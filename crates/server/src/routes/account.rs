@@ -8,7 +8,8 @@ use junto_protocol::account::{
 };
 use junto_protocol::auth::ChallengeOperation;
 use junto_protocol::error::ErrorCode;
-use junto_protocol::ids::{DeviceId, WorkspaceId};
+use junto_protocol::events::Event;
+use junto_protocol::ids::DeviceId;
 use junto_protocol::secret::LinkCode;
 use sqlx::AssertSqlSafe;
 use time::OffsetDateTime;
@@ -17,11 +18,12 @@ use uuid::Uuid;
 use crate::access::Access;
 use crate::db;
 use crate::error::{ApiError, ApiResult};
+use crate::events;
 use crate::extract::{ApiJson, ApiPath, Bearer, ClientAddress};
 use crate::proof;
 use crate::secrets::{CodePurpose, LINK_CODE_SYMBOLS, hash_code, random_code};
 use crate::state::AppState;
-use crate::store::{self, DEVICE_COLUMNS, DeviceRow};
+use crate::store::{self, DEVICE_COLUMNS, DeviceRow, SessionEnd, Sessions};
 use crate::validate;
 use crate::{read, transact};
 
@@ -41,26 +43,7 @@ pub async fn get_own_account(
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::OwnAccount)?;
-        let name: String = sqlx::query_scalar("select name from accounts where id = $1")
-            .bind(access.account_id)
-            .fetch_one(&mut *connection)
-            .await?;
-        let workspace_ids: Vec<WorkspaceId> = sqlx::query_scalar(
-            "select workspace_id from workspace_members
-             where account_id = $1
-             order by workspace_id",
-        )
-        .bind(access.account_id)
-        .fetch_all(&mut *connection)
-        .await?;
-        Ok(OwnAccount {
-            id: access.account_id,
-            name,
-            is_owner: access.is_owner(),
-            server_permissions: db::server_list(access.actor().server_permissions()),
-            server_role_ids: access.server_role_ids,
-            workspace_ids,
-        })
+        store::own_account(connection, &access).await
     })
     .map(Json)
 }
@@ -126,6 +109,11 @@ pub async fn rename_device(
         .fetch_optional(&mut *connection)
         .await?;
         let row = row.ok_or_else(ApiError::not_found)?;
+        let renamed = Event::DeviceRenamed {
+            device_id,
+            name: name.clone(),
+        };
+        events::tell_account(connection, now, access.account_id, &renamed).await?;
         store::device(row, access.device_id)
     })
     .map(Json)
@@ -162,11 +150,14 @@ pub async fn remove_device(
                 "the last device of an account cannot be removed",
             ));
         }
+        let sessions = Sessions::OfDevice(device_id);
+        store::record_ended(connection, now, sessions, SessionEnd::DeviceRemoved).await?;
         sqlx::query("delete from devices where id = $1")
             .bind(device_id)
             .execute(&mut *connection)
             .await?;
-        Ok(())
+        let removed = Event::DeviceRemoved { device_id };
+        events::tell_account(connection, now, access.account_id, &removed).await
     })?;
     Ok(StatusCode::NO_CONTENT)
 }

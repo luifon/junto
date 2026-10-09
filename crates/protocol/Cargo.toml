@@ -14,14 +14,12 @@ sqlx = ["dep:sqlx"]
 junto-authz = { workspace = true, features = ["serde", "utoipa"] }
 base64 = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 sqlx = { workspace = true, optional = true }
 thiserror = { workspace = true }
 time = { workspace = true }
 utoipa = { workspace = true }
 uuid = { workspace = true }
-
-[dev-dependencies]
-serde_json = { workspace = true }
 
 [lints]
 workspace = true

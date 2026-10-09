@@ -267,21 +267,58 @@ impl Access {
         .bind(workspace_id)
         .fetch_all(&mut *connection)
         .await?;
-        let mut by_channel: HashMap<ChannelId, Vec<OverrideRow>> = HashMap::new();
-        for row in overrides {
-            by_channel.entry(row.0).or_default().push(row);
-        }
-        rows.into_iter()
-            .map(|row| {
-                let record = channel_record(row)?;
-                let overrides = by_channel
-                    .get(&record.channel.id)
-                    .map_or(&[][..], Vec::as_slice);
-                let scope = channel_scope(workspace.clone(), overrides)?;
-                Ok((record, scope))
-            })
-            .collect()
+        scoped_channels(rows, overrides, workspace)
     }
+
+    /// The channels of a workspace with the identifiers in `channel_ids`, deleted ones
+    /// included, with the caller's standing in each.
+    pub async fn named_channels(
+        &self,
+        connection: &mut PgConnection,
+        workspace_id: WorkspaceId,
+        workspace: &WorkspaceScope,
+        channel_ids: &[ChannelId],
+    ) -> ApiResult<Vec<(ChannelRecord, ChannelScope)>> {
+        let rows: Vec<ChannelRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {CHANNEL_COLUMNS} from channels where workspace_id = $1 and id = any($2)"
+        )))
+        .bind(workspace_id)
+        .bind(channel_ids)
+        .fetch_all(&mut *connection)
+        .await?;
+        let overrides: Vec<OverrideRow> = sqlx::query_as(
+            "select o.channel_id, o.role_id, r.is_everyone, o.allow, o.deny
+             from channel_overrides o
+             join workspace_roles r on r.id = o.role_id
+             where o.workspace_id = $1 and o.channel_id = any($2)",
+        )
+        .bind(workspace_id)
+        .bind(channel_ids)
+        .fetch_all(&mut *connection)
+        .await?;
+        scoped_channels(rows, overrides, workspace)
+    }
+}
+
+fn scoped_channels(
+    rows: Vec<ChannelRow>,
+    overrides: Vec<OverrideRow>,
+    workspace: &WorkspaceScope,
+) -> ApiResult<Vec<(ChannelRecord, ChannelScope)>> {
+    let mut by_channel: HashMap<ChannelId, Vec<OverrideRow>> = HashMap::new();
+    for row in overrides {
+        by_channel.entry(row.0).or_default().push(row);
+    }
+    rows.into_iter()
+        .map(|row| {
+            let record = channel_record(row)?;
+            let overrides = by_channel
+                .get(&record.channel.id)
+                .map_or(&[][..], Vec::as_slice);
+            let scope = channel_scope(workspace.clone(), overrides)?;
+            Ok((record, scope))
+        })
+        .collect()
 }
 
 type OverrideRow = (ChannelId, WorkspaceRoleId, bool, i64, i64);

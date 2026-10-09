@@ -6,7 +6,9 @@ use junto_protocol::account::{
     AccountStatus, AccountSummary, DeviceOrigin, RecoverAccount, RecoveryNotice,
 };
 use junto_protocol::audit::AuditEvent;
-use junto_protocol::ids::{AccountId, InviteId, ServerRoleId};
+use junto_protocol::events::Event;
+use junto_protocol::ids::{AccountId, InviteId, ServerRoleId, WorkspaceId};
+use junto_protocol::invite::InviteRevocation;
 use sqlx::PgConnection;
 use time::OffsetDateTime;
 
@@ -14,8 +16,10 @@ use crate::access::Access;
 use crate::audit::{self, About};
 use crate::db::StoredText;
 use crate::error::{ApiError, ApiResult};
+use crate::events;
 use crate::extract::{ApiJson, ApiPath, Bearer};
 use crate::state::AppState;
+use crate::store::{SessionEnd, Sessions};
 use crate::{read, transact};
 use crate::{store, validate};
 
@@ -87,15 +91,17 @@ pub async fn locked_status(
 
 async fn set_status(
     connection: &mut PgConnection,
+    now: OffsetDateTime,
     account_id: AccountId,
     status: AccountStatus,
 ) -> ApiResult<()> {
     sqlx::query("update accounts set status = $2 where id = $1")
         .bind(account_id)
         .bind(status.stored())
-        .execute(connection)
+        .execute(&mut *connection)
         .await?;
-    Ok(())
+    let changed = Event::AccountStatusChanged { account_id, status };
+    events::publish(connection, now, &changed).await
 }
 
 /// Removes an account from the server. Its devices, sessions, memberships and roles end.
@@ -122,16 +128,36 @@ pub async fn remove_account(
             return Err(ApiError::conflict("the account is already removed"));
         }
 
-        set_status(connection, account_id, AccountStatus::Removed).await?;
-        for statement in [
-            "delete from devices where account_id = $1",
-            "delete from workspace_members where account_id = $1",
-            "delete from account_server_roles where account_id = $1",
-        ] {
-            sqlx::query(statement)
-                .bind(account_id)
-                .execute(&mut *connection)
-                .await?;
+        set_status(connection, now, account_id, AccountStatus::Removed).await?;
+        let sessions = Sessions::OfAccount(account_id);
+        store::record_ended(connection, now, sessions, SessionEnd::Removed).await?;
+        sqlx::query("delete from devices where account_id = $1")
+            .bind(account_id)
+            .execute(&mut *connection)
+            .await?;
+        let left: Vec<WorkspaceId> = sqlx::query_scalar(
+            "delete from workspace_members where account_id = $1 returning workspace_id",
+        )
+        .bind(account_id)
+        .fetch_all(&mut *connection)
+        .await?;
+        for workspace_id in left {
+            let removed = Event::WorkspaceMemberRemoved {
+                workspace_id,
+                account_id,
+            };
+            events::publish(connection, now, &removed).await?;
+        }
+        let roles = sqlx::query("delete from account_server_roles where account_id = $1")
+            .bind(account_id)
+            .execute(&mut *connection)
+            .await?;
+        if roles.rows_affected() > 0 {
+            let changed = Event::AccountServerRolesChanged {
+                account_id,
+                server_role_ids: Vec::new(),
+            };
+            events::publish(connection, now, &changed).await?;
         }
         audit::record(
             connection,
@@ -173,8 +199,8 @@ pub async fn ban_account(
             AccountStatus::Removed => return Err(ApiError::conflict("the account is removed")),
         }
 
-        set_status(connection, account_id, AccountStatus::Banned).await?;
-        store::end_sessions(connection, account_id).await?;
+        set_status(connection, now, account_id, AccountStatus::Banned).await?;
+        store::end_sessions(connection, now, account_id, SessionEnd::Banned).await?;
         let cancelled_invite_ids: Vec<InviteId> = sqlx::query_scalar(
             "update invites set revoked_at = $2, revocation = 'creator_banned'
              where created_by = $1 and revoked_at is null
@@ -184,6 +210,13 @@ pub async fn ban_account(
         .bind(now)
         .fetch_all(&mut *connection)
         .await?;
+        if !cancelled_invite_ids.is_empty() {
+            let revoked = Event::InvitesOfCreatorRevoked {
+                created_by: account_id,
+                revocation: InviteRevocation::CreatorBanned,
+            };
+            events::publish(connection, now, &revoked).await?;
+        }
         audit::record(
             connection,
             now,
@@ -222,7 +255,7 @@ pub async fn unban_account(
         if locked_status(connection, account_id).await? != AccountStatus::Banned {
             return Err(ApiError::conflict("the account is not banned"));
         }
-        set_status(connection, account_id, AccountStatus::Active).await?;
+        set_status(connection, now, account_id, AccountStatus::Active).await?;
         audit::record(
             connection,
             now,

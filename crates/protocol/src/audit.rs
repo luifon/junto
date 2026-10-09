@@ -33,6 +33,8 @@ pub enum AuditEvent {
         account_id: AccountId,
         device_id: DeviceId,
     },
+    /// The host command gave the event stream a new epoch, as after a restore.
+    EventEpochRenewed,
     InviteCreated {
         invite_id: InviteId,
         #[serde(with = "time::serde::rfc3339")]
@@ -162,6 +164,7 @@ impl AuditEvent {
             Self::OwnerAssigned { .. } => "owner_assigned",
             Self::OwnerCodeIssued { .. } => "owner_code_issued",
             Self::OwnerAccessRestored { .. } => "owner_access_restored",
+            Self::EventEpochRenewed => "event_epoch_renewed",
             Self::InviteRedeemed { .. } => "invite_redeemed",
             Self::WorkspaceMemberAdded { .. } => "workspace_member_added",
             Self::InviteCreated { .. } => "invite_created",

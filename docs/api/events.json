@@ -1,0 +1,2142 @@
+{
+  "title": "Junto event stream",
+  "api_version": 1,
+  "path": "/api/v1/events",
+  "server_message": {
+    "$ref": "#/components/schemas/ServerMessage"
+  },
+  "client_message": {
+    "$ref": "#/components/schemas/ClientMessage"
+  },
+  "events": {
+    "account_added": {
+      "properties": {
+        "account": {
+          "$ref": "#/components/schemas/AccountSummary"
+        },
+        "type": {
+          "enum": [
+            "account_added"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "account",
+        "type"
+      ],
+      "type": "object"
+    },
+    "account_recovered": {
+      "description": "The server owner gave a new device access to the account of the recipient.",
+      "properties": {
+        "recovery": {
+          "$ref": "#/components/schemas/RecoveryNotice"
+        },
+        "type": {
+          "enum": [
+            "account_recovered"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "recovery",
+        "type"
+      ],
+      "type": "object"
+    },
+    "account_server_roles_changed": {
+      "properties": {
+        "account_id": {
+          "$ref": "#/components/schemas/AccountId"
+        },
+        "server_role_ids": {
+          "items": {
+            "$ref": "#/components/schemas/ServerRoleId"
+          },
+          "type": "array"
+        },
+        "type": {
+          "enum": [
+            "account_server_roles_changed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "account_id",
+        "server_role_ids",
+        "type"
+      ],
+      "type": "object"
+    },
+    "account_status_changed": {
+      "properties": {
+        "account_id": {
+          "$ref": "#/components/schemas/AccountId"
+        },
+        "status": {
+          "$ref": "#/components/schemas/AccountStatus"
+        },
+        "type": {
+          "enum": [
+            "account_status_changed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "account_id",
+        "status",
+        "type"
+      ],
+      "type": "object"
+    },
+    "category_created": {
+      "properties": {
+        "category": {
+          "$ref": "#/components/schemas/Category"
+        },
+        "type": {
+          "enum": [
+            "category_created"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "category",
+        "type"
+      ],
+      "type": "object"
+    },
+    "category_updated": {
+      "properties": {
+        "category": {
+          "$ref": "#/components/schemas/Category"
+        },
+        "type": {
+          "enum": [
+            "category_updated"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "category",
+        "type"
+      ],
+      "type": "object"
+    },
+    "channel_created": {
+      "properties": {
+        "channel": {
+          "$ref": "#/components/schemas/Channel"
+        },
+        "type": {
+          "enum": [
+            "channel_created"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "channel",
+        "type"
+      ],
+      "type": "object"
+    },
+    "channel_deleted": {
+      "properties": {
+        "channel_id": {
+          "$ref": "#/components/schemas/ChannelId"
+        },
+        "type": {
+          "enum": [
+            "channel_deleted"
+          ],
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/components/schemas/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "channel_id",
+        "type"
+      ],
+      "type": "object"
+    },
+    "channel_override_set": {
+      "description": "The allow set and the deny set of one role in a channel. Two empty sets mean that the\nrole has no override in the channel.",
+      "properties": {
+        "allow": {
+          "items": {
+            "$ref": "#/components/schemas/WorkspacePermission"
+          },
+          "type": "array"
+        },
+        "channel_id": {
+          "$ref": "#/components/schemas/ChannelId"
+        },
+        "deny": {
+          "items": {
+            "$ref": "#/components/schemas/WorkspacePermission"
+          },
+          "type": "array"
+        },
+        "role_id": {
+          "$ref": "#/components/schemas/WorkspaceRoleId"
+        },
+        "type": {
+          "enum": [
+            "channel_override_set"
+          ],
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/components/schemas/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "channel_id",
+        "role_id",
+        "allow",
+        "deny",
+        "type"
+      ],
+      "type": "object"
+    },
+    "channel_updated": {
+      "properties": {
+        "channel": {
+          "$ref": "#/components/schemas/Channel"
+        },
+        "type": {
+          "enum": [
+            "channel_updated"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "channel",
+        "type"
+      ],
+      "type": "object"
+    },
+    "device_added": {
+      "description": "A device was added to the account of the recipient.",
+      "properties": {
+        "created_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "device_id": {
+          "$ref": "#/components/schemas/DeviceId"
+        },
+        "name": {
+          "type": "string"
+        },
+        "origin": {
+          "$ref": "#/components/schemas/DeviceOrigin"
+        },
+        "public_key": {
+          "$ref": "#/components/schemas/PublicKey"
+        },
+        "type": {
+          "enum": [
+            "device_added"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "device_id",
+        "name",
+        "public_key",
+        "origin",
+        "created_at",
+        "type"
+      ],
+      "type": "object"
+    },
+    "device_logged_in": {
+      "properties": {
+        "device_id": {
+          "$ref": "#/components/schemas/DeviceId"
+        },
+        "logged_in_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "device_logged_in"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "device_id",
+        "logged_in_at",
+        "type"
+      ],
+      "type": "object"
+    },
+    "device_logged_out": {
+      "properties": {
+        "device_id": {
+          "$ref": "#/components/schemas/DeviceId"
+        },
+        "type": {
+          "enum": [
+            "device_logged_out"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "device_id",
+        "type"
+      ],
+      "type": "object"
+    },
+    "device_removed": {
+      "description": "A device of the account was removed. Its sessions have ended.",
+      "properties": {
+        "device_id": {
+          "$ref": "#/components/schemas/DeviceId"
+        },
+        "type": {
+          "enum": [
+            "device_removed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "device_id",
+        "type"
+      ],
+      "type": "object"
+    },
+    "device_renamed": {
+      "properties": {
+        "device_id": {
+          "$ref": "#/components/schemas/DeviceId"
+        },
+        "name": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "device_renamed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "device_id",
+        "name",
+        "type"
+      ],
+      "type": "object"
+    },
+    "invite_created": {
+      "properties": {
+        "invite": {
+          "$ref": "#/components/schemas/Invite"
+        },
+        "type": {
+          "enum": [
+            "invite_created"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "invite",
+        "type"
+      ],
+      "type": "object"
+    },
+    "invite_revoked": {
+      "properties": {
+        "invite_id": {
+          "$ref": "#/components/schemas/InviteId"
+        },
+        "revocation": {
+          "$ref": "#/components/schemas/InviteRevocation"
+        },
+        "type": {
+          "enum": [
+            "invite_revoked"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "invite_id",
+        "revocation",
+        "type"
+      ],
+      "type": "object"
+    },
+    "invite_used": {
+      "properties": {
+        "invite_id": {
+          "$ref": "#/components/schemas/InviteId"
+        },
+        "type": {
+          "enum": [
+            "invite_used"
+          ],
+          "type": "string"
+        },
+        "uses": {
+          "format": "int32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "invite_id",
+        "uses",
+        "type"
+      ],
+      "type": "object"
+    },
+    "invites_of_creator_revoked": {
+      "description": "Every invite that the account created and that was not revoked is revoked now.",
+      "properties": {
+        "created_by": {
+          "$ref": "#/components/schemas/AccountId"
+        },
+        "revocation": {
+          "$ref": "#/components/schemas/InviteRevocation"
+        },
+        "type": {
+          "enum": [
+            "invites_of_creator_revoked"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "created_by",
+        "revocation",
+        "type"
+      ],
+      "type": "object"
+    },
+    "join_request_created": {
+      "properties": {
+        "join_request": {
+          "$ref": "#/components/schemas/JoinRequest"
+        },
+        "type": {
+          "enum": [
+            "join_request_created"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "join_request",
+        "type"
+      ],
+      "type": "object"
+    },
+    "join_request_decided": {
+      "properties": {
+        "account_id": {
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/AccountId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "join_request_id": {
+          "$ref": "#/components/schemas/JoinRequestId"
+        },
+        "state": {
+          "$ref": "#/components/schemas/JoinRequestState"
+        },
+        "type": {
+          "enum": [
+            "join_request_decided"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "join_request_id",
+        "state",
+        "type"
+      ],
+      "type": "object"
+    },
+    "owner_changed": {
+      "properties": {
+        "account_id": {
+          "$ref": "#/components/schemas/AccountId"
+        },
+        "previous_owner_id": {
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/AccountId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "enum": [
+            "owner_changed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "account_id",
+        "type"
+      ],
+      "type": "object"
+    },
+    "permissions_changed": {
+      "description": "What the recipient may see or do has changed: in one workspace, or on the server when\nno workspace is named. The client loads a snapshot.",
+      "properties": {
+        "type": {
+          "enum": [
+            "permissions_changed"
+          ],
+          "type": "string"
+        },
+        "workspace_id": {
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/WorkspaceId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "server_role_created": {
+      "properties": {
+        "role": {
+          "$ref": "#/components/schemas/ServerRole"
+        },
+        "type": {
+          "enum": [
+            "server_role_created"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "role",
+        "type"
+      ],
+      "type": "object"
+    },
+    "server_role_updated": {
+      "properties": {
+        "role": {
+          "$ref": "#/components/schemas/ServerRole"
+        },
+        "type": {
+          "enum": [
+            "server_role_updated"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "role",
+        "type"
+      ],
+      "type": "object"
+    },
+    "workspace_created": {
+      "properties": {
+        "type": {
+          "enum": [
+            "workspace_created"
+          ],
+          "type": "string"
+        },
+        "workspace": {
+          "$ref": "#/components/schemas/Workspace"
+        }
+      },
+      "required": [
+        "workspace",
+        "type"
+      ],
+      "type": "object"
+    },
+    "workspace_member_added": {
+      "properties": {
+        "member": {
+          "$ref": "#/components/schemas/WorkspaceMember"
+        },
+        "type": {
+          "enum": [
+            "workspace_member_added"
+          ],
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/components/schemas/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "member",
+        "type"
+      ],
+      "type": "object"
+    },
+    "workspace_member_removed": {
+      "properties": {
+        "account_id": {
+          "$ref": "#/components/schemas/AccountId"
+        },
+        "type": {
+          "enum": [
+            "workspace_member_removed"
+          ],
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/components/schemas/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "account_id",
+        "type"
+      ],
+      "type": "object"
+    },
+    "workspace_member_roles_changed": {
+      "properties": {
+        "account_id": {
+          "$ref": "#/components/schemas/AccountId"
+        },
+        "role_ids": {
+          "items": {
+            "$ref": "#/components/schemas/WorkspaceRoleId"
+          },
+          "type": "array"
+        },
+        "type": {
+          "enum": [
+            "workspace_member_roles_changed"
+          ],
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/components/schemas/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "account_id",
+        "role_ids",
+        "type"
+      ],
+      "type": "object"
+    },
+    "workspace_role_created": {
+      "properties": {
+        "role": {
+          "$ref": "#/components/schemas/WorkspaceRole"
+        },
+        "type": {
+          "enum": [
+            "workspace_role_created"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "role",
+        "type"
+      ],
+      "type": "object"
+    },
+    "workspace_role_updated": {
+      "properties": {
+        "role": {
+          "$ref": "#/components/schemas/WorkspaceRole"
+        },
+        "type": {
+          "enum": [
+            "workspace_role_updated"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "role",
+        "type"
+      ],
+      "type": "object"
+    },
+    "workspace_updated": {
+      "properties": {
+        "type": {
+          "enum": [
+            "workspace_updated"
+          ],
+          "type": "string"
+        },
+        "workspace": {
+          "$ref": "#/components/schemas/Workspace"
+        }
+      },
+      "required": [
+        "workspace",
+        "type"
+      ],
+      "type": "object"
+    }
+  },
+  "close_codes": {
+    "1001": "stopping",
+    "1009": "message_too_big",
+    "1011": "failed",
+    "4001": "ended",
+    "4002": "replaced",
+    "4003": "slow",
+    "4004": "idle",
+    "4005": "invalid_message",
+    "4006": "too_many_messages"
+  },
+  "components": {
+    "schemas": {
+      "AccountId": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "AccountStatus": {
+        "enum": [
+          "active",
+          "banned",
+          "removed"
+        ],
+        "type": "string"
+      },
+      "AccountSummary": {
+        "description": "An account as a moderator sees it.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "$ref": "#/components/schemas/AccountId"
+          },
+          "is_owner": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "server_role_ids": {
+            "items": {
+              "$ref": "#/components/schemas/ServerRoleId"
+            },
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AccountStatus"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "status",
+          "is_owner",
+          "server_role_ids",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "Category": {
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/CategoryId"
+          },
+          "name": {
+            "type": "string"
+          },
+          "position": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "workspace_id": {
+            "$ref": "#/components/schemas/WorkspaceId"
+          }
+        },
+        "required": [
+          "id",
+          "workspace_id",
+          "name",
+          "position"
+        ],
+        "type": "object"
+      },
+      "CategoryId": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "Channel": {
+        "properties": {
+          "category_id": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CategoryId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/components/schemas/ChannelId"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ChannelKind"
+          },
+          "name": {
+            "type": "string"
+          },
+          "permanent_messages": {
+            "description": "The channel setting that makes each message sent under it permanent.",
+            "type": "boolean"
+          },
+          "position": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "workspace_id": {
+            "$ref": "#/components/schemas/WorkspaceId"
+          }
+        },
+        "required": [
+          "id",
+          "workspace_id",
+          "kind",
+          "name",
+          "position",
+          "permanent_messages"
+        ],
+        "type": "object"
+      },
+      "ChannelId": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "ChannelKind": {
+        "enum": [
+          "text",
+          "voice"
+        ],
+        "type": "string"
+      },
+      "ClientMessage": {
+        "description": "What a client sends.",
+        "oneOf": [
+          {
+            "description": "Starts or restarts the delivery after `cursor` at `level`. Without a cursor the\ndelivery starts after the newest event.",
+            "properties": {
+              "cursor": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/Cursor"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "level": {
+                "$ref": "#/components/schemas/Level"
+              },
+              "type": {
+                "enum": [
+                  "subscribe"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "level",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Cursor": {
+        "description": "A place in the order of the events of one server. An event with a position at or below the\nposition of a cursor is covered by the state that the cursor belongs to.",
+        "properties": {
+          "epoch": {
+            "$ref": "#/components/schemas/StreamEpoch"
+          },
+          "position": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "epoch",
+          "position"
+        ],
+        "type": "object"
+      },
+      "DeviceId": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "DeviceOrigin": {
+        "description": "How a device key came to belong to its account.",
+        "enum": [
+          "owner_code",
+          "invite",
+          "join_request",
+          "link",
+          "recovery"
+        ],
+        "type": "string"
+      },
+      "EndReason": {
+        "description": "Why the server ended the access of a connection.",
+        "enum": [
+          "banned",
+          "removed",
+          "device_removed",
+          "recovered",
+          "session_ended"
+        ],
+        "type": "string"
+      },
+      "Event": {
+        "description": "One change of the state of a server. New events are added; the fields of an existing event\nare not changed or removed within one API version (ADR 0206).",
+        "oneOf": [
+          {
+            "description": "A device was added to the account of the recipient.",
+            "properties": {
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "device_id": {
+                "$ref": "#/components/schemas/DeviceId"
+              },
+              "name": {
+                "type": "string"
+              },
+              "origin": {
+                "$ref": "#/components/schemas/DeviceOrigin"
+              },
+              "public_key": {
+                "$ref": "#/components/schemas/PublicKey"
+              },
+              "type": {
+                "enum": [
+                  "device_added"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "device_id",
+              "name",
+              "public_key",
+              "origin",
+              "created_at",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "device_id": {
+                "$ref": "#/components/schemas/DeviceId"
+              },
+              "name": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "device_renamed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "device_id",
+              "name",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A device of the account was removed. Its sessions have ended.",
+            "properties": {
+              "device_id": {
+                "$ref": "#/components/schemas/DeviceId"
+              },
+              "type": {
+                "enum": [
+                  "device_removed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "device_id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "device_id": {
+                "$ref": "#/components/schemas/DeviceId"
+              },
+              "logged_in_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "device_logged_in"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "device_id",
+              "logged_in_at",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "device_id": {
+                "$ref": "#/components/schemas/DeviceId"
+              },
+              "type": {
+                "enum": [
+                  "device_logged_out"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "device_id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The server owner gave a new device access to the account of the recipient.",
+            "properties": {
+              "recovery": {
+                "$ref": "#/components/schemas/RecoveryNotice"
+              },
+              "type": {
+                "enum": [
+                  "account_recovered"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "recovery",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "What the recipient may see or do has changed: in one workspace, or on the server when\nno workspace is named. The client loads a snapshot.",
+            "properties": {
+              "type": {
+                "enum": [
+                  "permissions_changed"
+                ],
+                "type": "string"
+              },
+              "workspace_id": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/WorkspaceId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "account": {
+                "$ref": "#/components/schemas/AccountSummary"
+              },
+              "type": {
+                "enum": [
+                  "account_added"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "account",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "status": {
+                "$ref": "#/components/schemas/AccountStatus"
+              },
+              "type": {
+                "enum": [
+                  "account_status_changed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "account_id",
+              "status",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "server_role_ids": {
+                "items": {
+                  "$ref": "#/components/schemas/ServerRoleId"
+                },
+                "type": "array"
+              },
+              "type": {
+                "enum": [
+                  "account_server_roles_changed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "account_id",
+              "server_role_ids",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "previous_owner_id": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/AccountId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": {
+                "enum": [
+                  "owner_changed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "account_id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "role": {
+                "$ref": "#/components/schemas/ServerRole"
+              },
+              "type": {
+                "enum": [
+                  "server_role_created"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "role",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "role": {
+                "$ref": "#/components/schemas/ServerRole"
+              },
+              "type": {
+                "enum": [
+                  "server_role_updated"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "role",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "invite": {
+                "$ref": "#/components/schemas/Invite"
+              },
+              "type": {
+                "enum": [
+                  "invite_created"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "invite",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "invite_id": {
+                "$ref": "#/components/schemas/InviteId"
+              },
+              "revocation": {
+                "$ref": "#/components/schemas/InviteRevocation"
+              },
+              "type": {
+                "enum": [
+                  "invite_revoked"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "invite_id",
+              "revocation",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "invite_id": {
+                "$ref": "#/components/schemas/InviteId"
+              },
+              "type": {
+                "enum": [
+                  "invite_used"
+                ],
+                "type": "string"
+              },
+              "uses": {
+                "format": "int32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "invite_id",
+              "uses",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Every invite that the account created and that was not revoked is revoked now.",
+            "properties": {
+              "created_by": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "revocation": {
+                "$ref": "#/components/schemas/InviteRevocation"
+              },
+              "type": {
+                "enum": [
+                  "invites_of_creator_revoked"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "created_by",
+              "revocation",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "join_request": {
+                "$ref": "#/components/schemas/JoinRequest"
+              },
+              "type": {
+                "enum": [
+                  "join_request_created"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "join_request",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "account_id": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/AccountId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "join_request_id": {
+                "$ref": "#/components/schemas/JoinRequestId"
+              },
+              "state": {
+                "$ref": "#/components/schemas/JoinRequestState"
+              },
+              "type": {
+                "enum": [
+                  "join_request_decided"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "join_request_id",
+              "state",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "workspace_created"
+                ],
+                "type": "string"
+              },
+              "workspace": {
+                "$ref": "#/components/schemas/Workspace"
+              }
+            },
+            "required": [
+              "workspace",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "workspace_updated"
+                ],
+                "type": "string"
+              },
+              "workspace": {
+                "$ref": "#/components/schemas/Workspace"
+              }
+            },
+            "required": [
+              "workspace",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "member": {
+                "$ref": "#/components/schemas/WorkspaceMember"
+              },
+              "type": {
+                "enum": [
+                  "workspace_member_added"
+                ],
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            },
+            "required": [
+              "workspace_id",
+              "member",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "type": {
+                "enum": [
+                  "workspace_member_removed"
+                ],
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            },
+            "required": [
+              "workspace_id",
+              "account_id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "role_ids": {
+                "items": {
+                  "$ref": "#/components/schemas/WorkspaceRoleId"
+                },
+                "type": "array"
+              },
+              "type": {
+                "enum": [
+                  "workspace_member_roles_changed"
+                ],
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            },
+            "required": [
+              "workspace_id",
+              "account_id",
+              "role_ids",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "role": {
+                "$ref": "#/components/schemas/WorkspaceRole"
+              },
+              "type": {
+                "enum": [
+                  "workspace_role_created"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "role",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "role": {
+                "$ref": "#/components/schemas/WorkspaceRole"
+              },
+              "type": {
+                "enum": [
+                  "workspace_role_updated"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "role",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "category": {
+                "$ref": "#/components/schemas/Category"
+              },
+              "type": {
+                "enum": [
+                  "category_created"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "category",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "category": {
+                "$ref": "#/components/schemas/Category"
+              },
+              "type": {
+                "enum": [
+                  "category_updated"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "category",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "channel": {
+                "$ref": "#/components/schemas/Channel"
+              },
+              "type": {
+                "enum": [
+                  "channel_created"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "channel",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "channel": {
+                "$ref": "#/components/schemas/Channel"
+              },
+              "type": {
+                "enum": [
+                  "channel_updated"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "channel",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "channel_id": {
+                "$ref": "#/components/schemas/ChannelId"
+              },
+              "type": {
+                "enum": [
+                  "channel_deleted"
+                ],
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            },
+            "required": [
+              "workspace_id",
+              "channel_id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The allow set and the deny set of one role in a channel. Two empty sets mean that the\nrole has no override in the channel.",
+            "properties": {
+              "allow": {
+                "items": {
+                  "$ref": "#/components/schemas/WorkspacePermission"
+                },
+                "type": "array"
+              },
+              "channel_id": {
+                "$ref": "#/components/schemas/ChannelId"
+              },
+              "deny": {
+                "items": {
+                  "$ref": "#/components/schemas/WorkspacePermission"
+                },
+                "type": "array"
+              },
+              "role_id": {
+                "$ref": "#/components/schemas/WorkspaceRoleId"
+              },
+              "type": {
+                "enum": [
+                  "channel_override_set"
+                ],
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            },
+            "required": [
+              "workspace_id",
+              "channel_id",
+              "role_id",
+              "allow",
+              "deny",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Invite": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "$ref": "#/components/schemas/AccountId"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "$ref": "#/components/schemas/InviteId"
+          },
+          "max_uses": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "revocation": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/InviteRevocation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "uses": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "workspace_ids": {
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "created_by",
+          "created_at",
+          "expires_at",
+          "max_uses",
+          "uses",
+          "workspace_ids"
+        ],
+        "type": "object"
+      },
+      "InviteId": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "InviteRevocation": {
+        "enum": [
+          "revoked",
+          "creator_banned"
+        ],
+        "type": "string"
+      },
+      "JoinRequest": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "$ref": "#/components/schemas/JoinRequestId"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "created_at",
+          "expires_at"
+        ],
+        "type": "object"
+      },
+      "JoinRequestId": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "JoinRequestState": {
+        "enum": [
+          "pending",
+          "approved",
+          "denied",
+          "expired"
+        ],
+        "type": "string"
+      },
+      "Level": {
+        "description": "How much a connection receives (ADR 0107).",
+        "enum": [
+          "full",
+          "background"
+        ],
+        "type": "string"
+      },
+      "PublicKey": {
+        "description": "32 bytes in base64url without padding",
+        "maxLength": 43,
+        "minLength": 43,
+        "pattern": "^[A-Za-z0-9_-]+$",
+        "type": "string"
+      },
+      "RecoveryId": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "RecoveryNotice": {
+        "description": "One recovery of an account, as the account sees it.",
+        "properties": {
+          "device_id": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DeviceId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/components/schemas/RecoveryId"
+          },
+          "performed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "performed_by": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AccountId",
+                "description": "Absent when the recovery was done with the host command."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "performed_at"
+        ],
+        "type": "object"
+      },
+      "ResyncReason": {
+        "enum": [
+          "unknown_cursor",
+          "too_far_behind",
+          "skipped_event"
+        ],
+        "type": "string"
+      },
+      "ServerMessage": {
+        "description": "What the server sends.",
+        "oneOf": [
+          {
+            "description": "The first message of every connection.",
+            "properties": {
+              "api_versions": {
+                "items": {
+                  "format": "int32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "epoch": {
+                "$ref": "#/components/schemas/StreamEpoch"
+              },
+              "heartbeat_seconds": {
+                "description": "The server sends a ping at this interval and expects a frame from the client within\n`idle_seconds`.",
+                "format": "int32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "idle_seconds": {
+                "format": "int32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "server_version": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "hello"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "server_version",
+              "api_versions",
+              "epoch",
+              "heartbeat_seconds",
+              "idle_seconds",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The answer to a `subscribe`. Events after `cursor` follow.",
+            "properties": {
+              "cursor": {
+                "$ref": "#/components/schemas/Cursor"
+              },
+              "level": {
+                "$ref": "#/components/schemas/Level"
+              },
+              "type": {
+                "enum": [
+                  "subscribed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "level",
+              "cursor",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "event": {
+                "$ref": "#/components/schemas/Event"
+              },
+              "id": {
+                "description": "The position of the event. It grows from one event to the next; an event with an\n`id` at or below the last one that the client has applied is a repeat.",
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "enum": [
+                  "event"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "at",
+              "event",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The connection has received every event up to `cursor` that it may receive.",
+            "properties": {
+              "cursor": {
+                "$ref": "#/components/schemas/Cursor"
+              },
+              "type": {
+                "enum": [
+                  "checkpoint"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "cursor",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The server does not continue from the cursor of the client: as the answer to a\n`subscribe`, or as the end of a subscription. The connection stays open and delivers\nnothing. Whatever the reason, the client discards every collection of this server\nthat it holds, loads a snapshot and subscribes with the cursor of the snapshot. That\nincludes the collections that the snapshot does not carry, such as members, accounts,\ndevices, invites, join requests, server roles and channel overrides: the client loads\nthem again from their routes when it needs them.",
+            "properties": {
+              "reason": {
+                "$ref": "#/components/schemas/ResyncReason"
+              },
+              "type": {
+                "enum": [
+                  "resync"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The last message before the server closes a connection whose session no longer counts.",
+            "properties": {
+              "reason": {
+                "$ref": "#/components/schemas/EndReason"
+              },
+              "recovery": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/RecoveryNotice",
+                    "description": "Present with the reason `recovered`."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": {
+                "enum": [
+                  "ended"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ServerPermission": {
+        "description": "A permission that acts on the whole server. The number is the bit of the stored set.",
+        "enum": [
+          "Administrator",
+          "CreateWorkspace",
+          "CreateInvites",
+          "ApproveJoinRequests",
+          "BanMembers",
+          "ViewServerAuditLog"
+        ],
+        "type": "string"
+      },
+      "ServerRole": {
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/ServerRoleId"
+          },
+          "name": {
+            "type": "string"
+          },
+          "permissions": {
+            "items": {
+              "$ref": "#/components/schemas/ServerPermission"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "permissions"
+        ],
+        "type": "object"
+      },
+      "ServerRoleId": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "StreamEpoch": {
+        "description": "Identifies one history of event positions. It changes when positions start again.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "Workspace": {
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/WorkspaceId"
+          },
+          "is_default": {
+            "description": "True for the workspace that an invite or an approval grants when it names none.",
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "is_default"
+        ],
+        "type": "object"
+      },
+      "WorkspaceId": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "WorkspaceMember": {
+        "properties": {
+          "account_id": {
+            "$ref": "#/components/schemas/AccountId"
+          },
+          "name": {
+            "type": "string"
+          },
+          "role_ids": {
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceRoleId"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "account_id",
+          "name",
+          "role_ids"
+        ],
+        "type": "object"
+      },
+      "WorkspacePermission": {
+        "description": "A permission inside one workspace. The number is the bit of the stored set.",
+        "enum": [
+          "ViewChannel",
+          "ManageRoles",
+          "ManageChannel",
+          "ManageMessages",
+          "MentionEveryone",
+          "ManageGlossary",
+          "RecordCalls",
+          "ManageRecordings",
+          "ExportChannel",
+          "MoveMembers",
+          "MuteMembers",
+          "DeafenMembers",
+          "DisconnectMembers",
+          "LockRoom",
+          "RunMeetingMode",
+          "ViewAuditEntries"
+        ],
+        "type": "string"
+      },
+      "WorkspaceRole": {
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/WorkspaceRoleId"
+          },
+          "is_everyone": {
+            "description": "True for the role that every member of the workspace holds. It is never assigned.",
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "permissions": {
+            "items": {
+              "$ref": "#/components/schemas/WorkspacePermission"
+            },
+            "type": "array"
+          },
+          "workspace_id": {
+            "$ref": "#/components/schemas/WorkspaceId"
+          }
+        },
+        "required": [
+          "id",
+          "workspace_id",
+          "name",
+          "permissions",
+          "is_everyone"
+        ],
+        "type": "object"
+      },
+      "WorkspaceRoleId": {
+        "format": "uuid",
+        "type": "string"
+      }
+    }
+  }
+}

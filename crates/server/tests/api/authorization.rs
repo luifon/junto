@@ -474,6 +474,8 @@ async fn world() -> World {
             none.clone(),
             &forbidden,
         ),
+        operation(Method::GET, "/api/v1/snapshot", &[], none.clone(), &own),
+        operation(Method::GET, "/api/v1/events", &[], none.clone(), &own),
     ];
 
     World {

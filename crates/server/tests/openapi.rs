@@ -17,6 +17,22 @@ fn committed_openapi_document_matches_the_routes() {
 }
 
 #[test]
+fn committed_event_stream_document_matches_the_event_types() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(junto_server::EVENTS_DOCUMENT_PATH);
+    let committed = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+    let generated = junto_server::events_document().unwrap();
+    assert!(
+        committed == generated,
+        "{} differs from the event types. Run `cargo run -p junto-server --bin junto-openapi` \
+         and commit the result.",
+        path.display()
+    );
+}
+
+#[test]
 fn every_operation_documents_a_success_and_the_error_body() {
     let document: serde_json::Value =
         serde_json::from_str(&junto_server::openapi_document().unwrap()).unwrap();
@@ -29,8 +45,12 @@ fn every_operation_documents_a_success_and_the_error_body() {
         );
         for (method, operation) in operations.as_object().unwrap() {
             let responses = operation["responses"].as_object().unwrap();
+            let succeeds = |status: &String| {
+                status.starts_with('2')
+                    || (status == "101" && path == junto_protocol::events::STREAM_PATH)
+            };
             assert!(
-                responses.keys().any(|status| status.starts_with('2')),
+                responses.keys().any(succeeds),
                 "{method} {path} documents no success"
             );
             assert_eq!(
@@ -59,6 +79,7 @@ fn routes_without_a_session_are_the_ones_a_device_uses_before_it_has_one() {
         open,
         [
             "get /api/server",
+            "get /api/v1/health",
             "post /api/v1/auth/challenges",
             "post /api/v1/auth/sessions",
             "post /api/v1/device-links",

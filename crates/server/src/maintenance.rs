@@ -6,6 +6,7 @@ use std::time::Duration;
 use time::OffsetDateTime;
 
 use crate::error::ApiResult;
+use crate::events;
 use crate::state::AppState;
 use crate::transact;
 
@@ -34,16 +35,27 @@ const PAST_THE_HISTORY_PERIOD: &str = "delete from join_requests where id in (
          where state in ('denied', 'expired') and expires_at <= $1 limit $2)
      returning 1";
 
+const ENDED_SESSIONS_PAST_THEIR_LIFETIME: &str = "delete from ended_sessions
+     where session_id in (
+         select session_id from ended_sessions where ended_at <= $1 limit $2)
+     returning 1";
+
 /// Deletes expired challenges, sessions and device links, marks the join requests that
-/// waited too long as expired, and deletes denied and expired join requests that are older
-/// than the history period. The work is done in batches, each in its own transaction.
+/// waited too long as expired, deletes denied and expired join requests that are older than
+/// the history period, deletes the stored reasons of sessions that would have expired by now,
+/// and removes the events that the log no longer keeps. The work is done in batches, each in
+/// its own transaction.
 pub async fn run_once(app: &AppState) -> ApiResult<()> {
     let now = app.now();
     for statement in EXPIRED_AT_NOW {
         in_batches(app, statement, now).await?;
     }
     let history_start = now - app.config.limits.join_request_history;
-    in_batches(app, PAST_THE_HISTORY_PERIOD, history_start).await
+    in_batches(app, PAST_THE_HISTORY_PERIOD, history_start).await?;
+    let kept_from = now - app.config.limits.session_lifetime;
+    in_batches(app, ENDED_SESSIONS_PAST_THEIR_LIFETIME, kept_from).await?;
+    events::log::trim(app).await?;
+    Ok(())
 }
 
 async fn in_batches(app: &AppState, statement: &'static str, due: OffsetDateTime) -> ApiResult<()> {

@@ -8,6 +8,7 @@ pub mod config;
 pub mod database;
 pub mod db;
 pub mod error;
+pub mod events;
 pub mod extract;
 pub mod maintenance;
 pub mod owner;
@@ -32,6 +33,9 @@ use crate::state::AppState;
 
 /// The relative path of the committed OpenAPI document, from the repository root.
 pub const OPENAPI_DOCUMENT_PATH: &str = "docs/api/openapi.json";
+
+/// The relative path of the committed description of the event stream.
+pub const EVENTS_DOCUMENT_PATH: &str = "docs/api/events.json";
 
 pub fn openapi_document() -> Result<String, serde_json::Error> {
     let mut document = serde_json::to_string_pretty(&routes::openapi())?;
@@ -59,14 +63,32 @@ pub async fn prepare(
     })
 }
 
-/// Serves the API on `listener` until `shutdown` resolves, then finishes the open requests.
+/// The description of the event stream: a schema for every message and every event.
+pub fn events_document() -> Result<String, serde_json::Error> {
+    let mut document = serde_json::to_string_pretty(&events::schema::document()?)?;
+    document.push('\n');
+    Ok(document)
+}
+
+/// Serves the API on `listener` until `shutdown` resolves, then finishes the open requests,
+/// closes the connections of the event stream and waits until each has closed.
 pub async fn serve(
     listener: TcpListener,
     state: AppState,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
-    let service = routes::router(state).into_make_service_with_connect_info::<SocketAddr>();
-    axum::serve(listener, service)
-        .with_graceful_shutdown(shutdown)
-        .await
+    let watcher = tokio::spawn(events::watcher::run(state.clone()));
+    let stopping = state.clone();
+    let stop = async move {
+        shutdown.await;
+        stopping.streams.shut_down();
+    };
+    let service = routes::router(state.clone()).into_make_service_with_connect_info::<SocketAddr>();
+    let served = axum::serve(listener, service)
+        .with_graceful_shutdown(stop)
+        .await;
+    let limit = state.config.limits.stream.stop_timeout.unsigned_abs();
+    state.streams.stop(limit).await;
+    watcher.abort();
+    served
 }

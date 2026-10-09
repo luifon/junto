@@ -1026,6 +1026,65 @@
         }
       }
     },
+    "/api/v1/events": {
+      "get": {
+        "tags": [
+          "events"
+        ],
+        "summary": "Opens the event stream of the caller's device as a WebSocket. The messages are described\nin `docs/api/events.json`.",
+        "operationId": "open_event_stream",
+        "responses": {
+          "101": {
+            "description": "The connection is now a WebSocket."
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "tags": [
+          "server"
+        ],
+        "summary": "Whether the server reaches its database (ADR 0012).",
+        "operationId": "get_health",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/invites": {
       "get": {
         "tags": [
@@ -1599,6 +1658,41 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ServerRole"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/snapshot": {
+      "get": {
+        "tags": [
+          "events"
+        ],
+        "summary": "The state that a client starts from, with the cursor from which the event stream\ncontinues it.",
+        "operationId": "get_snapshot",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Snapshot"
                 }
               }
             }
@@ -2630,6 +2724,21 @@
               },
               "device_id": {
                 "$ref": "#/components/schemas/DeviceId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The host command gave the event stream a new epoch, as after a restore.",
+            "required": [
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "event_epoch_renewed"
+                ]
               }
             }
           },
@@ -3685,6 +3794,24 @@
           }
         }
       },
+      "Cursor": {
+        "type": "object",
+        "description": "A place in the order of the events of one server. An event with a position at or below the\nposition of a cursor is covered by the state that the cursor belongs to.",
+        "required": [
+          "epoch",
+          "position"
+        ],
+        "properties": {
+          "epoch": {
+            "$ref": "#/components/schemas/StreamEpoch"
+          },
+          "position": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "Device": {
         "type": "object",
         "required": [
@@ -3788,6 +3915,7 @@
           "exceeds_own_permissions",
           "not_found",
           "conflict",
+          "limit_reached",
           "key_already_registered",
           "owner_already_claimed",
           "owner_code_invalid",
@@ -3799,11 +3927,13 @@
           "join_requests_full",
           "challenges_full",
           "device_links_full",
+          "too_many_connections",
           "link_code_invalid",
           "public_key_mismatch",
           "method_not_allowed",
           "timeout",
           "busy",
+          "unavailable",
           "internal"
         ]
       },
@@ -3820,6 +3950,19 @@
           "message": {
             "type": "string",
             "description": "A sentence for a person who reads a log. Its text is not stable."
+          }
+        }
+      },
+      "Health": {
+        "type": "object",
+        "description": "What the health route reports when the server can serve requests.",
+        "required": [
+          "database"
+        ],
+        "properties": {
+          "database": {
+            "type": "boolean",
+            "description": "True when the server reached its database for this response."
           }
         }
       },
@@ -4386,6 +4529,35 @@
         "minLength": 86,
         "pattern": "^[A-Za-z0-9_-]+$"
       },
+      "Snapshot": {
+        "type": "object",
+        "description": "The state that a client starts from or returns to. It contains the effect of every event\nup to `cursor` and of no later one, so a subscription with `cursor` continues it without a\ngap (ADR 0207). It carries the account, its workspaces, and their roles, categories and\nchannels. The other collections are loaded on demand from their routes: members, accounts,\ndevices, invites, join requests, server roles and channel overrides. A client that loads\none of them applies to it the events that arrived since it asked for it, in their order.",
+        "required": [
+          "cursor",
+          "account",
+          "workspaces"
+        ],
+        "properties": {
+          "account": {
+            "$ref": "#/components/schemas/OwnAccount"
+          },
+          "cursor": {
+            "$ref": "#/components/schemas/Cursor"
+          },
+          "workspaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceState"
+            },
+            "description": "The workspaces that the caller can see."
+          }
+        }
+      },
+      "StreamEpoch": {
+        "type": "string",
+        "format": "uuid",
+        "description": "Identifies one history of event positions. It changes when positions start again."
+      },
       "UpdateCategory": {
         "type": "object",
         "description": "An absent field keeps its value.",
@@ -4595,6 +4767,47 @@
       "WorkspaceRoleId": {
         "type": "string",
         "format": "uuid"
+      },
+      "WorkspaceState": {
+        "type": "object",
+        "required": [
+          "workspace",
+          "own_role_ids",
+          "roles",
+          "categories",
+          "channels"
+        ],
+        "properties": {
+          "categories": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Category"
+            }
+          },
+          "channels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Channel"
+            },
+            "description": "The channels that the caller can see."
+          },
+          "own_role_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceRoleId"
+            },
+            "description": "The roles of the workspace that the caller holds, without the \"everyone\" role."
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceRole"
+            }
+          },
+          "workspace": {
+            "$ref": "#/components/schemas/Workspace"
+          }
+        }
       }
     },
     "securitySchemes": {
@@ -4641,6 +4854,10 @@
     {
       "name": "audit",
       "description": "The audit log"
+    },
+    {
+      "name": "events",
+      "description": "The event stream and the snapshot it continues"
     }
   ]
 }

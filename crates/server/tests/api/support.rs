@@ -121,6 +121,7 @@ pub struct Member {
 
 pub struct TestServer {
     pub base: String,
+    pub address: SocketAddr,
     pub db: PgPool,
     pub clock: Arc<ManualClock>,
     pub owner_code: String,
@@ -129,7 +130,9 @@ pub struct TestServer {
     http: reqwest::Client,
     database: PgConnectOptions,
     config: Config,
-    _shutdown: oneshot::Sender<()>,
+    send_buffer: Option<u32>,
+    shutdown: Option<oneshot::Sender<()>>,
+    served: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
 }
 
 fn admin_options() -> PgConnectOptions {
@@ -161,6 +164,16 @@ impl TestServer {
 
     /// Starts a server on its own new database.
     pub async fn start_with(configure: impl FnOnce(&mut Config)) -> Self {
+        Self::start_tuned(configure, None).await
+    }
+
+    /// Like [`TestServer::start_with`]. With `send_buffer`, the sockets of the server hold at
+    /// most about that many unsent bytes, so that a client that does not read is noticed
+    /// after little data.
+    pub async fn start_tuned(
+        configure: impl FnOnce(&mut Config),
+        send_buffer: Option<u32>,
+    ) -> Self {
         let admin = admin_options();
         let name = format!("junto_test_{}", uuid::Uuid::new_v4().simple());
         let mut connection = admin.connect().await.unwrap();
@@ -172,7 +185,7 @@ impl TestServer {
 
         let mut config = test_config();
         configure(&mut config);
-        Self::on_database(admin.database(&name), config, None).await
+        Self::on_database(admin.database(&name), config, None, send_buffer).await
     }
 
     /// Starts a second server process on the database of this one.
@@ -181,16 +194,28 @@ impl TestServer {
             self.database.clone(),
             self.config.clone(),
             Some(self.clock.now()),
+            self.send_buffer,
         )
         .await
+    }
+
+    /// Stops this server process as a stop signal does and waits until it has ended.
+    pub async fn stop(&mut self) {
+        drop(self.shutdown.take());
+        if let Some(served) = self.served.take() {
+            served.await.unwrap().unwrap();
+        }
     }
 
     async fn on_database(
         database: PgConnectOptions,
         config: Config,
         now: Option<OffsetDateTime>,
+        send_buffer: Option<u32>,
     ) -> Self {
-        let connected = Database::connect(database.clone(), 8, &config.limits.database)
+        let limits = &config.limits;
+        let stream_pool = limits.stream.pool();
+        let connected = Database::connect(database.clone(), 8, &limits.database, &stream_pool)
             .await
             .unwrap();
         let db = connected.pool().clone();
@@ -206,10 +231,19 @@ impl TestServer {
             .map(|code| code.expose().to_owned())
             .unwrap_or_default();
 
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
+        let listener = match send_buffer {
+            None => TcpListener::bind("127.0.0.1:0").await.unwrap(),
+            Some(bytes) => {
+                let socket = tokio::net::TcpSocket::new_v4().unwrap();
+                socket.set_send_buffer_size(bytes).unwrap();
+                socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+                socket.listen(1024).unwrap()
+            }
+        };
+        let address = listener.local_addr().unwrap();
+        let base = format!("http://{address}");
         let (shutdown, stopped) = oneshot::channel::<()>();
-        tokio::spawn(junto_server::serve(listener, prepared.state, async move {
+        let served = tokio::spawn(junto_server::serve(listener, prepared.state, async move {
             let _ = stopped.await;
         }));
 
@@ -224,6 +258,7 @@ impl TestServer {
             .unwrap();
         Self {
             base,
+            address,
             db,
             clock,
             owner_code,
@@ -232,7 +267,9 @@ impl TestServer {
             http,
             database,
             config,
-            _shutdown: shutdown,
+            send_buffer,
+            shutdown: Some(shutdown),
+            served: Some(served),
         }
     }
 

@@ -6,6 +6,7 @@ use junto_protocol::account::DeviceOrigin;
 use junto_protocol::audit::AuditEvent;
 use junto_protocol::auth::{ChallengeOperation, SessionCreated};
 use junto_protocol::error::ErrorCode;
+use junto_protocol::events::Event;
 use junto_protocol::ids::{AccountId, InviteId, JoinRequestId, WorkspaceId};
 use junto_protocol::invite::{
     ApproveJoinRequest, CreateInvite, Invite, InviteCreated, InviteRevocation, Join, JoinRequest,
@@ -20,6 +21,7 @@ use crate::access::Access;
 use crate::audit::{self, About};
 use crate::db::{self, StoredText};
 use crate::error::{ApiError, ApiResult, violates};
+use crate::events;
 use crate::extract::{ApiJson, ApiPath, Bearer, ClientAddress};
 use crate::proof;
 use crate::secrets::{CodePurpose, INVITE_CODE_SYMBOLS, hash_code, random_code};
@@ -43,6 +45,17 @@ const INVITE_SELECT: &str = "select i.id, i.created_by, i.created_at, i.expires_
      array(select w.workspace_id from invite_workspaces w \
            where w.invite_id = i.id order by w.workspace_id) \
      from invites i";
+
+/// An invite and an approval name a bounded number of workspaces (ADR 0306).
+fn require_few_workspaces(app: &AppState, workspace_ids: &[WorkspaceId]) -> ApiResult<()> {
+    let most = app.config.limits.invite_most_workspaces;
+    if workspace_ids.len() > most {
+        return Err(ApiError::invalid(format!(
+            "workspace_ids names at most {most} workspaces"
+        )));
+    }
+    Ok(())
+}
 
 fn invite(row: InviteRow) -> ApiResult<Invite> {
     let (id, created_by, created_at, expires_at, max_uses, uses, revocation, workspace_ids) = row;
@@ -93,6 +106,7 @@ pub async fn create_invite(
             limits.invite_most_uses
         )));
     }
+    require_few_workspaces(&app, &body.workspace_ids)?;
     let stored_max_uses = i32::try_from(max_uses).map_err(|error| ApiError::internal(&error))?;
     let code = random_code(INVITE_CODE_SYMBOLS)?;
     let id = InviteId::generate();
@@ -140,7 +154,7 @@ pub async fn create_invite(
             },
         )
         .await?;
-        Ok(Invite {
+        let invite = Invite {
             id,
             created_by: access.account_id,
             created_at: now,
@@ -149,7 +163,12 @@ pub async fn create_invite(
             uses: 0,
             workspace_ids,
             revocation: None,
-        })
+        };
+        let created = Event::InviteCreated {
+            invite: invite.clone(),
+        };
+        events::publish(connection, now, &created).await?;
+        Ok(invite)
     })?;
 
     Ok((
@@ -228,7 +247,12 @@ pub async fn revoke_invite(
             About::Server,
             &AuditEvent::InviteRevoked { invite_id },
         )
-        .await
+        .await?;
+        let revoked = Event::InviteRevoked {
+            invite_id,
+            revocation: InviteRevocation::Revoked,
+        };
+        events::publish(connection, now, &revoked).await
     })?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -239,17 +263,22 @@ async fn use_invite(
     code_hash: &[u8; 32],
     now: OffsetDateTime,
 ) -> ApiResult<(InviteId, AccountId)> {
-    let used: Option<(InviteId, AccountId)> = sqlx::query_as(
+    let used: Option<(InviteId, AccountId, i32)> = sqlx::query_as(
         "update invites set uses = uses + 1
          where code_hash = $1 and revoked_at is null and expires_at > $2 and uses < max_uses
-         returning id, created_by",
+         returning id, created_by, uses",
     )
     .bind(code_hash.as_slice())
     .bind(now)
     .fetch_optional(&mut *connection)
     .await?;
-    if let Some(used) = used {
-        return Ok(used);
+    if let Some((invite_id, created_by, uses)) = used {
+        let used = Event::InviteUsed {
+            invite_id,
+            uses: db::count(uses)?,
+        };
+        events::publish(connection, now, &used).await?;
+        return Ok((invite_id, created_by));
     }
     let row: Option<(bool, OffsetDateTime)> = sqlx::query_as(
         "select revoked_at is not null, expires_at from invites where code_hash = $1",
@@ -313,6 +342,7 @@ pub async fn redeem_invite(
         }
         let mut workspace_ids = workspace_ids;
         workspace_ids.sort();
+        store::announce_members(connection, now, access.account_id, &workspace_ids).await?;
         audit::record(
             connection,
             now,
@@ -461,7 +491,12 @@ pub async fn request_to_join(
         .execute(&mut *connection)
         .await;
         match inserted {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                let created = Event::JoinRequestCreated {
+                    join_request: request.clone(),
+                };
+                events::publish(connection, now, &created).await
+            }
             Err(error) if violates(&error, "join_requests_one_pending_per_key") => {
                 Err(ApiError::new(
                     ErrorCode::JoinRequestPending,
@@ -599,6 +634,7 @@ pub async fn approve_join_request(
     ApiPath(join_request_id): ApiPath<JoinRequestId>,
     ApiJson(body): ApiJson<ApproveJoinRequest>,
 ) -> ApiResult<Json<JoinRequestStatus>> {
+    require_few_workspaces(&app, &body.workspace_ids)?;
     let now = app.now();
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
@@ -646,6 +682,12 @@ pub async fn approve_join_request(
             },
         )
         .await?;
+        let decided = Event::JoinRequestDecided {
+            join_request_id,
+            state: JoinRequestState::Approved,
+            account_id: Some(account_id),
+        };
+        events::publish(connection, now, &decided).await?;
         Ok(JoinRequestStatus {
             id: join_request_id,
             state: JoinRequestState::Approved,
@@ -691,6 +733,12 @@ pub async fn deny_join_request(
             &AuditEvent::JoinRequestDenied { join_request_id },
         )
         .await?;
+        let decided = Event::JoinRequestDecided {
+            join_request_id,
+            state: JoinRequestState::Denied,
+            account_id: None,
+        };
+        events::publish(connection, now, &decided).await?;
         Ok(JoinRequestStatus {
             id: join_request_id,
             state: JoinRequestState::Denied,

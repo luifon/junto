@@ -61,6 +61,10 @@ identifier!(WorkspaceRoleId);
 identifier!(CategoryId);
 identifier!(ChannelId);
 identifier!(AuditEntryId);
+identifier!(
+    /// Identifies one history of event positions. It changes when positions start again.
+    StreamEpoch
+);
 
 #[cfg(test)]
 mod tests {

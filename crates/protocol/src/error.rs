@@ -22,6 +22,7 @@ pub enum ErrorCode {
     ExceedsOwnPermissions,
     NotFound,
     Conflict,
+    LimitReached,
     KeyAlreadyRegistered,
     OwnerAlreadyClaimed,
     OwnerCodeInvalid,
@@ -33,11 +34,13 @@ pub enum ErrorCode {
     JoinRequestsFull,
     ChallengesFull,
     DeviceLinksFull,
+    TooManyConnections,
     LinkCodeInvalid,
     PublicKeyMismatch,
     MethodNotAllowed,
     Timeout,
     Busy,
+    Unavailable,
     Internal,
 }
 
@@ -59,6 +62,7 @@ impl ErrorCode {
         Self::ExceedsOwnPermissions,
         Self::NotFound,
         Self::Conflict,
+        Self::LimitReached,
         Self::KeyAlreadyRegistered,
         Self::OwnerAlreadyClaimed,
         Self::OwnerCodeInvalid,
@@ -70,11 +74,13 @@ impl ErrorCode {
         Self::JoinRequestsFull,
         Self::ChallengesFull,
         Self::DeviceLinksFull,
+        Self::TooManyConnections,
         Self::LinkCodeInvalid,
         Self::PublicKeyMismatch,
         Self::MethodNotAllowed,
         Self::Timeout,
         Self::Busy,
+        Self::Unavailable,
         Self::Internal,
     ];
 
@@ -95,6 +101,7 @@ impl ErrorCode {
             | Self::OwnerCodeInvalid => 403,
             Self::NotFound | Self::InviteNotFound | Self::LinkCodeInvalid => 404,
             Self::Conflict
+            | Self::LimitReached
             | Self::KeyAlreadyRegistered
             | Self::OwnerAlreadyClaimed
             | Self::JoinRequestPending
@@ -104,9 +111,10 @@ impl ErrorCode {
             | Self::RateLimited
             | Self::JoinRequestsFull
             | Self::ChallengesFull
-            | Self::DeviceLinksFull => 429,
+            | Self::DeviceLinksFull
+            | Self::TooManyConnections => 429,
             Self::MethodNotAllowed => 405,
-            Self::Timeout | Self::Busy => 503,
+            Self::Timeout | Self::Busy | Self::Unavailable => 503,
             Self::Internal => 500,
         }
     }

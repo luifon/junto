@@ -6,7 +6,7 @@ It consists of a server written in Rust with PostgreSQL, a native desktop client
 
 ## Status
 
-Design reviewed. The technical tests of step 0 are in progress. The server base exists in `crates/`: accounts, device keys, invites, roles, channels and the audit log behind the public API. There is no client yet, and there is still no usable application.
+Design reviewed. The technical tests of step 0 are in progress. The server base exists in `crates/`: accounts, device keys, invites, roles, channels, the audit log and the event stream behind the public API. There is no client yet, and there is still no usable application.
 
 ## Main design points
 

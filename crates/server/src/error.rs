@@ -47,6 +47,11 @@ impl ApiError {
         Self::new(ErrorCode::Conflict, message)
     }
 
+    /// An object holds the largest number of parts that the server allows (ADR 0306).
+    pub fn limit_reached(message: impl Into<Cow<'static, str>>) -> Self {
+        Self::new(ErrorCode::LimitReached, message)
+    }
+
     pub fn unauthenticated() -> Self {
         Self::new(
             ErrorCode::Unauthenticated,

@@ -7,12 +7,14 @@ pub mod account;
 pub mod audit;
 pub mod auth;
 pub mod error;
+pub mod events;
 pub mod ids;
 pub mod invite;
 pub mod keys;
 pub mod roles;
 pub mod secret;
 pub mod server;
+pub mod snapshot;
 pub mod structure;
 
 pub use junto_authz::{ServerPermission, WorkspacePermission};

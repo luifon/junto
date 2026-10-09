@@ -2,7 +2,7 @@ use std::net::{IpAddr, SocketAddr};
 
 use time::Duration;
 
-use crate::database::Timeouts;
+use crate::database::{StreamPool, Timeouts};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -30,7 +30,7 @@ pub struct Config {
     pub limits: Limits,
 }
 
-/// The numbers that ADR 0108, 0109, 0111, 0112 and 0114 fix.
+/// The numbers that ADR 0108, 0109, 0111, 0112, 0114, 0116 and 0207 fix.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Limits {
     pub challenge_lifetime: Duration,
@@ -53,6 +53,85 @@ pub struct Limits {
     pub request_timeout: Duration,
     pub database: Timeouts,
     pub maintenance_batch: u32,
+    pub invite_most_workspaces: usize,
+    pub most_roles_per_workspace: u32,
+    pub most_roles_per_member: u32,
+    pub most_server_roles_per_account: u32,
+    pub stream: StreamLimits,
+}
+
+/// The limits of the event stream (ADR 0116, ADR 0207).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamLimits {
+    pub connections_per_device: usize,
+    pub connections_per_account: usize,
+    pub opens: RateLimit,
+    pub heartbeat: Duration,
+    pub idle_timeout: Duration,
+    pub subscribe_timeout: Duration,
+    pub send_timeout: Duration,
+    pub read_deadline: Duration,
+    pub retry_delay: Duration,
+    pub most_failed_attempts: u32,
+    pub close_timeout: Duration,
+    pub stop_timeout: Duration,
+    pub client_message_bytes: usize,
+    pub client_frames: RateLimit,
+    pub batch: u32,
+    pub batch_bytes: u32,
+    pub authorization_validity: Duration,
+    pub replay_most_events: u32,
+    pub events_kept: u32,
+    pub poll_interval: Duration,
+    pub concurrent_deliveries: usize,
+    pub concurrent_session_checks: usize,
+}
+
+impl StreamLimits {
+    /// The connections of the event stream: one for each read that can run at the same time,
+    /// and one for the watcher.
+    pub fn pool(&self) -> StreamPool {
+        let readers = self.concurrent_deliveries.max(1) + self.concurrent_session_checks.max(1);
+        StreamPool {
+            connections: u32::try_from(readers + 1).unwrap_or(u32::MAX),
+            time_limit: self.read_deadline,
+        }
+    }
+}
+
+impl Default for StreamLimits {
+    fn default() -> Self {
+        Self {
+            connections_per_device: 2,
+            connections_per_account: 10,
+            opens: RateLimit {
+                attempts: 30,
+                window: Duration::minutes(1),
+            },
+            heartbeat: Duration::seconds(25),
+            idle_timeout: Duration::seconds(60),
+            subscribe_timeout: Duration::seconds(30),
+            send_timeout: Duration::seconds(10),
+            read_deadline: Duration::seconds(5),
+            retry_delay: Duration::seconds(1),
+            most_failed_attempts: 5,
+            close_timeout: Duration::seconds(2),
+            stop_timeout: Duration::seconds(5),
+            client_message_bytes: 4096,
+            client_frames: RateLimit {
+                attempts: 30,
+                window: Duration::minutes(1),
+            },
+            batch: 64,
+            batch_bytes: 256 * 1024,
+            authorization_validity: Duration::seconds(1),
+            replay_most_events: 1_000,
+            events_kept: 5_000,
+            poll_interval: Duration::seconds(1),
+            concurrent_deliveries: 4,
+            concurrent_session_checks: 2,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +179,11 @@ impl Default for Limits {
                 idle_in_transaction: Duration::seconds(15),
             },
             maintenance_batch: 500,
+            invite_most_workspaces: 100,
+            most_roles_per_workspace: 250,
+            most_roles_per_member: 64,
+            most_server_roles_per_account: 64,
+            stream: StreamLimits::default(),
         }
     }
 }

@@ -1,0 +1,37 @@
+use std::time::Duration;
+
+use axum::Json;
+use axum::extract::State;
+use junto_protocol::error::ErrorCode;
+use junto_protocol::server::Health;
+
+use crate::error::{ApiError, ApiResult};
+use crate::read;
+use crate::state::AppState;
+
+const DATABASE_TIME_LIMIT: Duration = Duration::from_secs(2);
+
+async fn database_answers(app: &AppState) -> ApiResult<()> {
+    read!(app, |connection| {
+        sqlx::query("select 1").execute(connection).await?;
+        Ok(())
+    })
+}
+
+/// Whether the server reaches its database (ADR 0012).
+#[utoipa::path(
+    get,
+    path = "/api/v1/health",
+    tag = "server",
+    responses((status = 200, body = Health), ApiError)
+)]
+pub async fn get_health(State(app): State<AppState>) -> ApiResult<Json<Health>> {
+    match tokio::time::timeout(DATABASE_TIME_LIMIT, database_answers(&app)).await {
+        Ok(Ok(())) => Ok(Json(Health { database: true })),
+        Ok(Err(_)) | Err(_) => Err(ApiError::new(
+            ErrorCode::Unavailable,
+            "the server does not reach its database",
+        )
+        .retry_after(time::Duration::seconds(1))),
+    }
+}

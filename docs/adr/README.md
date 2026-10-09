@@ -22,6 +22,9 @@ Status values:
 | [0007](0007-monitoring-and-no-telemetry.md) | Monitoring and no telemetry | Accepted | A health endpoint and an optional OpenTelemetry export; nothing is sent to the authors or a third party. |
 | [0008](0008-server-crates-and-process.md) | Server crates, configuration and process behaviour | Accepted | Three crates in one workspace; settings from environment variables; structured logs on standard error and the owner code on standard output; host commands in the same binary. |
 | [0009](0009-serializable-transactions-and-retry.md) | Serializable transactions with a bounded retry | Accepted | Every request is one serializable transaction that is run again up to eight times when it loses against a concurrent one; no lock order; PostgreSQL limits each statement, lock wait and idle transaction. |
+| [0010](0010-event-positions-assigned-at-commit.md) | Event positions are assigned at the commit, under one lock | Accepted | A deferred trigger gives each event its position when its transaction commits, under one advisory lock, so a higher position is never visible before a lower one; a cursor is an epoch and a position, and a host command sets a new epoch after a restore. |
+| [0011](0011-events-written-with-the-change-and-authorized-at-delivery.md) | Events are written with their change and authorized when they are delivered | Accepted | The event table is the outbox and the replay log; each connection reads it in bounded batches and decides every event with the permission function in the same transaction, valid for one second from before its snapshot; deliveries are at least once; a stop loses nothing. |
+| [0012](0012-health-route.md) | Health route | Accepted | `GET /api/v1/health` without a session answers 200 when the database answers and 503 with the error `unavailable` otherwise. |
 
 ## 0101–0199 Accounts and servers
 
@@ -42,6 +45,7 @@ Status values:
 | [0113](0113-account-states.md) | Account states for removal and ban | Accepted | Accounts are active, banned or removed and are never deleted; a ban keeps the keys blocked until an unban, a removal frees them. |
 | [0114](0114-host-commands-for-the-server-owner.md) | Host commands for the server owner | Accepted | Two commands of the server binary assign a new owner or issue an owner code, on the database only, with an audit entry. |
 | [0115](0115-existing-accounts-and-further-workspaces.md) | Adding an existing account to further workspaces | Accepted | A logged-in account redeems an invite, or an administrator adds the account; both are in the audit log. |
+| [0116](0116-event-stream-connection-limits.md) | Limits of the event stream: connections, heartbeat and slow clients | Accepted | Two connections per device and ten per account, counted until their tasks end; a ping every 25 seconds; unfragmented client frames counted at the socket; no queue per connection; a client that takes no message for 10 seconds is disconnected and resumes from its cursor. |
 
 ## 0201–0299 API and automation
 
@@ -52,6 +56,9 @@ Status values:
 | [0203](0203-access-tokens.md) | Administrator access tokens | Accepted | Tokens with an expiry and a set of actions, checked against the creator's current permissions on each request. |
 | [0204](0204-setup-tool.md) | Setup from a file with a command-line tool | Accepted | `export`, `plan` and `apply` for the server structure, with stable identifiers and an all-or-nothing endpoint. |
 | [0205](0205-api-conventions.md) | API conventions: paths, identifiers, encodings and errors | Accepted | Routes under `/api/v1`, UUID version 7 identifiers, RFC 3339 times, one error body with stable codes for every error, identical responses for absent and hidden objects, and a generated OpenAPI file checked by a test. |
+| [0206](0206-event-envelope-and-version-rule.md) | Event envelope and the version rule of the event stream | Accepted | One JSON object per text frame with a `type`; within an API version the server only adds, and a reader skips what it does not know; the schemas are generated into `docs/api/events.json`. |
+| [0207](0207-cursor-replay-bound-and-snapshot.md) | Cursor, replay bound and snapshot | Accepted | The device keeps its cursor; the server replays up to 1000 events that the account may receive from a log of 5000 positions and otherwise answers `resync`; the snapshot route returns the state with the cursor that continues it; states what positions tell a recipient. |
+| [0208](0208-events-of-the-server-base.md) | The events of the server base and who receives them | Accepted | Each event goes to the accounts that the matching REST route serves; a permission change is a notice that names only the workspace; removal, ban and recovery end the connection with a reason. |
 
 ## 0301–0399 Permissions and moderation
 
@@ -62,6 +69,7 @@ Status values:
 | [0303](0303-audit-log.md) | Audit log | Accepted | A read-only log of administrative actions, visible according to channel access, with system lines in the channel. |
 | [0304](0304-permission-evaluation-details.md) | Details of the permission function: view permission, grant rule and stored sets | Accepted | A "view channel" permission, the grant rule including what the channel overrides of a role allow, the permissions for actions that ADR 0301 does not name, and permission sets stored as fixed bits. |
 | [0305](0305-audit-log-storage.md) | Storage and reading of the audit log | Accepted | Typed events stored with the change they describe, a trigger that refuses changes, and one read route per level with visibility decided per channel from one snapshot. |
+| [0306](0306-ceilings-on-roles-and-invite-workspaces.md) | Ceilings on roles, role assignments and the workspaces of an invite | Accepted | 250 roles per workspace, 64 roles per member, 64 server roles per account and 100 workspaces per invite, so that no list in an event grows without a bound. |
 
 ## 0401–0499 Text
 
@@ -91,9 +99,9 @@ Status values:
 
 | Number | Title | Status | Summary |
 |---|---|---|---|
-| [0601](0601-recording-job-model.md) | Recording start and the recording job model | Accepted, pending step 0 | A recording starts by permission with an indicator and is a tracked job with segments and states. |
-| [0602](0602-recording-output-and-layout-page.md) | Recording output and the layout page | Accepted, pending step 0 | One MP4 composed by the project's own layout page, plus one audio file per track as timed segments. |
-| [0603](0603-transcripts-diarization-and-glossary.md) | Transcripts, diarization and glossary | Accepted, pending step 0 | Voice detection before Whisper, speaker names from tracks, optional diarization of shared sound, a workspace glossary. |
+| [0601](0601-recording-job-model.md) | Recording start and the recording job model | Accepted | A recording starts by permission with an indicator and is a tracked job with segments and states. |
+| [0602](0602-recording-output-and-layout-page.md) | Recording output and the layout page | Accepted | One MP4 composed by the project's own layout page, plus one audio file per track as timed segments. |
+| [0603](0603-transcripts-diarization-and-glossary.md) | Transcripts, diarization and glossary | Accepted | Voice detection before Whisper, speaker names from tracks, optional diarization of shared sound, a workspace glossary. |
 
 ## 0701–0799 Client
 

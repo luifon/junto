@@ -16,13 +16,15 @@ const USAGE: &str = "usage:
   junto-server                             serve the API
   junto-server assign-owner <account-id>   make an active account the server owner
   junto-server issue-owner-code            print a new one-time owner code
+  junto-server new-event-epoch             make every client load a snapshot, after a restore
 
-Every form reads JUNTO_DATABASE_URL. The two commands work on the database directly.";
+Every form reads JUNTO_DATABASE_URL. The three commands work on the database directly.";
 
 enum Command {
     Serve,
     AssignOwner(AccountId),
     IssueOwnerCode,
+    NewEventEpoch,
 }
 
 fn command(arguments: &[String]) -> Result<Command, String> {
@@ -30,6 +32,7 @@ fn command(arguments: &[String]) -> Result<Command, String> {
         [] => Ok(Command::Serve),
         [name] if name == "serve" => Ok(Command::Serve),
         [name] if name == "issue-owner-code" => Ok(Command::IssueOwnerCode),
+        [name] if name == "new-event-epoch" => Ok(Command::NewEventEpoch),
         [name, account_id] if name == "assign-owner" => account_id
             .parse()
             .map(Command::AssignOwner)
@@ -64,6 +67,7 @@ async fn main() -> ExitCode {
         }
         Command::AssignOwner(account_id) => assign_owner(config, account_id).await,
         Command::IssueOwnerCode => issue_owner_code(config).await,
+        Command::NewEventEpoch => new_event_epoch(config).await,
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -78,7 +82,14 @@ type Failure = Box<dyn std::error::Error>;
 
 async fn connect(config: &Config, connections: u32) -> Result<Database, Failure> {
     let options: PgConnectOptions = config.database_url.parse()?;
-    Ok(Database::connect(options, connections, &config.limits.database).await?)
+    let limits = &config.limits;
+    Ok(Database::connect(
+        options,
+        connections,
+        &limits.database,
+        &limits.stream.pool(),
+    )
+    .await?)
 }
 
 async fn serve(config: Config) -> Result<(), Failure> {
@@ -109,6 +120,16 @@ async fn assign_owner(config: Config, account_id: AccountId) -> Result<(), Failu
     let database = connect(&config, HOST_COMMAND_CONNECTIONS).await?;
     owner::assign(&database, account_id, SystemClock.now()).await?;
     println!("The account {account_id} is now the server owner.");
+    Ok(())
+}
+
+async fn new_event_epoch(config: Config) -> Result<(), Failure> {
+    let database = connect(&config, HOST_COMMAND_CONNECTIONS).await?;
+    let epoch = owner::renew_event_epoch(&database, SystemClock.now()).await?;
+    println!(
+        "The event stream has the new epoch {epoch}. Every client loads a snapshot when it \
+         subscribes the next time."
+    );
     Ok(())
 }
 

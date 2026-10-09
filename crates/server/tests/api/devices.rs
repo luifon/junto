@@ -11,7 +11,7 @@ use time::Duration;
 
 use crate::support::{DeviceKey, Member, TestServer, member};
 
-async fn request_link(server: &TestServer, key: &DeviceKey, name: &str) -> DeviceLinkCreated {
+pub async fn request_link(server: &TestServer, key: &DeviceKey, name: &str) -> DeviceLinkCreated {
     let proof = server.proof(key, ChallengeOperation::LinkDevice).await;
     server
         .open(
@@ -22,7 +22,7 @@ async fn request_link(server: &TestServer, key: &DeviceKey, name: &str) -> Devic
         .ok(StatusCode::CREATED)
 }
 
-async fn link_second_device(server: &TestServer, first: &Member) -> Member {
+pub async fn link_second_device(server: &TestServer, first: &Member) -> Member {
     let key = DeviceKey::generate();
     let link = request_link(server, &key, "laptop").await;
     server

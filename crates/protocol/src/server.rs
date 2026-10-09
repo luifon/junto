@@ -12,3 +12,10 @@ pub struct ServerInfo {
     pub logo_path: Option<String>,
     pub api_versions: Vec<u32>,
 }
+
+/// What the health route reports when the server can serve requests.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Health {
+    /// True when the server reached its database for this response.
+    pub database: bool,
+}

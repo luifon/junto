@@ -17,10 +17,13 @@ pub mod account;
 pub mod audit_log;
 pub mod auth;
 pub mod channels;
+pub mod health;
 pub mod invites;
 pub mod moderation;
 pub mod server_info;
 pub mod server_roles;
+pub mod snapshot;
+pub mod stream;
 pub mod workspace_roles;
 pub mod workspaces;
 
@@ -46,7 +49,8 @@ pub const SESSION_SECURITY: &str = "session";
         (name = "server roles", description = "Roles that hold server permissions"),
         (name = "workspaces", description = "Workspaces, their members and roles"),
         (name = "channels", description = "Categories, channels and channel overrides"),
-        (name = "audit", description = "The audit log")
+        (name = "audit", description = "The audit log"),
+        (name = "events", description = "The event stream and the snapshot it continues")
     )
 )]
 struct ApiDocument;
@@ -71,6 +75,7 @@ impl Modify for SessionSecurity {
 fn documented_routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::with_openapi(ApiDocument::openapi())
         .routes(routes!(server_info::get_server_info))
+        .routes(routes!(health::get_health))
         .routes(routes!(auth::create_challenge))
         .routes(routes!(auth::log_in))
         .routes(routes!(auth::log_out))
@@ -130,6 +135,8 @@ fn documented_routes() -> OpenApiRouter<AppState> {
         .routes(routes!(channels::set_channel_override))
         .routes(routes!(audit_log::get_server_audit_log))
         .routes(routes!(audit_log::get_workspace_audit_log))
+        .routes(routes!(snapshot::get_snapshot))
+        .routes(routes!(stream::open_event_stream))
 }
 
 /// The OpenAPI document of every route that [`router`] serves.
