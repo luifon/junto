@@ -1,0 +1,32 @@
+name: junto-spike-link
+
+services:
+  link:
+    build: ./link
+    image: junto-spike-link
+    container_name: junto-spike-link
+    restart: "no"
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    environment:
+      WG_ADDRESS: ${WG_PUBLIC_END_ADDRESS:?set in .env}/30
+      WG_LISTEN_PORT: ${WG_PORT:?set in .env}
+      WG_PEER_PUBLIC_KEY: ${WG_DATA_END_PUBLIC_KEY:?set in .env}
+      WG_PEER_ADDRESS: ${WG_DATA_END_ADDRESS:?set in .env}
+      FORWARD_LISTEN: ${WG_PUBLIC_END_ADDRESS}:6379
+      FORWARD_TARGET: redis:6379
+    volumes:
+      - ./keys:/keys
+    ports:
+      - "${WG_PORT}:${WG_PORT}/udp"
+    networks:
+      - media
+    cpus: 0.5
+    mem_limit: 128m
+
+networks:
+  media:
+    external: true
+    name: ${MEDIA_NETWORK:?set in .env}

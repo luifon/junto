@@ -1,0 +1,82 @@
+name: junto-spike-rec
+
+services:
+  link:
+    build: ./link
+    image: junto-spike-rec-link
+    container_name: junto-spike-rec-link
+    restart: "no"
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    environment:
+      WG_ADDRESS: ${WG_DATA_END_ADDRESS:?set in .env}/30
+      WG_PEER_PUBLIC_KEY: ${WG_PUBLIC_END_PUBLIC_KEY:?set in .env}
+      WG_PEER_ADDRESS: ${WG_PUBLIC_END_ADDRESS:?set in .env}
+      WG_ENDPOINT: ${PUBLIC_HOST_ADDRESS:?set in .env}:${WG_PORT:?set in .env}
+      WG_KEEPALIVE: "25"
+      FORWARD_LISTEN: 0.0.0.0:6379
+      FORWARD_TARGET: ${WG_PUBLIC_END_ADDRESS}:6379
+    volumes:
+      - ./keys:/keys
+    cpus: 0.5
+    mem_limit: 128m
+
+  layout:
+    build: ./layout
+    image: junto-spike-rec-layout
+    container_name: junto-spike-rec-layout
+    restart: "no"
+    cpus: 0.5
+    mem_limit: 128m
+
+  egress:
+    image: livekit/egress:v1.15.0
+    container_name: junto-spike-rec-egress
+    restart: "${EGRESS_RESTART:-no}"
+    entrypoint: ["/tini", "--", "${EGRESS_ENTRYPOINT:-/entrypoint.sh}"]
+    cap_add:
+      - SYS_ADMIN
+    environment:
+      EGRESS_CONFIG_BODY: |
+        api_key: ${LIVEKIT_API_KEY:?set in .env}
+        api_secret: ${LIVEKIT_API_SECRET:?set in .env}
+        ws_url: ${LIVEKIT_URL:?set in .env}
+        insecure: true
+        health_port: 9090
+        redis:
+          address: link:6379
+          password: ${REDIS_PASSWORD:?set in .env}
+        logging:
+          level: ${EGRESS_LOG_LEVEL:-debug}
+        cpu_cost:
+          max_cpu_utilization: ${EGRESS_MAX_CPU_UTILIZATION:-0.8}
+          room_composite_cpu_cost: ${EGRESS_COMPOSITE_COST:-3.0}
+          track_composite_cpu_cost: ${EGRESS_TRACK_COMPOSITE_COST:-0.5}
+          track_cpu_cost: ${EGRESS_TRACK_COST:-0.1}
+    volumes:
+      - ./out:/out
+      - ${EGRESS_WORK_DIR:-./egress-tmp}:/home/egress/tmp
+      - ./egress-entrypoint.sh:/rescue-entrypoint.sh:ro
+    cpus: ${EGRESS_CPUS:-6}
+    mem_limit: 8g
+
+  ctl:
+    build: ./tools
+    image: junto-spike-rec-tools
+    container_name: junto-spike-rec-ctl
+    restart: "no"
+    command: ["sleep", "infinity"]
+    working_dir: /work
+    environment:
+      LIVEKIT_URL: ${LIVEKIT_URL}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+      CARGO_TARGET_DIR: /work/build/target
+      CARGO_HOME: /work/build/cargo
+    volumes:
+      - .:/work
+      - /var/run/docker.sock:/var/run/docker.sock
+    cpus: ${CTL_CPUS:-4}
+    mem_limit: 6g
