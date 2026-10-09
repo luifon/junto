@@ -1,0 +1,13 @@
+target/
+**/target/
+.env
+.env.local
+*.local
+.DS_Store
+node_modules/
+*.wav
+*.mp4
+*.ogg
+*.log
+/spikes/*/out/
+/private/
