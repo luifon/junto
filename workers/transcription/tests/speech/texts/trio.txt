@@ -1,0 +1,18 @@
+A|Thanks for joining. I would like to start with the customer feedback from last month.
+B|Sure. Most of the comments were about the export function, and people want more file formats.
+C|I read those comments too. The request for spreadsheet export appeared more than twenty times.
+A|That matches what the sales team told me on Tuesday.
+C|From the engineering side, spreadsheet export is not difficult, but we need a clear list of columns.
+B|I can prepare that list. Give me until Thursday and I will send a first draft.
+A|Please include the date format, because customers in different countries expect different formats.
+C|Good point. We had a bug about that last year and it took a long time to find.
+B|Agreed. Let us move to the second topic, which is the new onboarding flow.
+C|The first test with five new customers went well, but two of them got lost on the permissions page.
+A|I watched one of those sessions, and the labels on that page are confusing.
+B|We can rename the labels quickly. Changing the layout would take much longer.
+C|Then rename the labels first and measure again before changing the layout.
+A|That works for me. I will schedule three more sessions for next week.
+B|I would also like to add a short video that explains the roles.
+A|A video is fine, as long as someone keeps it up to date when the page changes.
+C|I will own the video. It is a small task and I know the product well.
+B|Great. Is there anything else before we close?

@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:junto:transcription:job:1",
+  "title": "Junto transcription job, format version 1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format_version",
+    "recording_id",
+    "language",
+    "glossary",
+    "separate_speakers",
+    "segments"
+  ],
+  "properties": {
+    "format_version": {
+      "const": 1
+    },
+    "recording_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "language": {
+      "description": "\"auto\" detects the language of each speech clip. A Whisper language code fixes it for the whole job.",
+      "type": "string",
+      "pattern": "^(?:(auto|[a-z]{2,3}))(?![\\s\\S])"
+    },
+    "glossary": {
+      "description": "Names and terms, most important first. A term may not contain the written form of a control token of Whisper (\"<|\" or \"|>\"); the worker also refuses a term that the tokenizer of the model turns into a control token.",
+      "type": "array",
+      "maxItems": 2000,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "maxLength": 200,
+        "pattern": "^(?:[^\\s\\u0000-\\u001f\\u007f-\\u009f]([^\\u0000-\\u001f\\u007f-\\u009f]*[^\\s\\u0000-\\u001f\\u007f-\\u009f])?)(?![\\s\\S])",
+        "not": {
+          "pattern": "<\\||\\|>"
+        }
+      }
+    },
+    "separate_speakers": {
+      "description": "Whether voices inside shared audio get speaker labels.",
+      "type": "boolean"
+    },
+    "segments": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10000,
+      "items": {
+        "$ref": "#/$defs/segment"
+      }
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f]+)(?![\\s\\S])"
+    },
+    "segment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "path",
+        "kind",
+        "participant",
+        "start_ms"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "path": {
+          "description": "Audio file with exactly one audio stream, relative to the audio root, with \"/\" separators and no empty, \".\" or \"..\" part. No part may be a link.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000,
+          "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f]+)(?![\\s\\S])"
+        },
+        "kind": {
+          "enum": [
+            "microphone",
+            "shared"
+          ]
+        },
+        "participant": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "name"
+          ],
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/identifier"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200,
+              "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f]+)(?![\\s\\S])"
+            }
+          }
+        },
+        "start_ms": {
+          "description": "Start of the file on the timeline of the recording.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 604800000
+        }
+      }
+    }
+  }
+}

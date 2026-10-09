@@ -1,0 +1,138 @@
+{
+  "manifest_version": 1,
+  "models": [
+    {
+      "role": "voice-detector",
+      "name": "silero-vad-v6",
+      "default": true,
+      "purpose": "product",
+      "version": "v6, the file inside faster-whisper 1.2.1",
+      "licence": "MIT",
+      "source": "https://github.com/snakers4/silero-vad",
+      "attribution": "Silero VAD by the Silero Team.",
+      "package": "faster_whisper",
+      "directory": "assets",
+      "weights": "silero_vad_v6.onnx",
+      "settings": {},
+      "files": [
+        {
+          "name": "silero_vad_v6.onnx",
+          "url": null,
+          "sha256": "4cbf549b8326f60f80f2536d9eefeb450a9abe83365a098031c89719f1be17d2",
+          "size": 1245151
+        }
+      ]
+    },
+    {
+      "role": "whisper",
+      "name": "large-v3-turbo",
+      "default": true,
+      "purpose": "product",
+      "version": "0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf",
+      "licence": "MIT",
+      "source": "https://huggingface.co/dropbox-dash/faster-whisper-large-v3-turbo",
+      "attribution": "Whisper large-v3-turbo by OpenAI, converted to the CTranslate2 format (dropbox-dash/faster-whisper-large-v3-turbo).",
+      "directory": "faster-whisper-large-v3-turbo",
+      "weights": "model.bin",
+      "settings": {
+        "batch_size": 8
+      },
+      "files": [
+        {
+          "name": "config.json",
+          "url": "https://huggingface.co/dropbox-dash/faster-whisper-large-v3-turbo/resolve/0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf/config.json",
+          "sha256": "b0253ea6c0d3bea6b1e19e91a02acfd3b53f4467362efcb5a3e6b16c9b3a9b7e",
+          "size": 2263
+        },
+        {
+          "name": "model.bin",
+          "url": "https://huggingface.co/dropbox-dash/faster-whisper-large-v3-turbo/resolve/0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf/model.bin",
+          "sha256": "e76620f83d5f5b69efd3d87e3dc180c1bd21df9fbebacfd4335e5e1efcc018da",
+          "size": 1617884929
+        },
+        {
+          "name": "preprocessor_config.json",
+          "url": "https://huggingface.co/dropbox-dash/faster-whisper-large-v3-turbo/resolve/0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf/preprocessor_config.json",
+          "sha256": "7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711",
+          "size": 340
+        },
+        {
+          "name": "tokenizer.json",
+          "url": "https://huggingface.co/dropbox-dash/faster-whisper-large-v3-turbo/resolve/0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf/tokenizer.json",
+          "sha256": "297b13372ac43916285644fb9687add3cc62ee2a1adb60da3dc25cc94c1871fd",
+          "size": 2710337
+        },
+        {
+          "name": "vocabulary.json",
+          "url": "https://huggingface.co/dropbox-dash/faster-whisper-large-v3-turbo/resolve/0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf/vocabulary.json",
+          "sha256": "c69260f2ab26d659b7c398f9a2b2b48ed0df16c3b47d7326782fd9cba71690c1",
+          "size": 1068114
+        }
+      ]
+    },
+    {
+      "role": "whisper",
+      "name": "small",
+      "default": false,
+      "purpose": "development",
+      "version": "536b0662742c02347bc0e980a01041f333bce120",
+      "licence": "MIT",
+      "source": "https://huggingface.co/Systran/faster-whisper-small",
+      "attribution": "Whisper small by OpenAI, converted to the CTranslate2 format (Systran/faster-whisper-small).",
+      "directory": "faster-whisper-small",
+      "weights": "model.bin",
+      "settings": {
+        "batch_size": 8
+      },
+      "files": [
+        {
+          "name": "config.json",
+          "url": "https://huggingface.co/Systran/faster-whisper-small/resolve/536b0662742c02347bc0e980a01041f333bce120/config.json",
+          "sha256": "b55496ac7940a7ae47d2c01eab40edfd8701feec1229d9cce3b40014383fb828",
+          "size": 2370
+        },
+        {
+          "name": "model.bin",
+          "url": "https://huggingface.co/Systran/faster-whisper-small/resolve/536b0662742c02347bc0e980a01041f333bce120/model.bin",
+          "sha256": "3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671",
+          "size": 483546902
+        },
+        {
+          "name": "tokenizer.json",
+          "url": "https://huggingface.co/Systran/faster-whisper-small/resolve/536b0662742c02347bc0e980a01041f333bce120/tokenizer.json",
+          "sha256": "fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab",
+          "size": 2203239
+        },
+        {
+          "name": "vocabulary.txt",
+          "url": "https://huggingface.co/Systran/faster-whisper-small/resolve/536b0662742c02347bc0e980a01041f333bce120/vocabulary.txt",
+          "sha256": "34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913",
+          "size": 459861
+        }
+      ]
+    },
+    {
+      "role": "speaker-embedding",
+      "name": "nemo_en_titanet_large",
+      "default": true,
+      "purpose": "product",
+      "version": "ONNX export in the sherpa-onnx release 'speaker-recongition-models'",
+      "licence": "CC-BY-4.0",
+      "source": "https://huggingface.co/nvidia/speakerverification_en_titanet_large",
+      "attribution": "TitaNet-Large (speakerverification_en_titanet_large) by NVIDIA, licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). The ONNX export is distributed by the sherpa-onnx project; Junto uses the file unchanged.",
+      "directory": "speaker",
+      "weights": "nemo_en_titanet_large.onnx",
+      "settings": {
+        "threshold": 0.6
+      },
+      "files": [
+        {
+          "name": "nemo_en_titanet_large.onnx",
+          "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_large.onnx",
+          "sha256": "d51abcf31717ef28162f26acb9d44dd4127c3d44c9b8624f699f3425daca8e77",
+          "size": 101405493
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,557 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:junto:transcription:transcript:1",
+  "title": "Junto transcript, format version 1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format_version",
+    "recording_id",
+    "language",
+    "participants",
+    "lines",
+    "segments",
+    "glossary",
+    "speaker_separation",
+    "engine",
+    "timing"
+  ],
+  "properties": {
+    "format_version": {
+      "const": 1
+    },
+    "recording_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "language": {
+      "description": "The language the job asked for.",
+      "type": "string",
+      "pattern": "^(?:(auto|[a-z]{2,3}))(?![\\s\\S])"
+    },
+    "participants": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "lines": {
+      "description": "In timeline order.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/line"
+      }
+    },
+    "segments": {
+      "description": "One result per segment of the job, in job order.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/segment_result"
+      }
+    },
+    "glossary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "token_limit",
+        "token_count",
+        "used",
+        "cut"
+      ],
+      "properties": {
+        "token_limit": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "token_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "used": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cut": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "speaker_separation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requested",
+        "speakers"
+      ],
+      "properties": {
+        "requested": {
+          "type": "boolean"
+        },
+        "speakers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "label",
+              "participant_id"
+            ],
+            "properties": {
+              "label": {
+                "type": "string",
+                "pattern": "^(?:Speaker [1-9][0-9]*)(?![\\s\\S])"
+              },
+              "participant_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "engine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "worker",
+        "device",
+        "compute_type",
+        "threads",
+        "models",
+        "libraries",
+        "settings"
+      ],
+      "properties": {
+        "worker": {
+          "type": "string"
+        },
+        "device": {
+          "enum": [
+            "cpu",
+            "cuda"
+          ]
+        },
+        "compute_type": {
+          "type": "string"
+        },
+        "threads": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "role",
+              "name",
+              "version",
+              "licence",
+              "sha256"
+            ],
+            "properties": {
+              "role": {
+                "enum": [
+                  "voice-detector",
+                  "whisper",
+                  "speaker-embedding"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "licence": {
+                "type": "string"
+              },
+              "sha256": {
+                "description": "Checksum of the weights file.",
+                "type": "string",
+                "pattern": "^(?:[0-9a-f]{64})(?![\\s\\S])"
+              }
+            }
+          }
+        },
+        "libraries": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "settings": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "number",
+              "string",
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "timing": {
+      "description": "Differs between two runs of the same job.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total_ms",
+        "audio_ms",
+        "speech_ms",
+        "stages_ms",
+        "peak_memory_mb"
+      ],
+      "properties": {
+        "total_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "audio_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "speech_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stages_ms": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "peak_memory_mb": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    }
+  },
+  "$defs": {
+    "line": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start_ms",
+        "end_ms",
+        "segment_id",
+        "source",
+        "text",
+        "language",
+        "words"
+      ],
+      "properties": {
+        "start_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "segment_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "participant_id"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "microphone"
+                },
+                "participant_id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "participant_id",
+                "speaker"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "shared"
+                },
+                "participant_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "speaker": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^(?:Speaker [1-9][0-9]*)(?![\\s\\S])"
+                }
+              }
+            }
+          ]
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "language": {
+          "type": "string",
+          "pattern": "^(?:[a-z]{2,3})(?![\\s\\S])"
+        },
+        "words": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "start_ms",
+              "end_ms",
+              "text"
+            ],
+            "properties": {
+              "start_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "end_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "segment_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "status",
+        "reason",
+        "audio_ms",
+        "processed_ms",
+        "speech_ms",
+        "clips",
+        "lines",
+        "speakers",
+        "speakers_reason"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "description": "ok: lines exist. empty: decoded, no line. damaged: only a part of the audio was processed; the lines of that part exist. failed: nothing was processed.",
+          "enum": [
+            "ok",
+            "empty",
+            "damaged",
+            "failed"
+          ]
+        },
+        "reason": {
+          "description": "Why the status is damaged or failed.",
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "code",
+                "message"
+              ],
+              "properties": {
+                "code": {
+                  "enum": [
+                    "file_missing",
+                    "not_a_regular_file",
+                    "decode_failed",
+                    "not_one_audio_stream",
+                    "decode_incomplete",
+                    "timestamp_gap",
+                    "timestamp_backward",
+                    "segment_duration_limit",
+                    "job_duration_limit",
+                    "time_limit",
+                    "processing_failed"
+                  ]
+                },
+                "message": {
+                  "description": "A fixed text for the code. It contains no value of the job.",
+                  "type": "string"
+                }
+              }
+            }
+          ]
+        },
+        "audio_ms": {
+          "description": "Length of the audio that was decoded, with the silence that filled timestamp gaps. Decoding stops at a limit, so this is at most the limit.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "processed_ms": {
+          "description": "The lines cover the audio from the start of the file to this point. Equal to audio_ms unless the processing time limit stopped the segment.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "speech_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "clips": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lines": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "speakers": {
+          "description": "separated: every line has a speaker label. unassigned: at least one line has none. failed: no line has one.",
+          "enum": [
+            "not_applicable",
+            "not_requested",
+            "separated",
+            "unassigned",
+            "failed"
+          ]
+        },
+        "speakers_reason": {
+          "description": "Why speakers is unassigned or failed.",
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "code",
+                "message"
+              ],
+              "properties": {
+                "code": {
+                  "enum": [
+                    "segment_failed",
+                    "embedding_failed",
+                    "clustering_failed",
+                    "no_voice_window",
+                    "speaker_window_limit",
+                    "time_limit"
+                  ]
+                },
+                "message": {
+                  "description": "A fixed text for the code. It contains no value of the job.",
+                  "type": "string"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "damaged",
+                  "failed"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "type": "object"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "reason": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "speakers": {
+                "enum": [
+                  "unassigned",
+                  "failed"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "speakers_reason": {
+                "type": "object"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "speakers_reason": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

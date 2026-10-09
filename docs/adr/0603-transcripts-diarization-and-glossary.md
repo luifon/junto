@@ -47,7 +47,7 @@ Corrections:
 Glossary:
 
 - Each workspace has a glossary of names and terms that Whisper receives before it starts.
-- The glossary has a size limit and an order of priority. The limit is 223 tokens, counted with the tokenizer of the Whisper model. The worker keeps the terms in order of priority up to the limit and reports which terms were used and which were cut (ADR 0613).
+- The glossary has a size limit and an order of priority. The limit is 200 tokens, counted with the tokenizer of the Whisper model. The library cuts at 223 tokens without a message, and the worker stays below that. The worker keeps the terms in order of priority up to the limit and reports which terms were used and which were cut (ADR 0613).
 - Every member of the workspace can see the glossary, so it must not hold confidential terms.
 - Editing the glossary needs "manage glossary".
 

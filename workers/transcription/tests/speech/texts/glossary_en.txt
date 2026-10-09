@@ -1,0 +1,11 @@
+Welcome to the product review, my name is Oswin Thackerby.
+With me today are Ysolde Varkonen and Brannoch Illesku from the platform group.
+Our first topic is Quorvex, the new scheduling engine.
+Ysolde Varkonen finished the load tests for Quorvex on Monday.
+The second topic is Lumitrax, which collects the metrics for every Tarnbook workspace.
+Brannoch Illesku found that Lumitrax drops samples when Tarnbook restarts.
+We also need to plan the Velkira release, because Velkira depends on the Zyphra gateway.
+Oswin Thackerby will write the migration guide for Zyphra and Nexavio.
+After that, Nexavio will replace the old login service in every Tarnbook region.
+Please record every decision in Junto, so that the Quorvex team can read it later.
+Thank you, Ysolde Varkonen, and thank you, Brannoch Illesku.

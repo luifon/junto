@@ -1,0 +1,9 @@
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!THIRD-PARTY.md
+!src
+!tests
+!docker
+**/__pycache__
