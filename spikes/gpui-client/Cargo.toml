@@ -1,0 +1,29 @@
+[package]
+name = "gpui-client-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "spike"
+path = "src/main.rs"
+
+[dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.8", features = ["profiler"] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["font-kit"] }
+reqwest_client = { package = "gpui-pre-reqwest-client", version = "=0.3.8" }
+gpui-component = { version = "=0.7.1", features = ["tree-sitter-rust", "tree-sitter-toml"] }
+gpui-kit-assets = "=0.7.1"
+gpui-base = "=0.7.1"
+core-video = { version = "0.5.2", features = ["metal"] }
+core-foundation = "0.10"
+anyhow = "1"
+futures = "0.3"
+log = "0.4"
+libc = "0.2"
+image = { version = "0.25", default-features = false, features = ["png", "gif"] }
+
+[profile.release]
+debug = false
