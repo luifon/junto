@@ -1,0 +1,4 @@
+FROM rust:1-trixie
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libpipewire-0.3-dev libspa-0.2-dev libclang-dev clang pkg-config \
+ && rm -rf /var/lib/apt/lists/*
