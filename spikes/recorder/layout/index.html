@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Recording layout</title>
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; background: #101014; overflow: hidden;
+    font-family: sans-serif; color: #fff; }
+  #stage { position: absolute; inset: 0; display: flex; }
+  #main { flex: 1; position: relative; background: #000; min-width: 0; }
+  #tiles { width: 20%; display: flex; flex-direction: column; gap: 6px; padding: 6px;
+    box-sizing: border-box; }
+  #tiles:empty { display: none; }
+  .tile { position: relative; aspect-ratio: 16 / 9; background: #000; flex: 0 0 auto; }
+  video { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .name { position: absolute; left: 0; bottom: 0; padding: 2px 8px; font-size: 16px;
+    background: rgba(0, 0, 0, 0.7); }
+  #main .name { font-size: 22px; }
+  #empty { position: absolute; inset: 0; display: flex; align-items: center;
+    justify-content: center; font-size: 28px; color: #889; }
+  #status { position: absolute; left: 0; top: 0; padding: 2px 8px; font: 14px monospace;
+    background: rgba(0, 0, 0, 0.8); display: none; white-space: pre; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="main"><div id="empty">No screen share</div></div>
+  <div id="tiles"></div>
+</div>
+<div id="status"></div>
+<div id="sounds" hidden></div>
+<script src="livekit-client.umd.js"></script>
+<script src="layout.js"></script>
+</body>
+</html>

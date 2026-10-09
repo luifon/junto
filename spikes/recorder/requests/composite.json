@@ -1,0 +1,7 @@
+{
+  "room_name": "ROOM",
+  "layout": "debug",
+  "custom_base_url": "http://layout/",
+  "preset": "H264_720P_30",
+  "file_outputs": [{ "file_type": "MP4", "filepath": "/out/ROOM/composite-{time}.mp4" }]
+}

@@ -1,0 +1,48 @@
+name: junto-spike-recorder
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: junto-spike-rec-redis
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+
+  livekit:
+    image: livekit/livekit-server:v1.13.9
+    container_name: junto-spike-rec-livekit
+    command: ["--dev", "--bind", "0.0.0.0", "--config", "/etc/livekit.yaml"]
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    ports:
+      - "127.0.0.1:7880:7880"
+      - "127.0.0.1:7881:7881"
+      - "127.0.0.1:7882:7882/udp"
+    depends_on:
+      - redis
+
+  egress:
+    image: livekit/egress:v1.15.0
+    container_name: junto-spike-rec-egress
+    environment:
+      EGRESS_CONFIG_BODY: |
+        api_key: ${LIVEKIT_API_KEY}
+        api_secret: ${LIVEKIT_API_SECRET}
+        ws_url: ws://livekit:7880
+        insecure: true
+        redis:
+          address: redis:6379
+        logging:
+          level: debug
+    cap_add:
+      - SYS_ADMIN
+    volumes:
+      - ./out:/out
+    depends_on:
+      - livekit
+      - redis
+
+  layout:
+    build: ./layout
+    image: junto-spike-rec-layout
+    container_name: junto-spike-rec-layout
