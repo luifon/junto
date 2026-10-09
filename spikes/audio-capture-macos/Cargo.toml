@@ -1,0 +1,18 @@
+[package]
+name = "audio-capture-macos-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "spike"
+path = "src/main.rs"
+
+[dependencies]
+screencapturekit = { version = "11.0.0", features = ["macos_13_0"] }
+cpal = "0.18.2"
+
+[profile.release]
+debug = false
