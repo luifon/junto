@@ -1,0 +1,20 @@
+FROM python:3.11-slim-bookworm
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ffmpeg strace time ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir \
+    faster-whisper==1.2.1 \
+    ctranslate2==4.8.2 \
+    onnxruntime==1.28.0 \
+    sherpa-onnx==1.13.8 \
+    nvidia-cublas-cu12==12.9.2.10 \
+    nvidia-cudnn-cu12==9.27.0.42 \
+    jiwer==4.0.0 \
+    numpy scipy soundfile
+ENV LD_LIBRARY_PATH=/usr/local/lib/python3.11/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.11/site-packages/nvidia/cudnn/lib
+ENV HF_HUB_OFFLINE=1 \
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    DO_NOT_TRACK=1 \
+    ORT_DISABLE_TELEMETRY=1 \
+    PYTHONUNBUFFERED=1
+WORKDIR /work

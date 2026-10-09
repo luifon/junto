@@ -1,0 +1,7 @@
+FROM python:3.11-slim-bookworm
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ffmpeg ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir piper-tts==1.2.0 numpy soundfile
+ENV PYTHONUNBUFFERED=1
+WORKDIR /work

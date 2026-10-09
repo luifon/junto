@@ -1,0 +1,11 @@
+Bem-vindos à revisão do produto, meu nome é Jurandira Pindobaçu.
+Hoje estão comigo o Evaristo Castelhão e a Ysolde Varkonen, da equipe de plataforma.
+O primeiro assunto é o Quorvex, o novo motor de agendamento.
+O Evaristo Castelhão terminou os testes de carga do Quorvex na segunda-feira.
+O segundo assunto é o Lumitrax, que coleta as métricas de cada espaço do Tarnbook.
+A Ysolde Varkonen descobriu que o Lumitrax perde amostras quando o Tarnbook reinicia.
+Também precisamos planejar o lançamento do Velkira, porque o Velkira depende do Zyphra.
+A Jurandira Pindobaçu vai escrever o guia de migração para o Zyphra e o Nexavio.
+Depois disso, o Nexavio vai substituir o serviço de login antigo em todas as regiões do Tarnbook.
+Por favor, registrem cada decisão no Junto, para que a equipe do Quorvex possa ler depois.
+Obrigada, Evaristo Castelhão, e obrigada, Ysolde Varkonen.

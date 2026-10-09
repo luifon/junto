@@ -1,0 +1,8 @@
+out/
+models/
+audio/
+*.wav
+*.ogg
+*.opus
+*.bin
+*.onnx

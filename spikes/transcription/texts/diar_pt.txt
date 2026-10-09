@@ -1,0 +1,21 @@
+A|Obrigado por participarem. Quero começar pelo retorno dos clientes do mês passado.
+B|Claro. A maioria dos comentários foi sobre a exportação, e as pessoas querem mais formatos de arquivo.
+C|Eu também li esses comentários. O pedido de exportação para planilha apareceu mais de vinte vezes.
+A|Isso bate com o que a equipe de vendas me contou na terça-feira.
+C|Do lado da engenharia, exportar para planilha não é difícil, mas precisamos de uma lista clara de colunas.
+B|Eu posso preparar essa lista. Me deem até quinta-feira e eu envio uma primeira versão.
+A|Por favor, incluam o formato de data, porque clientes de países diferentes esperam formatos diferentes.
+C|Boa observação. Tivemos um defeito sobre isso no ano passado e demorou muito para encontrar.
+A|Combinado. Vamos para o segundo assunto, que é o novo fluxo de boas-vindas.
+B|O primeiro teste com cinco clientes novos foi bem, mas dois deles se perderam na página de permissões.|overlap
+C|Eu assisti a uma dessas sessões, e os rótulos daquela página confundem.
+A|Podemos renomear os rótulos rapidamente. Mudar o desenho da página levaria muito mais tempo.
+B|Então renomeiem os rótulos primeiro e meçam de novo antes de mudar o desenho.
+C|Para mim está bom. Vou marcar mais três sessões para a semana que vem.
+A|Eu também gostaria de incluir um vídeo curto que explique os papéis.
+B|Um vídeo é uma boa ideia, desde que alguém o mantenha atualizado quando a página mudar.|overlap
+C|Eu cuido do vídeo. É uma tarefa pequena e eu conheço bem o produto.
+A|Ótimo. Mais alguma coisa antes de encerrar?
+B|Só um lembrete de que o escritório fecha na segunda-feira.
+C|Obrigado pelo lembrete. Vou passar a implantação para terça de manhã.
+A|Perfeito. Obrigado a todos, e até a semana que vem.
