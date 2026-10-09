@@ -1,0 +1,22 @@
+[package]
+name = "junto-authz"
+description = "Permission model and the single evaluation function of Junto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+serde = ["dep:serde"]
+utoipa = ["dep:utoipa"]
+
+[dependencies]
+serde = { workspace = true, optional = true }
+utoipa = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

@@ -20,6 +20,8 @@ Status values:
 | [0005](0005-backups-and-upgrades.md) | Backups and upgrades | Accepted | The server provides consistent backup and restore commands; migrations go forward only, under a lock, after a copy. |
 | [0006](0006-storage-guard.md) | Storage guard | Accepted | Recordings and exports reserve disk space; below a reserve the server refuses new uploads, recordings and exports. |
 | [0007](0007-monitoring-and-no-telemetry.md) | Monitoring and no telemetry | Accepted | A health endpoint and an optional OpenTelemetry export; nothing is sent to the authors or a third party. |
+| [0008](0008-server-crates-and-process.md) | Server crates, configuration and process behaviour | Accepted | Three crates in one workspace; settings from environment variables; structured logs on standard error and the owner code on standard output; host commands in the same binary. |
+| [0009](0009-serializable-transactions-and-retry.md) | Serializable transactions with a bounded retry | Accepted | Every request is one serializable transaction that is run again up to eight times when it loses against a concurrent one; no lock order; PostgreSQL limits each statement, lock wait and idle transaction. |
 
 ## 0101–0199 Accounts and servers
 
@@ -30,8 +32,16 @@ Status values:
 | [0103](0103-device-keys-and-login.md) | Accounts, device keys and login | Accepted, pending step 0 | One device key per server, no passwords, login by a signed single-use challenge; step 0 decides where keys are stored. |
 | [0104](0104-device-linking-and-recovery.md) | Device linking and recovery | Accepted | A second device is linked with a one-time code for all servers; only the server owner performs a recovery, and it is recorded. |
 | [0105](0105-invites-and-joining.md) | Invites and joining | Accepted | Joining by invite code or by approval; codes have an expiry, a use limit and workspaces; no guest accounts. |
-| [0106](0106-removal-and-bans.md) | Removal and bans | Accepted | A ban applies to the account, blocks its keys and cancels its invites; a return needs a new code. |
+| [0106](0106-removal-and-bans.md) | Removal and bans | Accepted | A ban blocks the account and its keys and cancels its invites; an unban restores the same account; otherwise a return needs a new code and gives a new account. |
 | [0107](0107-connections-and-background-servers.md) | Connections, background servers and one call at a time | Accepted | One WebSocket per saved server with server-side filtering for background servers; one call per client and per account. |
+| [0108](0108-login-challenge-and-signature.md) | Wire format of the login challenge and the limit on failed attempts | Accepted | The signed bytes name server, operation, account, device and challenge; a challenge lives 60 seconds and is used when its operation commits; no lock per key; a ceiling on outstanding challenges. |
+| [0109](0109-session-tokens.md) | Session tokens | Accepted | Opaque random tokens stored as hashes, valid 30 days, checked inside the transaction of each request, ended per device, by a ban, a removal and a recovery. |
+| [0110](0110-one-time-codes.md) | Format and storage of owner, invite and link codes | Accepted | Codes of 5-bit symbols in groups of four, stored as hashes; each start without an owner issues a new owner code. |
+| [0111](0111-invite-rules-and-attempt-limits.md) | Invite and join request rules, and the limits on attempts | Accepted | Defaults and bounds of invites, atomic use counting, join requests with a kept history and a hard ceiling, and limits per client address with bounded memory that trust a forwarded address only from a configured proxy. |
+| [0112](0112-device-link-flow-and-recovery-notices.md) | Device link flow, device removal and recovery notices | Accepted | The new device gets a code, a logged-in device approves it with the public key; a recovery ends every session of the account and each device is told once. |
+| [0113](0113-account-states.md) | Account states for removal and ban | Accepted | Accounts are active, banned or removed and are never deleted; a ban keeps the keys blocked until an unban, a removal frees them. |
+| [0114](0114-host-commands-for-the-server-owner.md) | Host commands for the server owner | Accepted | Two commands of the server binary assign a new owner or issue an owner code, on the database only, with an audit entry. |
+| [0115](0115-existing-accounts-and-further-workspaces.md) | Adding an existing account to further workspaces | Accepted | A logged-in account redeems an invite, or an administrator adds the account; both are in the audit log. |
 
 ## 0201–0299 API and automation
 
@@ -41,14 +51,17 @@ Status values:
 | [0202](0202-generated-api-documentation.md) | Generated API documentation | Accepted | OpenAPI and event schemas are generated from the server's definitions, and CI fails on a difference. |
 | [0203](0203-access-tokens.md) | Administrator access tokens | Accepted | Tokens with an expiry and a set of actions, checked against the creator's current permissions on each request. |
 | [0204](0204-setup-tool.md) | Setup from a file with a command-line tool | Accepted | `export`, `plan` and `apply` for the server structure, with stable identifiers and an all-or-nothing endpoint. |
+| [0205](0205-api-conventions.md) | API conventions: paths, identifiers, encodings and errors | Accepted | Routes under `/api/v1`, UUID version 7 identifiers, RFC 3339 times, one error body with stable codes for every error, identical responses for absent and hidden objects, and a generated OpenAPI file checked by a test. |
 
 ## 0301–0399 Permissions and moderation
 
 | Number | Title | Status | Summary |
 |---|---|---|---|
-| [0301](0301-roles-and-permission-evaluation.md) | Two levels of roles and one evaluation rule | Accepted | Server roles and workspace roles, channel overrides, one evaluation function, and limits that apply to administrators too. |
+| [0301](0301-roles-and-permission-evaluation.md) | Two levels of roles and one evaluation rule | Accepted | Server roles and workspace roles, channel overrides (none per category), one evaluation function, and limits that apply to administrators too. |
 | [0302](0302-direct-message-privacy.md) | Direct messages and their privacy | Accepted | One-to-one direct messages inside one server, closed to everyone except their two participants. |
 | [0303](0303-audit-log.md) | Audit log | Accepted | A read-only log of administrative actions, visible according to channel access, with system lines in the channel. |
+| [0304](0304-permission-evaluation-details.md) | Details of the permission function: view permission, grant rule and stored sets | Accepted | A "view channel" permission, the grant rule including what the channel overrides of a role allow, the permissions for actions that ADR 0301 does not name, and permission sets stored as fixed bits. |
+| [0305](0305-audit-log-storage.md) | Storage and reading of the audit log | Accepted | Typed events stored with the change they describe, a trigger that refuses changes, and one read route per level with visibility decided per channel from one snapshot. |
 
 ## 0401–0499 Text
 
@@ -60,6 +73,7 @@ Status values:
 | [0404](0404-notifications.md) | Unread signs and notifications | Accepted | Server-stored read positions, a level per channel, mute, do not disturb, and rules for direct messages and threads. |
 | [0405](0405-search.md) | Search | Accepted | PostgreSQL full-text search over messages and transcripts, limited to the channels a user can read. |
 | [0406](0406-archive-export-and-retention.md) | Archive, export and retention | Accepted | Manual archive with deletion after a set time, ZIP export with an expiring link, retention per workspace. |
+| [0407](0407-deleted-channels-and-permanent-message-count.md) | Deleted channels keep a marker row, and a channel counts its permanent messages | Accepted | A deleted channel stays as a row for the audit log; the count of permanent messages decides the owner-only deletion. |
 
 ## 0501–0599 Calls
 
@@ -104,3 +118,4 @@ Status values:
 | [0901](0901-repository-rules-and-feature-process.md) | Repository rules and the process per feature | Accepted | No personal information in tracked files; each feature passes a fixed sequence of tests, checks and an ADR before a push. |
 | [0902](0902-testing-strategy.md) | Testing strategy | Accepted | CI on three systems, a test participant for calls and recordings, and tests of real capture on real systems. |
 | [0903](0903-step-0-and-build-order.md) | Step 0 before product code, and the build order | Accepted | Eight technical tests run before product code; seven build steps follow. |
+| [0904](0904-server-tests.md) | Server tests against PostgreSQL | Accepted | Integration tests over HTTP against a real PostgreSQL in Docker, one database per test, a replaceable clock, fixed orders for races, and one table of every protected operation. |

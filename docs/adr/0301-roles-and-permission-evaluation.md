@@ -21,6 +21,7 @@ Two levels of roles:
 Channel overrides:
 
 - A workspace role can have allow overrides and deny overrides per channel.
+- Overrides exist per channel only. A category has no overrides, and a channel takes no override from its category.
 - There are no overrides for a single member in the first version.
 
 Evaluation rule:

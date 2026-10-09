@@ -1,0 +1,622 @@
+//! One table lists every operation that needs a session. For each one, a caller without the
+//! permission gets the stated denial and the database is unchanged, and a request without a
+//! session gets `unauthenticated`. The table is compared with the generated OpenAPI document,
+//! so an operation that is missing here fails a test.
+
+use std::collections::BTreeSet;
+
+use junto_protocol::auth::ChallengeOperation;
+use junto_protocol::error::ErrorCode;
+use junto_protocol::invite::JoinRequest;
+use junto_protocol::roles::{ServerRole, WorkspaceRole};
+use junto_protocol::structure::{Category, Channel, Workspace};
+use junto_protocol::{ServerPermission, WorkspacePermission};
+use reqwest::{Method, StatusCode};
+use serde_json::{Value, json};
+
+use crate::support::{DeviceKey, Member, TestServer};
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Caller {
+    /// A member of the default workspace without any role.
+    Plain,
+    /// An account with every server permission and every workspace permission, not the owner.
+    Administrator,
+}
+
+struct Operation {
+    method: Method,
+    template: &'static str,
+    path: String,
+    body: Value,
+    /// The callers that must be denied, each with the code of the denial. Empty for an
+    /// operation on the caller's own account, which only a missing session denies.
+    denials: Vec<(Caller, ErrorCode)>,
+}
+
+struct World {
+    server: TestServer,
+    plain: Member,
+    administrator: Member,
+    operations: Vec<Operation>,
+}
+
+fn operation(
+    method: Method,
+    template: &'static str,
+    values: &[&dyn std::fmt::Display],
+    body: Value,
+    denials: &[(Caller, ErrorCode)],
+) -> Operation {
+    let mut values = values.iter();
+    let path = template
+        .split('/')
+        .map(|segment| {
+            if segment.starts_with('{') {
+                values.next().unwrap().to_string()
+            } else {
+                segment.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+    assert!(values.next().is_none(), "{template}");
+    Operation {
+        method,
+        template,
+        path,
+        body,
+        denials: denials.to_vec(),
+    }
+}
+
+async fn world() -> World {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let workspace = server.default_workspace(&owner).await;
+    let plain = server.join(&owner, "Plain").await;
+    let target = server.join(&owner, "Target").await;
+    let removed = server.join(&owner, "Removed").await;
+    let administrator = server.join(&owner, "Administrator").await;
+    server
+        .grant_server(&owner, &administrator, ServerPermission::ALL)
+        .await;
+    server
+        .grant_workspace(
+            &owner,
+            &administrator,
+            workspace.id,
+            WorkspacePermission::ALL,
+        )
+        .await;
+
+    let closed: Workspace = server
+        .post(&owner, "/api/v1/workspaces", &json!({ "name": "Closed" }))
+        .await
+        .ok(StatusCode::CREATED);
+    let server_role: ServerRole = server
+        .post(
+            &owner,
+            "/api/v1/server-roles",
+            &json!({ "name": "inviters" }),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    let role: WorkspaceRole = server
+        .post(
+            &owner,
+            &format!("/api/v1/workspaces/{}/roles", workspace.id),
+            &json!({ "name": "helpers" }),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    let category: Category = server
+        .post(
+            &owner,
+            &format!("/api/v1/workspaces/{}/categories", workspace.id),
+            &json!({ "name": "Projects" }),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    let channel: Channel = server
+        .post(
+            &owner,
+            &format!("/api/v1/workspaces/{}/channels", workspace.id),
+            &json!({ "name": "plans", "kind": "text" }),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    let permanent: Channel = server
+        .post(
+            &owner,
+            &format!("/api/v1/workspaces/{}/channels", workspace.id),
+            &json!({ "name": "records", "kind": "text" }),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    sqlx::query("update channels set permanent_message_count = 1 where id = $1")
+        .bind(permanent.id.as_uuid())
+        .execute(&server.db)
+        .await
+        .unwrap();
+    let invite = server.invite(&owner, json!({ "max_uses": 5 })).await;
+    let proof = server
+        .proof(&DeviceKey::generate(), ChallengeOperation::RequestToJoin)
+        .await;
+    let request: JoinRequest = server
+        .open(
+            "/api/v1/join-requests",
+            &json!({ "proof": proof, "name": "Newcomer" }),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    let proof = server
+        .proof(&DeviceKey::generate(), ChallengeOperation::RequestToJoin)
+        .await;
+    let refused: JoinRequest = server
+        .open(
+            "/api/v1/join-requests",
+            &json!({ "proof": proof, "name": "Unwanted" }),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+
+    use Caller::{Administrator, Plain};
+    use ErrorCode::{Forbidden, NotFound, OwnerOnly};
+    let forbidden = [(Plain, Forbidden)];
+    let own: [(Caller, ErrorCode); 0] = [];
+    let none = Value::Null;
+    let new_key = || json!({ "public_key": DeviceKey::generate().public() });
+    let (ws, closed_id, target_id) = (workspace.id, closed.id, target.account_id);
+
+    let operations = vec![
+        operation(
+            Method::DELETE,
+            "/api/v1/auth/session",
+            &[],
+            none.clone(),
+            &own,
+        ),
+        operation(Method::GET, "/api/v1/account", &[], none.clone(), &own),
+        operation(
+            Method::GET,
+            "/api/v1/account/devices",
+            &[],
+            none.clone(),
+            &own,
+        ),
+        operation(
+            Method::PATCH,
+            "/api/v1/account/devices/{device_id}",
+            &[&target.device_id],
+            json!({ "name": "taken" }),
+            &[(Plain, NotFound), (Administrator, NotFound)],
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/account/devices/{device_id}",
+            &[&target.device_id],
+            none.clone(),
+            &[(Plain, NotFound), (Administrator, NotFound)],
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/account/recoveries",
+            &[],
+            none.clone(),
+            &own,
+        ),
+        operation(
+            Method::POST,
+            "/api/v1/account/device-links/lookup",
+            &[],
+            json!({ "code": "ZZZZ-ZZZZ" }),
+            &own,
+        ),
+        operation(
+            Method::POST,
+            "/api/v1/account/device-links/approve",
+            &[],
+            json!({ "code": "ZZZZ-ZZZZ", "public_key": DeviceKey::generate().public() }),
+            &own,
+        ),
+        operation(Method::POST, "/api/v1/invites", &[], json!({}), &forbidden),
+        operation(
+            Method::GET,
+            "/api/v1/invites",
+            &[],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/invites/{invite_id}",
+            &[&invite.invite.id],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::POST,
+            "/api/v1/invites/redemption",
+            &[],
+            json!({ "invite_code": "ZZZZ-ZZZZ-ZZZZ-ZZZZ" }),
+            &own,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/join-requests",
+            &[],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::POST,
+            "/api/v1/join-requests/{join_request_id}/approval",
+            &[&request.id],
+            json!({}),
+            &forbidden,
+        ),
+        operation(
+            Method::POST,
+            "/api/v1/join-requests/{join_request_id}/denial",
+            &[&refused.id],
+            json!({}),
+            &forbidden,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/accounts",
+            &[],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::POST,
+            "/api/v1/accounts/{account_id}/removal",
+            &[&removed.account_id],
+            json!({}),
+            &forbidden,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/accounts/{account_id}/ban",
+            &[&target_id],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/accounts/{account_id}/ban",
+            &[&target_id],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::POST,
+            "/api/v1/accounts/{account_id}/recovery",
+            &[&target_id],
+            new_key(),
+            &[(Plain, OwnerOnly), (Administrator, OwnerOnly)],
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/server-roles",
+            &[],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::POST,
+            "/api/v1/server-roles",
+            &[],
+            json!({ "name": "mine", "permissions": ["administrator"] }),
+            &forbidden,
+        ),
+        operation(
+            Method::PATCH,
+            "/api/v1/server-roles/{role_id}",
+            &[&server_role.id],
+            json!({ "permissions": ["administrator"] }),
+            &forbidden,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/accounts/{account_id}/server-roles/{role_id}",
+            &[&plain.account_id, &server_role.id],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/accounts/{account_id}/server-roles/{role_id}",
+            &[&administrator.account_id, &server_role.id],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(Method::GET, "/api/v1/workspaces", &[], none.clone(), &own),
+        operation(
+            Method::POST,
+            "/api/v1/workspaces",
+            &[],
+            json!({ "name": "Mine" }),
+            &forbidden,
+        ),
+        operation(
+            Method::PATCH,
+            "/api/v1/workspaces/{workspace_id}",
+            &[&ws],
+            json!({ "name": "Mine" }),
+            &forbidden,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/workspaces/{workspace_id}/members",
+            &[&closed_id],
+            none.clone(),
+            &[(Plain, NotFound)],
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/workspaces/{workspace_id}/members/{account_id}",
+            &[&closed_id, &plain.account_id],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/workspaces/{workspace_id}/roles",
+            &[&closed_id],
+            none.clone(),
+            &[(Plain, NotFound)],
+        ),
+        operation(
+            Method::POST,
+            "/api/v1/workspaces/{workspace_id}/roles",
+            &[&ws],
+            json!({ "name": "mine" }),
+            &forbidden,
+        ),
+        operation(
+            Method::PATCH,
+            "/api/v1/workspaces/{workspace_id}/roles/{role_id}",
+            &[&ws, &role.id],
+            json!({ "permissions": ["manage_roles"] }),
+            &forbidden,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/workspaces/{workspace_id}/members/{account_id}/roles/{role_id}",
+            &[&ws, &plain.account_id, &role.id],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/workspaces/{workspace_id}/members/{account_id}/roles/{role_id}",
+            &[&ws, &administrator.account_id, &role.id],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::POST,
+            "/api/v1/workspaces/{workspace_id}/categories",
+            &[&ws],
+            json!({ "name": "mine" }),
+            &forbidden,
+        ),
+        operation(
+            Method::PATCH,
+            "/api/v1/workspaces/{workspace_id}/categories/{category_id}",
+            &[&ws, &category.id],
+            json!({ "name": "mine" }),
+            &forbidden,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/workspaces/{workspace_id}/channels",
+            &[&closed_id],
+            none.clone(),
+            &[(Plain, NotFound)],
+        ),
+        operation(
+            Method::POST,
+            "/api/v1/workspaces/{workspace_id}/channels",
+            &[&ws],
+            json!({ "name": "mine", "kind": "text" }),
+            &forbidden,
+        ),
+        operation(
+            Method::PATCH,
+            "/api/v1/channels/{channel_id}",
+            &[&channel.id],
+            json!({ "name": "mine", "permanent_messages": true }),
+            &forbidden,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/channels/{channel_id}/overrides",
+            &[&channel.id],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/channels/{channel_id}/overrides/{role_id}",
+            &[&channel.id, &role.id],
+            json!({ "allow": ["manage_channel"] }),
+            &forbidden,
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/channels/{channel_id}",
+            &[&permanent.id],
+            none.clone(),
+            &[(Plain, OwnerOnly), (Administrator, OwnerOnly)],
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/channels/{channel_id}",
+            &[&channel.id],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/audit-log",
+            &[],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/workspaces/{workspace_id}/audit-log",
+            &[&ws],
+            none.clone(),
+            &forbidden,
+        ),
+    ];
+
+    World {
+        server,
+        plain,
+        administrator,
+        operations,
+    }
+}
+
+/// One text that changes when any row of any table changes.
+async fn database_state(server: &TestServer) -> String {
+    let tables: Vec<String> = sqlx::query_scalar(
+        "select table_name::text from information_schema.tables
+         where table_schema = 'public' and table_name <> '_sqlx_migrations'
+         order by table_name",
+    )
+    .fetch_all(&server.db)
+    .await
+    .unwrap();
+    assert!(tables.len() >= 20, "{tables:?}");
+    let mut state = String::new();
+    for table in tables {
+        let digest: String = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "select coalesce(md5(string_agg(row::text, '|' order by row::text)), 'empty')
+             from {table} as row"
+        )))
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+        state.push_str(&format!("{table}={digest};"));
+    }
+    state
+}
+
+async fn send(
+    server: &TestServer,
+    operation: &Operation,
+    token: Option<&str>,
+) -> crate::support::Reply {
+    let body = (!operation.body.is_null()).then_some(&operation.body);
+    server
+        .send(operation.method.clone(), &operation.path, token, body, None)
+        .await
+}
+
+#[tokio::test]
+async fn the_table_lists_every_operation_that_needs_a_session() {
+    let world = world().await;
+    let listed: BTreeSet<String> = world
+        .operations
+        .iter()
+        .map(|operation| format!("{} {}", operation.method, operation.template))
+        .collect();
+
+    let document: Value = serde_json::from_str(&junto_server::openapi_document().unwrap()).unwrap();
+    let mut documented = BTreeSet::new();
+    for (path, operations) in document["paths"].as_object().unwrap() {
+        for (method, operation) in operations.as_object().unwrap() {
+            if operation.get("security").is_some() {
+                documented.insert(format!("{} {path}", method.to_uppercase()));
+            }
+        }
+    }
+    assert_eq!(listed, documented);
+}
+
+#[tokio::test]
+async fn a_caller_without_the_permission_is_denied_and_nothing_changes() {
+    let world = world().await;
+    let mut checked = 0;
+    for operation in &world.operations {
+        for (caller, code) in &operation.denials {
+            let member = match caller {
+                Caller::Plain => &world.plain,
+                Caller::Administrator => &world.administrator,
+            };
+            let before = database_state(&world.server).await;
+            let reply = send(&world.server, operation, Some(&member.token)).await;
+            assert_eq!(
+                reply.code(),
+                *code,
+                "{} {} as {caller:?}: {}",
+                operation.method,
+                operation.template,
+                reply.text()
+            );
+            assert_eq!(reply.status.as_u16(), code.http_status());
+            assert_eq!(
+                database_state(&world.server).await,
+                before,
+                "{} {} as {caller:?} changed the database",
+                operation.method,
+                operation.template
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked >= 40, "{checked}");
+}
+
+#[tokio::test]
+async fn a_request_without_a_session_is_refused_and_nothing_changes() {
+    let world = world().await;
+    let before = database_state(&world.server).await;
+    for operation in &world.operations {
+        for token in [
+            None,
+            Some("jst_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+        ] {
+            let reply = send(&world.server, operation, token).await;
+            assert_eq!(
+                reply.code(),
+                ErrorCode::Unauthenticated,
+                "{} {}",
+                operation.method,
+                operation.template
+            );
+        }
+    }
+    assert_eq!(database_state(&world.server).await, before);
+}
+
+#[tokio::test]
+async fn the_denied_operations_succeed_for_a_caller_who_may_do_them() {
+    let world = world().await;
+    let server = &world.server;
+    for operation in &world.operations {
+        let denied_to_administrator = operation
+            .denials
+            .iter()
+            .any(|(caller, _)| *caller == Caller::Administrator);
+        if operation.denials.is_empty() || denied_to_administrator {
+            continue;
+        }
+        let reply = send(server, operation, Some(&world.administrator.token)).await;
+        assert!(
+            reply.status.is_success(),
+            "{} {} as the administrator: {} {}",
+            operation.method,
+            operation.template,
+            reply.status,
+            reply.text()
+        );
+    }
+}

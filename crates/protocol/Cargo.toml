@@ -1,0 +1,27 @@
+[package]
+name = "junto-protocol"
+description = "Request, response and event types of the public Junto API"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+sqlx = ["dep:sqlx"]
+
+[dependencies]
+junto-authz = { workspace = true, features = ["serde", "utoipa"] }
+base64 = { workspace = true }
+serde = { workspace = true }
+sqlx = { workspace = true, optional = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+utoipa = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

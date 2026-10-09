@@ -1,0 +1,52 @@
+[package]
+name = "junto-server"
+description = "The Junto server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "junto-server"
+path = "src/main.rs"
+
+[[bin]]
+name = "junto-openapi"
+path = "src/bin/openapi.rs"
+
+[[test]]
+name = "api"
+path = "tests/api/main.rs"
+
+[[test]]
+name = "openapi"
+path = "tests/openapi.rs"
+
+[dependencies]
+junto-authz = { workspace = true }
+junto-protocol = { workspace = true, features = ["sqlx"] }
+axum = { workspace = true }
+base64 = { workspace = true }
+ed25519-dalek = { workspace = true }
+getrandom = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+sqlx = { workspace = true }
+subtle = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+utoipa = { workspace = true, features = ["axum_extras"] }
+utoipa-axum = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+reqwest = { workspace = true }
+
+[lints]
+workspace = true

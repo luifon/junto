@@ -1,0 +1,54 @@
+use junto_authz::{ServerPermission, WorkspacePermission};
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
+
+use crate::ids::{ServerRoleId, WorkspaceId, WorkspaceRoleId};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ServerRole {
+    pub id: ServerRoleId,
+    pub name: String,
+    pub permissions: Vec<ServerPermission>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CreateServerRole {
+    pub name: String,
+    #[serde(default)]
+    pub permissions: Vec<ServerPermission>,
+}
+
+/// An absent field keeps its value.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+pub struct UpdateServerRole {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub permissions: Option<Vec<ServerPermission>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct WorkspaceRole {
+    pub id: WorkspaceRoleId,
+    pub workspace_id: WorkspaceId,
+    pub name: String,
+    pub permissions: Vec<WorkspacePermission>,
+    /// True for the role that every member of the workspace holds. It is never assigned.
+    pub is_everyone: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CreateWorkspaceRole {
+    pub name: String,
+    #[serde(default)]
+    pub permissions: Vec<WorkspacePermission>,
+}
+
+/// An absent field keeps its value.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+pub struct UpdateWorkspaceRole {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub permissions: Option<Vec<WorkspacePermission>>,
+}

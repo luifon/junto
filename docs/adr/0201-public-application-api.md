@@ -27,7 +27,7 @@ Versioning:
 Administration:
 
 - Administration happens in the client, through the public API.
-- The server has a command line for two cases only. The first start prints a one-time code that makes the first client the server owner. A recovery of the server assigns a new server owner.
+- The server has a command line for two cases only. The first start prints a one-time code that makes the first client the server owner. A recovery of the server assigns a new server owner or issues a new one-time code for the owner (ADR 0114).
 
 Not in the first version:
 

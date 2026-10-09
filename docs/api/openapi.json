@@ -1,0 +1,4646 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Junto server API",
+    "description": "The public application API of a Junto server. Every route is under the version prefix, except the server information route, which tells a client which versions the server supports.",
+    "license": {
+      "name": "Apache-2.0",
+      "identifier": "Apache-2.0"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/server": {
+      "get": {
+        "tags": [
+          "server"
+        ],
+        "summary": "The name, the logo and the supported API versions of this server.",
+        "operationId": "get_server_info",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServerInfo"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/account": {
+      "get": {
+        "tags": [
+          "account"
+        ],
+        "summary": "The caller's account, its server roles and its workspaces.",
+        "operationId": "get_own_account",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnAccount"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/account/device-links/approve": {
+      "post": {
+        "tags": [
+          "account"
+        ],
+        "summary": "Adds the device behind a link code to the caller's account. The approval names the public\nkey of the new device.",
+        "operationId": "approve_device_link",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApproveDeviceLink"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Device"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/account/device-links/lookup": {
+      "post": {
+        "tags": [
+          "account"
+        ],
+        "summary": "Shows the device key behind a link code, so that the approving device can compare it.",
+        "operationId": "look_up_device_link",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LookUpDeviceLink"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingDeviceLink"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/account/devices": {
+      "get": {
+        "tags": [
+          "account"
+        ],
+        "summary": "The devices of the caller's account.",
+        "operationId": "list_devices",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Device"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/account/devices/{device_id}": {
+      "delete": {
+        "tags": [
+          "account"
+        ],
+        "summary": "Removes one device of the caller's account and ends its sessions.",
+        "operationId": "remove_device",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/DeviceId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "account"
+        ],
+        "summary": "Changes the name of one device of the caller's account.",
+        "operationId": "rename_device",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/DeviceId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameDevice"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Device"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/account/recoveries": {
+      "get": {
+        "tags": [
+          "account"
+        ],
+        "summary": "The recoveries of the caller's account.",
+        "operationId": "list_recoveries",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RecoveryNotice"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/accounts": {
+      "get": {
+        "tags": [
+          "moderation"
+        ],
+        "summary": "Every account of the server, with its status and server roles.",
+        "operationId": "list_accounts",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AccountSummary"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/accounts/{account_id}/ban": {
+      "put": {
+        "tags": [
+          "moderation"
+        ],
+        "summary": "Bans an account. Its device keys cannot log in and the invites it created are cancelled.",
+        "operationId": "ban_account",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/AccountId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "moderation"
+        ],
+        "summary": "Lifts the ban of an account. The invites that the ban cancelled stay cancelled.",
+        "operationId": "unban_account",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/AccountId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/accounts/{account_id}/recovery": {
+      "post": {
+        "tags": [
+          "moderation"
+        ],
+        "summary": "Gives a new device key access to an existing account. Only the server owner can do this.",
+        "operationId": "recover_account",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/AccountId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecoverAccount"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryNotice"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/accounts/{account_id}/removal": {
+      "post": {
+        "tags": [
+          "moderation"
+        ],
+        "summary": "Removes an account from the server. Its devices, sessions, memberships and roles end.",
+        "operationId": "remove_account",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/AccountId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/accounts/{account_id}/server-roles/{role_id}": {
+      "put": {
+        "tags": [
+          "server roles"
+        ],
+        "summary": "Gives a server role to an account.",
+        "operationId": "assign_server_role",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/AccountId"
+            }
+          },
+          {
+            "name": "role_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ServerRoleId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "server roles"
+        ],
+        "summary": "Takes a server role from an account.",
+        "operationId": "unassign_server_role",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/AccountId"
+            }
+          },
+          {
+            "name": "role_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ServerRoleId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/audit-log": {
+      "get": {
+        "tags": [
+          "audit"
+        ],
+        "summary": "The audit entries about the server: accounts, invites, bans, recoveries and server roles.",
+        "operationId": "get_server_audit_log",
+        "parameters": [
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Return entries older than this one.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/AuditEntryId"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "The largest number of entries to return, from 1 to 200. Absent: 50.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditPage"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/challenges": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Asks for a single-use challenge for one device key and one operation.",
+        "operationId": "create_challenge",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateChallenge"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Challenge"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/session": {
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Ends the session of the request.",
+        "operationId": "log_out",
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/sessions": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Starts a session with a signed `login` challenge.",
+        "operationId": "log_in",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Login"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionCreated"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/channels/{channel_id}": {
+      "delete": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "Deletes a channel. Only the server owner deletes a channel that contains permanent\nmessages.",
+        "operationId": "delete_channel",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "Changes the settings of a channel.",
+        "operationId": "update_channel",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateChannel"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Channel"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/channels/{channel_id}/overrides": {
+      "get": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "The role overrides of a channel.",
+        "operationId": "list_channel_overrides",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ChannelOverride"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/channels/{channel_id}/overrides/{role_id}": {
+      "put": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "Sets the allow set and the deny set of one workspace role in a channel.",
+        "operationId": "set_channel_override",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          },
+          {
+            "name": "role_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceRoleId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetChannelOverride"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelOverride"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/device-links": {
+      "post": {
+        "tags": [
+          "account"
+        ],
+        "summary": "Sent by a new device. Returns the one-time code that a device of the account approves.",
+        "operationId": "request_device_link",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestDeviceLink"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceLinkCreated"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/invites": {
+      "get": {
+        "tags": [
+          "joining"
+        ],
+        "summary": "Every invite of the server, without its code.",
+        "operationId": "list_invites",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Invite"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "joining"
+        ],
+        "summary": "Creates an invite code. The response is the only one that carries the code.",
+        "operationId": "create_invite",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateInvite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InviteCreated"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/invites/redemption": {
+      "post": {
+        "tags": [
+          "joining"
+        ],
+        "summary": "Adds the caller's account to the workspaces of an invite that it is not yet a member of.\nThe invite counts one use, under the same rules as a join. Attempts are limited per\naccount and per client address.",
+        "operationId": "redeem_invite",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RedeemInvite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Redemption"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/invites/{invite_id}": {
+      "delete": {
+        "tags": [
+          "joining"
+        ],
+        "summary": "Cancels an invite. Its code stops working.",
+        "operationId": "revoke_invite",
+        "parameters": [
+          {
+            "name": "invite_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/InviteId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/join": {
+      "post": {
+        "tags": [
+          "joining"
+        ],
+        "summary": "Creates an account with an invite code and starts its first session.",
+        "operationId": "join",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Join"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionCreated"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/join-requests": {
+      "get": {
+        "tags": [
+          "joining"
+        ],
+        "summary": "The join requests that wait for an answer.",
+        "operationId": "list_join_requests",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/JoinRequest"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "joining"
+        ],
+        "summary": "Asks to join without a code. The request carries a name and waits for an approval.",
+        "operationId": "request_to_join",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestToJoin"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JoinRequest"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/join-requests/status": {
+      "post": {
+        "tags": [
+          "joining"
+        ],
+        "summary": "The result of the latest join request of a device key, given to the holder of that key.",
+        "operationId": "join_request_status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JoinRequestStatusQuery"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JoinRequestStatus"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/join-requests/{join_request_id}/approval": {
+      "post": {
+        "tags": [
+          "joining"
+        ],
+        "summary": "Approves a join request and creates the account in the named workspaces.",
+        "operationId": "approve_join_request",
+        "parameters": [
+          {
+            "name": "join_request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/JoinRequestId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApproveJoinRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JoinRequestStatus"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/join-requests/{join_request_id}/denial": {
+      "post": {
+        "tags": [
+          "joining"
+        ],
+        "summary": "Denies a join request.",
+        "operationId": "deny_join_request",
+        "parameters": [
+          {
+            "name": "join_request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/JoinRequestId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JoinRequestStatus"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/owner/claim": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Presents the owner code. On a server without an owner, the device becomes the server\nowner. With a code that the host command issued, the device is added to the account of\nthe owner.",
+        "operationId": "claim_owner",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClaimOwner"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionCreated"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/server-roles": {
+      "get": {
+        "tags": [
+          "server roles"
+        ],
+        "summary": "The server roles.",
+        "operationId": "list_server_roles",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ServerRole"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "server roles"
+        ],
+        "summary": "Creates a server role.",
+        "operationId": "create_server_role",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateServerRole"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServerRole"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/server-roles/{role_id}": {
+      "patch": {
+        "tags": [
+          "server roles"
+        ],
+        "summary": "Changes the name or the permissions of a server role.",
+        "operationId": "update_server_role",
+        "parameters": [
+          {
+            "name": "role_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ServerRoleId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateServerRole"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServerRole"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces": {
+      "get": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "The workspaces that the caller can see.",
+        "operationId": "list_workspaces",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Workspace"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Creates a workspace. The caller becomes its first member.",
+        "operationId": "create_workspace",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWorkspace"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Workspace"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}": {
+      "patch": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Renames a workspace.",
+        "operationId": "update_workspace",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateWorkspace"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Workspace"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/audit-log": {
+      "get": {
+        "tags": [
+          "audit"
+        ],
+        "summary": "The audit entries of a workspace. An entry about a channel is returned only when the caller\ncan see that channel; an entry about a deleted channel only to a server administrator.",
+        "operationId": "get_workspace_audit_log",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Return entries older than this one.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/AuditEntryId"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "The largest number of entries to return, from 1 to 200. Absent: 50.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditPage"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/categories": {
+      "post": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "Creates a category in a workspace.",
+        "operationId": "create_category",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCategory"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Category"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/categories/{category_id}": {
+      "patch": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "Changes the name or the position of a category.",
+        "operationId": "update_category",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          },
+          {
+            "name": "category_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/CategoryId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateCategory"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Category"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/channels": {
+      "get": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "The categories of a workspace and the channels that the caller can see.",
+        "operationId": "list_channels",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelList"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "Creates a text channel or a voice channel in a workspace.",
+        "operationId": "create_channel",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateChannel"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Channel"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/members": {
+      "get": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "The members of a workspace with their roles.",
+        "operationId": "list_members",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WorkspaceMember"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/members/{account_id}": {
+      "put": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Adds an existing account to a workspace. Only a server administrator can do this.",
+        "operationId": "add_member",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          },
+          {
+            "name": "account_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/AccountId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/members/{account_id}/roles/{role_id}": {
+      "put": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Gives a workspace role to a member of the workspace.",
+        "operationId": "assign_workspace_role",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          },
+          {
+            "name": "account_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/AccountId"
+            }
+          },
+          {
+            "name": "role_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceRoleId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Takes a workspace role from a member.",
+        "operationId": "unassign_workspace_role",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          },
+          {
+            "name": "account_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/AccountId"
+            }
+          },
+          {
+            "name": "role_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceRoleId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/roles": {
+      "get": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "The roles of a workspace, the \"everyone\" role included.",
+        "operationId": "list_workspace_roles",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WorkspaceRole"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Creates a workspace role.",
+        "operationId": "create_workspace_role",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWorkspaceRole"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceRole"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/roles/{role_id}": {
+      "patch": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Changes the name or the permissions of a workspace role.",
+        "operationId": "update_workspace_role",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          },
+          {
+            "name": "role_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceRoleId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateWorkspaceRole"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceRole"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AccountId": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "AccountStatus": {
+        "type": "string",
+        "enum": [
+          "active",
+          "banned",
+          "removed"
+        ]
+      },
+      "AccountSummary": {
+        "type": "object",
+        "description": "An account as a moderator sees it.",
+        "required": [
+          "id",
+          "name",
+          "status",
+          "is_owner",
+          "server_role_ids",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "$ref": "#/components/schemas/AccountId"
+          },
+          "is_owner": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "server_role_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServerRoleId"
+            }
+          },
+          "status": {
+            "$ref": "#/components/schemas/AccountStatus"
+          }
+        }
+      },
+      "ApproveDeviceLink": {
+        "type": "object",
+        "description": "The approval names the public key that the approving device saw.",
+        "required": [
+          "code",
+          "public_key"
+        ],
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/LinkCode"
+          },
+          "public_key": {
+            "$ref": "#/components/schemas/PublicKey"
+          }
+        }
+      },
+      "ApproveJoinRequest": {
+        "type": "object",
+        "properties": {
+          "workspace_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            },
+            "description": "Empty: the default workspace."
+          }
+        }
+      },
+      "AuditEntry": {
+        "type": "object",
+        "description": "One line of the audit log: who did it, what was done and when.",
+        "required": [
+          "id",
+          "occurred_at",
+          "event"
+        ],
+        "properties": {
+          "actor_id": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AccountId",
+                "description": "Absent when the server itself acted."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "channel_id": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ChannelId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "event": {
+            "$ref": "#/components/schemas/AuditEvent"
+          },
+          "id": {
+            "$ref": "#/components/schemas/AuditEntryId"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "workspace_id": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WorkspaceId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "AuditEntryId": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "AuditEvent": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "account_id",
+              "action"
+            ],
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "owner_claimed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Done with the host command, so the entry has no acting account.",
+            "required": [
+              "account_id",
+              "action"
+            ],
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "owner_assigned"
+                ]
+              },
+              "previous_owner_id": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/AccountId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The host command stored a new owner code. The entry does not contain the code.",
+            "required": [
+              "replaced_a_code",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "owner_code_issued"
+                ]
+              },
+              "expires_at": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "replaced_a_code": {
+                "type": "boolean",
+                "description": "True when a stored code stopped working because of the new one."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The owner returned with a code that the host command issued.",
+            "required": [
+              "account_id",
+              "device_id",
+              "action"
+            ],
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "owner_access_restored"
+                ]
+              },
+              "device_id": {
+                "$ref": "#/components/schemas/DeviceId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "invite_id",
+              "expires_at",
+              "max_uses",
+              "workspace_ids",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "invite_created"
+                ]
+              },
+              "expires_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "invite_id": {
+                "$ref": "#/components/schemas/InviteId"
+              },
+              "max_uses": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              "workspace_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/WorkspaceId"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "invite_id",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "invite_revoked"
+                ]
+              },
+              "invite_id": {
+                "$ref": "#/components/schemas/InviteId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "States which invite created the account and which account created that invite.",
+            "required": [
+              "account_id",
+              "invite_id",
+              "invite_created_by",
+              "action"
+            ],
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "account_joined"
+                ]
+              },
+              "invite_created_by": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "invite_id": {
+                "$ref": "#/components/schemas/InviteId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "An existing account used an invite to enter further workspaces.",
+            "required": [
+              "account_id",
+              "invite_id",
+              "invite_created_by",
+              "workspace_ids",
+              "action"
+            ],
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "invite_redeemed"
+                ]
+              },
+              "invite_created_by": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "invite_id": {
+                "$ref": "#/components/schemas/InviteId"
+              },
+              "workspace_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/WorkspaceId"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "join_request_id",
+              "account_id",
+              "workspace_ids",
+              "action"
+            ],
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "join_request_approved"
+                ]
+              },
+              "join_request_id": {
+                "$ref": "#/components/schemas/JoinRequestId"
+              },
+              "workspace_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/WorkspaceId"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "join_request_id",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "join_request_denied"
+                ]
+              },
+              "join_request_id": {
+                "$ref": "#/components/schemas/JoinRequestId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "account_id",
+              "action"
+            ],
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "account_removed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "account_id",
+              "cancelled_invite_ids",
+              "action"
+            ],
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "account_banned"
+                ]
+              },
+              "cancelled_invite_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/InviteId"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "account_id",
+              "action"
+            ],
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "account_unbanned"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "account_id",
+              "device_id",
+              "action"
+            ],
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "account_recovered"
+                ]
+              },
+              "device_id": {
+                "$ref": "#/components/schemas/DeviceId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "role_id",
+              "name",
+              "permissions",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "server_role_created"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "permissions": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ServerPermission"
+                }
+              },
+              "role_id": {
+                "$ref": "#/components/schemas/ServerRoleId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "role_id",
+              "name",
+              "permissions",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "server_role_updated"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "permissions": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ServerPermission"
+                }
+              },
+              "role_id": {
+                "$ref": "#/components/schemas/ServerRoleId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "role_id",
+              "account_id",
+              "action"
+            ],
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "server_role_assigned"
+                ]
+              },
+              "role_id": {
+                "$ref": "#/components/schemas/ServerRoleId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "role_id",
+              "account_id",
+              "action"
+            ],
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "server_role_unassigned"
+                ]
+              },
+              "role_id": {
+                "$ref": "#/components/schemas/ServerRoleId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "workspace_id",
+              "name",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "workspace_created"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "workspace_id",
+              "name",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "workspace_renamed"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "role_id",
+              "name",
+              "permissions",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "workspace_role_created"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "permissions": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/WorkspacePermission"
+                }
+              },
+              "role_id": {
+                "$ref": "#/components/schemas/WorkspaceRoleId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "role_id",
+              "name",
+              "permissions",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "workspace_role_updated"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "permissions": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/WorkspacePermission"
+                }
+              },
+              "role_id": {
+                "$ref": "#/components/schemas/WorkspaceRoleId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "role_id",
+              "account_id",
+              "action"
+            ],
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "workspace_role_assigned"
+                ]
+              },
+              "role_id": {
+                "$ref": "#/components/schemas/WorkspaceRoleId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "role_id",
+              "account_id",
+              "action"
+            ],
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "workspace_role_unassigned"
+                ]
+              },
+              "role_id": {
+                "$ref": "#/components/schemas/WorkspaceRoleId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "An administrator added an existing account to the workspace.",
+            "required": [
+              "account_id",
+              "action"
+            ],
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "workspace_member_added"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "category_id",
+              "name",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "category_created"
+                ]
+              },
+              "category_id": {
+                "$ref": "#/components/schemas/CategoryId"
+              },
+              "name": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "category_id",
+              "name",
+              "position",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "category_updated"
+                ]
+              },
+              "category_id": {
+                "$ref": "#/components/schemas/CategoryId"
+              },
+              "name": {
+                "type": "string"
+              },
+              "position": {
+                "type": "integer",
+                "format": "int32"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "name",
+              "kind",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "channel_created"
+                ]
+              },
+              "kind": {
+                "$ref": "#/components/schemas/ChannelKind"
+              },
+              "name": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "name",
+              "position",
+              "permanent_messages",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "channel_updated"
+                ]
+              },
+              "category_id": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/CategoryId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "permanent_messages": {
+                "type": "boolean"
+              },
+              "position": {
+                "type": "integer",
+                "format": "int32"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "role_id",
+              "allow",
+              "deny",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "channel_override_set"
+                ]
+              },
+              "allow": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/WorkspacePermission"
+                }
+              },
+              "deny": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/WorkspacePermission"
+                }
+              },
+              "role_id": {
+                "$ref": "#/components/schemas/WorkspaceRoleId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "name",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "channel_deleted"
+                ]
+              },
+              "name": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "description": "What was done. New actions are added; the fields of an existing action do not change."
+      },
+      "AuditPage": {
+        "type": "object",
+        "required": [
+          "entries"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditEntry"
+            },
+            "description": "Newest first."
+          },
+          "next_before": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AuditEntryId",
+                "description": "Pass as `before` to read the next page. Absent on the last page."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "Category": {
+        "type": "object",
+        "required": [
+          "id",
+          "workspace_id",
+          "name",
+          "position"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/CategoryId"
+          },
+          "name": {
+            "type": "string"
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "workspace_id": {
+            "$ref": "#/components/schemas/WorkspaceId"
+          }
+        }
+      },
+      "CategoryId": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "Challenge": {
+        "type": "object",
+        "description": "A single-use challenge. The device signs [`Challenge::signing_input`].",
+        "required": [
+          "id",
+          "server_id",
+          "operation",
+          "public_key",
+          "nonce",
+          "expires_at"
+        ],
+        "properties": {
+          "account_id": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AccountId",
+                "description": "The account of the device key, when the key belongs to one."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "$ref": "#/components/schemas/ChallengeId"
+          },
+          "nonce": {
+            "$ref": "#/components/schemas/Nonce"
+          },
+          "operation": {
+            "$ref": "#/components/schemas/ChallengeOperation"
+          },
+          "public_key": {
+            "$ref": "#/components/schemas/PublicKey"
+          },
+          "server_id": {
+            "$ref": "#/components/schemas/ServerId"
+          }
+        }
+      },
+      "ChallengeId": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "ChallengeOperation": {
+        "type": "string",
+        "description": "What a signed challenge is for. A challenge is accepted only by the route of its operation.",
+        "enum": [
+          "login",
+          "claim_owner",
+          "join",
+          "request_to_join",
+          "join_request_status",
+          "link_device"
+        ]
+      },
+      "Channel": {
+        "type": "object",
+        "required": [
+          "id",
+          "workspace_id",
+          "kind",
+          "name",
+          "position",
+          "permanent_messages"
+        ],
+        "properties": {
+          "category_id": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CategoryId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/components/schemas/ChannelId"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ChannelKind"
+          },
+          "name": {
+            "type": "string"
+          },
+          "permanent_messages": {
+            "type": "boolean",
+            "description": "The channel setting that makes each message sent under it permanent."
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "workspace_id": {
+            "$ref": "#/components/schemas/WorkspaceId"
+          }
+        }
+      },
+      "ChannelId": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "ChannelKind": {
+        "type": "string",
+        "enum": [
+          "text",
+          "voice"
+        ]
+      },
+      "ChannelList": {
+        "type": "object",
+        "description": "The channels and categories of a workspace that the caller can see.",
+        "required": [
+          "categories",
+          "channels"
+        ],
+        "properties": {
+          "categories": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Category"
+            }
+          },
+          "channels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Channel"
+            }
+          }
+        }
+      },
+      "ChannelOverride": {
+        "type": "object",
+        "description": "The allow set and the deny set of one workspace role in one channel.",
+        "required": [
+          "role_id",
+          "allow",
+          "deny"
+        ],
+        "properties": {
+          "allow": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspacePermission"
+            }
+          },
+          "deny": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspacePermission"
+            }
+          },
+          "role_id": {
+            "$ref": "#/components/schemas/WorkspaceRoleId"
+          }
+        }
+      },
+      "ClaimOwner": {
+        "type": "object",
+        "required": [
+          "proof",
+          "owner_code",
+          "name"
+        ],
+        "properties": {
+          "device_name": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "owner_code": {
+            "$ref": "#/components/schemas/OwnerCode"
+          },
+          "proof": {
+            "$ref": "#/components/schemas/Proof"
+          }
+        }
+      },
+      "CreateCategory": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "position": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Absent: after the last category."
+          }
+        }
+      },
+      "CreateChallenge": {
+        "type": "object",
+        "required": [
+          "public_key",
+          "operation"
+        ],
+        "properties": {
+          "operation": {
+            "$ref": "#/components/schemas/ChallengeOperation"
+          },
+          "public_key": {
+            "$ref": "#/components/schemas/PublicKey"
+          }
+        }
+      },
+      "CreateChannel": {
+        "type": "object",
+        "required": [
+          "name",
+          "kind"
+        ],
+        "properties": {
+          "category_id": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CategoryId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ChannelKind"
+          },
+          "name": {
+            "type": "string"
+          },
+          "position": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Absent: after the last channel."
+          }
+        }
+      },
+      "CreateInvite": {
+        "type": "object",
+        "properties": {
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Absent: the server's default lifetime applies."
+          },
+          "max_uses": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Absent: one use.",
+            "minimum": 0
+          },
+          "workspace_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            },
+            "description": "Empty: the default workspace."
+          }
+        }
+      },
+      "CreateServerRole": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServerPermission"
+            }
+          }
+        }
+      },
+      "CreateWorkspace": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateWorkspaceRole": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspacePermission"
+            }
+          }
+        }
+      },
+      "Device": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "public_key",
+          "origin",
+          "created_at",
+          "current"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "current": {
+            "type": "boolean",
+            "description": "True for the device of the session that made the request."
+          },
+          "id": {
+            "$ref": "#/components/schemas/DeviceId"
+          },
+          "last_login_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "name": {
+            "type": "string"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/DeviceOrigin"
+          },
+          "public_key": {
+            "$ref": "#/components/schemas/PublicKey"
+          }
+        }
+      },
+      "DeviceId": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "DeviceLinkCreated": {
+        "type": "object",
+        "required": [
+          "code",
+          "expires_at"
+        ],
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/LinkCode"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "DeviceOrigin": {
+        "type": "string",
+        "description": "How a device key came to belong to its account.",
+        "enum": [
+          "owner_code",
+          "invite",
+          "join_request",
+          "link",
+          "recovery"
+        ]
+      },
+      "ErrorBody": {
+        "type": "object",
+        "description": "The body of every response with a status of 400 or above.",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorDetail"
+          }
+        }
+      },
+      "ErrorCode": {
+        "type": "string",
+        "description": "The stable machine-readable code of an error. A client decides on the code, never on the\nmessage.",
+        "enum": [
+          "invalid_request",
+          "unauthenticated",
+          "challenge_invalid",
+          "challenge_expired",
+          "invalid_signature",
+          "unknown_device",
+          "too_many_attempts",
+          "rate_limited",
+          "account_banned",
+          "forbidden",
+          "owner_only",
+          "owner_protected",
+          "own_account_target",
+          "exceeds_own_permissions",
+          "not_found",
+          "conflict",
+          "key_already_registered",
+          "owner_already_claimed",
+          "owner_code_invalid",
+          "invite_not_found",
+          "invite_expired",
+          "invite_exhausted",
+          "invite_revoked",
+          "join_request_pending",
+          "join_requests_full",
+          "challenges_full",
+          "device_links_full",
+          "link_code_invalid",
+          "public_key_mismatch",
+          "method_not_allowed",
+          "timeout",
+          "busy",
+          "internal"
+        ]
+      },
+      "ErrorDetail": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          "message": {
+            "type": "string",
+            "description": "A sentence for a person who reads a log. Its text is not stable."
+          }
+        }
+      },
+      "Invite": {
+        "type": "object",
+        "required": [
+          "id",
+          "created_by",
+          "created_at",
+          "expires_at",
+          "max_uses",
+          "uses",
+          "workspace_ids"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_by": {
+            "$ref": "#/components/schemas/AccountId"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "$ref": "#/components/schemas/InviteId"
+          },
+          "max_uses": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "revocation": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/InviteRevocation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "uses": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "workspace_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          }
+        }
+      },
+      "InviteCode": {
+        "type": "string"
+      },
+      "InviteCreated": {
+        "type": "object",
+        "description": "The only response that carries the code of an invite.",
+        "required": [
+          "invite",
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/InviteCode"
+          },
+          "invite": {
+            "$ref": "#/components/schemas/Invite"
+          }
+        }
+      },
+      "InviteId": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "InviteRevocation": {
+        "type": "string",
+        "enum": [
+          "revoked",
+          "creator_banned"
+        ]
+      },
+      "Join": {
+        "type": "object",
+        "required": [
+          "proof",
+          "invite_code",
+          "name"
+        ],
+        "properties": {
+          "device_name": {
+            "type": "string"
+          },
+          "invite_code": {
+            "$ref": "#/components/schemas/InviteCode"
+          },
+          "name": {
+            "type": "string"
+          },
+          "proof": {
+            "$ref": "#/components/schemas/Proof"
+          }
+        }
+      },
+      "JoinRequest": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "created_at",
+          "expires_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "$ref": "#/components/schemas/JoinRequestId"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "JoinRequestId": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "JoinRequestState": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "approved",
+          "denied",
+          "expired"
+        ]
+      },
+      "JoinRequestStatus": {
+        "type": "object",
+        "description": "The result that the waiting device collects with its device key.",
+        "required": [
+          "id",
+          "state"
+        ],
+        "properties": {
+          "account_id": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AccountId",
+                "description": "Present once the request is approved. The device then logs in."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/components/schemas/JoinRequestId"
+          },
+          "state": {
+            "$ref": "#/components/schemas/JoinRequestState"
+          }
+        }
+      },
+      "JoinRequestStatusQuery": {
+        "type": "object",
+        "required": [
+          "proof"
+        ],
+        "properties": {
+          "proof": {
+            "$ref": "#/components/schemas/Proof"
+          }
+        }
+      },
+      "LinkCode": {
+        "type": "string"
+      },
+      "Login": {
+        "type": "object",
+        "required": [
+          "proof"
+        ],
+        "properties": {
+          "proof": {
+            "$ref": "#/components/schemas/Proof"
+          }
+        }
+      },
+      "LookUpDeviceLink": {
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/LinkCode"
+          }
+        }
+      },
+      "Nonce": {
+        "type": "string",
+        "description": "32 bytes in base64url without padding",
+        "maxLength": 43,
+        "minLength": 43,
+        "pattern": "^[A-Za-z0-9_-]+$"
+      },
+      "OwnAccount": {
+        "type": "object",
+        "description": "The account of the caller.",
+        "required": [
+          "id",
+          "name",
+          "is_owner",
+          "server_role_ids",
+          "server_permissions",
+          "workspace_ids"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/AccountId"
+          },
+          "is_owner": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "server_permissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServerPermission"
+            },
+            "description": "The union of the permissions of the account's server roles."
+          },
+          "server_role_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServerRoleId"
+            }
+          },
+          "workspace_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          }
+        }
+      },
+      "OwnerCode": {
+        "type": "string"
+      },
+      "PendingDeviceLink": {
+        "type": "object",
+        "description": "A device link that waits for the approval of a device of the account.",
+        "required": [
+          "public_key",
+          "device_name",
+          "expires_at"
+        ],
+        "properties": {
+          "device_name": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "public_key": {
+            "$ref": "#/components/schemas/PublicKey"
+          }
+        }
+      },
+      "Proof": {
+        "type": "object",
+        "description": "The answer to a challenge. The challenge names the device key that must have signed it.",
+        "required": [
+          "challenge_id",
+          "signature"
+        ],
+        "properties": {
+          "challenge_id": {
+            "$ref": "#/components/schemas/ChallengeId"
+          },
+          "signature": {
+            "$ref": "#/components/schemas/Signature"
+          }
+        }
+      },
+      "PublicKey": {
+        "type": "string",
+        "description": "32 bytes in base64url without padding",
+        "maxLength": 43,
+        "minLength": 43,
+        "pattern": "^[A-Za-z0-9_-]+$"
+      },
+      "RecoverAccount": {
+        "type": "object",
+        "required": [
+          "public_key"
+        ],
+        "properties": {
+          "device_name": {
+            "type": "string"
+          },
+          "public_key": {
+            "$ref": "#/components/schemas/PublicKey"
+          }
+        }
+      },
+      "RecoveryId": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "RecoveryNotice": {
+        "type": "object",
+        "description": "One recovery of an account, as the account sees it.",
+        "required": [
+          "id",
+          "performed_at"
+        ],
+        "properties": {
+          "device_id": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DeviceId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/components/schemas/RecoveryId"
+          },
+          "performed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "performed_by": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AccountId",
+                "description": "Absent when the recovery was done with the host command."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "RedeemInvite": {
+        "type": "object",
+        "description": "Sent by a logged-in account to enter the workspaces of an invite.",
+        "required": [
+          "invite_code"
+        ],
+        "properties": {
+          "invite_code": {
+            "$ref": "#/components/schemas/InviteCode"
+          }
+        }
+      },
+      "Redemption": {
+        "type": "object",
+        "required": [
+          "workspace_ids"
+        ],
+        "properties": {
+          "workspace_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            },
+            "description": "The workspaces that the account entered with this redemption."
+          }
+        }
+      },
+      "RenameDevice": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "RequestDeviceLink": {
+        "type": "object",
+        "description": "Sent by a new device that has no account on this server yet.",
+        "required": [
+          "proof"
+        ],
+        "properties": {
+          "device_name": {
+            "type": "string"
+          },
+          "proof": {
+            "$ref": "#/components/schemas/Proof"
+          }
+        }
+      },
+      "RequestToJoin": {
+        "type": "object",
+        "description": "A join request carries a name and nothing else about the person.",
+        "required": [
+          "proof",
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "proof": {
+            "$ref": "#/components/schemas/Proof"
+          }
+        }
+      },
+      "ServerId": {
+        "type": "string",
+        "format": "uuid",
+        "description": "Identifies one server. A client stores it with the server address."
+      },
+      "ServerInfo": {
+        "type": "object",
+        "description": "What a server tells any caller before the caller has an account.",
+        "required": [
+          "server_id",
+          "name",
+          "api_versions"
+        ],
+        "properties": {
+          "api_versions": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          "logo_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The path of the logo on this server, when the server has one."
+          },
+          "name": {
+            "type": "string"
+          },
+          "server_id": {
+            "$ref": "#/components/schemas/ServerId"
+          }
+        }
+      },
+      "ServerPermission": {
+        "type": "string",
+        "description": "A permission that acts on the whole server. The number is the bit of the stored set.",
+        "enum": [
+          "Administrator",
+          "CreateWorkspace",
+          "CreateInvites",
+          "ApproveJoinRequests",
+          "BanMembers",
+          "ViewServerAuditLog"
+        ]
+      },
+      "ServerRole": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "permissions"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/ServerRoleId"
+          },
+          "name": {
+            "type": "string"
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServerPermission"
+            }
+          }
+        }
+      },
+      "ServerRoleId": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "SessionCreated": {
+        "type": "object",
+        "required": [
+          "token",
+          "expires_at",
+          "account_id",
+          "device_id",
+          "recoveries"
+        ],
+        "properties": {
+          "account_id": {
+            "$ref": "#/components/schemas/AccountId"
+          },
+          "device_id": {
+            "$ref": "#/components/schemas/DeviceId"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "recoveries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RecoveryNotice"
+            },
+            "description": "The recoveries of the account since the previous login of this device."
+          },
+          "token": {
+            "$ref": "#/components/schemas/SessionToken"
+          }
+        }
+      },
+      "SessionToken": {
+        "type": "string"
+      },
+      "SetChannelOverride": {
+        "type": "object",
+        "description": "Two empty sets remove the override.",
+        "properties": {
+          "allow": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspacePermission"
+            }
+          },
+          "deny": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspacePermission"
+            }
+          }
+        }
+      },
+      "Signature": {
+        "type": "string",
+        "description": "64 bytes in base64url without padding",
+        "maxLength": 86,
+        "minLength": 86,
+        "pattern": "^[A-Za-z0-9_-]+$"
+      },
+      "UpdateCategory": {
+        "type": "object",
+        "description": "An absent field keeps its value.",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "position": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          }
+        }
+      },
+      "UpdateChannel": {
+        "type": "object",
+        "description": "An absent field keeps its value. `category_id: null` takes the channel out of its category.",
+        "properties": {
+          "category_id": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CategoryId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "permanent_messages": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "position": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          }
+        }
+      },
+      "UpdateServerRole": {
+        "type": "object",
+        "description": "An absent field keeps its value.",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "permissions": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ServerPermission"
+            }
+          }
+        }
+      },
+      "UpdateWorkspace": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "UpdateWorkspaceRole": {
+        "type": "object",
+        "description": "An absent field keeps its value.",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "permissions": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/WorkspacePermission"
+            }
+          }
+        }
+      },
+      "Workspace": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "is_default"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/WorkspaceId"
+          },
+          "is_default": {
+            "type": "boolean",
+            "description": "True for the workspace that an invite or an approval grants when it names none."
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "WorkspaceId": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "WorkspaceMember": {
+        "type": "object",
+        "required": [
+          "account_id",
+          "name",
+          "role_ids"
+        ],
+        "properties": {
+          "account_id": {
+            "$ref": "#/components/schemas/AccountId"
+          },
+          "name": {
+            "type": "string"
+          },
+          "role_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceRoleId"
+            }
+          }
+        }
+      },
+      "WorkspacePermission": {
+        "type": "string",
+        "description": "A permission inside one workspace. The number is the bit of the stored set.",
+        "enum": [
+          "ViewChannel",
+          "ManageRoles",
+          "ManageChannel",
+          "ManageMessages",
+          "MentionEveryone",
+          "ManageGlossary",
+          "RecordCalls",
+          "ManageRecordings",
+          "ExportChannel",
+          "MoveMembers",
+          "MuteMembers",
+          "DeafenMembers",
+          "DisconnectMembers",
+          "LockRoom",
+          "RunMeetingMode",
+          "ViewAuditEntries"
+        ]
+      },
+      "WorkspaceRole": {
+        "type": "object",
+        "required": [
+          "id",
+          "workspace_id",
+          "name",
+          "permissions",
+          "is_everyone"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/WorkspaceRoleId"
+          },
+          "is_everyone": {
+            "type": "boolean",
+            "description": "True for the role that every member of the workspace holds. It is never assigned."
+          },
+          "name": {
+            "type": "string"
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspacePermission"
+            }
+          },
+          "workspace_id": {
+            "$ref": "#/components/schemas/WorkspaceId"
+          }
+        }
+      },
+      "WorkspaceRoleId": {
+        "type": "string",
+        "format": "uuid"
+      }
+    },
+    "securitySchemes": {
+      "session": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "The token of a session, from a login."
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "server",
+      "description": "What a server tells any caller"
+    },
+    {
+      "name": "auth",
+      "description": "Challenges, sessions and the first owner"
+    },
+    {
+      "name": "account",
+      "description": "The caller's own account and devices"
+    },
+    {
+      "name": "joining",
+      "description": "Invites and join requests"
+    },
+    {
+      "name": "moderation",
+      "description": "Accounts, removal, bans and recovery"
+    },
+    {
+      "name": "server roles",
+      "description": "Roles that hold server permissions"
+    },
+    {
+      "name": "workspaces",
+      "description": "Workspaces, their members and roles"
+    },
+    {
+      "name": "channels",
+      "description": "Categories, channels and channel overrides"
+    },
+    {
+      "name": "audit",
+      "description": "The audit log"
+    }
+  ]
+}
