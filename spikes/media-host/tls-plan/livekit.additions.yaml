@@ -1,0 +1,18 @@
+# DESIGN ONLY. Keys to add to livekit.yaml when the TLS entry exists. Placeholders in angle brackets.
+port: 7880
+bind_addresses:
+  - 127.0.0.1        # signalling is reached only through the entry on 443
+  - <LINK_ADDRESS_OF_THIS_HOST>   # the recorder and the chat server reach the API over the private link
+
+rtc:
+  tcp_port: 7881
+  udp_port: 7882
+  use_external_ip: false          # NODE_IP is set explicitly
+
+turn:
+  enabled: true
+  domain: <TURN_HOSTNAME>         # must match the certificate the entry presents
+  tls_port: 5349                  # plain TCP from the entry, because external_tls is true
+  external_tls: true
+  udp_port: 3478
+  # proxy_protocol: true          # with proxy_protocol: v2 on the Caddy route

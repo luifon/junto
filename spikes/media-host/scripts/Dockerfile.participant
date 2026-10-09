@@ -1,0 +1,4 @@
+FROM python:3.12-slim
+RUN pip install --no-cache-dir livekit==1.1.20 livekit-api==1.2.1
+COPY participant.py /app/participant.py
+ENTRYPOINT ["python", "/app/participant.py"]

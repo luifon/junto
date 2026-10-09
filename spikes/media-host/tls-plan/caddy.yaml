@@ -1,0 +1,60 @@
+# DESIGN ONLY. Not applied, not run. Placeholders in angle brackets.
+# Caddy built with the layer4 and YAML-adapter modules (LiveKit publishes such a build).
+# One listener on TCP 443 reads the TLS server name and selects one of three routes.
+logging:
+  logs:
+    default:
+      level: INFO
+storage:
+  module: file_system
+  root: /data
+apps:
+  tls:
+    certificates:
+      automate:
+        - <LIVEKIT_HOSTNAME>
+        - <TURN_HOSTNAME>
+        - <CHAT_HOSTNAME>
+  layer4:
+    servers:
+      main:
+        listen: [":443"]
+        routes:
+          # TURN over TLS. Caddy ends TLS and passes plain TCP to LiveKit's TURN port
+          # (turn.external_tls: true in livekit.yaml).
+          - match:
+              - tls:
+                  sni:
+                    - "<TURN_HOSTNAME>"
+            handle:
+              - handler: tls
+              - handler: proxy
+                # proxy_protocol: v2   # use together with turn.proxy_protocol: true
+                upstreams:
+                  - dial: ["127.0.0.1:5349"]
+          # LiveKit signalling (WebSocket and HTTP API).
+          - match:
+              - tls:
+                  sni:
+                    - "<LIVEKIT_HOSTNAME>"
+            handle:
+              - handler: tls
+                connection_policies:
+                  - alpn: ["http/1.1"]
+              - handler: proxy
+                upstreams:
+                  - dial: ["127.0.0.1:7880"]
+          # Chat server HTTPS. Caddy ends TLS and passes HTTP/1.1 over the private link
+          # to the chat server on the data host.
+          - match:
+              - tls:
+                  sni:
+                    - "<CHAT_HOSTNAME>"
+            handle:
+              - handler: tls
+                connection_policies:
+                  - alpn: ["http/1.1"]
+              - handler: proxy
+                # proxy_protocol: v2   # only if the chat server reads the PROXY header
+                upstreams:
+                  - dial: ["<DATA_HOST_LINK_ADDRESS>:<CHAT_SERVER_PORT>"]

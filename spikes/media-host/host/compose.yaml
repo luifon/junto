@@ -1,0 +1,40 @@
+name: junto-spike
+
+services:
+  redis:
+    image: redis:7.2.16-alpine
+    container_name: junto-spike-redis
+    restart: "no"
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set in .env}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        exec redis-server - <<CONF
+        bind 0.0.0.0
+        port 6379
+        requirepass $$REDIS_PASSWORD
+        save ""
+        appendonly no
+        maxmemory 128mb
+        maxmemory-policy noeviction
+        CONF
+    ports:
+      - "127.0.0.1:6379:6379"
+    mem_limit: 192m
+
+  livekit:
+    image: livekit/livekit-server:v1.13.9
+    container_name: junto-spike-livekit
+    restart: "no"
+    network_mode: host
+    depends_on:
+      - redis
+    command: ["--config", "/etc/livekit.yaml"]
+    environment:
+      LIVEKIT_KEYS: "${LK_API_KEY:?set in .env}: ${LK_API_SECRET:?set in .env}"
+      NODE_IP: ${NODE_IP:?set in .env}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set in .env}
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    mem_limit: 2g

@@ -1,0 +1,10 @@
+# DESIGN ONLY. Service to add to the media host's Compose file.
+services:
+  entry:
+    image: livekit/caddyl4:<PINNED_TAG_OR_DIGEST>
+    command: run --config /etc/caddy.yaml --adapter yaml
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./caddy.yaml:/etc/caddy.yaml:ro
+      - ./caddy_data:/data          # certificates and ACME account keys; include in backups
