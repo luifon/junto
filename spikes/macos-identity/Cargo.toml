@@ -1,0 +1,21 @@
+[package]
+name = "macos-identity-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "spike"
+path = "src/main.rs"
+
+[dependencies]
+security-framework = { version = "3.7", features = ["OSX_10_15"] }
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSBundle", "NSString"] }
+objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "AVCaptureDevice", "AVMediaFormat", "block2"] }
+block2 = "0.6"
+
+[profile.release]
+debug = false
