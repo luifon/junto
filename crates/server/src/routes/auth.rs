@@ -8,16 +8,19 @@ use junto_protocol::auth::{
     Challenge, ChallengeOperation, ClaimOwner, CreateChallenge, Login, SessionCreated,
 };
 use junto_protocol::error::ErrorCode;
+use junto_protocol::events::Event;
 use junto_protocol::ids::{AccountId, DeviceId};
 
 use crate::access::Access;
 use crate::audit::{self, About};
 use crate::db::StoredText;
 use crate::error::{ApiError, ApiResult};
+use crate::events;
 use crate::extract::{ApiJson, Bearer, ClientAddress};
 use crate::proof;
 use crate::secrets::{CodePurpose, constant_time_eq, hash_code};
 use crate::state::AppState;
+use crate::store::{SessionEnd, Sessions};
 use crate::transact;
 use crate::{owner, store, validate};
 
@@ -103,11 +106,16 @@ pub async fn log_out(State(app): State<AppState>, bearer: Bearer) -> ApiResult<S
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::OwnAccount)?;
+        let session = Sessions::One(access.session_id);
+        store::record_ended(connection, &app.calls, now, session, SessionEnd::LoggedOut).await?;
         sqlx::query("delete from sessions where id = $1")
             .bind(access.session_id)
             .execute(&mut *connection)
             .await?;
-        Ok(())
+        let logged_out = Event::DeviceLoggedOut {
+            device_id: access.device_id,
+        };
+        events::tell_account(connection, now, access.account_id, &logged_out).await
     })?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -163,12 +171,15 @@ pub async fn claim_owner(
             Some(account_id) => {
                 let notice = store::recover(
                     connection,
+                    &app.calls,
                     now,
-                    account_id,
-                    &proven.public_key,
-                    &device_name,
-                    DeviceOrigin::OwnerCode,
-                    None,
+                    store::Recovery {
+                        account_id,
+                        public_key: &proven.public_key,
+                        device_name: &device_name,
+                        origin: DeviceOrigin::OwnerCode,
+                        performed_by: None,
+                    },
                 )
                 .await?;
                 let device_id = notice.device_id.ok_or_else(ApiError::not_found)?;
@@ -200,6 +211,11 @@ pub async fn claim_owner(
                     .bind(account_id)
                     .execute(&mut *connection)
                     .await?;
+                let claimed = Event::OwnerChanged {
+                    account_id,
+                    previous_owner_id: None,
+                };
+                events::publish(connection, now, &claimed).await?;
                 let default_workspace = store::default_workspace(connection).await?;
                 store::add_members(connection, now, account_id, &[default_workspace]).await?;
                 audit::record(

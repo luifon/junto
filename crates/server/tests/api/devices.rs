@@ -11,7 +11,7 @@ use time::Duration;
 
 use crate::support::{DeviceKey, Member, TestServer, member};
 
-async fn request_link(server: &TestServer, key: &DeviceKey, name: &str) -> DeviceLinkCreated {
+pub async fn request_link(server: &TestServer, key: &DeviceKey, name: &str) -> DeviceLinkCreated {
     let proof = server.proof(key, ChallengeOperation::LinkDevice).await;
     server
         .open(
@@ -22,7 +22,7 @@ async fn request_link(server: &TestServer, key: &DeviceKey, name: &str) -> Devic
         .ok(StatusCode::CREATED)
 }
 
-async fn link_second_device(server: &TestServer, first: &Member) -> Member {
+pub async fn link_second_device(server: &TestServer, first: &Member) -> Member {
     let key = DeviceKey::generate();
     let link = request_link(server, &key, "laptop").await;
     server
@@ -296,13 +296,16 @@ async fn the_owner_recovers_an_account_and_the_account_sees_it() {
     assert_eq!(recovered.account_id, guest.account_id);
     assert_eq!(recovered.device_id, notice.device_id.unwrap());
     assert_eq!(recovered.recoveries, std::slice::from_ref(&notice));
-    assert!(server.login(&new_key).await.recoveries.is_empty());
+    assert_eq!(
+        server.login(&new_key).await.recoveries,
+        std::slice::from_ref(&notice)
+    );
 
     server.clock.advance(Duration::hours(1));
     let first_device = server.login(&guest.key).await;
     assert_eq!(first_device.recoveries, std::slice::from_ref(&notice));
     let again = server.login(&guest.key).await;
-    assert!(again.recoveries.is_empty());
+    assert_eq!(again.recoveries, std::slice::from_ref(&notice));
 
     let guest = member(guest.key, again);
     let listed: Vec<RecoveryNotice> = server
@@ -329,6 +332,87 @@ async fn the_owner_recovers_an_account_and_the_account_sees_it() {
         }
     );
     assert_eq!(log.entries[0].actor_id, Some(owner.account_id));
+}
+
+#[tokio::test]
+async fn a_recovery_notice_stays_for_each_device_until_that_device_acknowledges_it() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let guest = server.join(&owner, "Guest").await;
+    let new_key = DeviceKey::generate();
+    let recover = |key: &DeviceKey| {
+        let body = json!({ "public_key": key.public() });
+        let path = format!("/api/v1/accounts/{}/recovery", guest.account_id);
+        let (server, owner) = (&server, &owner);
+        async move {
+            server
+                .post(owner, &path, &body)
+                .await
+                .ok::<RecoveryNotice>(StatusCode::CREATED)
+        }
+    };
+    let first = recover(&new_key).await;
+    server.clock.advance(Duration::minutes(5));
+    let second = recover(&DeviceKey::generate()).await;
+    let both = [first.clone(), second.clone()];
+
+    let session = server.login(&guest.key).await;
+    let old_device = member(guest.key, session);
+    let session = server.login(&new_key).await;
+    let new_device = member(new_key, session);
+    async fn pending(server: &TestServer, device: &Member) -> Vec<RecoveryNotice> {
+        server
+            .get(device, "/api/v1/account/recovery-notices")
+            .await
+            .ok(StatusCode::OK)
+    }
+    assert_eq!(pending(&server, &old_device).await, both);
+    assert_eq!(pending(&server, &new_device).await, both);
+
+    let notice = |id| format!("/api/v1/account/recovery-notices/{id}");
+    server
+        .delete(&old_device, &notice(first.id))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert_eq!(
+        pending(&server, &old_device).await,
+        std::slice::from_ref(&second)
+    );
+    assert_eq!(pending(&server, &new_device).await, both);
+    assert_eq!(
+        server.login(&old_device.key).await.recoveries,
+        std::slice::from_ref(&second)
+    );
+    assert_eq!(server.login(&new_device.key).await.recoveries, both);
+
+    server
+        .delete(&old_device, &notice(first.id))
+        .await
+        .error(ErrorCode::NotFound);
+    server
+        .delete(
+            &old_device,
+            &notice(junto_protocol::ids::RecoveryId::generate()),
+        )
+        .await
+        .error(ErrorCode::NotFound);
+    server
+        .delete(&owner, &notice(second.id))
+        .await
+        .error(ErrorCode::NotFound);
+    assert_eq!(pending(&server, &new_device).await, both);
+
+    server
+        .delete(&old_device, &notice(second.id))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert!(pending(&server, &old_device).await.is_empty());
+    assert!(server.login(&old_device.key).await.recoveries.is_empty());
+    let listed: Vec<RecoveryNotice> = server
+        .get(&old_device, "/api/v1/account/recoveries")
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(listed, both);
 }
 
 #[tokio::test]

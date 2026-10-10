@@ -1,5 +1,6 @@
 use junto_authz::WorkspacePermissions;
 use junto_protocol::ids::{ChannelId, ServerId, WorkspaceId, WorkspaceRoleId};
+use junto_protocol::roles::WorkspaceRole;
 use junto_protocol::secret::OwnerCode;
 use junto_protocol::structure::ChannelKind;
 use sqlx::PgConnection;
@@ -22,6 +23,8 @@ pub const DEFAULT_VOICE_CHANNEL_NAME: &str = "voice";
 pub enum StartError {
     #[error("database migration failed: {0}")]
     Migration(#[from] sqlx::migrate::MigrateError),
+    #[error("the client of the media server could not be built: {0}")]
+    MediaServer(String),
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
     #[error(transparent)]
@@ -84,7 +87,9 @@ async fn start_in(
         Some(state) => state,
         None => {
             let server_id = ServerId::generate();
-            let workspace_id = create_workspace(&mut *connection, server_name, now).await?;
+            let workspace_id = create_workspace(&mut *connection, server_name, now)
+                .await?
+                .0;
             for (kind, name, position) in [
                 (ChannelKind::Text, DEFAULT_TEXT_CHANNEL_NAME, 0),
                 (ChannelKind::Voice, DEFAULT_VOICE_CHANNEL_NAME, 1),
@@ -128,12 +133,12 @@ async fn start_in(
     })
 }
 
-/// A workspace with its "everyone" role and no member.
+/// A workspace with its "everyone" role and no member. Returns both.
 pub async fn create_workspace(
     connection: &mut PgConnection,
     name: &str,
     now: OffsetDateTime,
-) -> Result<WorkspaceId, sqlx::Error> {
+) -> Result<(WorkspaceId, WorkspaceRole), sqlx::Error> {
     let workspace_id = WorkspaceId::generate();
     sqlx::query("insert into workspaces (id, name, created_at) values ($1, $2, $3)")
         .bind(workspace_id)
@@ -141,16 +146,23 @@ pub async fn create_workspace(
         .bind(now)
         .execute(&mut *connection)
         .await?;
+    let everyone = WorkspaceRole {
+        id: WorkspaceRoleId::generate(),
+        workspace_id,
+        name: EVERYONE_ROLE_NAME.to_owned(),
+        permissions: db::workspace_list(WorkspacePermissions::EVERYONE_DEFAULT),
+        is_everyone: true,
+    };
     sqlx::query(
         "insert into workspace_roles (id, workspace_id, name, permissions, is_everyone, created_at)
          values ($1, $2, $3, $4, true, $5)",
     )
-    .bind(WorkspaceRoleId::generate())
+    .bind(everyone.id)
     .bind(workspace_id)
-    .bind(EVERYONE_ROLE_NAME)
+    .bind(&everyone.name)
     .bind(db::workspace_bits(WorkspacePermissions::EVERYONE_DEFAULT))
     .bind(now)
     .execute(&mut *connection)
     .await?;
-    Ok(workspace_id)
+    Ok((workspace_id, everyone))
 }

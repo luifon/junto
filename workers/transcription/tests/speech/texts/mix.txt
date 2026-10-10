@@ -1,0 +1,18 @@
+en|Let us start with the status of the payment integration.
+pt|A integração com o banco ficou pronta ontem à noite, mas ainda falta testar o estorno.
+en|That is good news, and I think we can show it to the customer next week.
+pt|Eu prefiro esperar o resultado dos testes antes de marcar a demonstração.
+en|Fair enough, we will wait for the tests and then choose a date.
+pt|Outra coisa, o relatório mensal está saindo com os valores arredondados de forma errada.
+en|I saw that as well, and the totals do not match the invoices.
+pt|O problema está na conversão de moeda, que usa a taxa do dia anterior.
+en|Can you fix it before the finance team closes the month?
+pt|Consigo sim, preciso de uns dois dias para corrigir e validar com o financeiro.
+en|Great, please write a short summary when the fix is deployed.
+pt|Pode deixar, eu mando o resumo no canal do projeto assim que terminar.
+en|The last topic is the hiring plan for the support team.
+pt|Recebemos muitos currículos, mas poucos candidatos falam inglês e português.
+en|Then we should ask the recruiter to change the description of the position.
+pt|Concordo, e também vale a pena divulgar a vaga nas universidades da região.
+en|Thank you, that is everything from my side for today.
+pt|Obrigado, até a próxima reunião.

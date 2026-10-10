@@ -1,0 +1,2 @@
+150|en_US-kristin-medium|Can everyone see my screen now?
+430|pt_BR-faber-medium|Acho que a conexão caiu por alguns segundos.

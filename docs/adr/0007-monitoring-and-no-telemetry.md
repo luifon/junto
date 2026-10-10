@@ -28,3 +28,5 @@ No telemetry:
 - An administrator who wants metrics, traces or logs runs a collector and sets its address.
 - The transcription worker cannot download a model at run time. The models are present before the worker starts.
 - The diarization component must run without network access (ADR 0603).
+- ONNX Runtime, which the transcription worker uses for voice detection, contains a telemetry client that is on by default from version 1.29. The worker pins version 1.28.0, which does not contain it, and sets the variable that turns the client off (ADR 0610). With both in place, and with no network in the container, the transcription chain made no socket call for an Internet address.
+- The recorder sends requests to public STUN servers of third parties when it connects to a room. This is a default of the recorder, and it conflicts with the rule above. The deployment must turn it off. The setting that turns it off is not verified (`docs/step-0/README.md`, "Open after step 0").

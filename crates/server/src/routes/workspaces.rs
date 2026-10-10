@@ -3,12 +3,14 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use junto_authz::{Request, ServerPermission};
 use junto_protocol::audit::AuditEvent;
+use junto_protocol::events::Event;
 use junto_protocol::ids::{AccountId, WorkspaceId, WorkspaceRoleId};
 use junto_protocol::structure::{CreateWorkspace, UpdateWorkspace, Workspace, WorkspaceMember};
 
 use crate::access::Access;
 use crate::audit::{self, About};
 use crate::error::{ApiError, ApiResult};
+use crate::events;
 use crate::extract::{ApiJson, ApiPath, Bearer};
 use crate::routes::server_roles::require_active_account;
 use crate::state::AppState;
@@ -70,7 +72,17 @@ pub async fn create_workspace(
     let workspace_id = transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::Server(ServerPermission::CreateWorkspace))?;
-        let workspace_id = bootstrap::create_workspace(connection, &name, now).await?;
+        let (workspace_id, everyone) = bootstrap::create_workspace(connection, &name, now).await?;
+        let created = Event::WorkspaceCreated {
+            workspace: Workspace {
+                id: workspace_id,
+                name: name.clone(),
+                is_default: false,
+            },
+        };
+        events::publish(connection, now, &created).await?;
+        let role = Event::WorkspaceRoleCreated { role: everyone };
+        events::publish(connection, now, &role).await?;
         store::add_members(connection, now, access.account_id, &[workspace_id]).await?;
         audit::record(
             connection,
@@ -113,7 +125,7 @@ pub async fn update_workspace(
 ) -> ApiResult<Json<Workspace>> {
     let name = validate::name("name", &body.name)?;
     let now = app.now();
-    let is_default = transact!(app, |connection| {
+    transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::Server(ServerPermission::Administrator))?;
         let renamed = sqlx::query("update workspaces set name = $2 where id = $1")
@@ -136,13 +148,18 @@ pub async fn update_workspace(
             },
         )
         .await?;
-        Ok(workspace_id == default_workspace)
-    })?;
-    Ok(Json(Workspace {
-        id: workspace_id,
-        name,
-        is_default,
-    }))
+        let workspace = Workspace {
+            id: workspace_id,
+            name: name.clone(),
+            is_default: workspace_id == default_workspace,
+        };
+        let updated = Event::WorkspaceUpdated {
+            workspace: workspace.clone(),
+        };
+        events::publish(connection, now, &updated).await?;
+        Ok(workspace)
+    })
+    .map(Json)
 }
 
 /// The members of a workspace with their roles.
@@ -228,6 +245,7 @@ pub async fn add_member(
                 &AuditEvent::WorkspaceMemberAdded { account_id },
             )
             .await?;
+            store::announce_members(connection, now, account_id, &[workspace_id]).await?;
         }
         Ok(())
     })?;

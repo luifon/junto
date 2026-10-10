@@ -1,0 +1,24 @@
+Good morning everyone, and thank you for joining the weekly planning call.
+Before we start, I want to confirm that the recording is running and that all of you can hear me clearly.
+Last week we finished the migration of the billing service to the new database cluster.
+The migration took longer than we expected because several tables had missing indexes.
+We found the problem during the first rehearsal, so the production change went smoothly.
+The support team reported fewer timeouts after the change, which is a good sign.
+Our next priority is the search feature for archived messages.
+The current prototype returns results quickly, but the ranking still needs work.
+I would like someone to review the ranking function before the end of the week.
+We also need to decide how long deleted messages stay in the backup.
+The legal team asked for a written answer by Friday afternoon.
+On the client side, the new settings page is almost complete.
+The remaining work is the keyboard navigation and the screen reader labels.
+Please test the page with a keyboard only, and write down every place where the focus gets lost.
+There is one open question about notifications on mobile devices.
+Some people receive the same notification twice when they switch between wireless and cellular networks.
+We believe the cause is a retry that does not check whether the first attempt succeeded.
+I will open a ticket with the logs so that the mobile team can reproduce it.
+For the release, we plan to freeze the code on Wednesday and publish on Thursday morning.
+If the load test fails, we will delay the release instead of removing the test.
+Does anyone have a concern about that schedule?
+Then let us move to the budget review, which should take about ten minutes.
+The hosting cost went down slightly because we removed three unused servers.
+Thank you all, and please send me your notes before the end of the day.

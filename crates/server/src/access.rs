@@ -44,10 +44,12 @@ type ChannelRow = (
     bool,
     i64,
     Option<OffsetDateTime>,
+    Option<i32>,
+    bool,
 );
 
 const CHANNEL_COLUMNS: &str = "id, workspace_id, category_id, kind, name, position, \
-     permanent_messages, permanent_message_count, deleted_at";
+     permanent_messages, permanent_message_count, deleted_at, user_limit, hides_occupants";
 
 impl Access {
     /// Verifies the session of the request and loads the caller, inside the transaction that
@@ -76,7 +78,68 @@ impl Access {
             }
             _ => return Err(ApiError::unauthenticated()),
         };
+        Self::load(connection, account_id, device_id, session_id).await
+    }
 
+    /// The standing of an active account that is not the caller of the request: a person who
+    /// is invited or moved. `None` when the account does not exist or is not active.
+    pub async fn of_account(
+        connection: &mut PgConnection,
+        account_id: AccountId,
+    ) -> ApiResult<Option<Self>> {
+        let active: bool = sqlx::query_scalar(
+            "select exists (select 1 from accounts where id = $1 and status = 'active')",
+        )
+        .bind(account_id)
+        .fetch_one(&mut *connection)
+        .await?;
+        if !active {
+            return Ok(None);
+        }
+        let nobody = DeviceId::from_uuid(Uuid::nil());
+        Ok(Some(
+            Self::load(connection, account_id, nobody, Uuid::nil()).await?,
+        ))
+    }
+
+    /// The standing of the account behind a session that was valid when a call was joined.
+    /// `None` when the session no longer counts: it has ended or expired, its device is
+    /// gone, or its account is not active.
+    pub async fn of_session(
+        connection: &mut PgConnection,
+        account_id: AccountId,
+        device_id: DeviceId,
+        session_id: Uuid,
+        now: OffsetDateTime,
+    ) -> ApiResult<Option<Self>> {
+        let counts: bool = sqlx::query_scalar(
+            "select exists (
+                 select 1 from sessions s
+                 join devices d on d.id = s.device_id
+                 join accounts a on a.id = d.account_id
+                 where s.id = $1 and d.id = $2 and a.id = $3
+                   and s.expires_at > $4 and a.status = 'active')",
+        )
+        .bind(session_id)
+        .bind(device_id)
+        .bind(account_id)
+        .bind(now)
+        .fetch_one(&mut *connection)
+        .await?;
+        if !counts {
+            return Ok(None);
+        }
+        Ok(Some(
+            Self::load(connection, account_id, device_id, session_id).await?,
+        ))
+    }
+
+    async fn load(
+        connection: &mut PgConnection,
+        account_id: AccountId,
+        device_id: DeviceId,
+        session_id: Uuid,
+    ) -> ApiResult<Self> {
         let owner_id: Option<AccountId> =
             sqlx::query_scalar("select owner_account_id from server_state")
                 .fetch_one(&mut *connection)
@@ -267,21 +330,58 @@ impl Access {
         .bind(workspace_id)
         .fetch_all(&mut *connection)
         .await?;
-        let mut by_channel: HashMap<ChannelId, Vec<OverrideRow>> = HashMap::new();
-        for row in overrides {
-            by_channel.entry(row.0).or_default().push(row);
-        }
-        rows.into_iter()
-            .map(|row| {
-                let record = channel_record(row)?;
-                let overrides = by_channel
-                    .get(&record.channel.id)
-                    .map_or(&[][..], Vec::as_slice);
-                let scope = channel_scope(workspace.clone(), overrides)?;
-                Ok((record, scope))
-            })
-            .collect()
+        scoped_channels(rows, overrides, workspace)
     }
+
+    /// The channels of a workspace with the identifiers in `channel_ids`, deleted ones
+    /// included, with the caller's standing in each.
+    pub async fn named_channels(
+        &self,
+        connection: &mut PgConnection,
+        workspace_id: WorkspaceId,
+        workspace: &WorkspaceScope,
+        channel_ids: &[ChannelId],
+    ) -> ApiResult<Vec<(ChannelRecord, ChannelScope)>> {
+        let rows: Vec<ChannelRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {CHANNEL_COLUMNS} from channels where workspace_id = $1 and id = any($2)"
+        )))
+        .bind(workspace_id)
+        .bind(channel_ids)
+        .fetch_all(&mut *connection)
+        .await?;
+        let overrides: Vec<OverrideRow> = sqlx::query_as(
+            "select o.channel_id, o.role_id, r.is_everyone, o.allow, o.deny
+             from channel_overrides o
+             join workspace_roles r on r.id = o.role_id
+             where o.workspace_id = $1 and o.channel_id = any($2)",
+        )
+        .bind(workspace_id)
+        .bind(channel_ids)
+        .fetch_all(&mut *connection)
+        .await?;
+        scoped_channels(rows, overrides, workspace)
+    }
+}
+
+fn scoped_channels(
+    rows: Vec<ChannelRow>,
+    overrides: Vec<OverrideRow>,
+    workspace: &WorkspaceScope,
+) -> ApiResult<Vec<(ChannelRecord, ChannelScope)>> {
+    let mut by_channel: HashMap<ChannelId, Vec<OverrideRow>> = HashMap::new();
+    for row in overrides {
+        by_channel.entry(row.0).or_default().push(row);
+    }
+    rows.into_iter()
+        .map(|row| {
+            let record = channel_record(row)?;
+            let overrides = by_channel
+                .get(&record.channel.id)
+                .map_or(&[][..], Vec::as_slice);
+            let scope = channel_scope(workspace.clone(), overrides)?;
+            Ok((record, scope))
+        })
+        .collect()
 }
 
 type OverrideRow = (ChannelId, WorkspaceRoleId, bool, i64, i64);
@@ -330,6 +430,8 @@ fn channel_record(row: ChannelRow) -> ApiResult<ChannelRecord> {
         permanent_messages,
         permanent_message_count,
         deleted_at,
+        user_limit,
+        hides_occupants,
     ) = row;
     Ok(ChannelRecord {
         channel: Channel {
@@ -340,6 +442,8 @@ fn channel_record(row: ChannelRow) -> ApiResult<ChannelRecord> {
             name,
             position,
             permanent_messages,
+            user_limit: user_limit.map(db::count).transpose()?,
+            hides_occupants,
         },
         permanent_message_count,
         deleted_at,

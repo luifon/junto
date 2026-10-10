@@ -3,6 +3,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use junto_authz::{Request, ServerPermission, ServerPermissions};
 use junto_protocol::audit::AuditEvent;
+use junto_protocol::events::Event;
 use junto_protocol::ids::{AccountId, ServerRoleId};
 use junto_protocol::roles::{CreateServerRole, ServerRole, UpdateServerRole};
 use sqlx::PgConnection;
@@ -11,10 +12,12 @@ use crate::access::Access;
 use crate::audit::{self, About};
 use crate::db;
 use crate::error::{ApiError, ApiResult};
+use crate::events;
+use crate::events::log::Affected;
 use crate::extract::{ApiJson, ApiPath, Bearer};
 use crate::state::AppState;
-use crate::validate;
 use crate::{read, transact};
+use crate::{store, validate};
 
 async fn locked_role(
     connection: &mut PgConnection,
@@ -109,7 +112,9 @@ pub async fn create_server_role(
                 permissions: role.permissions.clone(),
             },
         )
-        .await
+        .await?;
+        let created = Event::ServerRoleCreated { role: role.clone() };
+        events::publish(connection, now, &created).await
     })?;
     Ok((StatusCode::CREATED, Json(role)))
 }
@@ -172,9 +177,30 @@ pub async fn update_server_role(
             },
         )
         .await?;
+        let updated = Event::ServerRoleUpdated { role: role.clone() };
+        events::publish(connection, now, &updated).await?;
+        if permissions != old_permissions {
+            let holders = Affected::ServerRoleHolders(role_id);
+            events::permissions_changed(connection, now, holders, None).await?;
+        }
         Ok(role)
     })
     .map(Json)
+}
+
+/// Records a change of the server roles of an account: for the people who list accounts, and
+/// for the account, whose permissions changed.
+async fn announce_roles(
+    connection: &mut PgConnection,
+    now: time::OffsetDateTime,
+    account_id: AccountId,
+) -> ApiResult<()> {
+    let changed = Event::AccountServerRolesChanged {
+        account_id,
+        server_role_ids: store::server_role_ids_of(connection, account_id).await?,
+    };
+    events::publish(connection, now, &changed).await?;
+    events::permissions_changed(connection, now, Affected::Account(account_id), None).await
 }
 
 pub async fn require_active_account(
@@ -226,6 +252,14 @@ pub async fn assign_server_role(
         .execute(&mut *connection)
         .await?;
         if inserted.rows_affected() > 0 {
+            let held = store::server_role_ids_of(connection, account_id)
+                .await?
+                .len();
+            if held > app.config.limits.most_server_roles_per_account as usize {
+                return Err(ApiError::limit_reached(
+                    "the account holds the largest number of server roles",
+                ));
+            }
             audit::record(
                 connection,
                 now,
@@ -237,6 +271,7 @@ pub async fn assign_server_role(
                 },
             )
             .await?;
+            announce_roles(connection, now, account_id).await?;
         }
         Ok(())
     })?;
@@ -281,6 +316,7 @@ pub async fn unassign_server_role(
                 },
             )
             .await?;
+            announce_roles(connection, now, account_id).await?;
         }
         Ok(())
     })?;

@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use junto_authz::{ChannelGrant, Request, WorkspacePermission, WorkspacePermissions};
 use junto_protocol::audit::AuditEvent;
+use junto_protocol::events::Event;
 use junto_protocol::ids::{AccountId, ChannelId, WorkspaceId, WorkspaceRoleId};
 use junto_protocol::roles::{CreateWorkspaceRole, UpdateWorkspaceRole, WorkspaceRole};
 use sqlx::PgConnection;
@@ -13,6 +14,8 @@ use crate::access::Access;
 use crate::audit::{self, About};
 use crate::db;
 use crate::error::{ApiError, ApiResult};
+use crate::events;
+use crate::events::log::Affected;
 use crate::extract::{ApiJson, ApiPath, Bearer};
 use crate::state::AppState;
 use crate::validate;
@@ -65,27 +68,69 @@ pub async fn list_workspace_roles(
         let access = Access::open(connection, &bearer, now).await?;
         let scope = access.workspace(connection, workspace_id).await?;
         access.require(Request::ViewWorkspace(&scope))?;
-        let rows: Vec<(WorkspaceRoleId, String, i64, bool)> = sqlx::query_as(
-            "select id, name, permissions, is_everyone from workspace_roles
-             where workspace_id = $1
-             order by is_everyone desc, id",
-        )
-        .bind(workspace_id)
-        .fetch_all(&mut *connection)
-        .await?;
-        rows.into_iter()
-            .map(|(id, name, bits, is_everyone)| {
-                Ok(WorkspaceRole {
-                    id,
-                    workspace_id,
-                    name,
-                    permissions: db::workspace_list(db::workspace_permissions(bits)?),
-                    is_everyone,
-                })
-            })
-            .collect()
+        roles_of(connection, workspace_id).await
     })
     .map(Json)
+}
+
+/// The roles of a workspace, the "everyone" role first.
+pub async fn roles_of(
+    connection: &mut PgConnection,
+    workspace_id: WorkspaceId,
+) -> ApiResult<Vec<WorkspaceRole>> {
+    let rows: Vec<(WorkspaceRoleId, String, i64, bool)> = sqlx::query_as(
+        "select id, name, permissions, is_everyone from workspace_roles
+         where workspace_id = $1
+         order by is_everyone desc, id",
+    )
+    .bind(workspace_id)
+    .fetch_all(connection)
+    .await?;
+    rows.into_iter()
+        .map(|(id, name, bits, is_everyone)| {
+            Ok(WorkspaceRole {
+                id,
+                workspace_id,
+                name,
+                permissions: db::workspace_list(db::workspace_permissions(bits)?),
+                is_everyone,
+            })
+        })
+        .collect()
+}
+
+pub async fn role_ids_of(
+    connection: &mut PgConnection,
+    workspace_id: WorkspaceId,
+    account_id: AccountId,
+) -> ApiResult<Vec<WorkspaceRoleId>> {
+    Ok(sqlx::query_scalar(
+        "select role_id from member_roles
+         where workspace_id = $1 and account_id = $2
+         order by role_id",
+    )
+    .bind(workspace_id)
+    .bind(account_id)
+    .fetch_all(connection)
+    .await?)
+}
+
+/// Records a change of the roles of a member: for the members of the workspace, and for the
+/// member, whose permissions changed.
+async fn announce_roles(
+    connection: &mut PgConnection,
+    now: time::OffsetDateTime,
+    workspace_id: WorkspaceId,
+    account_id: AccountId,
+) -> ApiResult<()> {
+    let changed = Event::WorkspaceMemberRolesChanged {
+        workspace_id,
+        account_id,
+        role_ids: role_ids_of(connection, workspace_id, account_id).await?,
+    };
+    events::publish(connection, now, &changed).await?;
+    let affected = Affected::Account(account_id);
+    events::permissions_changed(connection, now, affected, Some(workspace_id)).await
 }
 
 /// Creates a workspace role.
@@ -121,6 +166,16 @@ pub async fn create_workspace_role(
             granting: permissions,
             in_channels: &[],
         })?;
+        let existing: i64 =
+            sqlx::query_scalar("select count(*) from workspace_roles where workspace_id = $1")
+                .bind(workspace_id)
+                .fetch_one(&mut *connection)
+                .await?;
+        if existing >= i64::from(app.config.limits.most_roles_per_workspace) {
+            return Err(ApiError::limit_reached(
+                "the workspace has the largest number of roles",
+            ));
+        }
         sqlx::query(
             "insert into workspace_roles (id, workspace_id, name, permissions, created_at)
              values ($1, $2, $3, $4, $5)",
@@ -143,7 +198,9 @@ pub async fn create_workspace_role(
                 permissions: role.permissions.clone(),
             },
         )
-        .await
+        .await?;
+        let created = Event::WorkspaceRoleCreated { role: role.clone() };
+        events::publish(connection, now, &created).await
     })?;
     Ok((StatusCode::CREATED, Json(role)))
 }
@@ -214,6 +271,12 @@ pub async fn update_workspace_role(
             },
         )
         .await?;
+        let updated = Event::WorkspaceRoleUpdated { role: role.clone() };
+        events::publish(connection, now, &updated).await?;
+        if permissions != stored.permissions {
+            let holders = Affected::WorkspaceRoleHolders(workspace_id, role_id);
+            events::permissions_changed(connection, now, holders, Some(workspace_id)).await?;
+        }
         Ok(role)
     })
     .map(Json)
@@ -302,6 +365,14 @@ pub async fn assign_workspace_role(
         .execute(&mut *connection)
         .await?;
         if inserted.rows_affected() > 0 {
+            let held = role_ids_of(connection, workspace_id, account_id)
+                .await?
+                .len();
+            if held > app.config.limits.most_roles_per_member as usize {
+                return Err(ApiError::limit_reached(
+                    "the member holds the largest number of roles of the workspace",
+                ));
+            }
             audit::record(
                 connection,
                 now,
@@ -313,6 +384,7 @@ pub async fn assign_workspace_role(
                 },
             )
             .await?;
+            announce_roles(connection, now, workspace_id, account_id).await?;
         }
         Ok(())
     })?;
@@ -371,6 +443,7 @@ pub async fn unassign_workspace_role(
                 },
             )
             .await?;
+            announce_roles(connection, now, workspace_id, account_id).await?;
         }
         Ok(())
     })?;

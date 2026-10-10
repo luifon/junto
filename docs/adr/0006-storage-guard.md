@@ -21,5 +21,7 @@ Uploads, recordings and exports write large files to the disk of the server. The
 - A recording or an export does not start when the server cannot reserve space for it.
 - A user can be refused an upload, a recording or an export while free disk space is below the reserve.
 - A long recording can be stopped by the server before the call ends. Its files up to that point are complete.
+- The reservation of a recording covers its video twice. The video is recorded as segments, which were 6.0 to 6.5 % larger than the MP4 in the measured recordings, and the segments and the MP4 that is built from them exist together until the segments are deleted (ADR 0602).
+- What the recorder does when the disk is full was not tested. The server stops a recording before that point.
 - A chunked upload stays under a size limit per request that a proxy in front of the server applies.
 - The reserved amount and the limit on concurrent jobs are server settings; their values are not fixed by this record.

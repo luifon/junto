@@ -2,15 +2,13 @@ use std::fmt;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 use uuid::Uuid;
 
 macro_rules! identifier {
     ($(#[$meta:meta])* $name:ident) => {
         $(#[$meta])*
-        #[derive(
-            Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, ToSchema,
-        )]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+        #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
         #[cfg_attr(feature = "sqlx", derive(sqlx::Type), sqlx(transparent))]
         #[serde(transparent)]
         pub struct $name(Uuid);
@@ -61,6 +59,14 @@ identifier!(WorkspaceRoleId);
 identifier!(CategoryId);
 identifier!(ChannelId);
 identifier!(AuditEntryId);
+identifier!(CallId);
+identifier!(EntryRequestId);
+identifier!(CallInvitationId);
+identifier!(CallMoveId);
+identifier!(
+    /// Identifies one history of event positions. It changes when positions start again.
+    StreamEpoch
+);
 
 #[cfg(test)]
 mod tests {

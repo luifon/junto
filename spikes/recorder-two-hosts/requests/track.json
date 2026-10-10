@@ -1,0 +1,5 @@
+{
+  "room_name": "ROOM",
+  "track_id": "TRACK_ID",
+  "file": { "filepath": "/out/ROOM/tracks/IDENTITY-SOURCE-TRACK_ID-{time}" }
+}

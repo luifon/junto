@@ -1,7 +1,6 @@
 use junto_authz::{ServerPermission, WorkspacePermission};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
-use utoipa::{IntoParams, ToSchema};
 
 use crate::ids::{
     AccountId, AuditEntryId, CategoryId, ChannelId, DeviceId, InviteId, JoinRequestId,
@@ -10,7 +9,12 @@ use crate::ids::{
 use crate::structure::ChannelKind;
 
 /// What was done. New actions are added; the fields of an existing action do not change.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+///
+/// An action that this build does not know is read as [`AuditEvent::Unknown`], so that a
+/// client can show the entry with its time and its actor (ADR 0209). `Unknown` is never
+/// written.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum AuditEvent {
     OwnerClaimed {
@@ -33,6 +37,8 @@ pub enum AuditEvent {
         account_id: AccountId,
         device_id: DeviceId,
     },
+    /// The host command gave the event stream a new epoch, as after a restore.
+    EventEpochRenewed,
     InviteCreated {
         invite_id: InviteId,
         #[serde(with = "time::serde::rfc3339")]
@@ -153,6 +159,42 @@ pub enum AuditEvent {
     ChannelDeleted {
         name: String,
     },
+    /// The user limit or the setting that hides who is inside changed.
+    ChannelCallSettingsUpdated {
+        user_limit: Option<u32>,
+        hides_occupants: bool,
+    },
+    /// A moderator blocked the microphone of a person in the call of the channel.
+    CallMicrophoneBlocked {
+        account_id: AccountId,
+    },
+    CallMicrophoneUnblocked {
+        account_id: AccountId,
+    },
+    /// A moderator blocked the sound of a person in the call of the channel.
+    CallSoundBlocked {
+        account_id: AccountId,
+    },
+    CallSoundUnblocked {
+        account_id: AccountId,
+    },
+    /// A moderator removed a person from the call of the channel.
+    CallMemberDisconnected {
+        account_id: AccountId,
+    },
+    /// A moderator moved a person out of the call of the channel into another voice
+    /// channel. The entry does not name that channel.
+    CallMemberMovedOut {
+        account_id: AccountId,
+    },
+    /// A moderator moved a person into the call of the channel from another voice channel.
+    /// The entry does not name that channel.
+    CallMemberMovedIn {
+        account_id: AccountId,
+    },
+    /// An action that this build does not know. It is read and never written.
+    #[serde(other, skip_serializing)]
+    Unknown,
 }
 
 impl AuditEvent {
@@ -162,6 +204,7 @@ impl AuditEvent {
             Self::OwnerAssigned { .. } => "owner_assigned",
             Self::OwnerCodeIssued { .. } => "owner_code_issued",
             Self::OwnerAccessRestored { .. } => "owner_access_restored",
+            Self::EventEpochRenewed => "event_epoch_renewed",
             Self::InviteRedeemed { .. } => "invite_redeemed",
             Self::WorkspaceMemberAdded { .. } => "workspace_member_added",
             Self::InviteCreated { .. } => "invite_created",
@@ -189,12 +232,22 @@ impl AuditEvent {
             Self::ChannelUpdated { .. } => "channel_updated",
             Self::ChannelOverrideSet { .. } => "channel_override_set",
             Self::ChannelDeleted { .. } => "channel_deleted",
+            Self::ChannelCallSettingsUpdated { .. } => "channel_call_settings_updated",
+            Self::CallMicrophoneBlocked { .. } => "call_microphone_blocked",
+            Self::CallMicrophoneUnblocked { .. } => "call_microphone_unblocked",
+            Self::CallSoundBlocked { .. } => "call_sound_blocked",
+            Self::CallSoundUnblocked { .. } => "call_sound_unblocked",
+            Self::CallMemberDisconnected { .. } => "call_member_disconnected",
+            Self::CallMemberMovedOut { .. } => "call_member_moved_out",
+            Self::CallMemberMovedIn { .. } => "call_member_moved_in",
+            Self::Unknown => "unknown",
         }
     }
 }
 
 /// One line of the audit log: who did it, what was done and when.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AuditEntry {
     pub id: AuditEntryId,
     #[serde(with = "time::serde::rfc3339")]
@@ -206,7 +259,8 @@ pub struct AuditEntry {
     pub event: AuditEvent,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AuditPage {
     /// Newest first.
     pub entries: Vec<AuditEntry>,
@@ -214,8 +268,9 @@ pub struct AuditPage {
     pub next_before: Option<AuditEntryId>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, IntoParams)]
-#[into_params(parameter_in = Query)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+#[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
 pub struct AuditQuery {
     /// Return entries older than this one.
     #[serde(default)]
@@ -246,11 +301,38 @@ mod tests {
                 allow: vec![WorkspacePermission::ViewChannel],
                 deny: vec![],
             },
+            AuditEvent::ChannelCallSettingsUpdated {
+                user_limit: Some(4),
+                hides_occupants: true,
+            },
+            AuditEvent::CallMicrophoneBlocked { account_id },
+            AuditEvent::CallMicrophoneUnblocked { account_id },
+            AuditEvent::CallSoundBlocked { account_id },
+            AuditEvent::CallSoundUnblocked { account_id },
+            AuditEvent::CallMemberDisconnected { account_id },
+            AuditEvent::CallMemberMovedOut { account_id },
+            AuditEvent::CallMemberMovedIn { account_id },
         ];
         for event in events {
             let json = serde_json::to_value(&event).unwrap();
             assert_eq!(json["action"], event.action());
             assert_eq!(serde_json::from_value::<AuditEvent>(json).unwrap(), event);
         }
+    }
+
+    #[test]
+    fn an_action_of_a_newer_server_is_read_as_unknown_and_never_written() {
+        let entry: AuditEntry = serde_json::from_str(
+            r#"{"id":"0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e5f",
+                "occurred_at":"2030-01-01T00:00:00Z",
+                "actor_id":null,"workspace_id":null,"channel_id":null,
+                "event":{"action":"glossary_updated","terms":3}}"#,
+        )
+        .unwrap();
+        assert_eq!(entry.event, AuditEvent::Unknown);
+        assert_eq!(entry.event.action(), "unknown");
+        assert!(serde_json::to_string(&entry).is_err());
+        assert!(serde_json::to_string(&AuditEvent::Unknown).is_err());
+        assert!(serde_json::from_str::<AuditEvent>(r#"{"name":"general"}"#).is_err());
     }
 }

@@ -1,0 +1,74 @@
+[project]
+name = "junto-transcribe"
+version = "0.1.0"
+description = "Transcription worker of Junto: voice detection, Whisper and speaker separation for one recording"
+readme = "README.md"
+requires-python = "==3.12.*"
+license = "Apache-2.0"
+dependencies = [
+    "faster-whisper==1.2.1",
+    "ctranslate2==4.8.2",
+    "onnxruntime==1.28.0",
+    "sherpa-onnx==1.13.8",
+    "sherpa-onnx-core==1.13.8",
+    "numpy>=2.2,<3",
+    "jsonschema>=4.25,<5",
+]
+
+[project.optional-dependencies]
+gpu = [
+    "nvidia-cublas-cu12==12.9.2.10; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "nvidia-cudnn-cu12==9.27.0.42; sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+[project.scripts]
+junto-transcribe = "junto_transcribe.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4,<10",
+    "ruff>=0.14",
+    "mypy>=1.18",
+    "types-jsonschema>=4.25",
+    "jiwer==4.0.0",
+    "scipy>=1.16",
+    "pyyaml>=6",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/junto_transcribe"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "C4", "PTH", "RET", "PL"]
+ignore = ["SIM905", "PLR0911", "PLR0913", "PLR2004", "PLR0912", "PLR0915", "PLR0917", "PLC0415"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+files = ["src", "tests"]
+mypy_path = "src"
+
+[[tool.mypy.overrides]]
+module = ["faster_whisper.*", "ctranslate2.*", "sherpa_onnx.*", "scipy.*", "jiwer.*", "piper.*", "soundfile.*", "yaml.*", "onnxruntime.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "models: needs the model files and the generated speech (JUNTO_TRANSCRIBE_MODELS, JUNTO_TRANSCRIBE_TEST_AUDIO)",
+    "gpu: needs a CUDA device",
+    "offline: needs a machine or container without network access",
+]
+
+[tool.uv]
+build-constraint-dependencies = ["hatchling==1.32.4", "setuptools==84.0.0", "cython==3.3.0"]

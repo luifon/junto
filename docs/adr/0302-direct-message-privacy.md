@@ -13,6 +13,7 @@ A direct message is a conversation between two people and belongs to no workspac
 Scope:
 
 - A direct message is one-to-one.
+- Two accounts exchange direct messages only while the rule of ADR 0307 holds for them.
 - A direct message exists inside one server and is shared across that server's workspaces.
 - Direct messages are not deleted automatically by default. One server-level retention setting applies to them.
 - Each participant can export their own direct messages.

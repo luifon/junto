@@ -47,6 +47,11 @@ impl ApiError {
         Self::new(ErrorCode::Conflict, message)
     }
 
+    /// An object holds the largest number of parts that the server allows (ADR 0306).
+    pub fn limit_reached(message: impl Into<Cow<'static, str>>) -> Self {
+        Self::new(ErrorCode::LimitReached, message)
+    }
+
     pub fn unauthenticated() -> Self {
         Self::new(
             ErrorCode::Unauthenticated,
@@ -61,6 +66,22 @@ impl ApiError {
             "the request took too long and changed nothing; send the same request again",
         )
         .retry_after(Duration::seconds(1))
+    }
+
+    /// The error of an insert that can meet the row of a concurrent request. The server reads
+    /// before it inserts, so a duplicate key means that another transaction inserted the row
+    /// in between: the transaction lost against it and runs again (ADR 0009).
+    pub fn concurrent(error: sqlx::Error) -> Self {
+        let duplicate = error
+            .as_database_error()
+            .is_some_and(|database| database.is_unique_violation());
+        if duplicate {
+            let mut busy = <Self as TransactionError>::exhausted();
+            busy.retryable = true;
+            busy
+        } else {
+            error.into()
+        }
     }
 
     pub fn retry_after(mut self, wait: Duration) -> Self {

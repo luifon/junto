@@ -1,8 +1,11 @@
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use junto_authz::{ChannelContent, Override, Request, WorkspacePermission, WorkspacePermissions};
+use junto_authz::{
+    ChannelContent, Override, Request, WorkspacePermission, WorkspacePermissions, WorkspaceScope,
+};
 use junto_protocol::audit::AuditEvent;
+use junto_protocol::events::Event;
 use junto_protocol::ids::{CategoryId, ChannelId, WorkspaceId, WorkspaceRoleId};
 use junto_protocol::structure::{
     Category, Channel, ChannelList, ChannelOverride, CreateCategory, CreateChannel,
@@ -14,6 +17,8 @@ use crate::access::{Access, stored_override};
 use crate::audit::{self, About};
 use crate::db::{self, StoredText};
 use crate::error::{ApiError, ApiResult};
+use crate::events;
+use crate::events::log::Affected;
 use crate::extract::{ApiJson, ApiPath, Bearer};
 use crate::state::AppState;
 use crate::validate;
@@ -105,6 +110,10 @@ pub async fn create_category(
             },
         )
         .await?;
+        let created = Event::CategoryCreated {
+            category: category.clone(),
+        };
+        events::publish(connection, now, &created).await?;
         Ok(category)
     })?;
     Ok((StatusCode::CREATED, Json(category)))
@@ -165,12 +174,17 @@ pub async fn update_category(
             },
         )
         .await?;
-        Ok(Category {
+        let category = Category {
             id: category_id,
             workspace_id,
             name,
             position,
-        })
+        };
+        let updated = Event::CategoryUpdated {
+            category: category.clone(),
+        };
+        events::publish(connection, now, &updated).await?;
+        Ok(category)
     })
     .map(Json)
 }
@@ -194,42 +208,51 @@ pub async fn list_channels(
         let access = Access::open(connection, &bearer, now).await?;
         let scope = access.workspace(connection, workspace_id).await?;
         access.require(Request::ViewWorkspace(&scope))?;
-
-        let categories: Vec<(CategoryId, String, i32)> = sqlx::query_as(
-            "select id, name, position from categories
-             where workspace_id = $1
-             order by position, id",
-        )
-        .bind(workspace_id)
-        .fetch_all(&mut *connection)
-        .await?;
-        let channels = access
-            .workspace_channels(connection, workspace_id, &scope)
-            .await?
-            .into_iter()
-            .filter(|(record, channel_scope)| {
-                record.deleted_at.is_none()
-                    && access.allows(Request::Channel {
-                        scope: channel_scope,
-                        permission: WorkspacePermission::ViewChannel,
-                    })
-            })
-            .map(|(record, _)| record.channel)
-            .collect();
-        Ok(ChannelList {
-            categories: categories
-                .into_iter()
-                .map(|(id, name, position)| Category {
-                    id,
-                    workspace_id,
-                    name,
-                    position,
-                })
-                .collect(),
-            channels,
-        })
+        visible_structure(connection, &access, workspace_id, &scope).await
     })
     .map(Json)
+}
+
+/// The categories of a workspace and the channels of it that the caller can see.
+pub async fn visible_structure(
+    connection: &mut PgConnection,
+    access: &Access,
+    workspace_id: WorkspaceId,
+    scope: &WorkspaceScope,
+) -> ApiResult<ChannelList> {
+    let categories: Vec<(CategoryId, String, i32)> = sqlx::query_as(
+        "select id, name, position from categories
+         where workspace_id = $1
+         order by position, id",
+    )
+    .bind(workspace_id)
+    .fetch_all(&mut *connection)
+    .await?;
+    let channels = access
+        .workspace_channels(connection, workspace_id, scope)
+        .await?
+        .into_iter()
+        .filter(|(record, channel_scope)| {
+            record.deleted_at.is_none()
+                && access.allows(Request::Channel {
+                    scope: channel_scope,
+                    permission: WorkspacePermission::ViewChannel,
+                })
+        })
+        .map(|(record, _)| record.channel)
+        .collect();
+    Ok(ChannelList {
+        categories: categories
+            .into_iter()
+            .map(|(id, name, position)| Category {
+                id,
+                workspace_id,
+                name,
+                position,
+            })
+            .collect(),
+        channels,
+    })
 }
 
 /// Creates a text channel or a voice channel in a workspace.
@@ -282,6 +305,8 @@ pub async fn create_channel(
             name: name.clone(),
             position,
             permanent_messages: false,
+            user_limit: None,
+            hides_occupants: false,
         };
         sqlx::query(
             "insert into channels
@@ -308,6 +333,10 @@ pub async fn create_channel(
             },
         )
         .await?;
+        let created = Event::ChannelCreated {
+            channel: channel.clone(),
+        };
+        events::publish(connection, now, &created).await?;
         Ok(channel)
     })?;
     Ok((StatusCode::CREATED, Json(channel)))
@@ -387,6 +416,10 @@ pub async fn update_channel(
             },
         )
         .await?;
+        let updated = Event::ChannelUpdated {
+            channel: channel.clone(),
+        };
+        events::publish(connection, now, &updated).await?;
         Ok(channel)
     })
     .map(Json)
@@ -437,6 +470,9 @@ pub async fn delete_channel(
         if deleted.rows_affected() == 0 {
             return Err(ApiError::conflict("the channel changed during the request"));
         }
+        let workspace_id = record.channel.workspace_id;
+        crate::calls::store::mark_channel(connection, &app.calls, channel_id).await?;
+        events::channel_deleted(connection, now, workspace_id, channel_id).await?;
         sqlx::query("delete from channel_overrides where channel_id = $1")
             .bind(channel_id)
             .execute(&mut *connection)
@@ -593,7 +629,21 @@ pub async fn set_channel_override(
                 deny: result.deny.clone(),
             },
         )
-        .await
+        .await?;
+        let set = Event::ChannelOverrideSet {
+            workspace_id,
+            channel_id,
+            role_id,
+            allow: result.allow.clone(),
+            deny: result.deny.clone(),
+        };
+        events::publish(connection, now, &set).await?;
+        if previous != next {
+            crate::calls::store::mark_channel(connection, &app.calls, channel_id).await?;
+            let holders = Affected::WorkspaceRoleHolders(workspace_id, role_id);
+            events::permissions_changed(connection, now, holders, Some(workspace_id)).await?;
+        }
+        Ok(())
     })?;
     Ok(Json(result))
 }

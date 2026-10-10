@@ -1,0 +1,2 @@
+150|en|Can everyone see my screen now?
+430|pt|Acho que a conexão caiu por alguns segundos.

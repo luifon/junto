@@ -1,0 +1,14 @@
+{
+  "room_name": "ROOM",
+  "layout": "main:MAIN_SHARE_ID",
+  "custom_base_url": "http://layout/",
+  "preset": "H264_1080P_30",
+  "segment_outputs": [
+    {
+      "filename_prefix": "/out/ROOM/hls/composite",
+      "playlist_name": "composite.m3u8",
+      "live_playlist_name": "composite-live.m3u8",
+      "segment_duration": 2
+    }
+  ]
+}

@@ -216,6 +216,28 @@ pub enum Target {
     Other,
 }
 
+/// How the actor stands to an account whose profile it asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Acquaintance {
+    Own,
+    /// The two accounts are members of at least one common workspace.
+    SharedWorkspace,
+    Unrelated,
+}
+
+/// How the actor stands to the other account of a direct message or a direct call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Contact {
+    /// The two accounts are members of at least one common workspace.
+    SharedWorkspace,
+    /// The two accounts have no common workspace, and the other account is the server owner
+    /// or holds the administrator permission.
+    Administrator,
+    /// The two accounts have no common workspace, and the other account does not administer
+    /// the server.
+    Unrelated,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Admission {
     CreateInvite,
@@ -258,6 +280,8 @@ pub enum AuditScope<'a> {
 pub enum Request<'a> {
     /// An action on the actor's own account and devices.
     OwnAccount,
+    /// Reading the profile of an account: its name and its avatar.
+    ViewAccount(Acquaintance),
     Server(ServerPermission),
     /// A change of server roles that can add `granting` to an account.
     ManageServerRoles {
@@ -299,6 +323,8 @@ pub enum Request<'a> {
         content: ChannelContent,
     },
     DirectMessage(Participation),
+    /// Exchanging direct messages or a direct call with another account.
+    Contact(Contact),
     EditMessage {
         place: MessagePlace<'a>,
         permanence: Permanence,

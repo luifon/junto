@@ -15,6 +15,8 @@ The server builds its SQL statements at run time (ADR 0008) and relies on constr
 - Each test creates its own database and applies the migrations to it, so tests run in parallel and do not share state.
 - A test without `JUNTO_TEST_DATABASE_URL` fails with a message that names the script. It is not skipped.
 - A test replaces the clock (ADR 0008) and moves the time forward to test expiry.
+- A test that shortens a time limit applies it only to the step that it examines, and prepares under the normal limits. For the time limit of a request and the time limits of the database, the test prepares on one server process and sends the examined step to a second process on the same database that has the short limit. For the time limits of the event stream, the test replaces the limits of the running server after its preparation. Only tests replace limits at run time.
+- A test waits for a condition and not for a fixed time when it needs something to have happened. For the admission check, the server states whether a check runs or a room waits for one.
 - The permission function has table tests for each rule and property tests for the rules that must hold for every combination of roles and overrides.
 - A test compares the committed OpenAPI document with the generated one (ADR 0205).
 - A test checks that the database itself refuses states that break the invariants.
@@ -23,10 +25,13 @@ The server builds its SQL statements at run time (ADR 0008) and relies on constr
 - A test compares the complete responses for an absent object and for an object that the caller may not see.
 - The host commands (ADR 0114) are tested by running the server binary.
 - On a machine where other work compiles, heavy commands run through `tools/serial.sh`.
+- The tests of calls have two tiers. The first tier is part of the integration tests: the server gets a media server in memory that behaves as step 0 measured LiveKit (ADR 0508), the tasks of calls do not run by themselves, and a test runs each admission check itself, so that the order of things is fixed.
+- The second tier runs against a real LiveKit server. The script `tools/with-test-livekit.sh` starts one in Docker in development mode with the name `junto-dev-livekit`, runs a command, and removes the container. Real participants are processes of `spikes/test-participant` (ADR 0902). These tests are marked as ignored, so the plain run does not need LiveKit; they wait for the media server with bounded polling.
 
 ## Consequences
 
 - The tests need Docker.
 - A rule that depends on a lock or a constraint is tested with the lock or the constraint.
 - A test of a time limit takes no real time.
+- A machine under load makes a test slower and does not change its result: no preparation step runs under a shortened time limit.
 - CI on Windows and macOS (ADR 0902) needs a PostgreSQL that those runners can start; the script covers Linux and macOS.

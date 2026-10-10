@@ -1,0 +1,51 @@
+# The two images of the transcription worker. Neither service has a network.
+# The model directory and the job directory are the only links to the host.
+#
+#   docker compose -f docker/compose.yaml build worker-cpu
+#   docker compose -f docker/compose.yaml run --rm worker-cpu run /jobs/job.json --out /jobs/transcript.json
+
+name: junto-transcription-worker
+
+x-worker: &worker
+  network_mode: none
+  read_only: true
+  # Limits of one worker. The memory covers the measured need of 3.2 GB on a CPU.
+  mem_limit: ${JUNTO_WORKER_MEMORY:-6g}
+  memswap_limit: ${JUNTO_WORKER_MEMORY:-6g}
+  cpus: ${JUNTO_WORKER_CPUS:-4}
+  pids_limit: 512
+  user: "10001:10001"
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  tmpfs: ["/tmp"]
+  volumes:
+    - ${JUNTO_MODELS_DIR:?set JUNTO_MODELS_DIR}:/models:ro
+    - ${JUNTO_JOBS_DIR:?set JUNTO_JOBS_DIR}:/jobs
+
+services:
+  worker-cpu:
+    <<: *worker
+    image: junto-transcription-worker:cpu
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: worker
+      args: {VARIANT: cpu}
+
+  worker-gpu:
+    <<: *worker
+    image: junto-transcription-worker:gpu
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: worker
+      args: {VARIANT: gpu}
+    # Needed where the GPU device nodes belong to a group: stat -c %g /dev/nvidiactl
+    group_add: ["${JUNTO_GPU_GROUP:-10001}"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

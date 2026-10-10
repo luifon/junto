@@ -1,0 +1,2 @@
+150|en_US-kristin-medium|Can everyone see my screen now?
+430|en_US-norman-medium|I think the connection dropped for a few seconds.

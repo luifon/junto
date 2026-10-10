@@ -24,12 +24,17 @@ name = "openapi"
 path = "tests/openapi.rs"
 
 [dependencies]
-junto-authz = { workspace = true }
-junto-protocol = { workspace = true, features = ["sqlx"] }
+junto-authz = { workspace = true, features = ["serde"] }
+junto-protocol = { workspace = true, features = ["sqlx", "openapi"] }
 axum = { workspace = true }
 base64 = { workspace = true }
 ed25519-dalek = { workspace = true }
+futures-util = { workspace = true }
 getrandom = { workspace = true }
+hyper = { workspace = true }
+hmac = { workspace = true }
+hyper-util = { workspace = true }
+reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
@@ -38,6 +43,7 @@ subtle = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
 tower-http = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -46,7 +52,7 @@ utoipa-axum = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
-reqwest = { workspace = true }
+tokio-tungstenite = { workspace = true, features = ["connect"] }
 
 [lints]
 workspace = true

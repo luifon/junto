@@ -4,7 +4,7 @@ use std::time::Duration;
 use sqlx::migrate::{MigrateError, Migrator};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{Connection, PgPool, Postgres, Transaction};
-use tokio::sync::Semaphore;
+use tokio::sync::{Notify, Semaphore};
 
 const BEGIN_READ_WRITE: &str = "begin isolation level serializable read write";
 const BEGIN_READ_ONLY: &str = "begin isolation level serializable read only";
@@ -50,9 +50,20 @@ pub struct Timeouts {
 /// The only way the server reads and writes PostgreSQL. Every transaction is serializable
 /// and is run again, a bounded number of times, when it loses against a concurrent one
 /// (ADR 0009).
+/// The connections that the event stream reads with, apart from the connections of the
+/// requests (ADR 0011).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamPool {
+    pub connections: u32,
+    /// PostgreSQL ends a statement and a wait for a lock of the event stream after this time.
+    pub time_limit: time::Duration,
+}
+
 pub struct Database {
     pool: PgPool,
+    stream_pool: PgPool,
     commit_gate: CommitGate,
+    written: Notify,
 }
 
 impl Database {
@@ -60,25 +71,42 @@ impl Database {
         options: PgConnectOptions,
         connections: u32,
         timeouts: &Timeouts,
+        stream: &StreamPool,
     ) -> Result<Self, sqlx::Error> {
         let milliseconds = |limit: time::Duration| limit.whole_milliseconds().max(1).to_string();
-        let options = options.options([
-            (DEFAULT_ISOLATION, "serializable".to_owned()),
-            ("statement_timeout", milliseconds(timeouts.statement)),
-            ("lock_timeout", milliseconds(timeouts.lock)),
-            (
-                "idle_in_transaction_session_timeout",
-                milliseconds(timeouts.idle_in_transaction),
-            ),
-        ]);
+        let limited = |statement, lock, idle_in_transaction| {
+            options.clone().options([
+                (DEFAULT_ISOLATION, "serializable".to_owned()),
+                ("statement_timeout", milliseconds(statement)),
+                ("lock_timeout", milliseconds(lock)),
+                (
+                    "idle_in_transaction_session_timeout",
+                    milliseconds(idle_in_transaction),
+                ),
+            ])
+        };
         let pool = PgPoolOptions::new()
             .max_connections(connections)
             .acquire_timeout(Duration::from_secs(10))
-            .connect_with(options)
+            .connect_with(limited(
+                timeouts.statement,
+                timeouts.lock,
+                timeouts.idle_in_transaction,
+            ))
             .await?;
+        let stream_pool = PgPoolOptions::new()
+            .max_connections(stream.connections.max(1))
+            .acquire_timeout(stream.time_limit.unsigned_abs())
+            .connect_lazy_with(limited(
+                stream.time_limit,
+                stream.time_limit,
+                stream.time_limit,
+            ));
         Ok(Self {
             pool,
+            stream_pool,
             commit_gate: CommitGate::default(),
+            written: Notify::new(),
         })
     }
 
@@ -107,7 +135,24 @@ impl Database {
     }
 
     pub async fn close(&self) {
+        self.stream_pool.close().await;
         self.pool.close().await;
+    }
+
+    /// Starts one attempt of a transaction of the event stream, on a connection of its own
+    /// pool. A request never waits for one of these connections, and the event stream never
+    /// takes a connection of the requests.
+    pub async fn begin_stream(
+        &self,
+        mode: Mode,
+        attempt: &Attempt,
+    ) -> Result<Transaction<'static, Postgres>, sqlx::Error> {
+        self.begin_on(&self.stream_pool, mode, attempt).await
+    }
+
+    /// Resolves after a transaction that can write has committed in this process.
+    pub async fn written(&self) {
+        self.written.notified().await;
     }
 
     /// Starts one attempt of a transaction. Used through [`transact!`] and [`read!`].
@@ -116,21 +161,60 @@ impl Database {
         mode: Mode,
         attempt: &Attempt,
     ) -> Result<Transaction<'static, Postgres>, sqlx::Error> {
+        self.begin_on(&self.pool, mode, attempt).await
+    }
+
+    async fn begin_on(
+        &self,
+        pool: &PgPool,
+        mode: Mode,
+        attempt: &Attempt,
+    ) -> Result<Transaction<'static, Postgres>, sqlx::Error> {
         if attempt.0 > 0 {
             tokio::time::sleep(backoff(attempt.0)).await;
         }
-        self.pool
-            .begin_with(match mode {
-                Mode::ReadWrite => BEGIN_READ_WRITE,
-                Mode::ReadOnly => BEGIN_READ_ONLY,
-            })
-            .await
+        pool.begin_with(match mode {
+            Mode::ReadWrite => BEGIN_READ_WRITE,
+            Mode::ReadOnly => BEGIN_READ_ONLY,
+        })
+        .await
     }
 
     /// Ends one attempt: commits after success, and asks for another attempt when the
     /// transaction lost against a concurrent one.
     pub async fn finish<T, E>(
         &self,
+        mode: Mode,
+        transaction: Transaction<'static, Postgres>,
+        outcome: Result<T, E>,
+        attempt: &mut Attempt,
+    ) -> Step<Result<T, E>>
+    where
+        E: TransactionError,
+    {
+        self.end(mode, Some(&self.commit_gate), transaction, outcome, attempt)
+            .await
+    }
+
+    /// Like [`Database::finish`], for the work of the event stream that no request waits
+    /// for: the commit gate of the tests does not count or hold the transaction.
+    pub async fn finish_unattended<T, E>(
+        &self,
+        mode: Mode,
+        transaction: Transaction<'static, Postgres>,
+        outcome: Result<T, E>,
+        attempt: &mut Attempt,
+    ) -> Step<Result<T, E>>
+    where
+        E: TransactionError,
+    {
+        self.end(mode, None, transaction, outcome, attempt).await
+    }
+
+    async fn end<T, E>(
+        &self,
+        mode: Mode,
+        gate: Option<&CommitGate>,
         transaction: Transaction<'static, Postgres>,
         outcome: Result<T, E>,
         attempt: &mut Attempt,
@@ -139,11 +223,18 @@ impl Database {
         E: TransactionError,
     {
         match outcome {
-            Ok(_) if self.commit_gate.loses() => rollback(transaction).await,
+            Ok(_) if gate.is_some_and(CommitGate::loses) => rollback(transaction).await,
             Ok(value) => {
-                self.commit_gate.pass().await;
+                if let Some(gate) = gate {
+                    gate.pass().await;
+                }
                 match transaction.commit().await {
-                    Ok(()) => return Step::Done(Ok(value)),
+                    Ok(()) => {
+                        if matches!(mode, Mode::ReadWrite) {
+                            self.written.notify_one();
+                        }
+                        return Step::Done(Ok(value));
+                    }
                     Err(error) if is_conflict(&error) => {}
                     Err(error) => return Step::Done(Err(error.into())),
                 }
@@ -224,7 +315,10 @@ macro_rules! in_transaction {
                 let $connection: &mut ::sqlx::PgConnection = &mut transaction;
                 async { $body }.await
             };
-            match $database.finish(transaction, outcome, &mut attempt).await {
+            match $database
+                .finish($mode, transaction, outcome, &mut attempt)
+                .await
+            {
                 $crate::database::Step::Done(result) => break result,
                 $crate::database::Step::Again => continue,
             }

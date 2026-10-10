@@ -1,0 +1,24 @@
+Bom dia, pessoal, e obrigado por participarem da reunião semanal de planejamento.
+Antes de começar, quero confirmar que a gravação está funcionando e que todos conseguem me ouvir bem.
+Na semana passada terminamos a migração do serviço de cobrança para o novo banco de dados.
+A migração demorou mais do que esperávamos porque várias tabelas estavam sem índices.
+Encontramos o problema no primeiro ensaio, então a mudança em produção correu sem surpresas.
+A equipe de suporte relatou menos erros de tempo esgotado depois da mudança, o que é um bom sinal.
+Nossa próxima prioridade é a busca nas mensagens arquivadas.
+O protótipo atual devolve os resultados rapidamente, mas a ordenação ainda precisa de ajustes.
+Eu gostaria que alguém revisasse a função de ordenação até o fim da semana.
+Também precisamos decidir por quanto tempo as mensagens apagadas ficam na cópia de segurança.
+O departamento jurídico pediu uma resposta por escrito até sexta-feira à tarde.
+No aplicativo, a nova página de configurações está quase pronta.
+Falta apenas a navegação pelo teclado e os rótulos para o leitor de tela.
+Por favor, testem a página usando somente o teclado e anotem todos os pontos em que o foco se perde.
+Existe uma dúvida em aberto sobre as notificações nos celulares.
+Algumas pessoas recebem a mesma notificação duas vezes quando trocam da rede sem fio para a rede móvel.
+Acreditamos que a causa é uma nova tentativa que não verifica se a primeira deu certo.
+Vou abrir um chamado com os registros para que a equipe de celulares consiga reproduzir o erro.
+Para o lançamento, pretendemos congelar o código na quarta-feira e publicar na quinta de manhã.
+Se o teste de carga falhar, vamos adiar o lançamento em vez de remover o teste.
+Alguém tem alguma preocupação com esse cronograma?
+Então vamos passar para a revisão do orçamento, que deve levar uns dez minutos.
+O custo de hospedagem caiu um pouco porque desligamos três servidores que não eram usados.
+Obrigado a todos, e por favor me enviem suas anotações até o fim do dia.

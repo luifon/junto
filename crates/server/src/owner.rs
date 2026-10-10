@@ -2,7 +2,8 @@
 //! direct access to the database (ADR 0114).
 
 use junto_protocol::audit::AuditEvent;
-use junto_protocol::ids::AccountId;
+use junto_protocol::events::Event;
+use junto_protocol::ids::{AccountId, StreamEpoch};
 use junto_protocol::secret::OwnerCode;
 use sqlx::PgConnection;
 use time::{Duration, OffsetDateTime};
@@ -10,6 +11,8 @@ use time::{Duration, OffsetDateTime};
 use crate::audit::{self, About};
 use crate::database::{self, Database, TransactionError};
 use crate::error::ApiResult;
+use crate::events;
+use crate::events::log::Affected;
 use crate::secrets::{
     CodePurpose, OWNER_CODE_SYMBOLS, RandomnessUnavailable, hash_code, random_code,
 };
@@ -73,7 +76,7 @@ pub enum HostCommandError {
     UnknownAccount,
     #[error("the account is banned or removed; only an active account can own the server")]
     AccountNotActive,
-    #[error("the entry for the audit log could not be written")]
+    #[error("the entry for the audit log or the event could not be written")]
     Audit,
     #[error("the command lost against a concurrent change")]
     Conflict,
@@ -151,7 +154,58 @@ pub async fn assign(
             },
         )
         .await
-        .map_err(audit_failure)
+        .map_err(audit_failure)?;
+        announce_owner(connection, now, account_id, previous_owner_id)
+            .await
+            .map_err(audit_failure)
+    })
+}
+
+/// Records the change of the owner: for the people who list accounts, and for the two
+/// accounts, whose permissions changed.
+async fn announce_owner(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    account_id: AccountId,
+    previous_owner_id: Option<AccountId>,
+) -> ApiResult<()> {
+    if previous_owner_id == Some(account_id) {
+        return Ok(());
+    }
+    let changed = Event::OwnerChanged {
+        account_id,
+        previous_owner_id,
+    };
+    events::publish(connection, now, &changed).await?;
+    for affected in previous_owner_id.into_iter().chain([account_id]) {
+        events::permissions_changed(connection, now, Affected::Account(affected), None).await?;
+    }
+    Ok(())
+}
+
+/// Gives the event stream a new epoch, so that every cursor that a client holds is unknown
+/// and every client loads a snapshot (ADR 0010). It is run after a restore of a backup.
+pub async fn renew_event_epoch(
+    database: &Database,
+    now: OffsetDateTime,
+) -> Result<StreamEpoch, HostCommandError> {
+    let epoch = StreamEpoch::generate();
+    transact!(database, |connection| {
+        require_started(connection).await?;
+        sqlx::query("update event_stream set epoch = $1")
+            .bind(epoch)
+            .execute(&mut *connection)
+            .await?;
+        audit::record(
+            connection,
+            now,
+            None,
+            About::Server,
+            &AuditEvent::EventEpochRenewed,
+        )
+        .await
+        .map_err(audit_failure)?;
+        Ok(epoch)
     })
 }
 

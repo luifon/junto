@@ -1,0 +1,12 @@
+{
+  "room_name": "ROOM",
+  "audio_track_id": "TRACK_ID",
+  "segment_outputs": [
+    {
+      "filename_prefix": "/out/ROOM/hls/IDENTITY-SOURCE",
+      "playlist_name": "IDENTITY-SOURCE.m3u8",
+      "live_playlist_name": "IDENTITY-SOURCE-live.m3u8",
+      "segment_duration": 2
+    }
+  ]
+}

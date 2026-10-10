@@ -1,0 +1,9 @@
+FROM registry.opensuse.org/opensuse/tumbleweed:latest
+RUN zypper --non-interactive install --no-recommends \
+      labwc sway grim wtype wlrctl wl-clipboard wlr-randr \
+      Mesa-dri Mesa-libEGL1 Mesa-libGL1 libvulkan_lvp vulkan-tools \
+      xorg-x11-server-Xvfb xdotool ImageMagick xrdb xprop xclip \
+      dbus-1-daemon at-spi2-core python313-gobject typelib-1_0-Atspi-2_0 \
+      libxkbcommon-x11-0 libwayland-client0 fontconfig xkeyboard-config \
+      procps util-linux \
+ && zypper clean --all

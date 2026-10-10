@@ -34,7 +34,7 @@ Recovery:
 - The recovery deletes every session of the account in the same transaction. A copied session token stops working at the recovery.
 - The other devices of the account keep their keys. They log in again and then receive the notice.
 - The server stores one row per recovery, and one notice row for each device that the account has at that moment, the new device included.
-- The response to a login carries the recoveries whose notice the device has not received, and removes those notice rows. The account can also list all of its recoveries.
+- The response to a login carries the recoveries whose notice the device has not acknowledged. A login removes no notice. The device reads its notices and acknowledges each one after it has shown it (ADR 0118). The account can also list all of its recoveries.
 
 ## Consequences
 
@@ -43,6 +43,6 @@ Recovery:
 - The approving client must show the public key or compare it for the user; this is the step that names the key.
 - Linking all servers of a client (ADR 0104) repeats this flow once per server. The client carries the codes between the two devices.
 - An account always has a device that can log in, unless the owner removes or bans the account.
-- Each device is told about a recovery once, at its next login, whatever the time of that login. Every device has to log in again after a recovery, so the notice reaches it then.
+- Each device is told about a recovery at every login until it acknowledges the notice, whatever the time of that login. Every device has to log in again after a recovery, so the notice reaches it then.
 - A recovery interrupts the work on the other devices of the account until their clients have logged in again.
 - The owner chooses the public key of a recovery, so the person must give the owner the public key of the new device over another channel.

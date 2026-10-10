@@ -27,8 +27,9 @@ Challenge:
 - The device signs these bytes, built by the client from the fields:
 
   ```
-  junto-challenge-v1
+  junto-challenge-v2
   server:<server identifier>
+  origin:<origin that the device connected to>
   operation:<operation>
   account:<account identifier or "none">
   device:<public key>
@@ -38,7 +39,8 @@ Challenge:
   ```
 
   The lines are joined with a line feed and there is no line feed at the end.
-- A request that needs proof carries the challenge identifier and the signature. The server reads the public key from the stored challenge.
+- The origin is not a field of the challenge. The device takes it from the address that it connected to, and the server accepts only one of its own public origins (ADR 0117).
+- A request that needs proof carries the challenge identifier, the origin that the device signed, and the signature. The server reads the public key from the stored challenge.
 - A challenge lives 60 seconds.
 - The server stores one challenge per public key and operation, so at most 6 per key. A new challenge replaces the earlier one of the same key and operation.
 - The server marks a challenge as used in the transaction of the operation that the challenge authorizes (ADR 0009). When that transaction commits, the challenge is used, and a second request with it gets `challenge_invalid`.
@@ -58,8 +60,9 @@ Failed attempts:
 
 ## Consequences
 
-- A signature is valid for one server, one account, one device key, one operation and one challenge. A client that builds the bytes itself cannot be made to sign text that a server chose freely.
-- A change of the signed bytes needs a new first line and a new API version.
+- A signature is valid for one server, one origin, one account, one device key, one operation and one challenge. A client that builds the bytes itself cannot be made to sign text that a server chose freely.
+- A signature that a device made for the address of one server is of no use at another server, also when the first server announces the identifier of the second (ADR 0117).
+- A change of the signed bytes needs a new first line and a new API version. The origin line was added, with the first line `junto-challenge-v2`, before the first release of API version 1.
 - A party that sends wrong signatures for the key of another person does not affect that person.
 - The count of wrong signatures is held in the memory of the server process and is cleared by a restart.
 - The response to a `login` challenge request shows whether a public key is registered and whether its account is banned.
