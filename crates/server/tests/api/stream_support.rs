@@ -1,5 +1,7 @@
 //! A client of the event stream for the tests. It keeps every text frame that it receives.
 
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
@@ -14,17 +16,71 @@ use junto_protocol::snapshot::Snapshot;
 use junto_protocol::structure::{Category, Channel};
 use reqwest::StatusCode;
 use serde_json::json;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpSocket, TcpStream};
+use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::{self, Message};
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use crate::support::{Member, TestServer};
 
-const PATIENCE: Duration = Duration::from_secs(10);
+const PATIENCE: Duration = Duration::from_secs(20);
+
+/// The connection of a stream to the server. It can discard what the client writes: the
+/// client then reads on, and the server hears nothing more from it.
+struct Wire {
+    tcp: TcpStream,
+    discards: bool,
+}
+
+impl Wire {
+    fn of(tcp: TcpStream) -> Self {
+        Self {
+            tcp,
+            discards: false,
+        }
+    }
+}
+
+impl AsyncRead for Wire {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.tcp).poll_read(context, buffer)
+    }
+}
+
+impl AsyncWrite for Wire {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        if self.discards {
+            return Poll::Ready(Ok(bytes.len()));
+        }
+        Pin::new(&mut self.tcp).poll_write(context, bytes)
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.tcp).poll_flush(context)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.tcp).poll_shutdown(context)
+    }
+}
 
 pub struct Stream {
-    socket: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    socket: WebSocketStream<Wire>,
     pub epoch: StreamEpoch,
     /// Every text frame that the server sent, in order.
     pub raw: Vec<String>,
@@ -54,7 +110,8 @@ impl TestServer {
         &self,
         token: Option<&str>,
     ) -> Result<Stream, (StatusCode, ErrorCode)> {
-        match tokio_tungstenite::connect_async(request(self, token)).await {
+        let tcp = TcpStream::connect(self.address).await.unwrap();
+        match tokio_tungstenite::client_async(request(self, token), Wire::of(tcp)).await {
             Ok((socket, _)) => Ok(Stream::greeted(socket).await),
             Err(tungstenite::Error::Http(response)) => {
                 let body: ErrorBody =
@@ -76,12 +133,10 @@ impl TestServer {
         let socket = TcpSocket::new_v4().unwrap();
         socket.set_recv_buffer_size(receive_buffer).unwrap();
         let tcp = socket.connect(self.address).await.unwrap();
-        let (socket, _) = tokio_tungstenite::client_async(
-            request(self, Some(&member.token)),
-            MaybeTlsStream::Plain(tcp),
-        )
-        .await
-        .unwrap();
+        let (socket, _) =
+            tokio_tungstenite::client_async(request(self, Some(&member.token)), Wire::of(tcp))
+                .await
+                .unwrap();
         Stream::greeted(socket).await
     }
 
@@ -213,8 +268,18 @@ impl TestServer {
     }
 }
 
+impl TestServer {
+    /// Changes the limits of the event stream of this server from now on. A test shortens
+    /// a time limit with this after its preparation, for the step that it examines.
+    pub fn tighten_streams(&self, change: impl FnOnce(&mut junto_server::config::StreamLimits)) {
+        let mut limits = (*self.state.streams.limits()).clone();
+        change(&mut limits);
+        self.state.streams.set_limits(limits);
+    }
+}
+
 impl Stream {
-    async fn greeted(socket: WebSocketStream<MaybeTlsStream<TcpStream>>) -> Self {
+    async fn greeted(socket: WebSocketStream<Wire>) -> Self {
         let mut stream = Self {
             socket,
             epoch: StreamEpoch::generate(),
@@ -241,6 +306,12 @@ impl Stream {
 
     pub async fn send_frame(&mut self, frame: Message) -> Result<(), tungstenite::Error> {
         self.socket.send(frame).await
+    }
+
+    /// From now on the server hears nothing from this client: no answer to a ping and no
+    /// answer to a close frame. The client still reads what the server sends.
+    pub fn answer_nothing(&mut self) {
+        self.socket.get_mut().discards = true;
     }
 
     /// The next message or the end of the connection. Pings and pongs are passed over.
@@ -298,6 +369,16 @@ impl Stream {
                 other => panic!("expected an event: {other:?}"),
             }
         }
+    }
+
+    /// The next `count` events. A test reads the events about a channel with this before
+    /// it deletes the channel: an event that is delivered after the deletion reaches nobody.
+    pub async fn events(&mut self, count: usize) -> Vec<(u64, Event)> {
+        let mut events = Vec::new();
+        for _ in 0..count {
+            events.push(self.event().await);
+        }
+        events
     }
 
     /// Reads until the connection ends. Returns the messages before the end and the code of

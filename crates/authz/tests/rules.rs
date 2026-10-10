@@ -1,10 +1,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use junto_authz::{
-    Actor, Admission, AuditScope, Authorship, ChannelContent, ChannelGrant, ChannelScope, Decision,
-    Denial, HeldRole, Membership, MessagePlace, Override, OwnerAction, Participation, Permanence,
-    Position, Reach, Request, RoleKey, RoleOverride, ServerPermission, ServerPermissions, Target,
-    WorkspacePermission, WorkspacePermissions, WorkspaceScope, authorize,
+    Acquaintance, Actor, Admission, AuditScope, Authorship, ChannelContent, ChannelGrant,
+    ChannelScope, Contact, Decision, Denial, HeldRole, Membership, MessagePlace, Override,
+    OwnerAction, Participation, Permanence, Position, Reach, Request, RoleKey, RoleOverride,
+    ServerPermission, ServerPermissions, Target, WorkspacePermission, WorkspacePermissions,
+    WorkspaceScope, authorize,
 };
 
 use Decision::{Allow, Deny};
@@ -294,6 +295,27 @@ fn owner_only_actions_belong_to_the_owner() {
 fn own_account_is_open_to_every_actor() {
     for actor in [plain(), administrator(), owner()] {
         assert_eq!(authorize(&actor, &Request::OwnAccount), Allow);
+    }
+}
+
+#[test]
+fn a_profile_is_open_to_its_account_to_fellow_members_and_to_moderators() {
+    let moderator = with_server(&[ServerPermission::BanMembers]);
+    let inviter = with_server(&[ServerPermission::CreateInvites]);
+    for actor in [owner(), administrator(), moderator.clone(), plain()] {
+        for near in [Acquaintance::Own, Acquaintance::SharedWorkspace] {
+            assert_eq!(authorize(&actor, &Request::ViewAccount(near)), Allow);
+        }
+    }
+    let unrelated = Request::ViewAccount(Acquaintance::Unrelated);
+    for actor in [owner(), administrator(), moderator] {
+        assert_eq!(authorize(&actor, &unrelated), Allow);
+    }
+    for actor in [plain(), inviter] {
+        assert_eq!(
+            authorize(&actor, &unrelated),
+            missing_server(ServerPermission::BanMembers)
+        );
     }
 }
 
@@ -730,6 +752,36 @@ fn deleting_a_channel_with_permanent_messages_belongs_to_the_owner() {
             expected,
             "{actor:?} {content:?}"
         );
+    }
+}
+
+#[test]
+fn two_accounts_reach_each_other_with_a_common_workspace_or_when_one_administers_the_server() {
+    let others: Vec<ServerPermission> = ServerPermission::ALL
+        .iter()
+        .copied()
+        .filter(|permission| *permission != ServerPermission::Administrator)
+        .collect();
+    let everything_else = with_server(&others);
+    for actor in [plain(), everything_else.clone(), administrator(), owner()] {
+        for near in [Contact::SharedWorkspace, Contact::Administrator] {
+            assert_eq!(
+                authorize(&actor, &Request::Contact(near)),
+                Allow,
+                "{actor:?}"
+            );
+        }
+    }
+    let unrelated = Request::Contact(Contact::Unrelated);
+    for actor in [plain(), everything_else] {
+        assert_eq!(
+            authorize(&actor, &unrelated),
+            missing_server(ServerPermission::Administrator),
+            "{actor:?}"
+        );
+    }
+    for actor in [administrator(), owner()] {
+        assert_eq!(authorize(&actor, &unrelated), Allow, "{actor:?}");
     }
 }
 

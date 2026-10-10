@@ -51,7 +51,7 @@ Removal and ban:
 Recovery:
 
 - A recovery ends every session of the account (ADR 0112). The connected devices of the account get `ended` with the reason `recovered` and the recovery, and their connections close.
-- The notice that a login consumes (ADR 0112) is not used for this, so a login of the device does not change the reason.
+- The notice of the device (ADR 0112) is not used for this, so a login and an acknowledgement of the notice (ADR 0118) do not change the reason.
 
 Reason of an ended session:
 
@@ -60,7 +60,7 @@ Reason of an ended session:
 - A session without a row has expired. The connection then sends `session_ended`, or the reason that the state of the account and of the device gives.
 - The maintenance task (ADR 0009) removes a row when the session would have expired, 30 days after it was ended at the latest (ADR 0109).
 - The event `account_recovered` and the event `device_added` of the new device stay in the log. A device that logs in again and subscribes with its cursor receives them.
-- The notice in the response to the login (ADR 0112) is unchanged. The three carry the same recovery identifier, and a client shows a recovery once.
+- The notice in the response to the login (ADR 0112) stays until the device acknowledges it (ADR 0118). The three carry the same recovery identifier, and a client shows a recovery once.
 
 No events:
 

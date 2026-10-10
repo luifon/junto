@@ -107,7 +107,7 @@ pub async fn log_out(State(app): State<AppState>, bearer: Bearer) -> ApiResult<S
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::OwnAccount)?;
         let session = Sessions::One(access.session_id);
-        store::record_ended(connection, now, session, SessionEnd::LoggedOut).await?;
+        store::record_ended(connection, &app.calls, now, session, SessionEnd::LoggedOut).await?;
         sqlx::query("delete from sessions where id = $1")
             .bind(access.session_id)
             .execute(&mut *connection)
@@ -171,12 +171,15 @@ pub async fn claim_owner(
             Some(account_id) => {
                 let notice = store::recover(
                     connection,
+                    &app.calls,
                     now,
-                    account_id,
-                    &proven.public_key,
-                    &device_name,
-                    DeviceOrigin::OwnerCode,
-                    None,
+                    store::Recovery {
+                        account_id,
+                        public_key: &proven.public_key,
+                        device_name: &device_name,
+                        origin: DeviceOrigin::OwnerCode,
+                        performed_by: None,
+                    },
                 )
                 .await?;
                 let device_id = notice.device_id.ok_or_else(ApiError::not_found)?;

@@ -37,4 +37,4 @@ Step 0 measured how long a token admits a participant (`docs/step-0/README.md`, 
 - The server keeps a current list of the people who are allowed in each active call, including people who entered by invitation or move through a lock or a user limit (ADR 0504).
 - The repeated comparison costs requests to LiveKit's API for every active call at every interval.
 - Not tested: ending a room and continuing the call in a room with a new name, which would make every old token useless, and a LiveKit setting that shortens the token of 600 seconds.
-- The length of the interval is not fixed by this record.
+- The length of the interval is fixed by ADR 0509: 2 seconds.

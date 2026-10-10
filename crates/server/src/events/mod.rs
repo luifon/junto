@@ -10,4 +10,6 @@ pub mod schema;
 pub mod transport;
 pub mod watcher;
 
-pub use log::{channel_deleted, permissions_changed, publish, tell_account};
+pub use log::{
+    channel_deleted, permissions_changed, publish, tell_account, tell_account_at, tell_inside,
+};

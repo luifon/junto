@@ -171,7 +171,7 @@ impl Outstanding {
 }
 
 /// An IPv6 client controls a whole /64, so the limit counts the /64.
-fn limiter_key(address: IpAddr) -> IpAddr {
+pub fn limiter_key(address: IpAddr) -> IpAddr {
     match address {
         IpAddr::V4(_) => address,
         IpAddr::V6(v6) => match v6.to_ipv4_mapped() {

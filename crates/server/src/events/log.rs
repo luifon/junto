@@ -38,14 +38,52 @@ pub async fn publish(
     record(connection, now, &audience, event).await
 }
 
-/// Records an event for the connections of one account.
+/// Records an event for the connections of one account. An event that names voice channels
+/// is delivered only while the account sees them (ADR 0510).
 pub async fn tell_account(
     connection: &mut PgConnection,
     now: OffsetDateTime,
     account_id: AccountId,
     event: &Event,
 ) -> ApiResult<()> {
-    record(connection, now, &Audience::Account { account_id }, event).await
+    record(
+        connection,
+        now,
+        &Audience::addressed(account_id, event),
+        event,
+    )
+    .await
+}
+
+/// Records an event for the connections of one account about something at `places` that
+/// the event itself does not name. It is delivered only while the account may be at every
+/// one of them, so an account that lost a place learns no outcome of what it waited for
+/// there (ADR 0510).
+pub async fn tell_account_at(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    account_id: AccountId,
+    places: &[junto_protocol::call::CallPlace],
+    event: &Event,
+) -> ApiResult<()> {
+    let audience = Audience::addressed_at(account_id, places);
+    record(connection, now, &audience, event).await
+}
+
+/// Records an event about the call of a voice channel for the accounts inside that call.
+pub async fn tell_inside(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    workspace_id: WorkspaceId,
+    channel_id: ChannelId,
+    event: &Event,
+) -> ApiResult<()> {
+    let audience = Audience::Call {
+        workspace_id,
+        channel_id,
+        reach: crate::events::audience::CallReach::Inside,
+    };
+    record(connection, now, &audience, event).await
 }
 
 /// Whose permissions a change can have altered.
@@ -57,7 +95,8 @@ pub enum Affected {
 }
 
 /// Records the notice that tells the affected accounts to load a snapshot. The notice names
-/// the workspace and nothing else (ADR 0208).
+/// the workspace and nothing else (ADR 0208). The change can end the access of a person to a
+/// call, so the rooms that it can concern are marked for the admission check (ADR 0509).
 pub async fn permissions_changed(
     connection: &mut PgConnection,
     now: OffsetDateTime,
@@ -73,7 +112,8 @@ pub async fn permissions_changed(
         },
     };
     let event = Event::PermissionsChanged { workspace_id };
-    record(connection, now, &audience, &event).await
+    record(&mut *connection, now, &audience, &event).await?;
+    crate::calls::store::mark_after_permission_change(connection, workspace_id).await
 }
 
 /// Records the deletion of a channel for the accounts that could see it. It reads the

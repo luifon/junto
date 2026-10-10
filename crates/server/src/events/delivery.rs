@@ -2,7 +2,7 @@
 //! roles in one read-only transaction that starts immediately before the messages are written
 //! to the socket (ADR 0011).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use junto_protocol::account::{AccountStatus, RecoveryNotice};
 use junto_protocol::error::ErrorCode;
@@ -20,8 +20,9 @@ use crate::access::Access;
 use crate::db::StoredText;
 use crate::error::{ApiError, ApiResult};
 use crate::events::audience::{
-    Audience, ChannelStanding, Class, Recipient, WorkspaceStanding, may_receive,
+    Audience, ChannelStanding, Class, Recipient, WorkspaceStanding, receives,
 };
+use crate::events::hub::CallKey;
 use crate::events::log::{self, STORED_AUDIENCE_BYTES, STORED_PAYLOAD_BYTES};
 use crate::extract::Bearer;
 use crate::read;
@@ -108,7 +109,7 @@ struct Candidate {
 }
 
 enum Decision {
-    Deliver(Delivery),
+    Deliver(Box<Delivery>),
     Hidden,
     /// The account may receive the event, or the server cannot tell, and the event cannot be
     /// sent.
@@ -206,7 +207,7 @@ pub async fn validate(app: &AppState, who: &Opened) -> ApiResult<Option<Ended>> 
 /// The classes that the SQL statements select for a connection: every class for a full
 /// connection and for an account in a call, because the events of the call's channel are of
 /// any class.
-fn selected_classes(level: Level, in_call: Option<ChannelId>) -> Vec<&'static str> {
+fn selected_classes(level: Level, in_call: Option<CallKey>) -> Vec<&'static str> {
     let classes = match in_call {
         Some(_) => Class::received_at(Level::Full),
         None => Class::received_at(level),
@@ -218,27 +219,27 @@ fn decide(
     access: &Access,
     standing: &Standing,
     level: Level,
-    in_call: Option<ChannelId>,
+    in_call: Option<CallKey>,
     candidate: Candidate,
 ) -> ApiResult<Decision> {
     let Some(audience) = &candidate.audience else {
         return Ok(Decision::Unsendable);
     };
     let wanted = candidate.class.is_none_or(|class| class.reaches(level))
-        || (in_call.is_some() && audience.channel_id() == in_call);
+        || (in_call.is_some() && audience.call_key() == in_call);
     let recipient = Recipient {
         account_id: access.account_id,
         actor: access.actor(),
         server_role_ids: &access.server_role_ids,
+        fellows: &standing.fellows,
+        contacts: &standing.contacts,
     };
-    let workspace = audience
-        .workspace_id()
-        .and_then(|workspace_id| standing.workspaces.get(&workspace_id));
-    if !(wanted && may_receive(recipient, audience, workspace)) {
+    let in_workspace = |workspace_id| standing.workspaces.get(&workspace_id);
+    if !(wanted && receives(recipient, audience, &in_workspace)) {
         return Ok(Decision::Hidden);
     }
     match (candidate.class, candidate.event) {
-        (Some(_), Some(event)) => Ok(Decision::Deliver(Delivery {
+        (Some(_), Some(event)) => Ok(Decision::Deliver(Box::new(Delivery {
             position: candidate.position,
             message: ServerMessage::Event {
                 id: u64::try_from(candidate.position)
@@ -246,7 +247,7 @@ fn decide(
                 at: candidate.recorded_at,
                 event,
             },
-        })),
+        }))),
         _ => Ok(Decision::Unsendable),
     }
 }
@@ -267,7 +268,7 @@ pub async fn subscribe(
     cursor: Option<Cursor>,
 ) -> ApiResult<Start> {
     let most = app.config.limits.stream.replay_most_events;
-    let in_call = app.streams.calls().channel_of(who.account_id);
+    let in_call = app.streams.calls().key_of(who.account_id);
     let classes = selected_classes(level, in_call);
     read!(app.unattended(), |connection| {
         let access = match open(connection, who, app.now()).await? {
@@ -358,7 +359,7 @@ pub async fn next_batch(
     let limits = &app.config.limits.stream;
     let size = i64::from(most.clamp(1, limits.batch.max(1)));
     let budget = i64::from(limits.batch_bytes.max(1));
-    let in_call = app.streams.calls().channel_of(who.account_id);
+    let in_call = app.streams.calls().key_of(who.account_id);
     let classes = selected_classes(subscription.level, in_call);
     read!(app.unattended(), |connection| {
         let read_at = Instant::now();
@@ -432,7 +433,7 @@ pub async fn next_batch(
         for candidate in candidates {
             let at = candidate.position;
             match decide(&access, &standing, subscription.level, in_call, candidate)? {
-                Decision::Deliver(delivery) => deliveries.push(delivery),
+                Decision::Deliver(delivery) => deliveries.push(*delivery),
                 Decision::Hidden => {}
                 Decision::Unsendable => {
                     tracing::error!(position = at, "an event of the log cannot be sent");
@@ -458,6 +459,8 @@ pub async fn next_batch(
 /// the transaction of the batch.
 struct Standing {
     workspaces: HashMap<WorkspaceId, WorkspaceStanding>,
+    fellows: HashSet<AccountId>,
+    contacts: HashMap<AccountId, junto_authz::Contact>,
 }
 
 impl Standing {
@@ -467,13 +470,11 @@ impl Standing {
         candidates: &[Candidate],
     ) -> ApiResult<Self> {
         let mut named: Vec<(WorkspaceId, Vec<ChannelId>)> = Vec::new();
-        for audience in candidates
+        let places = candidates
             .iter()
             .filter_map(|event| event.audience.as_ref())
-        {
-            let Some(workspace_id) = audience.workspace_id() else {
-                continue;
-            };
+            .flat_map(Audience::places);
+        for (workspace_id, channel_id) in places {
             let index = match named.iter().position(|(id, _)| *id == workspace_id) {
                 Some(index) => index,
                 None => {
@@ -481,10 +482,31 @@ impl Standing {
                     named.len() - 1
                 }
             };
-            if let Some(channel_id) = audience.channel_id()
+            if let Some(channel_id) = channel_id
                 && !named[index].1.contains(&channel_id)
             {
                 named[index].1.push(channel_id);
+            }
+        }
+        let viewed: Vec<AccountId> = candidates
+            .iter()
+            .filter_map(|event| event.audience.as_ref()?.viewed_account_id())
+            .collect();
+        let fellows = if viewed.is_empty() {
+            HashSet::new()
+        } else {
+            crate::store::fellow_members(connection, access.account_id, &viewed).await?
+        };
+        let mut contacts = HashMap::new();
+        let reached = candidates
+            .iter()
+            .filter_map(|event| event.audience.as_ref())
+            .flat_map(|audience| audience.reached_account_ids(access.account_id));
+        for other in reached {
+            if !contacts.contains_key(&other)
+                && let Some(contact) = crate::store::contact(connection, access, other).await?
+            {
+                contacts.insert(other, contact);
             }
         }
         let mut workspaces = HashMap::new();
@@ -503,6 +525,16 @@ impl Standing {
             let channels = if channel_ids.is_empty() {
                 HashMap::new()
             } else {
+                let inside: Vec<ChannelId> = sqlx::query_scalar(
+                    "select c.channel_id
+                     from call_members m
+                     join calls c on c.id = m.call_id
+                     where m.account_id = $1 and c.channel_id = any($2)",
+                )
+                .bind(access.account_id)
+                .bind(&channel_ids)
+                .fetch_all(&mut *connection)
+                .await?;
                 access
                     .named_channels(connection, workspace_id, &scope, &channel_ids)
                     .await?
@@ -510,6 +542,8 @@ impl Standing {
                     .map(|(record, scope)| {
                         let standing = ChannelStanding {
                             deleted: record.deleted_at.is_some(),
+                            hides_occupants: record.channel.hides_occupants,
+                            inside: inside.contains(&record.channel.id),
                             scope,
                         };
                         (record.channel.id, standing)
@@ -525,7 +559,11 @@ impl Standing {
                 },
             );
         }
-        Ok(Self { workspaces })
+        Ok(Self {
+            workspaces,
+            fellows,
+            contacts,
+        })
     }
 }
 
@@ -535,7 +573,7 @@ mod tests {
 
     #[test]
     fn a_call_selects_every_class_and_a_level_selects_its_own() {
-        let channel = Some(ChannelId::generate());
+        let channel = Some(CallKey::Channel(ChannelId::generate()));
         assert_eq!(selected_classes(Level::Background, channel).len(), 5);
         assert_eq!(selected_classes(Level::Full, None).len(), 5);
         assert_eq!(

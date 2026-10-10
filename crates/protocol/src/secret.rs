@@ -1,10 +1,7 @@
-use std::borrow::Cow;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
-use utoipa::openapi::RefOr;
-use utoipa::openapi::schema::{ObjectBuilder, Schema, Type};
-use utoipa::{PartialSchema, ToSchema};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 macro_rules! secret_text {
     ($(#[$meta:meta])* $name:ident) => {
@@ -18,11 +15,26 @@ macro_rules! secret_text {
                 Self(text.into())
             }
 
-            /// Returns the secret text. The caller must not log it.
+            /// Returns the secret text. The caller must not log it, and a copy that the
+            /// caller makes is not erased with this value.
             pub fn expose(&self) -> &str {
                 &self.0
             }
         }
+
+        impl Zeroize for $name {
+            fn zeroize(&mut self) {
+                self.0.zeroize();
+            }
+        }
+
+        impl Drop for $name {
+            fn drop(&mut self) {
+                self.zeroize();
+            }
+        }
+
+        impl ZeroizeOnDrop for $name {}
 
         impl fmt::Debug for $name {
             fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -30,15 +42,19 @@ macro_rules! secret_text {
             }
         }
 
-        impl PartialSchema for $name {
-            fn schema() -> RefOr<Schema> {
-                ObjectBuilder::new().schema_type(Type::String).into()
+        #[cfg(feature = "openapi")]
+        impl utoipa::PartialSchema for $name {
+            fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+                utoipa::openapi::schema::ObjectBuilder::new()
+                    .schema_type(utoipa::openapi::schema::Type::String)
+                    .into()
             }
         }
 
-        impl ToSchema for $name {
-            fn name() -> Cow<'static, str> {
-                Cow::Borrowed(stringify!($name))
+        #[cfg(feature = "openapi")]
+        impl utoipa::ToSchema for $name {
+            fn name() -> std::borrow::Cow<'static, str> {
+                std::borrow::Cow::Borrowed(stringify!($name))
             }
         }
     };
@@ -60,6 +76,11 @@ secret_text!(
     /// The short-lived one-time code of a device link.
     LinkCode
 );
+secret_text!(
+    /// The token with which a device joins one room of the media server. It is valid for
+    /// about one minute.
+    CallToken
+);
 
 #[cfg(test)]
 mod tests {
@@ -74,5 +95,24 @@ mod tests {
             serde_json::to_string(&token).unwrap(),
             "\"jst_secret-value\""
         );
+    }
+
+    #[test]
+    fn a_secret_erases_its_text() {
+        fn erased_when_dropped<T: ZeroizeOnDrop>() {}
+        erased_when_dropped::<SessionToken>();
+        erased_when_dropped::<OwnerCode>();
+        erased_when_dropped::<InviteCode>();
+        erased_when_dropped::<LinkCode>();
+        erased_when_dropped::<CallToken>();
+
+        let mut token = SessionToken::new("jst_secret-value");
+        token.zeroize();
+        assert_eq!(token.expose(), "");
+        let mut code: InviteCode = serde_json::from_str("\"ABCD-EFGH-JKMN-PQRS\"").unwrap();
+        let copy = code.clone();
+        code.zeroize();
+        assert_eq!(code.expose(), "");
+        assert_eq!(copy.expose(), "ABCD-EFGH-JKMN-PQRS");
     }
 }

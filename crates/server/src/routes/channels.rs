@@ -305,6 +305,8 @@ pub async fn create_channel(
             name: name.clone(),
             position,
             permanent_messages: false,
+            user_limit: None,
+            hides_occupants: false,
         };
         sqlx::query(
             "insert into channels
@@ -469,6 +471,7 @@ pub async fn delete_channel(
             return Err(ApiError::conflict("the channel changed during the request"));
         }
         let workspace_id = record.channel.workspace_id;
+        crate::calls::store::mark_channel(connection, &app.calls, channel_id).await?;
         events::channel_deleted(connection, now, workspace_id, channel_id).await?;
         sqlx::query("delete from channel_overrides where channel_id = $1")
             .bind(channel_id)
@@ -636,6 +639,7 @@ pub async fn set_channel_override(
         };
         events::publish(connection, now, &set).await?;
         if previous != next {
+            crate::calls::store::mark_channel(connection, &app.calls, channel_id).await?;
             let holders = Affected::WorkspaceRoleHolders(workspace_id, role_id);
             events::permissions_changed(connection, now, holders, Some(workspace_id)).await?;
         }

@@ -68,6 +68,22 @@ impl ApiError {
         .retry_after(Duration::seconds(1))
     }
 
+    /// The error of an insert that can meet the row of a concurrent request. The server reads
+    /// before it inserts, so a duplicate key means that another transaction inserted the row
+    /// in between: the transaction lost against it and runs again (ADR 0009).
+    pub fn concurrent(error: sqlx::Error) -> Self {
+        let duplicate = error
+            .as_database_error()
+            .is_some_and(|database| database.is_unique_violation());
+        if duplicate {
+            let mut busy = <Self as TransactionError>::exhausted();
+            busy.retryable = true;
+            busy
+        } else {
+            error.into()
+        }
+    }
+
     pub fn retry_after(mut self, wait: Duration) -> Self {
         self.retry_after = Some(wait);
         self

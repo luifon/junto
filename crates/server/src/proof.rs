@@ -139,6 +139,10 @@ async fn store(
 /// commit, the challenge is unused and the same signed request can be sent again until the
 /// challenge expires. A valid signature for an unexpired, unused challenge of `operation`
 /// always succeeds. A wrong signature counts against `address` only.
+///
+/// The signature covers the origin that the device connected to. A proof for an origin that
+/// is not one of this server's own is refused before the challenge is read, so a signature
+/// that a device made for another address is of no use here (ADR 0108).
 pub async fn consume(
     app: &AppState,
     connection: &mut PgConnection,
@@ -147,6 +151,13 @@ pub async fn consume(
     operation: ChallengeOperation,
     now: OffsetDateTime,
 ) -> ApiResult<Proven> {
+    if !app.config.public_origins.contains(&proof.origin) {
+        return Err(ApiError::new(
+            ErrorCode::OriginRejected,
+            "the signed origin is not a public origin of this server; an operator states them \
+             in JUNTO_PUBLIC_ORIGINS",
+        ));
+    }
     let used: Option<StoredChallenge> = sqlx::query_as(
         "update challenges set consumed_at = $2
          where id = $1 and consumed_at is null
@@ -202,7 +213,7 @@ fn signature_is_valid(challenge: &Challenge, proof: &Proof) -> bool {
         return false;
     };
     let signature = Signature::from_bytes(proof.signature.as_bytes());
-    key.verify_strict(&challenge.signing_input(), &signature)
+    key.verify_strict(&challenge.signing_input(&proof.origin), &signature)
         .is_ok()
 }
 

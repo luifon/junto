@@ -56,7 +56,13 @@ pub const ENTRY_COLUMNS: &str = "id, occurred_at, actor_id, workspace_id, channe
 
 pub fn entry(row: EntryRow) -> ApiResult<AuditEntry> {
     let (id, occurred_at, actor_id, workspace_id, channel_id, Json(event)) = row;
-    let event = serde_json::from_value(event).map_err(|error| ApiError::internal(&error))?;
+    let event: AuditEvent =
+        serde_json::from_value(event).map_err(|error| ApiError::internal(&error))?;
+    if event == AuditEvent::Unknown {
+        return Err(ApiError::internal(
+            &"a stored audit entry has an action that this server does not know",
+        ));
+    }
     Ok(AuditEntry {
         id,
         occurred_at,

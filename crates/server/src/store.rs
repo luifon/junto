@@ -1,5 +1,9 @@
+use std::collections::HashSet;
+
+use junto_authz::{Acquaintance, Contact, Request};
 use junto_protocol::account::{
-    AccountStatus, AccountSummary, Device, DeviceOrigin, OwnAccount, RecoveryNotice,
+    AccountProfile, AccountStatus, AccountSummary, Avatar, Device, DeviceOrigin, ImageType,
+    OwnAccount, RecoveryNotice,
 };
 use junto_protocol::auth::SessionCreated;
 use junto_protocol::error::ErrorCode;
@@ -13,6 +17,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::access::Access;
+use crate::calls::Calls;
 use crate::db::{self, StoredText};
 use crate::error::{ApiError, ApiResult, violates};
 use crate::events;
@@ -98,9 +103,11 @@ pub async fn own_account(connection: &mut PgConnection, access: &Access) -> ApiR
     .bind(access.account_id)
     .fetch_all(&mut *connection)
     .await?;
+    let avatar = avatar_of(connection, access.account_id).await?;
     Ok(OwnAccount {
         id: access.account_id,
         name,
+        avatar,
         is_owner: access.is_owner(),
         server_permissions: db::server_list(access.actor().server_permissions()),
         server_role_ids: access.server_role_ids.clone(),
@@ -238,7 +245,8 @@ pub async fn announce_members(
 }
 
 /// Starts a session of a device and records the login. The response carries the recoveries of
-/// the account that this device has not been told about, and each is told once.
+/// the account that this device has not acknowledged; a login does not remove them
+/// (ADR 0112).
 pub async fn start_session(
     app: &AppState,
     connection: &mut PgConnection,
@@ -246,19 +254,7 @@ pub async fn start_session(
     account_id: AccountId,
     device_id: DeviceId,
 ) -> ApiResult<SessionCreated> {
-    let recoveries = recovery_rows(
-        sqlx::query_as(
-            "with told as (
-                 delete from recovery_notices where device_id = $1 returning recovery_id)
-             select r.id, r.device_id, r.performed_by, r.performed_at
-             from recoveries r
-             join told on told.recovery_id = r.id
-             order by r.performed_at, r.id",
-        )
-        .bind(device_id)
-        .fetch_all(&mut *connection)
-        .await?,
-    );
+    let recoveries = recovery_notices_of(connection, device_id).await?;
 
     sqlx::query("update devices set last_login_at = $2 where id = $1")
         .bind(device_id)
@@ -312,6 +308,164 @@ fn recovery_rows(rows: Vec<RecoveryRow>) -> Vec<RecoveryNotice> {
             },
         )
         .collect()
+}
+
+/// The recoveries that a device has not acknowledged, oldest first.
+pub async fn recovery_notices_of(
+    connection: &mut PgConnection,
+    device_id: DeviceId,
+) -> ApiResult<Vec<RecoveryNotice>> {
+    Ok(recovery_rows(
+        sqlx::query_as(
+            "select r.id, r.device_id, r.performed_by, r.performed_at
+             from recovery_notices n
+             join recoveries r on r.id = n.recovery_id
+             where n.device_id = $1
+             order by r.performed_at, r.id",
+        )
+        .bind(device_id)
+        .fetch_all(connection)
+        .await?,
+    ))
+}
+
+type AvatarRow = (Vec<u8>, String, i32, i32, i32);
+
+const AVATAR_COLUMNS: &str = "hash, media_type, octet_length(content), width, height";
+
+fn avatar(row: AvatarRow) -> ApiResult<Avatar> {
+    let (hash, media_type, bytes, width, height) = row;
+    let media_type = ImageType::ALL
+        .iter()
+        .copied()
+        .find(|kind| kind.media_type() == media_type)
+        .ok_or_else(|| ApiError::internal(&format_args!("unknown stored type {media_type:?}")))?;
+    Ok(Avatar {
+        hash: hash.iter().map(|byte| format!("{byte:02x}")).collect(),
+        media_type,
+        bytes: db::count(bytes)?,
+        width: db::count(width)?,
+        height: db::count(height)?,
+    })
+}
+
+pub async fn avatar_of(
+    connection: &mut PgConnection,
+    account_id: AccountId,
+) -> ApiResult<Option<Avatar>> {
+    let row: Option<AvatarRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "select {AVATAR_COLUMNS} from account_avatars where account_id = $1"
+    )))
+    .bind(account_id)
+    .fetch_optional(connection)
+    .await?;
+    row.map(avatar).transpose()
+}
+
+/// The profile of an account that exists.
+pub async fn profile_of(
+    connection: &mut PgConnection,
+    account_id: AccountId,
+) -> ApiResult<Option<AccountProfile>> {
+    let name: Option<String> = sqlx::query_scalar("select name from accounts where id = $1")
+        .bind(account_id)
+        .fetch_optional(&mut *connection)
+        .await?;
+    let Some(name) = name else {
+        return Ok(None);
+    };
+    Ok(Some(AccountProfile {
+        id: account_id,
+        name,
+        avatar: avatar_of(connection, account_id).await?,
+    }))
+}
+
+/// Records the current profile of an account for the accounts that may see it.
+pub async fn announce_profile(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    account_id: AccountId,
+) -> ApiResult<AccountProfile> {
+    let profile = profile_of(&mut *connection, account_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    let updated = Event::AccountProfileUpdated {
+        profile: profile.clone(),
+    };
+    events::publish(connection, now, &updated).await?;
+    Ok(profile)
+}
+
+/// The accounts in `account_ids` that are members of a workspace that `account_id` is a
+/// member of.
+pub async fn fellow_members(
+    connection: &mut PgConnection,
+    account_id: AccountId,
+    account_ids: &[AccountId],
+) -> ApiResult<HashSet<AccountId>> {
+    let fellows: Vec<AccountId> = sqlx::query_scalar(
+        "select distinct theirs.account_id
+         from workspace_members mine
+         join workspace_members theirs on theirs.workspace_id = mine.workspace_id
+         where mine.account_id = $1 and theirs.account_id = any($2)",
+    )
+    .bind(account_id)
+    .bind(account_ids)
+    .fetch_all(connection)
+    .await?;
+    Ok(fellows.into_iter().collect())
+}
+
+/// How the caller stands to another account, for the decision whether it may see it.
+pub async fn acquaintance(
+    connection: &mut PgConnection,
+    access: &Access,
+    account_id: AccountId,
+) -> ApiResult<Acquaintance> {
+    if account_id == access.account_id {
+        return Ok(Acquaintance::Own);
+    }
+    let fellows = fellow_members(connection, access.account_id, &[account_id]).await?;
+    Ok(if fellows.contains(&account_id) {
+        Acquaintance::SharedWorkspace
+    } else {
+        Acquaintance::Unrelated
+    })
+}
+
+/// How the caller stands to another account for a direct message or a direct call. `None`
+/// when that account is not active: nobody reaches it.
+pub async fn contact(
+    connection: &mut PgConnection,
+    access: &Access,
+    account_id: AccountId,
+) -> ApiResult<Option<Contact>> {
+    let Some(other) = Access::of_account(&mut *connection, account_id).await? else {
+        return Ok(None);
+    };
+    let fellows = fellow_members(connection, access.account_id, &[account_id]).await?;
+    Ok(Some(if fellows.contains(&account_id) {
+        Contact::SharedWorkspace
+    } else if other.actor().is_administrator() {
+        Contact::Administrator
+    } else {
+        Contact::Unrelated
+    }))
+}
+
+/// Whether the caller and another account may exchange direct messages and direct calls
+/// now: both are active, and they share a workspace or one of them administers the server
+/// (ADR 0307). Every decision about a direct message or a direct call uses this function or
+/// the same request of the permission function.
+pub async fn may_reach(
+    connection: &mut PgConnection,
+    access: &Access,
+    account_id: AccountId,
+) -> ApiResult<bool> {
+    Ok(contact(connection, access, account_id)
+        .await?
+        .is_some_and(|contact| access.allows(Request::Contact(contact))))
 }
 
 pub async fn recoveries_of(
@@ -385,13 +539,17 @@ pub enum Sessions {
     OfAccount(AccountId),
 }
 
-/// Stores why the sessions end. It runs before the statement that deletes them.
+/// Stores why the sessions end, and ends the places in calls that belong to them, with their
+/// moves: a session that has ended holds no identity in a room (ADR 0510). It runs before
+/// the statement that deletes the sessions.
 pub async fn record_ended(
     connection: &mut PgConnection,
+    calls: &Calls,
     now: OffsetDateTime,
     sessions: Sessions,
     end: SessionEnd,
 ) -> ApiResult<()> {
+    crate::calls::store::end_places_of(&mut *connection, calls, now, sessions).await?;
     let (filter, id) = match sessions {
         Sessions::One(id) => ("s.id = $1", id),
         Sessions::OfDevice(id) => ("s.device_id = $1", id.as_uuid()),
@@ -420,11 +578,13 @@ pub async fn record_ended(
 
 pub async fn end_sessions(
     connection: &mut PgConnection,
+    calls: &Calls,
     now: OffsetDateTime,
     account_id: AccountId,
     end: SessionEnd,
 ) -> ApiResult<()> {
-    record_ended(&mut *connection, now, Sessions::OfAccount(account_id), end).await?;
+    let sessions = Sessions::OfAccount(account_id);
+    record_ended(&mut *connection, calls, now, sessions, end).await?;
     sqlx::query(
         "delete from sessions where device_id in (select id from devices where account_id = $1)",
     )
@@ -434,17 +594,30 @@ pub async fn end_sessions(
     Ok(())
 }
 
+/// The new device of a recovery and who performed it.
+pub struct Recovery<'a> {
+    pub account_id: AccountId,
+    pub public_key: &'a PublicKey,
+    pub device_name: &'a str,
+    pub origin: DeviceOrigin,
+    pub performed_by: Option<AccountId>,
+}
+
 /// Gives `public_key` access to an account as a new device: ends every session of the
 /// account, records the recovery, and leaves one notice for each device of the account.
 pub async fn recover(
     connection: &mut PgConnection,
+    calls: &Calls,
     now: OffsetDateTime,
-    account_id: AccountId,
-    public_key: &PublicKey,
-    device_name: &str,
-    origin: DeviceOrigin,
-    performed_by: Option<AccountId>,
+    recovery: Recovery<'_>,
 ) -> ApiResult<RecoveryNotice> {
+    let Recovery {
+        account_id,
+        public_key,
+        device_name,
+        origin,
+        performed_by,
+    } = recovery;
     let device = create_device(
         &mut *connection,
         now,
@@ -472,7 +645,7 @@ pub async fn recover(
     .execute(&mut *connection)
     .await?;
     let end = SessionEnd::Recovered(notice.id);
-    end_sessions(&mut *connection, now, account_id, end).await?;
+    end_sessions(&mut *connection, calls, now, account_id, end).await?;
     sqlx::query(
         "insert into recovery_notices (recovery_id, device_id)
          select $1, id from devices where account_id = $2",

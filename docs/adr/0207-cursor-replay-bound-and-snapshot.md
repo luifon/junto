@@ -53,6 +53,7 @@ Snapshot:
 - The route reads all of it in one read-only transaction. The cursor of the snapshot is the highest position that this transaction sees.
 - A change and its events commit together (ADR 0011), and a higher position is never visible before a lower one (ADR 0010). The snapshot therefore contains the effect of every event up to its cursor, and of no later event.
 - The snapshot carries: the account with its server permissions and workspaces, and for each workspace its roles, the caller's own roles, its categories and its channels.
+- The snapshot also carries the calls in progress as the caller may see them (ADR 0510): the call of the caller's account, the calls of the voice channels that the caller sees, the caller's direct-message calls, and the invitations into calls that wait for the caller.
 - Loaded on demand from their routes, and not in the snapshot: the members of a workspace, the accounts, the devices of the account, the invites, the join requests, the server roles and the channel overrides.
 - A client that loads one of these collections while it is subscribed applies to it the events that arrived since it sent the request, in their order, after the response. The events carry whole objects, so applying one twice changes nothing.
 

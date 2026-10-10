@@ -146,7 +146,7 @@ pub async fn run<S>(
 {
     let inbound = socket.get_ref().inbound();
     let (sink, mut source) = socket.split();
-    let limits = &app.config.limits.stream;
+    let limits = app.streams.limits();
     let seconds = |duration: time::Duration| {
         u32::try_from(duration.whole_seconds().max(1)).unwrap_or(u32::MAX)
     };
@@ -195,11 +195,14 @@ fn text(message: &ServerMessage) -> Result<Message, End> {
 impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
     async fn serve(&mut self, source: &mut SplitStream<WebSocketStream<Guarded<S>>>) -> End {
         let app = self.app.clone();
-        let limits = &app.config.limits.stream;
         let link = self.link.clone();
-        let heartbeat = limits.heartbeat.unsigned_abs();
-        let idle_timeout = limits.idle_timeout.unsigned_abs();
-        let subscribe_timeout = limits.subscribe_timeout.unsigned_abs();
+        let (heartbeat, idle_timeout) = {
+            let limits = app.streams.limits();
+            (
+                limits.heartbeat.unsigned_abs(),
+                limits.idle_timeout.unsigned_abs(),
+            )
+        };
 
         let mut beats = tokio::time::interval_at(Instant::now() + heartbeat, heartbeat);
         beats.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -215,6 +218,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
             if link.is_replaced() {
                 return End::Close(CloseCode::Replaced);
             }
+            let limits = app.streams.limits();
+            let subscribe_timeout = limits.subscribe_timeout.unsigned_abs();
             let mut step = Step::Idle;
             if Instant::now() >= not_before {
                 let deliveries_held = *held.borrow();
@@ -262,7 +267,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
                     }
                 }
                 () = tokio::time::sleep_until(self.unsubscribed_since + subscribe_timeout),
-                    if self.subscription.is_none() && self.asked.is_none() =>
+                    if self.subscription.is_none()
+                        && self.asked.is_none()
+                        && self.control.is_empty() =>
                 {
                     return End::Close(CloseCode::Idle);
                 }
@@ -321,6 +328,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
             self.told = subscription.position;
             self.link.set_level(Some(subscription.level));
             self.pending = true;
+        } else if self.subscription.is_none() {
+            self.unsubscribed_since = Instant::now();
         }
     }
 
@@ -334,7 +343,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
         T: Send + 'static,
         F: Future<Output = ApiResult<T>> + Send + 'static,
     {
-        let deadline = self.app.config.limits.stream.read_deadline.unsigned_abs();
+        let deadline = self.app.streams.limits().read_deadline.unsigned_abs();
         let places = self.app.streams.places(lane);
         let (waiting, mut given_up) = oneshot::channel::<()>();
         let mut reading = tokio::spawn(async move {
@@ -382,7 +391,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
             Read::Done(Some(ended)) => Err(End::Ended(ended)),
             Read::Failed => {
                 self.failed_session_checks += 1;
-                let most = self.app.config.limits.stream.most_failed_attempts.max(1);
+                let most = self.app.streams.limits().most_failed_attempts.max(1);
                 if self.failed_session_checks >= most {
                     return Err(End::Close(CloseCode::Failed));
                 }
@@ -545,7 +554,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
     /// whether the socket has the message.
     async fn put(&mut self, message: Message) -> Result<Put, End> {
         let link = self.link.clone();
-        let limit = self.app.config.limits.stream.send_timeout.unsigned_abs();
+        let limit = self.app.streams.limits().send_timeout.unsigned_abs();
         let taken_by = self
             .write_deadline
             .unwrap_or_else(|| Instant::now() + limit);
@@ -632,7 +641,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
     /// Tells the client why the connection ends, as far as the client still reads, and waits
     /// for its close frame so that the reason is not lost with the socket.
     async fn finish(mut self, end: End, source: &mut SplitStream<WebSocketStream<Guarded<S>>>) {
-        let limit = self.app.config.limits.stream.close_timeout.unsigned_abs();
+        let limit = self.app.streams.limits().close_timeout.unsigned_abs();
         let code = match end {
             End::Gone => return,
             End::ClosedByClient => {

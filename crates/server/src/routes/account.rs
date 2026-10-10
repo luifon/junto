@@ -1,16 +1,21 @@
 use axum::Json;
+use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, ETAG, X_CONTENT_TYPE_OPTIONS};
+use axum::http::{HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
 use junto_authz::Request;
 use junto_protocol::account::{
-    ApproveDeviceLink, Device, DeviceLinkCreated, DeviceOrigin, LookUpDeviceLink, OwnAccount,
-    PendingDeviceLink, RecoveryNotice, RenameDevice, RequestDeviceLink,
+    AccountProfile, ApproveDeviceLink, Avatar, Device, DeviceLinkCreated, DeviceOrigin,
+    LookUpDeviceLink, OwnAccount, PendingDeviceLink, RecoveryNotice, RenameDevice,
+    RequestDeviceLink, UpdateProfile,
 };
 use junto_protocol::auth::ChallengeOperation;
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::Event;
-use junto_protocol::ids::DeviceId;
+use junto_protocol::ids::{AccountId, DeviceId, RecoveryId};
 use junto_protocol::secret::LinkCode;
+use sha2::{Digest, Sha256};
 use sqlx::AssertSqlSafe;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -20,6 +25,7 @@ use crate::db;
 use crate::error::{ApiError, ApiResult};
 use crate::events;
 use crate::extract::{ApiJson, ApiPath, Bearer, ClientAddress};
+use crate::image;
 use crate::proof;
 use crate::secrets::{CodePurpose, LINK_CODE_SYMBOLS, hash_code, random_code};
 use crate::state::AppState;
@@ -46,6 +52,252 @@ pub async fn get_own_account(
         store::own_account(connection, &access).await
     })
     .map(Json)
+}
+
+/// The bytes of an image as the whole body of a request or of a response.
+pub struct ImageBytes;
+
+impl utoipa::PartialSchema for ImageBytes {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        use utoipa::openapi::schema::{KnownFormat, ObjectBuilder, SchemaFormat, Type};
+        ObjectBuilder::new()
+            .schema_type(Type::String)
+            .format(Some(SchemaFormat::KnownFormat(KnownFormat::Binary)))
+            .into()
+    }
+}
+
+impl utoipa::ToSchema for ImageBytes {}
+
+/// Changes the name that the caller's account shows.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/account",
+    tag = "account",
+    request_body = UpdateProfile,
+    security(("session" = [])),
+    responses((status = 200, body = OwnAccount), ApiError)
+)]
+pub async fn update_own_account(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiJson(body): ApiJson<UpdateProfile>,
+) -> ApiResult<Json<OwnAccount>> {
+    let name = validate::name("name", &body.name)?;
+    let now = app.now();
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        access.require(Request::OwnAccount)?;
+        let changed = sqlx::query("update accounts set name = $2 where id = $1 and name <> $2")
+            .bind(access.account_id)
+            .bind(&name)
+            .execute(&mut *connection)
+            .await?;
+        if changed.rows_affected() > 0 {
+            store::announce_profile(connection, now, access.account_id).await?;
+        }
+        store::own_account(connection, &access).await
+    })
+    .map(Json)
+}
+
+/// Stores the avatar of the caller's account. The body is the image itself: a still PNG,
+/// JPEG or WebP image of at most 262144 bytes and at most 1024 by 1024 pixels. The server
+/// reads the format from the bytes, not from `Content-Type`.
+#[utoipa::path(
+    put,
+    path = "/api/v1/account/avatar",
+    tag = "account",
+    request_body(content(
+        (inline(ImageBytes) = "image/png"),
+        (inline(ImageBytes) = "image/jpeg"),
+        (inline(ImageBytes) = "image/webp")
+    )),
+    security(("session" = [])),
+    responses((status = 200, body = Avatar), ApiError)
+)]
+pub async fn set_avatar(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    body: Bytes,
+) -> ApiResult<Json<Avatar>> {
+    let limits = &app.config.limits;
+    let inspected = || {
+        if body.len() > limits.avatar_bytes {
+            return Err(ApiError::new(
+                ErrorCode::ImageTooLarge,
+                format!("an avatar has at most {} bytes", limits.avatar_bytes),
+            ));
+        }
+        let longest = limits.avatar_longest_side;
+        let stated = image::inspect(&body)
+            .filter(|image| image.width <= longest && image.height <= longest)
+            .ok_or_else(|| {
+                ApiError::new(
+                    ErrorCode::ImageUnsupported,
+                    format!(
+                        "an avatar is a still PNG, JPEG or WebP image of at most {longest} by \
+                         {longest} pixels"
+                    ),
+                )
+            })?;
+        let width = i32::try_from(stated.width).map_err(|error| ApiError::internal(&error))?;
+        let height = i32::try_from(stated.height).map_err(|error| ApiError::internal(&error))?;
+        let hash: [u8; 32] = Sha256::digest(&body).into();
+        Ok((stated.kind, width, height, hash))
+    };
+    let now = app.now();
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        access.require(Request::OwnAccount)?;
+        let (kind, width, height, hash) = inspected()?;
+        let stored: Option<Vec<u8>> =
+            sqlx::query_scalar("select hash from account_avatars where account_id = $1")
+                .bind(access.account_id)
+                .fetch_optional(&mut *connection)
+                .await?;
+        if stored.as_deref() != Some(hash.as_slice()) {
+            sqlx::query(
+                "insert into account_avatars
+                     (account_id, media_type, content, hash, width, height, updated_at)
+                 values ($1, $2, $3, $4, $5, $6, $7)
+                 on conflict (account_id) do update set
+                     media_type = excluded.media_type,
+                     content = excluded.content,
+                     hash = excluded.hash,
+                     width = excluded.width,
+                     height = excluded.height,
+                     updated_at = excluded.updated_at",
+            )
+            .bind(access.account_id)
+            .bind(kind.media_type())
+            .bind(body.as_ref())
+            .bind(hash.as_slice())
+            .bind(width)
+            .bind(height)
+            .bind(now)
+            .execute(&mut *connection)
+            .await?;
+            store::announce_profile(connection, now, access.account_id).await?;
+        }
+        store::avatar_of(connection, access.account_id)
+            .await?
+            .ok_or_else(ApiError::not_found)
+    })
+    .map(Json)
+}
+
+/// Removes the avatar of the caller's account.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/account/avatar",
+    tag = "account",
+    security(("session" = [])),
+    responses((status = 204), ApiError)
+)]
+pub async fn remove_avatar(State(app): State<AppState>, bearer: Bearer) -> ApiResult<StatusCode> {
+    let now = app.now();
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        access.require(Request::OwnAccount)?;
+        let removed = sqlx::query("delete from account_avatars where account_id = $1")
+            .bind(access.account_id)
+            .execute(&mut *connection)
+            .await?;
+        if removed.rows_affected() > 0 {
+            store::announce_profile(connection, now, access.account_id).await?;
+        }
+        Ok(())
+    })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// The name and the avatar of an account that the caller may see: its own, an account in a
+/// workspace that the caller is a member of, or any account for a caller with `ban_members`.
+#[utoipa::path(
+    get,
+    path = "/api/v1/accounts/{account_id}/profile",
+    tag = "account",
+    params(("account_id" = AccountId, Path)),
+    security(("session" = [])),
+    responses((status = 200, body = AccountProfile), ApiError)
+)]
+pub async fn get_profile(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath(account_id): ApiPath<AccountId>,
+) -> ApiResult<Json<AccountProfile>> {
+    let now = app.now();
+    read!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        require_sight(connection, &access, account_id).await?;
+        store::profile_of(connection, account_id)
+            .await?
+            .ok_or_else(ApiError::not_found)
+    })
+    .map(Json)
+}
+
+/// An account that the caller may not see is answered like an account that does not exist.
+async fn require_sight(
+    connection: &mut sqlx::PgConnection,
+    access: &Access,
+    account_id: AccountId,
+) -> ApiResult<()> {
+    let acquaintance = store::acquaintance(connection, access, account_id).await?;
+    if access.allows(Request::ViewAccount(acquaintance)) {
+        Ok(())
+    } else {
+        Err(ApiError::not_found())
+    }
+}
+
+/// The avatar of an account that the caller may see, as the stored image.
+#[utoipa::path(
+    get,
+    path = "/api/v1/accounts/{account_id}/avatar",
+    tag = "account",
+    params(("account_id" = AccountId, Path)),
+    security(("session" = [])),
+    responses(
+        (status = 200, description = "The image. `ETag` carries its hash.", content(
+            (inline(ImageBytes) = "image/png"),
+            (inline(ImageBytes) = "image/jpeg"),
+            (inline(ImageBytes) = "image/webp")
+        )),
+        ApiError
+    )
+)]
+pub async fn get_avatar(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath(account_id): ApiPath<AccountId>,
+) -> ApiResult<Response> {
+    let now = app.now();
+    let (media_type, content, hash): (String, Vec<u8>, Vec<u8>) = read!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        require_sight(connection, &access, account_id).await?;
+        let row = sqlx::query_as(
+            "select media_type, content, hash from account_avatars where account_id = $1",
+        )
+        .bind(account_id)
+        .fetch_optional(&mut *connection)
+        .await?;
+        row.ok_or_else(ApiError::not_found)
+    })?;
+    let tag: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
+    let header =
+        |text: &str| HeaderValue::from_str(text).map_err(|error| ApiError::internal(&error));
+    Ok((
+        [
+            (CONTENT_TYPE, header(&media_type)?),
+            (ETAG, header(&format!("\"{tag}\""))?),
+            (CACHE_CONTROL, HeaderValue::from_static("private, no-cache")),
+            (X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff")),
+        ],
+        content,
+    )
+        .into_response())
 }
 
 /// The devices of the caller's account.
@@ -151,7 +403,14 @@ pub async fn remove_device(
             ));
         }
         let sessions = Sessions::OfDevice(device_id);
-        store::record_ended(connection, now, sessions, SessionEnd::DeviceRemoved).await?;
+        store::record_ended(
+            connection,
+            &app.calls,
+            now,
+            sessions,
+            SessionEnd::DeviceRemoved,
+        )
+        .await?;
         sqlx::query("delete from devices where id = $1")
             .bind(device_id)
             .execute(&mut *connection)
@@ -181,6 +440,61 @@ pub async fn list_recoveries(
         store::recoveries_of(connection, access.account_id).await
     })
     .map(Json)
+}
+
+/// The recoveries of the account that the calling device has not acknowledged. A login does
+/// not remove them.
+#[utoipa::path(
+    get,
+    path = "/api/v1/account/recovery-notices",
+    tag = "account",
+    security(("session" = [])),
+    responses((status = 200, body = [RecoveryNotice]), ApiError)
+)]
+pub async fn list_recovery_notices(
+    State(app): State<AppState>,
+    bearer: Bearer,
+) -> ApiResult<Json<Vec<RecoveryNotice>>> {
+    let now = app.now();
+    read!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        access.require(Request::OwnAccount)?;
+        store::recovery_notices_of(connection, access.device_id).await
+    })
+    .map(Json)
+}
+
+/// States that the calling device has shown a recovery to its user. The notice of that
+/// recovery is removed for this device only.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/account/recovery-notices/{recovery_id}",
+    tag = "account",
+    params(("recovery_id" = RecoveryId, Path)),
+    security(("session" = [])),
+    responses((status = 204), ApiError)
+)]
+pub async fn acknowledge_recovery_notice(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath(recovery_id): ApiPath<RecoveryId>,
+) -> ApiResult<StatusCode> {
+    let now = app.now();
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        access.require(Request::OwnAccount)?;
+        let acknowledged =
+            sqlx::query("delete from recovery_notices where recovery_id = $1 and device_id = $2")
+                .bind(recovery_id)
+                .bind(access.device_id)
+                .execute(&mut *connection)
+                .await?;
+        if acknowledged.rows_affected() == 0 {
+            return Err(ApiError::not_found());
+        }
+        Ok(())
+    })?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Sent by a new device. Returns the one-time code that a device of the account approves.

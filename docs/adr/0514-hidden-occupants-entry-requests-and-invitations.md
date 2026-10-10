@@ -1,0 +1,55 @@
+# 0514. Hidden occupants, the lock, requests to enter and invitations
+
+## Status
+
+Accepted
+
+## Context
+
+ADR 0504 decides the privacy of a voice channel: a user limit, a lock, a setting that hides who is inside, requests to enter, and invitations. It leaves open what exactly a person outside a hidden voice channel can learn, what counts for the user limit, how long an accepted person can enter, and how long an invitation waits.
+
+## Decision
+
+User limit and lock:
+
+- The user limit of a voice channel is from 1 to 99, or absent. It counts the members of the call and the people on their way in by a move (ADR 0511).
+- A person inside a voice channel with "lock room" locks and unlocks it. The lock belongs to the call and ends with it, so an empty voice channel is never locked.
+- The user limit and the hide setting are changed with "manage channel". The change is in the audit log as `channel_call_settings_updated`.
+- A person who is in the call keeps the place when the channel is locked or the limit is lowered.
+
+Hidden occupants:
+
+- A voice channel that hides who is inside shows the people outside one thing: whether it is in use.
+- The people outside get `call_started` and `call_ended` and no other event of the call. The route of the call and the snapshot give them no participant, no lock and no meeting.
+- A person is inside when the record of the call has a member row for the account (ADR 0510).
+- The rule holds for every account outside, the server owner and administrators included. The setting is a promise to the people inside about who knows that they are there. A role that reads the occupants from outside would make the promise depend on who holds roles, which the people inside cannot see. An administrator who needs to know enters the voice channel, and is then visible to the people inside.
+- A moderator who is outside gets `not_in_call` for every block, removal and move in that voice channel, whoever the request names. The answer does not depend on who is inside.
+- The decision is made when an event is delivered (ADR 0011), with the setting and the members of that moment.
+
+Requests to enter:
+
+- A person with access to a locked or full voice channel asks to enter. One request per person waits, and at most 50 per call.
+- The people inside get the request. Anyone inside accepts or denies. The first answer applies; a second one gets `conflict`.
+- A request without an answer ends after 60 seconds.
+- An accepted person can enter once within 60 seconds of the acceptance. The entry passes the lock and the user limit.
+- The person who asked gets the outcome in `call_entry_answered`, with the identifier of the request and without the account that answered, the channel or a person inside (ADR 0510).
+
+Invitations:
+
+- A person inside a voice channel invites an account that has access to the channel and that the person may see.
+- An invitation waits 60 seconds. At most 50 invitations per call wait.
+- One invitation per invited account waits in a call. A new invitation of the same account replaces the earlier one: the earlier one ends with `call_invitation_resolved` and `cancelled` for the invited account and for the account that made it.
+- The invited account and the inviting account both get `call_invited`.
+- The invited account accepts or declines; the inviting account can withdraw. Each of the three needs that the account may be at the voice channel at that time. An account that may not gets `not_found` and the invitation stays as it is, so the answer does not tell whether the invitation still waits.
+- The acceptance checks the access of the invited account again and then enters the call. It passes the lock and the user limit, and no permission (ADR 0301).
+- A direct-message call invites the other account in the same way when the first account enters (ADR 0501). That invitation has the class of call invites and reaches a background connection (ADR 0107). ADR 0515 limits these rings.
+- An invitation or a request to enter of an account that loses the voice channel ends at the next admission check, without an outcome for that account (ADR 0510).
+
+## Consequences
+
+- A person outside a hidden voice channel learns that it is in use, and learns from the answer to a join whether it is locked or full.
+- An invitation shows the invited account one person inside: the one who invited.
+- A moderator must enter a hidden voice channel to moderate it.
+- A person who was accepted and waits longer than 60 seconds asks again.
+- An invitation into a voice channel that the invited account can no longer see is not delivered and cannot be accepted. The account gets `call_access_ended` and no outcome of the invitation.
+- A voice channel can hold more people than its limit after an invitation, an accepted request or a move.

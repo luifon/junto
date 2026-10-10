@@ -96,13 +96,11 @@ async fn the_number_of_opened_streams_per_account_is_limited() {
 
 #[tokio::test]
 async fn a_connection_that_does_not_subscribe_in_time_is_closed() {
-    let server = TestServer::start_with(|config| {
-        config.limits.stream.subscribe_timeout = milliseconds(300);
-    })
-    .await;
+    let server = TestServer::start().await;
     let owner = server.owner().await;
-    let mut silent = server.stream(&owner).await;
     let mut subscribed = server.subscribed(&owner, Level::Full).await;
+    server.tighten_streams(|limits| limits.subscribe_timeout = milliseconds(300));
+    let mut silent = server.stream(&owner).await;
 
     assert_eq!(closed_with(&mut silent).await, Some(CloseCode::Idle));
     assert_eq!(subscribed.within(Duration::from_millis(400)).await, None);
@@ -121,27 +119,45 @@ async fn a_connection_that_does_not_subscribe_in_time_is_closed() {
     assert_eq!(closed_with(&mut subscribed).await, Some(CloseCode::Idle));
 }
 
+/// Reads `stream` until `done` resolves; reading answers the pings of the server. Fails
+/// when the stream gets a message or ends in that time.
+async fn quiet_until<T>(stream: &mut Stream, done: impl Future<Output = T>) -> T {
+    tokio::select! {
+        biased;
+        done = done => done,
+        frame = stream.next() => panic!("the answering client got {frame:?}"),
+    }
+}
+
 #[tokio::test]
 async fn a_client_that_answers_no_ping_is_closed_as_idle() {
-    let server = TestServer::start_with(|config| {
-        config.limits.stream.heartbeat = milliseconds(100);
-        config.limits.stream.idle_timeout = milliseconds(400);
-    })
-    .await;
+    let server = TestServer::start().await;
     let owner = server.owner().await;
-    let mut answering = server.subscribed(&owner, Level::Full).await;
+    let idle = milliseconds(2_000);
+    server.tighten_streams(|limits| {
+        limits.heartbeat = milliseconds(100);
+        limits.idle_timeout = idle;
+        limits.close_timeout = milliseconds(300);
+        limits.client_frames.attempts = 10_000;
+    });
     let mut silent = server.subscribed(&owner, Level::Full).await;
+    silent.answer_nothing();
+    let mut answering = server.subscribed(&owner, Level::Full).await;
+    let subscribed = tokio::time::Instant::now();
 
-    assert_eq!(answering.within(Duration::from_millis(1_200)).await, None);
-    assert_eq!(closed_with(&mut silent).await, Some(CloseCode::Idle));
-    assert_eq!(answering.within(Duration::from_millis(300)).await, None);
-    until_connections(&server, &owner, 1).await;
+    let closed = quiet_until(&mut answering, silent.until_closed()).await;
+    assert_eq!(closed, (vec![], Some(CloseCode::Idle)));
+    quiet_until(&mut answering, until_connections(&server, &owner, 1)).await;
+    let twice_the_idle_time = tokio::time::sleep_until(subscribed + 2 * idle.unsigned_abs());
+    quiet_until(&mut answering, twice_the_idle_time).await;
+    answering.subscribe(Level::Full, None).await;
 }
 
 #[tokio::test]
 async fn a_checkpoint_moves_the_cursor_past_events_that_the_connection_may_not_receive() {
     let server = TestServer::start_with(|config| {
         config.limits.stream.heartbeat = milliseconds(100);
+        config.limits.stream.client_frames.attempts = 10_000;
         config.limits.stream.replay_most_events = 3;
     })
     .await;
@@ -305,7 +321,11 @@ async fn the_health_route_reports_the_database() {
         .await;
     assert_eq!(
         reply.ok::<Health>(StatusCode::OK),
-        Health { database: true }
+        Health {
+            database: true,
+            media_server: None,
+            failing_call_rooms: 0,
+        }
     );
 
     server.state.database.close().await;

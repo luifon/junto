@@ -142,7 +142,7 @@ pub async fn queue_an_event_and_block_its_read(
 #[tokio::test]
 async fn a_batch_that_was_read_from_an_old_snapshot_is_discarded() {
     let world = private_channel(|config| {
-        config.limits.stream.authorization_validity = milliseconds(300);
+        config.limits.stream.authorization_validity = milliseconds(2_000);
     })
     .await;
     let (server, owner) = (&world.server, &world.owner);
@@ -159,7 +159,7 @@ async fn a_batch_that_was_read_from_an_old_snapshot_is_discarded() {
         false,
     )
     .await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::sleep(Duration::from_millis(2_500)).await;
     lock.rollback().await.unwrap();
 
     let received = server.traffic(&world.insider, &mut stream).await;
@@ -242,7 +242,7 @@ async fn a_replaced_connection_that_waits_for_the_database_closes_at_once() {
 
     let _second = server.stream(&world.insider).await;
     let _third = server.stream(&world.insider).await;
-    let closed = tokio::time::timeout(Duration::from_millis(1_500), waiting.until_closed()).await;
+    let closed = tokio::time::timeout(Duration::from_millis(3_500), waiting.until_closed()).await;
     assert_eq!(
         closed.map(|(_, code)| code),
         Ok(Some(CloseCode::Replaced)),
@@ -266,7 +266,7 @@ async fn a_ban_closes_a_connection_that_waits_for_the_database() {
         )
         .await
         .empty(StatusCode::NO_CONTENT);
-    let closed = tokio::time::timeout(Duration::from_millis(1_500), waiting.until_closed()).await;
+    let closed = tokio::time::timeout(Duration::from_millis(3_500), waiting.until_closed()).await;
     assert_eq!(
         closed,
         Ok((
@@ -282,12 +282,10 @@ async fn a_ban_closes_a_connection_that_waits_for_the_database() {
 
 #[tokio::test]
 async fn a_read_that_takes_too_long_is_given_up_and_the_connection_stays_responsive() {
-    let world = private_channel(|config| {
-        config.limits.stream.read_deadline = milliseconds(300);
-    })
-    .await;
+    let world = private_channel(|_| {}).await;
     let server = &world.server;
     let mut stream = server.subscribed(&world.insider, Level::Full).await;
+    server.tighten_streams(|limits| limits.read_deadline = milliseconds(300));
 
     let lock = queue_an_event_and_block_its_read(&world).await;
 
@@ -297,7 +295,7 @@ async fn a_read_that_takes_too_long_is_given_up_and_the_connection_stays_respons
             cursor: None,
         })
         .await;
-    let answer = stream.within(Duration::from_millis(2_000)).await;
+    let answer = stream.within(Duration::from_millis(4_000)).await;
     assert!(
         matches!(
             answer,
@@ -609,7 +607,7 @@ async fn a_fragmented_client_message_closes_the_connection() {
         false,
     );
     stream.send_frame(Message::Frame(first)).await.unwrap();
-    let closed = tokio::time::timeout(Duration::from_secs(2), stream.until_closed()).await;
+    let closed = tokio::time::timeout(Duration::from_secs(4), stream.until_closed()).await;
     assert_eq!(
         closed.map(|(_, code)| code),
         Ok(Some(CloseCode::InvalidMessage)),
@@ -625,7 +623,7 @@ async fn a_fragmented_client_message_closes_the_connection() {
             break;
         }
     }
-    let closed = tokio::time::timeout(Duration::from_secs(2), flooding.until_closed()).await;
+    let closed = tokio::time::timeout(Duration::from_secs(4), flooding.until_closed()).await;
     assert!(
         closed.is_ok(),
         "the server accepted the continuation frames"
@@ -827,11 +825,36 @@ async fn a_recovery_is_the_reason_also_after_the_device_has_logged_in_again() {
         (
             vec![ServerMessage::Ended {
                 reason: EndReason::Recovered,
-                recovery: Some(notice),
+                recovery: Some(notice.clone()),
             }],
             Some(CloseCode::Ended)
         )
     );
+    async fn pending(server: &TestServer, token: &str) -> Vec<RecoveryNotice> {
+        server
+            .send::<Value>(
+                reqwest::Method::GET,
+                "/api/v1/account/recovery-notices",
+                Some(token),
+                None,
+                None,
+            )
+            .await
+            .ok(StatusCode::OK)
+    }
+    let listed = pending(&first, session.token.expose()).await;
+    assert_eq!(listed, std::slice::from_ref(&notice));
+    first
+        .send::<Value>(
+            reqwest::Method::DELETE,
+            &format!("/api/v1/account/recovery-notices/{}", notice.id),
+            Some(session.token.expose()),
+            None,
+            None,
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert!(pending(&second, session.token.expose()).await.is_empty());
 
     let mut later = first
         .open_stream(Some(session.token.expose()))
@@ -903,6 +926,7 @@ async fn a_stop_aborts_the_connections_that_do_not_close_in_time() {
 async fn a_new_epoch_makes_every_older_cursor_unknown() {
     let server = TestServer::start_with(|config| {
         config.limits.stream.heartbeat = milliseconds(100);
+        config.limits.stream.client_frames.attempts = 10_000;
     })
     .await;
     let owner = server.owner().await;

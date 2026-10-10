@@ -51,9 +51,9 @@ pub async fn open_event_stream(
     let link = registration.link().clone();
     let response = upgrade.response();
     let task = tokio::spawn(async move {
-        let limits = &app.config.limits.stream;
+        let limits = app.streams.limits();
         let upgraded =
-            tokio::time::timeout(limits.send_timeout.unsigned_abs(), upgrade.socket(limits));
+            tokio::time::timeout(limits.send_timeout.unsigned_abs(), upgrade.socket(&limits));
         match upgraded.await {
             Ok(Ok(socket)) => connection::run(app, socket, who, epoch, registration).await,
             Ok(Err(error)) => tracing::debug!(%error, "a WebSocket upgrade did not complete"),

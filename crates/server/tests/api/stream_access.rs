@@ -83,6 +83,8 @@ async fn the_background_level_receives_control_events_only() {
     let channel = server.channel(&owner, workspace.id, "plans").await;
     rename_channel(&server, &owner, channel.id, "roadmap").await;
     set_roles(&server, &owner, workspace.id, &member, &helpers, true).await;
+    let mut in_full = full.events(5).await;
+    let mut in_background = background.events(1).await;
     server
         .delete(&owner, &format!("/api/v1/channels/{}", channel.id))
         .await
@@ -96,7 +98,7 @@ async fn the_background_level_receives_control_events_only() {
         .await
         .ok::<Workspace>(StatusCode::OK);
 
-    let in_background = server.traffic(&member, &mut background).await;
+    in_background.extend(server.traffic(&member, &mut background).await);
     assert_eq!(
         types(&in_background),
         ["permissions_changed", "channel_deleted"]
@@ -107,7 +109,7 @@ async fn the_background_level_receives_control_events_only() {
             workspace_id: Some(workspace.id)
         }
     );
-    let in_full = server.traffic(&member, &mut full).await;
+    in_full.extend(server.traffic(&member, &mut full).await);
     assert_eq!(
         types(&in_full),
         [
@@ -138,11 +140,10 @@ async fn an_account_in_a_call_receives_every_event_of_the_channel_of_the_call() 
     let other = server.channel(&owner, workspace.id, "other").await;
     let mut background = server.subscribed(&member, Level::Background).await;
 
-    server
-        .state
-        .streams
-        .calls()
-        .enter(member.account_id, call.id);
+    server.state.streams.calls().enter(
+        member.account_id,
+        junto_server::events::hub::CallKey::Channel(call.id),
+    );
     rename_channel(&server, &owner, other.id, "other-2").await;
     rename_channel(&server, &owner, call.id, "call-2").await;
     server.category(&owner, workspace.id, "Projects", 0).await;
@@ -303,6 +304,46 @@ async fn an_event_that_is_not_written_in_time_is_decided_again() {
     );
 }
 
+/// An event about a channel that is delivered after the deletion of the channel reaches
+/// nobody: a delivery decides with the state of its moment (ADR 0011). The deletion reaches
+/// the accounts that saw the channel.
+#[tokio::test]
+async fn events_about_a_channel_that_wait_until_after_its_deletion_reach_nobody() {
+    let world = private_channel().await;
+    let (server, owner) = (&world.server, &world.owner);
+    let channel_id = world.channel.id;
+    let other_role = role(server, owner, world.workspace.id, "guests").await;
+    let mut inside = server.subscribed(&world.insider, Level::Full).await;
+    let mut outside = server.subscribed(&world.outsider, Level::Full).await;
+    let mut managing = server.subscribed(owner, Level::Full).await;
+
+    server.state.streams.hold();
+    rename_channel(server, owner, channel_id, "secret-renamed").await;
+    server
+        .put(
+            owner,
+            &format!("/api/v1/channels/{channel_id}/overrides/{}", other_role.id),
+            &json!({ "deny": ["manage_messages"] }),
+        )
+        .await
+        .ok::<Value>(StatusCode::OK);
+    server
+        .delete(owner, &format!("/api/v1/channels/{channel_id}"))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    server.state.streams.release();
+
+    let to_insider = server.traffic(&world.insider, &mut inside).await;
+    assert_eq!(types(&to_insider), ["channel_deleted"]);
+    let to_manager = server.traffic(owner, &mut managing).await;
+    assert_eq!(types(&to_manager), ["channel_deleted"]);
+    assert!(!inside.raw.join("\n").contains("secret-renamed"));
+    server.traffic(&world.outsider, &mut outside).await;
+    let traffic = outside.raw.join("\n");
+    assert!(!traffic.contains(&channel_id.to_string()), "{traffic}");
+    assert!(!traffic.contains("secret"), "{traffic}");
+}
+
 #[tokio::test]
 async fn a_permission_granted_while_events_wait_shows_them() {
     let world = private_channel().await;
@@ -368,17 +409,19 @@ async fn nothing_about_a_private_channel_reaches_an_account_that_cannot_see_it()
         )
         .await
         .ok::<Value>(StatusCode::OK);
+    let mut to_manager = managing.events(3).await;
+    let mut to_insider = inside.events(2).await;
     server
         .delete(owner, &format!("/api/v1/channels/{channel_id}"))
         .await
         .empty(StatusCode::NO_CONTENT);
 
-    let to_insider = server.traffic(&world.insider, &mut inside).await;
+    to_insider.extend(server.traffic(&world.insider, &mut inside).await);
     assert_eq!(
         types(&to_insider),
         ["channel_updated", "channel_updated", "channel_deleted"]
     );
-    let to_manager = server.traffic(owner, &mut managing).await;
+    to_manager.extend(server.traffic(owner, &mut managing).await);
     assert_eq!(
         types(&to_manager),
         [
@@ -464,6 +507,8 @@ async fn the_events_of_a_workspace_reach_its_members_and_administrators_only() {
         .await
         .empty(StatusCode::NO_CONTENT);
     set_roles(&server, &owner, closed.id, &newcomer, &helpers, true).await;
+    let mut to_owner = inside.events(5).await;
+    let mut to_administrator = overseeing.events(5).await;
     server
         .delete(&owner, &format!("/api/v1/channels/{}", channel.id))
         .await
@@ -477,11 +522,10 @@ async fn the_events_of_a_workspace_reach_its_members_and_administrators_only() {
         "workspace_member_roles_changed",
         "channel_deleted",
     ];
-    assert_eq!(types(&server.traffic(&owner, &mut inside).await), expected);
-    assert_eq!(
-        types(&server.traffic(&administrator, &mut overseeing).await),
-        expected
-    );
+    to_owner.extend(server.traffic(&owner, &mut inside).await);
+    assert_eq!(types(&to_owner), expected);
+    to_administrator.extend(server.traffic(&administrator, &mut overseeing).await);
+    assert_eq!(types(&to_administrator), expected);
     assert!(server.traffic(&stranger, &mut outside).await.is_empty());
     let traffic = outside.raw.join("\n");
     assert!(!traffic.contains(&closed.id.to_string()));
@@ -782,6 +826,7 @@ async fn the_end_of_a_session_closes_its_connections_and_no_other() {
 async fn a_session_that_expires_closes_its_connection() {
     let server = TestServer::start_with(|config| {
         config.limits.stream.heartbeat = time::Duration::milliseconds(100);
+        config.limits.stream.client_frames.attempts = 10_000;
     })
     .await;
     let owner = server.owner().await;

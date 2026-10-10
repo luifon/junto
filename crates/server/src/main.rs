@@ -106,6 +106,11 @@ async fn serve(config: Config) -> Result<(), Failure> {
     }
 
     let state = prepared.state;
+    if state.config.public_origins.is_local_only() {
+        tracing::warn!(
+            "JUNTO_PUBLIC_ORIGINS is not set: devices can log in through a loopback address only"
+        );
+    }
     let listener = TcpListener::bind(listen_address).await?;
     tracing::info!(address = %listener.local_addr()?, "listening");
     let maintenance = tokio::spawn(maintenance::run(state.clone()));

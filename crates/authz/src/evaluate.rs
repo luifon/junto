@@ -1,7 +1,7 @@
 use crate::model::{
-    Actor, AuditScope, Authorship, ChannelContent, ChannelGrant, ChannelScope, Decision, Denial,
-    Membership, MessagePlace, Participation, Permanence, Position, Reach, Request, Target,
-    WorkspaceScope,
+    Acquaintance, Actor, AuditScope, Authorship, ChannelContent, ChannelGrant, ChannelScope,
+    Contact, Decision, Denial, Membership, MessagePlace, Participation, Permanence, Position,
+    Reach, Request, Target, WorkspaceScope,
 };
 use crate::permissions::{ServerPermission, WorkspacePermission, WorkspacePermissions};
 
@@ -61,6 +61,8 @@ fn apply_limits<'a>(actor: &Actor, request: &Request<'a>) -> Limited<'a> {
     match *request {
         Request::DirectMessage(Participation::Participant) => allow,
         Request::DirectMessage(Participation::Outsider) => deny(Denial::NotParticipant),
+        Request::Contact(Contact::SharedWorkspace | Contact::Administrator) => allow,
+        Request::Contact(Contact::Unrelated) => Limited::Open(Check::Administrator),
 
         Request::EditMessage {
             permanence: Permanence::Permanent,
@@ -112,6 +114,10 @@ fn apply_limits<'a>(actor: &Actor, request: &Request<'a>) -> Limited<'a> {
         } => Limited::Open(Check::Server(ServerPermission::BanMembers)),
 
         Request::OwnAccount => allow,
+        Request::ViewAccount(Acquaintance::Own | Acquaintance::SharedWorkspace) => allow,
+        Request::ViewAccount(Acquaintance::Unrelated) => {
+            Limited::Open(Check::Server(ServerPermission::BanMembers))
+        }
 
         Request::Server(permission) => Limited::Open(Check::Server(permission)),
         Request::ManageServerRoles { .. } => Limited::Open(Check::Administrator),

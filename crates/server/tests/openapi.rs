@@ -90,3 +90,21 @@ fn routes_without_a_session_are_the_ones_a_device_uses_before_it_has_one() {
         ]
     );
 }
+
+#[test]
+fn the_avatar_routes_describe_the_image_as_binary_content() {
+    let document: serde_json::Value =
+        serde_json::from_str(&junto_server::openapi_document().unwrap()).unwrap();
+    let binary = serde_json::json!({ "type": "string", "format": "binary" });
+    let upload = &document["paths"]["/api/v1/account/avatar"]["put"]["requestBody"]["content"];
+    let upload = upload.as_object().unwrap();
+    assert!(!upload.is_empty());
+    for (media_type, content) in upload {
+        assert_eq!(content["schema"], binary, "{media_type}");
+    }
+    let served = &document["paths"]["/api/v1/accounts/{account_id}/avatar"]["get"]["responses"]["200"]
+        ["content"];
+    for media_type in ["image/png", "image/jpeg", "image/webp"] {
+        assert_eq!(served[media_type]["schema"], binary, "{media_type}");
+    }
+}

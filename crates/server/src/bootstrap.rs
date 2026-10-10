@@ -23,6 +23,8 @@ pub const DEFAULT_VOICE_CHANNEL_NAME: &str = "voice";
 pub enum StartError {
     #[error("database migration failed: {0}")]
     Migration(#[from] sqlx::migrate::MigrateError),
+    #[error("the client of the media server could not be built: {0}")]
+    MediaServer(String),
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
     #[error(transparent)]

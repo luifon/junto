@@ -27,6 +27,25 @@
       ],
       "type": "object"
     },
+    "account_profile_updated": {
+      "description": "The name or the avatar of an account that the recipient may see has changed.",
+      "properties": {
+        "profile": {
+          "$ref": "#/components/schemas/AccountProfile"
+        },
+        "type": {
+          "enum": [
+            "account_profile_updated"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "profile",
+        "type"
+      ],
+      "type": "object"
+    },
     "account_recovered": {
       "description": "The server owner gave a new device access to the account of the recipient.",
       "properties": {
@@ -89,6 +108,445 @@
       "required": [
         "account_id",
         "status",
+        "type"
+      ],
+      "type": "object"
+    },
+    "call_access_ended": {
+      "description": "The account of the recipient lost the access to a voice channel, or can no longer\nreach the other account of a direct message, while something of it waited there: an\ninvitation that it got or made, a request to enter, a move, or a direct-message call.\nThose have ended, and no outcome of them follows. The event names nothing: the client\ndiscards what it holds for the places that it can no longer see.",
+      "properties": {
+        "type": {
+          "enum": [
+            "call_access_ended"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "call_ended": {
+      "description": "Nobody is in the call any more. Its lock, its blocks, its requests and its\ninvitations have ended with it.",
+      "properties": {
+        "call_id": {
+          "$ref": "#/components/schemas/CallId"
+        },
+        "place": {
+          "$ref": "#/components/schemas/CallPlace"
+        },
+        "type": {
+          "enum": [
+            "call_ended"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id",
+        "place",
+        "type"
+      ],
+      "type": "object"
+    },
+    "call_entry_answered": {
+      "description": "The request of the recipient to enter a voice channel has ended. The event names the\nrequest and nothing of the channel, so it also reaches an account that can no longer\nsee the channel.",
+      "properties": {
+        "outcome": {
+          "$ref": "#/components/schemas/EntryOutcome"
+        },
+        "request_id": {
+          "$ref": "#/components/schemas/EntryRequestId"
+        },
+        "type": {
+          "enum": [
+            "call_entry_answered"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id",
+        "outcome",
+        "type"
+      ],
+      "type": "object"
+    },
+    "call_entry_requested": {
+      "description": "A person outside asks to enter a locked or full voice channel. Anyone inside answers.",
+      "properties": {
+        "request": {
+          "$ref": "#/components/schemas/EntryRequest"
+        },
+        "type": {
+          "enum": [
+            "call_entry_requested"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "request",
+        "type"
+      ],
+      "type": "object"
+    },
+    "call_entry_resolved": {
+      "description": "A request to enter has ended. This event goes to the people inside the call.",
+      "properties": {
+        "account_id": {
+          "$ref": "#/components/schemas/AccountId"
+        },
+        "by": {
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/AccountId",
+              "description": "The person inside who answered."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "call_id": {
+          "$ref": "#/components/schemas/CallId"
+        },
+        "outcome": {
+          "$ref": "#/components/schemas/EntryOutcome"
+        },
+        "place": {
+          "$ref": "#/components/schemas/CallPlace"
+        },
+        "request_id": {
+          "$ref": "#/components/schemas/EntryRequestId"
+        },
+        "type": {
+          "enum": [
+            "call_entry_resolved"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id",
+        "call_id",
+        "place",
+        "account_id",
+        "outcome",
+        "type"
+      ],
+      "type": "object"
+    },
+    "call_invitation_resolved": {
+      "description": "An invitation that the recipient got or made has ended. The event names the\ninvitation and nothing of the call.",
+      "properties": {
+        "invitation_id": {
+          "$ref": "#/components/schemas/CallInvitationId"
+        },
+        "outcome": {
+          "$ref": "#/components/schemas/InvitationOutcome"
+        },
+        "type": {
+          "enum": [
+            "call_invitation_resolved"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "invitation_id",
+        "outcome",
+        "type"
+      ],
+      "type": "object"
+    },
+    "call_invited": {
+      "description": "The recipient is invited into a call, or the other participant of a direct message\ncalls. An account that cannot see the voice channel any more does not receive it.",
+      "properties": {
+        "invitation": {
+          "$ref": "#/components/schemas/CallInvitation"
+        },
+        "type": {
+          "enum": [
+            "call_invited"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "invitation",
+        "type"
+      ],
+      "type": "object"
+    },
+    "call_lock_changed": {
+      "properties": {
+        "call_id": {
+          "$ref": "#/components/schemas/CallId"
+        },
+        "lock": {
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/CallLock",
+              "description": "Absent: the voice channel is not locked."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "place": {
+          "$ref": "#/components/schemas/CallPlace"
+        },
+        "type": {
+          "enum": [
+            "call_lock_changed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id",
+        "place",
+        "type"
+      ],
+      "type": "object"
+    },
+    "call_meeting_ended": {
+      "description": "Meeting mode is off. Every microphone block in the call is removed, the ones that a\nmoderator set included.",
+      "properties": {
+        "call_id": {
+          "$ref": "#/components/schemas/CallId"
+        },
+        "place": {
+          "$ref": "#/components/schemas/CallPlace"
+        },
+        "reason": {
+          "$ref": "#/components/schemas/MeetingEnd"
+        },
+        "type": {
+          "enum": [
+            "call_meeting_ended"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id",
+        "place",
+        "reason",
+        "type"
+      ],
+      "type": "object"
+    },
+    "call_meeting_started": {
+      "description": "Meeting mode is on. Every participant except the presenter who had no microphone block\nhas one now, with the reason `meeting`.",
+      "properties": {
+        "call_id": {
+          "$ref": "#/components/schemas/CallId"
+        },
+        "meeting": {
+          "$ref": "#/components/schemas/Meeting"
+        },
+        "place": {
+          "$ref": "#/components/schemas/CallPlace"
+        },
+        "type": {
+          "enum": [
+            "call_meeting_started"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id",
+        "place",
+        "meeting",
+        "type"
+      ],
+      "type": "object"
+    },
+    "call_move_requested": {
+      "description": "A moderator moves the recipient into another voice channel. The device in the call\nasks for the join of the destination and joins it. An account that cannot see both\nvoice channels does not receive it.",
+      "properties": {
+        "move": {
+          "$ref": "#/components/schemas/CallMove"
+        },
+        "type": {
+          "enum": [
+            "call_move_requested"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "move",
+        "type"
+      ],
+      "type": "object"
+    },
+    "call_move_resolved": {
+      "description": "A move of the recipient, or one that the recipient asked for, has ended. The event\nnames the move and nothing of the two channels.",
+      "properties": {
+        "move_id": {
+          "$ref": "#/components/schemas/CallMoveId"
+        },
+        "outcome": {
+          "$ref": "#/components/schemas/MoveOutcome"
+        },
+        "type": {
+          "enum": [
+            "call_move_resolved"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "move_id",
+        "outcome",
+        "type"
+      ],
+      "type": "object"
+    },
+    "call_participant_joined": {
+      "description": "The media server lists a person whom the server allows in the call.",
+      "properties": {
+        "call_id": {
+          "$ref": "#/components/schemas/CallId"
+        },
+        "participant": {
+          "$ref": "#/components/schemas/CallParticipant"
+        },
+        "place": {
+          "$ref": "#/components/schemas/CallPlace"
+        },
+        "type": {
+          "enum": [
+            "call_participant_joined"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id",
+        "place",
+        "participant",
+        "type"
+      ],
+      "type": "object"
+    },
+    "call_participant_left": {
+      "properties": {
+        "account_id": {
+          "$ref": "#/components/schemas/AccountId"
+        },
+        "call_id": {
+          "$ref": "#/components/schemas/CallId"
+        },
+        "place": {
+          "$ref": "#/components/schemas/CallPlace"
+        },
+        "reason": {
+          "$ref": "#/components/schemas/LeaveReason"
+        },
+        "type": {
+          "enum": [
+            "call_participant_left"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id",
+        "place",
+        "account_id",
+        "reason",
+        "type"
+      ],
+      "type": "object"
+    },
+    "call_participant_updated": {
+      "description": "The own settings, the blocks, the raised hand or the screen share of a person in a\ncall changed. The event carries the whole participant.",
+      "properties": {
+        "call_id": {
+          "$ref": "#/components/schemas/CallId"
+        },
+        "participant": {
+          "$ref": "#/components/schemas/CallParticipant"
+        },
+        "place": {
+          "$ref": "#/components/schemas/CallPlace"
+        },
+        "type": {
+          "enum": [
+            "call_participant_updated"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id",
+        "place",
+        "participant",
+        "type"
+      ],
+      "type": "object"
+    },
+    "call_speaking": {
+      "description": "The people in a voice channel who speak now, as the clients inside report it. The\nlist replaces the one before. It is not sent for a channel that hides who is inside.",
+      "properties": {
+        "account_ids": {
+          "items": {
+            "$ref": "#/components/schemas/AccountId"
+          },
+          "type": "array"
+        },
+        "call_id": {
+          "$ref": "#/components/schemas/CallId"
+        },
+        "place": {
+          "$ref": "#/components/schemas/CallPlace"
+        },
+        "type": {
+          "enum": [
+            "call_speaking"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id",
+        "place",
+        "account_ids",
+        "type"
+      ],
+      "type": "object"
+    },
+    "call_started": {
+      "description": "The first person is in the room of a call: the voice channel is in use, or the\ndirect-message call has begun.",
+      "properties": {
+        "call_id": {
+          "$ref": "#/components/schemas/CallId"
+        },
+        "place": {
+          "$ref": "#/components/schemas/CallPlace"
+        },
+        "started_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "call_started"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id",
+        "place",
+        "started_at",
         "type"
       ],
       "type": "object"
@@ -346,6 +804,44 @@
       ],
       "type": "object"
     },
+    "direct_mute_removed": {
+      "description": "The account of the recipient turned the mute of a direct-message conversation off.",
+      "properties": {
+        "account_id": {
+          "$ref": "#/components/schemas/AccountId"
+        },
+        "type": {
+          "enum": [
+            "direct_mute_removed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "account_id",
+        "type"
+      ],
+      "type": "object"
+    },
+    "direct_mute_set": {
+      "description": "The account of the recipient muted its direct-message conversation with another\naccount, or changed the end of the mute.",
+      "properties": {
+        "mute": {
+          "$ref": "#/components/schemas/DirectMute"
+        },
+        "type": {
+          "enum": [
+            "direct_mute_set"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "mute",
+        "type"
+      ],
+      "type": "object"
+    },
     "invite_created": {
       "properties": {
         "invite": {
@@ -479,6 +975,43 @@
       "required": [
         "join_request_id",
         "state",
+        "type"
+      ],
+      "type": "object"
+    },
+    "own_call_changed": {
+      "description": "The call that the account of the recipient is in has changed. An event that names a\nvoice channel reaches the account only while it can see that channel; the event of a\nleave names no place.",
+      "properties": {
+        "call": {
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/OwnCall",
+              "description": "Absent: the account is in no call."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "left": {
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/LeaveReason",
+              "description": "Present when the account left a call: why."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "enum": [
+            "own_call_changed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
         "type"
       ],
       "type": "object"
@@ -735,6 +1268,32 @@
         "format": "uuid",
         "type": "string"
       },
+      "AccountProfile": {
+        "description": "What an account shows of itself to the accounts that may see it.",
+        "properties": {
+          "avatar": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Avatar"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/components/schemas/AccountId"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
+      },
       "AccountStatus": {
         "enum": [
           "active",
@@ -779,6 +1338,263 @@
         ],
         "type": "object"
       },
+      "Avatar": {
+        "description": "The stored avatar of an account. The image itself is read from\n`GET /api/v1/accounts/{account_id}/avatar`.",
+        "properties": {
+          "bytes": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "hash": {
+            "description": "The SHA-256 hash of the image in lower-case hexadecimal. It changes when the image\nchanges, so a client keeps the image for as long as it sees the same hash.",
+            "type": "string"
+          },
+          "height": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "media_type": {
+            "$ref": "#/components/schemas/ImageType"
+          },
+          "width": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "hash",
+          "media_type",
+          "bytes",
+          "width",
+          "height"
+        ],
+        "type": "object"
+      },
+      "BlockReason": {
+        "enum": [
+          "moderator",
+          "meeting"
+        ],
+        "type": "string"
+      },
+      "CallId": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "CallInvitation": {
+        "description": "An invitation into a call: from a person inside a voice channel, or the ringing of a\ndirect-message call.",
+        "properties": {
+          "account_id": {
+            "$ref": "#/components/schemas/AccountId"
+          },
+          "call_id": {
+            "$ref": "#/components/schemas/CallId"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "$ref": "#/components/schemas/CallInvitationId"
+          },
+          "invited_by": {
+            "$ref": "#/components/schemas/AccountId"
+          },
+          "place": {
+            "$ref": "#/components/schemas/CallPlace"
+          }
+        },
+        "required": [
+          "id",
+          "call_id",
+          "place",
+          "account_id",
+          "invited_by",
+          "created_at",
+          "expires_at"
+        ],
+        "type": "object"
+      },
+      "CallInvitationId": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "CallLock": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "by": {
+            "$ref": "#/components/schemas/AccountId"
+          }
+        },
+        "required": [
+          "by",
+          "at"
+        ],
+        "type": "object"
+      },
+      "CallMove": {
+        "description": "A move of a person from one voice channel to another. The person's device joins the\ndestination first; the server takes the person out of the source when it has seen that\njoin (ADR 0511).",
+        "properties": {
+          "account_id": {
+            "$ref": "#/components/schemas/AccountId"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "from": {
+            "$ref": "#/components/schemas/CallPlace"
+          },
+          "id": {
+            "$ref": "#/components/schemas/CallMoveId"
+          },
+          "moved_by": {
+            "$ref": "#/components/schemas/AccountId"
+          },
+          "to": {
+            "$ref": "#/components/schemas/CallPlace"
+          }
+        },
+        "required": [
+          "id",
+          "account_id",
+          "from",
+          "to",
+          "moved_by",
+          "expires_at"
+        ],
+        "type": "object"
+      },
+      "CallMoveId": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "CallParticipant": {
+        "description": "One person in a call. A block and the person's own setting are separate: removing a block\nreturns the microphone or the sound to `muted` or `deafened`.",
+        "properties": {
+          "account_id": {
+            "$ref": "#/components/schemas/AccountId"
+          },
+          "deafened": {
+            "description": "The person's own sound setting, as their client reports it.",
+            "type": "boolean"
+          },
+          "hand_raised": {
+            "type": "boolean"
+          },
+          "identity": {
+            "description": "The identity of the person's participant in the room of the media server.",
+            "type": "string"
+          },
+          "joined_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "microphone_block": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MicrophoneBlock"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "muted": {
+            "description": "The person's own microphone setting, as their client reports it.",
+            "type": "boolean"
+          },
+          "screen_share": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ScreenShare"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sound_block": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SoundBlock"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "account_id",
+          "identity",
+          "joined_at",
+          "muted",
+          "deafened",
+          "hand_raised"
+        ],
+        "type": "object"
+      },
+      "CallPlace": {
+        "description": "Where a call takes place.",
+        "oneOf": [
+          {
+            "properties": {
+              "channel_id": {
+                "$ref": "#/components/schemas/ChannelId"
+              },
+              "kind": {
+                "enum": [
+                  "channel"
+                ],
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            },
+            "required": [
+              "workspace_id",
+              "channel_id",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The direct message of two accounts. `low_account_id` is the smaller identifier.",
+            "properties": {
+              "high_account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "kind": {
+                "enum": [
+                  "direct"
+                ],
+                "type": "string"
+              },
+              "low_account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              }
+            },
+            "required": [
+              "low_account_id",
+              "high_account_id",
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "Category": {
         "properties": {
           "id": {
@@ -819,6 +1635,10 @@
               }
             ]
           },
+          "hides_occupants": {
+            "description": "True when a voice channel shows who is inside only to the people inside (ADR 0504).",
+            "type": "boolean"
+          },
           "id": {
             "$ref": "#/components/schemas/ChannelId"
           },
@@ -835,6 +1655,15 @@
           "position": {
             "format": "int32",
             "type": "integer"
+          },
+          "user_limit": {
+            "description": "The largest number of people in the call of a voice channel. Absent: no limit. A\nperson who is invited or moved in can pass it (ADR 0504).",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "workspace_id": {
             "$ref": "#/components/schemas/WorkspaceId"
@@ -928,6 +1757,27 @@
         ],
         "type": "string"
       },
+      "DirectMute": {
+        "description": "A muted direct-message conversation: the account that muted it gets no call invitation\nfrom the other account (ADR 0515).",
+        "properties": {
+          "account_id": {
+            "$ref": "#/components/schemas/AccountId",
+            "description": "The other account of the conversation."
+          },
+          "until": {
+            "description": "The time at which the mute ends. Absent: it lasts until it is turned off.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "account_id"
+        ],
+        "type": "object"
+      },
       "EndReason": {
         "description": "Why the server ended the access of a connection.",
         "enum": [
@@ -937,6 +1787,53 @@
           "recovered",
           "session_ended"
         ],
+        "type": "string"
+      },
+      "EntryOutcome": {
+        "enum": [
+          "accepted",
+          "denied",
+          "expired",
+          "cancelled"
+        ],
+        "type": "string"
+      },
+      "EntryRequest": {
+        "description": "A request of a person outside to enter a locked or full voice channel.",
+        "properties": {
+          "account_id": {
+            "$ref": "#/components/schemas/AccountId"
+          },
+          "call_id": {
+            "$ref": "#/components/schemas/CallId"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "$ref": "#/components/schemas/EntryRequestId"
+          },
+          "place": {
+            "$ref": "#/components/schemas/CallPlace"
+          }
+        },
+        "required": [
+          "id",
+          "call_id",
+          "place",
+          "account_id",
+          "created_at",
+          "expires_at"
+        ],
+        "type": "object"
+      },
+      "EntryRequestId": {
+        "format": "uuid",
         "type": "string"
       },
       "Event": {
@@ -1118,6 +2015,25 @@
             },
             "required": [
               "account",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The name or the avatar of an account that the recipient may see has changed.",
+            "properties": {
+              "profile": {
+                "$ref": "#/components/schemas/AccountProfile"
+              },
+              "type": {
+                "enum": [
+                  "account_profile_updated"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "profile",
               "type"
             ],
             "type": "object"
@@ -1649,8 +2565,540 @@
               "type"
             ],
             "type": "object"
+          },
+          {
+            "description": "The first person is in the room of a call: the voice channel is in use, or the\ndirect-message call has begun.",
+            "properties": {
+              "call_id": {
+                "$ref": "#/components/schemas/CallId"
+              },
+              "place": {
+                "$ref": "#/components/schemas/CallPlace"
+              },
+              "started_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "call_started"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "call_id",
+              "place",
+              "started_at",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Nobody is in the call any more. Its lock, its blocks, its requests and its\ninvitations have ended with it.",
+            "properties": {
+              "call_id": {
+                "$ref": "#/components/schemas/CallId"
+              },
+              "place": {
+                "$ref": "#/components/schemas/CallPlace"
+              },
+              "type": {
+                "enum": [
+                  "call_ended"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "call_id",
+              "place",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The media server lists a person whom the server allows in the call.",
+            "properties": {
+              "call_id": {
+                "$ref": "#/components/schemas/CallId"
+              },
+              "participant": {
+                "$ref": "#/components/schemas/CallParticipant"
+              },
+              "place": {
+                "$ref": "#/components/schemas/CallPlace"
+              },
+              "type": {
+                "enum": [
+                  "call_participant_joined"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "call_id",
+              "place",
+              "participant",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The own settings, the blocks, the raised hand or the screen share of a person in a\ncall changed. The event carries the whole participant.",
+            "properties": {
+              "call_id": {
+                "$ref": "#/components/schemas/CallId"
+              },
+              "participant": {
+                "$ref": "#/components/schemas/CallParticipant"
+              },
+              "place": {
+                "$ref": "#/components/schemas/CallPlace"
+              },
+              "type": {
+                "enum": [
+                  "call_participant_updated"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "call_id",
+              "place",
+              "participant",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "call_id": {
+                "$ref": "#/components/schemas/CallId"
+              },
+              "place": {
+                "$ref": "#/components/schemas/CallPlace"
+              },
+              "reason": {
+                "$ref": "#/components/schemas/LeaveReason"
+              },
+              "type": {
+                "enum": [
+                  "call_participant_left"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "call_id",
+              "place",
+              "account_id",
+              "reason",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "call_id": {
+                "$ref": "#/components/schemas/CallId"
+              },
+              "lock": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/CallLock",
+                    "description": "Absent: the voice channel is not locked."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "place": {
+                "$ref": "#/components/schemas/CallPlace"
+              },
+              "type": {
+                "enum": [
+                  "call_lock_changed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "call_id",
+              "place",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Meeting mode is on. Every participant except the presenter who had no microphone block\nhas one now, with the reason `meeting`.",
+            "properties": {
+              "call_id": {
+                "$ref": "#/components/schemas/CallId"
+              },
+              "meeting": {
+                "$ref": "#/components/schemas/Meeting"
+              },
+              "place": {
+                "$ref": "#/components/schemas/CallPlace"
+              },
+              "type": {
+                "enum": [
+                  "call_meeting_started"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "call_id",
+              "place",
+              "meeting",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Meeting mode is off. Every microphone block in the call is removed, the ones that a\nmoderator set included.",
+            "properties": {
+              "call_id": {
+                "$ref": "#/components/schemas/CallId"
+              },
+              "place": {
+                "$ref": "#/components/schemas/CallPlace"
+              },
+              "reason": {
+                "$ref": "#/components/schemas/MeetingEnd"
+              },
+              "type": {
+                "enum": [
+                  "call_meeting_ended"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "call_id",
+              "place",
+              "reason",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The people in a voice channel who speak now, as the clients inside report it. The\nlist replaces the one before. It is not sent for a channel that hides who is inside.",
+            "properties": {
+              "account_ids": {
+                "items": {
+                  "$ref": "#/components/schemas/AccountId"
+                },
+                "type": "array"
+              },
+              "call_id": {
+                "$ref": "#/components/schemas/CallId"
+              },
+              "place": {
+                "$ref": "#/components/schemas/CallPlace"
+              },
+              "type": {
+                "enum": [
+                  "call_speaking"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "call_id",
+              "place",
+              "account_ids",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A person outside asks to enter a locked or full voice channel. Anyone inside answers.",
+            "properties": {
+              "request": {
+                "$ref": "#/components/schemas/EntryRequest"
+              },
+              "type": {
+                "enum": [
+                  "call_entry_requested"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "request",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A request to enter has ended. This event goes to the people inside the call.",
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "by": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/AccountId",
+                    "description": "The person inside who answered."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "call_id": {
+                "$ref": "#/components/schemas/CallId"
+              },
+              "outcome": {
+                "$ref": "#/components/schemas/EntryOutcome"
+              },
+              "place": {
+                "$ref": "#/components/schemas/CallPlace"
+              },
+              "request_id": {
+                "$ref": "#/components/schemas/EntryRequestId"
+              },
+              "type": {
+                "enum": [
+                  "call_entry_resolved"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "request_id",
+              "call_id",
+              "place",
+              "account_id",
+              "outcome",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The request of the recipient to enter a voice channel has ended. The event names the\nrequest and nothing of the channel, so it also reaches an account that can no longer\nsee the channel.",
+            "properties": {
+              "outcome": {
+                "$ref": "#/components/schemas/EntryOutcome"
+              },
+              "request_id": {
+                "$ref": "#/components/schemas/EntryRequestId"
+              },
+              "type": {
+                "enum": [
+                  "call_entry_answered"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "request_id",
+              "outcome",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The recipient is invited into a call, or the other participant of a direct message\ncalls. An account that cannot see the voice channel any more does not receive it.",
+            "properties": {
+              "invitation": {
+                "$ref": "#/components/schemas/CallInvitation"
+              },
+              "type": {
+                "enum": [
+                  "call_invited"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "invitation",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "An invitation that the recipient got or made has ended. The event names the\ninvitation and nothing of the call.",
+            "properties": {
+              "invitation_id": {
+                "$ref": "#/components/schemas/CallInvitationId"
+              },
+              "outcome": {
+                "$ref": "#/components/schemas/InvitationOutcome"
+              },
+              "type": {
+                "enum": [
+                  "call_invitation_resolved"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "invitation_id",
+              "outcome",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A moderator moves the recipient into another voice channel. The device in the call\nasks for the join of the destination and joins it. An account that cannot see both\nvoice channels does not receive it.",
+            "properties": {
+              "move": {
+                "$ref": "#/components/schemas/CallMove"
+              },
+              "type": {
+                "enum": [
+                  "call_move_requested"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "move",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A move of the recipient, or one that the recipient asked for, has ended. The event\nnames the move and nothing of the two channels.",
+            "properties": {
+              "move_id": {
+                "$ref": "#/components/schemas/CallMoveId"
+              },
+              "outcome": {
+                "$ref": "#/components/schemas/MoveOutcome"
+              },
+              "type": {
+                "enum": [
+                  "call_move_resolved"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "move_id",
+              "outcome",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The call that the account of the recipient is in has changed. An event that names a\nvoice channel reaches the account only while it can see that channel; the event of a\nleave names no place.",
+            "properties": {
+              "call": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/OwnCall",
+                    "description": "Absent: the account is in no call."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "left": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/LeaveReason",
+                    "description": "Present when the account left a call: why."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": {
+                "enum": [
+                  "own_call_changed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The account of the recipient lost the access to a voice channel, or can no longer\nreach the other account of a direct message, while something of it waited there: an\ninvitation that it got or made, a request to enter, a move, or a direct-message call.\nThose have ended, and no outcome of them follows. The event names nothing: the client\ndiscards what it holds for the places that it can no longer see.",
+            "properties": {
+              "type": {
+                "enum": [
+                  "call_access_ended"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The account of the recipient muted its direct-message conversation with another\naccount, or changed the end of the mute.",
+            "properties": {
+              "mute": {
+                "$ref": "#/components/schemas/DirectMute"
+              },
+              "type": {
+                "enum": [
+                  "direct_mute_set"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "mute",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The account of the recipient turned the mute of a direct-message conversation off.",
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "type": {
+                "enum": [
+                  "direct_mute_removed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "account_id",
+              "type"
+            ],
+            "type": "object"
           }
         ]
+      },
+      "ImageType": {
+        "description": "The formats in which the server stores an avatar.",
+        "enum": [
+          "image/png",
+          "image/jpeg",
+          "image/webp"
+        ],
+        "type": "string"
+      },
+      "InvitationOutcome": {
+        "enum": [
+          "accepted",
+          "declined",
+          "expired",
+          "cancelled"
+        ],
+        "type": "string"
       },
       "Invite": {
         "properties": {
@@ -1755,6 +3203,19 @@
         ],
         "type": "string"
       },
+      "LeaveReason": {
+        "description": "Why a person is no longer in a call.",
+        "enum": [
+          "left",
+          "disconnected",
+          "moved",
+          "switched",
+          "connection_lost",
+          "never_connected",
+          "access_ended"
+        ],
+        "type": "string"
+      },
       "Level": {
         "description": "How much a connection receives (ADR 0107).",
         "enum": [
@@ -1762,6 +3223,80 @@
           "background"
         ],
         "type": "string"
+      },
+      "Meeting": {
+        "description": "Meeting mode: every microphone except the presenter's is blocked (ADR 0505).",
+        "properties": {
+          "presenter": {
+            "$ref": "#/components/schemas/AccountId"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "presenter",
+          "started_at"
+        ],
+        "type": "object"
+      },
+      "MeetingEnd": {
+        "enum": [
+          "turned_off",
+          "share_stopped",
+          "presenter_left"
+        ],
+        "type": "string"
+      },
+      "MicrophoneBlock": {
+        "description": "A block of a person's microphone. The server enforces it: the person cannot send audio.",
+        "properties": {
+          "by": {
+            "$ref": "#/components/schemas/AccountId"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/BlockReason"
+          }
+        },
+        "required": [
+          "by",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "MoveOutcome": {
+        "enum": [
+          "completed",
+          "timed_out",
+          "refused",
+          "abandoned"
+        ],
+        "type": "string"
+      },
+      "OwnCall": {
+        "description": "The call that the account is in, and the device that it is in the call with.",
+        "properties": {
+          "call_id": {
+            "$ref": "#/components/schemas/CallId"
+          },
+          "device_id": {
+            "$ref": "#/components/schemas/DeviceId"
+          },
+          "identity": {
+            "type": "string"
+          },
+          "place": {
+            "$ref": "#/components/schemas/CallPlace"
+          }
+        },
+        "required": [
+          "call_id",
+          "place",
+          "device_id",
+          "identity"
+        ],
+        "type": "object"
       },
       "PublicKey": {
         "description": "32 bytes in base64url without padding",
@@ -1775,7 +3310,7 @@
         "type": "string"
       },
       "RecoveryNotice": {
-        "description": "One recovery of an account, as the account sees it.",
+        "description": "One recovery of an account, as the account sees it. A device keeps the notice of a\nrecovery until it acknowledges it (ADR 0112).",
         "properties": {
           "device_id": {
             "oneOf": [
@@ -1819,6 +3354,22 @@
           "skipped_event"
         ],
         "type": "string"
+      },
+      "ScreenShare": {
+        "properties": {
+          "audio": {
+            "$ref": "#/components/schemas/ShareAudio"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "audio",
+          "started_at"
+        ],
+        "type": "object"
       },
       "ServerMessage": {
         "description": "What the server sends.",
@@ -2028,6 +3579,27 @@
       "ServerRoleId": {
         "format": "uuid",
         "type": "string"
+      },
+      "ShareAudio": {
+        "description": "The sound that a screen share sends (ADR 0502).",
+        "enum": [
+          "application",
+          "system",
+          "none"
+        ],
+        "type": "string"
+      },
+      "SoundBlock": {
+        "description": "A block of a person's sound. The client of the person applies it (ADR 0503).",
+        "properties": {
+          "by": {
+            "$ref": "#/components/schemas/AccountId"
+          }
+        },
+        "required": [
+          "by"
+        ],
+        "type": "object"
       },
       "StreamEpoch": {
         "description": "Identifies one history of event positions. It changes when positions start again.",

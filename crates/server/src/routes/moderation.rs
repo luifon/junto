@@ -130,7 +130,7 @@ pub async fn remove_account(
 
         set_status(connection, now, account_id, AccountStatus::Removed).await?;
         let sessions = Sessions::OfAccount(account_id);
-        store::record_ended(connection, now, sessions, SessionEnd::Removed).await?;
+        store::record_ended(connection, &app.calls, now, sessions, SessionEnd::Removed).await?;
         sqlx::query("delete from devices where account_id = $1")
             .bind(account_id)
             .execute(&mut *connection)
@@ -200,7 +200,7 @@ pub async fn ban_account(
         }
 
         set_status(connection, now, account_id, AccountStatus::Banned).await?;
-        store::end_sessions(connection, now, account_id, SessionEnd::Banned).await?;
+        store::end_sessions(connection, &app.calls, now, account_id, SessionEnd::Banned).await?;
         let cancelled_invite_ids: Vec<InviteId> = sqlx::query_scalar(
             "update invites set revoked_at = $2, revocation = 'creator_banned'
              where created_by = $1 and revoked_at is null
@@ -295,12 +295,15 @@ pub async fn recover_account(
 
         let notice = store::recover(
             connection,
+            &app.calls,
             now,
-            account_id,
-            &body.public_key,
-            &device_name,
-            DeviceOrigin::Recovery,
-            Some(access.account_id),
+            store::Recovery {
+                account_id,
+                public_key: &body.public_key,
+                device_name: &device_name,
+                origin: DeviceOrigin::Recovery,
+                performed_by: Some(access.account_id),
+            },
         )
         .await?;
         let device_id = notice.device_id.ok_or_else(ApiError::not_found)?;

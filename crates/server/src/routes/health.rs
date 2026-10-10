@@ -18,7 +18,8 @@ async fn database_answers(app: &AppState) -> ApiResult<()> {
     })
 }
 
-/// Whether the server reaches its database (ADR 0012).
+/// Whether the server reaches its database, and whether its last admission check reached the
+/// media server (ADR 0012). The status follows the database only.
 #[utoipa::path(
     get,
     path = "/api/v1/health",
@@ -27,7 +28,11 @@ async fn database_answers(app: &AppState) -> ApiResult<()> {
 )]
 pub async fn get_health(State(app): State<AppState>) -> ApiResult<Json<Health>> {
     match tokio::time::timeout(DATABASE_TIME_LIMIT, database_answers(&app)).await {
-        Ok(Ok(())) => Ok(Json(Health { database: true })),
+        Ok(Ok(())) => Ok(Json(Health {
+            database: true,
+            media_server: app.calls.reachable(),
+            failing_call_rooms: app.calls.failing_rooms(),
+        })),
         Ok(Err(_)) | Err(_) => Err(ApiError::new(
             ErrorCode::Unavailable,
             "the server does not reach its database",

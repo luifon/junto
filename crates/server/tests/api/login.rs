@@ -6,7 +6,10 @@ use reqwest::{Method, StatusCode};
 use serde_json::{Value, json};
 use time::Duration;
 
-use crate::support::{DeviceKey, TestServer};
+use junto_protocol::origin::Origin;
+use junto_server::config::PublicOrigins;
+
+use crate::support::{DeviceKey, TestServer, origin};
 
 async fn login_with(server: &TestServer, proof: &Proof) -> crate::support::Reply {
     server
@@ -74,6 +77,7 @@ async fn a_wrong_signature_is_refused() {
         .await;
     let signed_by_another_key = Proof {
         challenge_id: challenge.id,
+        origin: origin(),
         signature: other.sign(&challenge),
     };
     login_with(&server, &signed_by_another_key)
@@ -89,6 +93,7 @@ async fn a_wrong_signature_is_refused() {
     };
     let signed_over_other_fields = Proof {
         challenge_id: challenge.id,
+        origin: origin(),
         signature: owner.key.sign(&altered),
     };
     login_with(&server, &signed_over_other_fields)
@@ -100,6 +105,7 @@ async fn a_wrong_signature_is_refused() {
         .await;
     let garbage = Proof {
         challenge_id: challenge.id,
+        origin: origin(),
         signature: Signature::from_bytes([7; 64]),
     };
     login_with(&server, &garbage)
@@ -145,10 +151,12 @@ async fn a_challenge_is_used_once() {
         .await;
     let wrong = Proof {
         challenge_id: challenge.id,
+        origin: origin(),
         signature: Signature::from_bytes([1; 64]),
     };
     let right = Proof {
         challenge_id: challenge.id,
+        origin: origin(),
         signature: owner.key.sign(&challenge),
     };
     login_with(&server, &wrong)
@@ -247,6 +255,7 @@ async fn wrong_login(server: &TestServer, key: &DeviceKey, address: &str) -> cra
     let challenge = server.challenge(key, ChallengeOperation::Login).await;
     let wrong = Proof {
         challenge_id: challenge.id,
+        origin: origin(),
         signature: Signature::from_bytes([9; 64]),
     };
     server
@@ -466,4 +475,194 @@ async fn outstanding_challenges_have_a_ceiling_for_the_whole_server() {
     challenge_from(&server, 99)
         .await
         .ok::<Challenge>(StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn a_signature_is_accepted_only_for_an_origin_of_this_server() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let sessions = || async {
+        sqlx::query_scalar::<_, i64>("select count(*) from sessions")
+            .fetch_one(&server.db)
+            .await
+            .unwrap()
+    };
+    let before = sessions().await;
+
+    for foreign in [
+        "https://other.example.test",
+        "https://chat.example.test:8443",
+        "http://chat.example.test",
+        "http://localhost:8080",
+        "http://127.0.0.1:8080",
+    ] {
+        let foreign = Origin::parse(foreign).unwrap();
+        let challenge = server
+            .challenge(&owner.key, ChallengeOperation::Login)
+            .await;
+        let signed_for_it = Proof {
+            challenge_id: challenge.id,
+            origin: foreign.clone(),
+            signature: owner.key.sign_for(&challenge, &foreign),
+        };
+        login_with(&server, &signed_for_it)
+            .await
+            .error(ErrorCode::OriginRejected);
+
+        let relabelled = Proof {
+            challenge_id: challenge.id,
+            origin: origin(),
+            signature: owner.key.sign_for(&challenge, &foreign),
+        };
+        login_with(&server, &relabelled)
+            .await
+            .error(ErrorCode::InvalidSignature);
+    }
+    assert_eq!(sessions().await, before);
+
+    let malformed = json!({ "proof": {
+        "challenge_id": uuid::Uuid::now_v7(),
+        "origin": "chat.example.test/login",
+        "signature": Signature::from_bytes([1; 64]),
+    }});
+    server
+        .open("/api/v1/auth/sessions", &malformed)
+        .await
+        .error(ErrorCode::InvalidRequest);
+    let without_origin = json!({ "proof": {
+        "challenge_id": uuid::Uuid::now_v7(),
+        "signature": Signature::from_bytes([1; 64]),
+    }});
+    server
+        .open("/api/v1/auth/sessions", &without_origin)
+        .await
+        .error(ErrorCode::InvalidRequest);
+}
+
+/// A hostile server announces the identifier of another server and passes that server's
+/// challenge to a device that connected to the hostile address. The device signs for the
+/// address it connected to, so the signature is of no use at the other server.
+#[tokio::test]
+async fn a_challenge_that_another_server_relays_gives_it_no_session() {
+    let victim = TestServer::start().await;
+    let owner = victim.owner().await;
+    let hostile = Origin::parse("https://hostile.example.test").unwrap();
+    let sessions_before: i64 = sqlx::query_scalar("select count(*) from sessions")
+        .fetch_one(&victim.db)
+        .await
+        .unwrap();
+
+    let relayed = victim
+        .challenge(&owner.key, ChallengeOperation::Login)
+        .await;
+    assert_eq!(relayed.server_id, victim.info.server_id);
+    let signature = owner.key.sign_for(&relayed, &hostile);
+
+    let forwarded = Proof {
+        challenge_id: relayed.id,
+        origin: hostile,
+        signature,
+    };
+    login_with(&victim, &forwarded)
+        .await
+        .error(ErrorCode::OriginRejected);
+    let forwarded_as_the_victims_own = Proof {
+        challenge_id: relayed.id,
+        origin: origin(),
+        signature,
+    };
+    login_with(&victim, &forwarded_as_the_victims_own)
+        .await
+        .error(ErrorCode::InvalidSignature);
+
+    let sessions_after: i64 = sqlx::query_scalar("select count(*) from sessions")
+        .fetch_one(&victim.db)
+        .await
+        .unwrap();
+    assert_eq!(sessions_after, sessions_before);
+
+    let honest = Proof {
+        challenge_id: relayed.id,
+        origin: origin(),
+        signature: owner.key.sign(&relayed),
+    };
+    login_with(&victim, &honest)
+        .await
+        .ok::<Value>(StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn the_origin_binds_every_signed_operation_and_loopback_serves_local_work() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let invite = server.invite(&owner, json!({ "max_uses": 5 })).await;
+    let foreign = Origin::parse("https://other.example.test").unwrap();
+    let cases: [(ChallengeOperation, &str, Value); 4] = [
+        (
+            ChallengeOperation::Join,
+            "/api/v1/join",
+            json!({ "invite_code": invite.code, "name": "Newcomer" }),
+        ),
+        (
+            ChallengeOperation::RequestToJoin,
+            "/api/v1/join-requests",
+            json!({ "name": "Newcomer" }),
+        ),
+        (
+            ChallengeOperation::JoinRequestStatus,
+            "/api/v1/join-requests/status",
+            json!({}),
+        ),
+        (
+            ChallengeOperation::LinkDevice,
+            "/api/v1/device-links",
+            json!({ "device_name": "phone" }),
+        ),
+    ];
+    for (operation, path, mut body) in cases {
+        let key = DeviceKey::generate();
+        let challenge = server.challenge(&key, operation).await;
+        body["proof"] = json!(Proof {
+            challenge_id: challenge.id,
+            origin: foreign.clone(),
+            signature: key.sign_for(&challenge, &foreign),
+        });
+        server
+            .open(path, &body)
+            .await
+            .error(ErrorCode::OriginRejected);
+    }
+    let accounts: i64 = sqlx::query_scalar("select count(*) from accounts")
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(accounts, 1);
+
+    let local = TestServer::start_with(|config| {
+        let listen = "127.0.0.1:8080".parse().unwrap();
+        config.public_origins = PublicOrigins::local(listen).unwrap();
+    })
+    .await;
+    let loopback = Origin::parse("http://localhost:8080").unwrap();
+    let key = DeviceKey::generate();
+    let challenge = local.challenge(&key, ChallengeOperation::ClaimOwner).await;
+    let claim = |origin: &Origin| {
+        json!({
+            "proof": Proof {
+                challenge_id: challenge.id,
+                origin: origin.clone(),
+                signature: key.sign_for(&challenge, origin),
+            },
+            "owner_code": local.owner_code,
+            "name": "Owner",
+        })
+    };
+    local
+        .open("/api/v1/owner/claim", &claim(&origin()))
+        .await
+        .error(ErrorCode::OriginRejected);
+    local
+        .open("/api/v1/owner/claim", &claim(&loopback))
+        .await
+        .ok::<Value>(StatusCode::CREATED);
 }

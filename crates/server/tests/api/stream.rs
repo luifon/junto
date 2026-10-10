@@ -569,6 +569,7 @@ pub fn apply(snapshot: &mut Snapshot, event: Event) {
                     roles: Vec::new(),
                     categories: Vec::new(),
                     channels: Vec::new(),
+                    calls: Vec::new(),
                 });
             }
         }

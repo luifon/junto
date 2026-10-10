@@ -2,15 +2,24 @@
 
 mod audit;
 mod authorization;
+mod calls;
+mod calls_review;
+mod calls_review2;
+mod calls_review3;
+mod calls_rooms;
+mod calls_state;
+mod calls_support;
 mod concurrency;
 mod devices;
 mod first_start;
 mod host_commands;
 mod http_errors;
 mod joining;
+mod live;
 mod login;
 mod maintenance;
 mod moderation;
+mod profiles;
 mod stream;
 mod stream_access;
 mod stream_events;

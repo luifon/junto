@@ -71,7 +71,7 @@ fn operation(
 }
 
 async fn world() -> World {
-    let server = TestServer::start().await;
+    let server = TestServer::start_for_calls().await;
     let owner = server.owner().await;
     let workspace = server.default_workspace(&owner).await;
     let plain = server.join(&owner, "Plain").await;
@@ -94,6 +94,16 @@ async fn world() -> World {
         .post(&owner, "/api/v1/workspaces", &json!({ "name": "Closed" }))
         .await
         .ok(StatusCode::CREATED);
+    let outsider = server.join_into(&owner, "Outsider", &[closed.id]).await;
+    server
+        .put_bytes(
+            &outsider,
+            "/api/v1/account/avatar",
+            None,
+            junto_server::image::samples::png(8, 8),
+        )
+        .await
+        .ok::<Value>(StatusCode::OK);
     let server_role: ServerRole = server
         .post(
             &owner,
@@ -161,8 +171,37 @@ async fn world() -> World {
         .await
         .ok(StatusCode::CREATED);
 
+    let call_guest = server.join(&owner, "CallGuest").await;
+    let hall = server.voice(&owner, workspace.id, "hall").await;
+    let annex = server.voice(&owner, workspace.id, "annex").await;
+    let vault = server.voice(&owner, workspace.id, "vault").await;
+    server
+        .make_private(&owner, workspace.id, vault.id, role.id)
+        .await;
+    let seat = server.enter_call(&administrator, hall.id).await;
+    server.enter_call(&call_guest, hall.id).await;
+    server
+        .put(
+            &administrator,
+            "/api/v1/call/screen-share",
+            &json!({ "audio": "none" }),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert!(server.fake().publish(
+        &seat.room,
+        &seat.identity,
+        junto_server::media::TrackKind::Video,
+        junto_server::media::TrackSource::ScreenShare,
+    ));
+    server.check().await;
+
     use Caller::{Administrator, Plain};
-    use ErrorCode::{Forbidden, NotFound, OwnerOnly};
+    use ErrorCode::{Conflict, Forbidden, NotFound, NotInCall, OwnerOnly};
+    let outside = [(Plain, NotInCall)];
+    let unknown = [(Plain, NotFound), (Administrator, NotFound)];
+    let absent = uuid::Uuid::now_v7();
+    let (hall_id, guest_id) = (hall.id, call_guest.account_id);
     let forbidden = [(Plain, Forbidden)];
     let own: [(Caller, ErrorCode); 0] = [];
     let none = Value::Null;
@@ -178,6 +217,55 @@ async fn world() -> World {
             &own,
         ),
         operation(Method::GET, "/api/v1/account", &[], none.clone(), &own),
+        operation(
+            Method::PATCH,
+            "/api/v1/account",
+            &[],
+            json!({ "name": "Renamed" }),
+            &own,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/account/avatar",
+            &[],
+            none.clone(),
+            &own,
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/account/avatar",
+            &[],
+            none.clone(),
+            &own,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/accounts/{account_id}/profile",
+            &[&outsider.account_id],
+            none.clone(),
+            &[(Plain, NotFound)],
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/accounts/{account_id}/avatar",
+            &[&outsider.account_id],
+            none.clone(),
+            &[(Plain, NotFound)],
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/account/recovery-notices",
+            &[],
+            none.clone(),
+            &own,
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/account/recovery-notices/{recovery_id}",
+            &[&junto_protocol::ids::RecoveryId::generate()],
+            none.clone(),
+            &[(Plain, NotFound), (Administrator, NotFound)],
+        ),
         operation(
             Method::GET,
             "/api/v1/account/devices",
@@ -474,6 +562,220 @@ async fn world() -> World {
             none.clone(),
             &forbidden,
         ),
+        operation(Method::GET, "/api/v1/call", &[], none.clone(), &own),
+        operation(
+            Method::PUT,
+            "/api/v1/call/state",
+            &[],
+            json!({ "muted": true, "deafened": false }),
+            &own,
+        ),
+        operation(Method::PUT, "/api/v1/call/hand", &[], none.clone(), &own),
+        operation(Method::DELETE, "/api/v1/call/hand", &[], none.clone(), &own),
+        operation(
+            Method::PUT,
+            "/api/v1/call/speaking",
+            &[],
+            json!({ "speaking": true }),
+            &own,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/channels/{channel_id}/call",
+            &[&vault.id],
+            none.clone(),
+            &[(Plain, NotFound)],
+        ),
+        operation(
+            Method::PATCH,
+            "/api/v1/channels/{channel_id}/call/settings",
+            &[&hall_id],
+            json!({ "user_limit": 50 }),
+            &forbidden,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/channels/{channel_id}/call/lock",
+            &[&hall_id],
+            none.clone(),
+            &outside,
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/channels/{channel_id}/call/lock",
+            &[&hall_id],
+            none.clone(),
+            &outside,
+        ),
+        operation(
+            Method::POST,
+            "/api/v1/channels/{channel_id}/call/entry-requests",
+            &[&hall_id],
+            none.clone(),
+            &[(Plain, Conflict), (Administrator, Conflict)],
+        ),
+        operation(
+            Method::POST,
+            "/api/v1/call/entry-requests/{request_id}/answer",
+            &[&absent],
+            json!({ "accept": true }),
+            &unknown,
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/call/entry-requests/{request_id}",
+            &[&absent],
+            none.clone(),
+            &unknown,
+        ),
+        operation(
+            Method::POST,
+            "/api/v1/channels/{channel_id}/call/invitations",
+            &[&hall_id],
+            json!({ "account_id": plain.account_id }),
+            &outside,
+        ),
+        operation(
+            Method::POST,
+            "/api/v1/call/invitations/{invitation_id}/acceptance",
+            &[&absent],
+            none.clone(),
+            &unknown,
+        ),
+        operation(
+            Method::POST,
+            "/api/v1/call/invitations/{invitation_id}/refusal",
+            &[&absent],
+            none.clone(),
+            &unknown,
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/call/invitations/{invitation_id}",
+            &[&absent],
+            none.clone(),
+            &unknown,
+        ),
+        operation(
+            Method::POST,
+            "/api/v1/channels/{channel_id}/call/participants/{account_id}/move",
+            &[&hall_id, &guest_id],
+            json!({ "to_channel_id": annex.id }),
+            &forbidden,
+        ),
+        operation(
+            Method::POST,
+            "/api/v1/call/moves/{move_id}/join",
+            &[&absent],
+            none.clone(),
+            &unknown,
+        ),
+        operation(
+            Method::POST,
+            "/api/v1/call/moves/{move_id}/failure",
+            &[&absent],
+            none.clone(),
+            &unknown,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/channels/{channel_id}/call/meeting",
+            &[&hall_id],
+            none.clone(),
+            &outside,
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/channels/{channel_id}/call/meeting",
+            &[&hall_id],
+            none.clone(),
+            &outside,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/channels/{channel_id}/call/participants/{account_id}/microphone-block",
+            &[&hall_id, &guest_id],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/channels/{channel_id}/call/participants/{account_id}/microphone-block",
+            &[&hall_id, &guest_id],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/channels/{channel_id}/call/participants/{account_id}/sound-block",
+            &[&hall_id, &guest_id],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/channels/{channel_id}/call/participants/{account_id}/sound-block",
+            &[&hall_id, &guest_id],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/channels/{channel_id}/call/participants/{account_id}",
+            &[&hall_id, &guest_id],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/call/screen-share",
+            &[],
+            json!({ "audio": "none" }),
+            &own,
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/call/screen-share",
+            &[],
+            none.clone(),
+            &own,
+        ),
+        operation(
+            Method::POST,
+            "/api/v1/direct-calls/{account_id}/refusal",
+            &[&outsider.account_id],
+            none.clone(),
+            &unknown,
+        ),
+        operation(
+            Method::POST,
+            "/api/v1/direct-calls/{account_id}/join",
+            &[&outsider.account_id],
+            none.clone(),
+            &[(Plain, NotFound)],
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/direct-messages/{account_id}/mute",
+            &[&outsider.account_id],
+            json!({}),
+            &[(Plain, NotFound)],
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/direct-messages/{account_id}/mute",
+            &[&outsider.account_id],
+            none.clone(),
+            &[(Plain, NotFound)],
+        ),
+        operation(
+            Method::POST,
+            "/api/v1/channels/{channel_id}/call/join",
+            &[&vault.id],
+            none.clone(),
+            &[(Plain, NotFound)],
+        ),
+        operation(Method::DELETE, "/api/v1/call", &[], none.clone(), &own),
         operation(Method::GET, "/api/v1/snapshot", &[], none.clone(), &own),
         operation(Method::GET, "/api/v1/events", &[], none.clone(), &own),
     ];

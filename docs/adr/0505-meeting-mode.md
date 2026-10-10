@@ -27,4 +27,4 @@ In a call where one person presents to many, open microphones interrupt the pres
 - A moderator's block that was set before meeting mode does not survive its end. The moderator sets the block again if it is still needed.
 - When meeting mode ends, a microphone that its user did not mute sends audio again without an action by that user. The client's message informs that user.
 - The blocks are microphone blocks, so the server enforces them (ADR 0503).
-- The time that meeting mode waits for a presenter who left is not fixed by this record.
+- The time that meeting mode waits for a presenter who left is fixed by ADR 0512: 60 seconds.

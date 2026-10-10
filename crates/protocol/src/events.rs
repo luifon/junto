@@ -7,12 +7,15 @@
 use junto_authz::WorkspacePermission;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
-use utoipa::ToSchema;
 
-use crate::account::{AccountStatus, AccountSummary, DeviceOrigin, RecoveryNotice};
+use crate::account::{AccountProfile, AccountStatus, AccountSummary, DeviceOrigin, RecoveryNotice};
+use crate::call::{
+    CallInvitation, CallLock, CallMove, CallParticipant, CallPlace, DirectMute, EntryOutcome,
+    EntryRequest, InvitationOutcome, LeaveReason, Meeting, MeetingEnd, MoveOutcome, OwnCall,
+};
 use crate::ids::{
-    AccountId, ChannelId, DeviceId, InviteId, JoinRequestId, ServerRoleId, StreamEpoch,
-    WorkspaceId, WorkspaceRoleId,
+    AccountId, CallId, CallInvitationId, CallMoveId, ChannelId, DeviceId, EntryRequestId, InviteId,
+    JoinRequestId, ServerRoleId, StreamEpoch, WorkspaceId, WorkspaceRoleId,
 };
 use crate::invite::{Invite, InviteRevocation, JoinRequest, JoinRequestState};
 use crate::keys::PublicKey;
@@ -25,14 +28,16 @@ pub const STREAM_PATH: &str = "/api/v1/events";
 
 /// A place in the order of the events of one server. An event with a position at or below the
 /// position of a cursor is covered by the state that the cursor belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Cursor {
     pub epoch: StreamEpoch,
     pub position: u64,
 }
 
 /// How much a connection receives (ADR 0107).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Level {
     /// Every event that the account may see.
@@ -42,7 +47,8 @@ pub enum Level {
 }
 
 /// What a client sends.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMessage {
     /// Starts or restarts the delivery after `cursor` at `level`. Without a cursor the
@@ -54,7 +60,8 @@ pub enum ClientMessage {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ResyncReason {
     /// The cursor belongs to another epoch or lies after the newest event.
@@ -67,7 +74,8 @@ pub enum ResyncReason {
 }
 
 /// Why the server ended the access of a connection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum EndReason {
     Banned,
@@ -80,7 +88,8 @@ pub enum EndReason {
 }
 
 /// What the server sends.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
     /// The first message of every connection.
@@ -194,7 +203,8 @@ impl CloseCode {
 
 /// One change of the state of a server. New events are added; the fields of an existing event
 /// are not changed or removed within one API version (ADR 0206).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
     /// A device was added to the account of the recipient.
@@ -233,6 +243,10 @@ pub enum Event {
     },
     AccountAdded {
         account: AccountSummary,
+    },
+    /// The name or the avatar of an account that the recipient may see has changed.
+    AccountProfileUpdated {
+        profile: AccountProfile,
     },
     AccountStatusChanged {
         account_id: AccountId,
@@ -326,6 +340,135 @@ pub enum Event {
         allow: Vec<WorkspacePermission>,
         deny: Vec<WorkspacePermission>,
     },
+    /// The first person is in the room of a call: the voice channel is in use, or the
+    /// direct-message call has begun.
+    CallStarted {
+        call_id: CallId,
+        place: CallPlace,
+        #[serde(with = "time::serde::rfc3339")]
+        started_at: OffsetDateTime,
+    },
+    /// Nobody is in the call any more. Its lock, its blocks, its requests and its
+    /// invitations have ended with it.
+    CallEnded {
+        call_id: CallId,
+        place: CallPlace,
+    },
+    /// The media server lists a person whom the server allows in the call.
+    CallParticipantJoined {
+        call_id: CallId,
+        place: CallPlace,
+        participant: CallParticipant,
+    },
+    /// The own settings, the blocks, the raised hand or the screen share of a person in a
+    /// call changed. The event carries the whole participant.
+    CallParticipantUpdated {
+        call_id: CallId,
+        place: CallPlace,
+        participant: CallParticipant,
+    },
+    CallParticipantLeft {
+        call_id: CallId,
+        place: CallPlace,
+        account_id: AccountId,
+        reason: LeaveReason,
+    },
+    CallLockChanged {
+        call_id: CallId,
+        place: CallPlace,
+        /// Absent: the voice channel is not locked.
+        lock: Option<CallLock>,
+    },
+    /// Meeting mode is on. Every participant except the presenter who had no microphone block
+    /// has one now, with the reason `meeting`.
+    CallMeetingStarted {
+        call_id: CallId,
+        place: CallPlace,
+        meeting: Meeting,
+    },
+    /// Meeting mode is off. Every microphone block in the call is removed, the ones that a
+    /// moderator set included.
+    CallMeetingEnded {
+        call_id: CallId,
+        place: CallPlace,
+        reason: MeetingEnd,
+    },
+    /// The people in a voice channel who speak now, as the clients inside report it. The
+    /// list replaces the one before. It is not sent for a channel that hides who is inside.
+    CallSpeaking {
+        call_id: CallId,
+        place: CallPlace,
+        account_ids: Vec<AccountId>,
+    },
+    /// A person outside asks to enter a locked or full voice channel. Anyone inside answers.
+    CallEntryRequested {
+        request: EntryRequest,
+    },
+    /// A request to enter has ended. This event goes to the people inside the call.
+    CallEntryResolved {
+        request_id: EntryRequestId,
+        call_id: CallId,
+        place: CallPlace,
+        account_id: AccountId,
+        outcome: EntryOutcome,
+        /// The person inside who answered.
+        by: Option<AccountId>,
+    },
+    /// The request of the recipient to enter a voice channel has ended. The event names the
+    /// request and nothing of the channel, so it also reaches an account that can no longer
+    /// see the channel.
+    CallEntryAnswered {
+        request_id: EntryRequestId,
+        outcome: EntryOutcome,
+    },
+    /// The recipient is invited into a call, or the other participant of a direct message
+    /// calls. An account that cannot see the voice channel any more does not receive it.
+    CallInvited {
+        invitation: CallInvitation,
+    },
+    /// An invitation that the recipient got or made has ended. The event names the
+    /// invitation and nothing of the call.
+    CallInvitationResolved {
+        invitation_id: CallInvitationId,
+        outcome: InvitationOutcome,
+    },
+    /// A moderator moves the recipient into another voice channel. The device in the call
+    /// asks for the join of the destination and joins it. An account that cannot see both
+    /// voice channels does not receive it.
+    CallMoveRequested {
+        #[serde(rename = "move")]
+        call_move: CallMove,
+    },
+    /// A move of the recipient, or one that the recipient asked for, has ended. The event
+    /// names the move and nothing of the two channels.
+    CallMoveResolved {
+        move_id: CallMoveId,
+        outcome: MoveOutcome,
+    },
+    /// The call that the account of the recipient is in has changed. An event that names a
+    /// voice channel reaches the account only while it can see that channel; the event of a
+    /// leave names no place.
+    OwnCallChanged {
+        /// Absent: the account is in no call.
+        call: Option<OwnCall>,
+        /// Present when the account left a call: why.
+        left: Option<LeaveReason>,
+    },
+    /// The account of the recipient lost the access to a voice channel, or can no longer
+    /// reach the other account of a direct message, while something of it waited there: an
+    /// invitation that it got or made, a request to enter, a move, or a direct-message call.
+    /// Those have ended, and no outcome of them follows. The event names nothing: the client
+    /// discards what it holds for the places that it can no longer see.
+    CallAccessEnded {},
+    /// The account of the recipient muted its direct-message conversation with another
+    /// account, or changed the end of the mute.
+    DirectMuteSet {
+        mute: DirectMute,
+    },
+    /// The account of the recipient turned the mute of a direct-message conversation off.
+    DirectMuteRemoved {
+        account_id: AccountId,
+    },
 }
 
 impl Event {
@@ -338,6 +481,7 @@ impl Event {
         "account_recovered",
         "permissions_changed",
         "account_added",
+        "account_profile_updated",
         "account_status_changed",
         "account_server_roles_changed",
         "owner_changed",
@@ -362,6 +506,26 @@ impl Event {
         "channel_updated",
         "channel_deleted",
         "channel_override_set",
+        "call_started",
+        "call_ended",
+        "call_participant_joined",
+        "call_participant_updated",
+        "call_participant_left",
+        "call_lock_changed",
+        "call_meeting_started",
+        "call_meeting_ended",
+        "call_speaking",
+        "call_entry_requested",
+        "call_entry_resolved",
+        "call_entry_answered",
+        "call_invited",
+        "call_invitation_resolved",
+        "call_move_requested",
+        "call_move_resolved",
+        "own_call_changed",
+        "call_access_ended",
+        "direct_mute_set",
+        "direct_mute_removed",
     ];
 
     pub const fn name(&self) -> &'static str {
@@ -374,6 +538,7 @@ impl Event {
             Self::AccountRecovered { .. } => "account_recovered",
             Self::PermissionsChanged { .. } => "permissions_changed",
             Self::AccountAdded { .. } => "account_added",
+            Self::AccountProfileUpdated { .. } => "account_profile_updated",
             Self::AccountStatusChanged { .. } => "account_status_changed",
             Self::AccountServerRolesChanged { .. } => "account_server_roles_changed",
             Self::OwnerChanged { .. } => "owner_changed",
@@ -398,6 +563,26 @@ impl Event {
             Self::ChannelUpdated { .. } => "channel_updated",
             Self::ChannelDeleted { .. } => "channel_deleted",
             Self::ChannelOverrideSet { .. } => "channel_override_set",
+            Self::CallStarted { .. } => "call_started",
+            Self::CallEnded { .. } => "call_ended",
+            Self::CallParticipantJoined { .. } => "call_participant_joined",
+            Self::CallParticipantUpdated { .. } => "call_participant_updated",
+            Self::CallParticipantLeft { .. } => "call_participant_left",
+            Self::CallLockChanged { .. } => "call_lock_changed",
+            Self::CallMeetingStarted { .. } => "call_meeting_started",
+            Self::CallMeetingEnded { .. } => "call_meeting_ended",
+            Self::CallSpeaking { .. } => "call_speaking",
+            Self::CallEntryRequested { .. } => "call_entry_requested",
+            Self::CallEntryResolved { .. } => "call_entry_resolved",
+            Self::CallEntryAnswered { .. } => "call_entry_answered",
+            Self::CallInvited { .. } => "call_invited",
+            Self::CallInvitationResolved { .. } => "call_invitation_resolved",
+            Self::CallMoveRequested { .. } => "call_move_requested",
+            Self::CallMoveResolved { .. } => "call_move_resolved",
+            Self::OwnCallChanged { .. } => "own_call_changed",
+            Self::CallAccessEnded {} => "call_access_ended",
+            Self::DirectMuteSet { .. } => "direct_mute_set",
+            Self::DirectMuteRemoved { .. } => "direct_mute_removed",
         }
     }
 }
@@ -454,6 +639,24 @@ mod tests {
         let device_id = DeviceId::generate();
         let workspace_id = WorkspaceId::generate();
         let channel_id = ChannelId::generate();
+        let call_id = CallId::generate();
+        let other_account_id = AccountId::generate();
+        let place = CallPlace::Channel {
+            workspace_id,
+            channel_id,
+        };
+        let direct = CallPlace::direct(account_id, other_account_id);
+        let participant = CallParticipant {
+            account_id,
+            identity: "seat".to_owned(),
+            joined_at: time(),
+            muted: true,
+            deafened: false,
+            microphone_block: None,
+            sound_block: None,
+            hand_raised: false,
+            screen_share: None,
+        };
         let workspace = Workspace {
             id: workspace_id,
             name: "Acme".to_owned(),
@@ -467,6 +670,8 @@ mod tests {
             name: "general".to_owned(),
             position: 0,
             permanent_messages: false,
+            user_limit: None,
+            hides_occupants: false,
         };
         let category = Category {
             id: CategoryId::generate(),
@@ -533,6 +738,19 @@ mod tests {
                     is_owner: false,
                     server_role_ids: vec![],
                     created_at: time(),
+                },
+            },
+            Event::AccountProfileUpdated {
+                profile: AccountProfile {
+                    id: account_id,
+                    name: "Newcomer".to_owned(),
+                    avatar: Some(crate::account::Avatar {
+                        hash: "00".repeat(32),
+                        media_type: crate::account::ImageType::Png,
+                        bytes: 512,
+                        width: 64,
+                        height: 64,
+                    }),
                 },
             },
             Event::AccountStatusChanged {
@@ -624,6 +842,124 @@ mod tests {
                 role_id: workspace_role.id,
                 allow: vec![],
                 deny: vec![WorkspacePermission::ViewChannel],
+            },
+            Event::CallStarted {
+                call_id,
+                place,
+                started_at: time(),
+            },
+            Event::CallEnded { call_id, place },
+            Event::CallParticipantJoined {
+                call_id,
+                place,
+                participant: participant.clone(),
+            },
+            Event::CallParticipantUpdated {
+                call_id,
+                place,
+                participant,
+            },
+            Event::CallParticipantLeft {
+                call_id,
+                place,
+                account_id,
+                reason: LeaveReason::Moved,
+            },
+            Event::CallLockChanged {
+                call_id,
+                place,
+                lock: Some(CallLock {
+                    by: account_id,
+                    at: time(),
+                }),
+            },
+            Event::CallMeetingStarted {
+                call_id,
+                place,
+                meeting: Meeting {
+                    presenter: account_id,
+                    started_at: time(),
+                },
+            },
+            Event::CallMeetingEnded {
+                call_id,
+                place,
+                reason: MeetingEnd::ShareStopped,
+            },
+            Event::CallSpeaking {
+                call_id,
+                place,
+                account_ids: vec![account_id],
+            },
+            Event::CallEntryRequested {
+                request: EntryRequest {
+                    id: EntryRequestId::generate(),
+                    call_id,
+                    place,
+                    account_id,
+                    created_at: time(),
+                    expires_at: time(),
+                },
+            },
+            Event::CallEntryResolved {
+                request_id: EntryRequestId::generate(),
+                call_id,
+                place,
+                account_id,
+                outcome: EntryOutcome::Accepted,
+                by: Some(account_id),
+            },
+            Event::CallEntryAnswered {
+                request_id: EntryRequestId::generate(),
+                outcome: EntryOutcome::Denied,
+            },
+            Event::CallInvited {
+                invitation: CallInvitation {
+                    id: CallInvitationId::generate(),
+                    call_id,
+                    place: direct,
+                    account_id,
+                    invited_by: other_account_id,
+                    created_at: time(),
+                    expires_at: time(),
+                },
+            },
+            Event::CallInvitationResolved {
+                invitation_id: CallInvitationId::generate(),
+                outcome: InvitationOutcome::Declined,
+            },
+            Event::CallMoveRequested {
+                call_move: CallMove {
+                    id: CallMoveId::generate(),
+                    account_id,
+                    from: place,
+                    to: place,
+                    moved_by: other_account_id,
+                    expires_at: time(),
+                },
+            },
+            Event::CallMoveResolved {
+                move_id: CallMoveId::generate(),
+                outcome: MoveOutcome::TimedOut,
+            },
+            Event::OwnCallChanged {
+                call: Some(OwnCall {
+                    call_id,
+                    place,
+                    device_id,
+                    identity: "seat".to_owned(),
+                }),
+                left: None,
+            },
+            Event::CallAccessEnded {},
+            Event::DirectMuteSet {
+                mute: DirectMute {
+                    account_id: other_account_id,
+                    until: Some(time()),
+                },
+            },
+            Event::DirectMuteRemoved {
+                account_id: other_account_id,
             },
         ]
     }

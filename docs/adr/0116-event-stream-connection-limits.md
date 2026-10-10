@@ -23,7 +23,7 @@ Heartbeat and idle time:
 
 - The server sends a WebSocket ping every 25 seconds. The first message of the connection states this interval.
 - A connection from which no frame arrived for 60 seconds is closed with the code 4004. The server checks this at each ping.
-- A connection that has no subscription for 30 seconds, after it opened or after a `resync` (ADR 0207), is closed with the code 4004.
+- A connection that has no subscription for 30 seconds is closed with the code 4004. The time starts when the socket has taken the `hello`, and again when it has taken a `resync` (ADR 0207), so a client always receives that message before the close.
 
 Client messages:
 
@@ -63,8 +63,8 @@ Close codes of the server:
 
 Accounts in a call:
 
-- The server process keeps a list of the accounts that are in a call, with the channel of the call. A connection of such an account receives every event of that channel at any level (ADR 0107), when the account may receive it (ADR 0011).
-- The feature that adds calls enters and removes the accounts. Until then the list is empty.
+- The server process keeps a list of the accounts that are in a call, with the place of the call: a voice channel, or the two accounts of a direct message. A connection of such an account receives every event of that call at any level (ADR 0107), when the account may receive it (ADR 0011).
+- The call routes enter and remove the accounts, and every admission check replaces the list with the members that the database records (ADR 0510).
 
 ## Consequences
 

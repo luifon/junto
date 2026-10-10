@@ -5,9 +5,6 @@ use std::str::FromStr;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use utoipa::openapi::RefOr;
-use utoipa::openapi::schema::{ObjectBuilder, Schema, Type};
-use utoipa::{PartialSchema, ToSchema};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("expected {expected} bytes in unpadded base64url")]
@@ -79,10 +76,11 @@ macro_rules! byte_string {
             }
         }
 
-        impl PartialSchema for $name {
-            fn schema() -> RefOr<Schema> {
-                ObjectBuilder::new()
-                    .schema_type(Type::String)
+        #[cfg(feature = "openapi")]
+        impl utoipa::PartialSchema for $name {
+            fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+                utoipa::openapi::schema::ObjectBuilder::new()
+                    .schema_type(utoipa::openapi::schema::Type::String)
                     .description(Some(concat!(
                         stringify!($length),
                         " bytes in base64url without padding"
@@ -94,7 +92,8 @@ macro_rules! byte_string {
             }
         }
 
-        impl ToSchema for $name {
+        #[cfg(feature = "openapi")]
+        impl utoipa::ToSchema for $name {
             fn name() -> Cow<'static, str> {
                 Cow::Borrowed(stringify!($name))
             }

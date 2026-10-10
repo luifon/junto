@@ -12,7 +12,7 @@ name=junto-dev-postgres
 image="${JUNTO_TEST_POSTGRES_IMAGE:-postgres:17-alpine}"
 
 remove() {
-    docker rm -f "$name" >/dev/null 2>&1 || true
+    docker rm -f -v "$name" >/dev/null 2>&1 || true
 }
 
 remove

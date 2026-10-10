@@ -37,6 +37,7 @@ Do not disturb:
 Direct messages, call invites and threads:
 
 - Direct messages and call invites notify unless do not disturb is on or the conversation is muted.
+- The mute of a direct-message conversation is stored on the server. While it lasts, the server makes no call invitation for the account that muted (ADR 0515).
 - A reply in a thread notifies the people who wrote in that thread.
 
 ## Consequences

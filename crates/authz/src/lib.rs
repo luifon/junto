@@ -8,10 +8,10 @@ mod permissions;
 
 pub use evaluate::authorize;
 pub use model::{
-    Actor, Admission, AuditScope, Authorship, ChannelContent, ChannelGrant, ChannelScope, Decision,
-    Denial, HeldRole, Membership, MessagePlace, OverlappingOverride, Override, OwnerAction,
-    Participation, Permanence, Position, Reach, Request, RoleKey, RoleOverride, Target,
-    WorkspaceScope,
+    Acquaintance, Actor, Admission, AuditScope, Authorship, ChannelContent, ChannelGrant,
+    ChannelScope, Contact, Decision, Denial, HeldRole, Membership, MessagePlace,
+    OverlappingOverride, Override, OwnerAction, Participation, Permanence, Position, Reach,
+    Request, RoleKey, RoleOverride, Target, WorkspaceScope,
 };
 pub use permissions::{
     ServerPermission, ServerPermissions, WorkspacePermission, WorkspacePermissions,

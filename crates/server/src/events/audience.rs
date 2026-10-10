@@ -1,14 +1,19 @@
+use std::collections::{HashMap, HashSet};
+
+use junto_authz::Participation;
 use junto_authz::{
-    Actor, ChannelScope, Membership, Override, Request, RoleOverride, ServerPermission,
-    WorkspacePermission, WorkspaceScope, authorize,
+    Acquaintance, Actor, ChannelScope, Contact, Membership, Override, Request, RoleOverride,
+    ServerPermission, WorkspacePermission, WorkspaceScope, authorize,
 };
 use junto_protocol::account::AccountStatus;
+use junto_protocol::call::CallPlace;
 use junto_protocol::events::{Event, Level};
 use junto_protocol::ids::{AccountId, ChannelId, ServerRoleId, WorkspaceId, WorkspaceRoleId};
 use serde::{Deserialize, Serialize};
 
 use crate::access::{role_key, stored_override};
 use crate::db::StoredText;
+use crate::events::hub::CallKey;
 
 /// What a connection level receives is decided by the class of an event (ADR 0107).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -54,8 +59,17 @@ impl Class {
             | Event::AccountRecovered { .. }
             | Event::PermissionsChanged { .. }
             | Event::WorkspaceMemberRemoved { .. }
-            | Event::ChannelDeleted { .. } => Self::Control,
+            | Event::ChannelDeleted { .. }
+            | Event::CallMoveRequested { .. }
+            | Event::CallMoveResolved { .. }
+            | Event::CallEntryAnswered { .. }
+            | Event::OwnCallChanged { .. }
+            | Event::CallAccessEnded {}
+            | Event::DirectMuteSet { .. }
+            | Event::DirectMuteRemoved { .. } => Self::Control,
+            Event::CallInvited { .. } | Event::CallInvitationResolved { .. } => Self::CallInvite,
             Event::AccountAdded { .. }
+            | Event::AccountProfileUpdated { .. }
             | Event::AccountStatusChanged { .. }
             | Event::AccountServerRolesChanged { .. }
             | Event::OwnerChanged { .. }
@@ -77,7 +91,18 @@ impl Class {
             | Event::CategoryUpdated { .. }
             | Event::ChannelCreated { .. }
             | Event::ChannelUpdated { .. }
-            | Event::ChannelOverrideSet { .. } => Self::General,
+            | Event::ChannelOverrideSet { .. }
+            | Event::CallStarted { .. }
+            | Event::CallEnded { .. }
+            | Event::CallParticipantJoined { .. }
+            | Event::CallParticipantUpdated { .. }
+            | Event::CallParticipantLeft { .. }
+            | Event::CallLockChanged { .. }
+            | Event::CallMeetingStarted { .. }
+            | Event::CallMeetingEnded { .. }
+            | Event::CallSpeaking { .. }
+            | Event::CallEntryRequested { .. }
+            | Event::CallEntryResolved { .. } => Self::General,
         }
     }
 }
@@ -108,12 +133,46 @@ pub struct KeptOverride {
     pub deny: i64,
 }
 
+/// How far an event about the call of a voice channel reaches (ADR 0504, ADR 0510).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CallReach {
+    /// The accounts that may see who is inside: every account that may see the channel, or
+    /// only the accounts inside when the channel hides who is inside.
+    Occupancy,
+    /// The accounts inside the call.
+    Inside,
+}
+
+/// One voice channel that an event for one account names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Seen {
+    pub workspace_id: WorkspaceId,
+    pub channel_id: ChannelId,
+}
+
 /// Who may receive an event. It is stored with the event and decided for each recipient when
 /// the event is delivered (ADR 0011).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "to", rename_all = "snake_case")]
 pub enum Audience {
     Account {
+        account_id: AccountId,
+    },
+    /// One account, while it may see every channel in `channels` and may reach every
+    /// account in `accounts` (ADR 0307). An event for one account that is about a voice
+    /// channel or about a direct-message call has this audience, so that it does not tell an
+    /// account about a place that it can no longer be at.
+    AccountSeeing {
+        account_id: AccountId,
+        #[serde(default)]
+        channels: Vec<Seen>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        accounts: Vec<AccountId>,
+    },
+    /// The accounts that may see the profile of the account: the account itself, the members
+    /// of a workspace that it is a member of, and the accounts with `ban_members`.
+    AccountViewers {
         account_id: AccountId,
     },
     ServerPermission {
@@ -141,13 +200,153 @@ pub enum Audience {
         channel_id: ChannelId,
         overrides: Vec<KeptOverride>,
     },
+    /// Accounts that may see the voice channel, as far as `reach` states. The setting that
+    /// hides who is inside and the people inside are read when the event is delivered.
+    Call {
+        workspace_id: WorkspaceId,
+        channel_id: ChannelId,
+        reach: CallReach,
+    },
+    /// The two participants of a direct message.
+    Direct {
+        low_account_id: AccountId,
+        high_account_id: AccountId,
+    },
+}
+
+/// The audience of an event about a call at `place`.
+fn of_call(place: &CallPlace, reach: Option<CallReach>) -> Audience {
+    match (*place, reach) {
+        (
+            CallPlace::Channel {
+                workspace_id,
+                channel_id,
+            },
+            None,
+        ) => Audience::Channel {
+            workspace_id,
+            channel_id,
+            permission: WorkspacePermission::ViewChannel,
+        },
+        (
+            CallPlace::Channel {
+                workspace_id,
+                channel_id,
+            },
+            Some(reach),
+        ) => Audience::Call {
+            workspace_id,
+            channel_id,
+            reach,
+        },
+        (
+            CallPlace::Direct {
+                low_account_id,
+                high_account_id,
+            },
+            _,
+        ) => Audience::Direct {
+            low_account_id,
+            high_account_id,
+        },
+    }
 }
 
 impl Audience {
     pub const fn account_id(&self) -> Option<AccountId> {
         match self {
-            Self::Account { account_id } => Some(*account_id),
+            Self::Account { account_id } | Self::AccountSeeing { account_id, .. } => {
+                Some(*account_id)
+            }
             _ => None,
+        }
+    }
+
+    /// The audience of an event for one account: the account alone, or the account while it
+    /// may be at the places that the event names.
+    pub fn addressed(account_id: AccountId, event: &Event) -> Self {
+        let named: Vec<CallPlace> = match event {
+            Event::CallInvited { invitation } => vec![invitation.place],
+            Event::CallMoveRequested { call_move } => vec![call_move.from, call_move.to],
+            Event::OwnCallChanged {
+                call: Some(own), ..
+            } => vec![own.place],
+            _ => Vec::new(),
+        };
+        Self::addressed_at(account_id, &named)
+    }
+
+    /// The audience of an event for one account about `places`: the account, while it may
+    /// see every voice channel among them and may reach the other account of every direct
+    /// message among them.
+    pub fn addressed_at(account_id: AccountId, places: &[CallPlace]) -> Self {
+        let mut channels: Vec<Seen> = Vec::new();
+        let mut accounts: Vec<AccountId> = Vec::new();
+        for place in places {
+            match *place {
+                CallPlace::Channel {
+                    workspace_id,
+                    channel_id,
+                } => {
+                    let seen = Seen {
+                        workspace_id,
+                        channel_id,
+                    };
+                    if !channels.contains(&seen) {
+                        channels.push(seen);
+                    }
+                }
+                CallPlace::Direct {
+                    low_account_id,
+                    high_account_id,
+                } => {
+                    for other in [low_account_id, high_account_id] {
+                        if other != account_id && !accounts.contains(&other) {
+                            accounts.push(other);
+                        }
+                    }
+                }
+            }
+        }
+        if channels.is_empty() && accounts.is_empty() {
+            Self::Account { account_id }
+        } else {
+            Self::AccountSeeing {
+                account_id,
+                channels,
+                accounts,
+            }
+        }
+    }
+
+    /// The accounts that a recipient must be able to reach to receive an event with this
+    /// audience, other than the recipient.
+    pub fn reached_account_ids(&self, recipient: AccountId) -> Vec<AccountId> {
+        match self {
+            Self::AccountSeeing { accounts, .. } => accounts.clone(),
+            Self::Direct {
+                low_account_id,
+                high_account_id,
+            } => [*low_account_id, *high_account_id]
+                .into_iter()
+                .filter(|account_id| *account_id != recipient)
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The workspaces and channels whose standing a decision about this audience reads.
+    pub fn places(&self) -> Vec<(WorkspaceId, Option<ChannelId>)> {
+        match self {
+            Self::AccountSeeing { channels, .. } => channels
+                .iter()
+                .map(|seen| (seen.workspace_id, Some(seen.channel_id)))
+                .collect(),
+            _ => self
+                .workspace_id()
+                .map(|workspace_id| (workspace_id, self.channel_id()))
+                .into_iter()
+                .collect(),
         }
     }
 
@@ -156,18 +355,45 @@ impl Audience {
             Self::Workspace { workspace_id }
             | Self::WorkspaceRoleHolders { workspace_id, .. }
             | Self::Channel { workspace_id, .. }
-            | Self::DeletedChannel { workspace_id, .. } => Some(*workspace_id),
+            | Self::DeletedChannel { workspace_id, .. }
+            | Self::Call { workspace_id, .. } => Some(*workspace_id),
             Self::Account { .. }
+            | Self::AccountSeeing { .. }
+            | Self::AccountViewers { .. }
             | Self::ServerPermission { .. }
-            | Self::ServerRoleHolders { .. } => None,
+            | Self::ServerRoleHolders { .. }
+            | Self::Direct { .. } => None,
+        }
+    }
+
+    /// The account whose viewers the audience names.
+    pub const fn viewed_account_id(&self) -> Option<AccountId> {
+        match self {
+            Self::AccountViewers { account_id } => Some(*account_id),
+            _ => None,
         }
     }
 
     pub const fn channel_id(&self) -> Option<ChannelId> {
         match self {
-            Self::Channel { channel_id, .. } | Self::DeletedChannel { channel_id, .. } => {
-                Some(*channel_id)
+            Self::Channel { channel_id, .. }
+            | Self::DeletedChannel { channel_id, .. }
+            | Self::Call { channel_id, .. } => Some(*channel_id),
+            _ => None,
+        }
+    }
+
+    /// The call whose events the audience carries, for the rule that an account in a call
+    /// receives every event of that call (ADR 0107).
+    pub const fn call_key(&self) -> Option<CallKey> {
+        match self {
+            Self::Channel { channel_id, .. } | Self::Call { channel_id, .. } => {
+                Some(CallKey::Channel(*channel_id))
             }
+            Self::Direct {
+                low_account_id,
+                high_account_id,
+            } => Some(CallKey::Direct(*low_account_id, *high_account_id)),
             _ => None,
         }
     }
@@ -185,11 +411,35 @@ impl Audience {
             | Event::DeviceLoggedOut { .. }
             | Event::AccountRecovered { .. }
             | Event::PermissionsChanged { .. }
-            | Event::ChannelDeleted { .. } => None,
+            | Event::ChannelDeleted { .. }
+            | Event::CallEntryRequested { .. }
+            | Event::CallEntryResolved { .. }
+            | Event::CallEntryAnswered { .. }
+            | Event::CallInvited { .. }
+            | Event::CallInvitationResolved { .. }
+            | Event::CallMoveRequested { .. }
+            | Event::CallMoveResolved { .. }
+            | Event::OwnCallChanged { .. }
+            | Event::CallAccessEnded {}
+            | Event::DirectMuteSet { .. }
+            | Event::DirectMuteRemoved { .. } => None,
+            Event::CallStarted { place, .. } | Event::CallEnded { place, .. } => {
+                Some(of_call(place, None))
+            }
+            Event::CallParticipantJoined { place, .. }
+            | Event::CallParticipantUpdated { place, .. }
+            | Event::CallParticipantLeft { place, .. }
+            | Event::CallLockChanged { place, .. }
+            | Event::CallMeetingStarted { place, .. }
+            | Event::CallMeetingEnded { place, .. }
+            | Event::CallSpeaking { place, .. } => Some(of_call(place, Some(CallReach::Occupancy))),
             Event::AccountAdded { .. }
             | Event::AccountStatusChanged { .. }
             | Event::AccountServerRolesChanged { .. }
             | Event::OwnerChanged { .. } => permission(ServerPermission::BanMembers),
+            Event::AccountProfileUpdated { profile } => Some(Self::AccountViewers {
+                account_id: profile.id,
+            }),
             Event::ServerRoleCreated { .. } | Event::ServerRoleUpdated { .. } => {
                 permission(ServerPermission::Administrator)
             }
@@ -242,7 +492,42 @@ impl Audience {
                 | Event::AccountRecovered { .. },
                 Self::Account { .. },
             ) => true,
-            (Event::PermissionsChanged { .. }, Self::Account { .. }) => true,
+            (
+                Event::PermissionsChanged { .. }
+                | Event::CallAccessEnded {}
+                | Event::DirectMuteSet { .. }
+                | Event::DirectMuteRemoved { .. },
+                Self::Account { .. },
+            ) => true,
+            (
+                Event::CallInvited { .. }
+                | Event::CallMoveRequested { .. }
+                | Event::OwnCallChanged { call: Some(_), .. },
+                _,
+            ) => self
+                .account_id()
+                .is_some_and(|account_id| *self == Self::addressed(account_id, event)),
+            (Event::OwnCallChanged { call: None, .. }, Self::Account { .. }) => true,
+            (
+                Event::CallInvitationResolved { .. }
+                | Event::CallMoveResolved { .. }
+                | Event::CallEntryAnswered { .. },
+                Self::Account { .. } | Self::AccountSeeing { .. },
+            ) => true,
+            (
+                Event::CallEntryRequested { request },
+                Self::Call {
+                    reach: CallReach::Inside,
+                    ..
+                },
+            ) => *self == of_call(&request.place, Some(CallReach::Inside)),
+            (
+                Event::CallEntryResolved { place, .. },
+                Self::Call {
+                    reach: CallReach::Inside,
+                    ..
+                },
+            ) => *self == of_call(place, Some(CallReach::Inside)),
             (Event::PermissionsChanged { workspace_id: None }, Self::ServerRoleHolders { .. }) => {
                 true
             }
@@ -289,6 +574,24 @@ pub struct Recipient<'a> {
     pub account_id: AccountId,
     pub actor: &'a Actor,
     pub server_role_ids: &'a [ServerRoleId],
+    /// The accounts, of the ones that the audiences of a batch name, that are members of a
+    /// workspace that the recipient is a member of.
+    pub fellows: &'a HashSet<AccountId>,
+    /// How the recipient stands to the accounts that the audiences of a batch name for a
+    /// direct message or a direct call. An account that is not active has no entry.
+    pub contacts: &'a HashMap<AccountId, Contact>,
+}
+
+impl Recipient<'_> {
+    fn acquaintance(&self, account_id: AccountId) -> Acquaintance {
+        if account_id == self.account_id {
+            Acquaintance::Own
+        } else if self.fellows.contains(&account_id) {
+            Acquaintance::SharedWorkspace
+        } else {
+            Acquaintance::Unrelated
+        }
+    }
 }
 
 /// One channel of a workspace as the recipient stands in it now.
@@ -296,6 +599,10 @@ pub struct Recipient<'a> {
 pub struct ChannelStanding {
     pub deleted: bool,
     pub scope: ChannelScope,
+    /// The channel shows who is inside only to the people inside.
+    pub hides_occupants: bool,
+    /// The recipient is inside the call of the channel.
+    pub inside: bool,
 }
 
 /// One workspace as the recipient stands in it now.
@@ -347,10 +654,50 @@ pub fn may_receive(
     audience: &Audience,
     workspace: Option<&WorkspaceStanding>,
 ) -> bool {
+    receives(recipient, audience, &|_| workspace)
+}
+
+/// Like [`may_receive`], for an audience that can name channels of several workspaces:
+/// `standing` gives the standing of the recipient in one workspace.
+pub fn receives<'a>(
+    recipient: Recipient<'_>,
+    audience: &Audience,
+    standing: &dyn Fn(WorkspaceId) -> Option<&'a WorkspaceStanding>,
+) -> bool {
     let allows = |request: Request<'_>| authorize(recipient.actor, &request).is_allowed();
+    let reaches = |other: AccountId| {
+        recipient
+            .contacts
+            .get(&other)
+            .is_some_and(|contact| allows(Request::Contact(*contact)))
+    };
+    let workspace = audience.workspace_id().and_then(standing);
     match audience {
         Audience::Account { account_id } => {
             *account_id == recipient.account_id && allows(Request::OwnAccount)
+        }
+        Audience::AccountSeeing {
+            account_id,
+            channels,
+            accounts,
+        } => {
+            *account_id == recipient.account_id
+                && allows(Request::OwnAccount)
+                && channels.iter().all(|seen| {
+                    standing(seen.workspace_id)
+                        .and_then(|workspace| workspace.channels.get(&seen.channel_id))
+                        .is_some_and(|channel| {
+                            !channel.deleted
+                                && allows(Request::Channel {
+                                    scope: &channel.scope,
+                                    permission: WorkspacePermission::ViewChannel,
+                                })
+                        })
+                })
+                && accounts.iter().all(|other| reaches(*other))
+        }
+        Audience::AccountViewers { account_id } => {
+            allows(Request::ViewAccount(recipient.acquaintance(*account_id)))
         }
         Audience::ServerPermission { permission } => allows(Request::Server(*permission)),
         Audience::ServerRoleHolders { role_id } => {
@@ -383,6 +730,33 @@ pub fn may_receive(
                     permission: WorkspacePermission::ViewChannel,
                 })
             }),
+        Audience::Call {
+            channel_id, reach, ..
+        } => workspace
+            .and_then(|standing| standing.channels.get(channel_id))
+            .is_some_and(|channel| {
+                let reached = match reach {
+                    CallReach::Occupancy => !channel.hides_occupants || channel.inside,
+                    CallReach::Inside => channel.inside,
+                };
+                reached
+                    && !channel.deleted
+                    && allows(Request::Channel {
+                        scope: &channel.scope,
+                        permission: WorkspacePermission::ViewChannel,
+                    })
+            }),
+        Audience::Direct {
+            low_account_id,
+            high_account_id,
+        } => {
+            let other = match recipient.account_id {
+                own if own == *low_account_id => *high_account_id,
+                own if own == *high_account_id => *low_account_id,
+                _ => return allows(Request::DirectMessage(Participation::Outsider)),
+            };
+            allows(Request::DirectMessage(Participation::Participant)) && reaches(other)
+        }
     }
 }
 
@@ -410,11 +784,18 @@ mod tests {
         }
     }
 
+    static NO_FELLOWS: std::sync::LazyLock<HashSet<AccountId>> =
+        std::sync::LazyLock::new(HashSet::new);
+    static NO_CONTACTS: std::sync::LazyLock<HashMap<AccountId, Contact>> =
+        std::sync::LazyLock::new(HashMap::new);
+
     fn recipient(actor: &Actor) -> Recipient<'_> {
         Recipient {
             account_id: AccountId::generate(),
             actor,
             server_role_ids: &[],
+            fellows: &NO_FELLOWS,
+            contacts: &NO_CONTACTS,
         }
     }
 
@@ -472,6 +853,8 @@ mod tests {
         };
         let channel = ChannelStanding {
             deleted: false,
+            hides_occupants: false,
+            inside: false,
             scope: ChannelScope {
                 workspace: scope.clone(),
                 everyone_override: if private { deny_view() } else { Override::NONE },
@@ -527,6 +910,37 @@ mod tests {
         };
         assert!(may_receive(me, &mine, None));
         assert!(!may_receive(me, &other, None));
+    }
+
+    #[test]
+    fn a_profile_event_reaches_the_account_its_fellow_members_and_moderators() {
+        let subject = AccountId::generate();
+        let audience = Audience::AccountViewers {
+            account_id: subject,
+        };
+        let plain = member();
+        let stranger = recipient(&plain);
+        assert!(!may_receive(stranger, &audience, None));
+
+        let fellows = HashSet::from([subject]);
+        let fellow = Recipient {
+            fellows: &fellows,
+            ..recipient(&plain)
+        };
+        assert!(may_receive(fellow, &audience, None));
+
+        let own = Recipient {
+            account_id: subject,
+            ..recipient(&plain)
+        };
+        assert!(may_receive(own, &audience, None));
+
+        let moderator = Actor {
+            position: Position::Member,
+            server_roles: vec![ServerPermissions::from(ServerPermission::BanMembers)],
+        };
+        assert!(may_receive(recipient(&moderator), &audience, None));
+        assert!(may_receive(recipient(&administrator()), &audience, None));
     }
 
     #[test]
@@ -640,6 +1054,239 @@ mod tests {
     }
 
     #[test]
+    fn who_is_inside_a_hidden_voice_channel_reaches_only_the_people_inside() {
+        let place = place();
+        let call = |reach| Audience::Call {
+            workspace_id: place.workspace_id,
+            channel_id: place.channel_id,
+            reach,
+        };
+        let plain = member();
+        let me = recipient(&plain);
+        let standing_with = |hides_occupants, inside| {
+            let mut standing = standing(&place, Membership::Member, false, false);
+            let channel = standing.channels.get_mut(&place.channel_id).unwrap();
+            channel.hides_occupants = hides_occupants;
+            channel.inside = inside;
+            standing
+        };
+
+        let open = standing_with(false, false);
+        assert!(may_receive(me, &call(CallReach::Occupancy), Some(&open)));
+        assert!(!may_receive(me, &call(CallReach::Inside), Some(&open)));
+
+        let hidden = standing_with(true, false);
+        assert!(!may_receive(me, &call(CallReach::Occupancy), Some(&hidden)));
+        assert!(!may_receive(me, &call(CallReach::Inside), Some(&hidden)));
+        for reach in [CallReach::Occupancy, CallReach::Inside] {
+            assert!(!may_receive(
+                recipient(&administrator()),
+                &call(reach),
+                Some(&hidden)
+            ));
+        }
+
+        let inside = standing_with(true, true);
+        assert!(may_receive(me, &call(CallReach::Occupancy), Some(&inside)));
+        assert!(may_receive(me, &call(CallReach::Inside), Some(&inside)));
+
+        let mut without_sight = standing(&place, Membership::Member, false, true);
+        without_sight
+            .channels
+            .get_mut(&place.channel_id)
+            .unwrap()
+            .inside = true;
+        assert!(!may_receive(
+            me,
+            &call(CallReach::Inside),
+            Some(&without_sight)
+        ));
+        let mut deleted = standing_with(false, true);
+        deleted.channels.get_mut(&place.channel_id).unwrap().deleted = true;
+        assert!(!may_receive(
+            me,
+            &call(CallReach::Occupancy),
+            Some(&deleted)
+        ));
+        assert!(!may_receive(me, &call(CallReach::Occupancy), None));
+    }
+
+    #[test]
+    fn an_event_for_one_account_that_names_a_channel_needs_sight_of_that_channel() {
+        use junto_protocol::call::{CallInvitation, OwnCall};
+        use junto_protocol::ids::{CallId, CallInvitationId, DeviceId};
+
+        let place = place();
+        let other = self::place();
+        let channel = |place: &Place| CallPlace::Channel {
+            workspace_id: place.workspace_id,
+            channel_id: place.channel_id,
+        };
+        let plain = member();
+        let me = recipient(&plain);
+        let own = |call| Event::OwnCallChanged { call, left: None };
+        let joined = own(Some(OwnCall {
+            call_id: CallId::generate(),
+            place: channel(&place),
+            device_id: DeviceId::generate(),
+            identity: "seat".to_owned(),
+        }));
+        let audience = Audience::addressed(me.account_id, &joined);
+        assert_eq!(
+            audience,
+            Audience::AccountSeeing {
+                account_id: me.account_id,
+                channels: vec![Seen {
+                    workspace_id: place.workspace_id,
+                    channel_id: place.channel_id
+                }],
+                accounts: vec![],
+            }
+        );
+        assert_eq!(audience.account_id(), Some(me.account_id));
+        assert!(audience.fits(&joined));
+        assert!(
+            !Audience::Account {
+                account_id: me.account_id
+            }
+            .fits(&joined)
+        );
+        let left = own(None);
+        assert_eq!(
+            Audience::addressed(me.account_id, &left),
+            Audience::Account {
+                account_id: me.account_id
+            }
+        );
+        assert!(!audience.fits(&left));
+
+        let public = standing(&place, Membership::Member, false, false);
+        let private = standing(&place, Membership::Member, false, true);
+        assert!(may_receive(me, &audience, Some(&public)));
+        assert!(!may_receive(me, &audience, Some(&private)));
+        assert!(!may_receive(me, &audience, None));
+        assert!(!may_receive(recipient(&plain), &audience, Some(&public)));
+
+        let moved = Event::CallMoveRequested {
+            call_move: junto_protocol::call::CallMove {
+                id: junto_protocol::ids::CallMoveId::generate(),
+                account_id: me.account_id,
+                from: channel(&place),
+                to: channel(&other),
+                moved_by: AccountId::generate(),
+                expires_at: time::OffsetDateTime::UNIX_EPOCH,
+            },
+        };
+        let both = Audience::addressed(me.account_id, &moved);
+        assert_eq!(both.places().len(), 2);
+        let elsewhere = standing(&other, Membership::Member, false, false);
+        let hidden_elsewhere = standing(&other, Membership::Member, false, true);
+        let sees = |second: &WorkspaceStanding| {
+            let lookup = |workspace_id| {
+                if workspace_id == place.workspace_id {
+                    Some(&public)
+                } else if workspace_id == other.workspace_id {
+                    Some(second)
+                } else {
+                    None
+                }
+            };
+            receives(me, &both, &lookup)
+        };
+        assert!(sees(&elsewhere));
+        assert!(!sees(&hidden_elsewhere));
+
+        let caller = AccountId::generate();
+        let direct = Event::CallInvited {
+            invitation: CallInvitation {
+                id: CallInvitationId::generate(),
+                call_id: CallId::generate(),
+                place: CallPlace::direct(me.account_id, caller),
+                account_id: me.account_id,
+                invited_by: caller,
+                created_at: time::OffsetDateTime::UNIX_EPOCH,
+                expires_at: time::OffsetDateTime::UNIX_EPOCH,
+            },
+        };
+        let rung = Audience::addressed(me.account_id, &direct);
+        assert_eq!(
+            rung,
+            Audience::AccountSeeing {
+                account_id: me.account_id,
+                channels: vec![],
+                accounts: vec![caller],
+            }
+        );
+        assert!(!may_receive(me, &rung, None));
+        for (contact, reaches) in [
+            (Contact::SharedWorkspace, true),
+            (Contact::Administrator, true),
+            (Contact::Unrelated, false),
+        ] {
+            let contacts = HashMap::from([(caller, contact)]);
+            let near = Recipient {
+                contacts: &contacts,
+                ..me
+            };
+            assert_eq!(may_receive(near, &rung, None), reaches, "{contact:?}");
+        }
+    }
+
+    #[test]
+    fn an_event_of_a_direct_call_reaches_its_two_participants_while_they_reach_each_other() {
+        let (low, high) = (AccountId::generate(), AccountId::generate());
+        let audience = Audience::Direct {
+            low_account_id: low.min(high),
+            high_account_id: low.max(high),
+        };
+        let plain = member();
+        let manager = administrator();
+        for (participant, other) in [(low, high), (high, low)] {
+            let me = Recipient {
+                account_id: participant,
+                ..recipient(&plain)
+            };
+            assert!(!may_receive(me, &audience, None));
+            for (contact, reaches) in [
+                (Contact::SharedWorkspace, true),
+                (Contact::Administrator, true),
+                (Contact::Unrelated, false),
+            ] {
+                let contacts = HashMap::from([(other, contact)]);
+                let near = Recipient {
+                    contacts: &contacts,
+                    ..me
+                };
+                assert_eq!(may_receive(near, &audience, None), reaches, "{contact:?}");
+                let administering = Recipient {
+                    actor: &manager,
+                    ..near
+                };
+                assert!(may_receive(administering, &audience, None));
+            }
+        }
+        let owner = Actor {
+            position: Position::Owner,
+            server_roles: vec![],
+        };
+        let everyone = HashMap::from([
+            (low, Contact::SharedWorkspace),
+            (high, Contact::SharedWorkspace),
+        ]);
+        for outsider in [plain.clone(), administrator(), owner] {
+            let near = Recipient {
+                contacts: &everyone,
+                ..recipient(&outsider)
+            };
+            assert!(!may_receive(near, &audience, None));
+        }
+        assert_eq!(
+            audience.call_key(),
+            Some(CallKey::Direct(low.min(high), low.max(high)))
+        );
+    }
+
+    #[test]
     fn an_event_about_a_deleted_channel_reaches_nobody_except_its_deletion() {
         let place = place();
         let mut gone = standing(&place, Membership::Member, true, false);
@@ -745,6 +1392,8 @@ mod tests {
             name: "plans".to_owned(),
             position: 0,
             permanent_messages: false,
+            user_limit: None,
+            hides_occupants: false,
         };
         let created = Event::ChannelCreated { channel };
         assert!(channel_audience(&place, WorkspacePermission::ViewChannel).fits(&created));

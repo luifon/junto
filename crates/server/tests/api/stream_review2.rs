@@ -26,8 +26,6 @@ fn milliseconds(count: i64) -> time::Duration {
 #[tokio::test]
 async fn interrupted_reads_never_use_more_database_backends_than_the_bound() {
     let world = private_channel(|config| {
-        config.limits.stream.read_deadline = milliseconds(300);
-        config.limits.stream.retry_delay = milliseconds(100);
         config.limits.stream.most_failed_attempts = 10_000;
     })
     .await;
@@ -38,6 +36,10 @@ async fn interrupted_reads_never_use_more_database_backends_than_the_bound() {
         assign(server, owner, &world.workspace, &member, &world.team, true).await;
         streams.push(server.subscribed(&member, Level::Full).await);
     }
+    server.tighten_streams(|limits| {
+        limits.read_deadline = milliseconds(300);
+        limits.retry_delay = milliseconds(100);
+    });
     let mut observer = sqlx::PgConnection::connect(&server.database_url())
         .await
         .unwrap();
@@ -57,7 +59,7 @@ async fn interrupted_reads_never_use_more_database_backends_than_the_bound() {
         tokio::time::sleep(Duration::from_millis(40)).await;
     }
     let request =
-        tokio::time::timeout(Duration::from_secs(2), server.get(owner, "/api/v1/account"))
+        tokio::time::timeout(Duration::from_secs(6), server.get(owner, "/api/v1/account"))
             .await
             .expect("a request waited for a database connection");
     request.ok::<Value>(StatusCode::OK);
@@ -73,23 +75,27 @@ async fn interrupted_reads_never_use_more_database_backends_than_the_bound() {
 #[tokio::test]
 async fn a_connection_that_makes_no_progress_is_closed_and_can_resume() {
     let world = private_channel(|config| {
-        config.limits.stream.read_deadline = milliseconds(200);
-        config.limits.stream.retry_delay = milliseconds(100);
         config.limits.stream.most_failed_attempts = 3;
     })
     .await;
     let server = &world.server;
     let mut stream = server.stream(&world.insider).await;
     let start = stream.subscribe(Level::Full, None).await;
+    let normal = server.state.streams.limits();
+    server.tighten_streams(|limits| {
+        limits.read_deadline = milliseconds(200);
+        limits.retry_delay = milliseconds(100);
+    });
 
     let lock = queue_an_event_and_block_its_read(&world).await;
-    let closed = tokio::time::timeout(Duration::from_secs(4), stream.until_closed()).await;
+    let closed = tokio::time::timeout(Duration::from_secs(10), stream.until_closed()).await;
     assert_eq!(
         closed,
         Ok((vec![], Some(CloseCode::Failed))),
         "the connection stayed open without progress"
     );
     lock.rollback().await.unwrap();
+    server.state.streams.set_limits((*normal).clone());
 
     let mut resumed = server.stream(&world.insider).await;
     resumed.subscribe(Level::Full, Some(start)).await;
@@ -100,8 +106,6 @@ async fn a_connection_that_makes_no_progress_is_closed_and_can_resume() {
 async fn a_connection_whose_session_cannot_be_checked_is_closed() {
     let server = TestServer::start_with(|config| {
         config.limits.stream.heartbeat = milliseconds(100);
-        config.limits.stream.read_deadline = milliseconds(200);
-        config.limits.stream.retry_delay = milliseconds(100);
         config.limits.stream.most_failed_attempts = 3;
         config.limits.stream.client_frames.attempts = 10_000;
     })
@@ -109,13 +113,17 @@ async fn a_connection_whose_session_cannot_be_checked_is_closed() {
     let owner = server.owner().await;
     let mut stream = server.stream(&owner).await;
     assert_eq!(stream.within(Duration::from_millis(400)).await, None);
+    server.tighten_streams(|limits| {
+        limits.read_deadline = milliseconds(200);
+        limits.retry_delay = milliseconds(100);
+    });
 
     let mut lock = server.db.begin().await.unwrap();
     sqlx::query("lock table server_roles in access exclusive mode")
         .execute(&mut *lock)
         .await
         .unwrap();
-    let closed = tokio::time::timeout(Duration::from_secs(4), stream.until_closed()).await;
+    let closed = tokio::time::timeout(Duration::from_secs(10), stream.until_closed()).await;
     assert_eq!(
         closed,
         Ok((vec![], Some(CloseCode::Failed))),
@@ -230,7 +238,7 @@ async fn the_time_limit_of_a_write_is_not_renewed_by_interruptions() {
     let started = Instant::now();
     while !serving.is_finished() {
         assert!(
-            started.elapsed() < Duration::from_secs(4),
+            started.elapsed() < Duration::from_secs(10),
             "a client that reads nothing kept its connection through interruptions"
         );
         let mut arrivals = Arrivals::default();

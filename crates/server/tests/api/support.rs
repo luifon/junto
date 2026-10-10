@@ -8,13 +8,17 @@ use junto_protocol::error::{ErrorBody, ErrorCode};
 use junto_protocol::ids::{AccountId, DeviceId, ServerRoleId, WorkspaceId, WorkspaceRoleId};
 use junto_protocol::invite::InviteCreated;
 use junto_protocol::keys::{PublicKey, Signature};
+use junto_protocol::origin::Origin;
 use junto_protocol::roles::{ServerRole, WorkspaceRole};
 use junto_protocol::server::ServerInfo;
 use junto_protocol::structure::Workspace;
 use junto_protocol::{ServerPermission, WorkspacePermission};
+use junto_server::Tasks;
 use junto_server::clock::Clock;
-use junto_server::config::{Config, Limits, LogFormat};
+use junto_server::config::{Config, Limits, LogFormat, PublicOrigins};
 use junto_server::database::{CommitGate, Database};
+use junto_server::media::MediaServer;
+use junto_server::media::fake::FakeMedia;
 use junto_server::state::AppState;
 use reqwest::{Method, StatusCode};
 use serde::Serialize;
@@ -28,16 +32,37 @@ use tokio::sync::oneshot;
 
 const DATABASE_URL: &str = "JUNTO_TEST_DATABASE_URL";
 
-pub struct ManualClock(Mutex<OffsetDateTime>);
+/// The public origin of every test server: the address that a device connected to and signs.
+pub fn origin() -> Origin {
+    Origin::parse("https://chat.example.test").unwrap()
+}
+
+/// The clock of a test server. It stands still until a test moves it; a clock that
+/// `follows` the time of the machine is for the tests against a real media server, whose
+/// tokens carry real times.
+pub struct ManualClock {
+    now: Mutex<OffsetDateTime>,
+    follows: Option<(OffsetDateTime, std::time::Instant)>,
+}
 
 impl ManualClock {
+    fn starting_at(now: OffsetDateTime, follows: bool) -> Self {
+        Self {
+            now: Mutex::new(now),
+            follows: follows.then(|| (now, std::time::Instant::now())),
+        }
+    }
+
     pub fn advance(&self, duration: Duration) {
-        *self.0.lock().unwrap() += duration;
+        *self.now.lock().unwrap() += duration;
     }
 
     /// The time as the server stores it: cut to the microsecond.
     pub fn now(&self) -> OffsetDateTime {
-        let now = *self.0.lock().unwrap();
+        let mut now = *self.now.lock().unwrap();
+        if let Some((_, started)) = self.follows {
+            now += started.elapsed();
+        }
         now.replace_nanosecond(now.microsecond() * 1_000).unwrap()
     }
 }
@@ -62,7 +87,12 @@ impl DeviceKey {
     }
 
     pub fn sign(&self, challenge: &Challenge) -> Signature {
-        Signature::from_bytes(self.0.sign(&challenge.signing_input()).to_bytes())
+        self.sign_for(challenge, &origin())
+    }
+
+    /// Signs as a device that connected to `origin`.
+    pub fn sign_for(&self, challenge: &Challenge, origin: &Origin) -> Signature {
+        Signature::from_bytes(self.0.sign(&challenge.signing_input(origin)).to_bytes())
     }
 }
 
@@ -109,6 +139,17 @@ impl Reply {
     pub fn text(&self) -> String {
         String::from_utf8_lossy(&self.body).into_owned()
     }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.body
+    }
+
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(header, _)| header == name)
+            .map(|(_, value)| value.as_str())
+    }
 }
 
 /// An account with one device and a session.
@@ -127,12 +168,44 @@ pub struct TestServer {
     pub owner_code: String,
     pub info: ServerInfo,
     pub state: AppState,
+    /// The media server of a server that was started for calls.
+    pub media: Option<Arc<FakeMedia>>,
     http: reqwest::Client,
     database: PgConnectOptions,
     config: Config,
     send_buffer: Option<u32>,
+    tasks: Tasks,
     shutdown: Option<oneshot::Sender<()>>,
     served: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
+}
+
+/// The media server of a test server.
+enum Media {
+    /// The one of the configuration: none, or a LiveKit server.
+    Configured,
+    /// A fake one: a new one, or the one of the server that is restarted.
+    Fake(Option<Arc<FakeMedia>>),
+}
+
+/// How a test server is started.
+struct Setup {
+    send_buffer: Option<u32>,
+    media: Media,
+    tasks: Tasks,
+    follows_time: bool,
+    listen: Option<String>,
+}
+
+impl Default for Setup {
+    fn default() -> Self {
+        Self {
+            send_buffer: None,
+            media: Media::Configured,
+            tasks: Tasks { calls: false },
+            follows_time: false,
+            listen: None,
+        }
+    }
 }
 
 fn admin_options() -> PgConnectOptions {
@@ -149,10 +222,12 @@ pub fn test_config() -> Config {
     Config {
         database_url: String::new(),
         listen_address: SocketAddr::from(([127, 0, 0, 1], 0)),
+        public_origins: PublicOrigins::of(vec![origin()]),
         server_name: "Acme".to_owned(),
         trusted_proxies: Vec::new(),
         log_format: LogFormat::Text,
         log_level: tracing::Level::ERROR,
+        media: None,
         limits: Limits::default(),
     }
 }
@@ -174,6 +249,55 @@ impl TestServer {
         configure: impl FnOnce(&mut Config),
         send_buffer: Option<u32>,
     ) -> Self {
+        let setup = Setup {
+            send_buffer,
+            ..Setup::default()
+        };
+        Self::start_as(configure, setup).await
+    }
+
+    /// Starts a server with a fake media server. The admission check and the publication of
+    /// speaking marks do not run by themselves: a test runs each check, so that the order of
+    /// things is fixed.
+    pub async fn start_for_calls() -> Self {
+        Self::start_for_calls_with(|_| {}).await
+    }
+
+    pub async fn start_for_calls_with(configure: impl FnOnce(&mut Config)) -> Self {
+        let setup = Setup {
+            media: Media::Fake(None),
+            ..Setup::default()
+        };
+        let server = Self::start_as(configure, setup).await;
+        server.check().await;
+        server
+    }
+
+    /// Starts a server with a fake media server and the tasks of calls running as in the
+    /// product.
+    pub async fn start_with_tasks(configure: impl FnOnce(&mut Config)) -> Self {
+        let setup = Setup {
+            media: Media::Fake(None),
+            tasks: Tasks { calls: true },
+            ..Setup::default()
+        };
+        Self::start_as(configure, setup).await
+    }
+
+    /// Starts a server as the product runs: with the media server of its configuration, the
+    /// tasks of calls, and a clock that follows the time of the machine. With `listen`, the
+    /// server listens on that address.
+    pub async fn start_live(configure: impl FnOnce(&mut Config), listen: Option<String>) -> Self {
+        let setup = Setup {
+            tasks: Tasks { calls: true },
+            follows_time: true,
+            listen,
+            ..Setup::default()
+        };
+        Self::start_as(configure, setup).await
+    }
+
+    async fn start_as(configure: impl FnOnce(&mut Config), setup: Setup) -> Self {
         let admin = admin_options();
         let name = format!("junto_test_{}", uuid::Uuid::new_v4().simple());
         let mut connection = admin.connect().await.unwrap();
@@ -185,18 +309,59 @@ impl TestServer {
 
         let mut config = test_config();
         configure(&mut config);
-        Self::on_database(admin.database(&name), config, None, send_buffer).await
+        Self::on_database(admin.database(&name), config, None, setup).await
     }
 
     /// Starts a second server process on the database of this one.
     pub async fn restart(&self) -> Self {
-        Self::on_database(
+        let media = match &self.media {
+            Some(fake) => Media::Fake(Some(fake.clone())),
+            None => Media::Configured,
+        };
+        let setup = Setup {
+            send_buffer: self.send_buffer,
+            media,
+            tasks: self.tasks,
+            ..Setup::default()
+        };
+        let now = Some(self.clock.now());
+        Self::on_database(self.database.clone(), self.config.clone(), now, setup).await
+    }
+
+    /// Starts a second server process on the database of this one, with a changed
+    /// configuration. A test that shortens a time limit prepares on the first process, under
+    /// the normal limits, and sends only the step that it examines to this one.
+    pub async fn strict(&self, configure: impl FnOnce(&mut Config)) -> Self {
+        let media = match &self.media {
+            Some(fake) => Media::Fake(Some(fake.clone())),
+            None => Media::Configured,
+        };
+        let setup = Setup {
+            send_buffer: self.send_buffer,
+            media,
+            tasks: self.tasks,
+            ..Setup::default()
+        };
+        let mut config = self.config.clone();
+        configure(&mut config);
+        let now = Some(self.clock.now());
+        Self::on_database(self.database.clone(), config, now, setup).await
+    }
+
+    /// Connects to the database of this server as a server process with a changed
+    /// configuration does, and starts no process.
+    pub async fn database_with(&self, configure: impl FnOnce(&mut Config)) -> Database {
+        let mut config = self.config.clone();
+        configure(&mut config);
+        let limits = &config.limits;
+        Database::connect(
             self.database.clone(),
-            self.config.clone(),
-            Some(self.clock.now()),
-            self.send_buffer,
+            4,
+            &limits.database,
+            &limits.stream.pool(),
         )
         .await
+        .unwrap()
     }
 
     /// Stops this server process as a stop signal does and waits until it has ended.
@@ -211,20 +376,39 @@ impl TestServer {
         database: PgConnectOptions,
         config: Config,
         now: Option<OffsetDateTime>,
-        send_buffer: Option<u32>,
+        setup: Setup,
     ) -> Self {
+        let Setup {
+            send_buffer,
+            media,
+            tasks,
+            follows_time,
+            listen,
+        } = setup;
         let limits = &config.limits;
         let stream_pool = limits.stream.pool();
         let connected = Database::connect(database.clone(), 8, &limits.database, &stream_pool)
             .await
             .unwrap();
         let db = connected.pool().clone();
-        let clock = Arc::new(ManualClock(Mutex::new(
+        let clock = Arc::new(ManualClock::starting_at(
             now.unwrap_or_else(OffsetDateTime::now_utc),
-        )));
-        let prepared = junto_server::prepare(connected, config.clone(), clock.clone())
-            .await
-            .unwrap();
+            follows_time,
+        ));
+        let media = match media {
+            Media::Configured => None,
+            Media::Fake(Some(fake)) => Some(fake),
+            Media::Fake(None) => Some(Arc::new(FakeMedia::new(clock.clone()))),
+        };
+        let prepared = match &media {
+            Some(fake) => {
+                let fake: Arc<dyn MediaServer> = fake.clone();
+                junto_server::prepare_with(connected, config.clone(), clock.clone(), Some(fake))
+                    .await
+            }
+            None => junto_server::prepare(connected, config.clone(), clock.clone()).await,
+        }
+        .unwrap();
         let state = prepared.state.clone();
         let owner_code = prepared
             .owner_code
@@ -232,7 +416,9 @@ impl TestServer {
             .unwrap_or_default();
 
         let listener = match send_buffer {
-            None => TcpListener::bind("127.0.0.1:0").await.unwrap(),
+            None => TcpListener::bind(listen.as_deref().unwrap_or("127.0.0.1:0"))
+                .await
+                .unwrap(),
             Some(bytes) => {
                 let socket = tokio::net::TcpSocket::new_v4().unwrap();
                 socket.set_send_buffer_size(bytes).unwrap();
@@ -243,9 +429,15 @@ impl TestServer {
         let address = listener.local_addr().unwrap();
         let base = format!("http://{address}");
         let (shutdown, stopped) = oneshot::channel::<()>();
-        let served = tokio::spawn(junto_server::serve(listener, prepared.state, async move {
+        let stop = async move {
             let _ = stopped.await;
-        }));
+        };
+        let served = tokio::spawn(junto_server::serve_with(
+            listener,
+            prepared.state,
+            stop,
+            tasks,
+        ));
 
         let http = reqwest::Client::new();
         let info = http
@@ -264,10 +456,12 @@ impl TestServer {
             owner_code,
             info,
             state,
+            media,
             http,
             database,
             config,
             send_buffer,
+            tasks,
             shutdown: Some(shutdown),
             served: Some(served),
         }
@@ -291,6 +485,29 @@ impl TestServer {
         if let Some(address) = forwarded_for {
             request = request.header("x-forwarded-for", address);
         }
+        Self::reply(request).await
+    }
+
+    /// Sends `bytes` as the body, with `content_type` when one is given.
+    pub async fn put_bytes(
+        &self,
+        member: &Member,
+        path: &str,
+        content_type: Option<&str>,
+        bytes: Vec<u8>,
+    ) -> Reply {
+        let mut request = self
+            .http
+            .put(format!("{}{path}", self.base))
+            .bearer_auth(&member.token)
+            .body(bytes);
+        if let Some(content_type) = content_type {
+            request = request.header("content-type", content_type);
+        }
+        Self::reply(request).await
+    }
+
+    pub async fn reply(request: reqwest::RequestBuilder) -> Reply {
         let response = request.send().await.unwrap();
         let mut headers: Vec<(String, String)> = response
             .headers()
@@ -443,6 +660,7 @@ impl TestServer {
         let challenge = self.challenge(key, operation).await;
         Proof {
             challenge_id: challenge.id,
+            origin: origin(),
             signature: key.sign(&challenge),
         }
     }

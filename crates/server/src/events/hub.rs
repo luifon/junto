@@ -97,25 +97,62 @@ struct Registry {
     stopping: bool,
 }
 
-/// The accounts that are in a call and the channel of each call. A connection of such an
-/// account receives every event of that channel at any level (ADR 0107). The feature that
-/// adds calls enters and removes the accounts.
+/// The place of a call, as the audience of an event names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CallKey {
+    Channel(ChannelId),
+    /// A direct-message call, the smaller account identifier first.
+    Direct(AccountId, AccountId),
+}
+
+/// The accounts that are in a call and the place of each call. A connection of such an
+/// account receives every event of that call at any level (ADR 0107). The call routes enter
+/// and remove the accounts, and every admission check replaces the list with the content of
+/// the database (ADR 0509). The list widens the classes that a connection reads; it never
+/// decides whether an account may receive an event.
 #[derive(Default)]
 pub struct CallRegistry {
-    by_account: Mutex<HashMap<AccountId, ChannelId>>,
+    inner: Mutex<InCalls>,
+}
+
+#[derive(Default)]
+struct InCalls {
+    by_account: HashMap<AccountId, CallKey>,
+    generation: u64,
 }
 
 impl CallRegistry {
-    pub fn enter(&self, account_id: AccountId, channel_id: ChannelId) {
-        lock(&self.by_account).insert(account_id, channel_id);
+    pub fn enter(&self, account_id: AccountId, key: CallKey) {
+        let mut inner = lock(&self.inner);
+        inner.by_account.insert(account_id, key);
+        inner.generation += 1;
     }
 
     pub fn leave(&self, account_id: AccountId) {
-        lock(&self.by_account).remove(&account_id);
+        let mut inner = lock(&self.inner);
+        inner.by_account.remove(&account_id);
+        inner.generation += 1;
     }
 
-    pub fn channel_of(&self, account_id: AccountId) -> Option<ChannelId> {
-        lock(&self.by_account).get(&account_id).copied()
+    pub fn key_of(&self, account_id: AccountId) -> Option<CallKey> {
+        lock(&self.inner).by_account.get(&account_id).copied()
+    }
+
+    /// A number that changes with every entry and every leave.
+    pub fn generation(&self) -> u64 {
+        lock(&self.inner).generation
+    }
+
+    /// Replaces the list with `members`, which were read from the database after
+    /// `generation` was taken. When a request changed the list in between, the list stays
+    /// as it is and the next admission check replaces it.
+    pub fn replace_since(&self, generation: u64, members: HashMap<AccountId, CallKey>) -> bool {
+        let mut inner = lock(&self.inner);
+        if inner.generation != generation {
+            return false;
+        }
+        inner.by_account = members;
+        true
     }
 }
 
@@ -130,7 +167,7 @@ pub enum Lane {
 }
 
 pub struct Streams {
-    limits: StreamLimits,
+    limits: Mutex<Arc<StreamLimits>>,
     registry: Mutex<Registry>,
     event_reads: Arc<Semaphore>,
     session_reads: Arc<Semaphore>,
@@ -145,7 +182,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 impl Streams {
     pub fn new(limits: &StreamLimits) -> Self {
         Self {
-            limits: limits.clone(),
+            limits: Mutex::new(Arc::new(limits.clone())),
             registry: Mutex::new(Registry::default()),
             event_reads: Arc::new(Semaphore::new(limits.concurrent_deliveries.max(1))),
             session_reads: Arc::new(Semaphore::new(limits.concurrent_session_checks.max(1))),
@@ -158,6 +195,19 @@ impl Streams {
         &self.calls
     }
 
+    /// The limits of the event stream. A connection reads its heartbeat and its idle time
+    /// when it opens, and the other time limits whenever it uses them.
+    pub fn limits(&self) -> Arc<StreamLimits> {
+        lock(&self.limits).clone()
+    }
+
+    /// Replaces the limits of the event stream while the server runs. Only tests do this:
+    /// a test shortens a time limit for the step that it examines, after its preparation
+    /// ran under the normal limits (ADR 0904).
+    pub fn set_limits(&self, limits: StreamLimits) {
+        *lock(&self.limits) = Arc::new(limits);
+    }
+
     /// Admits a connection of a device. A device at its ceiling loses its oldest connection;
     /// an account at its ceiling is refused. A connection that was told to close counts for
     /// its account until its task has ended.
@@ -166,6 +216,7 @@ impl Streams {
         account_id: AccountId,
         device_id: DeviceId,
     ) -> Result<Registration, ApiError> {
+        let limits = self.limits();
         let mut registry = lock(&self.registry);
         if registry.stopping {
             return Err(ApiError::new(
@@ -174,14 +225,14 @@ impl Streams {
             ));
         }
         let connections = registry.by_account.entry(account_id).or_default();
-        if connections.len() >= self.limits.connections_per_account.max(1) {
+        if connections.len() >= limits.connections_per_account.max(1) {
             return Err(ApiError::new(
                 ErrorCode::TooManyConnections,
                 "the account has too many connections to the event stream",
             ));
         }
         let in_use = |link: &&Arc<Link>| link.device_id == device_id && !link.is_replaced();
-        if connections.iter().filter(in_use).count() >= self.limits.connections_per_device.max(1)
+        if connections.iter().filter(in_use).count() >= limits.connections_per_device.max(1)
             && let Some(oldest) = connections.iter().find(in_use)
         {
             oldest.replaced.store(true, Ordering::SeqCst);
@@ -234,7 +285,7 @@ impl Streams {
             if !(addressed || arrivals.other || arrivals.general) {
                 continue;
             }
-            let in_call = self.calls.channel_of(*account_id).is_some();
+            let in_call = self.calls.key_of(*account_id).is_some();
             for link in connections {
                 let wanted = match link.level.load(Ordering::SeqCst) {
                     FULL => true,
@@ -362,14 +413,23 @@ mod tests {
     fn an_account_is_in_at_most_one_call() {
         let calls = CallRegistry::default();
         let account_id = AccountId::generate();
-        let first = ChannelId::generate();
-        let second = ChannelId::generate();
-        assert_eq!(calls.channel_of(account_id), None);
+        let first = CallKey::Channel(ChannelId::generate());
+        let second = CallKey::Direct(account_id, AccountId::generate());
+        assert_eq!(calls.key_of(account_id), None);
         calls.enter(account_id, first);
         calls.enter(account_id, second);
-        assert_eq!(calls.channel_of(account_id), Some(second));
+        assert_eq!(calls.key_of(account_id), Some(second));
         calls.leave(account_id);
-        assert_eq!(calls.channel_of(account_id), None);
+        assert_eq!(calls.key_of(account_id), None);
+        let read_at = calls.generation();
+        assert!(calls.replace_since(read_at, HashMap::from([(account_id, first)])));
+        assert_eq!(calls.key_of(account_id), Some(first));
+        let read_at = calls.generation();
+        calls.enter(account_id, second);
+        assert!(!calls.replace_since(read_at, HashMap::new()));
+        assert_eq!(calls.key_of(account_id), Some(second));
+        assert!(calls.replace_since(calls.generation(), HashMap::new()));
+        assert_eq!(calls.key_of(account_id), None);
     }
 
     #[test]

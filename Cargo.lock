@@ -877,6 +877,7 @@ dependencies = [
  "time",
  "utoipa",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -888,6 +889,7 @@ dependencies = [
  "ed25519-dalek",
  "futures-util",
  "getrandom 0.4.3",
+ "hmac",
  "hyper",
  "hyper-util",
  "junto-authz",

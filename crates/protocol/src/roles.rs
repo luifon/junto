@@ -1,17 +1,18 @@
 use junto_authz::{ServerPermission, WorkspacePermission};
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
 use crate::ids::{ServerRoleId, WorkspaceId, WorkspaceRoleId};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ServerRole {
     pub id: ServerRoleId,
     pub name: String,
     pub permissions: Vec<ServerPermission>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateServerRole {
     pub name: String,
     #[serde(default)]
@@ -19,7 +20,8 @@ pub struct CreateServerRole {
 }
 
 /// An absent field keeps its value.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateServerRole {
     #[serde(default)]
     pub name: Option<String>,
@@ -27,7 +29,8 @@ pub struct UpdateServerRole {
     pub permissions: Option<Vec<ServerPermission>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct WorkspaceRole {
     pub id: WorkspaceRoleId,
     pub workspace_id: WorkspaceId,
@@ -37,7 +40,8 @@ pub struct WorkspaceRole {
     pub is_everyone: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateWorkspaceRole {
     pub name: String,
     #[serde(default)]
@@ -45,7 +49,8 @@ pub struct CreateWorkspaceRole {
 }
 
 /// An absent field keeps its value.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateWorkspaceRole {
     #[serde(default)]
     pub name: Option<String>,

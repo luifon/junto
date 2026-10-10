@@ -40,17 +40,40 @@ async fn hold_workspace_row(
     (holder, pid)
 }
 
+/// Waits until no backend of this database works. With [`reads_the_log_after_writes_only`],
+/// none starts to work afterwards unless a request arrives.
+async fn until_no_backend_is_busy(server: &TestServer, holder: i32) {
+    let idle = async {
+        while busy_backends(server, holder).await > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    };
+    tokio::time::timeout(PATIENCE, idle)
+        .await
+        .expect("a backend works while no request runs");
+}
+
+/// The server reads the event log in the background at an interval (ADR 0011). A test that
+/// counts the backends that work switches the interval off, so that it counts the backends
+/// of its requests only.
+fn reads_the_log_after_writes_only(config: &mut junto_server::config::Config) {
+    config.limits.stream.poll_interval = Duration::hours(1);
+}
+
 #[tokio::test]
 async fn a_request_blocked_inside_a_statement_gets_the_timeout_error_and_frees_its_connection() {
-    let server = TestServer::start_with(|config| {
-        config.limits.database.lock = Duration::milliseconds(300);
-        config.limits.database.idle_in_transaction = Duration::seconds(30);
-    })
-    .await;
-    let owner = server.owner().await;
-    let workspace = server.default_workspace(&owner).await;
+    let prepared = TestServer::start_with(reads_the_log_after_writes_only).await;
+    let owner = prepared.owner().await;
+    let workspace = prepared.default_workspace(&owner).await;
+    let server = prepared
+        .strict(|config| {
+            config.limits.database.lock = Duration::milliseconds(300);
+            config.limits.database.idle_in_transaction = Duration::seconds(30);
+        })
+        .await;
     let path = format!("/api/v1/workspaces/{}", workspace.id);
     let (holder, holder_pid) = hold_workspace_row(&server, &workspace).await;
+    until_no_backend_is_busy(&server, holder_pid).await;
 
     let body = json!({ "name": "Renamed" });
     let blocked = (0..12)
@@ -83,14 +106,19 @@ async fn a_request_blocked_inside_a_statement_gets_the_timeout_error_and_frees_i
 
 #[tokio::test]
 async fn a_request_that_reaches_the_http_time_limit_inside_a_statement_stops_in_the_database() {
-    let server = TestServer::start_with(|config| {
-        config.limits.request_timeout = Duration::milliseconds(300);
-        config.limits.database.lock = Duration::milliseconds(1_500);
-        config.limits.database.idle_in_transaction = Duration::seconds(30);
-    })
-    .await;
-    let owner = server.owner().await;
-    let workspace = server.default_workspace(&owner).await;
+    let prepared = TestServer::start().await;
+    let owner = prepared.owner().await;
+    let workspace = prepared.default_workspace(&owner).await;
+    // The request after the blocked ones runs under the same time limit and waits for
+    // nothing, so the limit is long enough for it on a slow machine.
+    let server = prepared
+        .strict(|config| {
+            config.limits.request_timeout = Duration::seconds(5);
+            config.limits.database.lock = Duration::seconds(10);
+            config.limits.database.idle_in_transaction = Duration::minutes(2);
+        })
+        .await;
+    let patience = std::time::Duration::from_secs(30);
     let path = format!("/api/v1/workspaces/{}", workspace.id);
     let (holder, holder_pid) = hold_workspace_row(&server, &workspace).await;
 
@@ -98,15 +126,15 @@ async fn a_request_that_reaches_the_http_time_limit_inside_a_statement_stops_in_
     let blocked = (0..12)
         .map(|_| server.patch(&owner, &path, &body))
         .collect();
-    let replies = tokio::time::timeout(PATIENCE, join_all(blocked))
+    let replies = tokio::time::timeout(patience, join_all(blocked))
         .await
         .expect("the blocked requests did not return");
     for reply in replies {
         reply.error(ErrorCode::Timeout);
     }
 
-    let settled = tokio::time::timeout(PATIENCE, async {
-        while busy_backends(&server, holder_pid).await > 0 {
+    let settled = tokio::time::timeout(patience, async {
+        while busy_backends(&prepared, holder_pid).await > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
     })
@@ -131,15 +159,13 @@ async fn a_request_that_reaches_the_http_time_limit_inside_a_statement_stops_in_
 
 #[tokio::test]
 async fn a_connection_left_inside_a_transaction_is_ended_by_the_database() {
-    let server = TestServer::start_with(|config| {
-        config.limits.database.idle_in_transaction = Duration::milliseconds(400);
-    })
-    .await;
-    let mut abandoned = server.db.begin().await.unwrap();
-    sqlx::query("select 1")
-        .execute(&mut *abandoned)
-        .await
-        .unwrap();
+    let server = TestServer::start().await;
+    let database = server
+        .database_with(|config| {
+            config.limits.database.idle_in_transaction = Duration::milliseconds(400);
+        })
+        .await;
+    let mut abandoned = database.pool().begin().await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
     let result = sqlx::query("select 1").execute(&mut *abandoned).await;
     assert!(result.is_err(), "the idle transaction is still open");
@@ -147,31 +173,46 @@ async fn a_connection_left_inside_a_transaction_is_ended_by_the_database() {
 
 #[tokio::test]
 async fn a_statement_that_runs_too_long_is_cancelled() {
-    let server = TestServer::start_with(|config| {
-        config.limits.database.statement = Duration::milliseconds(300);
-    })
-    .await;
-    let started = std::time::Instant::now();
-    let result = sqlx::query("select pg_sleep(5)").execute(&server.db).await;
-    assert!(result.is_err());
-    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    let server = TestServer::start().await;
+    let database = server
+        .database_with(|config| {
+            config.limits.database.statement = Duration::milliseconds(300);
+        })
+        .await;
+    let mut limited = database.pool().acquire().await.unwrap();
+    let mut reference = server.db.acquire().await.unwrap();
+
+    // The reference starts second and runs for ten times the limit: the statement under
+    // the limit has to end before it.
+    let cancelled = tokio::select! {
+        biased;
+        cancelled = sqlx::query("select pg_sleep(20)").execute(&mut *limited) => cancelled,
+        _ = sqlx::query("select pg_sleep(3)").execute(&mut *reference) => {
+            panic!("the statement ran for ten times its time limit")
+        }
+    };
+    let error = cancelled.expect_err("the statement ran to its end");
+    assert!(junto_server::database::is_timeout(&error), "{error}");
 }
 
 #[tokio::test]
 async fn migrations_are_exempt_from_the_statement_time_limit() {
-    let server = TestServer::start_with(|config| {
-        config.limits.database.statement = Duration::milliseconds(200);
-    })
-    .await;
+    const SLOW: &str = "select pg_sleep(0.7)";
+    let server = TestServer::start().await;
+    let database = server
+        .database_with(|config| {
+            config.limits.database.statement = Duration::milliseconds(200);
+        })
+        .await;
     let directory = std::env::temp_dir().join(format!("junto-migration-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&directory).unwrap();
-    std::fs::write(directory.join("9999_slow.sql"), "select pg_sleep(0.7);").unwrap();
+    std::fs::write(directory.join("9999_slow.sql"), format!("{SLOW};")).unwrap();
     let mut migrator = sqlx::migrate::Migrator::new(directory.clone())
         .await
         .unwrap();
     migrator.set_ignore_missing(true);
 
-    let migrated = server.state.database.migrate(&migrator).await;
+    let migrated = database.migrate(&migrator).await;
     std::fs::remove_dir_all(&directory).unwrap();
     migrated.unwrap();
 
@@ -181,10 +222,9 @@ async fn migrations_are_exempt_from_the_statement_time_limit() {
             .await
             .unwrap();
     assert_eq!(applied, 1);
-    assert!(
-        sqlx::query("select pg_sleep(0.7)")
-            .execute(&server.db)
-            .await
-            .is_err()
-    );
+    let error = sqlx::query(SLOW)
+        .execute(database.pool())
+        .await
+        .expect_err("the statement of the migration ran to its end on the pool");
+    assert!(junto_server::database::is_timeout(&error), "{error}");
 }
