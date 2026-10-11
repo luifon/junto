@@ -3,12 +3,14 @@
 
 mod secret_input;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::{Read, Write};
 use std::process::ExitCode;
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use junto_client_core::address::ServerAddress;
-use junto_client_core::book::{ConnectionMode, Membership};
+use junto_client_core::book::{ConnectionMode, Membership, ProfileSync};
 use junto_client_core::flow::FlowError;
 use junto_client_core::flow::access::{AccessAction, AccessState, Notice};
 use junto_client_core::flow::add_server::{AddServerAction, AddServerState};
@@ -18,7 +20,11 @@ use junto_client_core::flow::link_all::{
     LinkDeviceAction, LinkDeviceState, LinkProgress, LinkRequestText, ServerApproval,
 };
 use junto_client_core::paths::data_dir_of_this_user;
-use junto_client_core::protocol::ids::{JoinRequestId, ServerId, WorkspaceId};
+use junto_client_core::profile::{AVATAR_MAX_BYTES, ProfilePreset};
+use junto_client_core::protocol::account::Avatar;
+use junto_client_core::protocol::ids::{
+    AccountId, JoinRequestId, RecoveryId, ServerId, WorkspaceId,
+};
 use junto_client_core::protocol::invite::{ApproveJoinRequest, CreateInvite};
 use junto_client_core::protocol::secret::{InviteCode, LinkCode, OwnerCode};
 use junto_client_core::{Client, ClientOptions, Reach, ServerHandle};
@@ -53,12 +59,20 @@ commands:
                                server of this device
                                [--yes]
   devices                      list the devices of the account
+  recoveries                   list the recoveries of the account that this device has not
+                               acknowledged
+  acknowledge-recovery <id>    state that a recovery was seen; this device is not told of
+                               it again
+  account [<account id>]       show the account of this device, or the profile of another
+                               account; the options change the account of this device
+                               [--name <name>] [--avatar <file>] [--no-avatar]
+                               [--save-avatar <new file>]
   invite                       create an invite code
                                [--max-uses <n>] [--expires-in-hours <n>] [--workspace <id>]...
   requests                     list the join requests that wait
   approve-request <id>         approve a join request
   profile                      show or set the local profile preset
-                               [--name <name>]
+                               [--name <name>] [--avatar <file>] [--no-avatar]
 
 Commands that work on one server take --server <identifier, address or name>. It can be
 left out while one server is saved. --name can be left out when the profile preset has a
@@ -66,7 +80,10 @@ name.
 
 An owner code, an invite code, a link code, an offer and a request are read from standard
 input: one line, or a prompt without echo on a terminal. They are never taken from the
-command line.";
+command line.
+
+Every command that logs in prints the recoveries of the account that this device has not
+acknowledged, before its own output.";
 
 const VALUE_OPTIONS: &[&str] = &[
     "data-dir",
@@ -76,13 +93,21 @@ const VALUE_OPTIONS: &[&str] = &[
     "max-uses",
     "expires-in-hours",
     "workspace",
+    "avatar",
+    "save-avatar",
 ];
-const FLAGS: &[&str] = &["when-selected", "wait", "yes"];
+const FLAGS: &[&str] = &["when-selected", "wait", "yes", "no-avatar"];
 const WAIT_INTERVAL: Duration = Duration::from_secs(5);
 
 enum Failure {
     Usage(String),
     Failed(String),
+}
+
+/// Text that a server sent, as the tool prints it: without control characters, so that a
+/// server cannot move the cursor of a terminal or erase what the tool printed before.
+fn shown(text: &str) -> String {
+    text.chars().filter(|c| !c.is_control()).collect()
 }
 
 fn failed(error: impl std::fmt::Display) -> Failure {
@@ -260,7 +285,7 @@ async fn run(arguments: Arguments) -> Result<(), Failure> {
             show(&server);
             end_session(&server).await;
             let account = account.map_err(failed)?;
-            println!("name: {}", account.name);
+            println!("name: {}", shown(&account.name));
             println!("owner: {}", account.is_owner);
             Ok(())
         }
@@ -270,13 +295,60 @@ async fn run(arguments: Arguments) -> Result<(), Failure> {
             end_session(&server).await;
             result
         }
+        "recoveries" => {
+            let server = logged_in(&client, &arguments).await?;
+            if let AccessState::LoggedIn { recoveries, .. } = server.access().state
+                && recoveries.is_empty()
+            {
+                println!("no recovery waits for an acknowledgement");
+            }
+            end_session(&server).await;
+            Ok(())
+        }
+        "acknowledge-recovery" => {
+            let id: RecoveryId = arguments
+                .positional
+                .get(1)
+                .and_then(|text| text.parse().ok())
+                .ok_or_else(|| usage("acknowledge-recovery needs the identifier of a recovery"))?;
+            let server = logged_in(&client, &arguments).await?;
+            let acknowledged = server.acknowledge_recovery(id).await;
+            end_session(&server).await;
+            acknowledged.map_err(failed)?;
+            println!("acknowledged recovery {id}");
+            Ok(())
+        }
+        "account" => {
+            let other = arguments
+                .positional
+                .get(1)
+                .map(|text| {
+                    text.parse::<AccountId>()
+                        .map_err(|_| usage("account takes the identifier of an account"))
+                })
+                .transpose()?;
+            let changes = arguments.value("name").is_some()
+                || arguments.value("avatar").is_some()
+                || arguments.flag("no-avatar");
+            if other.is_some() && changes {
+                return Err(usage("only the account of this device can be changed"));
+            }
+            if arguments.value("avatar").is_some() && arguments.flag("no-avatar") {
+                return Err(usage("--avatar and --no-avatar exclude each other"));
+            }
+            let image = arguments.value("avatar").map(read_image).transpose()?;
+            let server = logged_in(&client, &arguments).await?;
+            let result = account(&server, &arguments, other, image).await;
+            end_session(&server).await;
+            result
+        }
         "devices" => {
             let server = logged_in(&client, &arguments).await?;
             let devices = server.api().devices().await;
             end_session(&server).await;
             for device in devices.map_err(failed)? {
-                let name = match device.name.as_str() {
-                    "" => "(no name)",
+                let name = match shown(&device.name) {
+                    name if name.is_empty() => "(no name)".to_owned(),
                     name => name,
                 };
                 let current = if device.current {
@@ -297,7 +369,7 @@ async fn run(arguments: Arguments) -> Result<(), Failure> {
             let created = server.api().create_invite(&invite).await;
             end_session(&server).await;
             let created = created.map_err(failed)?;
-            println!("code: {}", created.code.expose());
+            println!("code: {}", shown(created.code.expose()));
             println!("uses: {}", created.invite.max_uses);
             println!("expires: {}", created.invite.expires_at);
             Ok(())
@@ -309,7 +381,9 @@ async fn run(arguments: Arguments) -> Result<(), Failure> {
             for request in requests.map_err(failed)? {
                 println!(
                     "{}  {}  until {}",
-                    request.id, request.name, request.expires_at
+                    request.id,
+                    shown(&request.name),
+                    request.expires_at
                 );
             }
             Ok(())
@@ -396,11 +470,105 @@ async fn add(client: &Client, arguments: &Arguments) -> Result<(), Failure> {
 }
 
 fn profile(client: &Client, arguments: &Arguments) -> Result<(), Failure> {
-    let preset = match arguments.value("name") {
-        Some(name) => client.profile().set_name(name).map_err(failed)?,
-        None => client.profile().load().map_err(failed)?,
-    };
+    if arguments.value("avatar").is_some() && arguments.flag("no-avatar") {
+        return Err(usage("--avatar and --no-avatar exclude each other"));
+    }
+    let image = arguments.value("avatar").map(read_image).transpose()?;
+    let store = client.profile();
+    let mut preset: ProfilePreset = store.load().map_err(failed)?;
+    if let Some(name) = arguments.value("name") {
+        preset = store.set_name(name).map_err(failed)?;
+    }
+    if let Some(image) = image {
+        preset = store.set_avatar(&image).map_err(failed)?;
+    }
+    if arguments.flag("no-avatar") {
+        preset = store.clear_avatar().map_err(failed)?;
+    }
     println!("name: {}", preset.name);
+    match preset.avatar {
+        Some(kind) => println!("avatar: {}", kind.media_type()),
+        None => println!("avatar: none"),
+    }
+    Ok(())
+}
+
+/// Reads an image file. One byte more than an avatar can have is read at most, so that a
+/// larger file is refused by the check of the library and not held in memory.
+fn read_image(path: &str) -> Result<Vec<u8>, Failure> {
+    let unreadable = |error: std::io::Error| Failure::Failed(format!("{path}: {error}"));
+    let file = std::fs::File::open(path).map_err(unreadable)?;
+    let mut image = Vec::new();
+    file.take(AVATAR_MAX_BYTES as u64 + 1)
+        .read_to_end(&mut image)
+        .map_err(unreadable)?;
+    Ok(image)
+}
+
+fn show_avatar(avatar: Option<&Avatar>) {
+    match avatar {
+        Some(avatar) => println!(
+            "avatar: {}  {} bytes  {}x{}  {}",
+            avatar.media_type.media_type(),
+            avatar.bytes,
+            avatar.width,
+            avatar.height,
+            shown(&avatar.hash)
+        ),
+        None => println!("avatar: none"),
+    }
+}
+
+/// Shows the account of this device after the changes that the options ask for, or the
+/// profile of another account. `--save-avatar` writes the image to a file that does not
+/// exist yet.
+async fn account(
+    server: &ServerHandle,
+    arguments: &Arguments,
+    other: Option<AccountId>,
+    image: Option<Vec<u8>>,
+) -> Result<(), Failure> {
+    let api = server.api();
+    let (account_id, avatar) = match other {
+        Some(account_id) => {
+            let profile = api.profile(account_id).await.map_err(failed)?;
+            println!("account: {}", profile.id);
+            println!("name: {}", shown(&profile.name));
+            (profile.id, profile.avatar)
+        }
+        None => {
+            if let Some(name) = arguments.value("name") {
+                api.update_profile(name).await.map_err(failed)?;
+            }
+            if let Some(image) = image {
+                api.set_avatar(image).await.map_err(failed)?;
+            }
+            if arguments.flag("no-avatar") {
+                api.remove_avatar().await.map_err(failed)?;
+            }
+            let account = api.own_account().await.map_err(failed)?;
+            println!("account: {}", account.id);
+            println!("name: {}", shown(&account.name));
+            println!("owner: {}", account.is_owner);
+            (account.id, account.avatar)
+        }
+    };
+    show_avatar(avatar.as_ref());
+    let Some(path) = arguments.value("save-avatar") else {
+        return Ok(());
+    };
+    if avatar.is_none() {
+        return Err(Failure::Failed("the account has no avatar".to_owned()));
+    }
+    let image = api.avatar(account_id).await.map_err(failed)?;
+    let unwritable = |error: std::io::Error| Failure::Failed(format!("{path}: {error}"));
+    let mut file = std::fs::File::create_new(path).map_err(unwritable)?;
+    file.write_all(&image.bytes).map_err(unwritable)?;
+    println!(
+        "saved: {path}  {}  {}",
+        image.media_type.media_type(),
+        image.hash
+    );
     Ok(())
 }
 
@@ -498,8 +666,7 @@ async fn enter(server: &ServerHandle, action: AccessAction) -> Result<(), Failur
 }
 
 /// The login that every command of an account goes through. The recoveries of the account
-/// since the login before are shown here, before the output of the command: the server
-/// tells each device once.
+/// that this device has not acknowledged are shown here, before the output of the command.
 async fn logged_in(client: &Client, arguments: &Arguments) -> Result<ServerHandle, Failure> {
     let server = pick(client, arguments)?;
     let contacted = server.connect().await;
@@ -514,16 +681,30 @@ async fn logged_in(client: &Client, arguments: &Arguments) -> Result<ServerHandl
     }
 }
 
-/// Prints the recoveries that the server told at a login and that were not printed yet.
-/// It runs after every contact that can log in, before the output of the command.
+/// The recoveries that this process has printed.
+static PRINTED: Mutex<BTreeSet<RecoveryId>> = Mutex::new(BTreeSet::new());
+
+/// Prints the recoveries that this device has not acknowledged, each once in this process.
+/// It runs after every contact that can log in, before the output of the command. A
+/// printed line does not prove that a person read it, so the tool acknowledges a recovery
+/// only with the command `acknowledge-recovery` (ADR 0118).
 fn notices(server: &ServerHandle) {
-    for recovery in server.take_recoveries() {
+    let AccessState::LoggedIn { recoveries, .. } = server.access().state else {
+        return;
+    };
+    let mut printed = PRINTED.lock().unwrap_or_else(PoisonError::into_inner);
+    for recovery in recoveries {
+        if !printed.insert(recovery.id) {
+            continue;
+        }
         let by = match recovery.performed_by {
             Some(account_id) => format!("the account {account_id}"),
             None => "a command on the host of the server".to_owned(),
         };
         println!(
-            "recovery: a device was given access to the account on {} at {} by {by}",
+            "recovery {}: a device was given access to the account on {} at {} by {by}; not \
+             acknowledged",
+            recovery.id,
             server.entry().address,
             recovery.performed_at
         );
@@ -811,7 +992,30 @@ fn show(server: &ServerHandle) {
             println!("state: logged in");
             println!("account: {account_id}");
             println!("device: {device_id}");
+            match server.profile_sync() {
+                ProfileSync::NotNeeded | ProfileSync::Applied => {}
+                ProfileSync::Pending { attempts } => {
+                    println!("preset avatar: not sent yet ({attempts} failed tries)");
+                }
+                ProfileSync::Refused => println!("preset avatar: refused by the server"),
+            }
         }
         AccessState::Banned { .. } => println!("state: banned"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shown;
+
+    #[test]
+    fn text_of_a_server_is_printed_without_control_characters() {
+        assert_eq!(shown("Ada"), "Ada");
+        assert_eq!(
+            shown("Ada\u{1b}[2J\u{1b}[H\rowner: true\n"),
+            "Ada[2J[Howner: true"
+        );
+        assert_eq!(shown("a\u{7}\u{8}\u{9b}b\u{0}"), "ab");
+        assert_eq!(shown("Zo\u{eb} \u{1f600}"), "Zo\u{eb} \u{1f600}");
     }
 }

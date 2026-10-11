@@ -3,29 +3,29 @@
 use std::fmt;
 use std::time::Duration;
 
-use junto_protocol::error::ErrorCode;
+use junto_protocol::error::{ErrorBody, ErrorCode};
 use junto_protocol::ids::{AccountId, ServerId};
-use serde::Deserialize;
 
 use super::proof::ChallengeMismatch;
 use super::transport::{HttpResponse, TransportError};
 use crate::keys::KeyStoreError;
+use crate::profile::{InvalidAvatar, InvalidName};
 use crate::storage::StorageError;
 use crate::version::Incompatibility;
 
 const LONGEST_MESSAGE: usize = 200;
-const LONGEST_CODE: usize = 64;
 
 /// What the client does about a refusal. Every code of the server belongs to one group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorCategory {
     /// `busy`, `timeout`: nothing was changed and the same request is sent again.
     Unchanged,
-    /// A limit on attempts or a ceiling of the server. The request can be sent later.
+    /// A limit on attempts or on connections. The request can be sent later.
     Limited,
     /// `unauthenticated`: the session does not exist any more. The device logs in again.
     SessionEnded,
-    /// The challenge or its signature was not accepted. A new challenge is needed.
+    /// The proof of the device key was not accepted: the challenge, its signature, or the
+    /// origin that the device signed.
     Proof,
     /// `unknown_device`: the device key belongs to no account on the server.
     UnknownDevice,
@@ -45,20 +45,24 @@ pub enum ErrorCategory {
     ServerFault,
 }
 
-/// The group of each code. The match has no wildcard: a code that the protocol crate adds
-/// does not compile until it is placed here.
-pub const fn category(code: ErrorCode) -> ErrorCategory {
+/// The group of a code. The match has no wildcard: a code that the protocol crate adds
+/// does not compile until it is placed here. A code that this build does not know
+/// (ADR 0209) is grouped by the status of its response; it is never sent again by itself
+/// and never ends a session.
+pub const fn category(code: ErrorCode, status: u16) -> ErrorCategory {
     match code {
         ErrorCode::Busy | ErrorCode::Timeout => ErrorCategory::Unchanged,
         ErrorCode::RateLimited
         | ErrorCode::TooManyAttempts
+        | ErrorCode::TooManyConnections
         | ErrorCode::ChallengesFull
         | ErrorCode::DeviceLinksFull
         | ErrorCode::JoinRequestsFull => ErrorCategory::Limited,
         ErrorCode::Unauthenticated => ErrorCategory::SessionEnded,
-        ErrorCode::ChallengeInvalid | ErrorCode::ChallengeExpired | ErrorCode::InvalidSignature => {
-            ErrorCategory::Proof
-        }
+        ErrorCode::ChallengeInvalid
+        | ErrorCode::ChallengeExpired
+        | ErrorCode::InvalidSignature
+        | ErrorCode::OriginRejected => ErrorCategory::Proof,
         ErrorCode::UnknownDevice => ErrorCategory::UnknownDevice,
         ErrorCode::AccountBanned => ErrorCategory::Banned,
         ErrorCode::Forbidden
@@ -68,77 +72,83 @@ pub const fn category(code: ErrorCode) -> ErrorCategory {
         | ErrorCode::ExceedsOwnPermissions => ErrorCategory::NotAllowed,
         ErrorCode::NotFound => ErrorCategory::NotFound,
         ErrorCode::Conflict
+        | ErrorCode::LimitReached
         | ErrorCode::KeyAlreadyRegistered
         | ErrorCode::OwnerAlreadyClaimed
         | ErrorCode::JoinRequestPending
-        | ErrorCode::PublicKeyMismatch => ErrorCategory::Conflict,
+        | ErrorCode::PublicKeyMismatch
+        | ErrorCode::CallLocked
+        | ErrorCode::CallFull
+        | ErrorCode::NotInCall => ErrorCategory::Conflict,
         ErrorCode::OwnerCodeInvalid
         | ErrorCode::InviteNotFound
         | ErrorCode::InviteExpired
         | ErrorCode::InviteExhausted
         | ErrorCode::InviteRevoked
         | ErrorCode::LinkCodeInvalid => ErrorCategory::CodeRefused,
-        ErrorCode::InvalidRequest | ErrorCode::MethodNotAllowed => ErrorCategory::ClientFault,
-        ErrorCode::Internal => ErrorCategory::ServerFault,
-    }
-}
-
-/// The group of a code that this client does not know, from its HTTP status. Such a code
-/// is never sent again by itself and never ends a session.
-const fn category_of_status(status: u16) -> ErrorCategory {
-    match status {
-        403 | 401 => ErrorCategory::NotAllowed,
-        404 => ErrorCategory::NotFound,
-        409 | 410 => ErrorCategory::Conflict,
-        429 => ErrorCategory::Limited,
-        500..=599 => ErrorCategory::ServerFault,
-        _ => ErrorCategory::ClientFault,
-    }
-}
-
-/// The code of a refusal: one that this client knows, or the text of one that a newer
-/// server added.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RejectionCode {
-    Known(ErrorCode),
-    Unknown(String),
-}
-
-impl fmt::Display for RejectionCode {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Known(code) => match serde_json::to_value(code) {
-                Ok(serde_json::Value::String(name)) => formatter.write_str(&name),
-                _ => write!(formatter, "{code:?}"),
-            },
-            Self::Unknown(name) => formatter.write_str(name),
+        ErrorCode::InvalidRequest
+        | ErrorCode::MethodNotAllowed
+        | ErrorCode::ImageTooLarge
+        | ErrorCode::ImageUnsupported => ErrorCategory::ClientFault,
+        ErrorCode::Unavailable | ErrorCode::MediaUnavailable | ErrorCode::Internal => {
+            ErrorCategory::ServerFault
         }
+        ErrorCode::Unknown => match status {
+            401 | 403 => ErrorCategory::NotAllowed,
+            404 => ErrorCategory::NotFound,
+            409 | 410 => ErrorCategory::Conflict,
+            429 => ErrorCategory::Limited,
+            500..=599 => ErrorCategory::ServerFault,
+            _ => ErrorCategory::ClientFault,
+        },
+    }
+}
+
+/// The name of a code as the server writes it. A code that this build does not know has
+/// no name here; its status tells the kind of the error (ADR 0209).
+pub fn code_name(code: ErrorCode) -> String {
+    match serde_json::to_value(code) {
+        Ok(serde_json::Value::String(name)) => name,
+        _ => "unknown".to_owned(),
     }
 }
 
 /// An error response of the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rejection {
-    pub code: RejectionCode,
+    /// [`ErrorCode::Unknown`] for a code that a newer server added.
+    pub code: ErrorCode,
     pub status: u16,
     pub retry_after: Option<Duration>,
-    /// The sentence of the server for a person. Its text is not stable and comes from the
-    /// server, so the client shows it as a quotation and decides nothing on it.
+    /// The sentence of the server for a person, cut to 200 characters without control
+    /// characters. Its text is not stable and comes from the server, so the client shows
+    /// it as a quotation and decides nothing on it. The text of an error of this crate
+    /// contains it only for a code that this client does not know.
     pub message: String,
 }
 
 impl Rejection {
-    pub fn known(&self) -> Option<ErrorCode> {
-        match &self.code {
-            RejectionCode::Known(code) => Some(*code),
-            RejectionCode::Unknown(_) => None,
-        }
+    pub const fn category(&self) -> ErrorCategory {
+        category(self.code, self.status)
     }
+}
 
-    pub fn category(&self) -> ErrorCategory {
-        match &self.code {
-            RejectionCode::Known(code) => category(*code),
-            RejectionCode::Unknown(_) => category_of_status(self.status),
+/// How a refusal with a code that this client does not know is shown: by its status and
+/// by the sentence of the server, as a quotation (ADR 0209).
+pub fn unknown_refusal(status: u16, message: &str) -> String {
+    let code = format!("an error code that this client does not know (status {status})");
+    if message.is_empty() {
+        code
+    } else {
+        format!("{code}; the server says: \"{message}\"")
+    }
+}
+
+impl fmt::Display for Rejection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.code {
+            ErrorCode::Unknown => formatter.write_str(&unknown_refusal(self.status, &self.message)),
+            code => write!(formatter, "the error {}", code_name(code)),
         }
     }
 }
@@ -155,7 +165,7 @@ pub enum AccessLoss {
 pub enum ApiError {
     #[error(transparent)]
     Unreachable(TransportError),
-    #[error("the server refused the request with the error {}", .0.code)]
+    #[error("the server refused the request with {0}")]
     Rejected(Rejection),
     #[error(
         "the server answered with status {status} in a form that this client cannot read ({reason})"
@@ -178,12 +188,16 @@ pub enum ApiError {
     Key(#[from] KeyStoreError),
     #[error("the request could not be built: {0}")]
     Request(String),
+    /// The name is not one that a server accepts. It was not sent.
+    #[error(transparent)]
+    Name(#[from] InvalidName),
+    /// The image is not one that a server stores as an avatar. It was not sent.
+    #[error(transparent)]
+    Avatar(#[from] InvalidAvatar),
     /// The session of this device was renewed and now belongs to another account than the
     /// one that started the request. The request was not sent again.
     #[error("this device now belongs to the account {now}, and the request was made for {was}")]
     AccountChanged { was: AccountId, now: AccountId },
-    #[error("the server API has no operation to {operation}")]
-    NotOffered { operation: &'static str },
     #[error(transparent)]
     Storage(#[from] StorageError),
     #[error("the client is shutting down")]
@@ -198,9 +212,9 @@ impl ApiError {
         }
     }
 
-    /// The known code of a refusal.
+    /// The code of a refusal: [`ErrorCode::Unknown`] for one that this build does not know.
     pub fn code(&self) -> Option<ErrorCode> {
-        self.rejection().and_then(Rejection::known)
+        self.rejection().map(|rejection| rejection.code)
     }
 
     pub fn category(&self) -> Option<ErrorCategory> {
@@ -226,44 +240,15 @@ impl ApiError {
     }
 }
 
-#[derive(Deserialize)]
-struct WireError {
-    error: WireDetail,
-}
-
-#[derive(Deserialize)]
-struct WireDetail {
-    code: String,
-    #[serde(default)]
-    message: String,
-}
-
 /// Reads a response with a status of 400 or above (ADR 0205).
 pub(crate) fn read_rejection(response: &HttpResponse) -> ApiError {
-    let Ok(wire) = serde_json::from_slice::<WireError>(&response.body) else {
+    let Ok(body) = serde_json::from_slice::<ErrorBody>(&response.body) else {
         return ApiError::InvalidResponse {
             status: response.status,
             reason: "no error body",
         };
     };
-    let name_is_plain = !wire.error.code.is_empty()
-        && wire.error.code.len() <= LONGEST_CODE
-        && wire
-            .error
-            .code
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c == '_');
-    if !name_is_plain {
-        return ApiError::InvalidResponse {
-            status: response.status,
-            reason: "no error code",
-        };
-    }
-    let code = match serde_json::from_value::<ErrorCode>(wire.error.code.as_str().into()) {
-        Ok(code) => RejectionCode::Known(code),
-        Err(_) => RejectionCode::Unknown(wire.error.code),
-    };
-    let message: String = wire
+    let message: String = body
         .error
         .message
         .chars()
@@ -271,7 +256,7 @@ pub(crate) fn read_rejection(response: &HttpResponse) -> ApiError {
         .take(LONGEST_MESSAGE)
         .collect();
     ApiError::Rejected(Rejection {
-        code,
+        code: body.error.code,
         status: response.status,
         retry_after: response.retry_after,
         message,
@@ -290,22 +275,14 @@ mod tests {
         }
     }
 
-    fn wire_name(code: ErrorCode) -> String {
-        serde_json::to_value(code)
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .to_owned()
-    }
-
     #[test]
     fn every_code_of_the_server_is_read_and_has_a_group() {
         for code in ErrorCode::ALL {
-            let name = wire_name(*code);
+            let name = code_name(*code);
             let body = format!(r#"{{"error":{{"code":"{name}","message":"text"}}}}"#);
             let error = read_rejection(&response(code.http_status(), &body, Some(3)));
             assert_eq!(error.code(), Some(*code), "{name}");
-            assert_eq!(error.category(), Some(category(*code)));
+            assert_eq!(error.category(), Some(category(*code, code.http_status())));
             assert_eq!(error.retry_after(), Some(Duration::from_secs(3)));
             assert!(error.to_string().ends_with(&name), "{error}");
             assert!(!error.to_string().contains("text"));
@@ -320,6 +297,7 @@ mod tests {
             (ErrorCode::Timeout, C::Unchanged),
             (ErrorCode::RateLimited, C::Limited),
             (ErrorCode::TooManyAttempts, C::Limited),
+            (ErrorCode::TooManyConnections, C::Limited),
             (ErrorCode::ChallengesFull, C::Limited),
             (ErrorCode::DeviceLinksFull, C::Limited),
             (ErrorCode::JoinRequestsFull, C::Limited),
@@ -327,6 +305,7 @@ mod tests {
             (ErrorCode::ChallengeInvalid, C::Proof),
             (ErrorCode::ChallengeExpired, C::Proof),
             (ErrorCode::InvalidSignature, C::Proof),
+            (ErrorCode::OriginRejected, C::Proof),
             (ErrorCode::UnknownDevice, C::UnknownDevice),
             (ErrorCode::AccountBanned, C::Banned),
             (ErrorCode::Forbidden, C::NotAllowed),
@@ -336,10 +315,14 @@ mod tests {
             (ErrorCode::ExceedsOwnPermissions, C::NotAllowed),
             (ErrorCode::NotFound, C::NotFound),
             (ErrorCode::Conflict, C::Conflict),
+            (ErrorCode::LimitReached, C::Conflict),
             (ErrorCode::KeyAlreadyRegistered, C::Conflict),
             (ErrorCode::OwnerAlreadyClaimed, C::Conflict),
             (ErrorCode::JoinRequestPending, C::Conflict),
             (ErrorCode::PublicKeyMismatch, C::Conflict),
+            (ErrorCode::CallLocked, C::Conflict),
+            (ErrorCode::CallFull, C::Conflict),
+            (ErrorCode::NotInCall, C::Conflict),
             (ErrorCode::OwnerCodeInvalid, C::CodeRefused),
             (ErrorCode::InviteNotFound, C::CodeRefused),
             (ErrorCode::InviteExpired, C::CodeRefused),
@@ -348,21 +331,28 @@ mod tests {
             (ErrorCode::LinkCodeInvalid, C::CodeRefused),
             (ErrorCode::InvalidRequest, C::ClientFault),
             (ErrorCode::MethodNotAllowed, C::ClientFault),
+            (ErrorCode::ImageTooLarge, C::ClientFault),
+            (ErrorCode::ImageUnsupported, C::ClientFault),
+            (ErrorCode::Unavailable, C::ServerFault),
+            (ErrorCode::MediaUnavailable, C::ServerFault),
             (ErrorCode::Internal, C::ServerFault),
         ];
         assert_eq!(cases.len(), ErrorCode::ALL.len());
         for (code, expected) in cases {
-            assert_eq!(category(code), expected, "{code:?}");
+            // The status of the response does not move a code that this build knows.
+            for status in [code.http_status(), 400, 500] {
+                assert_eq!(category(code, status), expected, "{code:?}");
+            }
         }
         let unchanged: Vec<_> = ErrorCode::ALL
             .iter()
-            .filter(|code| category(**code) == C::Unchanged)
+            .filter(|code| category(**code, code.http_status()) == C::Unchanged)
             .collect();
         assert_eq!(unchanged, [&ErrorCode::Timeout, &ErrorCode::Busy]);
     }
 
     #[test]
-    fn a_code_of_a_newer_server_is_kept_and_grouped_by_its_status() {
+    fn a_code_of_a_newer_server_is_read_as_unknown_and_grouped_by_its_status() {
         let cases = [
             (400, ErrorCategory::ClientFault),
             (401, ErrorCategory::NotAllowed),
@@ -370,22 +360,32 @@ mod tests {
             (404, ErrorCategory::NotFound),
             (409, ErrorCategory::Conflict),
             (410, ErrorCategory::Conflict),
+            (413, ErrorCategory::ClientFault),
             (429, ErrorCategory::Limited),
             (500, ErrorCategory::ServerFault),
             (503, ErrorCategory::ServerFault),
         ];
         for (status, expected) in cases {
-            let body = r#"{"error":{"code":"quota_exceeded","message":"later"}}"#;
-            let error = read_rejection(&response(status, body, None));
-            assert_eq!(error.code(), None);
+            let body = r#"{"error":{"code":"quota_exceeded","message":"later","detail":7}}"#;
+            let error = read_rejection(&response(status, body, Some(2)));
+            assert_eq!(error.code(), Some(ErrorCode::Unknown));
             assert_eq!(error.category(), Some(expected), "{status}");
+            assert_ne!(error.category(), Some(ErrorCategory::Unchanged));
+            assert_ne!(error.category(), Some(ErrorCategory::SessionEnded));
             let rejection = error.rejection().unwrap();
+            assert_eq!(rejection.status, status);
+            assert_eq!(rejection.message, "later");
+            assert_eq!(rejection.retry_after, Some(Duration::from_secs(2)));
             assert_eq!(
-                rejection.code,
-                RejectionCode::Unknown("quota_exceeded".to_owned())
+                error.to_string(),
+                format!(
+                    "the server refused the request with an error code that this client does \
+                     not know (status {status}); the server says: \"later\""
+                )
             );
-            assert_eq!(rejection.code.to_string(), "quota_exceeded");
         }
+        assert_eq!(code_name(ErrorCode::Unknown), "unknown");
+        assert_eq!(code_name(ErrorCode::OriginRejected), "origin_rejected");
     }
 
     #[test]
@@ -396,9 +396,8 @@ mod tests {
             "{}",
             r#"{"error":"busy"}"#,
             r#"{"error":{"message":"no code"}}"#,
-            r#"{"error":{"code":"","message":""}}"#,
-            r#"{"error":{"code":"Not A Code","message":""}}"#,
-            r#"{"error":{"code":"busy\n","message":""}}"#,
+            r#"{"error":{"code":"busy"}}"#,
+            r#"{"error":{"code":7,"message":""}}"#,
         ];
         for body in bodies {
             let error = read_rejection(&response(502, body, None));
@@ -420,8 +419,6 @@ mod tests {
         let message = &error.rejection().unwrap().message;
         assert_eq!(message.chars().count(), 200);
         assert!(message.starts_with("a[31m"));
-        let without: HttpResponse = response(403, r#"{"error":{"code":"forbidden"}}"#, None);
-        assert_eq!(read_rejection(&without).rejection().unwrap().message, "");
     }
 
     #[test]
@@ -429,13 +426,14 @@ mod tests {
         let rejected = |code: ErrorCode| {
             let body = format!(
                 r#"{{"error":{{"code":"{}","message":""}}}}"#,
-                wire_name(code)
+                code_name(code)
             );
             read_rejection(&response(code.http_status(), &body, None))
         };
         assert!(rejected(ErrorCode::Busy).is_unavailable());
         assert!(rejected(ErrorCode::Timeout).is_unavailable());
         assert!(rejected(ErrorCode::Internal).is_unavailable());
+        assert!(rejected(ErrorCode::Unavailable).is_unavailable());
         assert!(ApiError::OutcomeUnknown.is_unavailable());
         for code in [
             ErrorCode::AccountBanned,
@@ -443,8 +441,12 @@ mod tests {
             ErrorCode::Unauthenticated,
             ErrorCode::RateLimited,
             ErrorCode::NotFound,
+            ErrorCode::OriginRejected,
         ] {
             assert!(!rejected(code).is_unavailable(), "{code:?}");
         }
+        let later = r#"{"error":{"code":"made_up_later","message":""}}"#;
+        assert!(read_rejection(&response(503, later, None)).is_unavailable());
+        assert!(!read_rejection(&response(409, later, None)).is_unavailable());
     }
 }

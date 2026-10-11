@@ -1,6 +1,6 @@
 //! A server in memory for the tests of the flows. It follows the rules of the real server
-//! for challenges, signatures, sessions, joining, join requests, device links, bans and
-//! removals, and it can be told to fail.
+//! for challenges, signatures over the origin, sessions, joining, join requests, device
+//! links, bans, removals, recovery notices and profiles, and it can be told to fail.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -8,17 +8,19 @@ use std::time::Duration;
 
 use ed25519_dalek::VerifyingKey;
 use junto_protocol::account::{
-    ApproveDeviceLink, Device, DeviceLinkCreated, DeviceOrigin, LookUpDeviceLink, OwnAccount,
-    PendingDeviceLink, RequestDeviceLink,
+    AccountProfile, ApproveDeviceLink, Avatar, Device, DeviceLinkCreated, DeviceOrigin,
+    LookUpDeviceLink, OwnAccount, PendingDeviceLink, RecoveryNotice, RequestDeviceLink,
+    UpdateProfile,
 };
 use junto_protocol::auth::{
     Challenge, ChallengeOperation, ClaimOwner, CreateChallenge, Login, Proof, SessionCreated,
 };
-use junto_protocol::ids::{AccountId, ChallengeId, DeviceId, JoinRequestId, ServerId};
+use junto_protocol::ids::{AccountId, ChallengeId, DeviceId, JoinRequestId, RecoveryId, ServerId};
 use junto_protocol::invite::{
     Join, JoinRequest, JoinRequestState, JoinRequestStatus, JoinRequestStatusQuery, RequestToJoin,
 };
 use junto_protocol::keys::{Nonce, PublicKey};
+use junto_protocol::origin::Origin;
 use junto_protocol::secret::{LinkCode, SessionToken};
 use junto_protocol::server::ServerInfo;
 use serde::Serialize;
@@ -29,6 +31,7 @@ use super::transport::{
     HttpRequest, HttpResponse, Method, Transport, TransportError, TransportErrorKind,
     TransportFuture,
 };
+use crate::profile::{InvalidAvatar, avatar_hash, check_avatar};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Fault {
@@ -52,6 +55,7 @@ enum Status {
 struct Account {
     name: String,
     status: Status,
+    avatar: Option<Vec<u8>>,
 }
 
 struct DeviceRow {
@@ -73,6 +77,10 @@ struct Request {
 struct World {
     info: ServerInfo,
     owner_code: Option<String>,
+    owner: Option<AccountId>,
+    /// The notices that devices acknowledged, kept for logins that tell them again.
+    acknowledged: Vec<(DeviceId, RecoveryNotice)>,
+    stale_logins: bool,
     challenges: BTreeMap<ChallengeId, Challenge>,
     accounts: BTreeMap<AccountId, Account>,
     devices: Vec<DeviceRow>,
@@ -81,12 +89,18 @@ struct World {
     requests: Vec<Request>,
     links: BTreeMap<String, (PublicKey, String)>,
     faults: Vec<(String, VecDeque<Fault>)>,
+    /// Refusals with a status and a code of the test, by the end of the path.
+    refusals: Vec<(String, u16, String)>,
     down: bool,
     seen: Vec<String>,
     next_token: u32,
     challenge_server_id: Option<ServerId>,
     link_code: Option<String>,
-    notices: Vec<(DeviceId, junto_protocol::account::RecoveryNotice)>,
+    notices: Vec<(DeviceId, RecoveryNotice)>,
+    /// The public origins. Without a list the server accepts the origin of the address
+    /// that a request was sent to.
+    public_origins: Option<Vec<Origin>>,
+    avatar_refusal: Option<&'static str>,
 }
 
 type Reply = Result<(u16, Vec<u8>), &'static str>;
@@ -109,6 +123,9 @@ impl FakeServer {
                     api_versions: vec![1],
                 },
                 owner_code: Some("OWNER-CODE".to_owned()),
+                owner: None,
+                acknowledged: Vec::new(),
+                stale_logins: false,
                 challenges: BTreeMap::new(),
                 accounts: BTreeMap::new(),
                 devices: Vec::new(),
@@ -117,12 +134,15 @@ impl FakeServer {
                 requests: Vec::new(),
                 links: BTreeMap::new(),
                 faults: Vec::new(),
+                refusals: Vec::new(),
                 down: false,
                 seen: Vec::new(),
                 next_token: 0,
                 challenge_server_id: None,
                 link_code: None,
                 notices: Vec::new(),
+                public_origins: None,
+                avatar_refusal: None,
             }),
         })
     }
@@ -145,6 +165,48 @@ impl FakeServer {
         self.world().link_code = Some(code.to_owned());
     }
 
+    /// States the public origins of the server, as `JUNTO_PUBLIC_ORIGINS` does. A proof for
+    /// another origin is refused.
+    pub(crate) fn set_public_origins(&self, origins: &[&str]) {
+        let origins = origins
+            .iter()
+            .map(|origin| Origin::parse(origin).unwrap())
+            .collect();
+        self.world().public_origins = Some(origins);
+    }
+
+    /// Stores a new owner code, as the host command does. A claim with it returns the
+    /// owner to the existing owner account on a new device, which is a recovery.
+    pub(crate) fn issue_owner_code(&self, code: &str) {
+        self.world().owner_code = Some(code.to_owned());
+    }
+
+    /// Makes every login tell the notices that its device has acknowledged too, as a login
+    /// does whose answer was computed before the acknowledgement.
+    pub(crate) fn set_stale_logins(&self, stale: bool) {
+        self.world().stale_logins = stale;
+    }
+
+    /// Makes the server refuse every avatar with this code, as it does for an image with
+    /// too many pixels.
+    pub(crate) fn refuse_avatars(&self, code: Option<&'static str>) {
+        self.world().avatar_refusal = code;
+    }
+
+    /// The stored avatar of an account.
+    pub(crate) fn avatar_of(&self, account_id: AccountId) -> Option<Vec<u8>> {
+        self.world().accounts[&account_id].avatar.clone()
+    }
+
+    pub(crate) fn name_of(&self, account_id: AccountId) -> String {
+        self.world().accounts[&account_id].name.clone()
+    }
+
+    /// The number of challenges that wait for an answer.
+    pub(crate) fn challenge_count(&self) -> usize {
+        self.world().challenges.len()
+    }
+
     pub(crate) fn set_info(&self, change: impl FnOnce(&mut ServerInfo)) {
         change(&mut self.world().info);
     }
@@ -158,6 +220,22 @@ impl FakeServer {
         self.world()
             .faults
             .push((path.to_owned(), faults.into_iter().collect()));
+    }
+
+    /// The next request whose path ends with `path` is refused with this status and this
+    /// code, which can be one that the client does not know. No work is done.
+    pub(crate) fn refuse_next(&self, path: &str, status: u16, code: &str) {
+        self.world()
+            .refusals
+            .push((path.to_owned(), status, code.to_owned()));
+    }
+
+    /// Stores bytes as the avatar of an account without any check, as a server that does
+    /// not follow the rules could.
+    pub(crate) fn store_avatar(&self, account_id: AccountId, image: Vec<u8>) {
+        if let Some(account) = self.world().accounts.get_mut(&account_id) {
+            account.avatar = Some(image);
+        }
     }
 
     pub(crate) fn add_invite(&self, code: &str, uses: u32) {
@@ -183,6 +261,23 @@ impl FakeServer {
             .retain(|device| device.account_id != account_id);
     }
 
+    /// Removes one device from its account and ends its sessions. The account stays.
+    pub(crate) fn remove_device(&self, public_key: PublicKey) {
+        let mut world = self.world();
+        let removed: Vec<DeviceId> = world
+            .devices
+            .iter()
+            .filter(|device| device.public_key == public_key)
+            .map(|device| device.id)
+            .collect();
+        world
+            .sessions
+            .retain(|_, device_id| !removed.contains(device_id));
+        world
+            .devices
+            .retain(|device| device.public_key != public_key);
+    }
+
     /// Takes the device with `public_key` out of its account and gives it to `account_id`,
     /// as a removal of the device followed by a recovery into another account does.
     pub(crate) fn reassign(&self, public_key: PublicKey, account_id: AccountId) {
@@ -204,24 +299,8 @@ impl FakeServer {
 
     /// Ends every session of the account and leaves one recovery notice for each of its
     /// devices, as a recovery of the account does.
-    pub(crate) fn recover(&self, account_id: AccountId) {
-        let mut world = self.world();
-        world.end_sessions_of(account_id);
-        let notice = junto_protocol::account::RecoveryNotice {
-            id: junto_protocol::ids::RecoveryId::generate(),
-            device_id: None,
-            performed_by: None,
-            performed_at: OffsetDateTime::now_utc().replace_nanosecond(0).unwrap(),
-        };
-        let devices: Vec<DeviceId> = world
-            .devices
-            .iter()
-            .filter(|device| device.account_id == account_id)
-            .map(|device| device.id)
-            .collect();
-        for device_id in devices {
-            world.notices.push((device_id, notice.clone()));
-        }
+    pub(crate) fn recover(&self, account_id: AccountId) -> RecoveryId {
+        self.world().recover(account_id)
     }
 
     pub(crate) fn end_sessions(&self) {
@@ -316,6 +395,27 @@ fn refusal(code: &str) -> HttpResponse {
 }
 
 impl World {
+    fn recover(&mut self, account_id: AccountId) -> RecoveryId {
+        let world = self;
+        world.end_sessions_of(account_id);
+        let notice = RecoveryNotice {
+            id: RecoveryId::generate(),
+            device_id: None,
+            performed_by: None,
+            performed_at: OffsetDateTime::now_utc().replace_nanosecond(0).unwrap(),
+        };
+        let devices: Vec<DeviceId> = world
+            .devices
+            .iter()
+            .filter(|device| device.account_id == account_id)
+            .map(|device| device.id)
+            .collect();
+        for device_id in devices {
+            world.notices.push((device_id, notice.clone()));
+        }
+        notice.id
+    }
+
     fn end_sessions_of(&mut self, account_id: AccountId) {
         let devices: Vec<DeviceId> = self
             .devices
@@ -340,6 +440,7 @@ impl World {
             Account {
                 name: name.to_owned(),
                 status: Status::Active,
+                avatar: None,
             },
         );
         self.add_device(account_id, public_key, device_name, origin);
@@ -376,13 +477,15 @@ impl World {
         self.next_token += 1;
         let token = format!("jst_fake-{}", self.next_token);
         self.sessions.insert(token.clone(), device_id);
-        let mut recoveries = Vec::new();
-        self.notices.retain(|(device, notice)| {
-            if *device == device_id {
-                recoveries.push(notice.clone());
-            }
-            *device != device_id
-        });
+        let mut recoveries = self.notices_of(device_id);
+        if self.stale_logins {
+            let acknowledged = self.acknowledged.iter();
+            recoveries.extend(
+                acknowledged
+                    .filter(|(device, _)| *device == device_id)
+                    .map(|(_, notice)| notice.clone()),
+            );
+        }
         SessionCreated {
             token: SessionToken::new(token),
             expires_at: OffsetDateTime::now_utc() + time::Duration::days(30),
@@ -392,13 +495,44 @@ impl World {
         }
     }
 
+    /// The recoveries that a device has not acknowledged, oldest first. A login does not
+    /// remove them.
+    fn notices_of(&self, device_id: DeviceId) -> Vec<RecoveryNotice> {
+        self.notices
+            .iter()
+            .filter(|(device, _)| *device == device_id)
+            .map(|(_, notice)| notice.clone())
+            .collect()
+    }
+
+    fn avatar_description(&self, account_id: AccountId) -> Option<Avatar> {
+        let image = self.accounts[&account_id].avatar.as_ref()?;
+        Some(Avatar {
+            hash: avatar_hash(image),
+            media_type: check_avatar(image).ok()?,
+            bytes: image.len() as u32,
+            width: 1,
+            height: 1,
+        })
+    }
+
     /// Checks a proof like the real server and uses the challenge up. An operation that
     /// then refuses puts the challenge back, as a transaction that does not commit does.
+    /// The origin is checked before the challenge is read, so a proof for another origin
+    /// leaves the challenge unused. `reached` is the origin that the request was sent to.
     fn consume(
         &mut self,
         proof: &Proof,
         operation: ChallengeOperation,
+        reached: &Origin,
     ) -> Result<Challenge, &'static str> {
+        let accepted = match &self.public_origins {
+            Some(origins) => origins.contains(&proof.origin),
+            None => proof.origin == *reached,
+        };
+        if !accepted {
+            return Err("origin_rejected");
+        }
         let challenge = self
             .challenges
             .get(&proof.challenge_id)
@@ -410,7 +544,7 @@ impl World {
         let key = VerifyingKey::from_bytes(challenge.public_key.as_bytes())
             .map_err(|_| "invalid_signature")?;
         let signature = ed25519_dalek::Signature::from_bytes(proof.signature.as_bytes());
-        key.verify_strict(&challenge.signing_input(), &signature)
+        key.verify_strict(&challenge.signing_input(&proof.origin), &signature)
             .map_err(|_| "invalid_signature")?;
         self.challenges.remove(&proof.challenge_id);
         Ok(challenge)
@@ -452,6 +586,29 @@ impl World {
 
     fn route(&mut self, request: &HttpRequest, route: &str) -> Result<(u16, Vec<u8>), Refusal> {
         let plain = |code: &'static str| (None, code);
+        let reached = Origin::parse(&request.url.origin().ascii_serialization())
+            .map_err(|_| plain("invalid_request"))?;
+        let reached = &reached;
+        if let Some(account) = route.strip_prefix("/accounts/") {
+            return self.account_route(request, account).map_err(plain);
+        }
+        if let Some(recovery) = route.strip_prefix("/account/recovery-notices/") {
+            let device_id = self.session_device(request).map_err(plain)?.id;
+            if request.method != Method::Delete {
+                return Err(plain("method_not_allowed"));
+            }
+            let recovery_id: RecoveryId = recovery.parse().map_err(|_| plain("not_found"))?;
+            let Some(index) = self
+                .notices
+                .iter()
+                .position(|(device, notice)| *device == device_id && notice.id == recovery_id)
+            else {
+                return Err(plain("not_found"));
+            };
+            let acknowledged = self.notices.remove(index);
+            self.acknowledged.push(acknowledged);
+            return Ok((204, Vec::new()));
+        }
         match (request.method, route) {
             (Method::Post, "/auth/challenges") => {
                 let body: CreateChallenge = read(request).map_err(plain)?;
@@ -487,7 +644,7 @@ impl World {
             (Method::Post, "/auth/sessions") => {
                 let body: Login = read(request).map_err(plain)?;
                 let challenge = self
-                    .consume(&body.proof, ChallengeOperation::Login)
+                    .consume(&body.proof, ChallengeOperation::Login, reached)
                     .map_err(plain)?;
                 json(201, &self.start_session(challenge.public_key)).map_err(plain)
             }
@@ -501,7 +658,7 @@ impl World {
             (Method::Post, "/owner/claim") => {
                 let body: ClaimOwner = read(request).map_err(plain)?;
                 let challenge = self
-                    .consume(&body.proof, ChallengeOperation::ClaimOwner)
+                    .consume(&body.proof, ChallengeOperation::ClaimOwner, reached)
                     .map_err(plain)?;
                 let refuse = |code| Err((Some(Box::new(challenge.clone())), code));
                 match &self.owner_code {
@@ -515,18 +672,33 @@ impl World {
                     return refuse("key_already_registered");
                 }
                 self.owner_code = None;
-                self.create_account(
-                    &body.name,
-                    challenge.public_key,
-                    &body.device_name,
-                    DeviceOrigin::OwnerCode,
-                );
+                match self.owner {
+                    // The owner returns on a new device: a recovery of the owner account.
+                    Some(owner) => {
+                        self.add_device(
+                            owner,
+                            challenge.public_key,
+                            &body.device_name,
+                            DeviceOrigin::OwnerCode,
+                        );
+                        self.recover(owner);
+                    }
+                    None => {
+                        let owner = self.create_account(
+                            &body.name,
+                            challenge.public_key,
+                            &body.device_name,
+                            DeviceOrigin::OwnerCode,
+                        );
+                        self.owner = Some(owner);
+                    }
+                }
                 json(201, &self.start_session(challenge.public_key)).map_err(plain)
             }
             (Method::Post, "/join") => {
                 let body: Join = read(request).map_err(plain)?;
                 let challenge = self
-                    .consume(&body.proof, ChallengeOperation::Join)
+                    .consume(&body.proof, ChallengeOperation::Join, reached)
                     .map_err(plain)?;
                 let refuse = |code| Err((Some(Box::new(challenge.clone())), code));
                 if self.device_of_key(challenge.public_key).is_some() {
@@ -548,7 +720,7 @@ impl World {
             (Method::Post, "/join-requests") => {
                 let body: RequestToJoin = read(request).map_err(plain)?;
                 let challenge = self
-                    .consume(&body.proof, ChallengeOperation::RequestToJoin)
+                    .consume(&body.proof, ChallengeOperation::RequestToJoin, reached)
                     .map_err(plain)?;
                 let refuse = |code| Err((Some(Box::new(challenge.clone())), code));
                 if self.device_of_key(challenge.public_key).is_some() {
@@ -581,7 +753,7 @@ impl World {
             (Method::Post, "/join-requests/status") => {
                 let body: JoinRequestStatusQuery = read(request).map_err(plain)?;
                 let challenge = self
-                    .consume(&body.proof, ChallengeOperation::JoinRequestStatus)
+                    .consume(&body.proof, ChallengeOperation::JoinRequestStatus, reached)
                     .map_err(plain)?;
                 let Some(found) = self
                     .requests
@@ -600,7 +772,7 @@ impl World {
             (Method::Post, "/device-links") => {
                 let body: RequestDeviceLink = read(request).map_err(plain)?;
                 let challenge = self
-                    .consume(&body.proof, ChallengeOperation::LinkDevice)
+                    .consume(&body.proof, ChallengeOperation::LinkDevice, reached)
                     .map_err(plain)?;
                 if self.device_of_key(challenge.public_key).is_some() {
                     return Err((Some(Box::new(challenge)), "key_already_registered"));
@@ -622,15 +794,49 @@ impl World {
             }
             (Method::Get, "/account") => {
                 let account_id = self.session_device(request).map_err(plain)?.account_id;
-                let account = OwnAccount {
-                    id: account_id,
-                    name: self.accounts[&account_id].name.clone(),
-                    is_owner: false,
-                    server_role_ids: Vec::new(),
-                    server_permissions: Vec::new(),
-                    workspace_ids: Vec::new(),
-                };
-                json(200, &account).map_err(plain)
+                json(200, &self.own_account(account_id)).map_err(plain)
+            }
+            (Method::Patch, "/account") => {
+                let account_id = self.session_device(request).map_err(plain)?.account_id;
+                let body: UpdateProfile = read(request).map_err(plain)?;
+                if body.name.is_empty() || body.name.chars().count() > 64 {
+                    return Err(plain("invalid_request"));
+                }
+                if let Some(account) = self.accounts.get_mut(&account_id) {
+                    account.name = body.name;
+                }
+                json(200, &self.own_account(account_id)).map_err(plain)
+            }
+            (Method::Put, "/account/avatar") => {
+                let account_id = self.session_device(request).map_err(plain)?.account_id;
+                let image = request
+                    .body
+                    .as_ref()
+                    .map(|body| body.as_slice().to_vec())
+                    .unwrap_or_default();
+                match check_avatar(&image) {
+                    Err(InvalidAvatar::TooLarge) => return Err(plain("image_too_large")),
+                    Err(InvalidAvatar::Unsupported) => return Err(plain("image_unsupported")),
+                    Ok(_) => {}
+                }
+                if let Some(code) = self.avatar_refusal {
+                    return Err(plain(code));
+                }
+                if let Some(account) = self.accounts.get_mut(&account_id) {
+                    account.avatar = Some(image);
+                }
+                json(200, &self.avatar_description(account_id)).map_err(plain)
+            }
+            (Method::Delete, "/account/avatar") => {
+                let account_id = self.session_device(request).map_err(plain)?.account_id;
+                if let Some(account) = self.accounts.get_mut(&account_id) {
+                    account.avatar = None;
+                }
+                Ok((204, Vec::new()))
+            }
+            (Method::Get, "/account/recovery-notices") => {
+                let device_id = self.session_device(request).map_err(plain)?.id;
+                json(200, &self.notices_of(device_id)).map_err(plain)
             }
             (Method::Get, "/account/devices") => {
                 let current = self.session_device(request).map_err(plain)?;
@@ -684,6 +890,45 @@ impl World {
     }
 }
 
+impl World {
+    fn own_account(&self, account_id: AccountId) -> OwnAccount {
+        OwnAccount {
+            id: account_id,
+            name: self.accounts[&account_id].name.clone(),
+            avatar: self.avatar_description(account_id),
+            is_owner: false,
+            server_role_ids: Vec::new(),
+            server_permissions: Vec::new(),
+            workspace_ids: Vec::new(),
+        }
+    }
+
+    /// The profile and the avatar of an account. Every account of this server sees every
+    /// other one; an account that does not exist is `not_found`.
+    fn account_route(&mut self, request: &HttpRequest, rest: &str) -> Reply {
+        self.session_device(request)?;
+        let (account, what) = rest.split_once('/').ok_or("not_found")?;
+        let account_id: AccountId = account.parse().map_err(|_| "not_found")?;
+        let known = self
+            .accounts
+            .get(&account_id)
+            .filter(|account| account.status == Status::Active)
+            .ok_or("not_found")?;
+        match (request.method, what) {
+            (Method::Get, "profile") => json(
+                200,
+                &AccountProfile {
+                    id: account_id,
+                    name: known.name.clone(),
+                    avatar: self.avatar_description(account_id),
+                },
+            ),
+            (Method::Get, "avatar") => Ok((200, known.avatar.clone().ok_or("not_found")?)),
+            _ => Err("not_found"),
+        }
+    }
+}
+
 impl DeviceRow {
     fn shown(&self, current: DeviceId) -> Device {
         Device {
@@ -712,6 +957,21 @@ impl Transport for FakeServer {
                 .iter_mut()
                 .find(|(end, queue)| path.ends_with(end.as_str()) && !queue.is_empty())
                 .and_then(|(_, queue)| queue.pop_front());
+            let refused = world
+                .refusals
+                .iter()
+                .position(|(end, _, _)| path.ends_with(end.as_str()))
+                .map(|index| world.refusals.remove(index));
+            if let Some((_, status, code)) = refused {
+                let body = format!(r#"{{"error":{{"code":"{code}","message":"a sentence"}}}}"#);
+                return Box::pin(async move {
+                    Ok(HttpResponse {
+                        status,
+                        retry_after: None,
+                        body: body.into_bytes().into(),
+                    })
+                });
+            }
             match fault {
                 Some(Fault::Busy) => Ok(refusal("busy")),
                 Some(Fault::LoseRequest) => lost(TransportErrorKind::Interrupted),

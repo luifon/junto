@@ -1,13 +1,18 @@
-//! The one place where a device key signs (ADR 0108).
+//! The one place where a device key signs (ADR 0108, ADR 0117).
 //!
 //! The client builds the signed bytes from the fields of a challenge, and only after it has
 //! compared the server, the operation, the device key and the account with what it asked
 //! for. A server cannot obtain a signature for another server, another operation or
 //! another key.
+//!
+//! The signed bytes name the origin that the request goes to. The origin comes from the
+//! address in the server book and from no response, so a signature that a device made at
+//! one address is of no use at another address.
 
 use junto_protocol::auth::{Challenge, ChallengeOperation, Proof};
 use junto_protocol::ids::{AccountId, ServerId};
 use junto_protocol::keys::PublicKey;
+use junto_protocol::origin::Origin;
 
 use crate::keys::DeviceKey;
 
@@ -23,8 +28,10 @@ pub enum ExpectedAccount {
     Any,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Expected {
+    /// The origin of the address that the challenge was asked from.
+    pub(crate) origin: Origin,
     pub(crate) server_id: ServerId,
     pub(crate) operation: ChallengeOperation,
     pub(crate) public_key: PublicKey,
@@ -43,15 +50,17 @@ pub enum ChallengeMismatch {
     Account,
 }
 
-/// A challenge whose fields equal what the client asked for.
+/// A challenge whose fields equal what the client asked for, with the origin that it was
+/// asked from.
 #[derive(Debug)]
 pub(crate) struct VerifiedChallenge {
     challenge: Challenge,
+    origin: Origin,
 }
 
 pub(crate) fn verify(
     challenge: Challenge,
-    expected: &Expected,
+    expected: Expected,
 ) -> Result<VerifiedChallenge, ChallengeMismatch> {
     if challenge.server_id != expected.server_id {
         return Err(ChallengeMismatch::Server {
@@ -74,7 +83,10 @@ pub(crate) fn verify(
     if !account_fits {
         return Err(ChallengeMismatch::Account);
     }
-    Ok(VerifiedChallenge { challenge })
+    Ok(VerifiedChallenge {
+        challenge,
+        origin: expected.origin,
+    })
 }
 
 impl VerifiedChallenge {
@@ -89,7 +101,8 @@ impl VerifiedChallenge {
         }
         Ok(Proof {
             challenge_id: self.challenge.id,
-            signature: key.sign(&self.challenge.signing_input()),
+            origin: self.origin.clone(),
+            signature: key.sign(&self.challenge.signing_input(&self.origin)),
         })
     }
 }
@@ -114,8 +127,13 @@ mod tests {
         }
     }
 
+    fn origin() -> Origin {
+        Origin::parse("https://chat.example.test").unwrap()
+    }
+
     fn expected(key: &DeviceKey, server_id: ServerId, operation: ChallengeOperation) -> Expected {
         Expected {
+            origin: origin(),
             server_id,
             operation,
             public_key: key.public_key(),
@@ -130,23 +148,58 @@ mod tests {
         let challenge = challenge(&key, server_id, ChallengeOperation::Join);
         let verified = verify(
             challenge.clone(),
-            &expected(&key, server_id, ChallengeOperation::Join),
+            expected(&key, server_id, ChallengeOperation::Join),
         )
         .unwrap();
         let proof = verified.sign(&key).unwrap();
         assert_eq!(proof.challenge_id, challenge.id);
-        let text = String::from_utf8(challenge.signing_input()).unwrap();
-        assert!(text.starts_with("junto-challenge-v1\nserver:"));
-        assert!(text.contains(&format!(
-            "server:{server_id}\noperation:join\naccount:none\n"
+        assert_eq!(proof.origin, origin());
+        let text = String::from_utf8(challenge.signing_input(&origin())).unwrap();
+        assert!(text.starts_with(&format!(
+            "junto-challenge-v2\nserver:{server_id}\norigin:https://chat.example.test\n\
+             operation:join\naccount:none\n"
         )));
-        VerifyingKey::from_bytes(key.public_key().as_bytes())
-            .unwrap()
-            .verify_strict(
-                text.as_bytes(),
-                &ed25519_dalek::Signature::from_bytes(proof.signature.as_bytes()),
-            )
+        let verifying = VerifyingKey::from_bytes(key.public_key().as_bytes()).unwrap();
+        let signature = ed25519_dalek::Signature::from_bytes(proof.signature.as_bytes());
+        verifying
+            .verify_strict(text.as_bytes(), &signature)
             .unwrap();
+    }
+
+    #[test]
+    fn the_signature_is_valid_for_the_origin_of_the_request_only() {
+        let key = DeviceKey::generate().unwrap();
+        let server_id = ServerId::generate();
+        let challenge = challenge(&key, server_id, ChallengeOperation::Login);
+        let asked_at = Origin::parse("https://relay.example.test").unwrap();
+        let verified = verify(
+            Challenge {
+                account_id: Some(AccountId::generate()),
+                ..challenge.clone()
+            },
+            Expected {
+                origin: asked_at.clone(),
+                account: ExpectedAccount::Any,
+                ..expected(&key, server_id, ChallengeOperation::Login)
+            },
+        )
+        .unwrap();
+        let proof = verified.sign(&key).unwrap();
+        assert_eq!(proof.origin, asked_at);
+        let verifying = VerifyingKey::from_bytes(key.public_key().as_bytes()).unwrap();
+        let signature = ed25519_dalek::Signature::from_bytes(proof.signature.as_bytes());
+        let signed_for = |origin: &Origin| {
+            let bytes = Challenge {
+                account_id: verified.account_id(),
+                ..challenge.clone()
+            }
+            .signing_input(origin);
+            verifying.verify_strict(&bytes, &signature).is_ok()
+        };
+        assert!(signed_for(&asked_at));
+        // The server that the challenge came from has another origin. The same signature
+        // does not fit the bytes with that origin.
+        assert!(!signed_for(&origin()));
     }
 
     #[test]
@@ -155,7 +208,7 @@ mod tests {
         let (saved, other) = (ServerId::generate(), ServerId::generate());
         let relayed = challenge(&key, other, ChallengeOperation::Login);
         assert_eq!(
-            verify(relayed, &expected(&key, saved, ChallengeOperation::Login)).unwrap_err(),
+            verify(relayed, expected(&key, saved, ChallengeOperation::Login)).unwrap_err(),
             ChallengeMismatch::Server {
                 expected: saved,
                 got: other
@@ -171,7 +224,7 @@ mod tests {
         assert_eq!(
             verify(
                 challenge(&key, server_id, ChallengeOperation::Login),
-                &expected(&key, server_id, ChallengeOperation::Join)
+                expected(&key, server_id, ChallengeOperation::Join)
             )
             .unwrap_err(),
             ChallengeMismatch::Operation
@@ -179,14 +232,14 @@ mod tests {
         assert_eq!(
             verify(
                 challenge(&other_key, server_id, ChallengeOperation::Join),
-                &expected(&key, server_id, ChallengeOperation::Join)
+                expected(&key, server_id, ChallengeOperation::Join)
             )
             .unwrap_err(),
             ChallengeMismatch::PublicKey
         );
         let verified = verify(
             challenge(&other_key, server_id, ChallengeOperation::Join),
-            &expected(&other_key, server_id, ChallengeOperation::Join),
+            expected(&other_key, server_id, ChallengeOperation::Join),
         )
         .unwrap();
         assert_eq!(
@@ -214,7 +267,7 @@ mod tests {
             (Some(other), ExpectedAccount::Any),
         ];
         for (named, expectation) in accepted {
-            let verified = verify(with(named), &expecting(expectation)).unwrap();
+            let verified = verify(with(named), expecting(expectation)).unwrap();
             assert_eq!(verified.account_id(), named);
         }
         let refused = [
@@ -225,7 +278,7 @@ mod tests {
         ];
         for (named, expectation) in refused {
             assert_eq!(
-                verify(with(named), &expecting(expectation)).unwrap_err(),
+                verify(with(named), expecting(expectation)).unwrap_err(),
                 ChallengeMismatch::Account,
                 "{named:?} {expectation:?}"
             );

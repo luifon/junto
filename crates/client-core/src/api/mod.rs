@@ -11,11 +11,13 @@ mod transport;
 pub(crate) mod testing;
 
 pub use client::{ApiClient, Session, server_info};
-pub use error::{AccessLoss, ApiError, ErrorCategory, Rejection, RejectionCode, category};
+pub use error::{
+    AccessLoss, ApiError, ErrorCategory, Rejection, category, code_name, unknown_refusal,
+};
 pub use proof::{ChallengeMismatch, ExpectedAccount};
 pub use retry::RetryPolicy;
-pub use session::ServerApi;
+pub use session::{AvatarImage, ServerApi};
 pub use transport::{
-    HttpRequest, HttpResponse, MAX_RESPONSE_BYTES, Method, ReqwestTransport, Transport,
-    TransportError, TransportErrorKind, TransportFuture,
+    HttpRequest, HttpResponse, MAX_RESPONSE_BYTES, Method, RequestBody, ReqwestTransport,
+    Transport, TransportError, TransportErrorKind, TransportFuture,
 };

@@ -13,7 +13,6 @@ pub mod keys;
 pub mod manager;
 pub mod paths;
 pub mod profile;
-pub mod profile_sync;
 pub mod runtime;
 pub mod secret;
 pub mod storage;

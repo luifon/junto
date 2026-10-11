@@ -7,6 +7,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use junto_protocol::account::ImageType;
 use url::Url;
 
 use crate::secret::{SecretBytes, SecretToken};
@@ -28,14 +29,45 @@ pub enum Method {
     Delete,
 }
 
+/// The body of a request: a JSON document, or the image of an avatar (ADR 0119). A request
+/// that is sent again shares the buffer.
+#[derive(Clone)]
+pub struct RequestBody {
+    pub media_type: &'static str,
+    pub bytes: Arc<SecretBytes>,
+}
+
+const JSON: &str = "application/json";
+/// What the client reads: JSON, and the image of an avatar.
+const ACCEPTED: &str = "application/json, image/png, image/jpeg, image/webp";
+
+impl RequestBody {
+    pub fn json(bytes: SecretBytes) -> Self {
+        Self {
+            media_type: JSON,
+            bytes: Arc::new(bytes),
+        }
+    }
+
+    pub fn image(kind: ImageType, bytes: SecretBytes) -> Self {
+        Self {
+            media_type: kind.media_type(),
+            bytes: Arc::new(bytes),
+        }
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        self.bytes.as_slice()
+    }
+}
+
 /// A request. Its body and its token can hold secrets, so formatting shows neither.
 #[derive(Clone)]
 pub struct HttpRequest {
     pub method: Method,
     pub url: Url,
     pub bearer: Option<SecretToken>,
-    /// A JSON document.
-    pub body: Option<Arc<SecretBytes>>,
+    pub body: Option<RequestBody>,
 }
 
 impl fmt::Debug for HttpRequest {
@@ -154,14 +186,14 @@ impl Transport for ReqwestTransport {
             };
             let mut builder = client
                 .request(method, request.url)
-                .header(reqwest::header::ACCEPT, "application/json");
+                .header(reqwest::header::ACCEPT, ACCEPTED);
             if let Some(token) = &request.bearer {
                 builder = builder.bearer_auth(token.expose());
             }
             if let Some(body) = &request.body {
                 builder = builder
-                    .header(reqwest::header::CONTENT_TYPE, "application/json")
-                    .body(shared_body(body));
+                    .header(reqwest::header::CONTENT_TYPE, body.media_type)
+                    .body(shared_body(&body.bytes));
             }
             let mut response = builder.send().await.map_err(failure)?;
             let status = response.status().as_u16();
@@ -247,7 +279,9 @@ mod tests {
             method: Method::Post,
             url: Url::parse("https://chat.example.test/api/v1/join").unwrap(),
             bearer: Some(SecretToken::new("jst_secret-token".to_owned())),
-            body: Some(Arc::new(br#"{"invite_code":"ABCD-EFGH"}"#.to_vec().into())),
+            body: Some(RequestBody::json(
+                br#"{"invite_code":"ABCD-EFGH"}"#.to_vec().into(),
+            )),
         };
         let shown = format!("{request:?}");
         assert_eq!(shown, "Post https://chat.example.test/api/v1/join");
@@ -258,6 +292,20 @@ mod tests {
         };
         assert_eq!(format!("{response:?}"), "201 with 28 bytes");
         assert!(response.is_success());
+    }
+
+    #[test]
+    fn a_body_states_what_it_is() {
+        let json = RequestBody::json(b"{}".to_vec().into());
+        assert_eq!(json.media_type, "application/json");
+        assert_eq!(json.as_slice(), b"{}");
+        for kind in ImageType::ALL {
+            let image = RequestBody::image(*kind, b"image".to_vec().into());
+            assert_eq!(image.media_type, kind.media_type());
+            assert!(ACCEPTED.contains(kind.media_type()));
+        }
+        let again = json.clone();
+        assert_eq!(again.as_slice().as_ptr(), json.as_slice().as_ptr());
     }
 
     #[test]

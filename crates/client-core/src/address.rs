@@ -2,7 +2,9 @@
 
 use std::fmt;
 use std::str::FromStr;
+use std::sync::Arc;
 
+use junto_protocol::origin::Origin;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use url::{Host, Url};
 
@@ -27,10 +29,12 @@ pub enum AddressError {
 }
 
 /// The origin of one server: scheme, host and port. Every request of the client goes to
-/// this origin.
+/// this origin, and a device signs it in every proof (ADR 0117).
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ServerAddress {
-    origin: Url,
+    origin: Origin,
+    /// The same origin as a URL with the path `/`. Copies of an address share it.
+    url: Arc<Url>,
 }
 
 impl ServerAddress {
@@ -69,43 +73,54 @@ impl ServerAddress {
         {
             return Err(AddressError::ExtraParts);
         }
-        let local = match url.host() {
-            Some(Host::Domain(name)) => name == "localhost",
-            Some(Host::Ipv4(address)) if address.is_loopback() => true,
-            Some(Host::Ipv6(address)) if address.is_loopback() => true,
-            Some(Host::Ipv4(_) | Host::Ipv6(_)) => return Err(AddressError::IpNotLocal),
+        let is_ip = match url.host() {
+            Some(Host::Domain(_)) => false,
+            Some(Host::Ipv4(_) | Host::Ipv6(_)) => true,
             None => return Err(AddressError::Malformed),
         };
-        if !secure && !local {
+        let mut url = url;
+        url.set_path("/");
+        // The address has the one spelling of an origin, so the text that is stored, the
+        // text that a device signs and the place that a request goes to are the same.
+        let text = url.as_str().trim_end_matches('/');
+        let origin = Origin::parse(text).map_err(|_| AddressError::Malformed)?;
+        if origin.as_str() != text {
+            return Err(AddressError::Malformed);
+        }
+        if is_ip && !origin.is_loopback() {
+            return Err(AddressError::IpNotLocal);
+        }
+        if !secure && !origin.is_loopback() {
             return Err(AddressError::InsecureNotLocal);
         }
-        let mut origin = url;
-        origin.set_path("/");
-        Ok(Self { origin })
+        Ok(Self {
+            origin,
+            url: Arc::new(url),
+        })
     }
 
     /// The stored and shown form, without a slash at the end.
     pub fn as_str(&self) -> &str {
-        self.origin.as_str().trim_end_matches('/')
+        self.origin.as_str()
+    }
+
+    /// The origin that a device signs when it proves its key to this address (ADR 0117).
+    pub fn origin(&self) -> &Origin {
+        &self.origin
     }
 
     pub fn host(&self) -> &str {
-        self.origin.host_str().unwrap_or_default()
+        self.url.host_str().unwrap_or_default()
     }
 
     pub fn is_local(&self) -> bool {
-        match self.origin.host() {
-            Some(Host::Domain(name)) => name == "localhost",
-            Some(Host::Ipv4(address)) => address.is_loopback(),
-            Some(Host::Ipv6(address)) => address.is_loopback(),
-            None => false,
-        }
+        self.origin.is_loopback()
     }
 
     /// The URL of an API path on this server. `path` is built by the client from a fixed
     /// text and typed identifiers.
     pub(crate) fn endpoint(&self, path: &str) -> Url {
-        let mut url = self.origin.clone();
+        let mut url = Url::clone(&self.url);
         url.set_path(path);
         url
     }
@@ -120,8 +135,8 @@ impl ServerAddress {
         if !plain {
             return None;
         }
-        let url = self.origin.join(logo_path).ok()?;
-        (url.origin() == self.origin.origin()).then_some(url)
+        let url = self.url.join(logo_path).ok()?;
+        (url.origin() == self.url.origin()).then_some(url)
     }
 }
 
@@ -241,6 +256,36 @@ mod tests {
     }
 
     #[test]
+    fn an_address_is_an_origin_in_its_one_spelling() {
+        for (text, origin) in [
+            ("Chat.Example.Test:443", "https://chat.example.test"),
+            ("chat.example.test:8443", "https://chat.example.test:8443"),
+            ("http://LOCALHOST:80/", "http://localhost"),
+            ("http://127.1:8080", "http://127.0.0.1:8080"),
+            ("http://[0:0:0:0:0:0:0:1]:8080", "http://[::1]:8080"),
+        ] {
+            let address = ServerAddress::parse(text).unwrap();
+            assert_eq!(address.origin().as_str(), origin, "{text}");
+            assert_eq!(address.as_str(), origin);
+            assert_eq!(address.endpoint("/").as_str(), format!("{origin}/"));
+            assert_eq!(address.is_local(), address.origin().is_loopback());
+            assert_eq!(Origin::parse(origin).unwrap(), *address.origin());
+        }
+        for text in [
+            "chat.example.test.",
+            "chat_room.example.test",
+            "-chat.example.test",
+            "chat.example.999",
+        ] {
+            assert_eq!(
+                ServerAddress::parse(text),
+                Err(AddressError::Malformed),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
     fn an_endpoint_stays_on_the_origin() {
         let address = ServerAddress::parse("https://chat.example.test:8443").unwrap();
         assert_eq!(
@@ -249,7 +294,7 @@ mod tests {
         );
         assert_eq!(
             address.endpoint("/api/server").origin(),
-            address.origin.origin()
+            address.url.origin()
         );
     }
 

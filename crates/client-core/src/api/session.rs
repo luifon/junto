@@ -7,13 +7,13 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use junto_protocol::account::{
-    AccountSummary, ApproveDeviceLink, Device, LookUpDeviceLink, OwnAccount, PendingDeviceLink,
-    RecoverAccount, RecoveryNotice, RenameDevice,
+    AccountProfile, AccountSummary, ApproveDeviceLink, Avatar, Device, ImageType, LookUpDeviceLink,
+    OwnAccount, PendingDeviceLink, RecoverAccount, RecoveryNotice, RenameDevice, UpdateProfile,
 };
 use junto_protocol::audit::{AuditPage, AuditQuery};
 use junto_protocol::ids::{
-    AccountId, CategoryId, ChannelId, DeviceId, InviteId, JoinRequestId, ServerRoleId, WorkspaceId,
-    WorkspaceRoleId,
+    AccountId, CategoryId, ChannelId, DeviceId, InviteId, JoinRequestId, RecoveryId, ServerRoleId,
+    WorkspaceId, WorkspaceRoleId,
 };
 use junto_protocol::invite::{
     ApproveJoinRequest, CreateInvite, Invite, InviteCreated, JoinRequest, JoinRequestStatus,
@@ -36,7 +36,8 @@ use serde::de::DeserializeOwned;
 use super::client::{ApiClient, encode, read_json};
 use super::error::ApiError;
 use super::retry::Repeat;
-use super::transport::{HttpResponse, Method};
+use super::transport::{HttpResponse, Method, RequestBody};
+use crate::profile::{self, InvalidAvatar};
 use crate::secret::{SecretBytes, SecretToken};
 
 /// A request of a session without its token and without the version prefix.
@@ -44,7 +45,7 @@ pub(crate) struct Outline {
     pub(crate) method: Method,
     pub(crate) path: String,
     pub(crate) query: Vec<(&'static str, String)>,
-    pub(crate) body: Option<Arc<SecretBytes>>,
+    pub(crate) body: Option<RequestBody>,
 }
 
 pub(crate) type AuthorityFuture =
@@ -104,6 +105,19 @@ impl ApiClient {
     }
 }
 
+/// The image of an avatar as the client read it. The server checked the header of the
+/// image and not its data (ADR 0119): the image is a file of an unknown sender.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AvatarImage {
+    /// The format that the first bytes state. The `Content-Type` of the response is not read.
+    pub media_type: ImageType,
+    /// The SHA-256 hash of the bytes in lower-case hexadecimal, computed by the client. It
+    /// equals [`Avatar::hash`] of the profile while the avatar is the one that the profile
+    /// describes.
+    pub hash: String,
+    pub bytes: Vec<u8>,
+}
+
 /// The operations of a logged-in account on one server.
 #[derive(Clone)]
 pub struct ServerApi {
@@ -120,7 +134,7 @@ impl ServerApi {
         method: Method,
         path: String,
         query: Vec<(&'static str, String)>,
-        body: Option<Arc<SecretBytes>>,
+        body: Option<RequestBody>,
     ) -> Result<HttpResponse, ApiError> {
         self.authority
             .send(Outline {
@@ -156,6 +170,53 @@ impl ServerApi {
         self.get("/account".to_owned()).await
     }
 
+    /// Sets the name that the account shows (ADR 0119). The name is checked by the rule of
+    /// the server before the request.
+    pub async fn update_profile(&self, name: &str) -> Result<OwnAccount, ApiError> {
+        let name = profile::account_name(name)?;
+        let path = "/account".to_owned();
+        self.send(Method::Patch, path, &UpdateProfile { name })
+            .await
+    }
+
+    /// Stores the avatar of the account. The body of the request is the image itself. An
+    /// image that no server accepts by its size or its first bytes is not sent.
+    pub async fn set_avatar(&self, image: Vec<u8>) -> Result<Avatar, ApiError> {
+        let kind = profile::check_avatar(&image)?;
+        let body = RequestBody::image(kind, SecretBytes::from_vec(image));
+        let path = "/account/avatar".to_owned();
+        read_json(&self.call(Method::Put, path, Vec::new(), Some(body)).await?)
+    }
+
+    pub async fn remove_avatar(&self) -> Result<(), ApiError> {
+        self.act(Method::Delete, "/account/avatar".to_owned()).await
+    }
+
+    /// The name and the description of the avatar of an account that this account may see.
+    pub async fn profile(&self, account_id: AccountId) -> Result<AccountProfile, ApiError> {
+        self.get(format!("/accounts/{account_id}/profile")).await
+    }
+
+    /// The avatar of an account that this account may see. An answer that is larger than an
+    /// avatar can be, or that is no PNG, JPEG or WebP image by its first bytes, is refused.
+    pub async fn avatar(&self, account_id: AccountId) -> Result<AvatarImage, ApiError> {
+        let path = format!("/accounts/{account_id}/avatar");
+        let response = self.call(Method::Get, path, Vec::new(), None).await?;
+        let media_type =
+            profile::check_avatar(&response.body).map_err(|invalid| ApiError::InvalidResponse {
+                status: response.status,
+                reason: match invalid {
+                    InvalidAvatar::TooLarge => "the avatar is too large",
+                    InvalidAvatar::Unsupported => "the avatar is not an image",
+                },
+            })?;
+        Ok(AvatarImage {
+            media_type,
+            hash: profile::avatar_hash(&response.body),
+            bytes: response.body.to_vec(),
+        })
+    }
+
     pub async fn devices(&self) -> Result<Vec<Device>, ApiError> {
         self.get("/account/devices".to_owned()).await
     }
@@ -176,8 +237,22 @@ impl ServerApi {
             .await
     }
 
+    /// Every recovery of the account.
     pub async fn recoveries(&self) -> Result<Vec<RecoveryNotice>, ApiError> {
         self.get("/account/recoveries".to_owned()).await
+    }
+
+    /// The recoveries that this device has not acknowledged, oldest first (ADR 0118).
+    pub async fn recovery_notices(&self) -> Result<Vec<RecoveryNotice>, ApiError> {
+        self.get("/account/recovery-notices".to_owned()).await
+    }
+
+    /// States that this device has shown a recovery to its user. The notice of the other
+    /// devices of the account stays. A saved server acknowledges through
+    /// `ServerHandle::acknowledge_recovery`, which also updates the state of its flow.
+    pub async fn acknowledge_recovery(&self, recovery_id: RecoveryId) -> Result<(), ApiError> {
+        let path = format!("/account/recovery-notices/{recovery_id}");
+        self.act(Method::Delete, path).await
     }
 
     /// The public key and the device name behind a link code, for the user to compare.
@@ -496,4 +571,78 @@ fn page(query: &AuditQuery) -> Vec<(&'static str, String)> {
         pairs.push(("limit", limit.to_string()));
     }
     pairs
+}
+
+#[cfg(test)]
+mod tests {
+    use junto_protocol::audit::AuditEvent;
+    use junto_protocol::ids::ServerId;
+
+    use super::*;
+    use crate::address::ServerAddress;
+    use crate::api::RetryPolicy;
+    use crate::api::transport::{HttpRequest, Transport, TransportFuture};
+    use crate::version::SupportedVersions;
+
+    struct Fixed(&'static str);
+
+    impl Transport for Fixed {
+        fn send(&self, _request: HttpRequest) -> TransportFuture {
+            let body = self.0.as_bytes().to_vec();
+            Box::pin(async move {
+                Ok(HttpResponse {
+                    status: 200,
+                    retry_after: None,
+                    body: body.into(),
+                })
+            })
+        }
+    }
+
+    fn api(body: &'static str) -> ServerApi {
+        ApiClient::new(
+            Arc::new(Fixed(body)),
+            ServerAddress::parse("chat.example.test").unwrap(),
+            ServerId::generate(),
+            SupportedVersions::THIS_BUILD.negotiate(&[1]).unwrap(),
+            RetryPolicy::default(),
+        )
+        .with_token(SecretToken::new("jst_test".to_owned()))
+    }
+
+    #[tokio::test]
+    async fn an_audit_page_with_an_action_of_a_newer_server_is_read_whole() {
+        let page = r#"{"entries":[
+            {"id":"0198f1c2-7d3a-7b1e-9c55-000000000003",
+             "occurred_at":"2030-01-02T00:00:00Z",
+             "actor_id":"0198f1c2-7d3a-7b1e-9c55-0000000000aa",
+             "workspace_id":"0198f1c2-7d3a-7b1e-9c55-0000000000bb",
+             "channel_id":null,
+             "event":{"action":"glossary_updated","terms":3,"nested":{"a":[1,2]}}},
+            {"id":"0198f1c2-7d3a-7b1e-9c55-000000000002",
+             "occurred_at":"2030-01-01T00:00:00Z",
+             "actor_id":null,"workspace_id":null,"channel_id":null,
+             "event":{"action":"owner_claimed",
+                      "account_id":"0198f1c2-7d3a-7b1e-9c55-0000000000aa"}}],
+            "next_before":"0198f1c2-7d3a-7b1e-9c55-000000000002"}"#;
+        for log in [
+            api(page).server_audit_log(&AuditQuery::default()).await,
+            api(page)
+                .workspace_audit_log(WorkspaceId::generate(), &AuditQuery::default())
+                .await,
+        ] {
+            let log = log.unwrap();
+            assert_eq!(log.entries.len(), 2);
+            let later = &log.entries[0];
+            assert_eq!(later.event, AuditEvent::Unknown);
+            assert_eq!(later.id.to_string(), "0198f1c2-7d3a-7b1e-9c55-000000000003");
+            assert_eq!(later.occurred_at.year(), 2030);
+            assert!(later.actor_id.is_some() && later.workspace_id.is_some());
+            assert!(matches!(
+                log.entries[1].event,
+                AuditEvent::OwnerClaimed { .. }
+            ));
+            assert!(log.next_before.is_some());
+        }
+    }
 }

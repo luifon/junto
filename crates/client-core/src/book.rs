@@ -11,15 +11,21 @@ use crate::address::ServerAddress;
 use crate::paths::{BOOK_FILE, DataDir};
 use crate::storage::{StorageError, Versioned};
 
-pub const BOOK_FORMAT_VERSION: u32 = 1;
+pub const BOOK_FORMAT_VERSION: u32 = 2;
 
 const BOOK: Versioned = Versioned {
     name: BOOK_FILE,
     kind: "server book",
     version: BOOK_FORMAT_VERSION,
-    migrations: &[],
+    migrations: &[unchanged],
     limit: 4 * 1024 * 1024,
 };
+
+/// Version 2 added the state `refused` of the profile preset. Every book of version 1 is a
+/// book of version 2; the version tells an older client that it cannot read the file.
+fn unchanged(value: serde_json::Value) -> Result<serde_json::Value, String> {
+    Ok(value)
+}
 
 const LONGEST_NAME: usize = 64;
 const LONGEST_LOGO_PATH: usize = 512;
@@ -107,6 +113,8 @@ pub enum ProfileSync {
         attempts: u32,
     },
     Applied,
+    /// The server refused the image itself. It is not sent again.
+    Refused,
 }
 
 /// Names one entry of the book as a client read it. A server that is removed and added
@@ -501,7 +509,7 @@ mod tests {
 
         let stored: serde_json::Value =
             serde_json::from_slice(&fs::read(data_dir.book_file()).unwrap()).unwrap();
-        assert_eq!(stored["format_version"], 1);
+        assert_eq!(stored["format_version"], 2);
         assert_eq!(stored["servers"][0]["address"], "https://acme.example.test");
         assert_eq!(stored["servers"][0]["connection_mode"], "when_selected");
         assert_eq!(stored["servers"][0]["membership"]["state"], "member");
@@ -581,6 +589,72 @@ mod tests {
             saved.server_id
         );
         assert!(book.entries().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_book_of_format_version_1_is_read_and_written_in_the_current_version() {
+        let (_directory, data_dir, book) = book();
+        let written = br#"{"format_version":1,"servers":[
+            {"server_id":"0198f1c2-7d3a-7b1e-9c55-000000000001","generation":7,
+             "address":"https://acme.example.test","name":"Acme","logo_path":null,
+             "api_versions":[1],"connection_mode":"always",
+             "membership":{"state":"member",
+                           "account_id":"0198f1c2-7d3a-7b1e-9c55-0000000000aa",
+                           "device_id":"0198f1c2-7d3a-7b1e-9c55-0000000000bb"},
+             "last_cursor":"0198f1c2:42",
+             "profile_sync":{"state":"pending","attempts":3}},
+            {"server_id":"0198f1c2-7d3a-7b1e-9c55-000000000002","generation":8,
+             "address":"http://127.0.0.1:8080","name":"Local","logo_path":"/api/v1/logo",
+             "api_versions":[1],"connection_mode":"when_selected",
+             "membership":{"state":"none"},"last_cursor":null}]}"#;
+        fs::write(data_dir.book_file(), written).unwrap();
+        let entries = book.entries().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].generation, 7);
+        assert_eq!(entries[0].address.as_str(), "https://acme.example.test");
+        assert!(matches!(entries[0].membership, Membership::Member { .. }));
+        assert_eq!(
+            entries[0].profile_sync,
+            ProfileSync::Pending { attempts: 3 }
+        );
+        assert_eq!(entries[1].address.as_str(), "http://127.0.0.1:8080");
+        assert_eq!(entries[1].profile_sync, ProfileSync::NotNeeded);
+
+        book.update(entries[0].key(), |entry| {
+            entry.profile_sync = ProfileSync::Refused;
+        })
+        .unwrap();
+        let stored: serde_json::Value =
+            serde_json::from_slice(&fs::read(data_dir.book_file()).unwrap()).unwrap();
+        assert_eq!(stored["format_version"], 2);
+        assert_eq!(stored["servers"][0]["profile_sync"]["state"], "refused");
+        assert_eq!(stored["servers"][1]["address"], "http://127.0.0.1:8080");
+        assert_eq!(book.entries().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn every_state_of_the_preset_is_stored_and_read_back() {
+        let (_directory, data_dir, book) = book();
+        let saved = book
+            .add(entry("https://acme.example.test", "Acme"))
+            .unwrap();
+        for (state, written) in [
+            (ProfileSync::NotNeeded, r#"{"state":"not_needed"}"#),
+            (
+                ProfileSync::Pending { attempts: 2 },
+                r#"{"state":"pending","attempts":2}"#,
+            ),
+            (ProfileSync::Applied, r#"{"state":"applied"}"#),
+            (ProfileSync::Refused, r#"{"state":"refused"}"#),
+        ] {
+            book.update(saved.key(), |entry| entry.profile_sync = state)
+                .unwrap();
+            assert_eq!(book.entries().unwrap()[0].profile_sync, state);
+            let stored: serde_json::Value =
+                serde_json::from_slice(&fs::read(data_dir.book_file()).unwrap()).unwrap();
+            let expected: serde_json::Value = serde_json::from_str(written).unwrap();
+            assert_eq!(stored["servers"][0]["profile_sync"], expected);
+        }
     }
 
     #[test]
@@ -725,37 +799,37 @@ mod tests {
         };
         let cases = [
             format!(
-                r#"{{"format_version":1,"servers":[{},{}]}}"#,
+                r#"{{"format_version":2,"servers":[{},{}]}}"#,
                 server("https://a.example.test", ""),
                 server("https://b.example.test", "")
             ),
             format!(
-                r#"{{"format_version":1,"servers":[{}]}}"#,
+                r#"{{"format_version":2,"servers":[{}]}}"#,
                 server("http://a.example.test", "")
             ),
             format!(
-                r#"{{"format_version":1,"servers":[{}]}}"#,
+                r#"{{"format_version":2,"servers":[{}]}}"#,
                 server("https://a.example.test/../../etc", "")
             ),
             format!(
-                r#"{{"format_version":1,"servers":[{}]}}"#,
+                r#"{{"format_version":2,"servers":[{}]}}"#,
                 server("https://a.example.test", "").replace("\"Acme\"", "\"\"")
             ),
             format!(
-                r#"{{"format_version":1,"servers":[{}]}}"#,
+                r#"{{"format_version":2,"servers":[{}]}}"#,
                 server("https://a.example.test", "")
                     .replace("\"logo_path\":null", "\"logo_path\":\"//b.example.test/x\"")
             ),
             format!(
-                r#"{{"format_version":1,"servers":[{}]}}"#,
+                r#"{{"format_version":2,"servers":[{}]}}"#,
                 server("https://a.example.test", "").replace("\"always\"", "\"sometimes\"")
             ),
             format!(
-                r#"{{"format_version":1,"servers":[{}]}}"#,
+                r#"{{"format_version":2,"servers":[{}]}}"#,
                 server("https://a.example.test", "")
                     .replace("\"generation\":7", "\"generation\":0")
             ),
-            r#"{"format_version":1}"#.to_owned(),
+            r#"{"format_version":2}"#.to_owned(),
         ];
         for content in cases {
             fs::write(data_dir.book_file(), &content).unwrap();
@@ -767,7 +841,7 @@ mod tests {
         fs::write(
             data_dir.book_file(),
             format!(
-                r#"{{"format_version":1,"servers":[{}]}}"#,
+                r#"{{"format_version":2,"servers":[{}]}}"#,
                 server("https://a.example.test", "")
             ),
         )
@@ -778,13 +852,13 @@ mod tests {
     #[test]
     fn a_book_of_a_newer_client_is_refused_and_not_overwritten() {
         let (_directory, data_dir, book) = book();
-        let newer = br#"{"format_version":2,"servers":[],"folders":[]}"#;
+        let newer = br#"{"format_version":3,"servers":[],"folders":[]}"#;
         fs::write(data_dir.book_file(), newer).unwrap();
         assert!(matches!(
             book.entries(),
             Err(StorageError::NewerFormat {
-                found: 2,
-                supported: 1,
+                found: 3,
+                supported: 2,
                 ..
             })
         ));

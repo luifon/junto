@@ -24,8 +24,8 @@ Files:
 | Path | Content |
 |---|---|
 | `servers.json` | The server book |
-| `profile.json` | The profile preset: a name and the format of the avatar |
-| `avatar.png`, `avatar.jpg` or `avatar.webp` | The avatar of the preset, at most 1 MiB |
+| `profile.json` | The profile preset: a name and the media type of the avatar |
+| `avatar.png`, `avatar.jpg` or `avatar.webp` | The avatar of the preset, at most 256 KiB, the bound of a server (ADR 0119) |
 | `keys/<server identifier>.key` | The device key of one server (ADR 0711) |
 | `lock` | An empty file that carries the lock of the directory |
 
@@ -50,7 +50,8 @@ Not stored:
 
 Format version:
 
-- `servers.json` and `profile.json` are JSON objects with the field `format_version`. This record describes version 1 of both.
+- `servers.json` and `profile.json` are JSON objects with the field `format_version`. This record describes version 2 of both.
+- Version 1 of `profile.json` named the format of the avatar `png`, `jpeg` or `webp`; version 2 stores its media type. Version 1 of `servers.json` had no state `refused` of the profile preset (ADR 0717); its content is otherwise the content of version 2. A new value of a stored field is a new version, so that an older client refuses the file and does not report it as corrupted.
 - A file with a higher version than the client knows is refused and never overwritten.
 - A file with a lower version is migrated in memory, one version step at a time, and written in the current version at the next change.
 - A key file states its version in its first line (ADR 0711).

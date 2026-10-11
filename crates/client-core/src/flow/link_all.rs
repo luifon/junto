@@ -33,7 +33,6 @@ use super::approve_link::{Approval, approve, device_with_key};
 use super::machine::{Machine, Outcome};
 use super::{FlowError, FlowView};
 use crate::address::ServerAddress;
-use crate::api::{RejectionCode, category};
 use crate::book::{ConnectionMode, Membership, ServerEntry};
 use crate::manager::Client;
 use crate::profile;
@@ -706,10 +705,7 @@ pub fn approve_devices_actions(state: &ApproveDevicesState) -> &'static [Approve
 }
 
 fn key_mismatch() -> FlowError {
-    FlowError::Refused {
-        code: RejectionCode::Known(ErrorCode::PublicKeyMismatch),
-        category: category(ErrorCode::PublicKeyMismatch),
-    }
+    FlowError::refused(ErrorCode::PublicKeyMismatch)
 }
 
 /// The progress after a failure. A change of the account is a state of its own, because

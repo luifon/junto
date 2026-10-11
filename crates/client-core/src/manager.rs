@@ -8,9 +8,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use junto_protocol::account::RecoveryNotice;
 use junto_protocol::error::ErrorCode;
-use junto_protocol::ids::{AccountId, ServerId};
+use junto_protocol::ids::{AccountId, RecoveryId, ServerId};
 use junto_protocol::invite::JoinRequestState;
 use junto_protocol::keys::PublicKey;
 use time::OffsetDateTime;
@@ -41,7 +40,6 @@ use crate::flow::{FlowError, FlowView};
 use crate::keys::{self, DeviceKey, FileKeyStore, KeyStore, KeyStoreError};
 use crate::paths::DataDir;
 use crate::profile::ProfileStore;
-use crate::profile_sync::{ProfileUpdate, ProfileUploader, WaitsForServerOperation};
 use crate::runtime::Runtime;
 use crate::secret::SecretToken;
 use crate::storage::StorageError;
@@ -55,9 +53,6 @@ pub struct ClientOptions {
     pub versions: SupportedVersions,
     pub retry: RetryPolicy,
     pub runtime: Option<Runtime>,
-    /// What sends the profile preset to a new account. The default waits for the server
-    /// operation (ADR 0105).
-    pub profile_uploader: Option<Arc<dyn ProfileUploader>>,
 }
 
 impl ClientOptions {
@@ -69,7 +64,6 @@ impl ClientOptions {
             versions: SupportedVersions::THIS_BUILD,
             retry: RetryPolicy::default(),
             runtime: None,
-            profile_uploader: None,
         }
     }
 }
@@ -112,7 +106,6 @@ pub(crate) struct Core {
     pub(crate) versions: SupportedVersions,
     pub(crate) policy: RetryPolicy,
     pub(crate) runtime: Runtime,
-    uploader: Arc<dyn ProfileUploader>,
     /// Runs between the snapshot and the write of a save. Only tests set it, to fix the
     /// order of two saves.
     #[cfg(test)]
@@ -178,9 +171,6 @@ impl Client {
             versions: options.versions,
             policy: options.retry,
             runtime,
-            uploader: options
-                .profile_uploader
-                .unwrap_or_else(|| Arc::new(WaitsForServerOperation)),
             #[cfg(test)]
             before_write: Mutex::new(None),
             selected: Mutex::new(None),
@@ -391,8 +381,13 @@ struct ServerState {
     error: Option<FlowError>,
     api: Option<ApiClient>,
     session: Option<Held>,
-    /// The recoveries that the server told at a login and that nobody has taken yet.
-    notices: Vec<RecoveryNotice>,
+    /// Counts the changes of the account that the state of the profile preset belongs
+    /// to. A try to send the avatar records its result only for the count that it read.
+    preset_owner: u64,
+    /// The recoveries that this device acknowledged since the client started. The server
+    /// never tells them again, except in the answer of a login that it computed before the
+    /// acknowledgement.
+    acknowledged: Vec<RecoveryId>,
     announced: Option<(ConnectionLevel, Option<SecretToken>)>,
     /// The membership or the profile state in memory is not in the book yet: a write
     /// failed. It is cleared only by a write that succeeded.
@@ -412,6 +407,9 @@ pub(crate) struct Server {
     /// Held from the snapshot of what a save writes to the clearing of the unsaved mark,
     /// so that two saves cannot write in another order than they read.
     saving: Mutex<()>,
+    /// Held while the avatar of the preset is sent, so that one try ends before the next
+    /// reads the state.
+    applying: tokio::sync::Mutex<()>,
 }
 
 /// One saved server.
@@ -450,8 +448,8 @@ impl ServerHandle {
     }
 
     /// Runs one action of the access flow. The action runs to its end when the returned
-    /// future is dropped. After an action that created an account, the profile preset is
-    /// sent when the server offers that operation (ADR 0105).
+    /// future is dropped. After an action that succeeded, the avatar of the profile preset
+    /// is sent to an account that waits for it (ADR 0717).
     pub fn dispatch(
         &self,
         action: AccessAction,
@@ -459,8 +457,11 @@ impl ServerHandle {
         let server = self.server.clone();
         let work = self.server.core.runtime.run(async move {
             let result = server.clone().dispatch(action).await;
-            if result.is_ok() {
-                let _ = server.apply_profile().await;
+            if result.is_ok()
+                && let Ok(applying) = server.applying.try_lock()
+            {
+                // A try that runs already is not waited for.
+                let _ = server.apply_profile(applying).await;
             }
             result
         });
@@ -503,9 +504,23 @@ impl ServerHandle {
                 pause = interval;
                 match handle.dispatch(AccessAction::Check).await {
                     Ok(())
-                    | Err(FlowError::Unavailable | FlowError::Unreachable(_) | FlowError::Busy) => {
-                    }
-                    Err(FlowError::Limited { retry_after }) => {
+                    | Err(
+                        FlowError::Unavailable
+                        | FlowError::Unreachable(_)
+                        | FlowError::Busy
+                        | FlowError::UnknownCode {
+                            category: ErrorCategory::ServerFault,
+                            ..
+                        },
+                    ) => {}
+                    Err(
+                        FlowError::Limited { retry_after }
+                        | FlowError::UnknownCode {
+                            category: ErrorCategory::Limited,
+                            retry_after,
+                            ..
+                        },
+                    ) => {
                         pause = pause.max(retry_after.unwrap_or(interval));
                     }
                     Err(error) => return Err(error),
@@ -524,12 +539,22 @@ impl ServerHandle {
             .run(async move { tokio::time::sleep(duration).await })
     }
 
-    /// The recoveries of the account that the server told this device at its logins and
-    /// that were not taken before. The server tells each device of a recovery once
-    /// (ADR 0112), and a later login replaces the list in the state of the flow, so the
-    /// client keeps every notice here until the interface takes it to show it.
-    pub fn take_recoveries(&self) -> Vec<RecoveryNotice> {
-        std::mem::take(&mut lock(&self.server.state).notices)
+    /// States that the interface has shown a recovery to the person (ADR 0118). The server
+    /// removes the notice of this device, and the recovery leaves the state `logged in`.
+    /// Until then every login tells the recovery again. The acknowledgement is sent for the
+    /// account that the flow shows. When the server holds no such notice of this device,
+    /// the recovery leaves the state too and the call fails with `not_found`.
+    pub fn acknowledge_recovery(
+        &self,
+        recovery_id: RecoveryId,
+    ) -> impl Future<Output = Result<(), ApiError>> + Send + 'static + use<> {
+        let server = self.server.clone();
+        let work = self
+            .server
+            .core
+            .runtime
+            .run(async move { server.acknowledge_recovery(recovery_id).await });
+        async move { work.await.unwrap_or(Err(ApiError::Stopped)) }
     }
 
     /// The account of the session that this device holds on the server now.
@@ -557,10 +582,7 @@ impl ServerHandle {
     /// [`ApiError::AccountChanged`] when the device has another account. What a user
     /// confirmed for one account is sent through this.
     pub fn api_for(&self, account_id: AccountId) -> ServerApi {
-        ServerApi::new(Arc::new(Managed {
-            server: self.server.clone(),
-            account: Some(account_id),
-        }))
+        self.server.api_for(account_id)
     }
 
     /// Starts the flow in which this logged-in device approves a new device (ADR 0112).
@@ -610,23 +632,23 @@ impl ServerHandle {
         self.server.level().0
     }
 
-    /// Whether the profile preset still waits to be sent to the account on this server.
+    /// Whether the avatar of the profile preset still waits to be sent to the account on
+    /// this server.
     pub fn profile_sync(&self) -> ProfileSync {
         lock(&self.server.state).entry.profile_sync
     }
 
-    /// Sends the profile preset to the account when it waits, and records the result: a
-    /// success ends the waiting, a failure is counted. While the server does not offer
-    /// the operation the call fails with [`ApiError::NotOffered`] and nothing changes.
+    /// Sends the avatar of the profile preset to the account when it waits, and records the
+    /// result: a success ends the waiting, a refusal of the image ends it too, and another
+    /// failure is counted (ADR 0717).
     pub fn apply_profile(
         &self,
     ) -> impl Future<Output = Result<ProfileSync, ApiError>> + Send + 'static + use<> {
         let server = self.server.clone();
-        let work = self
-            .server
-            .core
-            .runtime
-            .run(async move { server.apply_profile().await });
+        let work = self.server.core.runtime.run(async move {
+            let applying = server.applying.lock().await;
+            server.apply_profile(applying).await
+        });
         async move { work.await.unwrap_or(Err(ApiError::Stopped)) }
     }
 }
@@ -693,6 +715,18 @@ fn login_explains(error: &ApiError) -> bool {
         || error.code() == Some(ErrorCode::KeyAlreadyRegistered)
 }
 
+/// What an operation of the access flow creates when it succeeds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Creates {
+    /// No account: a login, a check, a request for a link.
+    Nothing,
+    /// An account for this device: a join with a code, an approved join request.
+    Account,
+    /// A claim: the owner account, or a new device of the owner account that exists. The
+    /// second is a recovery and leaves a notice for the new device (ADR 0114).
+    Owner,
+}
+
 enum KeyFault {
     Key(KeyStoreError),
     Book(BookError),
@@ -722,13 +756,15 @@ impl Server {
                 error: None,
                 api: None,
                 session: None,
-                notices: Vec::new(),
+                preset_owner: 0,
+                acknowledged: Vec::new(),
                 announced: None,
                 unsaved: false,
                 retired: false,
             }),
             gate: tokio::sync::Mutex::new(()),
             saving: Mutex::new(()),
+            applying: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -841,8 +877,13 @@ impl Server {
                 let api = self.contact(false).await?;
                 let key = self.key_or_new()?;
                 match api.join(&key, code, name, device_name).await {
-                    Ok(session) => self.settle_probe(before, Probe::LoggedIn(session), true),
-                    Err(error) => self.explain_by_login(&api, &key, before, error).await,
+                    Ok(session) => {
+                        self.settle_probe(before, Probe::LoggedIn(session), Creates::Account)
+                    }
+                    Err(error) => {
+                        self.explain_by_login(&api, &key, before, error, Creates::Account)
+                            .await
+                    }
                 }
             }
             AccessAction::ClaimOwner {
@@ -854,12 +895,12 @@ impl Server {
                 let key = self.key_or_new()?;
                 match api.claim_owner(&key, code, name, device_name).await {
                     Ok(session) => {
-                        // A claim that returns the owner to an existing account carries
-                        // the notice of that recovery (ADR 0114).
-                        let created = session.recoveries.is_empty();
-                        self.settle_probe(before, Probe::LoggedIn(session), created)
+                        self.settle_probe(before, Probe::LoggedIn(session), Creates::Owner)
                     }
-                    Err(error) => self.explain_by_login(&api, &key, before, error).await,
+                    Err(error) => {
+                        self.explain_by_login(&api, &key, before, error, Creates::Owner)
+                            .await
+                    }
                 }
             }
             AccessAction::RequestAccess { name } => self.request_access(before, name).await,
@@ -886,7 +927,10 @@ impl Server {
                         },
                         None,
                     ),
-                    Err(error) => self.explain_by_login(&api, &key, before, error).await,
+                    Err(error) => {
+                        self.explain_by_login(&api, &key, before, error, Creates::Nothing)
+                            .await
+                    }
                 }
             }
         }
@@ -938,7 +982,8 @@ impl Server {
             }
             Err(error) => {
                 let _ = self.remember(previous);
-                self.explain_by_login(&api, &key, before, error).await
+                self.explain_by_login(&api, &key, before, error, Creates::Nothing)
+                    .await
             }
         }
     }
@@ -1130,69 +1175,127 @@ impl Server {
             // client stopped before it stored the request, or the book was replaced.
             return self.settle(settled, None);
         }
-        self.settle_probe(before, probe, approved)
+        let creates = if approved {
+            Creates::Account
+        } else {
+            Creates::Nothing
+        };
+        self.settle_probe(before, probe, creates)
     }
 
     /// After an operation failed in a way that a login can explain, logs in. A session
     /// means that the device has its account; anything else leaves the first error.
+    /// `creates` says what the operation creates when it succeeds.
     async fn explain_by_login(
         &self,
         api: &ApiClient,
         key: &DeviceKey,
         before: &AccessState,
         error: ApiError,
+        creates: Creates,
     ) -> Result<(), FlowError> {
         if !login_explains(&error) {
             return Err(self.failed(error));
         }
-        let created = matches!(error, ApiError::OutcomeUnknown);
         match self.probe(api, key).await {
             Ok(Probe::UnknownDevice) | Err(_) => Err(self.failed(error)),
-            Ok(probe) => self.settle_probe(before, probe, created),
+            Ok(probe) => {
+                // A lost answer: the operation was done. Otherwise the key had its account
+                // before the operation, and only an approved join request of this device
+                // can have created that account for it.
+                let creates = if matches!(error, ApiError::OutcomeUnknown) {
+                    creates
+                } else if self.approved_request_created(api, key, &probe).await {
+                    Creates::Account
+                } else {
+                    Creates::Nothing
+                };
+                self.settle_probe(before, probe, creates)
+            }
         }
     }
 
-    /// Moves the flow to the state that a login attempt gives. `created` says that the
-    /// account is one that this device has just created, so the profile preset is sent
-    /// to it (ADR 0105).
+    /// True when the book holds a join request of this device and the server states that
+    /// the request was approved into the account of the login.
+    async fn approved_request_created(
+        &self,
+        api: &ApiClient,
+        key: &DeviceKey,
+        probe: &Probe,
+    ) -> bool {
+        let Probe::LoggedIn(session) = probe else {
+            return false;
+        };
+        if !matches!(self.membership(), Membership::JoinRequested { .. }) {
+            return false;
+        }
+        matches!(
+            api.join_request_status(key).await,
+            Ok(status) if status.state == JoinRequestState::Approved
+                && status.account_id == Some(session.account_id)
+        )
+    }
+
+    /// Moves the flow to the state that a login attempt gives. When the operation created
+    /// the account of the login, the avatar of the profile preset is sent to it (ADR 0717).
     fn settle_probe(
         &self,
         before: &AccessState,
         probe: Probe,
-        created: bool,
+        creates: Creates,
     ) -> Result<(), FlowError> {
         let held = held_of(&probe);
-        if let Probe::LoggedIn(session) = &probe {
-            let mut state = lock(&self.state);
-            for notice in &session.recoveries {
-                if !state.notices.iter().any(|kept| kept.id == notice.id) {
-                    state.notices.push(notice.clone());
-                }
-            }
-        }
-        if created && held.is_some() {
-            let has_avatar =
-                matches!(self.core.profile.load(), Ok(preset) if preset.avatar.is_some());
-            let mut state = lock(&self.state);
-            if has_avatar && state.entry.profile_sync == ProfileSync::NotNeeded {
-                state.entry.profile_sync = ProfileSync::Pending { attempts: 0 };
-                state.unsaved = true;
-            }
-        }
+        let new_account = match (&probe, creates) {
+            (Probe::LoggedIn(_), Creates::Account) => true,
+            (Probe::LoggedIn(session), Creates::Owner) => session.recoveries.is_empty(),
+            _ => false,
+        };
+        let preset_waits = new_account
+            && matches!(self.core.profile.load(), Ok(preset) if preset.avatar.is_some());
         let settled = after_probe(before, &self.membership(), probe, OffsetDateTime::now_utc());
-        self.settle(settled, held)
+        self.settle_account(settled, held, preset_waits)
     }
 
     /// Moves the flow to a state and stores the membership that belongs to it. The state
     /// in memory is what the server said. When the book cannot be written, the action
     /// reports that and the entry stays marked as unsaved until a write succeeds.
     fn settle(&self, settled: Settled, session: Option<Held>) -> Result<(), FlowError> {
+        self.settle_account(settled, session, false)
+    }
+
+    /// The state of the profile preset belongs to one account (ADR 0717): it starts again
+    /// when the device has another account or none, and it waits when `preset_waits`.
+    fn settle_account(
+        &self,
+        mut settled: Settled,
+        session: Option<Held>,
+        preset_waits: bool,
+    ) -> Result<(), FlowError> {
         {
             let mut state = lock(&self.state);
+            if let AccessState::LoggedIn { recoveries, .. } = &mut settled.state {
+                // The answer of a login can be older than an acknowledgement.
+                recoveries.retain(|notice| !state.acknowledged.contains(&notice.id));
+            }
             state.access = settled.state;
             state.session = session;
-            if state.entry.membership != settled.membership {
+            let other_account = access::account_of(&state.entry.membership)
+                != access::account_of(&settled.membership);
+            let profile_sync = if preset_waits {
+                ProfileSync::Pending { attempts: 0 }
+            } else if other_account {
+                ProfileSync::NotNeeded
+            } else {
+                state.entry.profile_sync
+            };
+            if preset_waits || other_account {
+                state.preset_owner += 1;
+            }
+            if state.entry.membership != settled.membership
+                || state.entry.profile_sync != profile_sync
+            {
                 state.entry.membership = settled.membership;
+                state.entry.profile_sync = profile_sync;
                 state.unsaved = true;
             }
         }
@@ -1282,6 +1385,7 @@ impl Server {
         state.session = None;
         state.entry.membership = Membership::None;
         state.entry.profile_sync = ProfileSync::NotNeeded;
+        state.preset_owner += 1;
         state.unsaved = false;
         Ok(())
     }
@@ -1399,50 +1503,131 @@ impl Server {
             None if probe == Probe::Banned => Err(ApiError::AccessLost(AccessLoss::Banned)),
             None => Err(ApiError::AccessLost(AccessLoss::Removed)),
         };
-        if let Err(error) = self.settle_probe(before, probe, false) {
+        if let Err(error) = self.settle_probe(before, probe, Creates::Nothing) {
             tracing::warn!(server = %self.id, %error, "the server book was not updated");
         }
         outcome
     }
 
-    /// Sends the profile preset to the account when it waits (ADR 0105).
-    async fn apply_profile(self: &Arc<Self>) -> Result<ProfileSync, ApiError> {
-        let (sync, account) = {
+    /// Sends the avatar of the profile preset to the account when it waits (ADR 0717).
+    /// The name is not sent: it travelled with the join, the claim or the join request.
+    /// The caller holds the lock of the tries.
+    ///
+    /// The request uses the session that the device has when the try starts and is not
+    /// sent again with a renewed session: after a removal and a return, the account can be
+    /// the same one and the avatar is no longer wanted.
+    async fn apply_profile(
+        &self,
+        _applying: tokio::sync::MutexGuard<'_, ()>,
+    ) -> Result<ProfileSync, ApiError> {
+        let (sync, session, owner) = {
             let state = lock(&self.state);
-            let account = state.session.as_ref().map(|held| held.account_id);
-            (state.entry.profile_sync, account)
+            let session = match (&state.api, &state.session, state.retired) {
+                (Some(api), Some(held), false) => Some((api.clone(), held.token.clone())),
+                _ => None,
+            };
+            (state.entry.profile_sync, session, state.preset_owner)
         };
         let ProfileSync::Pending { attempts } = sync else {
             return Ok(sync);
         };
-        let account = account.ok_or(ApiError::NotLoggedIn)?;
-        let preset = self.core.profile.load()?;
-        let Some(avatar) = self.core.profile.avatar()? else {
-            return Ok(self.record_sync(ProfileSync::NotNeeded));
+        let (api, token) = session.ok_or(ApiError::NotLoggedIn)?;
+        let failed_try = ProfileSync::Pending {
+            attempts: attempts.saturating_add(1),
         };
-        let api = ServerApi::new(Arc::new(Managed {
-            server: self.clone(),
-            account: Some(account),
-        }));
-        let update = ProfileUpdate {
-            name: preset.name,
-            avatar: Some(avatar),
-        };
-        match self.core.uploader.upload(api, update).await {
-            Ok(()) => Ok(self.record_sync(ProfileSync::Applied)),
-            Err(error @ ApiError::NotOffered { .. }) => Err(error),
+        let image = match self.core.profile.avatar() {
+            Ok(Some((_, image))) => image,
+            Ok(None) => return Ok(self.record_sync(owner, ProfileSync::NotNeeded)),
             Err(error) => {
-                self.record_sync(ProfileSync::Pending {
-                    attempts: attempts.saturating_add(1),
-                });
+                // A stored image that is larger than an avatar can be is never sent.
+                let refused = matches!(error, StorageError::TooLarge { .. });
+                self.record_sync(
+                    owner,
+                    if refused {
+                        ProfileSync::Refused
+                    } else {
+                        failed_try
+                    },
+                );
+                return Err(error.into());
+            }
+        };
+        let stored = api.with_token(token).set_avatar(image).await;
+        match &stored {
+            Ok(_) => self.answered(),
+            Err(error) => self.note(error),
+        }
+        match stored {
+            Ok(_) => Ok(self.record_sync(owner, ProfileSync::Applied)),
+            Err(error) => {
+                // A server that refuses the image itself refuses it at every try.
+                let refused = matches!(error, ApiError::Avatar(_))
+                    || matches!(
+                        error.code(),
+                        Some(ErrorCode::ImageTooLarge | ErrorCode::ImageUnsupported)
+                    );
+                self.record_sync(
+                    owner,
+                    if refused {
+                        ProfileSync::Refused
+                    } else {
+                        failed_try
+                    },
+                );
                 Err(error)
             }
         }
     }
 
-    fn record_sync(&self, sync: ProfileSync) -> ProfileSync {
+    fn api_for(self: &Arc<Self>, account_id: AccountId) -> ServerApi {
+        ServerApi::new(Arc::new(Managed {
+            server: self.clone(),
+            account: Some(account_id),
+        }))
+    }
+
+    /// Sends the acknowledgement of a recovery for the account that the flow shows, and
+    /// takes the recovery out of the state when the server holds its notice no longer.
+    async fn acknowledge_recovery(
+        self: &Arc<Self>,
+        recovery_id: RecoveryId,
+    ) -> Result<(), ApiError> {
+        let account = match &lock(&self.state).access {
+            AccessState::LoggedIn { account_id, .. } => *account_id,
+            _ => return Err(ApiError::NotLoggedIn),
+        };
+        let result = self
+            .api_for(account)
+            .acknowledge_recovery(recovery_id)
+            .await;
+        let gone = match &result {
+            Ok(()) => true,
+            Err(error) => error.code() == Some(ErrorCode::NotFound),
+        };
+        if gone {
+            {
+                let mut state = lock(&self.state);
+                if !state.acknowledged.contains(&recovery_id) {
+                    state.acknowledged.push(recovery_id);
+                }
+                if let AccessState::LoggedIn { recoveries, .. } = &mut state.access {
+                    recoveries.retain(|notice| notice.id != recovery_id);
+                }
+            }
+            self.core.notify();
+        }
+        result
+    }
+
+    /// Records the result of a try to send the avatar. `owner` is the count that the try
+    /// read when it started: a result for an account that the device left meanwhile, also
+    /// when it has returned to it, is dropped.
+    fn record_sync(&self, owner: u64, sync: ProfileSync) -> ProfileSync {
         {
             let mut state = lock(&self.state);
+            if state.preset_owner != owner {
+                return state.entry.profile_sync;
+            }
             state.entry.profile_sync = sync;
             state.unsaved = true;
         }

@@ -19,7 +19,9 @@ Contract of every flow:
 - No flow waits for the interface. Waiting for a person is a state, not a running action.
 - An action runs as a task of the client (ADR 0715). It runs to its end when the interface drops its future. If the task itself stops, the flow returns to its state with the reason `stopped` and accepts actions again.
 - Text that the user typed is checked before any request: a name has 1 to 64 characters and no control character, as on the server.
-- The reason of a failure holds no secret and no text of the server. It names the error code of the server, or the cause of a failed connection.
+- The reason of a failure holds no secret. It names the error code of the server, or the cause of a failed connection, and holds no text of the server, with one exception.
+- The exception is a refusal with a code that the client does not know. The client has no text of its own for it, so the reason holds the status of the response and the message of the server, cut to 200 characters without control characters (ADR 0209, ADR 0714). An interface shows the message as a quotation of the server.
+- The helper that waits for a decision goes on after such a refusal with a status of 500 or above, and waits for the stated time after one with the status 429, as it does for the known codes of those groups.
 
 Flow "add a server":
 
@@ -31,7 +33,7 @@ Flow "add a server":
 
 Access flow of one saved server:
 
-- States: `no account` (with a notice: removed, request denied, request expired, link expired, key missing), `waiting for approval` (with the request identifier once the server has answered), `waiting for link` (with the link code, the public key of this device and the expiry), `logged out`, `logged in` (with the recoveries since the login before), `banned`.
+- States: `no account` (with a notice: removed, request denied, request expired, link expired, key missing), `waiting for approval` (with the request identifier once the server has answered), `waiting for link` (with the link code, the public key of this device and the expiry), `logged out`, `logged in` (with the recoveries that this device has not acknowledged), `banned`.
 - Actions: `check`, `join` with an invite code, `claim owner` with an owner code, `request access`, `request link`, `log in`, `log out`, `forget account`.
 - `no account` accepts `check`, `join`, `request access`, `request link` and `claim owner`. The two waiting states accept `check`, `join`, `claim owner` and `forget account`; `waiting for link` also accepts a new `request link` and `request access`. `logged out` accepts `log in`. `logged in` accepts `check` and `log out`. `banned` accepts `check` and `forget account`.
 - Before any contact the state comes from the membership in the server book (ADR 0710): a member starts as `logged out`.
@@ -45,7 +47,10 @@ What the server says decides the state:
 - The error `unknown_device` for a device that was a member gives `no account` with the notice "removed". The error `account_banned` gives `banned`.
 - An operation whose answer was lost or could not be read although its status says success (ADR 0714), or that the server refused because the key already belongs to an account, is followed by a login. A session means that the device has its account, and the flow moves to `logged in`. Otherwise the first error stays.
 - A session that the server ends is found at the next request of the account. The client logs in again once with the device key. A ban or a removal found then moves the flow to `banned` or `no account`, and the request fails with the error "access lost".
-- The recoveries that the server tells at a login are kept by the client until the interface takes them, also when a later login tells none. The state `logged in` shows those of the last login only.
+- The state `logged in` shows the recoveries that the server told at the last login. The server tells every recovery that this device has not acknowledged, at every login (ADR 0118), so the client keeps no list of its own, and a restart loses none.
+- After the interface has shown a recovery to the person, it acknowledges it through the server object. The client sends the acknowledgement for the account that the flow shows. When the server has removed the notice, the recovery leaves the state. When the server answers that this device has no notice of that recovery, the recovery leaves the state too and the call fails with that answer. Every other failure leaves the recovery in the state.
+- The client remembers the recoveries that it acknowledged since its start and leaves them out of the list of a later login. The answer of a login can be older than an acknowledgement, and the server never gives a device a second notice of one recovery.
+- The error `origin_rejected` is a reason of its own: the saved address is not a public origin of the server (ADR 0117). It changes no state. The membership and the key stay, and the next `check` or `log in` asks again.
 - A request belongs to the account that the device had when the request started. When the renewed session belongs to another account, the flow moves to `logged in` for that account with the account before, and the request fails with the error "account changed" and is not sent again. What a user confirmed for one account is never done for another.
 - The client does not hold a device to the account identifier that it stored. A login for another account than the stored one is accepted and shown with the account before. A removed device can be linked or recovered into another account (ADR 0112), and the server already decides which account a key belongs to.
 - The state in memory changes first and the membership in the book second. When the book cannot be written, the action reports that and the entry stays marked as unsaved; every later action of the server writes it again until a write succeeds (ADR 0710).

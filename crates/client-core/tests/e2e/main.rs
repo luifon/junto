@@ -1,5 +1,5 @@
 //! End-to-end tests: the client library and `junto-cli` against the real server binary of
-//! this checkout and PostgreSQL. Run them through `crates/client-core/tools/with-test-postgres.sh`.
+//! this checkout and PostgreSQL. Run them through `tools/with-test-postgres.sh`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -11,7 +11,7 @@ use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 use junto_client_core::api::{AccessLoss, ApiError};
-use junto_client_core::book::Membership;
+use junto_client_core::book::{Membership, ProfileSync};
 use junto_client_core::flow::FlowError;
 use junto_client_core::flow::access::{AccessAction, AccessState, ActionKind, Notice};
 use junto_client_core::flow::add_server::{AddServerAction, AddServerState};
@@ -20,7 +20,8 @@ use junto_client_core::flow::link_all::{
     ApprovalProgress, ApproveDevicesAction, ApproveDevicesState, LinkDeviceAction, LinkDeviceState,
     LinkProgress,
 };
-use junto_client_core::protocol::account::{AccountStatus, RecoverAccount};
+use junto_client_core::profile::{AVATAR_MAX_BYTES, InvalidAvatar, ProfileError, avatar_hash};
+use junto_client_core::protocol::account::{AccountStatus, ImageType, RecoverAccount};
 use junto_client_core::protocol::audit::{AuditEvent, AuditQuery};
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::protocol::invite::{ApproveJoinRequest, CreateInvite};
@@ -92,7 +93,10 @@ async fn the_first_device_claims_a_new_server_with_the_printed_code() {
     let error = handle.dispatch(wrong).await.unwrap_err();
     assert!(matches!(
         error,
-        FlowError::Refused { ref code, .. } if code.to_string() == "owner_code_invalid"
+        FlowError::Refused {
+            code: ErrorCode::OwnerCodeInvalid,
+            ..
+        }
     ));
     assert_eq!(
         handle.access().state,
@@ -115,7 +119,10 @@ async fn the_first_device_claims_a_new_server_with_the_printed_code() {
     let error = late.dispatch(claim(&server, "Mallory")).await.unwrap_err();
     assert!(matches!(
         error,
-        FlowError::Refused { ref code, .. } if code.to_string() == "owner_already_claimed"
+        FlowError::Refused {
+            code: ErrorCode::OwnerAlreadyClaimed,
+            ..
+        }
     ));
 }
 
@@ -240,7 +247,10 @@ async fn a_second_device_with_a_fresh_data_directory_joins_with_an_invite() {
     let error = late.dispatch(join(&code, "Linus")).await.unwrap_err();
     assert!(matches!(
         error,
-        FlowError::Refused { ref code, .. } if code.to_string() == "invite_exhausted"
+        FlowError::Refused {
+            code: ErrorCode::InviteExhausted,
+            ..
+        }
     ));
     assert_eq!(late.access().state, AccessState::NoAccount { notice: None });
 }
@@ -543,7 +553,7 @@ async fn two_servers_are_held_at_once_and_a_stopped_one_does_not_affect_the_othe
 #[tokio::test(flavor = "multi_thread")]
 async fn a_busy_answer_gets_the_same_signed_request_again_and_the_server_accepts_it() {
     let server = TestServer::start("Acme").await;
-    let proxy = FaultProxy::start(server.port()).await;
+    let proxy = FaultProxy::start(&server).await;
     let device = Device::new();
     let handle = device.add(&proxy.address()).await;
 
@@ -581,7 +591,7 @@ async fn a_join_whose_answer_was_lost_is_repeated_and_creates_one_account() {
     owner.dispatch(claim(&server, "Ada")).await.unwrap();
     let code = invite(&owner, 5).await;
 
-    let proxy = FaultProxy::start(server.port()).await;
+    let proxy = FaultProxy::start(&server).await;
     let second = Device::new();
     let member = second.add(&proxy.address()).await;
     proxy.fail("/api/v1/join", [Fault::LoseAnswer]);
@@ -603,7 +613,7 @@ async fn a_join_whose_answer_was_lost_is_repeated_and_creates_one_account() {
 async fn a_request_that_timed_out_on_a_database_lock_is_repeated_unchanged() {
     const CLAIM: &str = "/api/v1/owner/claim";
     let server = TestServer::start("Acme").await;
-    let proxy = std::sync::Arc::new(FaultProxy::start(server.port()).await);
+    let proxy = std::sync::Arc::new(FaultProxy::start(&server).await);
     let device = Device::new();
     let handle = device.add(&proxy.address()).await;
 
@@ -766,6 +776,269 @@ async fn a_recovery_gives_a_new_device_the_account_and_every_device_a_notice() {
     assert_eq!(recoveries[0].performed_by, Some(logged_in(&owner)));
     assert_eq!(old_device.api().recoveries().await.unwrap().len(), 1);
     assert_eq!(old_device.api().devices().await.unwrap().len(), 2);
+
+    // A login does not remove the notice. The acknowledgement of one device does, for
+    // that device only (ADR 0118).
+    let shown = |handle: &junto_client_core::ServerHandle| match handle.access().state {
+        AccessState::LoggedIn { recoveries, .. } => recoveries.len(),
+        other => panic!("not logged in: {other:?}"),
+    };
+    for handle in [&new_device, &old_device] {
+        handle.dispatch(AccessAction::LogOut).await.unwrap();
+        handle.dispatch(AccessAction::LogIn).await.unwrap();
+        assert_eq!(shown(handle), 1);
+        assert_eq!(handle.api().recovery_notices().await.unwrap().len(), 1);
+    }
+    let restarted = third.restarted();
+    let after_restart = restarted.servers().remove(0);
+    after_restart.connect().await.unwrap();
+    assert_eq!(shown(&after_restart), 1);
+
+    new_device.acknowledge_recovery(notice.id).await.unwrap();
+    assert_eq!(shown(&new_device), 0);
+    assert!(
+        new_device
+            .api()
+            .recovery_notices()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    new_device.dispatch(AccessAction::LogOut).await.unwrap();
+    new_device.dispatch(AccessAction::LogIn).await.unwrap();
+    assert_eq!(shown(&new_device), 0);
+    let again = new_device
+        .acknowledge_recovery(notice.id)
+        .await
+        .unwrap_err();
+    assert_eq!(again.code(), Some(ErrorCode::NotFound));
+
+    old_device.dispatch(AccessAction::LogOut).await.unwrap();
+    old_device.dispatch(AccessAction::LogIn).await.unwrap();
+    assert_eq!(shown(&old_device), 1);
+    assert_eq!(old_device.api().recoveries().await.unwrap().len(), 1);
+}
+
+/// A still PNG image as far as the server reads it: the header chunk with the size, and
+/// the start of the image data.
+fn png(width: u32, height: u32, padding: usize) -> Vec<u8> {
+    let mut image = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+    image.extend_from_slice(&width.to_be_bytes());
+    image.extend_from_slice(&height.to_be_bytes());
+    image.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+    image.extend_from_slice(&(padding as u32).to_be_bytes());
+    image.extend_from_slice(b"IDAT");
+    image.resize(image.len() + padding + 4, 0);
+    image
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_proof_is_accepted_at_a_public_origin_of_the_server_and_refused_at_another_address() {
+    let server = TestServer::start("Acme").await;
+    let unlisted = FaultProxy::start_unlisted(&server).await;
+    let device = Device::new();
+    let handle = device.add(&unlisted.address()).await;
+    assert_eq!(
+        handle.dispatch(claim(&server, "Ada")).await,
+        Err(FlowError::OriginRejected)
+    );
+    assert_eq!(
+        handle.access().state,
+        AccessState::NoAccount { notice: None }
+    );
+    let signed_origin = |proxy: &FaultProxy, path: &str| {
+        let sent = proxy.seen(path);
+        assert_eq!(sent.len(), 1, "{path}");
+        let body: serde_json::Value = serde_json::from_slice(&sent[0].body).unwrap();
+        let (status, answer) = sent[0].answer.clone().unwrap();
+        (
+            body["proof"]["origin"].as_str().unwrap().to_owned(),
+            status,
+            String::from_utf8(answer).unwrap(),
+        )
+    };
+    let (origin, status, answer) = signed_origin(&unlisted, "/api/v1/owner/claim");
+    assert_eq!(origin, unlisted.address());
+    assert_eq!(status, 403);
+    assert!(answer.contains("origin_rejected"), "{answer}");
+
+    // The owner code is unused: the same code claims the server at a listed address, and
+    // the proof names that address.
+    let listed = FaultProxy::start(&server).await;
+    let through_proxy = Device::new();
+    let owner = through_proxy.add(&listed.address()).await;
+    owner.dispatch(claim(&server, "Ada")).await.unwrap();
+    assert!(owner.api().own_account().await.unwrap().is_owner);
+    let (origin, status, _) = signed_origin(&listed, "/api/v1/owner/claim");
+    assert_eq!(origin, listed.address());
+    assert_eq!(status, 201);
+
+    // The address of the server itself is the other listed origin.
+    let code = invite(&owner, 1).await;
+    let direct = Device::new();
+    let member = direct.add(&server.address()).await;
+    member.dispatch(join(&code, "Grace")).await.unwrap();
+    let account_id = logged_in(&member);
+    member.dispatch(AccessAction::LogOut).await.unwrap();
+    member.dispatch(AccessAction::LogIn).await.unwrap();
+    assert_eq!(logged_in(&member), account_id);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_avatar_of_the_preset_reaches_a_new_account_and_other_accounts_read_it() {
+    let server = TestServer::start("Acme").await;
+    let image = png(64, 48, 100);
+    let first = Device::new();
+    first.client.profile().set_name("Preset name").unwrap();
+    first.client.profile().set_avatar(&image).unwrap();
+    let owner = first.add(&server.address()).await;
+    owner.dispatch(claim(&server, "Ada")).await.unwrap();
+    let owner_id = logged_in(&owner);
+    assert_eq!(owner.profile_sync(), ProfileSync::Applied);
+    let own = owner.api().own_account().await.unwrap();
+    assert_eq!(own.name, "Ada");
+    let stored = own.avatar.unwrap();
+    assert_eq!(stored.hash, avatar_hash(&image));
+    assert_eq!(stored.media_type, ImageType::Png);
+    assert_eq!((stored.width, stored.height), (64, 48));
+    assert_eq!(stored.bytes as usize, image.len());
+
+    let code = invite(&owner, 2).await;
+    let second = Device::new();
+    let member = second.add(&server.address()).await;
+    member.dispatch(join(&code, "Grace")).await.unwrap();
+    let member_id = logged_in(&member);
+    assert_eq!(member.profile_sync(), ProfileSync::NotNeeded);
+    let profile = member.api().profile(owner_id).await.unwrap();
+    assert_eq!(profile.name, "Ada");
+    assert_eq!(profile.avatar, Some(stored.clone()));
+    let read = member.api().avatar(owner_id).await.unwrap();
+    assert_eq!(read.bytes, image);
+    assert_eq!(read.hash, stored.hash);
+    assert_eq!(read.media_type, ImageType::Png);
+
+    let renamed = member.api().update_profile("Grace H.").await.unwrap();
+    assert_eq!(renamed.name, "Grace H.");
+    assert_eq!(renamed.avatar, None);
+    assert_eq!(
+        owner.api().profile(member_id).await.unwrap().name,
+        "Grace H."
+    );
+    let jpeg_like = member.api().set_avatar(b"\xff\xd8\xff\xe0".to_vec()).await;
+    assert_eq!(
+        jpeg_like.unwrap_err().code(),
+        Some(ErrorCode::ImageUnsupported)
+    );
+    let replaced = member.api().set_avatar(png(8, 8, 0)).await.unwrap();
+    assert_eq!((replaced.width, replaced.height), (8, 8));
+    member.api().remove_avatar().await.unwrap();
+    assert_eq!(owner.api().profile(member_id).await.unwrap().avatar, None);
+    let gone = owner.api().avatar(member_id).await.unwrap_err();
+    assert_eq!(gone.code(), Some(ErrorCode::NotFound));
+
+    // An image with more pixels than a server stores passes the check of the client, which
+    // does not read the size in pixels. The server refuses it, and it is not sent again.
+    let third = Device::new();
+    third
+        .client
+        .profile()
+        .set_avatar(&png(2000, 2000, 0))
+        .unwrap();
+    let wide = third.add(&server.address()).await;
+    wide.dispatch(join(&code, "Linus")).await.unwrap();
+    assert_eq!(wide.profile_sync(), ProfileSync::Refused);
+    assert_eq!(wide.api().own_account().await.unwrap().avatar, None);
+    wide.dispatch(AccessAction::LogOut).await.unwrap();
+    wide.dispatch(AccessAction::LogIn).await.unwrap();
+    assert_eq!(wide.profile_sync(), ProfileSync::Refused);
+
+    // The preset takes no image that is larger than a server stores.
+    let large = png(16, 16, AVATAR_MAX_BYTES);
+    assert!(matches!(
+        third.client.profile().set_avatar(&large),
+        Err(ProfileError::Avatar(InvalidAvatar::TooLarge))
+    ));
+    assert!(matches!(
+        wide.api().set_avatar(large).await,
+        Err(ApiError::Avatar(InvalidAvatar::TooLarge))
+    ));
+    let largest = png(16, 16, AVATAR_MAX_BYTES - 45);
+    assert_eq!(largest.len(), AVATAR_MAX_BYTES);
+    let kept = wide.api().set_avatar(largest.clone()).await.unwrap();
+    assert_eq!(kept.bytes as usize, AVATAR_MAX_BYTES);
+    assert_eq!(
+        wide.api().avatar(logged_in(&wide)).await.unwrap().bytes,
+        largest
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_tool_sets_and_shows_the_profile_of_an_account_and_saves_an_avatar() {
+    let server = TestServer::start("Acme").await;
+    let address = server.address();
+    let (first, second) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let owner = Cli::in_directory(first.path());
+    let member = Cli::in_directory(second.path());
+    let image = png(32, 32, 10);
+    let image_file = first.path().join("avatar-source.png");
+    std::fs::write(&image_file, &image).unwrap();
+    let image_path = image_file.to_str().unwrap();
+
+    let preset = owner.ok(&["profile", "--name", "Ada", "--avatar", image_path]);
+    assert_eq!(field(&preset, "avatar"), "image/png");
+    owner.ok(&["add", &address]);
+    let claimed = owner.ok_with_input(&["claim"], &format!("{}\n", server.owner_code().unwrap()));
+    assert_eq!(field(&claimed, "state"), "logged in");
+    let account = owner.ok(&["account"]);
+    assert_eq!(field(&account, "name"), "Ada");
+    assert_eq!(field(&account, "owner"), "true");
+    let owner_id = field(&account, "account").to_owned();
+    let avatar = field(&account, "avatar");
+    assert!(avatar.starts_with("image/png  "), "{avatar}");
+    assert!(avatar.contains("32x32"), "{avatar}");
+    assert!(avatar.ends_with(&avatar_hash(&image)), "{avatar}");
+
+    let invited = owner.ok(&["invite"]);
+    member.ok(&["add", &address]);
+    member.ok_with_input(
+        &["join", "--name", "Grace"],
+        &format!("{}\n", field(&invited, "code")),
+    );
+    let seen = member.ok(&["account", &owner_id]);
+    assert_eq!(field(&seen, "name"), "Ada");
+    assert!(!seen.contains("owner: "), "{seen}");
+    let saved_file = second.path().join("saved.png");
+    let saved_path = saved_file.to_str().unwrap();
+    let saved = member.ok(&["account", &owner_id, "--save-avatar", saved_path]);
+    assert!(field(&saved, "saved").contains(&avatar_hash(&image)));
+    assert_eq!(std::fs::read(&saved_file).unwrap(), image);
+    let (success, _, stderr) = member.run(&["account", &owner_id, "--save-avatar", saved_path]);
+    assert!(!success && stderr.contains("saved.png"), "{stderr}");
+    assert_eq!(std::fs::read(&saved_file).unwrap(), image);
+    let (success, _, stderr) = member.run(&["account", &owner_id, "--name", "Mallory"]);
+    assert!(
+        !success && stderr.contains("only the account of this device"),
+        "{stderr}"
+    );
+
+    let changed = member.ok(&["account", "--name", "Grace H.", "--avatar", image_path]);
+    assert_eq!(field(&changed, "name"), "Grace H.");
+    assert!(field(&changed, "avatar").contains("32x32"));
+    let removed = member.ok(&["account", "--no-avatar"]);
+    assert_eq!(field(&removed, "avatar"), "none");
+    assert_eq!(field(&removed, "name"), "Grace H.");
+
+    let not_an_image = first.path().join("notes.txt");
+    std::fs::write(&not_an_image, b"not an image").unwrap();
+    let (success, _, stderr) = member.run(&["account", "--avatar", not_an_image.to_str().unwrap()]);
+    assert!(
+        !success && stderr.contains("not a PNG, JPEG or WebP image"),
+        "{stderr}"
+    );
+    assert_eq!(
+        field(&owner.ok(&["profile", "--no-avatar"]), "avatar"),
+        "none"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -778,6 +1051,7 @@ async fn an_owner_code_of_the_host_command_returns_the_owner_on_a_new_device() {
 
     let issued = support::code_in(&server.host_command(&["issue-owner-code"])).unwrap();
     let second = Device::new();
+    second.client.profile().set_avatar(&png(8, 8, 0)).unwrap();
     let returning = second.add(&server.address()).await;
     returning
         .dispatch(AccessAction::ClaimOwner {
@@ -788,7 +1062,11 @@ async fn an_owner_code_of_the_host_command_returns_the_owner_on_a_new_device() {
         .await
         .unwrap();
     assert_eq!(logged_in(&returning), account_id);
-    assert!(returning.api().own_account().await.unwrap().is_owner);
+    let account = returning.api().own_account().await.unwrap();
+    assert!(account.is_owner);
+    // The account existed before, so the avatar of the preset of this device is not sent.
+    assert_eq!(returning.profile_sync(), ProfileSync::NotNeeded);
+    assert_eq!(account.avatar, None);
 
     assert!(owner.api().own_account().await.unwrap().is_owner);
     let AccessState::LoggedIn { recoveries, .. } = owner.access().state else {
@@ -1164,15 +1442,40 @@ async fn every_command_of_the_tool_shows_a_recovery_before_its_own_output() {
         assert!(
             lines
                 .first()
-                .is_some_and(|line| line.starts_with("recovery: ")),
+                .is_some_and(|line| line.starts_with("recovery ")),
             "{arguments:?}\n{stdout}\n{stderr}"
         );
         assert!(lines[0].contains("a command on the host of the server"));
-        let notices = lines.iter().filter(|line| line.starts_with("recovery: "));
+        let notices = lines.iter().filter(|line| line.starts_with("recovery "));
         assert_eq!(notices.count(), 1, "{arguments:?}\n{stdout}");
+        let recovery_id = lines[0]
+            .strip_prefix("recovery ")
+            .and_then(|rest| rest.split(':').next())
+            .unwrap()
+            .to_owned();
 
+        // The tool shows the recovery at every command until it is acknowledged.
         let again = owner.ok(&["devices"]);
-        assert!(!again.contains("recovery: "), "{arguments:?}\n{again}");
+        assert!(
+            again.starts_with(&format!("recovery {recovery_id}: ")),
+            "{arguments:?}\n{again}"
+        );
+        let listed = owner.ok(&["recoveries"]);
+        assert_eq!(listed.lines().count(), 1, "{listed}");
+        assert!(listed.contains(&recovery_id), "{listed}");
+        let acknowledged = owner.ok(&["acknowledge-recovery", &recovery_id]);
+        assert_eq!(
+            acknowledged.lines().last(),
+            Some(format!("acknowledged recovery {recovery_id}").as_str())
+        );
+        let after = owner.ok(&["devices"]);
+        assert!(!after.contains("recovery "), "{arguments:?}\n{after}");
+        assert_eq!(
+            owner.ok(&["recoveries"]),
+            "no recovery waits for an acknowledgement\n"
+        );
+        let (success, _, stderr) = owner.run(&["acknowledge-recovery", &recovery_id]);
+        assert!(!success && stderr.contains("not_found"), "{stderr}");
     }
     let devices = owner.ok(&["devices"]);
     assert!(devices.contains("Phone"), "{devices}");
@@ -1245,8 +1548,12 @@ async fn a_new_device_is_linked_on_two_servers_in_one_flow() {
             .iter()
             .all(|server| server.progress == LinkProgress::Linked)
     );
-    for (old, new) in first.client.servers().iter().zip(second.client.servers()) {
-        assert_eq!(logged_in(&new), logged_in(old));
+    // The new device saved the servers side by side, so their order in its book is the
+    // order in which they answered.
+    assert_eq!(second.client.servers().len(), 2);
+    for old in first.client.servers() {
+        let new = second.client.server(old.id()).unwrap();
+        assert_eq!(logged_in(&new), logged_in(&old));
         assert!(new.api().own_account().await.unwrap().is_owner);
         let devices = new.api().devices().await.unwrap();
         assert_eq!(devices.len(), 2);

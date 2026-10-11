@@ -25,10 +25,7 @@ const SERVER_BINARY: &str = "JUNTO_SERVER_BIN";
 
 fn admin_url() -> String {
     std::env::var(DATABASE_URL).unwrap_or_else(|_| {
-        panic!(
-            "{DATABASE_URL} is not set. Run the tests through \
-             crates/client-core/tools/with-test-postgres.sh."
-        )
+        panic!("{DATABASE_URL} is not set. Run the tests through tools/with-test-postgres.sh.")
     })
 }
 
@@ -55,12 +52,16 @@ fn free_port() -> u16 {
         .port()
 }
 
-/// One server process on its own database.
+/// One server process on its own database. Its public origins are its own address and the
+/// address of one proxy, whose port is held open from the start of the server until
+/// [`FaultProxy::start`] takes it (ADR 0117).
 pub struct TestServer {
     child: Option<Child>,
     output: Arc<Mutex<String>>,
     name: String,
     port: u16,
+    proxy: Mutex<Option<StdListener>>,
+    proxy_port: u16,
     pub database_url: String,
 }
 
@@ -76,15 +77,32 @@ impl TestServer {
         drop(connection);
         let mut database_url = url::Url::parse(&admin_url()).unwrap();
         database_url.set_path(&database);
+        let proxy = StdListener::bind(("127.0.0.1", 0)).unwrap();
+        let proxy_port = proxy.local_addr().unwrap().port();
         let mut server = Self {
             child: None,
             output: Arc::default(),
             name: name.to_owned(),
             port: free_port(),
+            proxy: Mutex::new(Some(proxy)),
+            proxy_port,
             database_url: database_url.into(),
         };
         server.run().await;
+        server.wait_for_owner_code().await;
         server
+    }
+
+    /// A server on a new database prints an owner code before it listens. Another thread
+    /// copies the output, so the code can arrive here after the port answers.
+    async fn wait_for_owner_code(&self) {
+        for _ in 0..600 {
+            if self.owner_code().is_some() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the server printed no owner code");
     }
 
     async fn run(&mut self) {
@@ -97,6 +115,13 @@ impl TestServer {
             .env("JUNTO_DATABASE_URL", &self.database_url)
             .env("JUNTO_LISTEN_ADDRESS", format!("127.0.0.1:{}", self.port))
             .env("JUNTO_SERVER_NAME", &self.name)
+            .env(
+                "JUNTO_PUBLIC_ORIGINS",
+                format!(
+                    "http://127.0.0.1:{},http://127.0.0.1:{}",
+                    self.port, self.proxy_port
+                ),
+            )
             .env("JUNTO_LOG_FORMAT", "text")
             .env("JUNTO_LOG_LEVEL", "warn")
             .stdin(Stdio::null())
@@ -131,10 +156,6 @@ impl TestServer {
 
     pub fn address(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
-    }
-
-    pub fn port(&self) -> u16 {
-        self.port
     }
 
     /// The owner code that the running process printed. A server with an owner prints none.
@@ -302,8 +323,25 @@ impl Drop for FaultProxy {
 }
 
 impl FaultProxy {
-    pub async fn start(upstream_port: u16) -> Self {
+    /// The proxy at the address that the server lists as a public origin. A server has one.
+    pub async fn start(server: &TestServer) -> Self {
+        let listener = server
+            .proxy
+            .lock()
+            .unwrap()
+            .take()
+            .expect("the proxy of this server was started before");
+        listener.set_nonblocking(true).unwrap();
+        Self::serve_on(TcpListener::from_std(listener).unwrap(), server.port)
+    }
+
+    /// A proxy at an address that the server does not list as a public origin.
+    pub async fn start_unlisted(server: &TestServer) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        Self::serve_on(listener, server.port)
+    }
+
+    fn serve_on(listener: TcpListener, upstream_port: u16) -> Self {
         let port = listener.local_addr().unwrap().port();
         let state = Arc::<Mutex<ProxyState>>::default();
         let shared = state.clone();

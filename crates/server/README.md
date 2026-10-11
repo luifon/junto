@@ -99,7 +99,7 @@ The integration tests need Docker. The script starts a temporary PostgreSQL, run
 tools/with-test-postgres.sh cargo test --workspace
 ```
 
-Each test creates its own database. Without the script the integration tests fail with a message that names it. The tests of the event stream open real WebSocket connections to the server; some of them hold all deliveries to fix what waits in the log (ADR 0011). Every transaction of the server is serializable and retried (ADR 0009); the tests of races hold one request before its commit to fix the order. PostgreSQL ends a statement after 10 seconds and a wait for a lock after 5 seconds; the request then gets the error `timeout`. The tests that need no database run alone with:
+The container has the name `junto-dev-postgres`. Set `JUNTO_TEST_POSTGRES_CONTAINER` to another name to run the tests of two checkouts at the same time. Each test creates its own database. Without the script the integration tests fail with a message that names it. The tests of the event stream open real WebSocket connections to the server; some of them hold all deliveries to fix what waits in the log (ADR 0011). Every transaction of the server is serializable and retried (ADR 0009); the tests of races hold one request before its commit to fix the order. PostgreSQL ends a statement after 10 seconds and a wait for a lock after 5 seconds; the request then gets the error `timeout`. The tests that need no database run alone with:
 
 ```sh
 cargo test -p junto-authz -p junto-protocol

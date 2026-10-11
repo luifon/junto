@@ -11,7 +11,7 @@ use junto_protocol::secret::{InviteCode, LinkCode, OwnerCode};
 use super::*;
 use crate::address::ServerAddress;
 use crate::api::testing::{FakeServer, Fault};
-use crate::api::{ChallengeMismatch, RejectionCode, TransportErrorKind, TransportFuture};
+use crate::api::{ChallengeMismatch, TransportErrorKind, TransportFuture};
 use crate::api::{HttpRequest, TransportError};
 use crate::flow::add_server::{AddServerAction, AddServerActionKind, AddServerState};
 use crate::flow::approve_link::{
@@ -22,13 +22,15 @@ use crate::flow::link_all::{
     ApproveDevicesState, LinkDeviceAction, LinkDeviceActionKind, LinkDeviceFlow, LinkDeviceState,
     LinkProgress, LinkRequest, LinkRequestText,
 };
-use crate::profile_sync::UploadFuture;
+
+/// What waits at a suspended host: every request, or those whose path ends with a text.
+type Suspension = (Option<String>, watch::Sender<bool>);
 
 /// Several servers behind one transport, found by host name.
 #[derive(Default)]
 struct Network {
     hosts: Mutex<BTreeMap<String, Arc<FakeServer>>>,
-    suspended: Mutex<BTreeMap<String, watch::Sender<bool>>>,
+    suspended: Mutex<BTreeMap<String, Suspension>>,
 }
 
 impl Network {
@@ -49,15 +51,24 @@ impl Network {
 impl Network {
     /// Makes every request to a host wait until the host is resumed.
     fn suspend(&self, name: &str) {
-        self.suspended
-            .lock()
-            .unwrap()
-            .insert(format!("{name}.example.test"), watch::Sender::new(true));
+        self.suspended.lock().unwrap().insert(
+            format!("{name}.example.test"),
+            (None, watch::Sender::new(true)),
+        );
+    }
+
+    /// Makes the requests to a host whose path ends with `path_end` wait until the host is
+    /// resumed. Every other request of the host is answered.
+    fn suspend_path(&self, name: &str, path_end: &str) {
+        self.suspended.lock().unwrap().insert(
+            format!("{name}.example.test"),
+            (Some(path_end.to_owned()), watch::Sender::new(true)),
+        );
     }
 
     fn resume(&self, name: &str) {
         let host = format!("{name}.example.test");
-        if let Some(gate) = self.suspended.lock().unwrap().remove(&host) {
+        if let Some((_, gate)) = self.suspended.lock().unwrap().remove(&host) {
             gate.send_replace(false);
         }
     }
@@ -72,7 +83,12 @@ impl Transport for Network {
             .lock()
             .unwrap()
             .get(&host)
-            .map(watch::Sender::subscribe);
+            .filter(|(path_end, _)| {
+                path_end
+                    .as_deref()
+                    .is_none_or(|end| request.url.path().ends_with(end))
+            })
+            .map(|(_, gate)| gate.subscribe());
         match (server, gate) {
             (Some(server), Some(mut gate)) => Box::pin(async move {
                 let _ = gate.wait_for(|suspended| !suspended).await;
@@ -157,10 +173,7 @@ fn join(code: &str) -> AccessAction {
 }
 
 fn refused(code: ErrorCode) -> FlowError {
-    FlowError::Refused {
-        code: RejectionCode::Known(code),
-        category: crate::api::category(code),
-    }
+    FlowError::refused(code)
 }
 
 fn logged_in(handle: &ServerHandle) -> AccountId {
@@ -485,6 +498,44 @@ async fn waiting_for_a_decision_asks_again_until_the_request_is_approved() {
     assert!(matches!(state, AccessState::LoggedIn { .. }));
     assert_eq!(started.elapsed(), Duration::from_secs(40));
     assert_eq!(server.count("/join-requests/status"), 4);
+}
+
+#[tokio::test(start_paused = true)]
+async fn waiting_goes_on_after_an_unknown_error_code_of_a_failing_or_limiting_server() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle
+        .dispatch(AccessAction::RequestAccess {
+            name: "Grace".to_owned(),
+        })
+        .await
+        .unwrap();
+    server.refuse_next("/join-requests/status", 503, "made_up_later");
+    server.refuse_next("/join-requests/status", 429, "made_up_later");
+    server.decide_request(handle.device_public_key().unwrap(), true);
+    let state = handle
+        .wait_for_decision(Duration::from_secs(10))
+        .await
+        .unwrap();
+    assert!(matches!(state, AccessState::LoggedIn { .. }));
+    assert_eq!(server.count("/join-requests/status"), 3);
+
+    // An unknown code of another group ends the waiting with that error.
+    let other = crate::manager::tests::device(&network);
+    let handle = other.add("acme").await;
+    handle
+        .dispatch(AccessAction::RequestAccess {
+            name: "Linus".to_owned(),
+        })
+        .await
+        .unwrap();
+    server.refuse_next("/join-requests/status", 409, "made_up_later");
+    assert!(matches!(
+        handle.wait_for_decision(Duration::from_secs(10)).await,
+        Err(FlowError::UnknownCode { status: 409, .. })
+    ));
 }
 
 #[tokio::test(start_paused = true)]
@@ -1856,46 +1907,33 @@ async fn a_join_request_without_an_answer_waits_until_a_check_finds_it() {
     );
 }
 
-struct Uploads {
-    results: Mutex<Vec<Result<(), ApiError>>>,
-    seen: Mutex<Vec<ProfileUpdate>>,
-}
-
-impl ProfileUploader for Uploads {
-    fn upload(&self, api: ServerApi, update: ProfileUpdate) -> UploadFuture {
-        self.seen.lock().unwrap().push(update);
-        let result = self.results.lock().unwrap().remove(0);
-        Box::pin(async move {
-            api.own_account().await?;
-            result
-        })
-    }
-}
-
 const AVATAR: &[u8] = b"\x89PNG\r\n\x1a\n-image-";
 
 #[tokio::test(start_paused = true)]
-async fn the_preset_waits_for_the_server_operation_after_this_device_created_an_account() {
+async fn the_avatar_of_the_preset_is_sent_to_an_account_that_this_device_created() {
     let network = Arc::new(Network::default());
     let server = network.host("acme");
     server.add_invite("CODE", 2);
     let first = device(&network);
-    first.client.profile().set_name("Ada").unwrap();
+    first.client.profile().set_name("Preset name").unwrap();
     first.client.profile().set_avatar(AVATAR).unwrap();
     let owner = first.add("acme").await;
     assert_eq!(owner.profile_sync(), ProfileSync::NotNeeded);
     owner.dispatch(claim()).await.unwrap();
-    assert_eq!(owner.profile_sync(), ProfileSync::Pending { attempts: 0 });
-    assert!(matches!(
-        owner.apply_profile().await,
-        Err(ApiError::NotOffered { .. })
-    ));
-    assert_eq!(owner.profile_sync(), ProfileSync::Pending { attempts: 0 });
-    let restarted = first.reopened(&network);
-    let owner = restarted.servers().remove(0);
-    assert_eq!(owner.profile_sync(), ProfileSync::Pending { attempts: 0 });
-    owner.connect().await.unwrap();
-    assert_eq!(owner.profile_sync(), ProfileSync::Pending { attempts: 0 });
+    let account_id = logged_in(&owner);
+    assert_eq!(owner.profile_sync(), ProfileSync::Applied);
+    assert_eq!(server.avatar_of(account_id).as_deref(), Some(AVATAR));
+    // The name of the claim stays. The name of the preset is not sent after it.
+    assert_eq!(server.name_of(account_id), "Ada");
+    assert_eq!(server.count("/account"), 0);
+    assert_eq!(server.count("/account/avatar"), 1);
+    owner.dispatch(AccessAction::Check).await.unwrap();
+    assert_eq!(owner.apply_profile().await.unwrap(), ProfileSync::Applied);
+    assert_eq!(server.count("/account/avatar"), 1);
+    assert_eq!(
+        first.reopened(&network).servers().remove(0).profile_sync(),
+        ProfileSync::Applied
+    );
 
     let linked = device(&network);
     linked.client.profile().set_avatar(AVATAR).unwrap();
@@ -1918,72 +1956,421 @@ async fn the_preset_waits_for_the_server_operation_after_this_device_created_an_
     newcomer.dispatch(AccessAction::Check).await.unwrap();
     logged_in(&newcomer);
     assert_eq!(newcomer.profile_sync(), ProfileSync::NotNeeded);
+    assert_eq!(server.count("/account/avatar"), 1);
 
     let plain = device(&network);
     let without_avatar = plain.add("acme").await;
     without_avatar.dispatch(join("CODE")).await.unwrap();
     assert_eq!(without_avatar.profile_sync(), ProfileSync::NotNeeded);
+    assert_eq!(server.avatar_of(logged_in(&without_avatar)), None);
 }
 
 #[tokio::test(start_paused = true)]
-async fn the_preset_is_sent_after_a_join_and_a_failed_try_is_counted() {
+async fn a_failed_try_to_send_the_avatar_is_counted_and_repeated_at_the_next_login() {
     let network = Arc::new(Network::default());
     let server = network.host("acme");
     server.add_invite("CODE", 1);
-    let uploads = Arc::new(Uploads {
-        results: Mutex::new(vec![
-            Err(ApiError::OutcomeUnknown),
-            Err(ApiError::OutcomeUnknown),
-            Ok(()),
-        ]),
-        seen: Mutex::default(),
-    });
-    let directory = tempfile::tempdir().unwrap();
-    let open = || {
-        let mut options = ClientOptions::new(directory.path().join("junto"));
-        options.transport = Some(network.clone());
-        options.profile_uploader = Some(uploads.clone());
-        Client::open(options).unwrap()
-    };
-    let client = open();
-    client.profile().set_name("Grace").unwrap();
-    client.profile().set_avatar(AVATAR).unwrap();
-    let handle = add(&client, "acme").await;
+    let device = device(&network);
+    device.client.profile().set_avatar(AVATAR).unwrap();
+    let handle = device.add("acme").await;
 
+    server.fail("/account/avatar", [Fault::LoseRequest, Fault::LoseRequest]);
     handle.dispatch(join("CODE")).await.unwrap();
-    logged_in(&handle);
+    let account_id = logged_in(&handle);
     assert_eq!(handle.profile_sync(), ProfileSync::Pending { attempts: 1 });
-    {
-        let seen = uploads.seen.lock().unwrap();
-        assert_eq!(seen.len(), 1);
-        assert_eq!(seen[0].name, "Grace");
-        assert_eq!(
-            seen[0].avatar,
-            Some((crate::profile::AvatarFormat::Png, AVATAR.to_vec()))
-        );
-    }
+    assert_eq!(server.avatar_of(account_id), None);
 
-    let restarted = open();
+    let restarted = device.reopened(&network);
     let handle = restarted.servers().remove(0);
     assert_eq!(handle.profile_sync(), ProfileSync::Pending { attempts: 1 });
     assert!(matches!(
         handle.apply_profile().await,
         Err(ApiError::NotLoggedIn)
     ));
+    assert_eq!(handle.profile_sync(), ProfileSync::Pending { attempts: 1 });
     handle.connect().await.unwrap();
     assert_eq!(handle.profile_sync(), ProfileSync::Pending { attempts: 2 });
     assert_eq!(handle.apply_profile().await.unwrap(), ProfileSync::Applied);
-    assert_eq!(uploads.seen.lock().unwrap().len(), 3);
+    assert_eq!(server.avatar_of(account_id).as_deref(), Some(AVATAR));
+    assert_eq!(server.count("/account/avatar"), 3);
     assert_eq!(handle.apply_profile().await.unwrap(), ProfileSync::Applied);
-    assert_eq!(uploads.seen.lock().unwrap().len(), 3);
+    assert_eq!(server.count("/account/avatar"), 3);
     assert_eq!(
-        open().servers().remove(0).profile_sync(),
+        device.reopened(&network).servers().remove(0).profile_sync(),
         ProfileSync::Applied
     );
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_join_request_that_is_approved_marks_the_preset_as_waiting() {
+async fn an_avatar_that_the_server_refuses_is_not_sent_again() {
+    for code in [ErrorCode::ImageUnsupported, ErrorCode::ImageTooLarge] {
+        let network = Arc::new(Network::default());
+        let server = network.host("acme");
+        server.add_invite("CODE", 1);
+        server.refuse_avatars(Some(match code {
+            ErrorCode::ImageTooLarge => "image_too_large",
+            _ => "image_unsupported",
+        }));
+        let device = device(&network);
+        device.client.profile().set_avatar(AVATAR).unwrap();
+        let handle = device.add("acme").await;
+        handle.dispatch(join("CODE")).await.unwrap();
+        let account_id = logged_in(&handle);
+        assert_eq!(handle.profile_sync(), ProfileSync::Refused);
+        assert_eq!(server.count("/account/avatar"), 1);
+
+        // The server would accept the image now. The client does not try again.
+        server.refuse_avatars(None);
+        let restarted = device.reopened(&network);
+        let handle = restarted.servers().remove(0);
+        assert_eq!(handle.profile_sync(), ProfileSync::Refused);
+        handle.connect().await.unwrap();
+        assert_eq!(handle.apply_profile().await.unwrap(), ProfileSync::Refused);
+        assert_eq!(server.count("/account/avatar"), 1);
+        assert_eq!(server.avatar_of(account_id), None);
+
+        handle.dispatch(AccessAction::LogOut).await.unwrap();
+        server.ban(account_id);
+        let _ = handle.dispatch(AccessAction::LogIn).await;
+        handle.dispatch(AccessAction::ForgetAccount).await.unwrap();
+        assert_eq!(handle.profile_sync(), ProfileSync::NotNeeded);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_preset_whose_avatar_was_removed_or_replaced_by_other_bytes_sends_nothing() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    server.add_invite("CODE", 2);
+    server.fail("/account/avatar", [Fault::LoseRequest, Fault::LoseRequest]);
+
+    let removed = device(&network);
+    removed.client.profile().set_avatar(AVATAR).unwrap();
+    let handle = removed.add("acme").await;
+    handle.dispatch(join("CODE")).await.unwrap();
+    assert_eq!(handle.profile_sync(), ProfileSync::Pending { attempts: 1 });
+    removed.client.profile().clear_avatar().unwrap();
+    assert_eq!(
+        handle.apply_profile().await.unwrap(),
+        ProfileSync::NotNeeded
+    );
+
+    let replaced = device(&network);
+    replaced.client.profile().set_avatar(AVATAR).unwrap();
+    let handle = replaced.add("acme").await;
+    handle.dispatch(join("CODE")).await.unwrap();
+    assert_eq!(handle.profile_sync(), ProfileSync::Pending { attempts: 1 });
+    std::fs::write(
+        replaced.client.data_dir().root().join("avatar.png"),
+        b"<svg></svg>",
+    )
+    .unwrap();
+    let sent_before = server.count("/account/avatar");
+    assert!(matches!(
+        handle.apply_profile().await,
+        Err(ApiError::Avatar(crate::profile::InvalidAvatar::Unsupported))
+    ));
+    assert_eq!(handle.profile_sync(), ProfileSync::Refused);
+    assert_eq!(server.count("/account/avatar"), sent_before);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_state_of_the_preset_belongs_to_the_account_that_this_device_created() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    server.add_invite("CODE", 3);
+    let other = device(&network);
+    let existing = other.add("acme").await;
+    existing.dispatch(claim()).await.unwrap();
+    let existing_id = logged_in(&existing);
+    existing
+        .api()
+        .set_avatar(b"\xff\xd8\xff-own-".to_vec())
+        .await
+        .unwrap();
+
+    // The avatar still waits for the account that this device created. The device is
+    // removed and recovered into an account that existed before.
+    let device = device(&network);
+    device.client.profile().set_avatar(AVATAR).unwrap();
+    let handle = device.add("acme").await;
+    server.fail("/account/avatar", [Fault::LoseRequest]);
+    handle.dispatch(join("CODE")).await.unwrap();
+    let created = logged_in(&handle);
+    assert_eq!(handle.profile_sync(), ProfileSync::Pending { attempts: 1 });
+    server.reassign(handle.device_public_key().unwrap(), existing_id);
+    handle.dispatch(AccessAction::Check).await.unwrap();
+    assert_eq!(logged_in(&handle), existing_id);
+    assert_eq!(handle.profile_sync(), ProfileSync::NotNeeded);
+    assert_eq!(
+        server.avatar_of(existing_id).as_deref(),
+        Some(b"\xff\xd8\xff-own-".as_slice())
+    );
+    assert_eq!(server.avatar_of(created), None);
+    assert_eq!(
+        device.reopened(&network).servers().remove(0).profile_sync(),
+        ProfileSync::NotNeeded
+    );
+
+    // A state of an account that was removed does not stop the avatar of the next account
+    // that this device creates.
+    for refusal in [None, Some("image_unsupported")] {
+        let device = crate::manager::tests::device(&network);
+        device.client.profile().set_avatar(AVATAR).unwrap();
+        let handle = device.add("acme").await;
+        server.refuse_avatars(refusal);
+        handle.dispatch(join("CODE")).await.unwrap();
+        let first = logged_in(&handle);
+        let ended = match refusal {
+            None => ProfileSync::Applied,
+            Some(_) => ProfileSync::Refused,
+        };
+        assert_eq!(handle.profile_sync(), ended);
+        server.refuse_avatars(None);
+
+        server.remove(first);
+        let _ = handle.api().own_account().await;
+        assert_eq!(
+            handle.access().state,
+            AccessState::NoAccount {
+                notice: Some(Notice::Removed)
+            }
+        );
+        assert_eq!(handle.profile_sync(), ProfileSync::NotNeeded);
+        server.add_invite("AGAIN", 1);
+        handle.dispatch(join("AGAIN")).await.unwrap();
+        let second = logged_in(&handle);
+        assert_ne!(second, first);
+        assert_eq!(handle.profile_sync(), ProfileSync::Applied);
+        assert_eq!(server.avatar_of(second).as_deref(), Some(AVATAR));
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_owner_who_returns_with_a_lost_answer_keeps_the_avatar_of_the_account() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    let first = device(&network);
+    let owner = first.add("acme").await;
+    owner.dispatch(claim()).await.unwrap();
+    let owner_id = logged_in(&owner);
+    owner
+        .api()
+        .set_avatar(b"\xff\xd8\xff-own-".to_vec())
+        .await
+        .unwrap();
+
+    // The claim is done and its answer is lost. The login that explains it is a login to
+    // an account that existed before, which the recovery notice of this device shows.
+    server.issue_owner_code("OWNER-CODE");
+    let second = device(&network);
+    second.client.profile().set_avatar(AVATAR).unwrap();
+    let returning = second.add("acme").await;
+    server.fail("/owner/claim", [Fault::LoseAnswer]);
+    returning.dispatch(claim()).await.unwrap();
+    assert_eq!(logged_in(&returning), owner_id);
+    assert_eq!(returning.profile_sync(), ProfileSync::NotNeeded);
+    assert_eq!(
+        server.avatar_of(owner_id).as_deref(),
+        Some(b"\xff\xd8\xff-own-".as_slice())
+    );
+    let AccessState::LoggedIn { recoveries, .. } = returning.access().state else {
+        panic!("not logged in");
+    };
+    assert_eq!(recoveries.len(), 1);
+
+    // The same without a lost answer.
+    server.issue_owner_code("OWNER-CODE");
+    let third = device(&network);
+    third.client.profile().set_avatar(AVATAR).unwrap();
+    let again = third.add("acme").await;
+    again.dispatch(claim()).await.unwrap();
+    assert_eq!(logged_in(&again), owner_id);
+    assert_eq!(again.profile_sync(), ProfileSync::NotNeeded);
+    assert_eq!(server.count("/account/avatar"), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_link_request_with_a_lost_answer_does_not_mark_the_preset_as_waiting() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    let first = device(&network);
+    let owner = first.add("acme").await;
+    owner.dispatch(claim()).await.unwrap();
+    let owner_id = logged_in(&owner);
+
+    // The key of the new device already belongs to the account when the answer to its
+    // link request is lost, so the login that explains the lost answer succeeds.
+    let second = device(&network);
+    second.client.profile().set_avatar(AVATAR).unwrap();
+    let linked = second.add("acme").await;
+    server.reassign(linked.device_public_key().unwrap(), owner_id);
+    server.fail("/device-links", [Fault::LoseRequest; 3]);
+    linked
+        .dispatch(AccessAction::RequestLink {
+            device_name: String::new(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(logged_in(&linked), owner_id);
+    assert_eq!(linked.profile_sync(), ProfileSync::NotNeeded);
+    assert_eq!(server.avatar_of(owner_id), None);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_try_that_started_before_a_removal_does_not_send_the_avatar_after_a_return() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    let device = device(&network);
+    device.client.profile().set_avatar(AVATAR).unwrap();
+    let handle = device.add("acme").await;
+    server.fail("/account/avatar", [Fault::LoseRequest]);
+    handle.dispatch(claim()).await.unwrap();
+    let account_id = logged_in(&handle);
+    assert_eq!(handle.profile_sync(), ProfileSync::Pending { attempts: 1 });
+
+    // The request with the avatar is on its way while the device is removed from the
+    // account and returns to the same account with a new owner code.
+    network.suspend_path("acme", "/account/avatar");
+    let on_its_way = handle.apply_profile();
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+    }
+    server.remove_device(handle.device_public_key().unwrap());
+    let _ = handle.dispatch(AccessAction::Check).await;
+    assert_eq!(
+        handle.access().state,
+        AccessState::NoAccount {
+            notice: Some(Notice::Removed)
+        }
+    );
+    assert_eq!(handle.profile_sync(), ProfileSync::NotNeeded);
+    server.issue_owner_code("OWNER-CODE");
+    handle.dispatch(claim()).await.unwrap();
+    assert_eq!(logged_in(&handle), account_id);
+    assert_eq!(handle.profile_sync(), ProfileSync::NotNeeded);
+    server.store_avatar(account_id, b"\xff\xd8\xff-later-".to_vec());
+
+    network.resume("acme");
+    assert!(on_its_way.await.is_err());
+    assert_eq!(handle.profile_sync(), ProfileSync::NotNeeded);
+    assert_eq!(
+        server.avatar_of(account_id).as_deref(),
+        Some(b"\xff\xd8\xff-later-".as_slice())
+    );
+    assert_eq!(logged_in(&handle), account_id);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_approved_request_marks_the_preset_also_with_a_recovery_or_a_join_before_the_login() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    server.add_invite("CODE", 1);
+    let request = AccessAction::RequestAccess {
+        name: "Grace".to_owned(),
+    };
+
+    // The account of the approved request was recovered onto another device before the
+    // first login of this device, so the login tells a recovery.
+    let first = device(&network);
+    first.client.profile().set_avatar(AVATAR).unwrap();
+    let handle = first.add("acme").await;
+    handle.dispatch(request.clone()).await.unwrap();
+    let public_key = handle.device_public_key().unwrap();
+    server.decide_request(public_key, true);
+    let account_id = server.account_of(public_key).unwrap();
+    server.recover(account_id);
+    handle.dispatch(AccessAction::Check).await.unwrap();
+    assert_eq!(logged_in(&handle), account_id);
+    assert_eq!(handle.profile_sync(), ProfileSync::Applied);
+    assert_eq!(server.avatar_of(account_id).as_deref(), Some(AVATAR));
+
+    // The person joins with a code while the approval has not been collected. The server
+    // answers that the key has an account: the account of the approved request.
+    let second = device(&network);
+    second.client.profile().set_avatar(AVATAR).unwrap();
+    let handle = second.add("acme").await;
+    handle.dispatch(request).await.unwrap();
+    let public_key = handle.device_public_key().unwrap();
+    server.decide_request(public_key, true);
+    let account_id = server.account_of(public_key).unwrap();
+    handle.dispatch(join("CODE")).await.unwrap();
+    assert_eq!(logged_in(&handle), account_id);
+    assert_eq!(handle.profile_sync(), ProfileSync::Applied);
+    assert_eq!(server.avatar_of(account_id).as_deref(), Some(AVATAR));
+}
+
+#[tokio::test(start_paused = true)]
+async fn two_tries_to_send_the_avatar_at_the_same_time_send_it_once() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    server.add_invite("CODE", 1);
+    let device = device(&network);
+    device.client.profile().set_avatar(AVATAR).unwrap();
+    let handle = device.add("acme").await;
+    server.fail("/account/avatar", [Fault::LoseRequest]);
+    handle.dispatch(join("CODE")).await.unwrap();
+    assert_eq!(handle.profile_sync(), ProfileSync::Pending { attempts: 1 });
+    assert_eq!(server.count("/account/avatar"), 1);
+
+    network.suspend("acme");
+    let (first, second) = (handle.apply_profile(), handle.apply_profile());
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+    }
+    network.resume("acme");
+    assert_eq!(first.await.unwrap(), ProfileSync::Applied);
+    assert_eq!(second.await.unwrap(), ProfileSync::Applied);
+    assert_eq!(server.count("/account/avatar"), 2);
+    assert_eq!(handle.profile_sync(), ProfileSync::Applied);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stored_avatar_that_cannot_be_sent_ends_the_waiting_and_another_fault_is_counted() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    server.add_invite("CODE", 2);
+    server.fail("/account/avatar", [Fault::LoseRequest, Fault::LoseRequest]);
+
+    let large = device(&network);
+    large.client.profile().set_avatar(AVATAR).unwrap();
+    let handle = large.add("acme").await;
+    handle.dispatch(join("CODE")).await.unwrap();
+    assert_eq!(handle.profile_sync(), ProfileSync::Pending { attempts: 1 });
+    let file = large.client.data_dir().root().join("avatar.png");
+    let too_large = [AVATAR, vec![0; crate::profile::AVATAR_MAX_BYTES].as_slice()].concat();
+    std::fs::write(&file, too_large).unwrap();
+    assert!(matches!(
+        handle.apply_profile().await,
+        Err(ApiError::Storage(StorageError::TooLarge { .. }))
+    ));
+    assert_eq!(handle.profile_sync(), ProfileSync::Refused);
+
+    let missing = device(&network);
+    missing.client.profile().set_avatar(AVATAR).unwrap();
+    let handle = missing.add("acme").await;
+    handle.dispatch(join("CODE")).await.unwrap();
+    assert_eq!(handle.profile_sync(), ProfileSync::Pending { attempts: 1 });
+    let sent = server.count("/account/avatar");
+    #[cfg(unix)]
+    {
+        // A link in place of the file is not read (ADR 0711).
+        let file = missing.client.data_dir().root().join("avatar.png");
+        let elsewhere = missing.directory.path().join("elsewhere.png");
+        std::fs::write(&elsewhere, AVATAR).unwrap();
+        std::fs::remove_file(&file).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &file).unwrap();
+        assert!(matches!(
+            handle.apply_profile().await,
+            Err(ApiError::Storage(_))
+        ));
+        assert_eq!(handle.profile_sync(), ProfileSync::Pending { attempts: 2 });
+        assert_eq!(server.count("/account/avatar"), sent);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_avatar_is_sent_at_the_login_that_follows_an_approved_join_request() {
     let network = Arc::new(Network::default());
     let server = network.host("acme");
     let device = device(&network);
@@ -1996,10 +2383,16 @@ async fn a_join_request_that_is_approved_marks_the_preset_as_waiting() {
         .await
         .unwrap();
     assert_eq!(handle.profile_sync(), ProfileSync::NotNeeded);
+    assert_eq!(server.count("/account/avatar"), 0);
     server.decide_request(handle.device_public_key().unwrap(), true);
+    server.fail("/account/avatar", [Fault::LoseRequest]);
     handle.dispatch(AccessAction::Check).await.unwrap();
-    logged_in(&handle);
-    assert_eq!(handle.profile_sync(), ProfileSync::Pending { attempts: 0 });
+    let account_id = logged_in(&handle);
+    assert_eq!(handle.profile_sync(), ProfileSync::Pending { attempts: 1 });
+    handle.dispatch(AccessAction::Check).await.unwrap();
+    assert_eq!(handle.profile_sync(), ProfileSync::Applied);
+    assert_eq!(server.avatar_of(account_id).as_deref(), Some(AVATAR));
+    assert_eq!(server.name_of(account_id), "Grace");
 }
 
 async fn owner_of(network: &Arc<Network>, names: &[&str]) -> (Device, Vec<Arc<FakeServer>>) {
@@ -2726,7 +3119,8 @@ fn a_save_that_started_earlier_does_not_overwrite_a_later_one() {
     let earlier = {
         let server = handle.server.clone();
         std::thread::spawn(move || {
-            server.record_sync(ProfileSync::Applied);
+            let owner = lock(&server.state).preset_owner;
+            server.record_sync(owner, ProfileSync::Applied);
         })
     };
     has_entered.recv().unwrap();
@@ -2751,9 +3145,12 @@ fn a_save_that_started_earlier_does_not_overwrite_a_later_one() {
         .entry(handle.id())
         .unwrap()
         .unwrap();
+    // The later save wrote last. The state of the preset belonged to the account that the
+    // device has no longer.
     assert_eq!(stored.membership, Membership::Removed);
-    assert_eq!(stored.profile_sync, ProfileSync::Applied);
+    assert_eq!(stored.profile_sync, ProfileSync::NotNeeded);
     assert_eq!(handle.entry().membership, Membership::Removed);
+    assert_eq!(handle.profile_sync(), ProfileSync::NotNeeded);
 }
 
 /// A key store that looks, while a key is deleted, whether another holder can take the
@@ -2828,39 +3225,362 @@ async fn the_lock_is_held_from_the_removal_of_an_entry_to_the_deletion_of_its_ke
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_recovery_notice_is_kept_until_it_is_taken_also_across_later_logins() {
+async fn a_recovery_notice_stays_across_logins_until_this_device_acknowledges_it() {
     let network = Arc::new(Network::default());
     let server = network.host("acme");
     let device = device(&network);
     let handle = device.add("acme").await;
     handle.dispatch(claim()).await.unwrap();
     let account_id = logged_in(&handle);
-    assert!(handle.take_recoveries().is_empty());
-
-    server.recover(account_id);
-    handle.api().own_account().await.unwrap();
-    let AccessState::LoggedIn { recoveries, .. } = handle.access().state else {
-        panic!("not logged in");
+    let shown = |handle: &ServerHandle| match handle.access().state {
+        AccessState::LoggedIn { recoveries, .. } => recoveries
+            .into_iter()
+            .map(|notice| notice.id)
+            .collect::<Vec<_>>(),
+        other => panic!("not logged in: {other:?}"),
     };
-    assert_eq!(recoveries.len(), 1);
+    assert!(shown(&handle).is_empty());
 
+    let first = server.recover(account_id);
+    handle.api().own_account().await.unwrap();
+    assert_eq!(shown(&handle), [first]);
+
+    // Neither a renewal of the session, nor a logout and a login, nor a restart of the
+    // client removes the notice.
     server.end_sessions();
     handle.api().own_account().await.unwrap();
+    assert_eq!(shown(&handle), [first]);
     handle.dispatch(AccessAction::LogOut).await.unwrap();
     handle.dispatch(AccessAction::LogIn).await.unwrap();
-    let AccessState::LoggedIn {
-        recoveries: latest, ..
-    } = handle.access().state
-    else {
-        panic!("not logged in");
-    };
-    assert!(latest.is_empty());
+    assert_eq!(shown(&handle), [first]);
+    let restarted = device.reopened(&network);
+    let handle = restarted.servers().remove(0);
+    handle.connect().await.unwrap();
+    assert_eq!(shown(&handle), [first]);
+    assert_eq!(handle.api().recovery_notices().await.unwrap()[0].id, first);
 
-    server.recover(account_id);
+    let second = server.recover(account_id);
     handle.api().own_account().await.unwrap();
-    let taken = handle.take_recoveries();
-    assert_eq!(taken.len(), 2);
-    assert_eq!(taken[0].id, recoveries[0].id);
-    assert_ne!(taken[1].id, taken[0].id);
-    assert!(handle.take_recoveries().is_empty());
+    assert_eq!(shown(&handle), [first, second]);
+
+    let mut changes = restarted.changes();
+    handle.acknowledge_recovery(first).await.unwrap();
+    assert!(changes.changed().await);
+    assert_eq!(shown(&handle), [second]);
+    assert_eq!(
+        server.count(&format!("/account/recovery-notices/{first}")),
+        1
+    );
+    handle.dispatch(AccessAction::LogOut).await.unwrap();
+    handle.dispatch(AccessAction::LogIn).await.unwrap();
+    assert_eq!(shown(&handle), [second]);
+
+    // The server holds no notice of the first recovery any more.
+    let again = handle.acknowledge_recovery(first).await.unwrap_err();
+    assert_eq!(again.code(), Some(ErrorCode::NotFound));
+    assert_eq!(shown(&handle), [second]);
+
+    // An acknowledgement that the server did not receive leaves the notice.
+    server.fail(
+        &format!("/account/recovery-notices/{second}"),
+        [Fault::LoseRequest],
+    );
+    assert!(handle.acknowledge_recovery(second).await.is_err());
+    assert_eq!(shown(&handle), [second]);
+    handle.acknowledge_recovery(second).await.unwrap();
+    assert!(shown(&handle).is_empty());
+    assert!(handle.api().recovery_notices().await.unwrap().is_empty());
+
+    handle.dispatch(AccessAction::LogOut).await.unwrap();
+    assert!(matches!(
+        handle.acknowledge_recovery(second).await,
+        Err(ApiError::NotLoggedIn)
+    ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_login_that_was_answered_before_an_acknowledgement_does_not_show_the_recovery_again() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle.dispatch(claim()).await.unwrap();
+    let account_id = logged_in(&handle);
+    let shown = |handle: &ServerHandle| match handle.access().state {
+        AccessState::LoggedIn { recoveries, .. } => recoveries
+            .into_iter()
+            .map(|notice| notice.id)
+            .collect::<Vec<_>>(),
+        other => panic!("not logged in: {other:?}"),
+    };
+    let first = server.recover(account_id);
+    let second = server.recover(account_id);
+    handle.api().own_account().await.unwrap();
+    assert_eq!(shown(&handle), [first, second]);
+    handle.acknowledge_recovery(first).await.unwrap();
+    assert_eq!(shown(&handle), [second]);
+
+    // The answer of this login holds the notices as they were before the acknowledgement.
+    server.set_stale_logins(true);
+    server.end_sessions();
+    handle.api().own_account().await.unwrap();
+    assert_eq!(shown(&handle), [second]);
+    handle.dispatch(AccessAction::LogOut).await.unwrap();
+    handle.dispatch(AccessAction::LogIn).await.unwrap();
+    assert_eq!(shown(&handle), [second]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_acknowledgement_removes_the_notice_of_one_device_only() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    let first = device(&network);
+    let owner = first.add("acme").await;
+    owner.dispatch(claim()).await.unwrap();
+    let account_id = logged_in(&owner);
+
+    let second = device(&network);
+    let linked = second.add("acme").await;
+    linked
+        .dispatch(AccessAction::RequestLink {
+            device_name: String::new(),
+        })
+        .await
+        .unwrap();
+    let AccessState::WaitingForLink { code, .. } = linked.access().state else {
+        panic!("not waiting for a link");
+    };
+    let approval = owner.approve_link();
+    approval
+        .dispatch(ApproveLinkAction::LookUp { code })
+        .await
+        .unwrap();
+    approval.dispatch(ApproveLinkAction::Approve).await.unwrap();
+    linked.dispatch(AccessAction::Check).await.unwrap();
+    logged_in(&linked);
+
+    let recovery = server.recover(account_id);
+    owner.api().own_account().await.unwrap();
+    linked.api().own_account().await.unwrap();
+    owner.acknowledge_recovery(recovery).await.unwrap();
+    assert!(owner.api().recovery_notices().await.unwrap().is_empty());
+    let kept = linked.api().recovery_notices().await.unwrap();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].id, recovery);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_proof_names_the_address_of_the_book_and_a_server_with_other_origins_refuses_it() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    server.add_invite("CODE", 1);
+    server.set_public_origins(&["https://chat.example.test"]);
+    let device = device(&network);
+    let handle = device.add("acme").await;
+
+    for action in [
+        claim(),
+        join("CODE"),
+        AccessAction::RequestAccess {
+            name: "Ada".to_owned(),
+        },
+        AccessAction::RequestLink {
+            device_name: String::new(),
+        },
+    ] {
+        assert_eq!(
+            handle.dispatch(action).await,
+            Err(FlowError::OriginRejected)
+        );
+        assert_eq!(
+            handle.access().state,
+            AccessState::NoAccount { notice: None }
+        );
+        assert_eq!(handle.access().error, Some(FlowError::OriginRejected));
+    }
+    assert_eq!(handle.entry().membership, Membership::None);
+    assert_eq!(server.account_count(), 0);
+    // The server refused each proof before it read the challenge, and the client sent
+    // each proof once.
+    assert_eq!(server.challenge_count(), 4);
+    assert_eq!(server.count("/owner/claim"), 1);
+    assert!(matches!(handle.reach(), Reach::Reachable { .. }));
+
+    // The same server accepts the proof once the address of the book is one of its origins.
+    server.set_public_origins(&["https://chat.example.test", "https://acme.example.test"]);
+    handle.dispatch(claim()).await.unwrap();
+    let account_id = logged_in(&handle);
+
+    // A member whose server stops to list the address keeps its membership and its key.
+    handle.dispatch(AccessAction::LogOut).await.unwrap();
+    server.set_public_origins(&["https://chat.example.test"]);
+    assert_eq!(
+        handle.dispatch(AccessAction::LogIn).await,
+        Err(FlowError::OriginRejected)
+    );
+    assert_eq!(handle.access().state, AccessState::LoggedOut { account_id });
+    assert!(matches!(
+        handle.entry().membership,
+        Membership::Member { .. }
+    ));
+    assert!(device.client.data_dir().key_file(handle.id()).exists());
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_error_code_of_a_newer_server_fails_one_action_and_changes_no_state() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle.dispatch(claim()).await.unwrap();
+    let account_id = logged_in(&handle);
+
+    for status in [401, 403, 409, 422] {
+        server.refuse_next("/account", status, "made_up_later");
+        let error = handle.api().own_account().await.unwrap_err();
+        assert_eq!(error.code(), Some(ErrorCode::Unknown));
+        assert_eq!(error.rejection().unwrap().status, status);
+        // The code does not end the session, also with the status of an ended session,
+        // and the request is not sent again.
+        assert_eq!(logged_in(&handle), account_id);
+        assert_eq!(server.session_count(), 1);
+    }
+    assert_eq!(server.count("/account"), 4);
+    assert_eq!(server.count("/auth/sessions"), 0);
+
+    handle.dispatch(AccessAction::LogOut).await.unwrap();
+    server.refuse_next("/auth/challenges", 401, "made_up_later");
+    let unknown = handle.dispatch(AccessAction::LogIn).await.unwrap_err();
+    assert_eq!(
+        unknown,
+        FlowError::UnknownCode {
+            status: 401,
+            category: ErrorCategory::NotAllowed,
+            retry_after: None,
+            message: "a sentence".to_owned(),
+        }
+    );
+    assert_eq!(
+        unknown.to_string(),
+        "the server refused with an error code that this client does not know (status 401); \
+         the server says: \"a sentence\""
+    );
+    // An unknown code with the status of `unknown_device` is not read as a removal.
+    assert_eq!(handle.access().state, AccessState::LoggedOut { account_id });
+    assert!(matches!(
+        handle.entry().membership,
+        Membership::Member { .. }
+    ));
+    server.refuse_next("/auth/challenges", 503, "made_up_later");
+    assert!(matches!(
+        handle.dispatch(AccessAction::LogIn).await,
+        Err(FlowError::UnknownCode {
+            status: 503,
+            category: ErrorCategory::ServerFault,
+            ..
+        })
+    ));
+    assert_eq!(server.count("/auth/challenges"), 3);
+    handle.dispatch(AccessAction::LogIn).await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_name_and_the_avatar_of_an_account_are_changed_and_read_through_its_session() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    server.add_invite("CODE", 1);
+    let first = device(&network);
+    let owner = first.add("acme").await;
+    owner.dispatch(claim()).await.unwrap();
+    let owner_id = logged_in(&owner);
+    let second = device(&network);
+    let member = second.add("acme").await;
+    member.dispatch(join("CODE")).await.unwrap();
+
+    let renamed = owner.api().update_profile("  Ada L. ").await.unwrap();
+    assert_eq!(renamed.name, "Ada L.");
+    let sent = server.count("/account");
+    for name in ["", "a\nb", &"x".repeat(65)] {
+        assert!(matches!(
+            owner.api().update_profile(name).await,
+            Err(ApiError::Name(_))
+        ));
+    }
+    assert_eq!(server.count("/account"), sent);
+    assert_eq!(renamed.avatar, None);
+    let stored = owner.api().set_avatar(AVATAR.to_vec()).await.unwrap();
+    assert_eq!(stored.hash, crate::profile::avatar_hash(AVATAR));
+    assert_eq!(stored.bytes as usize, AVATAR.len());
+    assert_eq!(
+        owner.api().own_account().await.unwrap().avatar,
+        Some(stored.clone())
+    );
+
+    let profile = member.api().profile(owner_id).await.unwrap();
+    assert_eq!(profile.name, "Ada L.");
+    assert_eq!(profile.avatar, Some(stored.clone()));
+    let image = member.api().avatar(owner_id).await.unwrap();
+    assert_eq!(image.bytes, AVATAR);
+    assert_eq!(image.hash, stored.hash);
+    assert_eq!(image.media_type, junto_protocol::account::ImageType::Png);
+
+    // An image that no server stores is not sent.
+    let sent = server.count("/account/avatar");
+    for (image, invalid) in [
+        (
+            b"<svg></svg>".to_vec(),
+            crate::profile::InvalidAvatar::Unsupported,
+        ),
+        (
+            [AVATAR, vec![0; crate::profile::AVATAR_MAX_BYTES].as_slice()].concat(),
+            crate::profile::InvalidAvatar::TooLarge,
+        ),
+    ] {
+        assert!(matches!(
+            owner.api().set_avatar(image).await,
+            Err(ApiError::Avatar(found)) if found == invalid
+        ));
+    }
+    assert_eq!(server.count("/account/avatar"), sent);
+    server.refuse_avatars(Some("image_unsupported"));
+    let refused = owner.api().set_avatar(AVATAR.to_vec()).await.unwrap_err();
+    assert_eq!(refused.code(), Some(ErrorCode::ImageUnsupported));
+    assert_eq!(refused.category(), Some(ErrorCategory::ClientFault));
+
+    owner.api().remove_avatar().await.unwrap();
+    assert_eq!(member.api().profile(owner_id).await.unwrap().avatar, None);
+    let gone = member.api().avatar(owner_id).await.unwrap_err();
+    assert_eq!(gone.code(), Some(ErrorCode::NotFound));
+    let unknown = member
+        .api()
+        .profile(AccountId::generate())
+        .await
+        .unwrap_err();
+    assert_eq!(unknown.code(), Some(ErrorCode::NotFound));
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_avatar_that_is_no_image_or_too_large_is_not_given_to_the_interface() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle.dispatch(claim()).await.unwrap();
+    let account_id = logged_in(&handle);
+    handle.api().set_avatar(AVATAR.to_vec()).await.unwrap();
+
+    server.store_avatar(
+        account_id,
+        b"<html><script>alert(1)</script></html>".to_vec(),
+    );
+    assert!(matches!(
+        handle.api().avatar(account_id).await,
+        Err(ApiError::InvalidResponse { status: 200, reason }) if reason.contains("not an image")
+    ));
+    let large = [AVATAR, vec![0; crate::profile::AVATAR_MAX_BYTES].as_slice()].concat();
+    server.store_avatar(account_id, large);
+    assert!(matches!(
+        handle.api().avatar(account_id).await,
+        Err(ApiError::InvalidResponse { status: 200, reason }) if reason.contains("too large")
+    ));
 }

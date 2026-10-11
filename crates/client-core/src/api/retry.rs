@@ -116,7 +116,9 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
-    use crate::api::transport::{Method, TransportError, TransportErrorKind, TransportFuture};
+    use crate::api::transport::{
+        Method, RequestBody, TransportError, TransportErrorKind, TransportFuture,
+    };
 
     type Step = Result<HttpResponse, TransportError>;
 
@@ -142,8 +144,8 @@ mod tests {
                 .map(|request| {
                     request
                         .body
-                        .as_deref()
-                        .map(|body| body.to_vec())
+                        .as_ref()
+                        .map(|body| body.as_slice().to_vec())
                         .unwrap_or_default()
                 })
                 .collect()
@@ -168,7 +170,7 @@ mod tests {
             method: Method::Post,
             url: "https://chat.example.test/api/v1/join".parse().unwrap(),
             bearer: None,
-            body: Some(std::sync::Arc::new(
+            body: Some(RequestBody::json(
                 br#"{"proof":{"challenge_id":"c","signature":"s"}}"#.to_vec().into(),
             )),
         }
@@ -260,6 +262,10 @@ mod tests {
                 .unwrap_err();
             assert_eq!(script.bodies().len(), 1, "{code}");
             assert_eq!(error.rejection().unwrap().status, status);
+            assert_eq!(
+                error.code() == Some(ErrorCode::Unknown),
+                code == "made_up_later"
+            );
         }
     }
 

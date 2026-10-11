@@ -23,7 +23,7 @@ use super::error::ApiError;
 use super::proof::{self, Expected, ExpectedAccount};
 use super::retry::{self, Repeat, RetryPolicy};
 use super::session::{ServerApi, TokenAuthority};
-use super::transport::{HttpRequest, HttpResponse, Method, Transport};
+use super::transport::{HttpRequest, HttpResponse, Method, RequestBody, Transport};
 use crate::address::ServerAddress;
 use crate::keys::DeviceKey;
 use crate::secret::{SecretBytes, SecretToken};
@@ -54,11 +54,11 @@ pub(crate) fn read_json<R: DeserializeOwned>(response: &HttpResponse) -> Result<
 }
 
 /// Writes a request body into a buffer that is overwritten when it is dropped.
-pub(crate) fn encode<B: Serialize>(body: &B) -> Result<Arc<SecretBytes>, ApiError> {
+pub(crate) fn encode<B: Serialize>(body: &B) -> Result<RequestBody, ApiError> {
     let mut bytes = SecretBytes::with_capacity(512);
     serde_json::to_writer(&mut bytes, body)
         .map_err(|error| ApiError::Request(error.to_string()))?;
-    Ok(Arc::new(bytes))
+    Ok(RequestBody::json(bytes))
 }
 
 /// A session as the server created it. The token goes from the response into a buffer of
@@ -70,7 +70,7 @@ pub struct Session {
     pub expires_at: OffsetDateTime,
     pub account_id: AccountId,
     pub device_id: DeviceId,
-    /// The recoveries of the account since the previous login of this device.
+    /// The recoveries of the account that this device has not acknowledged (ADR 0118).
     pub recoveries: Vec<RecoveryNotice>,
 }
 
@@ -125,7 +125,7 @@ impl ApiClient {
         path: &str,
         query: &[(&'static str, String)],
         bearer: Option<&SecretToken>,
-        body: Option<Arc<SecretBytes>>,
+        body: Option<RequestBody>,
         repeat: Repeat,
     ) -> Result<HttpResponse, ApiError> {
         let mut url = self
@@ -145,7 +145,9 @@ impl ApiClient {
     }
 
     /// Gets a challenge for `operation`, compares it with what was asked for, signs it and
-    /// sends the request that `build` makes from the proof. The request is built once.
+    /// sends the request that `build` makes from the proof. The request is built once. The
+    /// proof names the origin of the address of this client, which is where both requests
+    /// go (ADR 0117).
     async fn prove<B, R>(
         &self,
         key: &DeviceKey,
@@ -176,7 +178,8 @@ impl ApiClient {
         let challenge: Challenge = read_json(&response)?;
         let verified = proof::verify(
             challenge,
-            &Expected {
+            Expected {
+                origin: self.address.origin().clone(),
                 server_id: self.server_id,
                 operation,
                 public_key,

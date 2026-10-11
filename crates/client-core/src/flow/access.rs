@@ -54,7 +54,9 @@ pub enum AccessState {
         account_id: AccountId,
         device_id: DeviceId,
         session_expires_at: OffsetDateTime,
-        /// The recoveries of the account since the login before (ADR 0112).
+        /// The recoveries of the account that this device has not acknowledged, oldest
+        /// first, as the last login told them (ADR 0118). The interface shows each one
+        /// and then acknowledges it.
         recoveries: Vec<RecoveryNotice>,
         /// Present when the key belonged to another account at the last contact.
         previous_account: Option<AccountId>,
@@ -221,7 +223,8 @@ pub(crate) struct Settled {
     pub(crate) membership: Membership,
 }
 
-fn account_of(membership: &Membership) -> Option<AccountId> {
+/// The account that a membership names.
+pub(crate) fn account_of(membership: &Membership) -> Option<AccountId> {
     match membership {
         Membership::Member { account_id, .. } => Some(*account_id),
         Membership::Banned { account_id } => *account_id,

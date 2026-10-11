@@ -11,7 +11,7 @@ The server builds its SQL statements at run time (ADR 0008) and relies on constr
 ## Decision
 
 - The integration tests of the server start the real router on a local port and call it over HTTP.
-- They run against a real PostgreSQL. The script `tools/with-test-postgres.sh` starts one in Docker with the name `junto-dev-postgres` on a free local port, passes its address in `JUNTO_TEST_DATABASE_URL`, runs a command, and removes the container.
+- They run against a real PostgreSQL. The script `tools/with-test-postgres.sh` starts one in Docker on a free local port, passes its address in `JUNTO_TEST_DATABASE_URL`, runs a command, and removes the container with its volume. The container has the name `junto-dev-postgres`, or the name in `JUNTO_TEST_POSTGRES_CONTAINER`, so that two checkouts on one machine can run their tests at the same time. It is the one script for a temporary PostgreSQL; the tests of the client use it too.
 - Each test creates its own database and applies the migrations to it, so tests run in parallel and do not share state.
 - A test without `JUNTO_TEST_DATABASE_URL` fails with a message that names the script. It is not skipped.
 - A test replaces the clock (ADR 0008) and moves the time forward to test expiry.
