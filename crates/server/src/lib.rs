@@ -18,9 +18,12 @@ pub mod media;
 pub mod owner;
 pub mod proof;
 pub mod rate_limit;
+pub mod recorder;
+pub mod recordings;
 pub mod routes;
 pub mod secrets;
 pub mod state;
+pub mod storage;
 pub mod store;
 pub mod validate;
 
@@ -55,33 +58,48 @@ pub struct Prepared {
 
 /// Brings the database to the current schema, performs the first start when it has not
 /// happened, and builds the state of the application. The media server is the LiveKit
-/// server of the configuration, when one is configured.
+/// server of the configuration, when one is configured, and the recorder is LiveKit Egress
+/// behind it, when the directory of the recordings is configured.
 pub async fn prepare(
     database: Database,
     config: Config,
     clock: Arc<dyn Clock>,
 ) -> Result<Prepared, StartError> {
-    let media = match &config.media {
+    let api = match &config.media {
         Some(settings) => {
-            let client = media::livekit::LiveKit::new(settings.clone(), clock.clone())
-                .map_err(|error| StartError::MediaServer(error.to_string()))?;
-            Some(Arc::new(client) as Arc<dyn media::MediaServer>)
+            let api = media::twirp::Twirp::new(settings.clone(), clock.clone())
+                .map_err(StartError::MediaServer)?;
+            Some(Arc::new(api))
         }
         None => None,
     };
-    prepare_with(database, config, clock, media).await
+    let media = api.clone().map(|api| {
+        let client: Arc<dyn media::MediaServer> = Arc::new(media::livekit::LiveKit::new(api));
+        client
+    });
+    let recorder = api.zip(config.recorder.clone()).map(|(api, settings)| {
+        let egress = recorder::livekit::Egress::new(api, &config.limits.recordings);
+        recordings::Backend {
+            recorder: Arc::new(egress),
+            disk: Arc::new(storage::Directory::new(settings.directory.clone())),
+            settings,
+        }
+    });
+    prepare_with(database, config, clock, media, recorder).await
 }
 
-/// Like [`prepare`], with the media server that the caller gives.
+/// Like [`prepare`], with the media server and the recorder that the caller gives.
 pub async fn prepare_with(
     database: Database,
     config: Config,
     clock: Arc<dyn Clock>,
     media: Option<Arc<dyn media::MediaServer>>,
+    recorder: Option<recordings::Backend>,
 ) -> Result<Prepared, StartError> {
     let started = bootstrap::start(&database, &config.server_name, clock.now()).await?;
+    let server_id = started.server_id;
     Ok(Prepared {
-        state: AppState::new(database, config, clock, started.server_id, media),
+        state: AppState::new(database, config, clock, server_id, media, recorder),
         owner_code: started.owner_code,
     })
 }
@@ -96,9 +114,9 @@ pub fn events_document() -> Result<String, serde_json::Error> {
 /// The tasks that run beside the requests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tasks {
-    /// The admission check of calls and the publication of speaking marks, at their
-    /// intervals (ADR 0509, ADR 0513). Tests that fix the order of things switch them off
-    /// and run each check themselves.
+    /// The admission check of calls, the publication of speaking marks and the controller
+    /// of recordings, at their intervals (ADR 0509, ADR 0513, ADR 0604). Tests that fix the
+    /// order of things switch them off and run each check themselves.
     pub calls: bool,
 }
 
@@ -123,6 +141,7 @@ pub async fn serve_with(
         (
             tokio::spawn(calls::admission::run(state.clone())),
             tokio::spawn(calls::speaking::run(state.clone())),
+            tokio::spawn(recordings::control::run(state.clone())),
         )
     });
     let stopping = state.clone();
@@ -137,9 +156,10 @@ pub async fn serve_with(
     let limit = state.config.limits.stream.stop_timeout.unsigned_abs();
     state.streams.stop(limit).await;
     watcher.abort();
-    if let Some((admission, speaking)) = calls {
+    if let Some((admission, speaking, recording)) = calls {
         admission.abort();
         speaking.abort();
+        recording.abort();
     }
     served
 }

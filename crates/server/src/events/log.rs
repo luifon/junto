@@ -86,6 +86,26 @@ pub async fn tell_inside(
     record(connection, now, &audience, event).await
 }
 
+/// Records an event about a recording: for the accounts that may see who is inside while
+/// the call of the recording runs, and for the accounts that may see the voice channel when
+/// the call has ended (ADR 0604).
+pub async fn tell_of_recording(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    call_runs: bool,
+    event: &Event,
+) -> ApiResult<()> {
+    let (Event::RecordingStarted { recording } | Event::RecordingUpdated { recording }) = event
+    else {
+        return Err(ApiError::internal(&format_args!(
+            "the event {} is not about a recording",
+            event.name()
+        )));
+    };
+    let audience = crate::events::audience::of_recording(recording, call_runs);
+    record(connection, now, &audience, event).await
+}
+
 /// Whose permissions a change can have altered.
 #[derive(Debug, Clone, Copy)]
 pub enum Affected {

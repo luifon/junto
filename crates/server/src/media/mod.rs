@@ -5,6 +5,7 @@
 pub mod fake;
 pub mod livekit;
 pub mod token;
+pub mod twirp;
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -117,11 +118,14 @@ pub enum TrackKind {
     Data,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Track {
     pub kind: TrackKind,
     pub source: TrackSource,
     pub muted: bool,
+    /// The identifier of the track on the media server. A track that is published again has
+    /// a new one (ADR 0601).
+    pub id: String,
 }
 
 /// The sources that a participant may publish. The list is always explicit, so a track of an

@@ -1,6 +1,6 @@
 # junto-server
 
-The Junto server: accounts, device keys, profiles, invites, roles, channels, the audit log, the event stream, the server side of calls and the public API. The design is in [`docs/adr/`](../../docs/adr/README.md); ADR 0008 describes this crate.
+The Junto server: accounts, device keys, profiles, invites, roles, channels, the audit log, the event stream, the server side of calls and of their recordings, and the public API. The design is in [`docs/adr/`](../../docs/adr/README.md); ADR 0008 describes this crate.
 
 ## Run it locally
 
@@ -61,6 +61,21 @@ The server reaches the API of LiveKit (`JUNTO_LIVEKIT_API_URL`) without TLS and 
 
 LiveKit sends its notifications to `POST /internal/media/notifications`. Configure that address as the webhook of LiveKit, with the same API key. The route accepts only a notification that LiveKit signed; it is not part of the public API, and the entry host does not need to forward it.
 
+## Recordings
+
+A person in the call of a voice channel who holds `record_calls` records it (ADR 0601, ADR 0604). The recorder is LiveKit Egress; the server reaches it through the API of LiveKit.
+
+1. `PUT /api/v1/channels/{channel_id}/call/recording` stores the recording in the state `starting`, with a reservation of disk space, and answers with it. `DELETE` on the same path asks for its stop.
+2. The controller of recordings compares each recording with the participants of its room once per second, and at once after a request and after a notification of LiveKit. It starts one job for the composite and one for each audio track, a new one for each track that appears later, and stops every job when the recording ends. A job that is older than 10 seconds and has no participant in the room is lost: its segment fails, and a new job starts while the call runs.
+3. The events `recording_started` and `recording_updated` carry the recording without its segments. While the call of the recording runs they go to the accounts that may see who is inside; when the call has ended, to the accounts that see the voice channel. `GET /api/v1/recordings/{recording_id}` returns the segments, and `GET /api/v1/workspaces/{workspace_id}/recordings` lists the recordings.
+4. A recording ends when a person stops it, when its call ends, when the free disk space reaches the reserve, and at 2000 segments.
+
+After its jobs have ended a recording has the state `processing`. The check of the files, the join of the composite and the transcript are not built yet, so no recording becomes `ready`.
+
+The storage guard (ADR 0605) keeps 5 GiB free, reserves 8 GiB for each recording and records 2 calls at one time. A start without that space gets `storage_low`, and a third recording gets `recordings_full`. The health route states `storage_low`.
+
+The recorder writes below `JUNTO_RECORDINGS_DIR`: the file of an audio track to `<recording>/<segment>.ogg` and the composite as pieces with a playlist to `<recording>/<segment>/`. The recorder loads the layout page from `JUNTO_RECORDER_LAYOUT_URL`; the server does not serve that page yet.
+
 ## Host commands
 
 Three commands change the database directly and are not part of the API (ADR 0114, ADR 0010). Each reads `JUNTO_DATABASE_URL` and can run while the server runs.
@@ -88,8 +103,11 @@ Run `new-event-epoch` after the restore of a backup, before the server accepts c
 | `JUNTO_LIVEKIT_URL` | none | Address of LiveKit for clients, with `wss://` or `ws://` |
 | `JUNTO_LIVEKIT_API_KEY` | none | API key of LiveKit |
 | `JUNTO_LIVEKIT_API_SECRET` | none | Secret of that key; never printed or logged |
+| `JUNTO_RECORDINGS_DIR` | none | Directory of the recordings as the server sees it, an absolute path (ADR 0604) |
+| `JUNTO_RECORDER_DIR` | the value of `JUNTO_RECORDINGS_DIR` | The same directory as the recorder sees it |
+| `JUNTO_RECORDER_LAYOUT_URL` | none | Address at which the recorder loads the layout page, with `http://` or `https://` |
 
-The four LiveKit settings are given together or not at all.
+The four LiveKit settings are given together or not at all. The directory of the recordings and the address of the layout page are given together and need the LiveKit settings; without them a request to record gets `recorder_unavailable`.
 
 ## Tests
 
@@ -115,6 +133,8 @@ The tests of calls have two tiers (ADR 0902). The first tier is part of the run 
 tools/with-test-postgres.sh tools/with-test-livekit.sh tools/serial.sh \
     cargo test -p junto-server --test api live:: -- --ignored
 ```
+
+The tests of recordings use a recorder in memory that behaves as step 0 measured LiveKit Egress, and each test runs the passes of the controller itself. No test runs against a real recorder yet.
 
 `tools/with-test-livekit.sh` starts LiveKit 1.13.9 in development mode as the container `junto-dev-livekit` on the local ports 17880 to 17882 and removes it afterwards. LiveKit sends its notifications to `127.0.0.1:17890` on the machine of the tests, where one test listens; on Linux, set `JUNTO_TEST_WEBHOOK_ADDRESS` to an address of the machine that the container reaches.
 

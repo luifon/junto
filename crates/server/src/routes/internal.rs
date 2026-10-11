@@ -16,8 +16,9 @@ pub const MEDIA_NOTIFICATIONS: &str = "/internal/media/notifications";
 
 /// Takes a notification of the media server. A notification whose signature the media server
 /// made for exactly this body makes the admission check look at the room that it names at
-/// once; it changes nothing by itself, and a lost one is made up for by the full check
-/// (ADR 0509).
+/// once, and the controller of recordings look at the recordings; it changes nothing by
+/// itself, and a lost one is made up for by the full check and by the next pass of the
+/// controller (ADR 0509, ADR 0604).
 ///
 /// The same notification is processed once while its signature is valid, and the number of
 /// notifications that start a check in a time is limited: a holder of one valid notification
@@ -58,5 +59,6 @@ pub async fn media_notification(
         Some(room) => app.calls.mark(room),
         None => app.calls.mark_everything(),
     }
+    app.recordings.poke();
     Ok(StatusCode::NO_CONTENT)
 }

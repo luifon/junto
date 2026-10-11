@@ -9,6 +9,7 @@ use junto_protocol::account::AccountStatus;
 use junto_protocol::call::CallPlace;
 use junto_protocol::events::{Event, Level};
 use junto_protocol::ids::{AccountId, ChannelId, ServerRoleId, WorkspaceId, WorkspaceRoleId};
+use junto_protocol::recording::Recording;
 use serde::{Deserialize, Serialize};
 
 use crate::access::{role_key, stored_override};
@@ -102,7 +103,9 @@ impl Class {
             | Event::CallMeetingEnded { .. }
             | Event::CallSpeaking { .. }
             | Event::CallEntryRequested { .. }
-            | Event::CallEntryResolved { .. } => Self::General,
+            | Event::CallEntryResolved { .. }
+            | Event::RecordingStarted { .. }
+            | Event::RecordingUpdated { .. } => Self::General,
         }
     }
 }
@@ -250,6 +253,18 @@ fn of_call(place: &CallPlace, reach: Option<CallReach>) -> Audience {
             high_account_id,
         },
     }
+}
+
+/// The audience of an event about a recording. A recording tells who is in its call, so
+/// while the call runs it reaches the accounts that may see who is inside. When the call has
+/// ended, it reaches the accounts that may see the voice channel. This is the rule of the
+/// routes that read recordings (ADR 0604).
+pub fn of_recording(recording: &Recording, call_runs: bool) -> Audience {
+    let place = CallPlace::Channel {
+        workspace_id: recording.workspace_id,
+        channel_id: recording.channel_id,
+    };
+    of_call(&place, call_runs.then_some(CallReach::Occupancy))
 }
 
 impl Audience {
@@ -422,7 +437,9 @@ impl Audience {
             | Event::OwnCallChanged { .. }
             | Event::CallAccessEnded {}
             | Event::DirectMuteSet { .. }
-            | Event::DirectMuteRemoved { .. } => None,
+            | Event::DirectMuteRemoved { .. }
+            | Event::RecordingStarted { .. }
+            | Event::RecordingUpdated { .. } => None,
             Event::CallStarted { place, .. } | Event::CallEnded { place, .. } => {
                 Some(of_call(place, None))
             }
@@ -528,6 +545,11 @@ impl Audience {
                     ..
                 },
             ) => *self == of_call(place, Some(CallReach::Inside)),
+            (Event::RecordingStarted { recording } | Event::RecordingUpdated { recording }, _) => {
+                [true, false]
+                    .into_iter()
+                    .any(|call_runs| *self == of_recording(recording, call_runs))
+            }
             (Event::PermissionsChanged { workspace_id: None }, Self::ServerRoleHolders { .. }) => {
                 true
             }

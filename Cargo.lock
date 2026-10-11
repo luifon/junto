@@ -895,6 +895,7 @@ dependencies = [
  "junto-authz",
  "junto-protocol",
  "reqwest",
+ "rustix",
  "serde",
  "serde_json",
  "sha2 0.11.0",

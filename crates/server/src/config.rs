@@ -1,4 +1,5 @@
 use std::net::{IpAddr, SocketAddr};
+use std::path::PathBuf;
 
 use junto_protocol::origin::{Origin, Scheme};
 use time::Duration;
@@ -122,6 +123,66 @@ pub struct MediaSettings {
     pub request_timeout: Duration,
 }
 
+/// Where the recorder writes and which layout page it loads (ADR 0604).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecorderSettings {
+    /// The directory of the recordings as the server sees it. The storage guard reads its
+    /// free space.
+    pub directory: PathBuf,
+    /// The same directory as the recorder sees it.
+    pub recorder_directory: String,
+    /// The address at which the recorder loads the layout page (ADR 0602).
+    pub layout_url: String,
+}
+
+/// The numbers of recordings and of the storage guard (ADR 0604, ADR 0605).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordingLimits {
+    /// The interval at which the controller compares each recording with its room.
+    pub check_interval: Duration,
+    /// The time limit of a request that starts a job. Without a recorder the media server
+    /// answers after 22 seconds (ADR 0601).
+    pub start_timeout: Duration,
+    /// The time limit of every other request to the recorder.
+    pub request_timeout: Duration,
+    /// The time in which one pass of the controller collects the reports of jobs. A report
+    /// that is not there by then counts as not given.
+    pub report_time_limit: Duration,
+    /// A job that is older than this and has no participant in the room is lost.
+    pub lost_after: Duration,
+    /// The time that a job has to report its end after its stop was delivered.
+    pub ending_grace: Duration,
+    /// The requests to start the job of one track, or the composite, that fail in a row
+    /// before the server stops asking.
+    pub start_attempts: u32,
+    pub most_segments: u32,
+    /// The recordings that are starting or run at one time.
+    pub most_concurrent: u32,
+    /// The free disk space that the server keeps.
+    pub reserve_bytes: u64,
+    /// The disk space that one recording reserves when it starts.
+    pub reservation_bytes: u64,
+}
+
+impl Default for RecordingLimits {
+    fn default() -> Self {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        Self {
+            check_interval: Duration::seconds(1),
+            start_timeout: Duration::seconds(25),
+            request_timeout: Duration::seconds(5),
+            report_time_limit: Duration::seconds(5),
+            lost_after: Duration::seconds(10),
+            ending_grace: Duration::seconds(20),
+            start_attempts: 3,
+            most_segments: 2000,
+            most_concurrent: 2,
+            reserve_bytes: 5 * GIB,
+            reservation_bytes: 8 * GIB,
+        }
+    }
+}
+
 /// The settings that an operator gives through environment variables.
 #[derive(Clone)]
 pub struct Config {
@@ -134,6 +195,8 @@ pub struct Config {
     pub log_level: tracing::Level,
     /// Absent: the server has no media server and no call can be joined.
     pub media: Option<MediaSettings>,
+    /// Absent: the server has no recorder and no recording starts.
+    pub recorder: Option<RecorderSettings>,
     pub limits: Limits,
 }
 
@@ -277,6 +340,7 @@ pub struct Limits {
     pub avatar_bytes: usize,
     pub avatar_longest_side: u32,
     pub calls: CallLimits,
+    pub recordings: RecordingLimits,
     pub stream: StreamLimits,
 }
 
@@ -410,6 +474,7 @@ impl Default for Limits {
             avatar_bytes: 256 * 1024,
             avatar_longest_side: 1024,
             calls: CallLimits::default(),
+            recordings: RecordingLimits::default(),
             stream: StreamLimits::default(),
         }
     }
@@ -427,6 +492,9 @@ impl Config {
     pub const LIVEKIT_URL: &'static str = "JUNTO_LIVEKIT_URL";
     pub const LIVEKIT_API_KEY: &'static str = "JUNTO_LIVEKIT_API_KEY";
     pub const LIVEKIT_API_SECRET: &'static str = "JUNTO_LIVEKIT_API_SECRET";
+    pub const RECORDINGS_DIR: &'static str = "JUNTO_RECORDINGS_DIR";
+    pub const RECORDER_DIR: &'static str = "JUNTO_RECORDER_DIR";
+    pub const RECORDER_LAYOUT_URL: &'static str = "JUNTO_RECORDER_LAYOUT_URL";
 
     pub fn from_env() -> Result<Self, ConfigError> {
         Self::from_lookup(|name| std::env::var(name).ok())
@@ -555,6 +623,66 @@ impl Config {
             }
         };
 
+        let trimmed = |name| value(name).map(|text| text.trim().to_owned());
+        let recorder = match (
+            trimmed(Self::RECORDINGS_DIR),
+            trimmed(Self::RECORDER_LAYOUT_URL),
+        ) {
+            (None, None) => {
+                if value(Self::RECORDER_DIR).is_some() {
+                    return Err(invalid(
+                        Self::RECORDER_DIR,
+                        format!("it is given together with {}", Self::RECORDINGS_DIR),
+                    ));
+                }
+                None
+            }
+            (Some(directory), Some(layout_url)) => {
+                if media.is_none() {
+                    return Err(invalid(
+                        Self::RECORDINGS_DIR,
+                        "the recorder is reached through the media server, whose four settings \
+                         are missing"
+                            .to_owned(),
+                    ));
+                }
+                let recorder_directory =
+                    trimmed(Self::RECORDER_DIR).unwrap_or_else(|| directory.clone());
+                for (name, path) in [
+                    (Self::RECORDINGS_DIR, &directory),
+                    (Self::RECORDER_DIR, &recorder_directory),
+                ] {
+                    if !path.starts_with('/') {
+                        return Err(invalid(name, "the path is absolute".to_owned()));
+                    }
+                }
+                if !(layout_url.starts_with("http://") || layout_url.starts_with("https://")) {
+                    return Err(invalid(
+                        Self::RECORDER_LAYOUT_URL,
+                        "the address starts with http:// or https://".to_owned(),
+                    ));
+                }
+                Some(RecorderSettings {
+                    directory: PathBuf::from(directory),
+                    recorder_directory: recorder_directory.trim_end_matches('/').to_owned(),
+                    layout_url,
+                })
+            }
+            (directory, _) => {
+                let missing = if directory.is_none() {
+                    Self::RECORDINGS_DIR
+                } else {
+                    Self::RECORDER_LAYOUT_URL
+                };
+                return Err(invalid(
+                    missing,
+                    "the directory of the recordings and the address of the layout page are \
+                     given together"
+                        .to_owned(),
+                ));
+            }
+        };
+
         Ok(Self {
             database_url,
             listen_address,
@@ -564,6 +692,7 @@ impl Config {
             log_format,
             log_level,
             media,
+            recorder,
             limits,
         })
     }
@@ -581,6 +710,7 @@ impl std::fmt::Debug for Config {
             .field("log_format", &self.log_format)
             .field("log_level", &self.log_level)
             .field("media", &self.media)
+            .field("recorder", &self.recorder)
             .field("limits", &self.limits)
             .finish()
     }
@@ -773,6 +903,70 @@ mod tests {
                 "{pairs:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_recorder_needs_its_directory_its_layout_page_and_the_media_server() {
+        const BASE: [(&str, &str); 5] = [
+            ("JUNTO_DATABASE_URL", "postgres://db.example.test/junto"),
+            ("JUNTO_LIVEKIT_API_URL", "http://livekit:7880"),
+            ("JUNTO_LIVEKIT_URL", "wss://media.example.test"),
+            ("JUNTO_LIVEKIT_API_KEY", "key"),
+            ("JUNTO_LIVEKIT_API_SECRET", "media-server-secret"),
+        ];
+        let with = |more: &'static [(&'static str, &'static str)]| {
+            Config::from_lookup(move |name| {
+                BASE.iter()
+                    .chain(more)
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| (*value).to_owned())
+            })
+        };
+        assert_eq!(with(&[]).unwrap().recorder, None);
+
+        let config = with(&[
+            ("JUNTO_RECORDINGS_DIR", "/srv/junto/recordings"),
+            ("JUNTO_RECORDER_LAYOUT_URL", "http://server:8080/layout/"),
+        ])
+        .unwrap();
+        let recorder = config.recorder.unwrap();
+        assert_eq!(recorder.directory, PathBuf::from("/srv/junto/recordings"));
+        assert_eq!(recorder.recorder_directory, "/srv/junto/recordings");
+        assert_eq!(recorder.layout_url, "http://server:8080/layout/");
+
+        let config = with(&[
+            ("JUNTO_RECORDINGS_DIR", "/srv/junto/recordings"),
+            ("JUNTO_RECORDER_DIR", "/out/"),
+            ("JUNTO_RECORDER_LAYOUT_URL", "http://server:8080/layout/"),
+        ])
+        .unwrap();
+        assert_eq!(config.recorder.unwrap().recorder_directory, "/out");
+
+        let refused: [&'static [(&str, &str)]; 5] = [
+            &[("JUNTO_RECORDINGS_DIR", "/srv/junto/recordings")],
+            &[("JUNTO_RECORDER_LAYOUT_URL", "http://server:8080/layout/")],
+            &[("JUNTO_RECORDER_DIR", "/out")],
+            &[
+                ("JUNTO_RECORDINGS_DIR", "recordings"),
+                ("JUNTO_RECORDER_LAYOUT_URL", "http://server:8080/layout/"),
+            ],
+            &[
+                ("JUNTO_RECORDINGS_DIR", "/srv/junto/recordings"),
+                ("JUNTO_RECORDER_LAYOUT_URL", "server:8080/layout/"),
+            ],
+        ];
+        for more in refused {
+            assert!(
+                matches!(with(more), Err(ConfigError::Invalid { .. })),
+                "{more:?}"
+            );
+        }
+        let without_media = Config::from_lookup(lookup(&[
+            ("JUNTO_DATABASE_URL", "postgres://db.example.test/junto"),
+            ("JUNTO_RECORDINGS_DIR", "/srv/junto/recordings"),
+            ("JUNTO_RECORDER_LAYOUT_URL", "http://server:8080/layout/"),
+        ]));
+        assert!(matches!(without_media, Err(ConfigError::Invalid { .. })));
     }
 
     #[test]

@@ -735,6 +735,16 @@ async fn every_request_that_changes_a_call_is_limited() {
         ),
         (Method::DELETE, participant.clone(), none.clone()),
         (
+            Method::PUT,
+            format!("/api/v1/channels/{voice}/call/recording"),
+            json!({}),
+        ),
+        (
+            Method::DELETE,
+            format!("/api/v1/channels/{voice}/call/recording"),
+            none.clone(),
+        ),
+        (
             Method::POST,
             format!("/api/v1/direct-calls/{person}/join"),
             none.clone(),

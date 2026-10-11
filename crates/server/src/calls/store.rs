@@ -433,7 +433,8 @@ pub async fn view(connection: &mut PgConnection, call: &CallRow) -> ApiResult<Ca
         started_at: call.started_at,
         lock: call.lock.clone(),
         meeting: call.meeting.clone(),
-        participants: participants(connection, call.id, None).await?,
+        participants: participants(&mut *connection, call.id, None).await?,
+        recording: crate::recordings::store::active_of_call(connection, call.id).await?,
     })
 }
 
@@ -1008,6 +1009,9 @@ pub async fn end_if_empty(
     resolve_invitations(&mut *connection, now, &ending, all, None, None, cancelled).await?;
     let cancelled = EntryOutcome::Cancelled;
     resolve_entries(&mut *connection, now, &ending, all, None, None, cancelled).await?;
+    if let Some(channel_id) = ending.place.channel_id() {
+        crate::recordings::store::call_ended(&mut *connection, now, call_id, channel_id).await?;
+    }
     if ending.started_at.is_some() {
         note(&mut *connection, now, &ending, Note::CallEnded, None).await?;
         let ended = Event::CallEnded {

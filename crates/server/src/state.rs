@@ -14,6 +14,7 @@ use crate::error::ApiResult;
 use crate::events::hub::Streams;
 use crate::media::MediaServer;
 use crate::rate_limit::{Outstanding, RateLimiter};
+use crate::recordings::{Backend, Recordings};
 
 #[derive(Clone)]
 pub struct AppState(Arc<Shared>);
@@ -32,6 +33,7 @@ pub struct Shared {
     pub stream_opens: RateLimiter<AccountId>,
     pub streams: Arc<Streams>,
     pub calls: Calls,
+    pub recordings: Recordings,
     pub bodies: Arc<BodyBudget>,
 }
 
@@ -42,6 +44,7 @@ impl AppState {
         clock: Arc<dyn Clock>,
         server_id: ServerId,
         media: Option<Arc<dyn MediaServer>>,
+        recorder: Option<Backend>,
     ) -> Self {
         let limits = &config.limits;
         let entries = limits.limiter_entries;
@@ -54,6 +57,7 @@ impl AppState {
         let stream_opens = RateLimiter::with_capacity(limits.stream.opens, entries);
         let streams = Arc::new(Streams::new(&limits.stream));
         let calls = Calls::new(media, server_id, limits);
+        let recordings = Recordings::new(recorder);
         let bodies = Arc::new(BodyBudget::new(
             limits.request_bodies_held_bytes,
             limits.request_bodies_held_per_address,
@@ -72,6 +76,7 @@ impl AppState {
             stream_opens,
             streams,
             calls,
+            recordings,
             bodies,
         }))
     }

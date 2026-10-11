@@ -18,8 +18,9 @@ async fn database_answers(app: &AppState) -> ApiResult<()> {
     })
 }
 
-/// Whether the server reaches its database, and whether its last admission check reached the
-/// media server (ADR 0012). The status follows the database only.
+/// Whether the server reaches its database, whether its last admission check reached the
+/// media server, and whether the free disk space of the recordings is at the reserve
+/// (ADR 0012, ADR 0605). The status follows the database only.
 #[utoipa::path(
     get,
     path = "/api/v1/health",
@@ -32,6 +33,9 @@ pub async fn get_health(State(app): State<AppState>) -> ApiResult<Json<Health>> 
             database: true,
             media_server: app.calls.reachable(),
             failing_call_rooms: app.calls.failing_rooms(),
+            storage_low: app
+                .recordings
+                .storage_low(app.config.limits.recordings.reserve_bytes),
         })),
         Ok(Err(_)) | Err(_) => Err(ApiError::new(
             ErrorCode::Unavailable,

@@ -18,6 +18,7 @@ pub mod ids;
 pub mod invite;
 pub mod keys;
 pub mod origin;
+pub mod recording;
 pub mod roles;
 pub mod secret;
 pub mod server;

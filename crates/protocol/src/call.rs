@@ -10,6 +10,7 @@ use crate::ids::{
     AccountId, CallId, CallInvitationId, CallMoveId, ChannelId, DeviceId, EntryRequestId,
     WorkspaceId,
 };
+use crate::recording::Recording;
 use crate::secret::CallToken;
 
 /// Where a call takes place.
@@ -140,6 +141,10 @@ pub struct Call {
     pub meeting: Option<Meeting>,
     /// The people whom the media server lists in the room and whom the server allows there.
     pub participants: Vec<CallParticipant>,
+    /// The recording of the call that is starting or runs. The people in the call see an
+    /// indicator while it is present (ADR 0601).
+    #[serde(default)]
+    pub recording: Option<Recording>,
 }
 
 /// What an account that may see a voice channel learns of the call in it.

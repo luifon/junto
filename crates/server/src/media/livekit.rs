@@ -11,26 +11,23 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use time::OffsetDateTime;
 
-use crate::clock::Clock;
-use crate::config::MediaSettings;
-use crate::media::token;
+use crate::media::token::{self, ApiGrant};
+use crate::media::twirp::{Answer, Failure, Twirp};
 use crate::media::{
     JoinGrant, JoinToken, MediaError, MediaResult, MediaServer, Notification, Participant,
     ParticipantKind, Publishing, Room, Track, TrackKind, TrackSource,
 };
 
-const SERVICE: &str = "twirp/livekit.RoomService";
+const SERVICE: &str = "livekit.RoomService";
 
 pub struct LiveKit {
-    http: reqwest::Client,
-    settings: MediaSettings,
-    clock: Arc<dyn Clock>,
+    api: Arc<Twirp>,
 }
 
 /// A value of an enumeration, which the API writes as its name and reads as name or number.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(untagged)]
-enum Named {
+pub(crate) enum Named {
     Name(String),
     Number(i64),
     #[default]
@@ -38,7 +35,7 @@ enum Named {
 }
 
 impl Named {
-    fn is(&self, name: &str, number: i64) -> bool {
+    pub(crate) fn is(&self, name: &str, number: i64) -> bool {
         match self {
             Self::Name(text) => text == name,
             Self::Number(value) => *value == number,
@@ -89,18 +86,14 @@ struct PermissionInfo {
 
 #[derive(Debug, Default, Deserialize)]
 struct TrackInfo {
+    #[serde(default)]
+    sid: String,
     #[serde(default, rename = "type")]
     kind: Named,
     #[serde(default)]
     source: Named,
     #[serde(default)]
     muted: bool,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct TwirpError {
-    #[serde(default)]
-    code: String,
 }
 
 const SOURCES: [(TrackSource, &str, i64); 5] = [
@@ -146,7 +139,7 @@ fn participant(info: ParticipantInfo) -> Participant {
         publishing,
         tracks: info
             .tracks
-            .iter()
+            .into_iter()
             .map(|track| Track {
                 kind: if track.kind.is("AUDIO", 0) {
                     TrackKind::Audio
@@ -157,72 +150,41 @@ fn participant(info: ParticipantInfo) -> Participant {
                 },
                 source: source(&track.source),
                 muted: track.muted,
+                id: track.sid,
             })
             .collect(),
     }
 }
 
-enum Answer {
-    Body(Value),
-    NotFound,
+impl From<Failure> for MediaError {
+    fn from(failure: Failure) -> Self {
+        match failure {
+            Failure::Unsigned => Self::Refused(failure.to_string()),
+            Failure::NoAnswer(reason) | Failure::Malformed(reason) => Self::Unreachable(reason),
+            Failure::Status { status, ref code } if status >= 500 || code == "unavailable" => {
+                Self::Unreachable(failure.to_string())
+            }
+            Failure::Status { .. } => Self::Refused(failure.to_string()),
+        }
+    }
 }
 
 impl LiveKit {
-    pub fn new(settings: MediaSettings, clock: Arc<dyn Clock>) -> MediaResult<Self> {
-        let http = reqwest::Client::builder()
-            .timeout(settings.request_timeout.unsigned_abs())
-            .connect_timeout(settings.request_timeout.unsigned_abs())
-            .build()
-            .map_err(|error| MediaError::Refused(error.to_string()))?;
-        Ok(Self {
-            http,
-            settings,
-            clock,
-        })
-    }
-
-    fn secret(&self) -> &[u8] {
-        self.settings.api_secret.expose().as_bytes()
+    pub fn new(api: Arc<Twirp>) -> Self {
+        Self { api }
     }
 
     async fn call(&self, method: &str, room: Option<&str>, body: Value) -> MediaResult<Answer> {
-        let claims = token::api_claims(&self.settings.api_key, room, self.clock.now());
-        let authorization = token::sign(self.secret(), &claims)
-            .ok_or_else(|| MediaError::Refused("the API token could not be signed".to_owned()))?;
-        let url = format!(
-            "{}/{SERVICE}/{method}",
-            self.settings.api_url.trim_end_matches('/')
-        );
-        let response = self
-            .http
-            .post(url)
-            .bearer_auth(authorization)
-            .json(&body)
-            .send()
+        let grant = room.map_or(ApiGrant::RoomList, ApiGrant::RoomAdmin);
+        self.api
+            .call(SERVICE, method, grant, body, None)
             .await
-            .map_err(|error| MediaError::Unreachable(error.without_url().to_string()))?;
-        let status = response.status();
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|error| MediaError::Unreachable(error.without_url().to_string()))?;
-        if status.is_success() {
-            return serde_json::from_slice(&bytes)
-                .map(Answer::Body)
-                .map_err(|error| MediaError::Unreachable(format!("{method}: {error}")));
-        }
-        let code = serde_json::from_slice::<TwirpError>(&bytes)
-            .map(|error| error.code)
-            .unwrap_or_default();
-        if code == "not_found" {
-            Ok(Answer::NotFound)
-        } else if status.is_server_error() || code == "unavailable" {
-            Err(MediaError::Unreachable(format!(
-                "{method}: {status} {code}"
-            )))
-        } else {
-            Err(MediaError::Refused(format!("{method}: {status} {code}")))
-        }
+            .map_err(|failure| match MediaError::from(failure) {
+                MediaError::Unreachable(reason) => {
+                    MediaError::Unreachable(format!("{method}: {reason}"))
+                }
+                MediaError::Refused(reason) => MediaError::Refused(format!("{method}: {reason}")),
+            })
     }
 }
 
@@ -236,12 +198,12 @@ fn read<T: serde::de::DeserializeOwned + Default>(method: &str, answer: Answer) 
 
 impl MediaServer for LiveKit {
     fn client_url(&self) -> &str {
-        &self.settings.client_url
+        &self.api.settings().client_url
     }
 
     fn join_token(&self, grant: &JoinGrant<'_>) -> MediaResult<JoinToken> {
-        let claims = token::join_claims(&self.settings.api_key, grant);
-        let token = token::sign(self.secret(), &claims)
+        let claims = token::join_claims(&self.api.settings().api_key, grant);
+        let token = token::sign(self.api.secret(), &claims)
             .ok_or_else(|| MediaError::Refused("the join token could not be signed".to_owned()))?;
         Ok(JoinToken {
             token: CallToken::new(token),
@@ -325,8 +287,8 @@ impl MediaServer for LiveKit {
         now: OffsetDateTime,
     ) -> Option<Notification> {
         token::notification(
-            &self.settings.api_key,
-            self.secret(),
+            &self.api.settings().api_key,
+            self.api.secret(),
             authorization,
             body,
             now,
@@ -377,22 +339,26 @@ mod tests {
                 Track {
                     kind: TrackKind::Audio,
                     source: TrackSource::Microphone,
-                    muted: true
+                    muted: true,
+                    id: "TR_1".to_owned(),
                 },
                 Track {
                     kind: TrackKind::Video,
                     source: TrackSource::ScreenShare,
-                    muted: false
+                    muted: false,
+                    id: "TR_2".to_owned(),
                 },
                 Track {
                     kind: TrackKind::Audio,
                     source: TrackSource::ScreenShareAudio,
-                    muted: false
+                    muted: false,
+                    id: "TR_3".to_owned(),
                 },
                 Track {
                     kind: TrackKind::Audio,
                     source: TrackSource::Unknown,
-                    muted: false
+                    muted: false,
+                    id: "TR_4".to_owned(),
                 },
             ]
         );

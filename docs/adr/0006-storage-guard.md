@@ -24,4 +24,4 @@ Uploads, recordings and exports write large files to the disk of the server. The
 - The reservation of a recording covers its video twice. The video is recorded as segments, which were 6.0 to 6.5 % larger than the MP4 in the measured recordings, and the segments and the MP4 that is built from them exist together until the segments are deleted (ADR 0602).
 - What the recorder does when the disk is full was not tested. The server stops a recording before that point.
 - A chunked upload stays under a size limit per request that a proxy in front of the server applies.
-- The reserved amount and the limit on concurrent jobs are server settings; their values are not fixed by this record.
+- The reserved amount and the limit on concurrent jobs are not fixed by this record. ADR 0605 states them, and how a reservation is stored.

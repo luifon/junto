@@ -19,6 +19,7 @@ use crate::ids::{
 };
 use crate::invite::{Invite, InviteRevocation, JoinRequest, JoinRequestState};
 use crate::keys::PublicKey;
+use crate::recording::Recording;
 use crate::roles::{ServerRole, WorkspaceRole};
 use crate::structure::{Category, Channel, Workspace, WorkspaceMember};
 
@@ -469,6 +470,17 @@ pub enum Event {
     DirectMuteRemoved {
         account_id: AccountId,
     },
+    /// A recording of the call of a voice channel was asked for. The event carries the
+    /// recording without its segments.
+    RecordingStarted {
+        recording: Box<Recording>,
+    },
+    /// The state of a recording changed, a stop was asked for, or a segment was added or
+    /// failed. The event carries the whole recording without its segments; the segments
+    /// are read from the route of the recording.
+    RecordingUpdated {
+        recording: Box<Recording>,
+    },
 }
 
 impl Event {
@@ -526,6 +538,8 @@ impl Event {
         "call_access_ended",
         "direct_mute_set",
         "direct_mute_removed",
+        "recording_started",
+        "recording_updated",
     ];
 
     pub const fn name(&self) -> &'static str {
@@ -583,6 +597,8 @@ impl Event {
             Self::CallAccessEnded {} => "call_access_ended",
             Self::DirectMuteSet { .. } => "direct_mute_set",
             Self::DirectMuteRemoved { .. } => "direct_mute_removed",
+            Self::RecordingStarted { .. } => "recording_started",
+            Self::RecordingUpdated { .. } => "recording_updated",
         }
     }
 }
@@ -700,6 +716,26 @@ mod tests {
             uses: 0,
             workspace_ids: vec![workspace_id],
             revocation: None,
+        };
+        let recording = Recording {
+            id: crate::ids::RecordingId::generate(),
+            workspace_id,
+            channel_id,
+            call_id,
+            state: crate::recording::RecordingState::Recording,
+            started_by: account_id,
+            requested_at: time(),
+            recording_since: Some(time()),
+            stop: Some(crate::recording::RecordingStop {
+                reason: crate::recording::RecordingStopReason::CallEnded,
+                by: None,
+                at: time(),
+            }),
+            ended_at: None,
+            failure: None,
+            language: "auto".to_owned(),
+            segments: 3,
+            failed_segments: 1,
         };
         vec![
             Event::DeviceAdded {
@@ -960,6 +996,12 @@ mod tests {
             },
             Event::DirectMuteRemoved {
                 account_id: other_account_id,
+            },
+            Event::RecordingStarted {
+                recording: Box::new(recording.clone()),
+            },
+            Event::RecordingUpdated {
+                recording: Box::new(recording),
             },
         ]
     }

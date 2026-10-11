@@ -15,11 +15,14 @@ use junto_protocol::structure::Workspace;
 use junto_protocol::{ServerPermission, WorkspacePermission};
 use junto_server::Tasks;
 use junto_server::clock::Clock;
-use junto_server::config::{Config, Limits, LogFormat, PublicOrigins};
+use junto_server::config::{Config, Limits, LogFormat, PublicOrigins, RecorderSettings};
 use junto_server::database::{CommitGate, Database};
 use junto_server::media::MediaServer;
 use junto_server::media::fake::FakeMedia;
+use junto_server::recorder::fake::FakeRecorder;
+use junto_server::recordings::Backend;
 use junto_server::state::AppState;
+use junto_server::storage::FakeDisk;
 use reqwest::{Method, StatusCode};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -170,6 +173,9 @@ pub struct TestServer {
     pub state: AppState,
     /// The media server of a server that was started for calls.
     pub media: Option<Arc<FakeMedia>>,
+    /// The recorder and the disk of a server that was started for calls.
+    pub recorder: Option<Arc<FakeRecorder>>,
+    pub disk: Option<Arc<FakeDisk>>,
     http: reqwest::Client,
     database: PgConnectOptions,
     config: Config,
@@ -179,12 +185,33 @@ pub struct TestServer {
     served: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
 }
 
+/// The fake media server of a test server, with the fake recorder that puts its jobs into
+/// the rooms of that media server, and the fake disk of the recordings.
+#[derive(Clone)]
+struct Fakes {
+    media: Arc<FakeMedia>,
+    recorder: Arc<FakeRecorder>,
+    disk: Arc<FakeDisk>,
+}
+
+/// The free space of the fake disk of a test server at its start.
+pub const FREE_DISK: u64 = 1 << 40;
+
+/// Where the recorder of a test server writes.
+pub fn recorder_settings() -> RecorderSettings {
+    RecorderSettings {
+        directory: "/srv/junto/recordings".into(),
+        recorder_directory: "/out".to_owned(),
+        layout_url: "http://server.example.test/layout/".to_owned(),
+    }
+}
+
 /// The media server of a test server.
 enum Media {
     /// The one of the configuration: none, or a LiveKit server.
     Configured,
     /// A fake one: a new one, or the one of the server that is restarted.
-    Fake(Option<Arc<FakeMedia>>),
+    Fake(Option<Fakes>),
 }
 
 /// How a test server is started.
@@ -228,6 +255,7 @@ pub fn test_config() -> Config {
         log_format: LogFormat::Text,
         log_level: tracing::Level::ERROR,
         media: None,
+        recorder: None,
         limits: Limits::default(),
     }
 }
@@ -308,16 +336,16 @@ impl TestServer {
         connection.close().await.unwrap();
 
         let mut config = test_config();
+        if matches!(setup.media, Media::Fake(_)) {
+            config.recorder = Some(recorder_settings());
+        }
         configure(&mut config);
         Self::on_database(admin.database(&name), config, None, setup).await
     }
 
     /// Starts a second server process on the database of this one.
     pub async fn restart(&self) -> Self {
-        let media = match &self.media {
-            Some(fake) => Media::Fake(Some(fake.clone())),
-            None => Media::Configured,
-        };
+        let media = self.fakes();
         let setup = Setup {
             send_buffer: self.send_buffer,
             media,
@@ -332,10 +360,7 @@ impl TestServer {
     /// configuration. A test that shortens a time limit prepares on the first process, under
     /// the normal limits, and sends only the step that it examines to this one.
     pub async fn strict(&self, configure: impl FnOnce(&mut Config)) -> Self {
-        let media = match &self.media {
-            Some(fake) => Media::Fake(Some(fake.clone())),
-            None => Media::Configured,
-        };
+        let media = self.fakes();
         let setup = Setup {
             send_buffer: self.send_buffer,
             media,
@@ -362,6 +387,17 @@ impl TestServer {
         )
         .await
         .unwrap()
+    }
+
+    fn fakes(&self) -> Media {
+        match (&self.media, &self.recorder, &self.disk) {
+            (Some(media), Some(recorder), Some(disk)) => Media::Fake(Some(Fakes {
+                media: media.clone(),
+                recorder: recorder.clone(),
+                disk: disk.clone(),
+            })),
+            _ => Media::Configured,
+        }
     }
 
     /// Stops this server process as a stop signal does and waits until it has ended.
@@ -395,20 +431,36 @@ impl TestServer {
             now.unwrap_or_else(OffsetDateTime::now_utc),
             follows_time,
         ));
-        let media = match media {
+        let fakes = match media {
             Media::Configured => None,
-            Media::Fake(Some(fake)) => Some(fake),
-            Media::Fake(None) => Some(Arc::new(FakeMedia::new(clock.clone()))),
+            Media::Fake(Some(fakes)) => Some(fakes),
+            Media::Fake(None) => {
+                let media = Arc::new(FakeMedia::new(clock.clone()));
+                Some(Fakes {
+                    recorder: Arc::new(FakeRecorder::new(clock.clone(), media.clone())),
+                    disk: Arc::new(FakeDisk::new(FREE_DISK)),
+                    media,
+                })
+            }
         };
-        let prepared = match &media {
-            Some(fake) => {
-                let fake: Arc<dyn MediaServer> = fake.clone();
-                junto_server::prepare_with(connected, config.clone(), clock.clone(), Some(fake))
-                    .await
+        let prepared = match &fakes {
+            Some(fakes) => {
+                let media: Arc<dyn MediaServer> = fakes.media.clone();
+                let backend = config.recorder.clone().map(|settings| Backend {
+                    recorder: fakes.recorder.clone(),
+                    disk: fakes.disk.clone(),
+                    settings,
+                });
+                let (config, clock) = (config.clone(), clock.clone());
+                junto_server::prepare_with(connected, config, clock, Some(media), backend).await
             }
             None => junto_server::prepare(connected, config.clone(), clock.clone()).await,
         }
         .unwrap();
+        let (media, recorder, disk) = match fakes {
+            Some(fakes) => (Some(fakes.media), Some(fakes.recorder), Some(fakes.disk)),
+            None => (None, None, None),
+        };
         let state = prepared.state.clone();
         let owner_code = prepared
             .owner_code
@@ -457,6 +509,8 @@ impl TestServer {
             info,
             state,
             media,
+            recorder,
+            disk,
             http,
             database,
             config,
