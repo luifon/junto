@@ -1605,3 +1605,189 @@ async fn what_happens_in_the_call_of_a_voice_channel_is_kept_for_the_lines_of_it
         .await;
     assert!(other_kind.is_err());
 }
+
+async fn raise_hand(server: &TestServer, member: &Member) {
+    server
+        .put_empty(member, "/api/v1/call/hand")
+        .await
+        .empty(StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn rule_70_73_the_presenter_lowers_the_hand_of_another_person() {
+    let (scene, _, _) = meeting().await;
+    let (server, ann, ben, voice) = (&scene.server, &scene.ann, &scene.ben, scene.voice.id);
+    raise_hand(server, ben).await;
+    assert!(
+        participant(server, ann, voice, ben.account_id)
+            .await
+            .hand_raised
+    );
+    let hand = block_path(voice, ben.account_id, "hand");
+    let audit_entries = server.count("audit_entries").await;
+    let mut to_ben = server.full_stream(ben).await;
+
+    server
+        .delete(ann, &hand)
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert!(
+        !participant(server, ann, voice, ben.account_id)
+            .await
+            .hand_raised
+    );
+    let told = server.call_events(ben, &mut to_ben).await;
+    assert_eq!(names(&told), ["call_participant_updated"]);
+    assert!(matches!(
+        &told[0],
+        Event::CallParticipantUpdated { participant, .. }
+            if participant.account_id == ben.account_id && !participant.hand_raised
+    ));
+    // The block of the meeting stays: lowering a hand does not let the person speak.
+    assert_eq!(
+        participant(server, ann, voice, ben.account_id)
+            .await
+            .microphone_block
+            .unwrap()
+            .reason,
+        BlockReason::Meeting
+    );
+
+    // A hand that is not raised stays as it is, and nothing is told.
+    server
+        .delete(ann, &hand)
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert_eq!(names(&server.call_events(ben, &mut to_ben).await), [""; 0]);
+    assert_eq!(server.count("audit_entries").await, audit_entries);
+
+    // A listener does not lower the hand of the presenter or of another listener.
+    raise_hand(server, ann).await;
+    let of_presenter = block_path(voice, ann.account_id, "hand");
+    server
+        .delete(ben, &of_presenter)
+        .await
+        .error(ErrorCode::Forbidden);
+    assert!(
+        participant(server, ben, voice, ann.account_id)
+            .await
+            .hand_raised
+    );
+
+    // When meeting mode has ended, the person who ran it has no such right any more.
+    server
+        .delete(ann, &meeting_path(voice))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    raise_hand(server, ben).await;
+    server.delete(ann, &hand).await.error(ErrorCode::Forbidden);
+    assert!(
+        participant(server, ann, voice, ben.account_id)
+            .await
+            .hand_raised
+    );
+}
+
+#[tokio::test]
+async fn rule_71_72_a_moderator_lowers_a_hand_and_other_people_are_refused() {
+    let scene = Scene::start().await;
+    let (server, owner, ann, ben) = (&scene.server, &scene.owner, &scene.ann, &scene.ben);
+    let voice = scene.voice.id;
+    server.enter_call(ann, voice).await;
+    server.enter_call(ben, voice).await;
+    let hand = block_path(voice, ben.account_id, "hand");
+    let raised = || async {
+        participant(server, ann, voice, ben.account_id)
+            .await
+            .hand_raised
+    };
+
+    raise_hand(server, ben).await;
+    server.delete(ann, &hand).await.error(ErrorCode::Forbidden);
+    assert!(raised().await);
+
+    server
+        .grant_workspace(owner, ann, scene.workspace_id, &[W::MuteMembers])
+        .await;
+    server
+        .delete(ann, &hand)
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert!(!raised().await);
+
+    // A moderator outside the call lowers a hand too, as for a microphone block.
+    raise_hand(server, ben).await;
+    server
+        .delete(owner, &hand)
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert!(!raised().await);
+
+    // A person who is not in the call, a channel without a call, a text channel and a
+    // channel that the caller does not see.
+    let outside = block_path(voice, owner.account_id, "hand");
+    server
+        .delete(owner, &outside)
+        .await
+        .error(ErrorCode::NotFound);
+    let empty = server.voice(owner, scene.workspace_id, "empty").await;
+    server
+        .delete(owner, &block_path(empty.id, ben.account_id, "hand"))
+        .await
+        .error(ErrorCode::NotFound);
+    let text = server.channel(owner, scene.workspace_id, "text").await;
+    server
+        .delete(owner, &block_path(text.id, ben.account_id, "hand"))
+        .await
+        .error(ErrorCode::Conflict);
+    let stranger = server.join(owner, "Stranger").await;
+    let role = server.everyone_role(owner, scene.workspace_id).await;
+    let hidden = server.voice(owner, scene.workspace_id, "hidden").await;
+    server
+        .make_private(owner, scene.workspace_id, hidden.id, role.id)
+        .await;
+    server
+        .delete(&stranger, &block_path(hidden.id, ben.account_id, "hand"))
+        .await
+        .error(ErrorCode::NotFound);
+
+    // In a channel that hides who is inside, a moderator outside learns nothing.
+    raise_hand(server, ben).await;
+    server
+        .call_settings(owner, voice, json!({ "hides_occupants": true }))
+        .await;
+    server
+        .delete(owner, &hand)
+        .await
+        .error(ErrorCode::NotInCall);
+    server
+        .delete(owner, &outside)
+        .await
+        .error(ErrorCode::NotInCall);
+    assert!(raised().await);
+    server
+        .delete(ann, &hand)
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert!(!raised().await);
+}
+
+#[tokio::test]
+async fn rule_64_a_join_token_carries_the_display_name_of_the_account() {
+    let scene = Scene::start().await;
+    let (server, ann) = (&scene.server, &scene.ann);
+    let first = server.join_call(ann, scene.voice.id).await;
+    assert_eq!(claims(&first)["name"], "Ann");
+    assert_eq!(claims(&first)["sub"], first.identity);
+    assert!(!first.identity.contains("Ann"));
+
+    server
+        .patch(ann, "/api/v1/account", &json!({ "name": "Ann Example" }))
+        .await
+        .ok::<Value>(StatusCode::OK);
+    let second = server.join_call(ann, scene.voice.id).await;
+    assert_eq!(claims(&second)["name"], "Ann Example");
+
+    let direct = server.enter_direct(&scene.ben, ann).await;
+    assert_eq!(claims(&direct.join)["name"], "Ben");
+}

@@ -268,6 +268,21 @@ pub enum Event {
     ServerRoleUpdated {
         role: ServerRole,
     },
+    /// An administrator created an access token (ADR 0210). The event never carries the
+    /// token.
+    AccessTokenCreated {
+        access_token: crate::access_token::AccessTokenInfo,
+    },
+    /// An access token was revoked, or it ended with the access of its creator. A token
+    /// that reaches its expiry has no event.
+    AccessTokenRevoked {
+        access_token_id: crate::ids::AccessTokenId,
+    },
+    /// Every access token of an account ended, because the account was banned, removed or
+    /// recovered.
+    AccessTokensOfCreatorRevoked {
+        created_by: AccountId,
+    },
     InviteCreated {
         invite: Invite,
     },
@@ -562,6 +577,9 @@ impl Event {
         "owner_changed",
         "server_role_created",
         "server_role_updated",
+        "access_token_created",
+        "access_token_revoked",
+        "access_tokens_of_creator_revoked",
         "invite_created",
         "invite_revoked",
         "invite_used",
@@ -634,6 +652,9 @@ impl Event {
             Self::OwnerChanged { .. } => "owner_changed",
             Self::ServerRoleCreated { .. } => "server_role_created",
             Self::ServerRoleUpdated { .. } => "server_role_updated",
+            Self::AccessTokenCreated { .. } => "access_token_created",
+            Self::AccessTokenRevoked { .. } => "access_token_revoked",
+            Self::AccessTokensOfCreatorRevoked { .. } => "access_tokens_of_creator_revoked",
             Self::InviteCreated { .. } => "invite_created",
             Self::InviteRevoked { .. } => "invite_revoked",
             Self::InviteUsed { .. } => "invite_used",
@@ -899,6 +920,22 @@ mod tests {
                 role: server_role.clone(),
             },
             Event::ServerRoleUpdated { role: server_role },
+            Event::AccessTokenCreated {
+                access_token: crate::access_token::AccessTokenInfo {
+                    id: crate::ids::AccessTokenId::generate(),
+                    name: "setup".to_owned(),
+                    created_by: account_id,
+                    actions: vec![crate::access_token::TokenAction::ReadStructure],
+                    created_at: time(),
+                    expires_at: time(),
+                },
+            },
+            Event::AccessTokenRevoked {
+                access_token_id: crate::ids::AccessTokenId::generate(),
+            },
+            Event::AccessTokensOfCreatorRevoked {
+                created_by: account_id,
+            },
             Event::InviteCreated {
                 invite: invite.clone(),
             },

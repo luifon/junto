@@ -290,6 +290,9 @@ pub struct Config {
     /// Absent: the server has no recorder and no recording starts.
     pub recorder: Option<RecorderSettings>,
     pub attachments_directory: Option<PathBuf>,
+    /// The built layout page of the recorder (ADR 0615). Absent: the server does not serve
+    /// the page.
+    pub recorder_layout_directory: Option<PathBuf>,
     pub limits: Limits,
 }
 
@@ -424,6 +427,9 @@ pub struct Limits {
     pub most_roles_per_workspace: u32,
     pub most_roles_per_member: u32,
     pub most_server_roles_per_account: u32,
+    /// The numbers of access tokens (ADR 0210).
+    pub most_access_tokens_per_creator: u32,
+    pub access_token_longest_lifetime: Duration,
     pub request_body_bytes: usize,
     pub request_body_drained_bytes: usize,
     /// The bytes of request bodies that the server holds at one time, for all requests.
@@ -562,6 +568,8 @@ impl Default for Limits {
             most_roles_per_workspace: 250,
             most_roles_per_member: 64,
             most_server_roles_per_account: 64,
+            most_access_tokens_per_creator: 100,
+            access_token_longest_lifetime: Duration::days(366),
             request_body_bytes: 2 * 1024 * 1024,
             request_body_drained_bytes: 16 * 1024 * 1024,
             request_bodies_held_bytes: 64 * 1024 * 1024,
@@ -592,6 +600,7 @@ impl Config {
     pub const RECORDINGS_DIR: &'static str = "JUNTO_RECORDINGS_DIR";
     pub const RECORDER_DIR: &'static str = "JUNTO_RECORDER_DIR";
     pub const RECORDER_LAYOUT_URL: &'static str = "JUNTO_RECORDER_LAYOUT_URL";
+    pub const RECORDER_LAYOUT_DIR: &'static str = "JUNTO_RECORDER_LAYOUT_DIR";
     pub const FFMPEG: &'static str = "JUNTO_FFMPEG";
     pub const FFPROBE: &'static str = "JUNTO_FFPROBE";
     pub const TRANSCRIBE_COMMAND: &'static str = "JUNTO_TRANSCRIBE_COMMAND";
@@ -844,6 +853,17 @@ impl Config {
                 "expected an existing absolute directory".to_owned(),
             ));
         }
+        let recorder_layout_directory = value(Self::RECORDER_LAYOUT_DIR).map(PathBuf::from);
+        if recorder_layout_directory
+            .as_ref()
+            .is_some_and(|path| !path.is_absolute() || !path.join("index.html").is_file())
+        {
+            return Err(invalid(
+                Self::RECORDER_LAYOUT_DIR,
+                "expected the absolute directory of the built layout page, with its index.html"
+                    .to_owned(),
+            ));
+        }
         let mut limits = limits;
         if let Some(v) = value("JUNTO_ATTACHMENT_BYTES") {
             limits.attachment_bytes = v
@@ -872,6 +892,7 @@ impl Config {
         }
         Ok(Self {
             attachments_directory,
+            recorder_layout_directory,
             database_url,
             listen_address,
             public_origins,

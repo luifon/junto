@@ -8,13 +8,15 @@ use junto_protocol::audit::AuditEvent;
 use junto_protocol::events::Event;
 use junto_protocol::ids::{CategoryId, ChannelId, WorkspaceId, WorkspaceRoleId};
 use junto_protocol::structure::{
-    Category, Channel, ChannelList, ChannelOverride, CreateCategory, CreateChannel,
+    Category, Channel, ChannelKind, ChannelList, ChannelOverride, CreateCategory, CreateChannel,
     SetChannelOverride, UpdateCategory, UpdateChannel,
 };
 use sqlx::PgConnection;
+use time::OffsetDateTime;
 
 use crate::access::{Access, stored_override};
 use crate::audit::{self, About};
+use crate::calls::Calls;
 use crate::db::{self, StoredText};
 use crate::error::{ApiError, ApiResult};
 use crate::events;
@@ -64,59 +66,78 @@ pub async fn create_category(
     let now = app.now();
     let category = transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        let scope = access.workspace(connection, workspace_id).await?;
-        access.require(Request::Workspace {
-            scope: &scope,
-            permission: WorkspacePermission::ManageChannel,
-        })?;
-
-        let position = match body.position {
-            Some(position) => position,
-            None => {
-                sqlx::query_scalar(
-                    "select coalesce(max(position), -1) + 1 from categories
-                         where workspace_id = $1",
-                )
-                .bind(workspace_id)
-                .fetch_one(&mut *connection)
-                .await?
-            }
-        };
-        let category = Category {
-            id,
-            workspace_id,
-            name: name.clone(),
-            position,
-        };
-        sqlx::query(
-            "insert into categories (id, workspace_id, name, position, created_at)
-                 values ($1, $2, $3, $4, $5)",
-        )
-        .bind(category.id)
-        .bind(workspace_id)
-        .bind(&category.name)
-        .bind(category.position)
-        .bind(now)
-        .execute(&mut *connection)
-        .await?;
-        audit::record(
+        create_category_in(
             connection,
+            &access,
             now,
-            Some(access.account_id),
-            About::Workspace(workspace_id),
-            &AuditEvent::CategoryCreated {
-                category_id: category.id,
-                name: category.name.clone(),
-            },
+            (workspace_id, id),
+            &name,
+            body.position,
         )
-        .await?;
-        let created = Event::CategoryCreated {
-            category: category.clone(),
-        };
-        events::publish(connection, now, &created).await?;
-        Ok(category)
+        .await
     })?;
     Ok((StatusCode::CREATED, Json(category)))
+}
+
+pub(crate) async fn create_category_in(
+    connection: &mut PgConnection,
+    access: &Access,
+    now: OffsetDateTime,
+    (workspace_id, id): (WorkspaceId, CategoryId),
+    name: &str,
+    position: Option<i32>,
+) -> ApiResult<Category> {
+    let scope = access.workspace(connection, workspace_id).await?;
+    access.require(Request::Workspace {
+        scope: &scope,
+        permission: WorkspacePermission::ManageChannel,
+    })?;
+
+    let position = match position {
+        Some(position) => position,
+        None => {
+            sqlx::query_scalar(
+                "select coalesce(max(position), -1) + 1 from categories
+                 where workspace_id = $1",
+            )
+            .bind(workspace_id)
+            .fetch_one(&mut *connection)
+            .await?
+        }
+    };
+    let category = Category {
+        id,
+        workspace_id,
+        name: name.to_owned(),
+        position,
+    };
+    sqlx::query(
+        "insert into categories (id, workspace_id, name, position, created_at)
+         values ($1, $2, $3, $4, $5)",
+    )
+    .bind(category.id)
+    .bind(workspace_id)
+    .bind(&category.name)
+    .bind(category.position)
+    .bind(now)
+    .execute(&mut *connection)
+    .await?;
+    audit::record(
+        connection,
+        now,
+        Some(access.account_id),
+        About::Workspace(workspace_id),
+        &AuditEvent::CategoryCreated {
+            category_id: category.id,
+            name: category.name.clone(),
+        },
+    )
+    .await?;
+    let created = Event::CategoryCreated {
+        category: category.clone(),
+    };
+    events::publish(connection, now, &created).await?;
+    Ok(category)
 }
 
 /// Changes the name or the position of a category.
@@ -143,50 +164,70 @@ pub async fn update_category(
     let now = app.now();
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        let scope = access.workspace(connection, workspace_id).await?;
-        access.require(Request::Workspace {
-            scope: &scope,
-            permission: WorkspacePermission::ManageChannel,
-        })?;
-
-        let updated: Option<(String, i32)> = sqlx::query_as(
-            "update categories
-             set name = coalesce($3, name), position = coalesce($4, position)
-             where id = $1 and workspace_id = $2
-             returning name, position",
-        )
-        .bind(category_id)
-        .bind(workspace_id)
-        .bind(new_name.as_deref())
-        .bind(body.position)
-        .fetch_optional(&mut *connection)
-        .await?;
-        let (name, position) = updated.ok_or_else(ApiError::not_found)?;
-        audit::record(
+        let ids = (workspace_id, category_id);
+        update_category_in(
             connection,
+            &access,
             now,
-            Some(access.account_id),
-            About::Workspace(workspace_id),
-            &AuditEvent::CategoryUpdated {
-                category_id,
-                name: name.clone(),
-                position,
-            },
+            ids,
+            new_name.as_deref(),
+            body.position,
         )
-        .await?;
-        let category = Category {
-            id: category_id,
-            workspace_id,
-            name,
-            position,
-        };
-        let updated = Event::CategoryUpdated {
-            category: category.clone(),
-        };
-        events::publish(connection, now, &updated).await?;
-        Ok(category)
+        .await
     })
     .map(Json)
+}
+
+pub(crate) async fn update_category_in(
+    connection: &mut PgConnection,
+    access: &Access,
+    now: OffsetDateTime,
+    (workspace_id, category_id): (WorkspaceId, CategoryId),
+    new_name: Option<&str>,
+    position: Option<i32>,
+) -> ApiResult<Category> {
+    let scope = access.workspace(connection, workspace_id).await?;
+    access.require(Request::Workspace {
+        scope: &scope,
+        permission: WorkspacePermission::ManageChannel,
+    })?;
+
+    let updated: Option<(String, i32)> = sqlx::query_as(
+        "update categories
+         set name = coalesce($3, name), position = coalesce($4, position)
+         where id = $1 and workspace_id = $2
+         returning name, position",
+    )
+    .bind(category_id)
+    .bind(workspace_id)
+    .bind(new_name)
+    .bind(position)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let (name, position) = updated.ok_or_else(ApiError::not_found)?;
+    audit::record(
+        connection,
+        now,
+        Some(access.account_id),
+        About::Workspace(workspace_id),
+        &AuditEvent::CategoryUpdated {
+            category_id,
+            name: name.clone(),
+            position,
+        },
+    )
+    .await?;
+    let category = Category {
+        id: category_id,
+        workspace_id,
+        name,
+        position,
+    };
+    let updated = Event::CategoryUpdated {
+        category: category.clone(),
+    };
+    events::publish(connection, now, &updated).await?;
+    Ok(category)
 }
 
 /// The categories of a workspace and the channels that the caller can see.
@@ -272,74 +313,102 @@ pub async fn create_channel(
     ApiJson(body): ApiJson<CreateChannel>,
 ) -> ApiResult<(StatusCode, Json<Channel>)> {
     let name = validate::name("name", &body.name)?;
-    let id = ChannelId::generate();
+    let new = NewChannel {
+        id: ChannelId::generate(),
+        workspace_id,
+        name: &name,
+        kind: body.kind,
+        category_id: body.category_id,
+        position: body.position,
+    };
     let now = app.now();
     let channel = transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        let scope = access.workspace(connection, workspace_id).await?;
-        access.require(Request::Workspace {
-            scope: &scope,
-            permission: WorkspacePermission::ManageChannel,
-        })?;
-        if let Some(category_id) = body.category_id {
-            require_category(connection, workspace_id, category_id).await?;
-        }
-
-        let position = match body.position {
-            Some(position) => position,
-            None => {
-                sqlx::query_scalar(
-                    "select coalesce(max(position), -1) + 1 from channels
-                         where workspace_id = $1 and deleted_at is null",
-                )
-                .bind(workspace_id)
-                .fetch_one(&mut *connection)
-                .await?
-            }
-        };
-        let channel = Channel {
-            id,
-            workspace_id,
-            category_id: body.category_id,
-            kind: body.kind,
-            name: name.clone(),
-            position,
-            permanent_messages: false,
-            user_limit: None,
-            hides_occupants: false,
-        };
-        sqlx::query(
-            "insert into channels
-                     (id, workspace_id, category_id, kind, name, position, created_at)
-                 values ($1, $2, $3, $4, $5, $6, $7)",
-        )
-        .bind(channel.id)
-        .bind(workspace_id)
-        .bind(channel.category_id)
-        .bind(channel.kind.stored())
-        .bind(&channel.name)
-        .bind(channel.position)
-        .bind(now)
-        .execute(&mut *connection)
-        .await?;
-        audit::record(
-            connection,
-            now,
-            Some(access.account_id),
-            About::Channel(workspace_id, channel.id),
-            &AuditEvent::ChannelCreated {
-                name: channel.name.clone(),
-                kind: channel.kind,
-            },
-        )
-        .await?;
-        let created = Event::ChannelCreated {
-            channel: channel.clone(),
-        };
-        events::publish(connection, now, &created).await?;
-        Ok(channel)
+        create_channel_in(connection, &access, now, &new).await
     })?;
     Ok((StatusCode::CREATED, Json(channel)))
+}
+
+/// A channel to create. The name is validated.
+pub(crate) struct NewChannel<'a> {
+    pub id: ChannelId,
+    pub workspace_id: WorkspaceId,
+    pub name: &'a str,
+    pub kind: ChannelKind,
+    pub category_id: Option<CategoryId>,
+    /// Absent: after the last channel.
+    pub position: Option<i32>,
+}
+
+pub(crate) async fn create_channel_in(
+    connection: &mut PgConnection,
+    access: &Access,
+    now: OffsetDateTime,
+    new: &NewChannel<'_>,
+) -> ApiResult<Channel> {
+    let workspace_id = new.workspace_id;
+    let scope = access.workspace(connection, workspace_id).await?;
+    access.require(Request::Workspace {
+        scope: &scope,
+        permission: WorkspacePermission::ManageChannel,
+    })?;
+    if let Some(category_id) = new.category_id {
+        require_category(connection, workspace_id, category_id).await?;
+    }
+
+    let position = match new.position {
+        Some(position) => position,
+        None => {
+            sqlx::query_scalar(
+                "select coalesce(max(position), -1) + 1 from channels
+                 where workspace_id = $1 and deleted_at is null",
+            )
+            .bind(workspace_id)
+            .fetch_one(&mut *connection)
+            .await?
+        }
+    };
+    let channel = Channel {
+        id: new.id,
+        workspace_id,
+        category_id: new.category_id,
+        kind: new.kind,
+        name: new.name.to_owned(),
+        position,
+        permanent_messages: false,
+        user_limit: None,
+        hides_occupants: false,
+    };
+    sqlx::query(
+        "insert into channels
+             (id, workspace_id, category_id, kind, name, position, created_at)
+         values ($1, $2, $3, $4, $5, $6, $7)",
+    )
+    .bind(channel.id)
+    .bind(workspace_id)
+    .bind(channel.category_id)
+    .bind(channel.kind.stored())
+    .bind(&channel.name)
+    .bind(channel.position)
+    .bind(now)
+    .execute(&mut *connection)
+    .await?;
+    audit::record(
+        connection,
+        now,
+        Some(access.account_id),
+        About::Channel(workspace_id, channel.id),
+        &AuditEvent::ChannelCreated {
+            name: channel.name.clone(),
+            kind: channel.kind,
+        },
+    )
+    .await?;
+    let created = Event::ChannelCreated {
+        channel: channel.clone(),
+    };
+    events::publish(connection, now, &created).await?;
+    Ok(channel)
 }
 
 /// Changes the settings of a channel.
@@ -366,63 +435,83 @@ pub async fn update_channel(
     let now = app.now();
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        let (record, scope) = access.channel(connection, channel_id).await?;
-        access.require(Request::Channel {
-            scope: &scope,
-            permission: WorkspacePermission::ManageChannel,
-        })?;
-
-        let mut channel = record.channel;
-        if let Some(name) = &new_name {
-            channel.name.clone_from(name);
-        }
-        if let Some(category_id) = body.category_id {
-            if let Some(category_id) = category_id {
-                require_category(connection, channel.workspace_id, category_id).await?;
-            }
-            channel.category_id = category_id;
-        }
-        if let Some(position) = body.position {
-            channel.position = position;
-        }
-        if let Some(permanent_messages) = body.permanent_messages {
-            channel.permanent_messages = permanent_messages;
-        }
-        let updated = sqlx::query(
-            "update channels
-             set name = $2, category_id = $3, position = $4, permanent_messages = $5
-             where id = $1 and deleted_at is null",
-        )
-        .bind(channel_id)
-        .bind(&channel.name)
-        .bind(channel.category_id)
-        .bind(channel.position)
-        .bind(channel.permanent_messages)
-        .execute(&mut *connection)
-        .await?;
-        if updated.rows_affected() == 0 {
-            return Err(ApiError::not_found());
-        }
-        audit::record(
+        update_channel_in(
             connection,
+            &access,
             now,
-            Some(access.account_id),
-            About::Channel(channel.workspace_id, channel_id),
-            &AuditEvent::ChannelUpdated {
-                name: channel.name.clone(),
-                category_id: channel.category_id,
-                position: channel.position,
-                permanent_messages: channel.permanent_messages,
-            },
+            channel_id,
+            new_name.as_deref(),
+            &body,
         )
-        .await?;
-        let updated = Event::ChannelUpdated {
-            channel: channel.clone(),
-        };
-        events::publish(connection, now, &updated).await?;
-        Ok(channel)
+        .await
     })
     .map(Json)
+}
+
+/// Changes a channel. `new_name` is the validated name of `change`.
+pub(crate) async fn update_channel_in(
+    connection: &mut PgConnection,
+    access: &Access,
+    now: OffsetDateTime,
+    channel_id: ChannelId,
+    new_name: Option<&str>,
+    change: &UpdateChannel,
+) -> ApiResult<Channel> {
+    let (record, scope) = access.channel(connection, channel_id).await?;
+    access.require(Request::Channel {
+        scope: &scope,
+        permission: WorkspacePermission::ManageChannel,
+    })?;
+
+    let mut channel = record.channel;
+    if let Some(name) = new_name {
+        name.clone_into(&mut channel.name);
+    }
+    if let Some(category_id) = change.category_id {
+        if let Some(category_id) = category_id {
+            require_category(connection, channel.workspace_id, category_id).await?;
+        }
+        channel.category_id = category_id;
+    }
+    if let Some(position) = change.position {
+        channel.position = position;
+    }
+    if let Some(permanent_messages) = change.permanent_messages {
+        channel.permanent_messages = permanent_messages;
+    }
+    let updated = sqlx::query(
+        "update channels
+         set name = $2, category_id = $3, position = $4, permanent_messages = $5
+         where id = $1 and deleted_at is null",
+    )
+    .bind(channel_id)
+    .bind(&channel.name)
+    .bind(channel.category_id)
+    .bind(channel.position)
+    .bind(channel.permanent_messages)
+    .execute(&mut *connection)
+    .await?;
+    if updated.rows_affected() == 0 {
+        return Err(ApiError::not_found());
+    }
+    audit::record(
+        connection,
+        now,
+        Some(access.account_id),
+        About::Channel(channel.workspace_id, channel_id),
+        &AuditEvent::ChannelUpdated {
+            name: channel.name.clone(),
+            category_id: channel.category_id,
+            position: channel.position,
+            permanent_messages: channel.permanent_messages,
+        },
+    )
+    .await?;
+    let updated = Event::ChannelUpdated {
+        channel: channel.clone(),
+    };
+    events::publish(connection, now, &updated).await?;
+    Ok(channel)
 }
 
 /// Deletes a channel. Only the server owner deletes a channel that contains permanent
@@ -443,73 +532,83 @@ pub async fn delete_channel(
     let now = app.now();
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        let (record, scope) = access.channel(connection, channel_id).await?;
-        let content = if record.permanent_message_count > 0 {
-            ChannelContent::PermanentMessages
-        } else {
-            ChannelContent::NoPermanentMessages
-        };
-        access.require(Request::Channel {
-            scope: &scope,
-            permission: WorkspacePermission::ViewChannel,
-        })?;
-        access.require(Request::DeleteChannel {
-            scope: &scope,
-            content,
-        })?;
-
-        let deleted = sqlx::query(
-            "update channels set deleted_at = $2
-             where id = $1 and deleted_at is null and permanent_message_count = $3",
-        )
-        .bind(channel_id)
-        .bind(now)
-        .bind(record.permanent_message_count)
-        .execute(&mut *connection)
-        .await?;
-        if deleted.rows_affected() == 0 {
-            return Err(ApiError::conflict("the channel changed during the request"));
-        }
-        sqlx::query("delete from thread_forks where channel_id=$1")
-            .bind(channel_id)
-            .execute(&mut *connection)
-            .await?;
-        sqlx::query("update attachments set removed_at=$2 where place_id=$1")
-            .bind(channel_id)
-            .bind(now)
-            .execute(&mut *connection)
-            .await?;
-        sqlx::query("delete from messages where place_id=$1")
-            .bind(channel_id)
-            .execute(&mut *connection)
-            .await?;
-        sqlx::query("delete from call_notes where channel_id=$1")
-            .bind(channel_id)
-            .execute(&mut *connection)
-            .await?;
-        sqlx::query("update channels set permanent_message_count=0 where id=$1")
-            .bind(channel_id)
-            .execute(&mut *connection)
-            .await?;
-        let workspace_id = record.channel.workspace_id;
-        crate::calls::store::mark_channel(connection, &app.calls, channel_id).await?;
-        events::channel_deleted(connection, now, workspace_id, channel_id).await?;
-        sqlx::query("delete from channel_overrides where channel_id = $1")
-            .bind(channel_id)
-            .execute(&mut *connection)
-            .await?;
-        audit::record(
-            connection,
-            now,
-            Some(access.account_id),
-            About::Channel(record.channel.workspace_id, channel_id),
-            &AuditEvent::ChannelDeleted {
-                name: record.channel.name,
-            },
-        )
-        .await
+        delete_channel_in(connection, &app.calls, &access, now, channel_id).await
     })?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn delete_channel_in(
+    connection: &mut PgConnection,
+    calls: &Calls,
+    access: &Access,
+    now: OffsetDateTime,
+    channel_id: ChannelId,
+) -> ApiResult<()> {
+    let (record, scope) = access.channel(connection, channel_id).await?;
+    let content = if record.permanent_message_count > 0 {
+        ChannelContent::PermanentMessages
+    } else {
+        ChannelContent::NoPermanentMessages
+    };
+    access.require(Request::Channel {
+        scope: &scope,
+        permission: WorkspacePermission::ViewChannel,
+    })?;
+    access.require(Request::DeleteChannel {
+        scope: &scope,
+        content,
+    })?;
+
+    let deleted = sqlx::query(
+        "update channels set deleted_at = $2
+         where id = $1 and deleted_at is null and permanent_message_count = $3",
+    )
+    .bind(channel_id)
+    .bind(now)
+    .bind(record.permanent_message_count)
+    .execute(&mut *connection)
+    .await?;
+    if deleted.rows_affected() == 0 {
+        return Err(ApiError::conflict("the channel changed during the request"));
+    }
+    sqlx::query("delete from thread_forks where channel_id=$1")
+        .bind(channel_id)
+        .execute(&mut *connection)
+        .await?;
+    sqlx::query("update attachments set removed_at=$2 where place_id=$1")
+        .bind(channel_id)
+        .bind(now)
+        .execute(&mut *connection)
+        .await?;
+    sqlx::query("delete from messages where place_id=$1")
+        .bind(channel_id)
+        .execute(&mut *connection)
+        .await?;
+    sqlx::query("delete from call_notes where channel_id=$1")
+        .bind(channel_id)
+        .execute(&mut *connection)
+        .await?;
+    sqlx::query("update channels set permanent_message_count=0 where id=$1")
+        .bind(channel_id)
+        .execute(&mut *connection)
+        .await?;
+    let workspace_id = record.channel.workspace_id;
+    crate::calls::store::mark_channel(connection, calls, channel_id).await?;
+    events::channel_deleted(connection, now, workspace_id, channel_id).await?;
+    sqlx::query("delete from channel_overrides where channel_id = $1")
+        .bind(channel_id)
+        .execute(&mut *connection)
+        .await?;
+    audit::record(
+        connection,
+        now,
+        Some(access.account_id),
+        About::Channel(record.channel.workspace_id, channel_id),
+        &AuditEvent::ChannelDeleted {
+            name: record.channel.name,
+        },
+    )
+    .await
 }
 
 /// The role overrides of a channel.
@@ -575,96 +674,116 @@ pub async fn set_channel_override(
     let deny: WorkspacePermissions = body.deny.iter().copied().collect();
     let next = Override::new(allow, deny)
         .map_err(|_| ApiError::invalid("a permission is in both allow and deny"))?;
+    let now = app.now();
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        set_override_in(
+            connection,
+            &app.calls,
+            &access,
+            now,
+            (channel_id, role_id),
+            next,
+        )
+        .await
+    })
+    .map(Json)
+}
+
+pub(crate) async fn set_override_in(
+    connection: &mut PgConnection,
+    calls: &Calls,
+    access: &Access,
+    now: OffsetDateTime,
+    (channel_id, role_id): (ChannelId, WorkspaceRoleId),
+    next: Override,
+) -> ApiResult<ChannelOverride> {
+    let (allow, deny) = (next.allow(), next.deny());
     let result = ChannelOverride {
         role_id,
         allow: db::workspace_list(allow),
         deny: db::workspace_list(deny),
     };
-    let now = app.now();
-    transact!(app, |connection| {
-        let access = Access::open(connection, &bearer, now).await?;
-        let (record, scope) = access.channel(connection, channel_id).await?;
-        access.require(Request::Channel {
-            scope: &scope,
-            permission: WorkspacePermission::ManageChannel,
-        })?;
-        let workspace_id = record.channel.workspace_id;
+    let (record, scope) = access.channel(connection, channel_id).await?;
+    access.require(Request::Channel {
+        scope: &scope,
+        permission: WorkspacePermission::ManageChannel,
+    })?;
+    let workspace_id = record.channel.workspace_id;
 
-        let role_exists: bool = sqlx::query_scalar(
-            "select exists (select 1 from workspace_roles where id = $1 and workspace_id = $2)",
-        )
-        .bind(role_id)
-        .bind(workspace_id)
-        .fetch_one(&mut *connection)
-        .await?;
-        if !role_exists {
-            return Err(ApiError::not_found());
-        }
-        let stored: Option<(i64, i64)> = sqlx::query_as(
-            "select allow, deny from channel_overrides
-             where channel_id = $1 and role_id = $2
-             for update",
+    let role_exists: bool = sqlx::query_scalar(
+        "select exists (select 1 from workspace_roles where id = $1 and workspace_id = $2)",
+    )
+    .bind(role_id)
+    .bind(workspace_id)
+    .fetch_one(&mut *connection)
+    .await?;
+    if !role_exists {
+        return Err(ApiError::not_found());
+    }
+    let stored: Option<(i64, i64)> = sqlx::query_as(
+        "select allow, deny from channel_overrides
+         where channel_id = $1 and role_id = $2
+         for update",
+    )
+    .bind(channel_id)
+    .bind(role_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let previous = match stored {
+        Some((allow, deny)) => stored_override(allow, deny)?,
+        None => Override::NONE,
+    };
+    access.require(Request::ManageChannelOverrides {
+        scope: &scope,
+        granting: previous.granted_by_change_to(next),
+    })?;
+
+    if next.is_none() {
+        sqlx::query("delete from channel_overrides where channel_id = $1 and role_id = $2")
+            .bind(channel_id)
+            .bind(role_id)
+            .execute(&mut *connection)
+            .await?;
+    } else {
+        sqlx::query(
+            "insert into channel_overrides (channel_id, role_id, workspace_id, allow, deny)
+             values ($1, $2, $3, $4, $5)
+             on conflict (channel_id, role_id) do update set
+                 allow = excluded.allow, deny = excluded.deny",
         )
         .bind(channel_id)
         .bind(role_id)
-        .fetch_optional(&mut *connection)
+        .bind(workspace_id)
+        .bind(db::workspace_bits(allow))
+        .bind(db::workspace_bits(deny))
+        .execute(&mut *connection)
         .await?;
-        let previous = match stored {
-            Some((allow, deny)) => stored_override(allow, deny)?,
-            None => Override::NONE,
-        };
-        access.require(Request::ManageChannelOverrides {
-            scope: &scope,
-            granting: previous.granted_by_change_to(next),
-        })?;
-
-        if next.is_none() {
-            sqlx::query("delete from channel_overrides where channel_id = $1 and role_id = $2")
-                .bind(channel_id)
-                .bind(role_id)
-                .execute(&mut *connection)
-                .await?;
-        } else {
-            sqlx::query(
-                "insert into channel_overrides (channel_id, role_id, workspace_id, allow, deny)
-                 values ($1, $2, $3, $4, $5)
-                 on conflict (channel_id, role_id) do update set
-                     allow = excluded.allow, deny = excluded.deny",
-            )
-            .bind(channel_id)
-            .bind(role_id)
-            .bind(workspace_id)
-            .bind(db::workspace_bits(allow))
-            .bind(db::workspace_bits(deny))
-            .execute(&mut *connection)
-            .await?;
-        }
-        audit::record(
-            connection,
-            now,
-            Some(access.account_id),
-            About::Channel(workspace_id, channel_id),
-            &AuditEvent::ChannelOverrideSet {
-                role_id,
-                allow: result.allow.clone(),
-                deny: result.deny.clone(),
-            },
-        )
-        .await?;
-        let set = Event::ChannelOverrideSet {
-            workspace_id,
-            channel_id,
+    }
+    audit::record(
+        connection,
+        now,
+        Some(access.account_id),
+        About::Channel(workspace_id, channel_id),
+        &AuditEvent::ChannelOverrideSet {
             role_id,
             allow: result.allow.clone(),
             deny: result.deny.clone(),
-        };
-        events::publish(connection, now, &set).await?;
-        if previous != next {
-            crate::calls::store::mark_channel(connection, &app.calls, channel_id).await?;
-            let holders = Affected::WorkspaceRoleHolders(workspace_id, role_id);
-            events::permissions_changed(connection, now, holders, Some(workspace_id)).await?;
-        }
-        Ok(())
-    })?;
-    Ok(Json(result))
+        },
+    )
+    .await?;
+    let set = Event::ChannelOverrideSet {
+        workspace_id,
+        channel_id,
+        role_id,
+        allow: result.allow.clone(),
+        deny: result.deny.clone(),
+    };
+    events::publish(connection, now, &set).await?;
+    if previous != next {
+        crate::calls::store::mark_channel(connection, calls, channel_id).await?;
+        let holders = Affected::WorkspaceRoleHolders(workspace_id, role_id);
+        events::permissions_changed(connection, now, holders, Some(workspace_id)).await?;
+    }
+    Ok(result)
 }

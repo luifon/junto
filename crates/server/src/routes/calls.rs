@@ -473,60 +473,78 @@ pub async fn update_call_settings(
     ApiPath(channel_id): ApiPath<ChannelId>,
     ApiJson(body): ApiJson<UpdateCallSettings>,
 ) -> ApiResult<Json<Channel>> {
+    check_call_settings(&app, &body)?;
+    let now = app.now();
+    proof::limit(&app.calls.actions, bearer.0, now)?;
+    let channel = transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        update_call_settings_in(connection, &access, now, channel_id, &body).await
+    })?;
+    Ok(Json(channel))
+}
+
+/// Refuses a user limit outside the range of the server.
+pub(crate) fn check_call_settings(app: &AppState, change: &UpdateCallSettings) -> ApiResult<()> {
     let largest = app.config.limits.calls.largest_user_limit;
-    if let Some(Some(limit)) = body.user_limit
+    if let Some(Some(limit)) = change.user_limit
         && !(1..=largest).contains(&limit)
     {
         return Err(ApiError::invalid(format!(
             "user_limit is from 1 to {largest}"
         )));
     }
-    let now = app.now();
-    proof::limit(&app.calls.actions, bearer.0, now)?;
-    let channel = transact!(app, |connection| {
-        let access = Access::open(connection, &bearer, now).await?;
-        let voice = voice(connection, &access, channel_id).await?;
-        access.require(Request::Channel {
-            scope: &voice.scope,
-            permission: WorkspacePermission::ManageChannel,
-        })?;
-        let mut channel = voice.record.channel.clone();
-        if let Some(user_limit) = body.user_limit {
-            channel.user_limit = user_limit;
-        }
-        if let Some(hides_occupants) = body.hides_occupants {
-            channel.hides_occupants = hides_occupants;
-        }
-        if channel == voice.record.channel {
-            return Ok(channel);
-        }
-        let limit = channel
-            .user_limit
-            .map(i32::try_from)
-            .transpose()
-            .map_err(|error| ApiError::internal(&error))?;
-        sqlx::query("update channels set user_limit = $2, hides_occupants = $3 where id = $1")
-            .bind(channel_id)
-            .bind(limit)
-            .bind(channel.hides_occupants)
-            .execute(&mut *connection)
-            .await?;
-        let changed = AuditEvent::ChannelCallSettingsUpdated {
-            user_limit: channel.user_limit,
-            hides_occupants: channel.hides_occupants,
-        };
-        let actor = Some(access.account_id);
-        audit::record(connection, now, actor, voice.about(), &changed).await?;
-        let updated = Event::ChannelUpdated {
-            channel: channel.clone(),
-        };
-        events::publish(connection, now, &updated).await?;
-        if voice.record.channel.hides_occupants && !channel.hides_occupants {
-            crate::recordings::store::occupants_shown(connection, now, channel_id).await?;
-        }
-        Ok(channel)
+    Ok(())
+}
+
+/// Changes the settings of the call of a voice channel. `change` passed
+/// [`check_call_settings`].
+pub(crate) async fn update_call_settings_in(
+    connection: &mut PgConnection,
+    access: &Access,
+    now: OffsetDateTime,
+    channel_id: ChannelId,
+    change: &UpdateCallSettings,
+) -> ApiResult<Channel> {
+    let voice = voice(connection, access, channel_id).await?;
+    access.require(Request::Channel {
+        scope: &voice.scope,
+        permission: WorkspacePermission::ManageChannel,
     })?;
-    Ok(Json(channel))
+    let mut channel = voice.record.channel.clone();
+    if let Some(user_limit) = change.user_limit {
+        channel.user_limit = user_limit;
+    }
+    if let Some(hides_occupants) = change.hides_occupants {
+        channel.hides_occupants = hides_occupants;
+    }
+    if channel == voice.record.channel {
+        return Ok(channel);
+    }
+    let limit = channel
+        .user_limit
+        .map(i32::try_from)
+        .transpose()
+        .map_err(|error| ApiError::internal(&error))?;
+    sqlx::query("update channels set user_limit = $2, hides_occupants = $3 where id = $1")
+        .bind(channel_id)
+        .bind(limit)
+        .bind(channel.hides_occupants)
+        .execute(&mut *connection)
+        .await?;
+    let changed = AuditEvent::ChannelCallSettingsUpdated {
+        user_limit: channel.user_limit,
+        hides_occupants: channel.hides_occupants,
+    };
+    let actor = Some(access.account_id);
+    audit::record(connection, now, actor, voice.about(), &changed).await?;
+    let updated = Event::ChannelUpdated {
+        channel: channel.clone(),
+    };
+    events::publish(connection, now, &updated).await?;
+    if voice.record.channel.hides_occupants && !channel.hides_occupants {
+        crate::recordings::store::occupants_shown(connection, now, channel_id).await?;
+    }
+    Ok(channel)
 }
 
 /// Asks for the place of the caller in the call of a voice channel. The answer carries the
@@ -1256,6 +1274,7 @@ pub async fn join_move(
             entry_requests: Vec::new(),
             call: store::view(connection, &to).await?,
             key: to.key(),
+            name: store::display_name(connection, access.account_id).await?,
             room: to.room,
             identity: pending.identity,
         })
@@ -1470,6 +1489,46 @@ async fn set_block(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// The call of a voice channel, locked for a change, for a person who changes what another
+/// person in it may do: a holder of `permission`, or, when `presenter_counts`, the person who
+/// runs meeting mode in the call. `None` when the channel has no call.
+///
+/// In a voice channel that hides who is inside, a caller who is outside gets `not_in_call`,
+/// so that the answer does not tell who is inside (ADR 0504).
+async fn call_for_presenter_or(
+    connection: &mut PgConnection,
+    access: &Access,
+    voice: &Voice,
+    permission: WorkspacePermission,
+    presenter_counts: bool,
+) -> ApiResult<Option<CallRow>> {
+    let call = store::call(&mut *connection, By::Place(voice.place), true).await?;
+    if voice.record.channel.hides_occupants {
+        let caller = store::member_of(connection, access.account_id, false).await?;
+        let is_inside = match (&call, caller) {
+            (Some(call), Some(caller)) => caller.call_id == call.id,
+            _ => false,
+        };
+        if !is_inside {
+            return Err(not_in_call());
+        }
+    }
+    let presents = call.as_ref().is_some_and(|call| {
+        presenter_counts
+            && call
+                .meeting
+                .as_ref()
+                .is_some_and(|meeting| meeting.presenter == access.account_id)
+    });
+    if !presents {
+        access.require(Request::Channel {
+            scope: &voice.scope,
+            permission,
+        })?;
+    }
+    Ok(call)
+}
+
 async fn remove_block(
     app: &AppState,
     bearer: &Bearer,
@@ -1482,30 +1541,15 @@ async fn remove_block(
     transact!(app, |connection| {
         let access = Access::open(connection, bearer, now).await?;
         let voice = voice(connection, &access, channel_id).await?;
-        let call = store::call(connection, By::Place(voice.place), true).await?;
-        if voice.record.channel.hides_occupants {
-            let caller = store::member_of(connection, access.account_id, false).await?;
-            let is_inside = match (&call, caller) {
-                (Some(call), Some(caller)) => caller.call_id == call.id,
-                _ => false,
-            };
-            if !is_inside {
-                return Err(not_in_call());
-            }
-        }
-        let presents = call.as_ref().is_some_and(|call| {
-            block == Block::Microphone
-                && call
-                    .meeting
-                    .as_ref()
-                    .is_some_and(|meeting| meeting.presenter == access.account_id)
-        });
-        if !presents {
-            access.require(Request::Channel {
-                scope: &voice.scope,
-                permission: block.permission(),
-            })?;
-        }
+        let presenter_counts = block == Block::Microphone;
+        let call = call_for_presenter_or(
+            connection,
+            &access,
+            &voice,
+            block.permission(),
+            presenter_counts,
+        )
+        .await?;
         let call = call.ok_or_else(ApiError::not_found)?;
         let table = match block {
             Block::Microphone => "call_microphone_blocks",
@@ -1567,6 +1611,51 @@ pub async fn unblock_microphone(
     ApiPath((channel_id, account_id)): ApiPath<(ChannelId, AccountId)>,
 ) -> ApiResult<StatusCode> {
     remove_block(&app, &bearer, channel_id, account_id, Block::Microphone).await
+}
+
+/// Lowers the raised hand of a person in the call of a voice channel: the person who runs
+/// meeting mode, or a moderator with `mute_members` (ADR 0516). A hand that is not raised
+/// stays as it is.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/channels/{channel_id}/call/participants/{account_id}/hand",
+    tag = "calls",
+    params(("channel_id" = ChannelId, Path), ("account_id" = AccountId, Path)),
+    security(("session" = [])),
+    responses((status = 204), ApiError)
+)]
+pub async fn lower_participant_hand(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath((channel_id, account_id)): ApiPath<(ChannelId, AccountId)>,
+) -> ApiResult<StatusCode> {
+    let now = app.now();
+    proof::limit(&app.calls.actions, bearer.0, now)?;
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        let voice = voice(connection, &access, channel_id).await?;
+        let moderating = WorkspacePermission::MuteMembers;
+        let call = call_for_presenter_or(connection, &access, &voice, moderating, true)
+            .await?
+            .ok_or_else(ApiError::not_found)?;
+        let member = store::member_of(connection, account_id, true)
+            .await?
+            .filter(|member| member.call_id == call.id)
+            .ok_or_else(ApiError::not_found)?;
+        if member.hand_raised_at.is_some() {
+            sqlx::query(
+                "update call_members set hand_raised_at = null
+                 where call_id = $1 and account_id = $2",
+            )
+            .bind(call.id)
+            .bind(account_id)
+            .execute(&mut *connection)
+            .await?;
+            store::announce_participant(connection, now, &call, account_id).await?;
+        }
+        Ok(())
+    })?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Blocks the sound of a person in the call of a voice channel. The client of the person

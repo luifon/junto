@@ -16,7 +16,7 @@ use junto_server::events::connection;
 use junto_server::events::delivery::{self, Batch, Opened, Subscription};
 use junto_server::events::hub::Arrivals;
 use junto_server::events::transport::{Violation, server_socket};
-use junto_server::extract::Bearer;
+use junto_server::extract::{Bearer, Credential};
 use junto_server::secrets::hash_session_token;
 use reqwest::StatusCode;
 use serde_json::{Value, json};
@@ -488,7 +488,7 @@ async fn the_database_refuses_an_event_that_is_too_large() {
 
 pub fn opened(member: &Member) -> Opened {
     Opened {
-        bearer: Bearer(hash_session_token(&member.token)),
+        bearer: Bearer(hash_session_token(&member.token), Credential::Session),
         account_id: member.account_id,
         device_id: member.device_id,
         session_id: uuid::Uuid::nil(),

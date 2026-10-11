@@ -87,6 +87,22 @@ pub fn hash_session_token(token: &str) -> [u8; 32] {
     hasher.finalize().into()
 }
 
+pub fn new_access_token() -> Result<String, RandomnessUnavailable> {
+    let bytes = random_bytes::<32>()?;
+    Ok(format!(
+        "{}{}",
+        junto_protocol::access_token::ACCESS_TOKEN_PREFIX,
+        URL_SAFE_NO_PAD.encode(bytes)
+    ))
+}
+
+pub fn hash_access_token(token: &str) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"junto:access-token:");
+    hasher.update(token.as_bytes());
+    hasher.finalize().into()
+}
+
 pub fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     left.ct_eq(right).into()
 }
@@ -142,6 +158,15 @@ mod tests {
         assert_eq!(token.len(), 4 + 43);
         assert_ne!(token, new_session_token().unwrap());
         assert_ne!(hash_session_token(&token), hash_session_token("jst_other"));
+    }
+
+    #[test]
+    fn access_token_is_opaque_and_hashed_apart_from_a_session_token() {
+        let token = new_access_token().unwrap();
+        assert!(token.starts_with("jat_"));
+        assert_eq!(token.len(), 4 + 43);
+        assert_ne!(token, new_access_token().unwrap());
+        assert_ne!(hash_access_token(&token), hash_session_token(&token));
     }
 
     #[test]

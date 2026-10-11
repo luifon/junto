@@ -117,14 +117,6 @@ async fn round3_unread_indexes_cover_place() {
         .await
         .ok::<Message>(StatusCode::CREATED);
     let mut db = server.db.acquire().await.unwrap();
-    sqlx::query("vacuum analyze thread_reads")
-        .execute(&mut *db)
-        .await
-        .unwrap();
-    sqlx::query("vacuum analyze message_mention_accounts")
-        .execute(&mut *db)
-        .await
-        .unwrap();
     sqlx::query("set enable_seqscan=off")
         .execute(&mut *db)
         .await
@@ -133,18 +125,6 @@ async fn round3_unread_indexes_cover_place() {
         .execute(&mut *db)
         .await
         .unwrap();
-    let plan: Value = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "explain(analyze,format json) {}",
-        junto_server::messages::threads::UNREAD_QUERY
-    )))
-    .bind(reader.account_id)
-    .bind(vec![uuid::Uuid::nil()])
-    .bind(uuid::Uuid::max())
-    .bind(uuid::Uuid::max())
-    .bind(201_i64)
-    .fetch_one(&mut *db)
-    .await
-    .unwrap();
     fn covered(plan: &Value, index: &str) -> bool {
         (plan["Index Name"] == index
             && plan["Node Type"] == "Index Only Scan"
@@ -153,7 +133,36 @@ async fn round3_unread_indexes_cover_place() {
                 .as_array()
                 .is_some_and(|children| children.iter().any(|child| covered(child, index)))
     }
-    for index in ["thread_reads_unread", "message_mention_inbox"] {
+    let indexes = ["thread_reads_unread", "message_mention_inbox"];
+    // VACUUM marks a page as visible to all only when no transaction of this database holds
+    // a snapshot from before the last change of the page. The tasks of the server hold such
+    // snapshots for moments, so the test repeats VACUUM until one ran without them.
+    let mut plan = Value::Null;
+    for _ in 0..200 {
+        for table in ["thread_reads", "message_mention_accounts"] {
+            sqlx::query(sqlx::AssertSqlSafe(format!("vacuum analyze {table}")))
+                .execute(&mut *db)
+                .await
+                .unwrap();
+        }
+        plan = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "explain(analyze,format json) {}",
+            junto_server::messages::threads::UNREAD_QUERY
+        )))
+        .bind(reader.account_id)
+        .bind(vec![uuid::Uuid::nil()])
+        .bind(uuid::Uuid::max())
+        .bind(uuid::Uuid::max())
+        .bind(201_i64)
+        .fetch_one(&mut *db)
+        .await
+        .unwrap();
+        if indexes.iter().all(|index| covered(&plan[0]["Plan"], index)) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    for index in indexes {
         assert!(
             covered(&plan[0]["Plan"], index),
             "unreadable places must not fetch heap rows: {plan}"

@@ -8,6 +8,7 @@
 //! event of an unknown type, an error with an unknown code and an audit entry with an unknown
 //! action are read as explicit unknown values (ADR 0206, ADR 0209). Writing is strict.
 
+pub mod access_token;
 pub mod account;
 pub mod audit;
 pub mod auth;
@@ -26,6 +27,7 @@ pub mod secret;
 pub mod server;
 pub mod snapshot;
 pub mod structure;
+pub mod structure_file;
 pub mod transcript;
 
 pub use junto_authz::{ServerPermission, WorkspacePermission};

@@ -16,6 +16,7 @@ Crates:
 - `junto-authz` holds the permission model and the evaluation function. It performs no input or output and depends on no other project crate.
 - `junto-protocol` holds the request, response and event types, the API version and the error codes. It depends on `junto-authz` for the permission names.
 - `junto-server` holds the server binary. It depends on both.
+- `junto-setup` holds the setup tool (ADR 0212). It depends on `junto-protocol` and not on the server.
 - The workspace forbids `unsafe` code and denies `unwrap` and `expect` outside tests.
 
 Configuration:

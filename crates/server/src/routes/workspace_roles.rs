@@ -9,6 +9,7 @@ use junto_protocol::events::Event;
 use junto_protocol::ids::{AccountId, ChannelId, WorkspaceId, WorkspaceRoleId};
 use junto_protocol::roles::{CreateWorkspaceRole, UpdateWorkspaceRole, WorkspaceRole};
 use sqlx::PgConnection;
+use time::OffsetDateTime;
 
 use crate::access::Access;
 use crate::audit::{self, About};
@@ -119,7 +120,7 @@ pub async fn role_ids_of(
 /// member, whose permissions changed.
 async fn announce_roles(
     connection: &mut PgConnection,
-    now: time::OffsetDateTime,
+    now: OffsetDateTime,
     workspace_id: WorkspaceId,
     account_id: AccountId,
 ) -> ApiResult<()> {
@@ -158,51 +159,65 @@ pub async fn create_workspace_role(
         is_everyone: false,
     };
     let now = app.now();
+    let ceiling = app.config.limits.most_roles_per_workspace;
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        let scope = access.workspace(connection, workspace_id).await?;
-        access.require(Request::ManageWorkspaceRoles {
-            scope: &scope,
-            granting: permissions,
-            in_channels: &[],
-        })?;
-        let existing: i64 =
-            sqlx::query_scalar("select count(*) from workspace_roles where workspace_id = $1")
-                .bind(workspace_id)
-                .fetch_one(&mut *connection)
-                .await?;
-        if existing >= i64::from(app.config.limits.most_roles_per_workspace) {
-            return Err(ApiError::limit_reached(
-                "the workspace has the largest number of roles",
-            ));
-        }
-        sqlx::query(
-            "insert into workspace_roles (id, workspace_id, name, permissions, created_at)
-             values ($1, $2, $3, $4, $5)",
-        )
-        .bind(role.id)
-        .bind(workspace_id)
-        .bind(&role.name)
-        .bind(db::workspace_bits(permissions))
-        .bind(now)
-        .execute(&mut *connection)
-        .await?;
-        audit::record(
-            connection,
-            now,
-            Some(access.account_id),
-            About::Workspace(workspace_id),
-            &AuditEvent::WorkspaceRoleCreated {
-                role_id: role.id,
-                name: role.name.clone(),
-                permissions: role.permissions.clone(),
-            },
-        )
-        .await?;
-        let created = Event::WorkspaceRoleCreated { role: role.clone() };
-        events::publish(connection, now, &created).await
+        create(connection, &access, now, &role, ceiling).await
     })?;
     Ok((StatusCode::CREATED, Json(role)))
+}
+
+/// Creates `role` in its workspace, which holds at most `ceiling` roles.
+pub(crate) async fn create(
+    connection: &mut PgConnection,
+    access: &Access,
+    now: OffsetDateTime,
+    role: &WorkspaceRole,
+    ceiling: u32,
+) -> ApiResult<()> {
+    let workspace_id = role.workspace_id;
+    let permissions: WorkspacePermissions = role.permissions.iter().copied().collect();
+    let scope = access.workspace(connection, workspace_id).await?;
+    access.require(Request::ManageWorkspaceRoles {
+        scope: &scope,
+        granting: permissions,
+        in_channels: &[],
+    })?;
+    let existing: i64 =
+        sqlx::query_scalar("select count(*) from workspace_roles where workspace_id = $1")
+            .bind(workspace_id)
+            .fetch_one(&mut *connection)
+            .await?;
+    if existing >= i64::from(ceiling) {
+        return Err(ApiError::limit_reached(
+            "the workspace has the largest number of roles",
+        ));
+    }
+    sqlx::query(
+        "insert into workspace_roles (id, workspace_id, name, permissions, created_at)
+         values ($1, $2, $3, $4, $5)",
+    )
+    .bind(role.id)
+    .bind(workspace_id)
+    .bind(&role.name)
+    .bind(db::workspace_bits(permissions))
+    .bind(now)
+    .execute(&mut *connection)
+    .await?;
+    audit::record(
+        connection,
+        now,
+        Some(access.account_id),
+        About::Workspace(workspace_id),
+        &AuditEvent::WorkspaceRoleCreated {
+            role_id: role.id,
+            name: role.name.clone(),
+            permissions: role.permissions.clone(),
+        },
+    )
+    .await?;
+    let created = Event::WorkspaceRoleCreated { role: role.clone() };
+    events::publish(connection, now, &created).await
 }
 
 /// Changes the name or the permissions of a workspace role.
@@ -233,53 +248,72 @@ pub async fn update_workspace_role(
     let now = app.now();
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        let scope = access.workspace(connection, workspace_id).await?;
-        access.require(Request::Workspace {
-            scope: &scope,
-            permission: WorkspacePermission::ManageRoles,
-        })?;
-        let stored = locked_role(connection, workspace_id, role_id).await?;
-        let permissions = new_permissions.unwrap_or(stored.permissions);
-        access.require(Request::ManageWorkspaceRoles {
-            scope: &scope,
-            granting: permissions.difference(stored.permissions),
-            in_channels: &[],
-        })?;
-
-        let role = WorkspaceRole {
-            id: role_id,
-            workspace_id,
-            name: new_name.clone().unwrap_or(stored.name),
-            permissions: db::workspace_list(permissions),
-            is_everyone: stored.is_everyone,
-        };
-        sqlx::query("update workspace_roles set name = $2, permissions = $3 where id = $1")
-            .bind(role_id)
-            .bind(&role.name)
-            .bind(db::workspace_bits(permissions))
-            .execute(&mut *connection)
-            .await?;
-        audit::record(
+        update(
             connection,
+            &access,
             now,
-            Some(access.account_id),
-            About::Workspace(workspace_id),
-            &AuditEvent::WorkspaceRoleUpdated {
-                role_id,
-                name: role.name.clone(),
-                permissions: role.permissions.clone(),
-            },
+            (workspace_id, role_id),
+            new_name.clone(),
+            new_permissions,
         )
-        .await?;
-        let updated = Event::WorkspaceRoleUpdated { role: role.clone() };
-        events::publish(connection, now, &updated).await?;
-        if permissions != stored.permissions {
-            let holders = Affected::WorkspaceRoleHolders(workspace_id, role_id);
-            events::permissions_changed(connection, now, holders, Some(workspace_id)).await?;
-        }
-        Ok(role)
+        .await
     })
     .map(Json)
+}
+
+pub(crate) async fn update(
+    connection: &mut PgConnection,
+    access: &Access,
+    now: OffsetDateTime,
+    (workspace_id, role_id): (WorkspaceId, WorkspaceRoleId),
+    new_name: Option<String>,
+    new_permissions: Option<WorkspacePermissions>,
+) -> ApiResult<WorkspaceRole> {
+    let scope = access.workspace(connection, workspace_id).await?;
+    access.require(Request::Workspace {
+        scope: &scope,
+        permission: WorkspacePermission::ManageRoles,
+    })?;
+    let stored = locked_role(connection, workspace_id, role_id).await?;
+    let permissions = new_permissions.unwrap_or(stored.permissions);
+    access.require(Request::ManageWorkspaceRoles {
+        scope: &scope,
+        granting: permissions.difference(stored.permissions),
+        in_channels: &[],
+    })?;
+
+    let role = WorkspaceRole {
+        id: role_id,
+        workspace_id,
+        name: new_name.unwrap_or(stored.name),
+        permissions: db::workspace_list(permissions),
+        is_everyone: stored.is_everyone,
+    };
+    sqlx::query("update workspace_roles set name = $2, permissions = $3 where id = $1")
+        .bind(role_id)
+        .bind(&role.name)
+        .bind(db::workspace_bits(permissions))
+        .execute(&mut *connection)
+        .await?;
+    audit::record(
+        connection,
+        now,
+        Some(access.account_id),
+        About::Workspace(workspace_id),
+        &AuditEvent::WorkspaceRoleUpdated {
+            role_id,
+            name: role.name.clone(),
+            permissions: role.permissions.clone(),
+        },
+    )
+    .await?;
+    let updated = Event::WorkspaceRoleUpdated { role: role.clone() };
+    events::publish(connection, now, &updated).await?;
+    if permissions != stored.permissions {
+        let holders = Affected::WorkspaceRoleHolders(workspace_id, role_id);
+        events::permissions_changed(connection, now, holders, Some(workspace_id)).await?;
+    }
+    Ok(role)
 }
 
 /// Gives a workspace role to a member of the workspace.

@@ -733,6 +733,7 @@ async fn every_request_that_changes_a_call_is_limited() {
             format!("{participant}/sound-block"),
             none.clone(),
         ),
+        (Method::DELETE, format!("{participant}/hand"), none.clone()),
         (Method::DELETE, participant.clone(), none.clone()),
         (
             Method::PUT,

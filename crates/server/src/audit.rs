@@ -1,10 +1,15 @@
 use junto_protocol::audit::{AuditEntry, AuditEvent};
-use junto_protocol::ids::{AccountId, AuditEntryId, ChannelId, WorkspaceId};
+use junto_protocol::ids::{AccessTokenId, AccountId, AuditEntryId, ChannelId, WorkspaceId};
 use sqlx::PgConnection;
 use sqlx::types::Json;
 use time::OffsetDateTime;
 
 use crate::error::{ApiError, ApiResult};
+
+/// The setting of a transaction that names the access token of its request. `Access::open`
+/// sets it, and every entry of the transaction is written with it, so that no writer of an
+/// entry can leave the token out (ADR 0210).
+pub const ACCESS_TOKEN_SETTING: &str = "junto.access_token";
 
 /// What an entry is about. It decides who can read the entry.
 #[derive(Debug, Clone, Copy)]
@@ -28,8 +33,9 @@ pub async fn record(
     };
     sqlx::query(
         "insert into audit_entries
-             (id, occurred_at, actor_id, workspace_id, channel_id, action, event)
-         values ($1, $2, $3, $4, $5, $6, $7)",
+             (id, occurred_at, actor_id, workspace_id, channel_id, action, event,
+              access_token_id)
+         values ($1, $2, $3, $4, $5, $6, $7, nullif(current_setting($8, true), '')::uuid)",
     )
     .bind(AuditEntryId::generate())
     .bind(now)
@@ -38,6 +44,7 @@ pub async fn record(
     .bind(channel_id)
     .bind(event.action())
     .bind(Json(event))
+    .bind(ACCESS_TOKEN_SETTING)
     .execute(&mut *connection)
     .await?;
     if let Some(channel_id) = channel_id
@@ -101,12 +108,14 @@ pub type EntryRow = (
     Option<WorkspaceId>,
     Option<ChannelId>,
     Json<serde_json::Value>,
+    Option<AccessTokenId>,
 );
 
-pub const ENTRY_COLUMNS: &str = "id, occurred_at, actor_id, workspace_id, channel_id, event";
+pub const ENTRY_COLUMNS: &str =
+    "id, occurred_at, actor_id, workspace_id, channel_id, event, access_token_id";
 
 pub fn entry(row: EntryRow) -> ApiResult<AuditEntry> {
-    let (id, occurred_at, actor_id, workspace_id, channel_id, Json(event)) = row;
+    let (id, occurred_at, actor_id, workspace_id, channel_id, Json(event), access_token_id) = row;
     let event: AuditEvent =
         serde_json::from_value(event).map_err(|error| ApiError::internal(&error))?;
     if event == AuditEvent::Unknown {
@@ -118,6 +127,7 @@ pub fn entry(row: EntryRow) -> ApiResult<AuditEntry> {
         id,
         occurred_at,
         actor_id,
+        access_token_id,
         workspace_id,
         channel_id,
         event,

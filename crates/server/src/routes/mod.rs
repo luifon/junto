@@ -6,7 +6,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
 use junto_protocol::error::{ErrorBody, ErrorCode};
-use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
+use tower_http::trace::{DefaultOnResponse, TraceLayer};
 use tracing::Level;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
@@ -20,6 +20,7 @@ use crate::error::ApiError;
 use crate::rate_limit::{client_address, limiter_key};
 use crate::state::AppState;
 
+pub mod access_tokens;
 pub mod account;
 pub mod attachments;
 pub mod audit_log;
@@ -30,6 +31,7 @@ pub mod glossary;
 pub mod health;
 pub mod internal;
 pub mod invites;
+pub mod layout;
 pub mod messages;
 pub mod moderation;
 pub mod notifications;
@@ -41,6 +43,7 @@ pub mod server_info;
 pub mod server_roles;
 pub mod snapshot;
 pub mod stream;
+pub mod structure;
 pub mod threads;
 pub mod transcripts;
 pub mod workspace_roles;
@@ -66,6 +69,9 @@ pub const SESSION_SECURITY: &str = "session";
         (name = "joining", description = "Invites and join requests"),
         (name = "moderation", description = "Accounts, removal, bans and recovery"),
         (name = "server roles", description = "Roles that hold server permissions"),
+        (name = "access tokens", description = "Tokens of administrators for other programs"),
+        (name = "structure", description = "The whole structure of the server and changes \
+                                            of it in one request"),
         (name = "workspaces", description = "Workspaces, their members and roles"),
         (name = "channels", description = "Categories, channels and channel overrides"),
         (name = "calls", description = "Calls in voice channels and direct messages"),
@@ -84,7 +90,10 @@ impl Modify for SessionSecurity {
         let scheme = SecurityScheme::Http(
             HttpBuilder::new()
                 .scheme(HttpAuthScheme::Bearer)
-                .description(Some("The token of a session, from a login."))
+                .description(Some(
+                    "The token of a session, from a login. The routes that an access token \
+                     reaches (ADR 0210) take the access token in the same header.",
+                ))
                 .build(),
         );
         openapi
@@ -195,6 +204,13 @@ fn documented_routes() -> OpenApiRouter<AppState> {
             server_roles::unassign_server_role
         ))
         .routes(routes!(
+            access_tokens::create_access_token,
+            access_tokens::list_access_tokens
+        ))
+        .routes(routes!(access_tokens::revoke_access_token))
+        .routes(routes!(structure::get_structure))
+        .routes(routes!(structure::apply_structure_changes))
+        .routes(routes!(
             workspaces::list_workspaces,
             workspaces::create_workspace
         ))
@@ -238,6 +254,7 @@ fn documented_routes() -> OpenApiRouter<AppState> {
         .routes(routes!(calls::start_meeting, calls::end_meeting))
         .routes(routes!(calls::block_microphone, calls::unblock_microphone))
         .routes(routes!(calls::block_sound, calls::unblock_sound))
+        .routes(routes!(calls::lower_participant_hand))
         .routes(routes!(calls::disconnect_participant))
         .routes(routes!(calls::join_direct_call))
         .routes(routes!(calls::refuse_direct_call))
@@ -282,6 +299,8 @@ pub fn router(state: AppState) -> Router {
             internal::MEDIA_NOTIFICATIONS,
             axum::routing::post(internal::media_notification),
         )
+        .route(layout::INDEX, axum::routing::get(layout::index))
+        .route(layout::FILE, axum::routing::get(layout::file))
         .fallback(unknown_path)
         .method_not_allowed_fallback(wrong_method)
         .layer(middleware::from_fn_with_state(state.clone(), whole_body))
@@ -289,10 +308,22 @@ pub fn router(state: AppState) -> Router {
         .layer(middleware::from_fn_with_state(state.clone(), call_changes))
         .layer(
             TraceLayer::new_for_http()
-                .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+                .make_span_with(request_span)
                 .on_response(DefaultOnResponse::new().level(Level::INFO)),
         )
         .with_state(state)
+}
+
+/// The span of the log record of one request: the method and the path (ADR 0008). The query
+/// is left out, because the recorder loads the layout page with its room token in the query
+/// (ADR 0615).
+fn request_span<B>(request: &axum::http::Request<B>) -> tracing::Span {
+    tracing::span!(
+        Level::INFO,
+        "request",
+        method = %request.method(),
+        path = %request.uri().path(),
+    )
 }
 
 async fn unknown_path() -> ApiError {
@@ -403,4 +434,61 @@ async fn whole_body(State(app): State<AppState>, request: Request, next: Next) -
     let response = next.run(Request::from_parts(parts, Body::from(kept))).await;
     drop(reservation);
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+
+    #[derive(Clone, Default)]
+    struct Captured(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Captured {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .map_err(|_| std::io::Error::other("poisoned"))?
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_log_record_of_a_request_has_the_path_and_not_the_query() {
+        let captured = Captured::default();
+        let writer = captured.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        let request = axum::http::Request::builder()
+            .method(Method::GET)
+            .uri("/recording-layout/?url=ws%3A%2F%2Fmedia&token=secret-room-token&layout=")
+            .body(())
+            .unwrap_or_default();
+        tracing::subscriber::with_default(subscriber, || {
+            let span = request_span(&request);
+            let _entered = span.enter();
+            tracing::info!("finished processing request");
+        });
+        let logged = String::from_utf8_lossy(
+            &captured
+                .0
+                .lock()
+                .map(|bytes| bytes.clone())
+                .unwrap_or_default(),
+        )
+        .into_owned();
+        assert!(logged.contains("method=GET"), "{logged}");
+        assert!(logged.contains("path=/recording-layout/"), "{logged}");
+        assert!(!logged.contains("secret-room-token"), "{logged}");
+        assert!(!logged.contains("token="), "{logged}");
+    }
 }

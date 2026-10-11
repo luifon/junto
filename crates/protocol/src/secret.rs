@@ -65,6 +65,11 @@ secret_text!(
     SessionToken
 );
 secret_text!(
+    /// The opaque access token of an administrator (ADR 0203). It is sent as
+    /// `Authorization: Bearer <token>` and is shown once, when it is created.
+    AccessToken
+);
+secret_text!(
     /// The one-time code that the first start of a server prints.
     OwnerCode
 );
@@ -95,12 +100,15 @@ mod tests {
             serde_json::to_string(&token).unwrap(),
             "\"jst_secret-value\""
         );
+        let token = AccessToken::new("jat_secret-value");
+        assert_eq!(format!("{token:?}"), "AccessToken(redacted)");
     }
 
     #[test]
     fn a_secret_erases_its_text() {
         fn erased_when_dropped<T: ZeroizeOnDrop>() {}
         erased_when_dropped::<SessionToken>();
+        erased_when_dropped::<AccessToken>();
         erased_when_dropped::<OwnerCode>();
         erased_when_dropped::<InviteCode>();
         erased_when_dropped::<LinkCode>();

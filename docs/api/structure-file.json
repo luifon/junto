@@ -1,0 +1,313 @@
+{
+  "$ref": "#/components/schemas/StructureFile",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "components": {
+    "schemas": {
+      "CategoryEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/StructureId"
+          },
+          "name": {
+            "type": "string"
+          },
+          "position": {
+            "description": "Absent: a new category goes after the last one, an existing one keeps its position.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
+      },
+      "ChannelEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/StructureId",
+                "description": "The identifier of a category of the same workspace. `null`: no category. Absent: a\nnew channel has no category, an existing channel keeps its category."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hides_occupants": {
+            "description": "For a voice channel only.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "id": {
+            "$ref": "#/components/schemas/StructureId"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ChannelKind",
+            "description": "The kind of a channel does not change."
+          },
+          "name": {
+            "type": "string"
+          },
+          "overrides": {
+            "description": "The overrides that the file states. An override of a role that is absent here is\nkept; an override with two empty sets is removed.",
+            "items": {
+              "$ref": "#/components/schemas/OverrideEntry"
+            },
+            "type": "array"
+          },
+          "permanent_messages": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "position": {
+            "description": "Absent: a new channel goes after the last one, an existing one keeps its position.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "user_limit": {
+            "description": "For a voice channel only. `null`: no limit.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "ChannelKind": {
+        "enum": [
+          "text",
+          "voice"
+        ],
+        "type": "string"
+      },
+      "Deletions": {
+        "additionalProperties": false,
+        "properties": {
+          "channels": {
+            "description": "The identifiers of the channels to delete.",
+            "items": {
+              "$ref": "#/components/schemas/StructureId"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "OverrideEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "allow": {
+            "items": {
+              "$ref": "#/components/schemas/WorkspacePermission"
+            },
+            "type": "array"
+          },
+          "deny": {
+            "items": {
+              "$ref": "#/components/schemas/WorkspacePermission"
+            },
+            "type": "array"
+          },
+          "role": {
+            "$ref": "#/components/schemas/StructureId",
+            "description": "The identifier of a role of the same workspace."
+          }
+        },
+        "required": [
+          "role"
+        ],
+        "type": "object"
+      },
+      "RoleEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "everyone": {
+            "description": "True for the role that every member holds. An entry with this mark stands for that\nrole of its workspace, whatever its identifier is.",
+            "type": "boolean"
+          },
+          "id": {
+            "$ref": "#/components/schemas/StructureId"
+          },
+          "name": {
+            "type": "string"
+          },
+          "permissions": {
+            "description": "Absent: a new role has no permission, an existing role keeps its permissions.",
+            "items": {
+              "$ref": "#/components/schemas/WorkspacePermission"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
+      },
+      "ServerPermission": {
+        "description": "A permission that acts on the whole server. The number is the bit of the stored set.",
+        "enum": [
+          "Administrator",
+          "CreateWorkspace",
+          "CreateInvites",
+          "ApproveJoinRequests",
+          "BanMembers",
+          "ViewServerAuditLog"
+        ],
+        "type": "string"
+      },
+      "ServerRoleEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/StructureId"
+          },
+          "name": {
+            "type": "string"
+          },
+          "permissions": {
+            "description": "Absent: a new role has no permission, an existing role keeps its permissions.",
+            "items": {
+              "$ref": "#/components/schemas/ServerPermission"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
+      },
+      "StructureFile": {
+        "additionalProperties": false,
+        "description": "The structure of a server: its server roles and its workspaces with their roles,\ncategories, channels and overrides.\n\nAn entry is matched by its identifier. An entry that is absent is kept as it is. In an\nentry, an absent optional field keeps its value. A file contains no member, no message\nand no secret.",
+        "properties": {
+          "delete": {
+            "$ref": "#/components/schemas/Deletions",
+            "description": "The entries that applying the file deletes. Nothing else is deleted."
+          },
+          "format": {
+            "description": "The version of the file format: 1.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "server_roles": {
+            "items": {
+              "$ref": "#/components/schemas/ServerRoleEntry"
+            },
+            "type": "array"
+          },
+          "workspaces": {
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceEntry"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "format"
+        ],
+        "type": "object"
+      },
+      "StructureId": {
+        "description": "Identifies one entry of a structure file (ADR 0211). It is the identifier of the\nobject, or the identifier under which a structure file created the object.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "WorkspaceEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "categories": {
+            "items": {
+              "$ref": "#/components/schemas/CategoryEntry"
+            },
+            "type": "array"
+          },
+          "channels": {
+            "items": {
+              "$ref": "#/components/schemas/ChannelEntry"
+            },
+            "type": "array"
+          },
+          "default": {
+            "description": "True for the default workspace. An entry with this mark whose identifier the server\ndoes not know stands for the default workspace of the server.",
+            "type": "boolean"
+          },
+          "id": {
+            "$ref": "#/components/schemas/StructureId"
+          },
+          "name": {
+            "type": "string"
+          },
+          "roles": {
+            "items": {
+              "$ref": "#/components/schemas/RoleEntry"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
+      },
+      "WorkspacePermission": {
+        "description": "A permission inside one workspace. The number is the bit of the stored set.",
+        "enum": [
+          "ViewChannel",
+          "ManageRoles",
+          "ManageChannel",
+          "ManageMessages",
+          "MentionEveryone",
+          "ManageGlossary",
+          "RecordCalls",
+          "ManageRecordings",
+          "ExportChannel",
+          "MoveMembers",
+          "MuteMembers",
+          "DeafenMembers",
+          "DisconnectMembers",
+          "LockRoom",
+          "RunMeetingMode",
+          "ViewAuditEntries"
+        ],
+        "type": "string"
+      }
+    }
+  },
+  "description": "The structure of a Junto server as the setup tool writes and reads it: format 1. An entry is matched by its identifier; an entry that is absent is kept; a deletion is listed under `delete`.",
+  "title": "Junto structure file"
+}

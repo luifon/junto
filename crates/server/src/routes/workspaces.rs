@@ -5,7 +5,10 @@ use junto_authz::{Request, ServerPermission};
 use junto_protocol::audit::AuditEvent;
 use junto_protocol::events::Event;
 use junto_protocol::ids::{AccountId, WorkspaceId, WorkspaceRoleId};
+use junto_protocol::roles::WorkspaceRole;
 use junto_protocol::structure::{CreateWorkspace, UpdateWorkspace, Workspace, WorkspaceMember};
+use sqlx::PgConnection;
+use time::OffsetDateTime;
 
 use crate::access::Access;
 use crate::audit::{self, About};
@@ -69,42 +72,48 @@ pub async fn create_workspace(
 ) -> ApiResult<(StatusCode, Json<Workspace>)> {
     let name = validate::name("name", &body.name)?;
     let now = app.now();
-    let workspace_id = transact!(app, |connection| {
+    let (workspace, _) = transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        access.require(Request::Server(ServerPermission::CreateWorkspace))?;
-        let (workspace_id, everyone) = bootstrap::create_workspace(connection, &name, now).await?;
-        let created = Event::WorkspaceCreated {
-            workspace: Workspace {
-                id: workspace_id,
-                name: name.clone(),
-                is_default: false,
-            },
-        };
-        events::publish(connection, now, &created).await?;
-        let role = Event::WorkspaceRoleCreated { role: everyone };
-        events::publish(connection, now, &role).await?;
-        store::add_members(connection, now, access.account_id, &[workspace_id]).await?;
-        audit::record(
-            connection,
-            now,
-            Some(access.account_id),
-            About::Server,
-            &AuditEvent::WorkspaceCreated {
-                workspace_id,
-                name: name.clone(),
-            },
-        )
-        .await?;
-        Ok(workspace_id)
+        create(connection, &access, now, &name).await
     })?;
-    Ok((
-        StatusCode::CREATED,
-        Json(Workspace {
-            id: workspace_id,
-            name,
-            is_default: false,
-        }),
-    ))
+    Ok((StatusCode::CREATED, Json(workspace)))
+}
+
+/// Creates a workspace with its "everyone" role. The caller becomes its first member.
+pub(crate) async fn create(
+    connection: &mut PgConnection,
+    access: &Access,
+    now: OffsetDateTime,
+    name: &str,
+) -> ApiResult<(Workspace, WorkspaceRole)> {
+    access.require(Request::Server(ServerPermission::CreateWorkspace))?;
+    let (workspace_id, everyone) = bootstrap::create_workspace(connection, name, now).await?;
+    let workspace = Workspace {
+        id: workspace_id,
+        name: name.to_owned(),
+        is_default: false,
+    };
+    let created = Event::WorkspaceCreated {
+        workspace: workspace.clone(),
+    };
+    events::publish(connection, now, &created).await?;
+    let role = Event::WorkspaceRoleCreated {
+        role: everyone.clone(),
+    };
+    events::publish(connection, now, &role).await?;
+    store::add_members(connection, now, access.account_id, &[workspace_id]).await?;
+    audit::record(
+        connection,
+        now,
+        Some(access.account_id),
+        About::Server,
+        &AuditEvent::WorkspaceCreated {
+            workspace_id,
+            name: name.to_owned(),
+        },
+    )
+    .await?;
+    Ok((workspace, everyone))
 }
 
 /// Renames a workspace.
@@ -127,39 +136,49 @@ pub async fn update_workspace(
     let now = app.now();
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        access.require(Request::Server(ServerPermission::Administrator))?;
-        let renamed = sqlx::query("update workspaces set name = $2 where id = $1")
-            .bind(workspace_id)
-            .bind(&name)
-            .execute(&mut *connection)
-            .await?;
-        if renamed.rows_affected() == 0 {
-            return Err(ApiError::not_found());
-        }
-        let default_workspace = store::default_workspace(connection).await?;
-        audit::record(
-            connection,
-            now,
-            Some(access.account_id),
-            About::Server,
-            &AuditEvent::WorkspaceRenamed {
-                workspace_id,
-                name: name.clone(),
-            },
-        )
-        .await?;
-        let workspace = Workspace {
-            id: workspace_id,
-            name: name.clone(),
-            is_default: workspace_id == default_workspace,
-        };
-        let updated = Event::WorkspaceUpdated {
-            workspace: workspace.clone(),
-        };
-        events::publish(connection, now, &updated).await?;
-        Ok(workspace)
+        rename(connection, &access, now, workspace_id, &name).await
     })
     .map(Json)
+}
+
+pub(crate) async fn rename(
+    connection: &mut PgConnection,
+    access: &Access,
+    now: OffsetDateTime,
+    workspace_id: WorkspaceId,
+    name: &str,
+) -> ApiResult<Workspace> {
+    access.require(Request::Server(ServerPermission::Administrator))?;
+    let renamed = sqlx::query("update workspaces set name = $2 where id = $1")
+        .bind(workspace_id)
+        .bind(name)
+        .execute(&mut *connection)
+        .await?;
+    if renamed.rows_affected() == 0 {
+        return Err(ApiError::not_found());
+    }
+    let default_workspace = store::default_workspace(connection).await?;
+    audit::record(
+        connection,
+        now,
+        Some(access.account_id),
+        About::Server,
+        &AuditEvent::WorkspaceRenamed {
+            workspace_id,
+            name: name.to_owned(),
+        },
+    )
+    .await?;
+    let workspace = Workspace {
+        id: workspace_id,
+        name: name.to_owned(),
+        is_default: workspace_id == default_workspace,
+    };
+    let updated = Event::WorkspaceUpdated {
+        workspace: workspace.clone(),
+    };
+    events::publish(connection, now, &updated).await?;
+    Ok(workspace)
 }
 
 /// The members of a workspace with their roles.

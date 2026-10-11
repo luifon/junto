@@ -999,6 +999,7 @@ dependencies = [
  "hyper-util",
  "junto-authz",
  "junto-protocol",
+ "junto-setup",
  "reqwest 0.13.5",
  "rustix",
  "serde",
@@ -1016,6 +1017,18 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "uuid",
+]
+
+[[package]]
+name = "junto-setup"
+version = "0.1.0"
+dependencies = [
+ "junto-protocol",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]

@@ -27,6 +27,8 @@ pub mod secrets;
 pub mod state;
 pub mod storage;
 pub mod store;
+pub mod structure;
+pub mod tokens;
 pub mod validate;
 
 use std::net::SocketAddr;
@@ -45,6 +47,16 @@ pub const OPENAPI_DOCUMENT_PATH: &str = "docs/api/openapi.json";
 
 /// The relative path of the committed description of the event stream.
 pub const EVENTS_DOCUMENT_PATH: &str = "docs/api/events.json";
+
+/// The relative path of the committed JSON Schema of the structure file.
+pub const STRUCTURE_FILE_DOCUMENT_PATH: &str = "docs/api/structure-file.json";
+
+/// The JSON Schema of the structure file that the setup tool writes and reads (ADR 0204).
+pub fn structure_file_document() -> Result<String, serde_json::Error> {
+    let mut document = serde_json::to_string_pretty(&structure::file_schema()?)?;
+    document.push('\n');
+    Ok(document)
+}
 
 pub fn openapi_document() -> Result<String, serde_json::Error> {
     let mut document = serde_json::to_string_pretty(&routes::openapi())?;
