@@ -218,6 +218,64 @@ pub(crate) async fn update(
     Ok(role)
 }
 
+/// Deletes a server role. No account holds it afterwards.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/server-roles/{role_id}",
+    tag = "server roles",
+    params(("role_id" = ServerRoleId, Path)),
+    security(("session" = [])),
+    responses((status = 204), ApiError)
+)]
+pub async fn delete_server_role(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath(role_id): ApiPath<ServerRoleId>,
+) -> ApiResult<StatusCode> {
+    let now = app.now();
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        delete(connection, &access, now, role_id).await
+    })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn delete(
+    connection: &mut PgConnection,
+    access: &Access,
+    now: OffsetDateTime,
+    role_id: ServerRoleId,
+) -> ApiResult<()> {
+    access.require(Request::ManageServerRoles {
+        granting: ServerPermissions::EMPTY,
+    })?;
+    let (name, permissions) = locked_role(connection, role_id).await?;
+    let holders = events::Receivers::ServerRoleHolders(role_id);
+    let holders = events::permissions_changed_for(connection, now, holders, None).await?;
+    sqlx::query("delete from structure_identifiers where kind = 'server_role' and object_id = $1")
+        .bind(role_id)
+        .execute(&mut *connection)
+        .await?;
+    sqlx::query("delete from server_roles where id = $1")
+        .bind(role_id)
+        .execute(&mut *connection)
+        .await?;
+    audit::record(
+        connection,
+        now,
+        Some(access.account_id),
+        About::Server,
+        &AuditEvent::ServerRoleDeleted {
+            role_id,
+            name,
+            permissions: db::server_list(permissions),
+            holders: u32::try_from(holders).map_err(|error| ApiError::internal(&error))?,
+        },
+    )
+    .await?;
+    events::publish(connection, now, &Event::ServerRoleDeleted { role_id }).await
+}
+
 /// Records a change of the server roles of an account: for the people who list accounts, and
 /// for the account, whose permissions changed.
 async fn announce_roles(

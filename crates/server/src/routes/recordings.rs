@@ -264,6 +264,31 @@ pub(crate) async fn readable(
     recording_id: RecordingId,
     for_change: bool,
 ) -> ApiResult<(RecordingRow, ChannelScope)> {
+    let (row, scope, _) = read_by(connection, access, recording_id, for_change).await?;
+    Ok((row, scope))
+}
+
+/// Like [`readable`], for a route that changes the recording or its transcript. The
+/// recording of an archived channel takes no change (ADR 0410).
+pub(crate) async fn changeable(
+    connection: &mut PgConnection,
+    access: &Access,
+    recording_id: RecordingId,
+    for_change: bool,
+) -> ApiResult<(RecordingRow, ChannelScope)> {
+    let (row, scope, archived) = read_by(connection, access, recording_id, for_change).await?;
+    if archived {
+        return Err(crate::access::archived());
+    }
+    Ok((row, scope))
+}
+
+async fn read_by(
+    connection: &mut PgConnection,
+    access: &Access,
+    recording_id: RecordingId,
+    for_change: bool,
+) -> ApiResult<(RecordingRow, ChannelScope, bool)> {
     let row = store::recording(&mut *connection, Of::Id(recording_id), false)
         .await?
         .ok_or_else(ApiError::not_found)?;
@@ -278,13 +303,14 @@ pub(crate) async fn readable(
             return Err(ApiError::not_found());
         }
     }
+    let archived = record.archived_at.is_some();
     if !for_change {
-        return Ok((row, scope));
+        return Ok((row, scope, archived));
     }
     let locked = store::recording(connection, Of::Id(recording_id), true)
         .await?
         .ok_or_else(ApiError::not_found)?;
-    Ok((locked, scope))
+    Ok((locked, scope, archived))
 }
 
 /// One recording with its segments. The caller may see its voice channel. While the call of
@@ -334,7 +360,7 @@ pub async fn remove_recording(
     let now = app.now();
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        let (recording, scope) = readable(connection, &access, recording_id, true).await?;
+        let (recording, scope) = changeable(connection, &access, recording_id, true).await?;
         access.require(Request::Channel {
             scope: &scope,
             permission: WorkspacePermission::ManageRecordings,

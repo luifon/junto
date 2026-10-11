@@ -21,19 +21,20 @@ File format 1:
 - An object of a file with a field that the format does not name is refused, so that a misspelled field is not ignored.
 - An entry has `id` and `name`; a channel also has `kind`. Every other field is optional. An absent field keeps the value of an existing object and takes the default of the server for a new one. `category: null` and `user_limit: null` remove the value.
 - An entry that a file does not hold is kept. An override that a channel entry does not state is kept; an override with two empty sets removes the override.
-- `delete.channels` lists the identifiers of the channels to delete. Nothing else is deleted. A listed channel that the server does not have is no change.
+- `delete` lists the identifiers of the entries to delete, per kind: `channels`, `categories`, `roles` (workspace roles), `server_roles` and `workspaces`. Nothing else is deleted. A listed entry that the server does not have is no change. The channels of a deleted category stay; a deleted workspace is deleted with everything that it holds (ADR 0308).
 - An exported file states every field, and no deletion.
 
 Matching:
 
 - An entry is matched by its identifier (ADR 0211). A matched entry with another name is a rename.
 - A workspace entry with `default: true` whose identifier the server does not know stands for the default workspace of the server. A role entry with `everyone: true` stands for the "everyone" role of its workspace, whatever its identifier is.
-- The tool refuses a file before any request that changes the server when: its format is not 1; two entries of one kind share an identifier; an entry is in another workspace than its object; the kind of a channel differs; a channel names a category or a role that is neither in the file nor on the server; an override has a permission in both sets; a text channel has a setting of voice channels; a channel is an entry and is listed for deletion; a second workspace is marked as default; two entries stand for one role, or two overrides of a channel for one role. It states the problems of the file alone together; for a file without such a problem it states the problems against the server together.
+- The tool refuses a file before any request that changes the server when: its format is not 1; two entries of one kind share an identifier; an entry is in another workspace than its object; the kind of a channel differs; a channel names a category or a role that is neither in the file nor on the server; an override has a permission in both sets; a text channel has a setting of voice channels; an entry of any kind is also listed for deletion, or is listed twice; a channel names a category or a role that is listed for deletion; a second workspace is marked as default; two entries stand for one role, or two overrides of a channel for one role. It states the problems of the file alone together; for a file without such a problem it states the problems against the server together.
 
 Plan:
 
 - `plan` reads the structure document and prints one line for each change, with the fields that differ. It sends only the fields that differ.
-- The changes are ordered so that each change names only entries that exist before it: server roles, then for each workspace its roles, categories and channels with their overrides, then the deletions.
+- The changes are ordered so that each change names only entries that exist before it: server roles, then for each workspace its roles, categories and channels with their overrides, then the deletions: channels, categories, workspace roles, workspaces, server roles.
+- The tool refuses, against the server, a file that lists an "everyone" role or the default workspace for deletion: the server deletes neither.
 - `plan --out` writes the plan: the format, the address of the server, the revision and the changes.
 - A plan with more than 200 changes is not sent.
 

@@ -51,6 +51,6 @@ Values:
 - A recording that is longer than its reservation is not stopped by the reservation. It is stopped when the free space reaches the reserve.
 - The reservations are an upper estimate: space that a recording has already written is counted as used by the file system and as reserved by its row. A server refuses a recording earlier than the free space alone would require.
 - An administrator sees the state of the storage in the log and on the health route. The client shows nothing; an administrator who starts a recording gets `storage_low`.
-- Uploads and exports do not exist yet. They will use the same reserve and the same table of reservations.
+- Uploads (ADR 0408) and exports (ADR 0411) use the same reserve and the same table of reservations. An export reserves the bytes that its file was counted to need, read from the free space of the directory of the exports.
 - A change of a value needs a new build of the server until the values become settings.
 - What the recorder does when the disk is full was not tested (ADR 0006). The stop at the reserve is meant to act before that point; a recording with five audio files writes about 1.6 GiB per hour, so one pass per second sees the reserve in time.

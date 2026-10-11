@@ -39,8 +39,8 @@ options:
                           variable JUNTO_ACCESS_TOKEN
 
 The access token is never an argument. `apply` applies all changes of a plan or none.
-`plan` and `apply` do not delete what a file does not hold; a file lists the channels to
-delete under \"delete\".";
+`plan` and `apply` do not delete what a file does not hold; a file lists the channels,
+categories, roles, server roles and workspaces to delete under \"delete\".";
 
 /// What the binary was started with.
 #[derive(Debug, Clone, Default)]

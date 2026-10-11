@@ -1,7 +1,9 @@
 //! The Junto server: accounts, permissions and the public application API.
 
 pub mod access;
+pub mod archive;
 pub mod audit;
+pub mod backup;
 pub mod bodies;
 pub mod bootstrap;
 pub mod calls;
@@ -12,6 +14,7 @@ pub mod db;
 pub mod download;
 pub mod error;
 pub mod events;
+pub mod exports;
 pub mod extract;
 pub mod image;
 pub mod maintenance;
@@ -19,6 +22,7 @@ pub mod media;
 pub mod messages;
 pub mod owner;
 pub mod proof;
+pub mod purge;
 pub mod rate_limit;
 pub mod recorder;
 pub mod recordings;

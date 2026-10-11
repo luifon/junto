@@ -316,6 +316,109 @@ pub(crate) async fn update(
     Ok(role)
 }
 
+/// Deletes a workspace role. No member holds it afterwards, and no channel has an override
+/// of it. The "everyone" role is not deleted.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/workspaces/{workspace_id}/roles/{role_id}",
+    tag = "workspaces",
+    params(("workspace_id" = WorkspaceId, Path), ("role_id" = WorkspaceRoleId, Path)),
+    security(("session" = [])),
+    responses((status = 204), ApiError)
+)]
+pub async fn delete_workspace_role(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath((workspace_id, role_id)): ApiPath<(WorkspaceId, WorkspaceRoleId)>,
+) -> ApiResult<StatusCode> {
+    let now = app.now();
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        delete(connection, &access, now, (workspace_id, role_id)).await
+    })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Deletes a workspace role with its assignments and its overrides. The removal of an
+/// override that denies a permission can add that permission to a holder of the role, so
+/// the caller must hold, in each channel, what the role is denied there (ADR 0304).
+pub(crate) async fn delete(
+    connection: &mut PgConnection,
+    access: &Access,
+    now: OffsetDateTime,
+    (workspace_id, role_id): (WorkspaceId, WorkspaceRoleId),
+) -> ApiResult<()> {
+    let scope = access.workspace(connection, workspace_id).await?;
+    access.require(Request::Workspace {
+        scope: &scope,
+        permission: WorkspacePermission::ManageRoles,
+    })?;
+    let stored = locked_role(connection, workspace_id, role_id).await?;
+    if stored.is_everyone {
+        return Err(ApiError::conflict(
+            "every member holds the everyone role; it is not deleted",
+        ));
+    }
+    let denied_in: HashMap<ChannelId, i64> = sqlx::query_as(
+        "select channel_id, deny from channel_overrides where role_id = $1 and deny <> 0",
+    )
+    .bind(role_id)
+    .fetch_all(&mut *connection)
+    .await?
+    .into_iter()
+    .collect();
+    let denied_channels: Vec<ChannelId> = denied_in.keys().copied().collect();
+    let channels = access
+        .named_channels(connection, workspace_id, &scope, &denied_channels)
+        .await?;
+    let mut in_channels = Vec::new();
+    for (record, channel_scope) in &channels {
+        if let Some(deny) = denied_in.get(&record.channel.id) {
+            in_channels.push(ChannelGrant {
+                scope: channel_scope,
+                granting: db::workspace_permissions(*deny)?,
+            });
+        }
+    }
+    access.require(Request::ManageWorkspaceRoles {
+        scope: &scope,
+        granting: WorkspacePermissions::EMPTY,
+        in_channels: &in_channels,
+    })?;
+
+    let holders = events::Receivers::WorkspaceRoleHolders(role_id);
+    let holders =
+        events::permissions_changed_for(connection, now, holders, Some(workspace_id)).await?;
+    sqlx::query(
+        "delete from structure_identifiers where kind = 'workspace_role' and object_id = $1",
+    )
+    .bind(role_id)
+    .execute(&mut *connection)
+    .await?;
+    sqlx::query("delete from workspace_roles where id = $1")
+        .bind(role_id)
+        .execute(&mut *connection)
+        .await?;
+    audit::record(
+        connection,
+        now,
+        Some(access.account_id),
+        About::Workspace(workspace_id),
+        &AuditEvent::WorkspaceRoleDeleted {
+            role_id,
+            name: stored.name,
+            permissions: db::workspace_list(stored.permissions),
+            holders: u32::try_from(holders).map_err(|error| ApiError::internal(&error))?,
+        },
+    )
+    .await?;
+    let deleted = Event::WorkspaceRoleDeleted {
+        workspace_id,
+        role_id,
+    };
+    events::publish(connection, now, &deleted).await
+}
+
 /// Gives a workspace role to a member of the workspace.
 #[utoipa::path(
     put,

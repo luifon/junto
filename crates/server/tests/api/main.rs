@@ -1,8 +1,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod access_tokens;
+mod archive;
 mod audit;
 mod authorization;
+mod backups;
 mod calls;
 mod calls_review;
 mod calls_review2;
@@ -11,8 +13,10 @@ mod calls_rooms;
 mod calls_state;
 mod calls_support;
 mod concurrency;
+mod deletions;
 mod devices;
 mod downloads;
+mod exports;
 mod first_start;
 mod glossary;
 mod host_commands;
@@ -31,6 +35,7 @@ mod recordings_support;
 mod review_unit6;
 mod setup_real;
 mod setup_tool;
+mod statement_statistics;
 mod stream;
 mod stream_access;
 mod stream_events;

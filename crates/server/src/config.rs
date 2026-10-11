@@ -1,4 +1,4 @@
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use junto_protocol::origin::{Origin, Scheme};
@@ -282,7 +282,7 @@ pub struct Config {
     pub listen_address: SocketAddr,
     pub public_origins: PublicOrigins,
     pub server_name: String,
-    pub trusted_proxies: Vec<IpAddr>,
+    pub trusted_proxies: Vec<crate::rate_limit::Network>,
     pub log_format: LogFormat,
     pub log_level: tracing::Level,
     /// Absent: the server has no media server and no call can be joined.
@@ -290,6 +290,11 @@ pub struct Config {
     /// Absent: the server has no recorder and no recording starts.
     pub recorder: Option<RecorderSettings>,
     pub attachments_directory: Option<PathBuf>,
+    /// The directory of the files of exports. Without it the server makes no export
+    /// (ADR 0411).
+    pub exports_directory: Option<PathBuf>,
+    /// Whether the server copies its database before a migration (ADR 0018).
+    pub migration_copy: crate::bootstrap::MigrationCopy,
     /// The built layout page of the recorder (ADR 0615). Absent: the server does not serve
     /// the page.
     pub recorder_layout_directory: Option<PathBuf>,
@@ -442,6 +447,7 @@ pub struct Limits {
     pub avatar_longest_side: u32,
     pub calls: CallLimits,
     pub recordings: RecordingLimits,
+    pub exports: ExportLimits,
     pub stream: StreamLimits,
 }
 
@@ -519,6 +525,49 @@ impl Default for StreamLimits {
     }
 }
 
+/// The limits of exports (ADR 0411).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportLimits {
+    /// An export that has finished is removed after this time.
+    pub lifetime: Duration,
+    /// The exports of one account that wait or are written at one time.
+    pub most_open_per_account: u32,
+    /// The exports that the server stores for one account.
+    pub most_per_account: u32,
+    /// The messages that one transaction of a build reads.
+    pub page: u32,
+    /// An export that was taken this often without an end fails.
+    pub attempts: u32,
+    /// The process that writes an export renews its lease at this interval.
+    pub heartbeat: Duration,
+    /// An export whose lease is older is taken by another process.
+    pub lease: Duration,
+    /// The task looks for exports at this interval.
+    pub check_interval: Duration,
+    /// A file that could not be deleted is tried again after this time.
+    pub removal_retry: Duration,
+    /// A download that runs is ended at most this long after its account lost the access
+    /// to the export.
+    pub download_check: Duration,
+}
+
+impl Default for ExportLimits {
+    fn default() -> Self {
+        Self {
+            lifetime: Duration::days(7),
+            most_open_per_account: 3,
+            most_per_account: 10,
+            page: 200,
+            attempts: 3,
+            heartbeat: Duration::seconds(15),
+            lease: Duration::seconds(90),
+            check_interval: Duration::seconds(5),
+            removal_retry: Duration::minutes(5),
+            download_check: Duration::seconds(5),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RateLimit {
     pub attempts: u32,
@@ -580,6 +629,7 @@ impl Default for Limits {
             avatar_longest_side: 1024,
             calls: CallLimits::default(),
             recordings: RecordingLimits::default(),
+            exports: ExportLimits::default(),
             stream: StreamLimits::default(),
         }
     }
@@ -601,6 +651,8 @@ impl Config {
     pub const RECORDER_DIR: &'static str = "JUNTO_RECORDER_DIR";
     pub const RECORDER_LAYOUT_URL: &'static str = "JUNTO_RECORDER_LAYOUT_URL";
     pub const RECORDER_LAYOUT_DIR: &'static str = "JUNTO_RECORDER_LAYOUT_DIR";
+    pub const EXPORTS_DIR: &'static str = "JUNTO_EXPORTS_DIR";
+    pub const MIGRATION_COPY: &'static str = "JUNTO_MIGRATION_COPY";
     pub const FFMPEG: &'static str = "JUNTO_FFMPEG";
     pub const FFPROBE: &'static str = "JUNTO_FFPROBE";
     pub const TRANSCRIBE_COMMAND: &'static str = "JUNTO_TRANSCRIBE_COMMAND";
@@ -669,9 +721,9 @@ impl Config {
             Some(text) => text
                 .split(',')
                 .map(|part| {
-                    part.trim().parse::<IpAddr>().map_err(|error| {
-                        invalid(Self::TRUSTED_PROXIES, format!("{part:?}: {error}"))
-                    })
+                    part.trim()
+                        .parse::<crate::rate_limit::Network>()
+                        .map_err(|error| invalid(Self::TRUSTED_PROXIES, error))
                 })
                 .collect::<Result<Vec<_>, _>>()?,
             None => Vec::new(),
@@ -853,6 +905,26 @@ impl Config {
                 "expected an existing absolute directory".to_owned(),
             ));
         }
+        let exports_directory = value(Self::EXPORTS_DIR).map(PathBuf::from);
+        if exports_directory
+            .as_ref()
+            .is_some_and(|path| !path.is_absolute() || !path.is_dir())
+        {
+            return Err(invalid(
+                Self::EXPORTS_DIR,
+                "expected an existing absolute directory".to_owned(),
+            ));
+        }
+        let migration_copy = match value(Self::MIGRATION_COPY).as_deref().map(str::trim) {
+            None | Some("database") => crate::bootstrap::MigrationCopy::Database,
+            Some("none") => crate::bootstrap::MigrationCopy::None,
+            Some(other) => {
+                return Err(invalid(
+                    Self::MIGRATION_COPY,
+                    format!("{other:?}: expected database or none"),
+                ));
+            }
+        };
         let recorder_layout_directory = value(Self::RECORDER_LAYOUT_DIR).map(PathBuf::from);
         if recorder_layout_directory
             .as_ref()
@@ -892,6 +964,8 @@ impl Config {
         }
         Ok(Self {
             attachments_directory,
+            exports_directory,
+            migration_copy,
             recorder_layout_directory,
             database_url,
             listen_address,
@@ -988,7 +1062,10 @@ mod tests {
                 "https://Chat.example.test, https://chat.example.test:443,http://localhost:9000",
             ),
             ("JUNTO_SERVER_NAME", " Acme "),
-            ("JUNTO_TRUSTED_PROXIES", "192.0.2.1, 2001:db8::1"),
+            (
+                "JUNTO_TRUSTED_PROXIES",
+                "192.0.2.1, 2001:db8::1, 172.31.240.0/24",
+            ),
             ("JUNTO_LOG_FORMAT", "text"),
             ("JUNTO_LOG_LEVEL", "debug"),
         ]))
@@ -1009,8 +1086,9 @@ mod tests {
         assert_eq!(
             config.trusted_proxies,
             [
-                "192.0.2.1".parse::<IpAddr>().unwrap(),
-                "2001:db8::1".parse().unwrap()
+                "192.0.2.1".parse::<crate::rate_limit::Network>().unwrap(),
+                "2001:db8::1".parse().unwrap(),
+                "172.31.240.0/24".parse().unwrap()
             ]
         );
         assert_eq!(config.log_format, LogFormat::Text);
@@ -1028,6 +1106,13 @@ mod tests {
             ("JUNTO_PUBLIC_ORIGINS", "https://chat.example.test/api"),
             ("JUNTO_PUBLIC_ORIGINS", "https://chat.example.test,"),
             ("JUNTO_TRUSTED_PROXIES", "192.0.2.1,proxy"),
+            ("JUNTO_MIGRATION_COPY", "schema"),
+            ("JUNTO_EXPORTS_DIR", "relative"),
+            ("JUNTO_EXPORTS_DIR", "/nonexistent/junto-exports"),
+            ("JUNTO_TRUSTED_PROXIES", "192.0.2.0/33"),
+            ("JUNTO_TRUSTED_PROXIES", "192.0.2.0/"),
+            ("JUNTO_TRUSTED_PROXIES", "192.0.2.0/+8"),
+            ("JUNTO_TRUSTED_PROXIES", "2001:db8::/129"),
             ("JUNTO_LOG_FORMAT", "xml"),
             ("JUNTO_LOG_LEVEL", "loud"),
         ] {

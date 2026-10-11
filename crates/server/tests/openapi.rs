@@ -82,7 +82,8 @@ fn the_structure_file_schema_describes_every_field_of_a_file() {
                            "hides_occupants": true,
                            "overrides": [{ "role": id, "allow": [], "deny": [] }] }],
         }],
-        "delete": { "channels": [id] },
+        "delete": { "channels": [id], "categories": [id], "roles": [id],
+                    "server_roles": [id], "workspaces": [id] },
     }))
     .unwrap();
     let written = serde_json::to_value(&full).unwrap();

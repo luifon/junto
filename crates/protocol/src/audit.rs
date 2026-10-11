@@ -246,6 +246,41 @@ pub enum AuditEvent {
     RetentionChanged {
         days: Option<u32>,
     },
+    /// A person archived the channel (ADR 0410).
+    ChannelArchived,
+    ChannelRestored,
+    /// The time after which the archived channels of the workspace are deleted. Absent
+    /// days: never.
+    ArchivePeriodChanged {
+        days: Option<u32>,
+    },
+    /// The channels of the category stay and have no category.
+    CategoryDeleted {
+        category_id: CategoryId,
+        name: String,
+    },
+    /// The entry states the role as it was, and how many members held it.
+    WorkspaceRoleDeleted {
+        role_id: WorkspaceRoleId,
+        name: String,
+        permissions: Vec<WorkspacePermission>,
+        holders: u32,
+    },
+    ServerRoleDeleted {
+        role_id: ServerRoleId,
+        name: String,
+        permissions: Vec<ServerPermission>,
+        holders: u32,
+    },
+    /// A workspace was deleted with its members, roles, categories and channels.
+    WorkspaceDeleted {
+        workspace_id: WorkspaceId,
+        name: String,
+    },
+    /// A person asked for an export of the channel (ADR 0411).
+    ExportRequested {
+        export_id: crate::ids::ExportId,
+    },
     /// An action that this build does not know. It is read and never written.
     #[serde(other, skip_serializing)]
     Unknown,
@@ -306,6 +341,14 @@ impl AuditEvent {
             Self::NotificationDefaultChanged { .. } => "notification_default_changed",
             Self::RecordingRetentionChanged { .. } => "recording_retention_changed",
             Self::RetentionChanged { .. } => "retention_changed",
+            Self::ChannelArchived => "channel_archived",
+            Self::ChannelRestored => "channel_restored",
+            Self::ArchivePeriodChanged { .. } => "archive_period_changed",
+            Self::CategoryDeleted { .. } => "category_deleted",
+            Self::WorkspaceRoleDeleted { .. } => "workspace_role_deleted",
+            Self::ServerRoleDeleted { .. } => "server_role_deleted",
+            Self::WorkspaceDeleted { .. } => "workspace_deleted",
+            Self::ExportRequested { .. } => "export_requested",
             Self::Unknown => "unknown",
         }
     }
@@ -405,6 +448,32 @@ mod tests {
             AuditEvent::AccessTokenRevoked {
                 access_token_id: AccessTokenId::generate(),
                 created_by: account_id,
+            },
+            AuditEvent::ChannelArchived,
+            AuditEvent::ChannelRestored,
+            AuditEvent::ArchivePeriodChanged { days: None },
+            AuditEvent::CategoryDeleted {
+                category_id: CategoryId::generate(),
+                name: "Projects".to_owned(),
+            },
+            AuditEvent::WorkspaceRoleDeleted {
+                role_id: WorkspaceRoleId::generate(),
+                name: "helpers".to_owned(),
+                permissions: vec![WorkspacePermission::ManageMessages],
+                holders: 2,
+            },
+            AuditEvent::ServerRoleDeleted {
+                role_id: ServerRoleId::generate(),
+                name: "inviters".to_owned(),
+                permissions: vec![ServerPermission::CreateInvites],
+                holders: 0,
+            },
+            AuditEvent::WorkspaceDeleted {
+                workspace_id: WorkspaceId::generate(),
+                name: "Closed".to_owned(),
+            },
+            AuditEvent::ExportRequested {
+                export_id: crate::ids::ExportId::generate(),
             },
         ];
         for event in events {

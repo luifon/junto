@@ -157,6 +157,7 @@ pub const EXPORT_SERVER_ROLES: &str = "select coalesce(i.identifier, r.id), r.na
 pub const EXPORT_WORKSPACES: &str = "select w.id, coalesce(i.identifier, w.id), w.name
      from workspaces w
      left join structure_identifiers i on i.kind = 'workspace' and i.object_id = w.id
+     where w.deleted_at is null
      order by w.id";
 pub const EXPORT_ROLES: &str =
     "select r.workspace_id, coalesce(i.identifier, r.id), r.name, r.permissions, r.is_everyone
@@ -597,6 +598,38 @@ async fn apply_one(
         StructureChange::DeleteChannel { id } => {
             let channel_id = ChannelId::from_uuid(resolve(&mut *connection, Channel, *id).await?);
             channels::delete_channel_in(connection, &app.calls, access, now, channel_id).await
+        }
+        StructureChange::DeleteCategory { id } => {
+            let category_id = resolve(&mut *connection, Category, *id).await?;
+            let workspace_id = workspace_of(
+                &mut *connection,
+                "select workspace_id from categories where id = $1",
+                category_id,
+            )
+            .await?;
+            let ids = (workspace_id, CategoryId::from_uuid(category_id));
+            channels::delete_category_in(connection, access, now, ids).await
+        }
+        StructureChange::DeleteWorkspaceRole { id } => {
+            let role_id = resolve(&mut *connection, role_kind, *id).await?;
+            let workspace_id = workspace_of(
+                &mut *connection,
+                "select workspace_id from workspace_roles where id = $1",
+                role_id,
+            )
+            .await?;
+            let ids = (workspace_id, WorkspaceRoleId::from_uuid(role_id));
+            workspace_roles::delete(connection, access, now, ids).await
+        }
+        StructureChange::DeleteServerRole { id } => {
+            let role_id = resolve(&mut *connection, ServerRoleKind, *id).await?;
+            let role_id = ServerRoleId::from_uuid(role_id);
+            server_roles::delete(connection, access, now, role_id).await
+        }
+        StructureChange::DeleteWorkspace { id } => {
+            let workspace_id = resolve(&mut *connection, Workspace, *id).await?;
+            let workspace_id = WorkspaceId::from_uuid(workspace_id);
+            workspaces::delete(connection, access, now, workspace_id).await
         }
     }
 }

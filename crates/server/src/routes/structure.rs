@@ -59,9 +59,10 @@ pub async fn apply_structure_changes(
         )));
     }
     let now = app.now();
-    transact!(app, |connection| {
+    let applied = transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         structure::apply(&app, connection, &access, now, &body).await
-    })
-    .map(Json)
+    })?;
+    app.purges.wake();
+    Ok(Json(applied))
 }

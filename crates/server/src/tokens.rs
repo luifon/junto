@@ -63,6 +63,22 @@ pub const REACH: &[(&str, &str, TokenAction)] = &[
         "/api/v1/workspaces/{workspace_id}/channels",
         ManageStructure,
     ),
+    (
+        "DELETE",
+        "/api/v1/workspaces/{workspace_id}",
+        ManageStructure,
+    ),
+    (
+        "DELETE",
+        "/api/v1/workspaces/{workspace_id}/categories/{category_id}",
+        ManageStructure,
+    ),
+    (
+        "DELETE",
+        "/api/v1/workspaces/{workspace_id}/roles/{role_id}",
+        ManageStructure,
+    ),
+    ("DELETE", "/api/v1/server-roles/{role_id}", ManageStructure),
     ("PATCH", "/api/v1/channels/{channel_id}", ManageStructure),
     ("DELETE", "/api/v1/channels/{channel_id}", ManageStructure),
     (

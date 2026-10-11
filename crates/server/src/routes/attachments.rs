@@ -61,6 +61,7 @@ pub async fn start_upload(
             (None, Some(id)) => Place::direct(connection, &access, id).await?,
             _ => return Err(ApiError::invalid("give one channel or conversation")),
         };
+        place.require_open()?;
         let count: i64 = sqlx::query_scalar(
             "select count(*)
                  from attachments
@@ -141,7 +142,7 @@ pub async fn put_chunk(
     }
     let account = read!(app, |connection| {
         let access = Access::open(connection, &bearer, app.now()).await?;
-        files::owned(connection, &access, id, app.now()).await?;
+        files::writable(connection, &access, id, app.now()).await?;
         Ok(access.account_id)
     })?;
     let permit = app.attachment_transfers.acquire(account).ok_or_else(|| {
@@ -156,7 +157,7 @@ pub async fn put_chunk(
     let now = app.now();
     let already = transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        let (_, upload) = files::owned(connection, &access, id, now).await?;
+        let (_, upload) = files::writable(connection, &access, id, now).await?;
         let prior: Option<(i32, String, bool)> = sqlx::query_as(
             "select bytes,sha256,stored
                  from attachment_chunks
@@ -230,7 +231,7 @@ pub async fn put_chunk(
     }
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, app.now()).await?;
-        files::owned(connection, &access, id, app.now()).await?;
+        files::writable(connection, &access, id, app.now()).await?;
         let changed = sqlx::query(
             "update attachment_chunks set stored=true
                  where attachment_id=$1
@@ -262,7 +263,7 @@ pub async fn complete_upload(
     crate::proof::limit(&app.attachment_writes, bearer.0, app.now())?;
     let (parts, expected, upload, account) = read!(app, |connection| {
         let access = Access::open(connection, &bearer, app.now()).await?;
-        let (_, upload) = files::owned(connection, &access, id, app.now()).await?;
+        let (_, upload) = files::writable(connection, &access, id, app.now()).await?;
         if upload.received != upload.bytes {
             return Err(ApiError::conflict("upload is incomplete"));
         }
@@ -314,7 +315,7 @@ pub async fn complete_upload(
         }
         transact!(app.background(), |connection| {
             let access = Access::open(connection, &bearer, app.now()).await?;
-            files::owned(connection, &access, id, app.now()).await?;
+            files::writable(connection, &access, id, app.now()).await?;
             let (media, width, height) =
                 image.map_or(("application/octet-stream", None, None), |im| {
                     (

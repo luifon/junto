@@ -749,7 +749,7 @@ async fn rule_24_one_failing_change_applies_nothing_and_names_its_number() {
     }
     // A body that is no list of known changes is refused whole.
     for body in [
-        json!({ "revision": export.revision, "changes": [{ "change": "delete_workspace",
+        json!({ "revision": export.revision, "changes": [{ "change": "merge_workspace",
                 "id": workspace }] }),
         json!({ "revision": export.revision }),
         json!({ "changes": [] }),
@@ -850,6 +850,174 @@ async fn rule_25_each_change_keeps_the_limits_of_its_own_route() {
         .change_structure(&owner, &revision, json!(roles[..5]))
         .await
         .ok::<StructureApplied>(StatusCode::OK);
+}
+
+#[tokio::test]
+async fn rule_32_deletions_keep_the_limits_of_their_routes() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let administrator = server.administrator(&owner, "Administrator").await;
+    let export = server.structure(&owner).await;
+    let home = default_of(&export);
+    let everyone = home.roles.iter().find(|role| role.everyone).unwrap().id;
+    let (server_role, side, side_everyone) = (new_id(), new_id(), new_id());
+    let (role, category, channel) = (new_id(), new_id(), new_id());
+    let made: StructureApplied = server
+        .change_structure(
+            &owner,
+            &export.revision,
+            json!([
+                { "change": "create_server_role", "id": server_role, "name": "Inviters" },
+                { "change": "create_workspace", "id": side, "name": "Side",
+                  "everyone_role": side_everyone },
+                { "change": "create_workspace_role", "id": role, "workspace": home.id,
+                  "name": "Helpers" },
+                { "change": "create_category", "id": category, "workspace": home.id,
+                  "name": "Projects" },
+                { "change": "create_channel", "id": channel, "workspace": home.id,
+                  "kind": "text", "name": "plans", "category": category },
+            ]),
+        )
+        .await
+        .ok(StatusCode::OK);
+
+    // Each refusal of a single route is the refusal of the change, and nothing is applied.
+    let before = state(&server).await;
+    let unknown = new_id();
+    for (change, code, stated) in [
+        (
+            json!({ "change": "delete_workspace_role", "id": everyone }),
+            ErrorCode::Conflict,
+            "delete_workspace_role",
+        ),
+        (
+            json!({ "change": "delete_workspace", "id": home.id }),
+            ErrorCode::Conflict,
+            "delete_workspace",
+        ),
+        (
+            json!({ "change": "delete_workspace_role", "id": unknown }),
+            ErrorCode::InvalidRequest,
+            "delete_workspace_role",
+        ),
+        (
+            json!({ "change": "delete_category", "id": unknown }),
+            ErrorCode::InvalidRequest,
+            "delete_category",
+        ),
+        (
+            json!({ "change": "delete_server_role", "id": unknown }),
+            ErrorCode::InvalidRequest,
+            "delete_server_role",
+        ),
+        (
+            json!({ "change": "delete_workspace", "id": unknown }),
+            ErrorCode::InvalidRequest,
+            "delete_workspace",
+        ),
+    ] {
+        let reply = server
+            .change_structure(
+                &owner,
+                &made.revision,
+                json!([{ "change": "delete_server_role", "id": server_role }, change]),
+            )
+            .await;
+        assert_eq!(reply.code(), code, "{}", reply.text());
+        assert!(
+            reply.text().contains(&format!("change 2 ({stated})")),
+            "{}",
+            reply.text()
+        );
+        assert_eq!(state(&server).await, before, "{stated}");
+    }
+
+    // Only the server owner deletes a workspace of which a channel contains permanent
+    // messages; the token of the owner is not the owner (ADR 0210).
+    let records = server
+        .channel(
+            &owner,
+            junto_protocol::ids::WorkspaceId::from_uuid(
+                made.created
+                    .iter()
+                    .find(|created| created.entry == side)
+                    .unwrap()
+                    .id,
+            ),
+            "records",
+        )
+        .await;
+    sqlx::query("update channels set permanent_message_count = 1 where id = $1")
+        .bind(records.id)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    let revision = server.structure(&owner).await.revision;
+    let deleting = json!([{ "change": "delete_workspace", "id": side }]);
+    let token = server
+        .access_token(&owner, &[TokenAction::ManageStructure])
+        .await;
+    let before = state(&server).await;
+    server
+        .change_structure(&administrator, &revision, deleting.clone())
+        .await
+        .error(ErrorCode::OwnerOnly);
+    let body = json!({ "revision": revision, "changes": deleting });
+    server
+        .with_token(Method::POST, CHANGES, &token, Some(&body))
+        .await
+        .error(ErrorCode::OwnerOnly);
+    assert_eq!(state(&server).await, before);
+
+    let deleted: StructureApplied = server
+        .change_structure(
+            &owner,
+            &revision,
+            json!([
+                { "change": "delete_category", "id": category },
+                { "change": "delete_workspace_role", "id": role },
+                { "change": "delete_workspace", "id": side },
+                { "change": "delete_server_role", "id": server_role },
+            ]),
+        )
+        .await
+        .ok(StatusCode::OK);
+    let export = server.structure(&owner).await;
+    assert_eq!(export.revision, deleted.revision);
+    let left = &export.structure.server_roles;
+    assert!(left.iter().all(|found| found.id != server_role), "{left:?}");
+    assert_eq!(export.structure.workspaces.len(), 1);
+    let home = default_of(&export);
+    assert!(home.categories.is_empty());
+    assert!(home.roles.iter().all(|found| found.id != role));
+    // The channel of the deleted category stays, without a category.
+    assert_eq!(channel_named(home, "plans").category, Some(None));
+
+    // The identifiers of the deleted roles and of the deleted category are free again.
+    // The identifier of a deleted workspace stays in use, like the one of a deleted channel.
+    let again: StructureApplied = server
+        .change_structure(
+            &owner,
+            &deleted.revision,
+            json!([
+                { "change": "create_server_role", "id": server_role, "name": "Inviters" },
+                { "change": "create_workspace_role", "id": role, "workspace": home.id,
+                  "name": "Helpers" },
+                { "change": "create_category", "id": category, "workspace": home.id,
+                  "name": "Projects" },
+            ]),
+        )
+        .await
+        .ok(StatusCode::OK);
+    server
+        .change_structure(
+            &owner,
+            &again.revision,
+            json!([{ "change": "create_workspace", "id": side, "name": "Side",
+                     "everyone_role": new_id() }]),
+        )
+        .await
+        .error(ErrorCode::Conflict);
 }
 
 #[tokio::test]
@@ -1056,13 +1224,10 @@ async fn export_statements(
 #[tokio::test]
 async fn rule_29_the_export_runs_a_fixed_number_of_statements_and_skips_deleted_channels() {
     use junto_server::structure as statements;
-    let server = TestServer::start().await;
+    let server = TestServer::start_measured().await;
+    let evictions = server.statement_evictions().await;
     let owner = server.owner().await;
     let workspace = server.default_workspace(&owner).await;
-    sqlx::query("create extension pg_stat_statements")
-        .execute(&server.db)
-        .await
-        .unwrap();
     let (mut held, role) = crate::messages_queries::measure_requests(&server).await;
     server.structure(&owner).await;
     let small = export_statements(&server, &owner, &mut held[0], role).await;
@@ -1116,6 +1281,7 @@ async fn rule_29_the_export_runs_a_fixed_number_of_statements_and_skips_deleted_
     assert_eq!(on_channels.len(), 1, "{plan}");
     assert_ne!(on_channels[0].0, "Seq Scan", "{plan}");
     assert!(plan.to_string().contains("channels_workspace"), "{plan}");
+    server.require_no_statement_eviction(evictions).await;
 }
 
 #[tokio::test]

@@ -275,6 +275,7 @@ pub async fn visible_structure(
         .into_iter()
         .filter(|(record, channel_scope)| {
             record.deleted_at.is_none()
+                && record.archived_at.is_none()
                 && access.allows(Request::Channel {
                     scope: channel_scope,
                     permission: WorkspacePermission::ViewChannel,
@@ -462,6 +463,7 @@ pub(crate) async fn update_channel_in(
         scope: &scope,
         permission: WorkspacePermission::ManageChannel,
     })?;
+    record.require_open()?;
 
     let mut channel = record.channel;
     if let Some(name) = new_name {
@@ -534,6 +536,7 @@ pub async fn delete_channel(
         let access = Access::open(connection, &bearer, now).await?;
         delete_channel_in(connection, &app.calls, &access, now, channel_id).await
     })?;
+    app.purges.wake();
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -559,56 +562,136 @@ pub(crate) async fn delete_channel_in(
         content,
     })?;
 
+    let removed = Removed {
+        id: channel_id,
+        workspace_id: record.channel.workspace_id,
+        name: &record.channel.name,
+        permanent_message_count: record.permanent_message_count,
+    };
+    remove_channel(connection, calls, now, &removed, Some(access.account_id)).await
+}
+
+/// A channel that is deleted, as the deletion read it.
+pub(crate) struct Removed<'a> {
+    pub id: ChannelId,
+    pub workspace_id: WorkspaceId,
+    pub name: &'a str,
+    pub permanent_message_count: i64,
+}
+
+/// Deletes a channel: for a person, who passed the checks of the route, and for the server
+/// when the archive period of the channel has ended (ADR 0410). The row stays as a marker
+/// (ADR 0407). The content of the channel is removed afterwards, in bounded parts
+/// (ADR 0017).
+pub(crate) async fn remove_channel(
+    connection: &mut PgConnection,
+    calls: &Calls,
+    now: OffsetDateTime,
+    channel: &Removed<'_>,
+    by: Option<junto_protocol::ids::AccountId>,
+) -> ApiResult<()> {
     let deleted = sqlx::query(
         "update channels set deleted_at = $2
          where id = $1 and deleted_at is null and permanent_message_count = $3",
     )
-    .bind(channel_id)
+    .bind(channel.id)
     .bind(now)
-    .bind(record.permanent_message_count)
+    .bind(channel.permanent_message_count)
     .execute(&mut *connection)
     .await?;
     if deleted.rows_affected() == 0 {
         return Err(ApiError::conflict("the channel changed during the request"));
     }
     sqlx::query("delete from thread_forks where channel_id=$1")
-        .bind(channel_id)
+        .bind(channel.id)
         .execute(&mut *connection)
         .await?;
-    sqlx::query("update attachments set removed_at=$2 where place_id=$1")
-        .bind(channel_id)
-        .bind(now)
-        .execute(&mut *connection)
-        .await?;
-    sqlx::query("delete from messages where place_id=$1")
-        .bind(channel_id)
-        .execute(&mut *connection)
-        .await?;
-    sqlx::query("delete from call_notes where channel_id=$1")
-        .bind(channel_id)
-        .execute(&mut *connection)
-        .await?;
-    sqlx::query("update channels set permanent_message_count=0 where id=$1")
-        .bind(channel_id)
-        .execute(&mut *connection)
-        .await?;
-    let workspace_id = record.channel.workspace_id;
-    crate::calls::store::mark_channel(connection, calls, channel_id).await?;
-    events::channel_deleted(connection, now, workspace_id, channel_id).await?;
+    crate::calls::store::mark_channel(connection, calls, channel.id).await?;
+    events::channel_deleted(connection, now, channel.workspace_id, channel.id).await?;
     sqlx::query("delete from channel_overrides where channel_id = $1")
-        .bind(channel_id)
+        .bind(channel.id)
+        .execute(&mut *connection)
+        .await?;
+    crate::purge::queue(connection, now, crate::purge::Subject::Channel(channel.id)).await?;
+    audit::record(
+        connection,
+        now,
+        by,
+        About::Channel(channel.workspace_id, channel.id),
+        &AuditEvent::ChannelDeleted {
+            name: channel.name.to_owned(),
+        },
+    )
+    .await
+}
+
+/// Deletes a category. Its channels stay and have no category.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/workspaces/{workspace_id}/categories/{category_id}",
+    tag = "channels",
+    params(("workspace_id" = WorkspaceId, Path), ("category_id" = CategoryId, Path)),
+    security(("session" = [])),
+    responses((status = 204), ApiError)
+)]
+pub async fn delete_category(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath((workspace_id, category_id)): ApiPath<(WorkspaceId, CategoryId)>,
+) -> ApiResult<StatusCode> {
+    let now = app.now();
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        delete_category_in(connection, &access, now, (workspace_id, category_id)).await
+    })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn delete_category_in(
+    connection: &mut PgConnection,
+    access: &Access,
+    now: OffsetDateTime,
+    (workspace_id, category_id): (WorkspaceId, CategoryId),
+) -> ApiResult<()> {
+    let scope = access.workspace(connection, workspace_id).await?;
+    access.require(Request::Workspace {
+        scope: &scope,
+        permission: WorkspacePermission::ManageChannel,
+    })?;
+    let name: Option<String> = sqlx::query_scalar(
+        "select name from categories where id = $1 and workspace_id = $2 for update",
+    )
+    .bind(category_id)
+    .bind(workspace_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let name = name.ok_or_else(ApiError::not_found)?;
+    // The rows of deleted channels refer to the category as well.
+    sqlx::query("update channels set category_id = null where category_id = $1")
+        .bind(category_id)
+        .execute(&mut *connection)
+        .await?;
+    sqlx::query("delete from structure_identifiers where kind = 'category' and object_id = $1")
+        .bind(category_id)
+        .execute(&mut *connection)
+        .await?;
+    sqlx::query("delete from categories where id = $1")
+        .bind(category_id)
         .execute(&mut *connection)
         .await?;
     audit::record(
         connection,
         now,
         Some(access.account_id),
-        About::Channel(record.channel.workspace_id, channel_id),
-        &AuditEvent::ChannelDeleted {
-            name: record.channel.name,
-        },
+        About::Workspace(workspace_id),
+        &AuditEvent::CategoryDeleted { category_id, name },
     )
-    .await
+    .await?;
+    let deleted = Event::CategoryDeleted {
+        workspace_id,
+        category_id,
+    };
+    events::publish(connection, now, &deleted).await
 }
 
 /// The role overrides of a channel.

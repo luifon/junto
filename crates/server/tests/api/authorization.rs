@@ -37,6 +37,8 @@ struct Operation {
 }
 
 struct World {
+    /// The directory of the exports of the server.
+    _exports: crate::support::Scratch,
     server: TestServer,
     plain: Member,
     administrator: Member,
@@ -73,7 +75,17 @@ fn operation(
 }
 
 async fn world() -> World {
-    let server = TestServer::start_for_calls().await;
+    let exports = crate::support::Scratch::new();
+    let server = TestServer::start_for_calls_with(|config| {
+        config.exports_directory = Some(exports.0.clone());
+    })
+    .await;
+    let free = junto_server::storage::FakeDisk::new(crate::support::FREE_DISK);
+    server
+        .state
+        .exports
+        .space()
+        .use_disk(std::sync::Arc::new(free));
     let owner = server.owner().await;
     let workspace = server.default_workspace(&owner).await;
     let plain = server.join(&owner, "Plain").await;
@@ -151,6 +163,52 @@ async fn world() -> World {
         .execute(&server.db)
         .await
         .unwrap();
+    // What the deletions of the table delete, so that every other operation keeps its
+    // subject.
+    let spare_role: WorkspaceRole = server
+        .post(
+            &owner,
+            &format!("/api/v1/workspaces/{}/roles", workspace.id),
+            &json!({ "name": "spare" }),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    let spare_server_role: ServerRole = server
+        .post(&owner, "/api/v1/server-roles", &json!({ "name": "spare" }))
+        .await
+        .ok(StatusCode::CREATED);
+    let spare_category: Category = server
+        .post(
+            &owner,
+            &format!("/api/v1/workspaces/{}/categories", workspace.id),
+            &json!({ "name": "Spare" }),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    let doomed: Workspace = server
+        .post(&owner, "/api/v1/workspaces", &json!({ "name": "Doomed" }))
+        .await
+        .ok(StatusCode::CREATED);
+    let shelf: Channel = server
+        .post(
+            &owner,
+            &format!("/api/v1/workspaces/{}/channels", workspace.id),
+            &json!({ "name": "shelf", "kind": "text" }),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    let shelved: Channel = server
+        .post(
+            &owner,
+            &format!("/api/v1/workspaces/{}/channels", workspace.id),
+            &json!({ "name": "shelved", "kind": "text" }),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    server
+        .put_empty(&owner, &format!("/api/v1/channels/{}/archive", shelved.id))
+        .await
+        .ok::<Value>(StatusCode::OK);
     let invite = server.invite(&owner, json!({ "max_uses": 5 })).await;
     let proof = server
         .proof(&DeviceKey::generate(), ChallengeOperation::RequestToJoin)
@@ -1239,12 +1297,114 @@ async fn world() -> World {
             &forbidden,
         ),
     ]);
+    operations.extend([
+        operation(
+            Method::PUT,
+            "/api/v1/channels/{channel_id}/archive",
+            &[&shelf.id],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/channels/{channel_id}/archive",
+            &[&shelved.id],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/workspaces/{workspace_id}/archived-channels",
+            &[&closed_id],
+            none.clone(),
+            &[(Plain, NotFound)],
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/workspaces/{workspace_id}/archive-period",
+            &[&ws],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/workspaces/{workspace_id}/archive-period",
+            &[&ws],
+            json!({ "days": 60 }),
+            &forbidden,
+        ),
+        operation(
+            Method::POST,
+            "/api/v1/channels/{channel_id}/exports",
+            &[&shelf.id],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::POST,
+            "/api/v1/conversations/{conversation_id}/exports",
+            &[&absent],
+            none.clone(),
+            &unknown,
+        ),
+        operation(Method::GET, "/api/v1/exports", &[], none.clone(), &own),
+        operation(
+            Method::GET,
+            "/api/v1/exports/{export_id}",
+            &[&absent],
+            none.clone(),
+            &unknown,
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/exports/{export_id}",
+            &[&absent],
+            none.clone(),
+            &unknown,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/exports/{export_id}/file",
+            &[&absent],
+            none.clone(),
+            &unknown,
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/workspaces/{workspace_id}/roles/{role_id}",
+            &[&ws, &spare_role.id],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/server-roles/{role_id}",
+            &[&spare_server_role.id],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/workspaces/{workspace_id}/categories/{category_id}",
+            &[&ws, &spare_category.id],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/workspaces/{workspace_id}",
+            &[&doomed.id],
+            none.clone(),
+            &forbidden,
+        ),
+    ]);
     for operation in &mut operations {
         if operation.template == "/api/v1/search" {
             operation.path.push_str("?q=sample");
         }
     }
     World {
+        _exports: exports,
         server,
         plain,
         administrator,
@@ -1441,6 +1601,22 @@ fn token_reach() -> BTreeMap<(&'static str, &'static str), TokenAction> {
         ),
         ("PATCH", "/api/v1/channels/{channel_id}", ManageStructure),
         ("DELETE", "/api/v1/channels/{channel_id}", ManageStructure),
+        (
+            "DELETE",
+            "/api/v1/workspaces/{workspace_id}",
+            ManageStructure,
+        ),
+        (
+            "DELETE",
+            "/api/v1/workspaces/{workspace_id}/categories/{category_id}",
+            ManageStructure,
+        ),
+        (
+            "DELETE",
+            "/api/v1/workspaces/{workspace_id}/roles/{role_id}",
+            ManageStructure,
+        ),
+        ("DELETE", "/api/v1/server-roles/{role_id}", ManageStructure),
         (
             "PATCH",
             "/api/v1/channels/{channel_id}/call/settings",

@@ -951,3 +951,84 @@ async fn speaking_marks_follow_a_block_while_the_person_keeps_reporting() {
     );
     let _ = WorkspacePermission::ViewChannel;
 }
+
+/// ADR 0513: the set of speakers holds only people whom the media server lists. A person
+/// whose device left the room without a request is absent after the next check, and is no
+/// speaker while a report of that device still counts.
+#[tokio::test]
+async fn a_person_who_is_absent_from_the_room_is_no_speaker() {
+    let scene = Scene::start().await;
+    let (server, ann, ben) = (&scene.server, &scene.ann, &scene.ben);
+    let voice = scene.voice.id;
+    let seat = server.enter_call(ann, voice).await;
+    let mut to_ben = server.full_stream(ben).await;
+    let said = |stream_events: Vec<Event>| -> Vec<Vec<AccountId>> {
+        stream_events
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::CallSpeaking { account_ids, .. } => Some(account_ids),
+                _ => None,
+            })
+            .collect()
+    };
+    let speak = json!({ "speaking": true });
+    server.clock.advance(Duration::seconds(1));
+    server
+        .put(ann, "/api/v1/call/speaking", &speak)
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    speaking::publish(&server.state).await.unwrap();
+    assert_eq!(
+        said(server.call_events(ben, &mut to_ben).await),
+        [vec![ann.account_id]]
+    );
+
+    server.fake().leave(&seat.room, &seat.identity);
+    server.check().await;
+    let absent: bool = sqlx::query_scalar(
+        "select absent_since is not null from call_members where account_id = $1",
+    )
+    .bind(ann.account_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert!(absent);
+    server.clock.advance(Duration::seconds(1));
+    server
+        .put(ann, "/api/v1/call/speaking", &speak)
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    speaking::publish(&server.state).await.unwrap();
+    let nobody: Vec<AccountId> = Vec::new();
+    assert_eq!(said(server.call_events(ben, &mut to_ben).await), [nobody]);
+}
+
+/// ADR 0510: raising and lowering the own hand counts against the limit of the requests
+/// that change a call, not against the limit of the reports of the own state.
+#[tokio::test]
+async fn the_own_hand_counts_against_the_limit_of_call_changes() {
+    let scene = Scene::start().await;
+    let (server, ann) = (&scene.server, &scene.ann);
+    let limit = server.state.config.limits.calls.actions.attempts;
+    // Entering the call is the first change.
+    server.enter_call(ann, scene.voice.id).await;
+    for _ in 1..limit {
+        server
+            .put_empty(ann, "/api/v1/call/hand")
+            .await
+            .empty(StatusCode::NO_CONTENT);
+    }
+    server
+        .put_empty(ann, "/api/v1/call/hand")
+        .await
+        .error(ErrorCode::RateLimited);
+    // A report of the own state has its own limit and is still taken.
+    server
+        .put(
+            ann,
+            "/api/v1/call/state",
+            &json!({ "muted": true, "deafened": false }),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+}

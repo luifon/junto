@@ -12,7 +12,7 @@ ADR 0204 decides a setup tool that exports the structure of a server to a file, 
 
 Structure document:
 
-- `GET /api/v1/structure` returns the structure of the server as one document, in the format of the structure file (ADR 0212), and its revision: the server roles, and each workspace with its roles, categories, channels that are not deleted, and overrides. It names no account and no member.
+- `GET /api/v1/structure` returns the structure of the server as one document, in the format of the structure file (ADR 0212), and its revision: the server roles, and each workspace that is not deleted with its roles, categories, channels that are not deleted, and overrides. It names no account and no member.
 - The route needs the administrator permission, because the document holds every channel and every override. The document is read from one snapshot, with a number of statements that does not depend on the size of the structure.
 
 Revision:
@@ -23,7 +23,7 @@ Revision:
 Changes route:
 
 - `POST /api/v1/structure/changes` takes a revision and a list of at most 200 changes, and applies them in their order in one transaction.
-- A change is one of: create or update a server role; create or rename a workspace; create or update a workspace role; create or update a category; create or update a channel; update the call settings of a voice channel; set a channel override; delete a channel.
+- A change is one of: create, update or delete a server role; create, rename or delete a workspace; create, update or delete a workspace role; create, update or delete a category; create, update or delete a channel; update the call settings of a voice channel; set a channel override.
 - Each change runs the function of its single route: the same permission checks with the grant rule (ADR 0304), the same limits (ADR 0301), the same ceilings (ADR 0306), the same audit entries and the same events. The single routes and this route share that function.
 - The route needs the administrator permission, because the revision is the revision of the whole structure, which only an administrator reads.
 - The transaction computes the revision of the structure before the first change. When it differs from the revision of the request, the answer is `conflict` and nothing is changed. A request without changes gets the same check.
@@ -36,7 +36,7 @@ Entry identifiers:
 
 - The identifier of an entry is the identifier of its object. An entry that a request creates carries an identifier that the author of the file chose. The server generates the identifier of the object as for every object, and stores the pair in the table `structure_identifiers`, per kind of object.
 - The structure document writes the stored identifier of an object when one exists, and the identifier of the object otherwise. A change names an entry by either.
-- A new entry cannot take an identifier that names an object of the same kind, as its entry identifier or as its own identifier. The identifier of a deleted channel stays in use.
+- A new entry cannot take an identifier that names an object of the same kind, as its entry identifier or as its own identifier. The identifier of a deleted channel and of a deleted workspace stays in use, because their rows stay (ADR 0407, ADR 0308). The identifier of a deleted role or category is free again.
 - The server does not create an object with an identifier that a client chose. An identifier of a channel or a workspace is a key of other data, and a chosen identifier could equal a key of another kind, for example of a direct-message conversation. Two servers that apply the same file would also hold objects with equal identifiers.
 
 ## Consequences
@@ -49,5 +49,5 @@ Entry identifiers:
 - The ceiling of 200 changes keeps a request far below the time limit of a request (ADR 0008). Measured on a development machine with a debug build, a change costs about 10 ms, and a request of 500 changes passed the limit of 30 seconds while the whole test suite ran beside it under CPU load. A larger file is applied in parts.
 - A file that is applied to a second server creates objects with the identifiers of that server. The file and the export of the second server name them by the identifiers of the file, so the same file plans no change afterwards.
 - An object that a file created has two identifiers: the one of its entry, in files and in the structure document, and its own, in every other route, in events and in the audit log. The answer of the changes route states both.
-- Deletion exists for channels only, as in the single routes. A role, a category and a workspace cannot be deleted through the API.
+- A deletion of a role, a category or a workspace runs the function of its single route (ADR 0308), with the same checks: a deletion that the route refuses ends the request, and nothing is changed.
 - A stale revision has the code `conflict`, like every state that makes a plan unusable. A program that gets `conflict` from this route computes a new plan.

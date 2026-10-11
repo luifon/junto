@@ -30,6 +30,10 @@ use crate::state::AppState;
 
 const COUNTED_PER_READ: i64 = 500;
 
+/// The lists of receivers, of the ones in `$1`, that hold the account `$2`.
+pub const RECEIVER_LISTS: &str =
+    "select event_id from event_receivers where event_id = any($1) and account_id = $2";
+
 /// The device behind a connection, as the upgrade request proved it.
 #[derive(Debug, Clone, Copy)]
 pub struct Opened {
@@ -254,6 +258,7 @@ fn decide(
         server_role_ids: &access.server_role_ids,
         fellows: &standing.fellows,
         contacts: &standing.contacts,
+        listed: &standing.listed,
     };
     let in_workspace = |workspace_id| standing.workspaces.get(&workspace_id);
     if let Audience::SystemMessage {
@@ -503,6 +508,7 @@ struct Standing {
     workspaces: HashMap<WorkspaceId, WorkspaceStanding>,
     fellows: HashSet<AccountId>,
     contacts: HashMap<AccountId, junto_authz::Contact>,
+    listed: HashSet<Uuid>,
     mentioned: HashSet<junto_protocol::ids::MessageId>,
     mention_notices: HashSet<Uuid>,
     notification_notices: HashMap<Uuid, (bool, bool)>,
@@ -629,6 +635,21 @@ impl Standing {
                 contacts.insert(other, contact);
             }
         }
+        let lists: Vec<Uuid> = candidates
+            .iter()
+            .filter_map(|event| event.audience.as_ref()?.receiver_list())
+            .collect();
+        let listed = if lists.is_empty() {
+            HashSet::new()
+        } else {
+            sqlx::query_scalar(RECEIVER_LISTS)
+                .bind(&lists)
+                .bind(access.account_id)
+                .fetch_all(&mut *connection)
+                .await?
+                .into_iter()
+                .collect()
+        };
         let mut workspaces = HashMap::new();
         for (workspace_id, channel_ids) in named {
             let scope = match access.workspace(connection, workspace_id).await {
@@ -690,6 +711,7 @@ impl Standing {
             workspaces,
             fellows,
             contacts,
+            listed,
             mentioned,
             mention_notices,
             notification_notices,

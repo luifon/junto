@@ -23,7 +23,7 @@ Audit entries about a deleted channel stay visible to server administrators (ADR
 ## Consequences
 
 - The name of a deleted channel stays stored and is shown only in audit entries, to administrators.
-- The content of a deleted channel is removed by the features that own it (ADR 0406); the marker row is not removed.
+- The content of a deleted channel is removed after the deletion, in bounded transactions (ADR 0017); the marker row is not removed.
 - The owner-only rule for deletion exists and is tested before messages exist.
 - A permanent message cannot be added to a channel while that channel is being deleted without one of the two operations running again and seeing the result of the other.
 - The count must be kept correct by every code path that adds or deletes a permanent message.

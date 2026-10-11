@@ -48,8 +48,20 @@ impl Voice {
 }
 
 /// Access to a voice channel is the permission to see it: a member who sees a voice channel
-/// can enter it, unless its lock or its user limit stops the entry (ADR 0504).
+/// can enter it, unless its lock or its user limit stops the entry (ADR 0504). An archived
+/// voice channel has no call and takes no change (ADR 0410).
 pub(super) async fn voice(
+    connection: &mut PgConnection,
+    access: &Access,
+    channel_id: ChannelId,
+) -> ApiResult<Voice> {
+    let voice = seen_voice(connection, access, channel_id).await?;
+    voice.record.require_open()?;
+    Ok(voice)
+}
+
+/// A voice channel that the caller sees, archived or not, for a route that only reads.
+async fn seen_voice(
     connection: &mut PgConnection,
     access: &Access,
     channel_id: ChannelId,
@@ -327,7 +339,7 @@ pub async fn end_screen_share(
 
 async fn set_hand(app: &AppState, bearer: &Bearer, raised: bool) -> ApiResult<StatusCode> {
     let now = app.now();
-    proof::limit(&app.calls.state_reports, bearer.0, now)?;
+    proof::limit(&app.calls.actions, bearer.0, now)?;
     transact!(app, |connection| {
         let access = Access::open(connection, bearer, now).await?;
         access.require(Request::OwnAccount)?;
@@ -432,7 +444,7 @@ pub async fn get_channel_call(
     let now = app.now();
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        let voice = voice(connection, &access, channel_id).await?;
+        let voice = seen_voice(connection, &access, channel_id).await?;
         visible_call(connection, &access, &voice.record.channel).await
     })
     .map(Json)

@@ -22,11 +22,13 @@ use crate::state::AppState;
 
 pub mod access_tokens;
 pub mod account;
+pub mod archive;
 pub mod attachments;
 pub mod audit_log;
 pub mod auth;
 pub mod calls;
 pub mod channels;
+pub mod exports;
 pub mod glossary;
 pub mod health;
 pub mod internal;
@@ -77,6 +79,8 @@ pub const SESSION_SECURITY: &str = "session";
         (name = "calls", description = "Calls in voice channels and direct messages"),
         (name = "recordings", description = "Recordings of calls in voice channels, their \
                                              files, their transcripts and the glossary"),
+        (name = "exports", description = "Exports of a channel or of a direct-message \
+                                          conversation as one ZIP file"),
         (name = "audit", description = "The audit log"),
         (name = "events", description = "The event stream and the snapshot it continues")
     )
@@ -198,7 +202,10 @@ fn documented_routes() -> OpenApiRouter<AppState> {
             server_roles::list_server_roles,
             server_roles::create_server_role
         ))
-        .routes(routes!(server_roles::update_server_role))
+        .routes(routes!(
+            server_roles::update_server_role,
+            server_roles::delete_server_role
+        ))
         .routes(routes!(
             server_roles::assign_server_role,
             server_roles::unassign_server_role
@@ -214,22 +221,42 @@ fn documented_routes() -> OpenApiRouter<AppState> {
             workspaces::list_workspaces,
             workspaces::create_workspace
         ))
-        .routes(routes!(workspaces::update_workspace))
+        .routes(routes!(
+            workspaces::update_workspace,
+            workspaces::delete_workspace
+        ))
         .routes(routes!(workspaces::list_members))
         .routes(routes!(workspaces::add_member))
         .routes(routes!(
             workspace_roles::list_workspace_roles,
             workspace_roles::create_workspace_role
         ))
-        .routes(routes!(workspace_roles::update_workspace_role))
+        .routes(routes!(
+            workspace_roles::update_workspace_role,
+            workspace_roles::delete_workspace_role
+        ))
         .routes(routes!(
             workspace_roles::assign_workspace_role,
             workspace_roles::unassign_workspace_role
         ))
         .routes(routes!(channels::create_category))
-        .routes(routes!(channels::update_category))
+        .routes(routes!(
+            channels::update_category,
+            channels::delete_category
+        ))
         .routes(routes!(channels::list_channels, channels::create_channel))
         .routes(routes!(channels::update_channel, channels::delete_channel))
+        .routes(routes!(archive::archive_channel, archive::restore_channel))
+        .routes(routes!(archive::list_archived_channels))
+        .routes(routes!(
+            archive::get_archive_period,
+            archive::set_archive_period
+        ))
+        .routes(routes!(exports::export_channel))
+        .routes(routes!(exports::export_conversation))
+        .routes(routes!(exports::list_exports))
+        .routes(routes!(exports::get_export, exports::remove_export))
+        .routes(routes!(exports::get_export_file))
         .routes(routes!(channels::list_channel_overrides))
         .routes(routes!(channels::set_channel_override))
         .routes(routes!(calls::get_own_call, calls::leave_call))

@@ -19,19 +19,16 @@ fn general_stream_authorization_window_matches_production() {
 
 #[tokio::test]
 async fn delivery_batch_statement_bound() {
-    let server = TestServer::start_with(|config| {
+    let server = TestServer::start_measured_with(|config| {
         config.limits.stream.batch = 100;
         config.limits.stream.poll_interval = time::Duration::hours(1);
     })
     .await;
+    let evictions = server.statement_evictions().await;
     let owner = server.owner().await;
     let reader = server.join(&owner, "Reader").await;
     let channel = channel(&server, &owner, "text").await;
     let root = send(&server, &owner, &channel, "root").await;
-    sqlx::query("create extension pg_stat_statements")
-        .execute(&server.db)
-        .await
-        .unwrap();
     for mixed in [false, true] {
         let start = server.snapshot(&reader).await.cursor;
         let mut tx = server.db.begin().await.unwrap();
@@ -146,4 +143,5 @@ async fn delivery_batch_statement_bound() {
             statements / 20
         );
     }
+    server.require_no_statement_eviction(evictions).await;
 }

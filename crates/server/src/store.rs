@@ -52,10 +52,12 @@ pub async fn require_workspaces_exist(
     connection: &mut PgConnection,
     workspace_ids: &[WorkspaceId],
 ) -> ApiResult<()> {
-    let existing: i64 = sqlx::query_scalar("select count(*) from workspaces where id = any($1)")
-        .bind(workspace_ids)
-        .fetch_one(connection)
-        .await?;
+    let existing: i64 = sqlx::query_scalar(
+        "select count(*) from workspaces where id = any($1) and deleted_at is null",
+    )
+    .bind(workspace_ids)
+    .fetch_one(connection)
+    .await?;
     if usize::try_from(existing) == Ok(workspace_ids.len()) {
         Ok(())
     } else {

@@ -31,6 +31,8 @@ pub struct Shared {
     pub redemptions_by_account: RateLimiter<AccountId>,
     pub outstanding_challenges: Outstanding,
     pub attachment_writes: RateLimiter<[u8; 32]>,
+    /// The disk of the attachments, whose free space the storage guard reads.
+    pub attachment_space: crate::storage::Space,
     pub attachment_checks: Arc<crate::messages::transfers::Checks>,
     pub attachment_downloads: Arc<crate::messages::transfers::Downloads>,
     pub attachment_transfers: Arc<crate::messages::transfers::Uploads>,
@@ -40,6 +42,8 @@ pub struct Shared {
     pub streams: Arc<Streams>,
     pub calls: Calls,
     pub recordings: Recordings,
+    pub exports: crate::exports::Exports,
+    pub purges: crate::purge::Purges,
     pub bodies: Arc<BodyBudget>,
 }
 
@@ -71,6 +75,8 @@ impl AppState {
         let streams = Arc::new(Streams::new(&limits.stream));
         let calls = Calls::new(media, server_id, limits);
         let recordings = Recordings::new(recorder, &limits.recordings);
+        let exports = crate::exports::Exports::new(config.exports_directory.clone());
+        let attachment_space = crate::storage::Space::of(config.attachments_directory.clone());
         let bodies = Arc::new(BodyBudget::new(
             limits.request_bodies_held_bytes,
             limits.request_bodies_held_per_address,
@@ -93,6 +99,7 @@ impl AppState {
                 },
                 entries,
             ),
+            attachment_space,
             attachment_checks: Arc::new(crate::messages::transfers::Checks::default()),
             attachment_downloads: Arc::new(crate::messages::transfers::Downloads::default()),
             attachment_transfers: Arc::new(crate::messages::transfers::Uploads::default()),
@@ -108,6 +115,8 @@ impl AppState {
             streams,
             calls,
             recordings,
+            exports,
+            purges: crate::purge::Purges::default(),
             bodies,
         }))
     }
@@ -144,7 +153,7 @@ impl AppState {
         Background(self)
     }
 
-    /// The free-space reserve shared by recordings and attachments (ADR 0006).
+    /// The free-space reserve shared by recordings, attachments and exports (ADR 0006).
     pub fn storage_reserve_bytes(&self) -> u64 {
         self.config.limits.recordings.reserve_bytes
     }

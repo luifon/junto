@@ -459,3 +459,110 @@ fn review2_two_overrides_of_a_channel_cannot_stand_for_one_role() {
         "{found}"
     );
 }
+
+#[test]
+fn rule_53_a_file_deletes_only_what_it_lists_in_an_order_that_the_server_takes() {
+    let mut current = server();
+    current.workspaces.push(
+        file(json!({ "format": 1, "workspaces": [{
+            "id": id(2), "name": "Side",
+            "roles": [{ "id": id(12), "name": "everyone", "everyone": true }],
+            "categories": [{ "id": id(21), "name": "Old" }],
+            "channels": [{ "id": id(32), "name": "side", "kind": "text" }] }] }))
+        .workspaces
+        .remove(0),
+    );
+    let deleting = file(json!({ "format": 1, "delete": {
+        "server_roles": [id(90), id(98)],
+        "workspaces": [id(2), id(97)],
+        "roles": [id(11), id(96)],
+        "categories": [id(20), id(95)],
+        "channels": [id(31), id(94)],
+    } }));
+    let planned = planned(&deleting, &current);
+    let sent: Vec<Value> = planned
+        .iter()
+        .map(|planned| serde_json::to_value(&planned.change).unwrap())
+        .collect();
+    // Channels first, then categories and roles, then workspaces, then server roles. An
+    // entry that the server does not have is no change.
+    assert_eq!(
+        sent,
+        [
+            json!({ "change": "delete_channel", "id": id(31) }),
+            json!({ "change": "delete_category", "id": id(20) }),
+            json!({ "change": "delete_workspace_role", "id": id(11) }),
+            json!({ "change": "delete_workspace", "id": id(2) }),
+            json!({ "change": "delete_server_role", "id": id(90) }),
+        ]
+    );
+    let lines: Vec<&str> = planned
+        .iter()
+        .map(|planned| planned.line.as_str())
+        .collect();
+    assert!(lines[1].starts_with("- category \"Projects\""), "{lines:?}");
+    assert!(lines[1].contains("its channels stay"), "{lines:?}");
+    assert!(lines[2].starts_with("- role \"Helpers\""), "{lines:?}");
+    assert!(lines[3].starts_with("- workspace \"Side\""), "{lines:?}");
+    assert!(
+        lines[3].contains("1 roles, 1 categories and 1 channels"),
+        "{lines:?}"
+    );
+    assert!(
+        lines[4].starts_with("- server role \"Inviters\""),
+        "{lines:?}"
+    );
+
+    // A file that holds an entry lists nothing of it for deletion, and no entry names what
+    // the file deletes.
+    let contradicting = problems(
+        json!({ "format": 1,
+            "server_roles": [{ "id": id(90), "name": "Inviters" }],
+            "workspaces": [{ "id": id(1), "name": "Main",
+                "roles": [{ "id": id(11), "name": "Helpers" }],
+                "categories": [{ "id": id(20), "name": "Projects" }],
+                "channels": [
+                    { "id": id(30), "name": "general", "kind": "text", "category": id(22),
+                      "overrides": [{ "role": id(13), "allow": ["view_channel"] }] }] }],
+            "delete": { "server_roles": [id(90)], "workspaces": [id(1)], "roles": [id(11), id(13)],
+                        "categories": [id(20), id(22), id(22)] } }),
+        &current,
+    );
+    for stated in [
+        format!(
+            "the server role {} is an entry and is also listed for deletion",
+            id(90)
+        ),
+        format!(
+            "the workspace {} is an entry and is also listed for deletion",
+            id(1)
+        ),
+        format!(
+            "the role {} is an entry and is also listed for deletion",
+            id(11)
+        ),
+        format!(
+            "the category {} is an entry and is also listed for deletion",
+            id(20)
+        ),
+        format!(
+            "names the category {}, which is listed for deletion",
+            id(22)
+        ),
+        format!(
+            "an override of the role {}, which is listed for deletion",
+            id(13)
+        ),
+        format!("the category {} is listed for deletion twice", id(22)),
+    ] {
+        assert!(contradicting.contains(&stated), "{stated}\n{contradicting}");
+    }
+
+    // The server deletes no everyone role and not its default workspace.
+    let refused = problems(
+        json!({ "format": 1, "delete": { "roles": [id(10)], "workspaces": [id(1)] } }),
+        &current,
+    );
+    assert!(refused.contains("is the everyone role"), "{refused}");
+    assert!(refused.contains("is the default workspace"), "{refused}");
+}

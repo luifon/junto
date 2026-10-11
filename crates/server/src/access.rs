@@ -42,6 +42,22 @@ pub struct ChannelRecord {
     pub channel: Channel,
     pub permanent_message_count: i64,
     pub deleted_at: Option<OffsetDateTime>,
+    /// Present for an archived channel, which is read-only (ADR 0410).
+    pub archived_at: Option<OffsetDateTime>,
+}
+
+impl ChannelRecord {
+    /// Refuses a change of the content or of the settings of an archived channel.
+    pub fn require_open(&self) -> ApiResult<()> {
+        match self.archived_at {
+            Some(_) => Err(archived()),
+            None => Ok(()),
+        }
+    }
+}
+
+pub fn archived() -> ApiError {
+    ApiError::conflict("the channel is archived and takes no change; restore it first")
 }
 
 type ChannelRow = (
@@ -56,10 +72,12 @@ type ChannelRow = (
     Option<OffsetDateTime>,
     Option<i32>,
     bool,
+    Option<OffsetDateTime>,
 );
 
 const CHANNEL_COLUMNS: &str = "id, workspace_id, category_id, kind, name, position, \
-     permanent_messages, permanent_message_count, deleted_at, user_limit, hides_occupants";
+     permanent_messages, permanent_message_count, deleted_at, user_limit, hides_occupants, \
+     archived_at";
 
 impl Access {
     /// Verifies the session or the access token of the request and loads the caller, inside
@@ -439,6 +457,21 @@ impl Access {
     }
 }
 
+/// One channel by its identifier, deleted or not, for the work of the server itself, which
+/// asks no permission.
+pub async fn stored_channel(
+    connection: &mut PgConnection,
+    channel_id: ChannelId,
+) -> ApiResult<Option<ChannelRecord>> {
+    let row: Option<ChannelRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "select {CHANNEL_COLUMNS} from channels where id = $1"
+    )))
+    .bind(channel_id)
+    .fetch_optional(connection)
+    .await?;
+    row.map(channel_record).transpose()
+}
+
 fn scoped_channels(
     rows: Vec<ChannelRow>,
     overrides: Vec<OverrideRow>,
@@ -508,6 +541,7 @@ fn channel_record(row: ChannelRow) -> ApiResult<ChannelRecord> {
         deleted_at,
         user_limit,
         hides_occupants,
+        archived_at,
     ) = row;
     Ok(ChannelRecord {
         channel: Channel {
@@ -523,5 +557,6 @@ fn channel_record(row: ChannelRow) -> ApiResult<ChannelRecord> {
         },
         permanent_message_count,
         deleted_at,
+        archived_at,
     })
 }

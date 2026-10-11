@@ -285,6 +285,7 @@ pub async fn system(
             channel_id: channel,
         },
         scope: None,
+        archived: false,
     };
     let readers: Option<Vec<junto_protocol::ids::AccountId>> = if let Some(call_id) = call_id {
         let active: bool = sqlx::query_scalar("select exists(select 1 from calls where id=$1)")
@@ -393,6 +394,7 @@ pub(crate) async fn erase(
     now: OffsetDateTime,
     id: MessageId,
 ) -> ApiResult<()> {
+    crate::exports::message_deleted(connection, now, id).await?;
     uploads::remove_message(connection, now, id).await?;
     sqlx::query("delete from message_pins where message_id=$1")
         .bind(id)

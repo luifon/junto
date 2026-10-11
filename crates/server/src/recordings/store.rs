@@ -1276,6 +1276,8 @@ pub async fn remove(
         channel_id: recording.channel_id,
     };
     events::tell_of_recording(&mut *connection, now, call_runs, &event).await?;
+    crate::exports::recording_removed(&mut *connection, now, recording.channel_id, recording.id)
+        .await?;
     let posts: Vec<(junto_protocol::ids::MessageId, i64, Option<Vec<AccountId>>)> = sqlx::query_as(
         "select id, position, readers from messages
          where recording_id=$1 and system->>'action'='recording_ready'",

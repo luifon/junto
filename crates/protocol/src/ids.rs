@@ -69,6 +69,7 @@ identifier!(CallMoveId);
 identifier!(RecordingId);
 identifier!(RecordingSegmentId);
 identifier!(AccessTokenId);
+identifier!(ExportId);
 identifier!(
     /// Identifies one entry of a structure file (ADR 0211). It is the identifier of the
     /// object, or the identifier under which a structure file created the object.

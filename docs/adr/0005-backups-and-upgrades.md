@@ -17,6 +17,7 @@ Backups:
 - A backup lists the files it needs. The server keeps those files until the backup reports that it finished.
 - Files that are still being written, such as the files of a running recording, are left out of the backup and are reported.
 - The restore procedure is part of the test plan (ADR 0902).
+- ADR 0018 states what the server binary provides of these commands and what the programs of the deployment do.
 
 Upgrades:
 

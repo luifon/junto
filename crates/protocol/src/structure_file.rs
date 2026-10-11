@@ -41,13 +41,30 @@ pub struct StructureFile {
 #[serde(deny_unknown_fields)]
 pub struct Deletions {
     /// The identifiers of the channels to delete.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub channels: Vec<StructureId>,
+    /// The identifiers of the categories to delete. Their channels stay and have no
+    /// category.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<StructureId>,
+    /// The identifiers of the workspace roles to delete.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roles: Vec<StructureId>,
+    /// The identifiers of the server roles to delete.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub server_roles: Vec<StructureId>,
+    /// The identifiers of the workspaces to delete, each with everything that it holds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspaces: Vec<StructureId>,
 }
 
 impl Deletions {
     pub fn is_empty(&self) -> bool {
         self.channels.is_empty()
+            && self.categories.is_empty()
+            && self.roles.is_empty()
+            && self.server_roles.is_empty()
+            && self.workspaces.is_empty()
     }
 }
 
@@ -282,6 +299,20 @@ pub enum StructureChange {
     DeleteChannel {
         id: StructureId,
     },
+    /// The channels of the category stay and have no category.
+    DeleteCategory {
+        id: StructureId,
+    },
+    DeleteWorkspaceRole {
+        id: StructureId,
+    },
+    DeleteServerRole {
+        id: StructureId,
+    },
+    /// Deletes the workspace with its members, roles, categories and channels.
+    DeleteWorkspace {
+        id: StructureId,
+    },
 }
 
 impl StructureChange {
@@ -300,6 +331,10 @@ impl StructureChange {
             Self::UpdateCallSettings { .. } => "update_call_settings",
             Self::SetChannelOverride { .. } => "set_channel_override",
             Self::DeleteChannel { .. } => "delete_channel",
+            Self::DeleteCategory { .. } => "delete_category",
+            Self::DeleteWorkspaceRole { .. } => "delete_workspace_role",
+            Self::DeleteServerRole { .. } => "delete_server_role",
+            Self::DeleteWorkspace { .. } => "delete_workspace",
         }
     }
 }
@@ -388,6 +423,10 @@ mod tests {
         let id: StructureId = "0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e5f".parse().unwrap();
         let changes = [
             StructureChange::DeleteChannel { id },
+            StructureChange::DeleteCategory { id },
+            StructureChange::DeleteWorkspaceRole { id },
+            StructureChange::DeleteServerRole { id },
+            StructureChange::DeleteWorkspace { id },
             StructureChange::RenameWorkspace {
                 id,
                 name: "Main".to_owned(),

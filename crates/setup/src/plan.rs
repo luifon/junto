@@ -163,9 +163,18 @@ fn check_file(planner: &mut Planner<'_>, file: &StructureFile) {
             planner.problem(format!("two {kind} entries have the identifier {id}"));
         }
     };
+    let delete = &file.delete;
+    let kept = |planner: &mut Planner<'_>, what: &str, id: StructureId, list: &[StructureId]| {
+        if list.contains(&id) {
+            planner.problem(format!(
+                "the {what} {id} is an entry and is also listed for deletion"
+            ));
+        }
+    };
     for role in &file.server_roles {
         unique(planner, "server role", role.id);
         planner.check_name("server role", role.id, &role.name);
+        kept(planner, "server role", role.id, &delete.server_roles);
     }
     if file.workspaces.iter().filter(|entry| entry.default).count() > 1 {
         planner.problem("two workspaces are marked as the default workspace".to_owned());
@@ -173,6 +182,7 @@ fn check_file(planner: &mut Planner<'_>, file: &StructureFile) {
     for workspace in &file.workspaces {
         unique(planner, "workspace", workspace.id);
         planner.check_name("workspace", workspace.id, &workspace.name);
+        kept(planner, "workspace", workspace.id, &delete.workspaces);
         if workspace.roles.iter().filter(|role| role.everyone).count() > 1 {
             planner.problem(format!(
                 "the workspace {} has two roles marked as its everyone role",
@@ -182,17 +192,23 @@ fn check_file(planner: &mut Planner<'_>, file: &StructureFile) {
         for role in &workspace.roles {
             unique(planner, "role", role.id);
             planner.check_name("role", role.id, &role.name);
+            kept(planner, "role", role.id, &delete.roles);
         }
         for category in &workspace.categories {
             unique(planner, "category", category.id);
             planner.check_name("category", category.id, &category.name);
+            kept(planner, "category", category.id, &delete.categories);
         }
         for channel in &workspace.channels {
             unique(planner, "channel", channel.id);
             planner.check_name("channel", channel.id, &channel.name);
-            if file.delete.channels.contains(&channel.id) {
+            kept(planner, "channel", channel.id, &delete.channels);
+            if let Some(Some(category)) = channel.category
+                && delete.categories.contains(&category)
+            {
                 planner.problem(format!(
-                    "the channel {} is an entry and is also listed for deletion",
+                    "the channel {} names the category {category}, which is listed for \
+                     deletion",
                     channel.id
                 ));
             }
@@ -212,6 +228,13 @@ fn check_file(planner: &mut Planner<'_>, file: &StructureFile) {
                         channel.id, entry.role
                     ));
                 }
+                if delete.roles.contains(&entry.role) {
+                    planner.problem(format!(
+                        "the channel {} has an override of the role {}, which is listed for \
+                         deletion",
+                        channel.id, entry.role
+                    ));
+                }
                 if !set(&entry.allow).is_disjoint(&set(&entry.deny)) {
                     planner.problem(format!(
                         "the override of the role {} in the channel {} has a permission in \
@@ -222,10 +245,101 @@ fn check_file(planner: &mut Planner<'_>, file: &StructureFile) {
             }
         }
     }
-    let mut deleted = HashSet::new();
+    for (what, list) in [
+        ("channel", &delete.channels),
+        ("category", &delete.categories),
+        ("role", &delete.roles),
+        ("server role", &delete.server_roles),
+        ("workspace", &delete.workspaces),
+    ] {
+        let mut deleted = HashSet::new();
+        for id in list {
+            if !deleted.insert(*id) {
+                planner.problem(format!("the {what} {id} is listed for deletion twice"));
+            }
+        }
+    }
+}
+
+/// The deletions that the file lists, after every other change: channels, categories,
+/// workspace roles, workspaces, server roles. A listed entry that the server does not have
+/// is no change. The server refuses the deletion of an everyone role and of the default
+/// workspace, so the file is refused before.
+fn deletions(planner: &mut Planner<'_>, places: &Places<'_>, file: &StructureFile) {
     for id in &file.delete.channels {
-        if !deleted.insert(*id) {
-            planner.problem(format!("the channel {id} is listed for deletion twice"));
+        if let Some((_, channel)) = places.channels.get(id) {
+            planner.add(
+                StructureChange::DeleteChannel { id: *id },
+                format!("- channel {:?} ({id}): delete", channel.name),
+            );
+        }
+    }
+    for id in &file.delete.categories {
+        let Some(workspace) = places.categories.get(id) else {
+            continue;
+        };
+        let name = places
+            .workspaces
+            .get(workspace)
+            .and_then(|found| found.categories.iter().find(|category| category.id == *id))
+            .map_or("", |category| category.name.as_str());
+        planner.add(
+            StructureChange::DeleteCategory { id: *id },
+            format!("- category {name:?} ({id}): delete; its channels stay without a category"),
+        );
+    }
+    for id in &file.delete.roles {
+        let Some(workspace) = places.roles.get(id) else {
+            continue;
+        };
+        let role = places
+            .workspaces
+            .get(workspace)
+            .and_then(|found| found.roles.iter().find(|role| role.id == *id));
+        if role.is_some_and(|role| role.everyone) {
+            planner.problem(format!(
+                "the role {id} is the everyone role of the workspace {workspace}; it is not \
+                 deleted"
+            ));
+            continue;
+        }
+        let name = role.map_or("", |role| role.name.as_str());
+        planner.add(
+            StructureChange::DeleteWorkspaceRole { id: *id },
+            format!("- role {name:?} ({id}): delete"),
+        );
+    }
+    for id in &file.delete.workspaces {
+        let Some(found) = places.workspaces.get(id) else {
+            continue;
+        };
+        if found.default {
+            planner.problem(format!(
+                "the workspace {id} is the default workspace of the server; it is not deleted"
+            ));
+            continue;
+        }
+        planner.add(
+            StructureChange::DeleteWorkspace { id: *id },
+            format!(
+                "- workspace {:?} ({id}): delete with its {} roles, {} categories and {} \
+                 channels, and with their content",
+                found.name,
+                found.roles.len(),
+                found.categories.len(),
+                found.channels.len()
+            ),
+        );
+    }
+    for id in &file.delete.server_roles {
+        let role = planner
+            .current
+            .server_roles
+            .iter()
+            .find(|role| role.id == *id);
+        if let Some(role) = role {
+            let line = format!("- server role {:?} ({id}): delete", role.name);
+            planner.add(StructureChange::DeleteServerRole { id: *id }, line);
         }
     }
 }
@@ -291,14 +405,7 @@ pub fn plan(
     for entry in &file.workspaces {
         workspace(&mut planner, &places, entry, claimed_default);
     }
-    for id in &file.delete.channels {
-        if let Some((_, channel)) = places.channels.get(id) {
-            planner.add(
-                StructureChange::DeleteChannel { id: *id },
-                format!("- channel {:?} ({id}): delete", channel.name),
-            );
-        }
-    }
+    deletions(&mut planner, &places, file);
     if planner.problems.is_empty() {
         Ok(planner.changes)
     } else {

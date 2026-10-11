@@ -136,6 +136,7 @@ pub async fn remove_account(
             .execute(&mut *connection)
             .await?;
         crate::tokens::end_all_of(connection, now, account_id).await?;
+        crate::exports::account_ended(connection, now, account_id).await?;
         let left: Vec<WorkspaceId> = sqlx::query_scalar(
             "delete from workspace_members where account_id = $1 returning workspace_id",
         )
@@ -202,6 +203,7 @@ pub async fn ban_account(
 
         set_status(connection, now, account_id, AccountStatus::Banned).await?;
         store::end_sessions(connection, &app.calls, now, account_id, SessionEnd::Banned).await?;
+        crate::exports::account_ended(connection, now, account_id).await?;
         let cancelled_invite_ids: Vec<InviteId> = sqlx::query_scalar(
             "update invites set revoked_at = $2, revocation = 'creator_banned'
              where created_by = $1 and revoked_at is null

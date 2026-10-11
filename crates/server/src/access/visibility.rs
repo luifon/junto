@@ -102,8 +102,8 @@ pub async fn load(
              workspace_members wm where wm.workspace_id=w.id and wm.account_id=a.id), 'roles' ,(select
              jsonb_agg(jsonb_build_array(r.id,r.permissions,r.is_everyone)) from workspace_roles r where
              r.workspace_id=w.id and (r.is_everyone or exists( select 1 from member_roles mr where mr.role_id=r.id and
-             mr.account_id=a.id))))) from workspaces w where $2::uuid[] is null or w.id in(select workspace_id from
-             channels_selected)), '[]' ::jsonb), 'directs' ,coalesce((select jsonb_agg(jsonb_build_object( 'id' ,c.id,
+             mr.account_id=a.id))))) from workspaces w where w.deleted_at is null and ($2::uuid[] is null or w.id in(select workspace_id from
+             channels_selected))), '[]' ::jsonb), 'directs' ,coalesce((select jsonb_agg(jsonb_build_object( 'id' ,c.id,
              'owner' ,coalesce(peer.id=s.owner_account_id,false), 'roles' ,array(select r.permissions from server_roles
              r join account_server_roles ar on ar.role_id=r.id where ar.account_id=peer.id), 'shared' ,exists(select 1
              from workspace_members mine join workspace_members theirs using(workspace_id) where mine.account_id=a.id

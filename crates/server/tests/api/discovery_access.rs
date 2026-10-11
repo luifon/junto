@@ -504,7 +504,7 @@ async fn rule_63_database_rejects_cross_place_threads_pins_and_invalid_retention
 }
 
 #[tokio::test]
-async fn rule_64_deferred_routes_and_individual_permanence_unmarking_are_absent() {
+async fn rule_64_individual_permanence_unmarking_is_absent() {
     let server = TestServer::start().await;
     let owner = server.owner().await;
     let channel = channel(&server, &owner, "text").await;
@@ -538,6 +538,6 @@ async fn rule_64_deferred_routes_and_individual_permanence_unmarking_are_absent(
             .as_object()
             .unwrap()
             .keys()
-            .all(|route| !route.contains("/archive") && !route.contains("/export"))
+            .all(|route| !route.contains("/permanent"))
     );
 }

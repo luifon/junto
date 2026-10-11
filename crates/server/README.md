@@ -129,7 +129,7 @@ junto-setup apply structure.json            # all changes or none
 junto-setup plan structure.json --out plan.json && junto-setup apply --plan plan.json
 ```
 
-The token is never an argument: it comes from `JUNTO_ACCESS_TOKEN` or from `--token-file`. The tool sends it over `https`, or over `http` to a loopback address. The file format is in [`docs/api/structure-file.json`](../../docs/api/structure-file.json). An entry is matched by its `id`; an entry or an optional field that the file does not hold is kept; only the channels under `delete.channels` are deleted. A new entry gets a new UUID from its author; the server generates the identifier of the object and keeps the identifier of the file for later files. A workspace with `"default": true` and a role with `"everyone": true` stand for the default workspace and for the everyone role of the server that the file is applied to, so the export of one server can be applied to another.
+The token is never an argument: it comes from `JUNTO_ACCESS_TOKEN` or from `--token-file`. The tool sends it over `https`, or over `http` to a loopback address. The file format is in [`docs/api/structure-file.json`](../../docs/api/structure-file.json). An entry is matched by its `id`; an entry or an optional field that the file does not hold is kept; only what the file lists under `delete` is deleted: `channels`, `categories`, `roles`, `server_roles` and `workspaces`. A new entry gets a new UUID from its author; the server generates the identifier of the object and keeps the identifier of the file for later files. A workspace with `"default": true` and a role with `"everyone": true` stand for the default workspace and for the everyone role of the server that the file is applied to, so the export of one server can be applied to another.
 
 `GET /api/v1/structure` returns the document with its revision, and `POST /api/v1/structure/changes` applies at most 200 changes in one transaction. A request that names another revision than the current one gets `conflict`, and so does a plan after any change of the structure. Both routes need the administrator permission.
 
@@ -144,14 +144,25 @@ JUNTO_TEST_SETUP_TARGET='http://127.0.0.1:8082|<owner code>' \
 
 ## Host commands
 
-Four commands work on the database directly and are not part of the API (ADR 0114, ADR 0010). Each reads `JUNTO_DATABASE_URL` and can run while the server runs.
+These commands work on the database directly and are not part of the API (ADR 0114, ADR 0010, ADR 0018). Each reads `JUNTO_DATABASE_URL` and can run while the server runs.
 
 ```sh
 junto-server assign-owner <account-id>   # make an active account the server owner
 junto-server issue-owner-code            # print a one-time code that returns the owner to their account
 junto-server new-event-epoch             # make every client load a snapshot
 junto-server check-upgrade               # tell whether a recording runs; exit code 3 while one does
+junto-server backup-begin                # hold file deletions back; print the identifier of a backup
+junto-server backup-files <backup-id>    # after the copy of the database: print the directories to copy
+junto-server backup-end <backup-id>      # the backup has copied its files
+junto-server restored                    # after a restore: new event epoch, no export, no backup
+junto-server health                      # exit code 0 while the server of this host answers 200
 ```
+
+`health` reads `JUNTO_LISTEN_ADDRESS` only and asks `GET /api/v1/health`; it is the health check of a container (ADR 0012).
+
+A backup copies the database and the files with the programs of the deployment (ADR 0018). `backup-begin` prints `backup <id> <expiry>`. From then on, and for 24 hours at most, the server deletes no directory of an attachment or of a recording. Copy the database. Then run `backup-files <id>` with the settings of the server: it prints `file <directory>` for each directory that the backup copies and `skip <directory> <reason>` for each one that is still written. Copy the directories of the `file` lines, then run `backup-end <id>`. After the database and the files of a backup were put in place, run `restored` before the server starts.
+
+Before a version of the server applies a migration, it copies the database to `<name>_before_<newest applied migration>` on the same PostgreSQL server and keeps that one copy. The copy needs that no other program is connected to the database and that the database user may create a database; otherwise the server does not start. `JUNTO_MIGRATION_COPY=none` turns the copy off. To go back: stop the server, rename the database, rename the copy to the name of the database, and start the earlier version.
 
 Run `check-upgrade` before an upgrade of the server or of the recorder. A server whose new version changes the database does not start while a recording is starting or runs (ADR 0005, ADR 0608).
 
@@ -165,7 +176,9 @@ Run `new-event-epoch` after the restore of a backup, before the server accepts c
 | `JUNTO_LISTEN_ADDRESS` | `127.0.0.1:8080` | Address and port of the HTTP listener |
 | `JUNTO_PUBLIC_ORIGINS` | the loopback origins of the port, when the server listens on a loopback address; required otherwise | Comma-separated origins at which clients reach the server, for example `https://chat.example.test`; `http` is accepted for a loopback host only (ADR 0117) |
 | `JUNTO_SERVER_NAME` | `Junto` | Name of the server and of its default workspace; read at the first start only |
-| `JUNTO_TRUSTED_PROXIES` | empty | Comma-separated IP addresses of the entry hosts whose `X-Forwarded-For` header the server trusts |
+| `JUNTO_TRUSTED_PROXIES` | empty | Comma-separated IP addresses or networks (`172.31.240.0/24`) of the entry hosts whose `X-Forwarded-For` header the server trusts |
+| `JUNTO_EXPORTS_DIR` | none | Existing absolute directory for the files of exports. Without it the server makes no export (ADR 0411) |
+| `JUNTO_MIGRATION_COPY` | `database` | `database`: copy the database before a migration; `none`: do not (ADR 0018) |
 | `JUNTO_LOG_FORMAT` | `json` | `json` or `text`; log records go to standard error |
 | `JUNTO_LOG_LEVEL` | `info` | `error`, `warn`, `info`, `debug` or `trace` |
 | `JUNTO_LIVEKIT_API_URL` | none | Address of the LiveKit API on the private network, with `http://` (ADR 0508) |
@@ -240,10 +253,18 @@ The test `openapi` fails while a committed file differs from the code.
 
 ## Text messages
 
-The test database starts with `pg_stat_statements` preloaded. The message read-cost test
-uses it to check that history and snapshot query counts remain bounded. Its entry limit
-keeps statistics for the whole suite without eviction. A temporary database role identifies
-request statements separately from the event watcher.
+The test database server starts with `pg_stat_statements` preloaded. The tests that count
+statements read it. Its list of entries has a fixed size for all databases together, so the
+database of a test records no statement: the test support sets `pg_stat_statements.track`
+to `none` for each database that it creates. A test that counts statements starts its server
+with `TestServer::start_measured`, which leaves the recording on for that database, and ends
+with `require_no_statement_eviction`, which fails when the database server evicted an entry
+during the measurement. A temporary database role identifies request statements separately
+from the event watcher. The ignored test `statement_statistics::entries_of_the_run` prints
+the number of entries when it runs after the suite in the same call of
+`tools/with-test-postgres.sh`. The test support deletes the database of a test when the
+test ends: the database server holds statistics for each table and index of each database
+in a shared memory of fixed size, and the databases of a whole run do not fit into it.
 
 Channels (including voice-channel chat) use `GET` and `POST /api/v1/channels/{id}/messages`.
 Two-account conversations are opened with `POST /api/v1/conversations` and use
@@ -294,3 +315,37 @@ batches for one place at a time. Final recordings include ready, partly_failed a
 Message retention and attachment cleanup run in maintenance.
 Messages retain a flag when file retention removes their attachments.
 The full rules and pagination contracts are in ADR 0409.
+
+## Archive, export and deletions
+
+`PUT /api/v1/channels/{id}/archive` archives a channel and `DELETE` on the same path restores
+it; both need `manage_channel` (ADR 0410). An archived channel is in no channel list and not
+in the snapshot. The people who see it read it; every change of its content or settings gets
+`conflict`, and the call of an archived voice channel ends. `GET
+/api/v1/workspaces/{id}/archived-channels` lists the archived channels with the time of their
+deletion. `GET` and `PUT /api/v1/workspaces/{id}/archive-period` read and set the period: 7 to
+36500 days or `null` for never, 30 by default. Maintenance records the notice
+`channel_deletion_due` 7 days before a deletion and deletes the channel 7 days after its
+notice. A channel that contains permanent messages is not deleted by the server.
+
+`POST /api/v1/channels/{id}/exports` asks for an export of a channel and needs
+`export_channel`; `POST /api/v1/conversations/{id}/exports` asks for an export of a
+direct-message conversation of the caller (ADR 0411). An export belongs to its requester:
+`GET /api/v1/exports`, `GET` and `DELETE /api/v1/exports/{id}` and `GET
+/api/v1/exports/{id}/file` serve that account only, and the download decides the permission
+again. The file is a ZIP64 archive with `export.json`, `messages.json`, `messages.html`,
+`attachments/` and `recordings/`. It holds what the requester reads of the items that existed
+at the request. One task writes one export at a time: it counts the bytes, reserves them
+(ADR 0605) and writes in pages. An export is removed 7 days after it finished, when an item of
+it is deleted, and with its account or its channel. Set `JUNTO_EXPORTS_DIR`.
+
+`DELETE /api/v1/workspaces/{id}/roles/{role}`, `DELETE /api/v1/server-roles/{role}`, `DELETE
+/api/v1/workspaces/{id}/categories/{category}` and `DELETE /api/v1/workspaces/{id}` delete a
+role, a category and a workspace (ADR 0308). The channels of a deleted category stay. A
+workspace is deleted by an administrator, by the server owner only when a channel of it
+contains permanent messages, and never the default workspace.
+
+A deletion of a channel or of a workspace changes rows of the structure in its request. The
+content (messages, attachments, recordings, exports) is removed afterwards by one task, in
+transactions of at most 500 rows (ADR 0017). The tests run it with
+`junto_server::purge::run_once`, the exports with `junto_server::exports::run_once`.

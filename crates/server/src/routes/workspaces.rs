@@ -1,7 +1,7 @@
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use junto_authz::{Request, ServerPermission};
+use junto_authz::{ChannelContent, Request, ServerPermission};
 use junto_protocol::audit::AuditEvent;
 use junto_protocol::events::Event;
 use junto_protocol::ids::{AccountId, WorkspaceId, WorkspaceRoleId};
@@ -37,7 +37,7 @@ pub async fn list_workspaces(
         let access = Access::open(connection, &bearer, now).await?;
         let default_workspace = store::default_workspace(connection).await?;
         let rows: Vec<(WorkspaceId, String)> =
-            sqlx::query_as("select id, name from workspaces order by id")
+            sqlx::query_as("select id, name from workspaces where deleted_at is null order by id")
                 .fetch_all(&mut *connection)
                 .await?;
         let mut workspaces = Vec::new();
@@ -149,11 +149,12 @@ pub(crate) async fn rename(
     name: &str,
 ) -> ApiResult<Workspace> {
     access.require(Request::Server(ServerPermission::Administrator))?;
-    let renamed = sqlx::query("update workspaces set name = $2 where id = $1")
-        .bind(workspace_id)
-        .bind(name)
-        .execute(&mut *connection)
-        .await?;
+    let renamed =
+        sqlx::query("update workspaces set name = $2 where id = $1 and deleted_at is null")
+            .bind(workspace_id)
+            .bind(name)
+            .execute(&mut *connection)
+            .await?;
     if renamed.rows_affected() == 0 {
         return Err(ApiError::not_found());
     }
@@ -179,6 +180,131 @@ pub(crate) async fn rename(
     };
     events::publish(connection, now, &updated).await?;
     Ok(workspace)
+}
+
+/// Deletes a workspace with its members, roles, categories and channels. The caller holds
+/// the administrator permission; only the server owner deletes a workspace of which a
+/// channel contains permanent messages. The default workspace is not deleted.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/workspaces/{workspace_id}",
+    tag = "workspaces",
+    params(("workspace_id" = WorkspaceId, Path)),
+    security(("session" = [])),
+    responses((status = 204), ApiError)
+)]
+pub async fn delete_workspace(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath(workspace_id): ApiPath<WorkspaceId>,
+) -> ApiResult<StatusCode> {
+    let now = app.now();
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        delete(connection, &access, now, workspace_id).await
+    })?;
+    app.purges.wake();
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// The statements that remove what a workspace holds besides its channels, in their
+/// order. Each names the workspace as `$1`. The roles go before the members, and with
+/// them every assignment and every override.
+const EMPTY_WORKSPACE: [&str; 11] = [
+    "delete from structure_identifiers
+     where (kind = 'workspace_role'
+            and object_id in (select id from workspace_roles where workspace_id = $1))
+        or (kind = 'category'
+            and object_id in (select id from categories where workspace_id = $1))",
+    "update channels set category_id = null
+     where workspace_id = $1 and category_id is not null",
+    "delete from categories where workspace_id = $1",
+    "delete from workspace_roles where workspace_id = $1",
+    "delete from workspace_members where workspace_id = $1",
+    "delete from glossary_terms where workspace_id = $1",
+    "delete from workspace_notification_defaults where workspace_id = $1",
+    "delete from workspace_file_retention where workspace_id = $1",
+    "delete from workspace_recording_retention where workspace_id = $1",
+    "delete from workspace_archive_periods where workspace_id = $1",
+    "delete from thread_forks
+     where channel_id in (select id from channels where workspace_id = $1)",
+];
+
+/// Deletes a workspace. The request removes the structure: the members, the roles with
+/// their assignments and overrides, the categories and the settings, and it marks every
+/// channel as deleted. The row of the workspace stays, because audit entries refer to it
+/// (ADR 0305). The content of the channels is removed afterwards, in bounded parts
+/// (ADR 0017).
+pub(crate) async fn delete(
+    connection: &mut PgConnection,
+    access: &Access,
+    now: OffsetDateTime,
+    workspace_id: WorkspaceId,
+) -> ApiResult<()> {
+    access.require(Request::Server(ServerPermission::Administrator))?;
+    let name: Option<String> = sqlx::query_scalar(
+        "select name from workspaces where id = $1 and deleted_at is null for update",
+    )
+    .bind(workspace_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let name = name.ok_or_else(ApiError::not_found)?;
+    if workspace_id == store::default_workspace(connection).await? {
+        return Err(ApiError::conflict(
+            "the default workspace is not deleted: an invite that names no workspace grants it",
+        ));
+    }
+    let permanent: bool = sqlx::query_scalar(
+        "select exists (
+             select 1 from channels
+             where workspace_id = $1 and deleted_at is null and permanent_message_count > 0)",
+    )
+    .bind(workspace_id)
+    .fetch_one(&mut *connection)
+    .await?;
+    access.require(Request::DeleteWorkspace {
+        content: if permanent {
+            ChannelContent::PermanentMessages
+        } else {
+            ChannelContent::NoPermanentMessages
+        },
+    })?;
+
+    events::workspace_deleted(connection, now, workspace_id).await?;
+    for statement in EMPTY_WORKSPACE {
+        sqlx::query(statement)
+            .bind(workspace_id)
+            .execute(&mut *connection)
+            .await?;
+    }
+    sqlx::query(
+        "with deleted as (
+             update channels set deleted_at = $2
+             where workspace_id = $1 and deleted_at is null
+             returning id)
+         insert into purges (id, kind, requested_at)
+         select id, 'channel', $2 from deleted
+         on conflict (id) do nothing",
+    )
+    .bind(workspace_id)
+    .bind(now)
+    .execute(&mut *connection)
+    .await?;
+    let subject = crate::purge::Subject::Workspace(workspace_id);
+    crate::purge::queue(connection, now, subject).await?;
+    sqlx::query("update workspaces set deleted_at = $2 where id = $1")
+        .bind(workspace_id)
+        .bind(now)
+        .execute(&mut *connection)
+        .await?;
+    audit::record(
+        connection,
+        now,
+        Some(access.account_id),
+        About::Server,
+        &AuditEvent::WorkspaceDeleted { workspace_id, name },
+    )
+    .await
 }
 
 /// The members of a workspace with their roles.

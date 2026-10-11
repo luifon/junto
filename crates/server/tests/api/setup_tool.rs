@@ -385,6 +385,82 @@ async fn rule_44_45_a_rename_keeps_the_entry_and_only_a_listed_channel_is_delete
 }
 
 #[tokio::test]
+async fn rule_53_a_file_deletes_only_what_it_lists() {
+    let server = TestServer::start_for_calls().await;
+    let owner = server.owner().await;
+    let token = full_token(&server, &owner).await;
+    let scratch = Scratch::new();
+    let main = server.default_workspace(&owner).await;
+    let main_id = main.id.to_string();
+    let path = write(&scratch, "structure.json", &additions(&main_id));
+    tool(&server, &token, &["apply", &path]).await.succeeded();
+    let side = json!({ "format": 1, "workspaces": [{ "id": id(2), "name": "Side",
+        "channels": [{ "id": id(40), "name": "side", "kind": "text" }] }] });
+    let path = write(&scratch, "side.json", &side);
+    tool(&server, &token, &["apply", &path]).await.succeeded();
+    let export = server.structure(&owner).await;
+    assert_eq!(export.structure.workspaces.len(), 2);
+    let named = |export: &junto_protocol::structure_file::StructureExport| {
+        let main = export
+            .structure
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.default)
+            .unwrap();
+        (
+            export.structure.server_roles.len(),
+            main.roles.len(),
+            main.categories.len(),
+            main.channels.len(),
+        )
+    };
+    let (server_roles, roles, categories, channels) = named(&export);
+    assert!(server_roles >= 1 && roles >= 2 && categories >= 1);
+
+    // The file names one entry of each kind. `plan` changes nothing.
+    let deleting = json!({ "format": 1, "delete": {
+        "server_roles": [export.structure.server_roles[0].id],
+        "roles": [id(11)],
+        "categories": [id(20)],
+        "workspaces": [id(2)],
+    } });
+    let path = write(&scratch, "deleting.json", &deleting);
+    let before = state(&server).await;
+    let planned = tool(&server, &token, &["plan", &path]).await.succeeded();
+    for line in [
+        "- category ",
+        "- role ",
+        "- workspace \"Side\"",
+        "- server role ",
+    ] {
+        assert!(planned.out.contains(line), "{line}: {}", planned.out);
+    }
+    assert_eq!(state(&server).await, before);
+
+    let applied = tool(&server, &token, &["apply", &path]).await.succeeded();
+    assert!(applied.out.contains("4 change"), "{}", applied.out);
+    let export = server.structure(&owner).await;
+    assert_eq!(export.structure.workspaces.len(), 1);
+    assert_eq!(
+        named(&export),
+        (server_roles - 1, roles - 1, categories - 1, channels)
+    );
+    let again = tool(&server, &token, &["apply", &path]).await.succeeded();
+    assert!(again.out.starts_with("No changes:"), "{}", again.out);
+
+    // The tool refuses a file that deletes the default workspace, before any request that
+    // changes the server.
+    let default = json!({ "format": 1, "delete": { "workspaces": [main_id] } });
+    let path = write(&scratch, "default.json", &default);
+    let before = state(&server).await;
+    let refused = tool(&server, &token, &["apply", &path])
+        .await
+        .failed(FAILURE);
+    assert!(refused.err.contains("default workspace"), "{}", refused.err);
+    assert_eq!(state(&server).await, before);
+}
+
+#[tokio::test]
 async fn rule_46_a_plan_of_an_earlier_revision_is_refused() {
     let server = TestServer::start_for_calls().await;
     let owner = server.owner().await;

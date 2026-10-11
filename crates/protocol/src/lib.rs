@@ -16,6 +16,7 @@ pub mod call;
 pub mod discovery;
 pub mod error;
 pub mod events;
+pub mod export;
 pub mod ids;
 pub mod invite;
 pub mod keys;

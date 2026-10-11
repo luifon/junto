@@ -106,8 +106,36 @@
       "Deletions": {
         "additionalProperties": false,
         "properties": {
+          "categories": {
+            "description": "The identifiers of the categories to delete. Their channels stay and have no\ncategory.",
+            "items": {
+              "$ref": "#/components/schemas/StructureId"
+            },
+            "type": "array"
+          },
           "channels": {
             "description": "The identifiers of the channels to delete.",
+            "items": {
+              "$ref": "#/components/schemas/StructureId"
+            },
+            "type": "array"
+          },
+          "roles": {
+            "description": "The identifiers of the workspace roles to delete.",
+            "items": {
+              "$ref": "#/components/schemas/StructureId"
+            },
+            "type": "array"
+          },
+          "server_roles": {
+            "description": "The identifiers of the server roles to delete.",
+            "items": {
+              "$ref": "#/components/schemas/StructureId"
+            },
+            "type": "array"
+          },
+          "workspaces": {
+            "description": "The identifiers of the workspaces to delete, each with everything that it holds.",
             "items": {
               "$ref": "#/components/schemas/StructureId"
             },

@@ -135,6 +135,94 @@ pub async fn permissions_changed(
     crate::calls::store::mark_after_permission_change(connection, workspace_id).await
 }
 
+/// The accounts that an event is for, selected before the change that ends the rule that
+/// names them.
+#[derive(Debug, Clone, Copy)]
+pub enum Receivers {
+    WorkspaceRoleHolders(WorkspaceRoleId),
+    ServerRoleHolders(junto_protocol::ids::ServerRoleId),
+    WorkspaceMembers(WorkspaceId),
+}
+
+/// Stores the accounts that `receivers` selects now as the list `list`, which is the
+/// identifier of the event that the list belongs to. The event is recorded before. Returns
+/// the number of accounts.
+async fn list_receivers(
+    connection: &mut PgConnection,
+    list: Uuid,
+    receivers: Receivers,
+) -> ApiResult<u64> {
+    let (statement, id) = match receivers {
+        Receivers::WorkspaceRoleHolders(id) => (
+            "insert into event_receivers (event_id, account_id)
+             select $1, account_id from member_roles where role_id = $2",
+            id.as_uuid(),
+        ),
+        Receivers::ServerRoleHolders(id) => (
+            "insert into event_receivers (event_id, account_id)
+             select $1, account_id from account_server_roles where role_id = $2",
+            id.as_uuid(),
+        ),
+        Receivers::WorkspaceMembers(id) => (
+            "insert into event_receivers (event_id, account_id)
+             select $1, account_id from workspace_members where workspace_id = $2",
+            id.as_uuid(),
+        ),
+    };
+    let listed = sqlx::query(statement)
+        .bind(list)
+        .bind(id)
+        .execute(connection)
+        .await?;
+    Ok(listed.rows_affected())
+}
+
+/// Records the notice that tells the accounts that `holders` selects now to load a
+/// snapshot, before the role that they hold is deleted. Returns the number of accounts.
+pub async fn permissions_changed_for(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    holders: Receivers,
+    workspace_id: Option<WorkspaceId>,
+) -> ApiResult<u64> {
+    let list = Uuid::now_v7();
+    let event = Event::PermissionsChanged { workspace_id };
+    record_at_id(
+        &mut *connection,
+        now,
+        list,
+        &Audience::Listed { list },
+        &event,
+    )
+    .await?;
+    let listed = list_receivers(&mut *connection, list, holders).await?;
+    crate::calls::store::mark_after_permission_change(connection, workspace_id).await?;
+    Ok(listed)
+}
+
+/// Records the deletion of a workspace for the accounts that could see it: its members,
+/// who are listed before their rows are deleted, and the accounts that see every workspace.
+pub async fn workspace_deleted(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    workspace_id: WorkspaceId,
+) -> ApiResult<()> {
+    let members = Uuid::now_v7();
+    let audience = Audience::DeletedWorkspace {
+        workspace_id,
+        members,
+    };
+    let event = Event::WorkspaceDeleted { workspace_id };
+    record_at_id(&mut *connection, now, members, &audience, &event).await?;
+    list_receivers(
+        &mut *connection,
+        members,
+        Receivers::WorkspaceMembers(workspace_id),
+    )
+    .await?;
+    crate::calls::store::mark_after_permission_change(connection, Some(workspace_id)).await
+}
+
 /// Records the deletion of a channel for the accounts that could see it. It reads the
 /// overrides of the channel, so it runs before they are deleted.
 pub async fn channel_deleted(

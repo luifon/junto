@@ -98,6 +98,24 @@ pub async fn send(
     place: OwnedSemaphorePermit,
     stall: std::time::Duration,
 ) -> Result<Response, ApiError> {
+    let always = || std::future::ready(true);
+    send_while(file, headers, described, place, stall, always).await
+}
+
+/// Like [`send`]. `allowed` is asked before each part of the file is read; when it answers
+/// false, the download ends without the rest of the file.
+pub async fn send_while<A, F>(
+    file: std::fs::File,
+    headers: &HeaderMap,
+    described: Described<'_>,
+    place: OwnedSemaphorePermit,
+    stall: std::time::Duration,
+    allowed: A,
+) -> Result<Response, ApiError>
+where
+    A: FnMut() -> F + Send + 'static,
+    F: Future<Output = bool> + Send,
+{
     let mut file = tokio::fs::File::from_std(file);
     let length = file
         .metadata()
@@ -111,11 +129,18 @@ pub async fn send(
     file.seek(std::io::SeekFrom::Start(first))
         .await
         .map_err(|error| ApiError::internal(&error))?;
-    let stream = futures_util::stream::try_unfold(file, |mut file| async move {
+    let state = (file, allowed);
+    let stream = futures_util::stream::try_unfold(state, |(mut file, mut allowed)| async move {
+        if !allowed().await {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "the download is no longer permitted",
+            ));
+        }
         let mut bytes = vec![0; CHUNK];
         let count = file.read(&mut bytes).await?;
         bytes.truncate(count);
-        Ok::<_, std::io::Error>((count > 0).then(|| (Bytes::from(bytes), file)))
+        Ok::<_, std::io::Error>((count > 0).then(|| (Bytes::from(bytes), (file, allowed))))
     });
     let mut response = streamed(
         stream,

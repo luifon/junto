@@ -611,6 +611,10 @@ pub async fn sweep(app: &AppState) -> ApiResult<usize> {
     };
     let now = app.now();
     let waiting = read!(app.background(), |connection| {
+        // A backup that runs still copies the files (ADR 0018).
+        if crate::backup::held(connection, now).await? {
+            return Ok(Vec::new());
+        }
         store::removals(connection, now, REMOVALS_AT_ONCE).await
     })?;
     let mut deleted = 0;

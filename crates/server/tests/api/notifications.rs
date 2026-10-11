@@ -1009,16 +1009,13 @@ async fn round2_dnd_checks_replayed_notices_and_channel_invites() {
 #[tokio::test]
 async fn round2_notice_trim_visits_only_changed_recipients() {
     use crate::messages_queries::{measure_requests, since, statements};
-    let server = TestServer::start().await;
+    let server = TestServer::start_measured().await;
+    let evictions = server.statement_evictions().await;
     let owner = server.owner().await;
     let reader = server.join(&owner, "Reader").await;
     let channel = channel(&server, &owner, "text").await;
     mention(&server, &owner, &channel, &reader).await;
     junto_server::messages::retention::run(&server.state)
-        .await
-        .unwrap();
-    sqlx::query("create extension pg_stat_statements")
-        .execute(&server.db)
         .await
         .unwrap();
     let (mut held, role) = measure_requests(&server).await;
@@ -1046,12 +1043,14 @@ async fn round2_notice_trim_visits_only_changed_recipients() {
             .keys()
             .any(|q| q.contains("offset") && q.contains("notifications"))
     );
+    server.require_no_statement_eviction(evictions).await;
 }
 
 #[tokio::test]
 async fn round2_account_subscribers_are_limited_to_memberships() {
     use crate::messages_queries::measure_requests;
-    let server = TestServer::start().await;
+    let server = TestServer::start_measured().await;
+    let evictions = server.statement_evictions().await;
     let owner = server.owner().await;
     for n in 0..8 {
         let other = server.join(&owner, &format!("Reader {n}")).await;
@@ -1072,10 +1071,6 @@ async fn round2_account_subscribers_are_limited_to_memberships() {
         )
         .await
         .ok(StatusCode::CREATED);
-    sqlx::query("create extension pg_stat_statements")
-        .execute(&server.db)
-        .await
-        .unwrap();
     let (mut held, role) = measure_requests(&server).await;
     send(&server, &owner, &channel, "ordinary").await;
     let count:i64=sqlx::query_scalar("select coalesce(sum(rows),0)::bigint from pg_stat_statements where userid=$1::oid and query like 'with channels_selected as materialized%'").bind(role).fetch_one(&mut **held.first_mut().unwrap()).await.unwrap();
@@ -1083,23 +1078,21 @@ async fn round2_account_subscribers_are_limited_to_memberships() {
         count, 0,
         "standing must not load subscribers of unrelated workspaces"
     );
+    server.require_no_statement_eviction(evictions).await;
 }
 
 #[tokio::test]
 async fn round2_delivery_authorizes_only_received_notices() {
     use crate::messages_queries::{measure_requests, since, statements};
     use junto_server::events::delivery::{Subscription, next_batch};
-    let server = TestServer::start().await;
+    let server = TestServer::start_measured().await;
+    let evictions = server.statement_evictions().await;
     let owner = server.owner().await;
     let reader = server.join(&owner, "Reader").await;
     let outsider = server.join(&owner, "Other").await;
     let channel = channel(&server, &owner, "text").await;
     let start = server.snapshot(&outsider).await.cursor;
     mention(&server, &owner, &channel, &reader).await;
-    sqlx::query("create extension pg_stat_statements")
-        .execute(&server.db)
-        .await
-        .unwrap();
     let (mut held, _role) = measure_requests(&server).await;
     let observer = &mut **held.first_mut().unwrap();
     let role: i64 =
@@ -1137,13 +1130,15 @@ async fn round2_delivery_authorizes_only_received_notices() {
                 || q.starts_with("select n.* from notifications")),
         "unrelated connections must not authorize notice contents: {changed:?}"
     );
+    server.require_no_statement_eviction(evictions).await;
 }
 
 #[tokio::test]
 async fn round2_snapshot_and_delivery_queries_are_batched() {
     use crate::messages_queries::{measure_requests, since, statements};
     use junto_server::events::delivery::{Subscription, next_batch};
-    let server = TestServer::start().await;
+    let server = TestServer::start_measured().await;
+    let evictions = server.statement_evictions().await;
     let owner = server.owner().await;
     let reader = server.join(&owner, "Reader").await;
     let channel = channel(&server, &owner, "text").await;
@@ -1151,10 +1146,6 @@ async fn round2_snapshot_and_delivery_queries_are_batched() {
     let start = server.snapshot(&reader).await.cursor;
     let root = send(&server, &reader, &channel, "root").await;
     reply(&server, &owner, root.id, "reply").await;
-    sqlx::query("create extension pg_stat_statements")
-        .execute(&server.db)
-        .await
-        .unwrap();
     let (mut held, role) = measure_requests(&server).await;
     let observer = &mut **held.first_mut().unwrap();
     server.snapshot(&reader).await;
@@ -1286,4 +1277,5 @@ async fn round2_snapshot_and_delivery_queries_are_batched() {
             .collect::<std::collections::BTreeMap<_, _>>(),
         small_delivery
     );
+    server.require_no_statement_eviction(evictions).await;
 }

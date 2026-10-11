@@ -38,7 +38,7 @@ pub async fn get_snapshot(
         let account = store::own_account(connection, &access).await?;
         let default_workspace = store::default_workspace(connection).await?;
         let rows: Vec<(WorkspaceId, String)> =
-            sqlx::query_as("select id, name from workspaces order by id")
+            sqlx::query_as("select id, name from workspaces where deleted_at is null order by id")
                 .fetch_all(&mut *connection)
                 .await?;
         let mut workspaces = Vec::new();
