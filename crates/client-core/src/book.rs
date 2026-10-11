@@ -1,0 +1,883 @@
+//! The server book: the saved servers of this client (ADR 0101, ADR 0710).
+
+use std::collections::BTreeSet;
+use std::fmt;
+
+use junto_protocol::ids::{AccountId, DeviceId, JoinRequestId, ServerId};
+use junto_protocol::server::ServerInfo;
+use serde::{Deserialize, Deserializer, Serialize};
+
+use crate::address::ServerAddress;
+use crate::paths::{BOOK_FILE, DataDir};
+use crate::storage::{StorageError, Versioned};
+
+pub const BOOK_FORMAT_VERSION: u32 = 2;
+
+const BOOK: Versioned = Versioned {
+    name: BOOK_FILE,
+    kind: "server book",
+    version: BOOK_FORMAT_VERSION,
+    migrations: &[unchanged],
+    limit: 4 * 1024 * 1024,
+};
+
+/// Version 2 added the state `refused` of the profile preset. Every book of version 1 is a
+/// book of version 2; the version tells an older client that it cannot read the file.
+fn unchanged(value: serde_json::Value) -> Result<serde_json::Value, String> {
+    Ok(value)
+}
+
+const LONGEST_NAME: usize = 64;
+const LONGEST_LOGO_PATH: usize = 512;
+const LONGEST_CURSOR: usize = 512;
+const MOST_API_VERSIONS: usize = 16;
+
+/// When the client holds the event stream of a server (ADR 0107).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionMode {
+    #[default]
+    Always,
+    WhenSelected,
+}
+
+/// What this device is on a server, as far as the client knows from its last contact.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum Membership {
+    #[default]
+    None,
+    /// A join request of this device. It is stored without an identifier before the
+    /// request is sent, so that a client that stops in between asks the server for it.
+    JoinRequested {
+        join_request_id: Option<JoinRequestId>,
+        name: String,
+    },
+    Member {
+        account_id: AccountId,
+        device_id: DeviceId,
+    },
+    Banned {
+        account_id: Option<AccountId>,
+    },
+    /// The server no longer knows the key that was a device of an account.
+    Removed,
+}
+
+/// The position of this device in the event stream of one server. The client stores it and
+/// does not read it.
+#[derive(Clone, PartialEq, Eq, Hash, Serialize)]
+#[serde(transparent)]
+pub struct EventCursor(String);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("an event cursor has 1 to 512 bytes and no control character")]
+pub struct InvalidCursor;
+
+impl EventCursor {
+    pub fn new(text: impl Into<String>) -> Result<Self, InvalidCursor> {
+        let text = text.into();
+        if text.is_empty() || text.len() > LONGEST_CURSOR || text.chars().any(char::is_control) {
+            return Err(InvalidCursor);
+        }
+        Ok(Self(text))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for EventCursor {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "EventCursor({})", self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for EventCursor {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Whether the profile preset still has to be sent to the account that this device
+/// created on a server (ADR 0105).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ProfileSync {
+    /// Nothing to send: the account was not created here, or the preset has no avatar.
+    #[default]
+    NotNeeded,
+    /// The preset waits to be sent. `attempts` counts the tries that failed.
+    Pending {
+        attempts: u32,
+    },
+    Applied,
+    /// The server refused the image itself. It is not sent again.
+    Refused,
+}
+
+/// Names one entry of the book as a client read it. A server that is removed and added
+/// again gets a new generation, so a change that was meant for the removed entry does not
+/// reach the new one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EntryKey {
+    pub server_id: ServerId,
+    pub generation: u64,
+}
+
+/// One saved server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerEntry {
+    pub server_id: ServerId,
+    /// A random number that the book gives the entry when it is added.
+    pub generation: u64,
+    pub address: ServerAddress,
+    pub name: String,
+    /// The path of the logo on the server. It is a reference, never a local path.
+    pub logo_path: Option<String>,
+    /// The API versions that the server reported at the last contact.
+    pub api_versions: Vec<u32>,
+    pub connection_mode: ConnectionMode,
+    pub membership: Membership,
+    pub last_cursor: Option<EventCursor>,
+    #[serde(default)]
+    pub profile_sync: ProfileSync,
+}
+
+impl ServerEntry {
+    pub fn key(&self) -> EntryKey {
+        EntryKey {
+            server_id: self.server_id,
+            generation: self.generation,
+        }
+    }
+
+    /// A new entry from what the server at `address` says about itself.
+    pub fn new(address: ServerAddress, info: &ServerInfo, connection_mode: ConnectionMode) -> Self {
+        let mut entry = Self {
+            server_id: info.server_id,
+            generation: 0,
+            address,
+            name: String::new(),
+            logo_path: None,
+            api_versions: Vec::new(),
+            connection_mode,
+            membership: Membership::None,
+            last_cursor: None,
+            profile_sync: ProfileSync::NotNeeded,
+        };
+        entry.refresh(info);
+        entry
+    }
+
+    /// Takes the name, the logo and the versions from a later answer of the same server.
+    /// Text that the server sends is cut to what the client shows and stores.
+    pub fn refresh(&mut self, info: &ServerInfo) {
+        self.name = shown_name(&info.name, &self.address);
+        self.logo_path = info
+            .logo_path
+            .as_deref()
+            .filter(|path| path.len() <= LONGEST_LOGO_PATH)
+            .filter(|path| self.address.logo_url(path).is_some())
+            .map(str::to_owned);
+        self.api_versions = known_versions(&info.api_versions);
+    }
+
+    fn check(&self) -> Result<(), String> {
+        let id = self.server_id;
+        if self.generation == 0 {
+            return Err(format!("server {id} has no generation"));
+        }
+        if self.name.is_empty()
+            || self.name.chars().count() > LONGEST_NAME
+            || self.name.chars().any(char::is_control)
+        {
+            return Err(format!("server {id} has an invalid name"));
+        }
+        if let Some(path) = &self.logo_path
+            && (path.len() > LONGEST_LOGO_PATH || self.address.logo_url(path).is_none())
+        {
+            return Err(format!("server {id} has an invalid logo path"));
+        }
+        if self.api_versions.len() > MOST_API_VERSIONS {
+            return Err(format!("server {id} has too many API versions"));
+        }
+        Ok(())
+    }
+}
+
+fn shown_name(raw: &str, address: &ServerAddress) -> String {
+    let name: String = raw
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>()
+        .trim()
+        .chars()
+        .take(LONGEST_NAME)
+        .collect();
+    if name.trim().is_empty() {
+        address.host().to_owned()
+    } else {
+        name.trim().to_owned()
+    }
+}
+
+fn known_versions(reported: &[u32]) -> Vec<u32> {
+    let unique: BTreeSet<u32> = reported.iter().copied().collect();
+    unique.into_iter().take(MOST_API_VERSIONS).collect()
+}
+
+#[derive(Serialize, Deserialize)]
+struct BookFile {
+    format_version: u32,
+    servers: Vec<ServerEntry>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum BookError {
+    #[error(transparent)]
+    Storage(#[from] StorageError),
+    #[error("the server {server_id} is already saved with the address {address}")]
+    AlreadySaved {
+        server_id: ServerId,
+        address: ServerAddress,
+    },
+    #[error("the address {address} is already saved for the server {server_id}")]
+    AddressTaken {
+        server_id: ServerId,
+        address: ServerAddress,
+    },
+    #[error("the server {server_id} is not saved")]
+    NotSaved { server_id: ServerId },
+}
+
+/// The server book of one data directory. Every change reads the file again under the lock
+/// of the data directory, so two processes do not lose each other's changes.
+#[derive(Debug, Clone)]
+pub struct ServerBook {
+    data_dir: DataDir,
+}
+
+impl ServerBook {
+    pub fn new(data_dir: DataDir) -> Self {
+        Self { data_dir }
+    }
+
+    pub fn entries(&self) -> Result<Vec<ServerEntry>, StorageError> {
+        let files = self.data_dir.files();
+        let Some(file) = BOOK.load::<BookFile>(files)? else {
+            return Ok(Vec::new());
+        };
+        let corrupted = |detail: String| BOOK.corrupted(files, detail);
+        let mut ids = BTreeSet::new();
+        let mut addresses = BTreeSet::new();
+        for entry in &file.servers {
+            entry.check().map_err(corrupted)?;
+            if !ids.insert(entry.server_id) || !addresses.insert(entry.address.as_str()) {
+                return Err(corrupted(format!(
+                    "server {} is listed twice",
+                    entry.server_id
+                )));
+            }
+        }
+        Ok(file.servers)
+    }
+
+    pub fn entry(&self, server_id: ServerId) -> Result<Option<ServerEntry>, StorageError> {
+        Ok(self
+            .entries()?
+            .into_iter()
+            .find(|entry| entry.server_id == server_id))
+    }
+
+    /// Adds a server and returns the stored entry with its generation. A server identifier
+    /// and an address are saved once each: a second address that reports a saved
+    /// identifier is refused, so the key of a saved server is only ever used with the
+    /// address that the user saved for it.
+    pub fn add(&self, entry: ServerEntry) -> Result<ServerEntry, BookError> {
+        self.add_after(entry, || Ok::<(), BookError>(()))
+    }
+
+    /// Like [`ServerBook::add`], after `check` succeeded under the lock of the book.
+    pub(crate) fn add_after<E: From<BookError>>(
+        &self,
+        mut entry: ServerEntry,
+        check: impl FnOnce() -> Result<(), E>,
+    ) -> Result<ServerEntry, E> {
+        self.change(|servers| {
+            for saved in servers.iter() {
+                if saved.server_id == entry.server_id {
+                    return Err(BookError::AlreadySaved {
+                        server_id: saved.server_id,
+                        address: saved.address.clone(),
+                    }
+                    .into());
+                }
+                if saved.address == entry.address {
+                    return Err(BookError::AddressTaken {
+                        server_id: saved.server_id,
+                        address: saved.address.clone(),
+                    }
+                    .into());
+                }
+            }
+            check()?;
+            entry.generation = new_generation().map_err(BookError::from)?;
+            servers.push(entry.clone());
+            Ok(entry)
+        })
+    }
+
+    /// Removes one entry and then runs `then`, both under the lock of the book. An entry
+    /// of another generation is not removed.
+    pub fn remove<E: From<BookError>>(
+        &self,
+        key: EntryKey,
+        then: impl FnOnce() -> Result<(), E>,
+    ) -> Result<ServerEntry, E> {
+        let _lock = self.data_dir.lock().map_err(BookError::from)?;
+        let removed = self.change(|servers| {
+            let index = position(servers, key)?;
+            Ok::<_, BookError>(servers.remove(index))
+        })?;
+        then()?;
+        Ok(removed)
+    }
+
+    /// Changes one entry and returns its new content. The identifier, the generation and
+    /// the address of an entry do not change.
+    pub fn update(
+        &self,
+        key: EntryKey,
+        change: impl FnOnce(&mut ServerEntry),
+    ) -> Result<ServerEntry, BookError> {
+        self.transact(key, |entry| {
+            change(entry);
+            Ok::<(), BookError>(())
+        })
+        .map(|(entry, ())| entry)
+    }
+
+    /// Runs `work` on one entry under the lock of the book and writes the book when it
+    /// succeeded. An entry of another generation is "not saved".
+    pub(crate) fn transact<R, E: From<BookError>>(
+        &self,
+        key: EntryKey,
+        work: impl FnOnce(&mut ServerEntry) -> Result<R, E>,
+    ) -> Result<(ServerEntry, R), E> {
+        self.change(|servers| {
+            let index = position(servers, key)?;
+            let entry = &mut servers[index];
+            let address = entry.address.clone();
+            let result = work(entry)?;
+            entry.server_id = key.server_id;
+            entry.generation = key.generation;
+            entry.address = address;
+            Ok((entry.clone(), result))
+        })
+    }
+
+    /// True while the book has the entry that `key` names. The caller holds the lock.
+    pub(crate) fn has(&self, key: EntryKey) -> Result<bool, StorageError> {
+        Ok(self.entries()?.iter().any(|entry| entry.key() == key))
+    }
+
+    pub(crate) fn lock(&self) -> Result<crate::storage::DirectoryLock, StorageError> {
+        self.data_dir.lock()
+    }
+
+    fn change<R, E: From<BookError>>(
+        &self,
+        change: impl FnOnce(&mut Vec<ServerEntry>) -> Result<R, E>,
+    ) -> Result<R, E> {
+        let _lock = self.data_dir.lock().map_err(BookError::from)?;
+        let mut servers = self.entries().map_err(BookError::from)?;
+        let before = servers.clone();
+        let result = change(&mut servers)?;
+        if servers == before {
+            return Ok(result);
+        }
+        let files = self.data_dir.files();
+        for entry in &servers {
+            entry
+                .check()
+                .map_err(|detail| BookError::from(BOOK.corrupted(files, detail)))?;
+        }
+        let file = BookFile {
+            format_version: BOOK_FORMAT_VERSION,
+            servers,
+        };
+        BOOK.store(files, &file).map_err(BookError::from)?;
+        Ok(result)
+    }
+
+    /// Moves a book that cannot be read out of the way, so that the client starts with an
+    /// empty book. The key files stay. Returns the new path of the moved file.
+    pub fn quarantine(&self, now_unix: i64) -> Result<std::path::PathBuf, StorageError> {
+        let _lock = self.data_dir.lock()?;
+        let name = format!("{BOOK_FILE}.corrupt-{now_unix}");
+        self.data_dir.files().rename(BOOK_FILE, &name)?;
+        Ok(self.data_dir.root().join(name))
+    }
+}
+
+fn position(servers: &[ServerEntry], key: EntryKey) -> Result<usize, BookError> {
+    servers
+        .iter()
+        .position(|entry| entry.key() == key)
+        .ok_or(BookError::NotSaved {
+            server_id: key.server_id,
+        })
+}
+
+fn new_generation() -> Result<u64, StorageError> {
+    loop {
+        let generation = getrandom::u64().map_err(|_| StorageError::Io {
+            action: "number",
+            path: BOOK_FILE.into(),
+            source: std::io::Error::other("no random bytes"),
+        })?;
+        // A JSON reader keeps whole numbers exactly up to 2^53.
+        let generation = generation >> 11;
+        if generation != 0 {
+            return Ok(generation);
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod testing {
+    use super::*;
+
+    pub(crate) fn info(name: &str) -> ServerInfo {
+        ServerInfo {
+            server_id: ServerId::generate(),
+            name: name.to_owned(),
+            logo_path: None,
+            api_versions: vec![1],
+        }
+    }
+
+    pub(crate) fn entry(address: &str, name: &str) -> ServerEntry {
+        ServerEntry::new(
+            ServerAddress::parse(address).unwrap(),
+            &info(name),
+            ConnectionMode::Always,
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testing::{entry, info};
+    use super::*;
+    use std::fs;
+
+    fn book() -> (tempfile::TempDir, DataDir, ServerBook) {
+        let directory = tempfile::tempdir().unwrap();
+        let data_dir = DataDir::open(directory.path().join("junto")).unwrap();
+        let book = ServerBook::new(data_dir.clone());
+        (directory, data_dir, book)
+    }
+
+    #[test]
+    fn an_empty_data_directory_has_an_empty_book() {
+        let (_directory, data_dir, book) = book();
+        assert!(book.entries().unwrap().is_empty());
+        assert!(!data_dir.book_file().exists());
+    }
+
+    #[test]
+    fn entries_are_stored_with_a_format_version_and_read_back_in_order() {
+        let (_directory, data_dir, book) = book();
+        let mut first = entry("https://acme.example.test", "Acme");
+        first.connection_mode = ConnectionMode::WhenSelected;
+        first.membership = Membership::Member {
+            account_id: AccountId::generate(),
+            device_id: DeviceId::generate(),
+        };
+        first.last_cursor = Some(EventCursor::new("0198f1c2:42").unwrap());
+        let second = entry("http://127.0.0.1:8080", "Local");
+        let first = book.add(first).unwrap();
+        let second = book.add(second).unwrap();
+        assert_ne!(first.generation, 0);
+        assert_ne!(first.generation, second.generation);
+
+        assert_eq!(book.entries().unwrap(), [first.clone(), second]);
+        assert_eq!(book.entry(first.server_id).unwrap().unwrap(), first);
+
+        let stored: serde_json::Value =
+            serde_json::from_slice(&fs::read(data_dir.book_file()).unwrap()).unwrap();
+        assert_eq!(stored["format_version"], 2);
+        assert_eq!(stored["servers"][0]["address"], "https://acme.example.test");
+        assert_eq!(stored["servers"][0]["connection_mode"], "when_selected");
+        assert_eq!(stored["servers"][0]["membership"]["state"], "member");
+        assert_eq!(stored["servers"][0]["last_cursor"], "0198f1c2:42");
+        assert_eq!(stored["servers"][1]["membership"]["state"], "none");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_book_file_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_directory, data_dir, book) = book();
+        book.add(entry("https://acme.example.test", "Acme"))
+            .unwrap();
+        let mode = fs::metadata(data_dir.book_file())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn a_server_identifier_and_an_address_are_saved_once() {
+        let (_directory, _data_dir, book) = book();
+        let saved = book
+            .add(entry("https://acme.example.test", "Acme"))
+            .unwrap();
+
+        let mut same_id_elsewhere = entry("https://other.example.test", "Copy");
+        same_id_elsewhere.server_id = saved.server_id;
+        assert!(matches!(
+            book.add(same_id_elsewhere),
+            Err(BookError::AlreadySaved { server_id, .. }) if server_id == saved.server_id
+        ));
+        assert!(matches!(
+            book.add(entry("https://acme.example.test", "Other")),
+            Err(BookError::AddressTaken { server_id, .. }) if server_id == saved.server_id
+        ));
+        assert_eq!(book.entries().unwrap(), [saved]);
+    }
+
+    #[test]
+    fn an_update_keeps_the_identifier_and_the_address() {
+        let (_directory, _data_dir, book) = book();
+        let saved = book
+            .add(entry("https://acme.example.test", "Acme"))
+            .unwrap();
+        let updated = book
+            .update(saved.key(), |entry| {
+                entry.server_id = ServerId::generate();
+                entry.generation += 1;
+                entry.address = ServerAddress::parse("https://other.example.test").unwrap();
+                entry.membership = Membership::Removed;
+            })
+            .unwrap();
+        assert_eq!(updated.key(), saved.key());
+        assert_eq!(updated.address, saved.address);
+        assert_eq!(updated.membership, Membership::Removed);
+        assert_eq!(book.entries().unwrap(), [updated]);
+
+        let unknown = EntryKey {
+            server_id: ServerId::generate(),
+            generation: saved.generation,
+        };
+        assert!(matches!(
+            book.update(unknown, |_| {}),
+            Err(BookError::NotSaved { server_id }) if server_id == unknown.server_id
+        ));
+        assert!(matches!(
+            book.remove(unknown, || Ok::<(), BookError>(())),
+            Err(BookError::NotSaved { .. })
+        ));
+        assert_eq!(
+            book.remove(saved.key(), || Ok::<(), BookError>(()))
+                .unwrap()
+                .server_id,
+            saved.server_id
+        );
+        assert!(book.entries().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_book_of_format_version_1_is_read_and_written_in_the_current_version() {
+        let (_directory, data_dir, book) = book();
+        let written = br#"{"format_version":1,"servers":[
+            {"server_id":"0198f1c2-7d3a-7b1e-9c55-000000000001","generation":7,
+             "address":"https://acme.example.test","name":"Acme","logo_path":null,
+             "api_versions":[1],"connection_mode":"always",
+             "membership":{"state":"member",
+                           "account_id":"0198f1c2-7d3a-7b1e-9c55-0000000000aa",
+                           "device_id":"0198f1c2-7d3a-7b1e-9c55-0000000000bb"},
+             "last_cursor":"0198f1c2:42",
+             "profile_sync":{"state":"pending","attempts":3}},
+            {"server_id":"0198f1c2-7d3a-7b1e-9c55-000000000002","generation":8,
+             "address":"http://127.0.0.1:8080","name":"Local","logo_path":"/api/v1/logo",
+             "api_versions":[1],"connection_mode":"when_selected",
+             "membership":{"state":"none"},"last_cursor":null}]}"#;
+        fs::write(data_dir.book_file(), written).unwrap();
+        let entries = book.entries().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].generation, 7);
+        assert_eq!(entries[0].address.as_str(), "https://acme.example.test");
+        assert!(matches!(entries[0].membership, Membership::Member { .. }));
+        assert_eq!(
+            entries[0].profile_sync,
+            ProfileSync::Pending { attempts: 3 }
+        );
+        assert_eq!(entries[1].address.as_str(), "http://127.0.0.1:8080");
+        assert_eq!(entries[1].profile_sync, ProfileSync::NotNeeded);
+
+        book.update(entries[0].key(), |entry| {
+            entry.profile_sync = ProfileSync::Refused;
+        })
+        .unwrap();
+        let stored: serde_json::Value =
+            serde_json::from_slice(&fs::read(data_dir.book_file()).unwrap()).unwrap();
+        assert_eq!(stored["format_version"], 2);
+        assert_eq!(stored["servers"][0]["profile_sync"]["state"], "refused");
+        assert_eq!(stored["servers"][1]["address"], "http://127.0.0.1:8080");
+        assert_eq!(book.entries().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn every_state_of_the_preset_is_stored_and_read_back() {
+        let (_directory, data_dir, book) = book();
+        let saved = book
+            .add(entry("https://acme.example.test", "Acme"))
+            .unwrap();
+        for (state, written) in [
+            (ProfileSync::NotNeeded, r#"{"state":"not_needed"}"#),
+            (
+                ProfileSync::Pending { attempts: 2 },
+                r#"{"state":"pending","attempts":2}"#,
+            ),
+            (ProfileSync::Applied, r#"{"state":"applied"}"#),
+            (ProfileSync::Refused, r#"{"state":"refused"}"#),
+        ] {
+            book.update(saved.key(), |entry| entry.profile_sync = state)
+                .unwrap();
+            assert_eq!(book.entries().unwrap()[0].profile_sync, state);
+            let stored: serde_json::Value =
+                serde_json::from_slice(&fs::read(data_dir.book_file()).unwrap()).unwrap();
+            let expected: serde_json::Value = serde_json::from_str(written).unwrap();
+            assert_eq!(stored["servers"][0]["profile_sync"], expected);
+        }
+    }
+
+    #[test]
+    fn a_change_for_a_removed_entry_does_not_reach_the_entry_that_replaced_it() {
+        let (_directory, _data_dir, book) = book();
+        let first = book
+            .add(entry("https://acme.example.test", "Acme"))
+            .unwrap();
+        book.remove(first.key(), || Ok::<(), BookError>(()))
+            .unwrap();
+        let mut again = entry("https://acme.example.test", "Acme");
+        again.server_id = first.server_id;
+        let second = book.add(again).unwrap();
+        assert_ne!(second.generation, first.generation);
+
+        assert!(matches!(
+            book.update(first.key(), |entry| entry.membership = Membership::Removed),
+            Err(BookError::NotSaved { .. })
+        ));
+        let mut ran = false;
+        assert!(matches!(
+            book.remove(first.key(), || {
+                ran = true;
+                Ok::<(), BookError>(())
+            }),
+            Err(BookError::NotSaved { .. })
+        ));
+        assert!(!ran);
+        assert_eq!(book.entries().unwrap(), [second]);
+    }
+
+    #[test]
+    fn the_step_after_a_removal_runs_while_the_book_is_locked() {
+        let (_directory, data_dir, book) = book();
+        let saved = book
+            .add(entry("https://acme.example.test", "Acme"))
+            .unwrap();
+        let other = ServerBook::new(DataDir::open(data_dir.root()).unwrap());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut adder = None;
+        book.remove(saved.key(), || {
+            adder = Some(std::thread::spawn(move || {
+                other
+                    .add(entry("https://again.example.test", "Again"))
+                    .unwrap();
+                sender.send(()).unwrap();
+            }));
+            let added_meanwhile = receiver
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_ok();
+            assert!(!added_meanwhile);
+            Ok::<(), BookError>(())
+        })
+        .unwrap();
+        adder.unwrap().join().unwrap();
+        assert_eq!(book.entries().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn two_handles_on_one_data_directory_do_not_lose_changes() {
+        let (_directory, data_dir, book) = book();
+        let other = ServerBook::new(data_dir);
+        let workers: Vec<_> = (0..8)
+            .map(|index| {
+                let book = if index % 2 == 0 {
+                    book.clone()
+                } else {
+                    other.clone()
+                };
+                std::thread::spawn(move || {
+                    let address = format!("https://server-{index}.example.test");
+                    book.add(entry(&address, "Acme")).unwrap();
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert_eq!(book.entries().unwrap().len(), 8);
+    }
+
+    #[test]
+    fn text_from_a_server_is_cut_to_what_the_client_stores() {
+        let address = ServerAddress::parse("https://acme.example.test").unwrap();
+        let mut reported = info("  Ac\u{0007}me\n  ");
+        reported.logo_path = Some("/api/v1/logo".to_owned());
+        reported.api_versions = vec![2, 1, 2, 1];
+        let entry = ServerEntry::new(address.clone(), &reported, ConnectionMode::Always);
+        assert_eq!(entry.name, "Acme");
+        assert_eq!(entry.logo_path.as_deref(), Some("/api/v1/logo"));
+        assert_eq!(entry.api_versions, [1, 2]);
+
+        let mut hostile = info(&"x".repeat(5000));
+        hostile.logo_path = Some("//other.example.test/../../logo".to_owned());
+        hostile.api_versions = (0..1000).collect();
+        let mut entry = ServerEntry::new(address.clone(), &hostile, ConnectionMode::Always);
+        entry.generation = 1;
+        assert_eq!(entry.name.chars().count(), 64);
+        assert_eq!(entry.logo_path, None);
+        assert_eq!(entry.api_versions.len(), 16);
+        entry.check().unwrap();
+
+        let unnamed = ServerEntry::new(address, &info(" \u{0000} "), ConnectionMode::Always);
+        assert_eq!(unnamed.name, "acme.example.test");
+    }
+
+    #[test]
+    fn a_corrupted_book_is_reported_and_left_in_place() {
+        let (_directory, data_dir, book) = book();
+        let saved = entry("https://acme.example.test", "Acme");
+        book.add(saved.clone()).unwrap();
+        let good = fs::read(data_dir.book_file()).unwrap();
+
+        let truncated = &good[..good.len() / 2];
+        fs::write(data_dir.book_file(), truncated).unwrap();
+        assert!(matches!(
+            book.entries(),
+            Err(StorageError::Corrupted { .. })
+        ));
+        assert!(matches!(
+            book.add(entry("https://other.example.test", "Other")),
+            Err(BookError::Storage(StorageError::Corrupted { .. }))
+        ));
+        assert_eq!(fs::read(data_dir.book_file()).unwrap(), truncated);
+
+        let moved = book.quarantine(1_800_000_000).unwrap();
+        assert_eq!(fs::read(moved).unwrap(), truncated);
+        assert!(book.entries().unwrap().is_empty());
+        book.add(saved).unwrap();
+    }
+
+    #[test]
+    fn a_book_with_invalid_entries_is_corrupted() {
+        let (_directory, data_dir, book) = book();
+        let id = ServerId::generate();
+        let server = |address: &str, extra: &str| {
+            format!(
+                r#"{{"server_id":"{id}","generation":7,"address":"{address}","name":"Acme","logo_path":null,
+                "api_versions":[1],"connection_mode":"always","membership":{{"state":"none"}},
+                "last_cursor":null{extra}}}"#
+            )
+        };
+        let cases = [
+            format!(
+                r#"{{"format_version":2,"servers":[{},{}]}}"#,
+                server("https://a.example.test", ""),
+                server("https://b.example.test", "")
+            ),
+            format!(
+                r#"{{"format_version":2,"servers":[{}]}}"#,
+                server("http://a.example.test", "")
+            ),
+            format!(
+                r#"{{"format_version":2,"servers":[{}]}}"#,
+                server("https://a.example.test/../../etc", "")
+            ),
+            format!(
+                r#"{{"format_version":2,"servers":[{}]}}"#,
+                server("https://a.example.test", "").replace("\"Acme\"", "\"\"")
+            ),
+            format!(
+                r#"{{"format_version":2,"servers":[{}]}}"#,
+                server("https://a.example.test", "")
+                    .replace("\"logo_path\":null", "\"logo_path\":\"//b.example.test/x\"")
+            ),
+            format!(
+                r#"{{"format_version":2,"servers":[{}]}}"#,
+                server("https://a.example.test", "").replace("\"always\"", "\"sometimes\"")
+            ),
+            format!(
+                r#"{{"format_version":2,"servers":[{}]}}"#,
+                server("https://a.example.test", "")
+                    .replace("\"generation\":7", "\"generation\":0")
+            ),
+            r#"{"format_version":2}"#.to_owned(),
+        ];
+        for content in cases {
+            fs::write(data_dir.book_file(), &content).unwrap();
+            assert!(
+                matches!(book.entries(), Err(StorageError::Corrupted { .. })),
+                "{content}"
+            );
+        }
+        fs::write(
+            data_dir.book_file(),
+            format!(
+                r#"{{"format_version":2,"servers":[{}]}}"#,
+                server("https://a.example.test", "")
+            ),
+        )
+        .unwrap();
+        assert_eq!(book.entries().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_book_of_a_newer_client_is_refused_and_not_overwritten() {
+        let (_directory, data_dir, book) = book();
+        let newer = br#"{"format_version":3,"servers":[],"folders":[]}"#;
+        fs::write(data_dir.book_file(), newer).unwrap();
+        assert!(matches!(
+            book.entries(),
+            Err(StorageError::NewerFormat {
+                found: 3,
+                supported: 2,
+                ..
+            })
+        ));
+        assert!(matches!(
+            book.add(entry("https://acme.example.test", "Acme")),
+            Err(BookError::Storage(StorageError::NewerFormat { .. }))
+        ));
+        assert_eq!(fs::read(data_dir.book_file()).unwrap(), newer);
+    }
+
+    #[test]
+    fn a_cursor_is_bounded_text() {
+        assert!(EventCursor::new("").is_err());
+        assert!(EventCursor::new("a\nb").is_err());
+        assert!(EventCursor::new("c".repeat(513)).is_err());
+        assert_eq!(
+            EventCursor::new("c".repeat(512)).unwrap().as_str().len(),
+            512
+        );
+        assert!(serde_json::from_str::<EventCursor>("\"\"").is_err());
+    }
+}

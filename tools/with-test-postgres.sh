@@ -1,6 +1,9 @@
 #!/bin/sh
-# Runs a command with a temporary PostgreSQL in Docker and removes it afterwards.
-# The command receives JUNTO_TEST_DATABASE_URL.
+# Runs a command with a temporary PostgreSQL in Docker and removes it with its volume
+# afterwards. The command receives JUNTO_TEST_DATABASE_URL.
+#
+# The container is named by JUNTO_TEST_POSTGRES_CONTAINER (default junto-dev-postgres). Two
+# checkouts on one machine run their tests at the same time when each sets another name.
 set -eu
 
 if [ "$#" -eq 0 ]; then
@@ -8,7 +11,7 @@ if [ "$#" -eq 0 ]; then
     exit 2
 fi
 
-name=junto-dev-postgres
+name="${JUNTO_TEST_POSTGRES_CONTAINER:-junto-dev-postgres}"
 image="${JUNTO_TEST_POSTGRES_IMAGE:-postgres:17-alpine}"
 
 remove() {

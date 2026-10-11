@@ -1,0 +1,66 @@
+[package]
+name = "junto-client-core"
+description = "The Junto client without a user interface: local storage, device keys, the API client and the join and login flows"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "junto-cli"
+path = "src/bin/junto-cli/main.rs"
+
+[[test]]
+name = "e2e"
+path = "tests/e2e/main.rs"
+
+[dependencies]
+junto-protocol = { workspace = true }
+base64 = { workspace = true }
+bytes = "1"
+ed25519-dalek = { workspace = true }
+getrandom = { workspace = true }
+# The 0.12 line with the trust store of the operating system (ADR 0714).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+url = "2"
+zeroize = "1"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["fs", "process", "stdio", "termios"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+sqlx = { workspace = true }
+tempfile = "3"
+tokio = { workspace = true, features = ["io-util", "test-util"] }
+uuid = { workspace = true }
+
+[target.'cfg(unix)'.dev-dependencies]
+rustix = { version = "1", features = ["pty"] }
+
+# The workspace forbids unsafe code. This crate denies it and allows it in two modules that
+# exist on Windows only: the library reads and sets owners and access lists, and the tool
+# turns the echo of the console off (ADR 0711).
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"

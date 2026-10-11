@@ -1,0 +1,1643 @@
+//! The client: the saved servers, and for each of them its own state, session and access
+//! flow (ADR 0101, ADR 0107). A server that fails or cannot be reached changes its own
+//! state only.
+
+use std::future::Future;
+use std::io;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use junto_protocol::error::ErrorCode;
+use junto_protocol::ids::{AccountId, RecoveryId, ServerId};
+use junto_protocol::invite::JoinRequestState;
+use junto_protocol::keys::PublicKey;
+use time::OffsetDateTime;
+use tokio::sync::watch;
+
+use crate::address::ServerAddress;
+use crate::api::session::{Authority, AuthorityFuture, Outline, send_with_token};
+use crate::api::{
+    AccessLoss, ApiClient, ApiError, ErrorCategory, ExpectedAccount, HttpResponse,
+    ReqwestTransport, RetryPolicy, ServerApi, Transport, TransportError, server_info,
+};
+use crate::book::{
+    BookError, ConnectionMode, EntryKey, EventCursor, Membership, ProfileSync, ServerBook,
+    ServerEntry,
+};
+use crate::events::{ConnectionLevel, EventStreams, StreamTarget};
+use crate::flow::access::{
+    self, AccessAction, AccessState, ActionKind, Notice, Probe, Settled, after_probe,
+    after_request_status,
+};
+use crate::flow::add_server::AddServerFlow;
+use crate::flow::approve_link::ApproveLinkFlow;
+use crate::flow::link_all::{
+    ApproveDevicesFlow, LinkDeviceFlow, LinkOffer, SERVERS_AT_ONCE, link_code_is_plain,
+};
+use crate::flow::machine::lock;
+use crate::flow::{FlowError, FlowView};
+use crate::keys::{self, DeviceKey, FileKeyStore, KeyStore, KeyStoreError};
+use crate::paths::DataDir;
+use crate::profile::ProfileStore;
+use crate::runtime::Runtime;
+use crate::secret::SecretToken;
+use crate::storage::StorageError;
+use crate::version::{ApiVersion, Incompatibility, SupportedVersions};
+
+/// How a client is opened. Every part except the data directory has a default.
+pub struct ClientOptions {
+    pub data_dir: PathBuf,
+    pub transport: Option<Arc<dyn Transport>>,
+    pub key_store: Option<Arc<dyn KeyStore>>,
+    pub versions: SupportedVersions,
+    pub retry: RetryPolicy,
+    pub runtime: Option<Runtime>,
+}
+
+impl ClientOptions {
+    pub fn new(data_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            data_dir: data_dir.into(),
+            transport: None,
+            key_store: None,
+            versions: SupportedVersions::THIS_BUILD,
+            retry: RetryPolicy::default(),
+            runtime: None,
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum OpenError {
+    #[error(transparent)]
+    Storage(#[from] StorageError),
+    #[error(transparent)]
+    Transport(#[from] TransportError),
+    #[error("the runtime of the client could not start: {0}")]
+    Runtime(#[from] io::Error),
+}
+
+/// What the client knows about the reachability of one server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    /// The client has not contacted the server since it started.
+    Unknown,
+    Reachable {
+        version: ApiVersion,
+    },
+    Unreachable,
+    /// The server and this client share no API version (ADR 0201). Only this server is
+    /// unavailable.
+    Incompatible(Incompatibility),
+    /// The address answers with another server identifier than the saved one. The client
+    /// sends this address no key proof and no session token.
+    OtherServer {
+        reported: ServerId,
+    },
+}
+
+pub(crate) struct Core {
+    pub(crate) data_dir: DataDir,
+    pub(crate) book: ServerBook,
+    pub(crate) profile: ProfileStore,
+    pub(crate) keys: Arc<dyn KeyStore>,
+    pub(crate) transport: Arc<dyn Transport>,
+    pub(crate) versions: SupportedVersions,
+    pub(crate) policy: RetryPolicy,
+    pub(crate) runtime: Runtime,
+    /// Runs between the snapshot and the write of a save. Only tests set it, to fix the
+    /// order of two saves.
+    #[cfg(test)]
+    before_write: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    selected: Mutex<Option<ServerId>>,
+    streams: Mutex<Option<Arc<dyn EventStreams>>>,
+    changes: watch::Sender<u64>,
+}
+
+impl Core {
+    pub(crate) fn notify(&self) {
+        self.changes.send_modify(|generation| *generation += 1);
+    }
+}
+
+pub(crate) struct Inner {
+    pub(crate) core: Arc<Core>,
+    servers: Mutex<Vec<Arc<Server>>>,
+}
+
+impl Inner {
+    pub(crate) fn adopt(&self, entry: ServerEntry) -> ServerId {
+        let server = Server::new(self.core.clone(), entry);
+        let id = server.id;
+        lock(&self.servers).push(server);
+        self.core.notify();
+        id
+    }
+}
+
+/// The client of one data directory.
+#[derive(Clone)]
+pub struct Client {
+    pub(crate) inner: Arc<Inner>,
+}
+
+impl Client {
+    /// Opens the data directory and reads the server book and the profile preset. A file
+    /// that cannot be read stops the start. No server is contacted.
+    pub fn open(options: ClientOptions) -> Result<Self, OpenError> {
+        let data_dir = DataDir::open(options.data_dir)?;
+        let book = ServerBook::new(data_dir.clone());
+        let entries = book.entries()?;
+        let profile = ProfileStore::new(data_dir.clone());
+        profile.load()?;
+        let transport = match options.transport {
+            Some(transport) => transport,
+            None => Arc::new(ReqwestTransport::new()?),
+        };
+        let keys = options
+            .key_store
+            .unwrap_or_else(|| Arc::new(FileKeyStore::new(data_dir.clone())));
+        let runtime = match options.runtime {
+            Some(runtime) => runtime,
+            None => Runtime::current_or_new()?,
+        };
+        let core = Arc::new(Core {
+            profile,
+            data_dir,
+            book,
+            keys,
+            transport,
+            versions: options.versions,
+            policy: options.retry,
+            runtime,
+            #[cfg(test)]
+            before_write: Mutex::new(None),
+            selected: Mutex::new(None),
+            streams: Mutex::new(None),
+            changes: watch::Sender::new(0),
+        });
+        let servers = entries
+            .into_iter()
+            .map(|entry| Server::new(core.clone(), entry))
+            .collect();
+        Ok(Self {
+            inner: Arc::new(Inner {
+                core,
+                servers: Mutex::new(servers),
+            }),
+        })
+    }
+
+    pub fn data_dir(&self) -> &DataDir {
+        &self.inner.core.data_dir
+    }
+
+    /// The local profile preset (ADR 0105).
+    pub fn profile(&self) -> &ProfileStore {
+        &self.inner.core.profile
+    }
+
+    /// The saved servers in the order of the server book.
+    pub fn servers(&self) -> Vec<ServerHandle> {
+        lock(&self.inner.servers)
+            .iter()
+            .map(|server| ServerHandle {
+                server: server.clone(),
+            })
+            .collect()
+    }
+
+    pub fn server(&self, server_id: ServerId) -> Option<ServerHandle> {
+        lock(&self.inner.servers)
+            .iter()
+            .find(|server| server.id == server_id)
+            .map(|server| ServerHandle {
+                server: server.clone(),
+            })
+    }
+
+    /// Starts the flow that adds a server by its address.
+    pub fn add_server(&self) -> AddServerFlow {
+        AddServerFlow::new(self.inner.clone())
+    }
+
+    /// The servers on which this device has an account, for a new device that is to be
+    /// linked on all of them (ADR 0104).
+    pub fn link_offer(&self) -> LinkOffer {
+        LinkOffer::of(self.servers().iter().map(ServerHandle::entry))
+    }
+
+    /// Starts the flow in which this new device asks for a link on every server of an
+    /// offer (ADR 0104).
+    pub fn link_this_device(&self) -> LinkDeviceFlow {
+        LinkDeviceFlow::new(self.clone())
+    }
+
+    /// Starts the flow in which this device approves a new device on each of its servers
+    /// (ADR 0104).
+    pub fn approve_devices(&self) -> ApproveDevicesFlow {
+        ApproveDevicesFlow::new(self.clone())
+    }
+
+    pub(crate) fn runtime(&self) -> &Runtime {
+        &self.inner.core.runtime
+    }
+
+    pub(crate) fn notify(&self) {
+        self.inner.core.notify();
+    }
+
+    /// Removes a server from the book and deletes the key of this device for it, in one
+    /// step under the lock of the data directory. The account on the server is not
+    /// changed; without the key this device cannot use it. A server whose flow runs an
+    /// action is not removed. An entry that another client removed and added again is
+    /// not removed, and its key stays.
+    pub fn remove_server(&self, server_id: ServerId) -> Result<(), RemoveError> {
+        let server = lock(&self.inner.servers)
+            .iter()
+            .find(|server| server.id == server_id)
+            .cloned()
+            .ok_or(BookError::NotSaved { server_id })?;
+        let Ok(_gate) = server.gate.try_lock() else {
+            return Err(RemoveError::Busy);
+        };
+        let keys = self.inner.core.keys.clone();
+        let removed = self.inner.core.book.remove(server.key, || {
+            keys.remove(server_id).map_err(RemoveError::from)
+        });
+        if matches!(&removed, Err(RemoveError::Book(BookError::Storage(_)))) {
+            return removed.map(|_| ());
+        }
+        lock(&self.inner.servers).retain(|kept| !Arc::ptr_eq(kept, &server));
+        server.retire();
+        {
+            let mut selected = lock(&self.inner.core.selected);
+            if *selected == Some(server_id) {
+                *selected = None;
+            }
+        }
+        self.inner.core.notify();
+        removed.map(|_| ())
+    }
+
+    /// The server that the interface shows. It gets every event; the others get the
+    /// background events (ADR 0107).
+    pub fn select(&self, server_id: Option<ServerId>) {
+        *lock(&self.inner.core.selected) = server_id;
+        for handle in self.servers() {
+            handle.server.announce_level();
+        }
+        self.inner.core.notify();
+    }
+
+    pub fn selected(&self) -> Option<ServerId> {
+        *lock(&self.inner.core.selected)
+    }
+
+    /// Attaches the event streams and tells them the present level of every server.
+    pub fn attach_event_streams(&self, streams: Arc<dyn EventStreams>) {
+        *lock(&self.inner.core.streams) = Some(streams);
+        for handle in self.servers() {
+            handle.server.forget_announcement();
+            handle.server.announce_level();
+        }
+    }
+
+    /// Contacts the saved servers side by side, a bounded number at a time, and brings
+    /// each to its present state: logged in, waiting, banned, removed or unreachable. The
+    /// result of one server does not depend on another.
+    pub fn connect_all(
+        &self,
+    ) -> impl Future<Output = Vec<(ServerId, Result<(), FlowError>)>> + Send + 'static + use<> {
+        let slots = Arc::new(tokio::sync::Semaphore::new(SERVERS_AT_ONCE));
+        let pending: Vec<_> = self
+            .servers()
+            .into_iter()
+            .map(|handle| {
+                let (server_id, slots) = (handle.id(), slots.clone());
+                let connecting = self.inner.core.runtime.run(async move {
+                    let _slot = slots.acquire_owned().await;
+                    handle.connect().await
+                });
+                (server_id, connecting)
+            })
+            .collect();
+        async move {
+            let mut results = Vec::with_capacity(pending.len());
+            for (server_id, connecting) in pending {
+                let result = match connecting.await {
+                    Ok(result) => result,
+                    Err(stopped) => Err(stopped.into()),
+                };
+                results.push((server_id, result));
+            }
+            results
+        }
+    }
+
+    /// A value that reports each change of any server or of the list of servers.
+    pub fn changes(&self) -> Changes {
+        Changes {
+            receiver: self.inner.core.changes.subscribe(),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum RemoveError {
+    #[error("an action of the server is in progress")]
+    Busy,
+    #[error(transparent)]
+    Book(#[from] BookError),
+    #[error(transparent)]
+    Key(#[from] KeyStoreError),
+}
+
+/// Wakes an interface when something that it shows has changed.
+pub struct Changes {
+    receiver: watch::Receiver<u64>,
+}
+
+impl Changes {
+    /// Waits for the next change. False when the client does not exist any more.
+    pub async fn changed(&mut self) -> bool {
+        self.receiver.changed().await.is_ok()
+    }
+}
+
+/// A session and the account that it belongs to.
+#[derive(Clone)]
+struct Held {
+    token: SecretToken,
+    account_id: AccountId,
+}
+
+struct ServerState {
+    entry: ServerEntry,
+    reach: Reach,
+    access: AccessState,
+    in_progress: Option<ActionKind>,
+    error: Option<FlowError>,
+    api: Option<ApiClient>,
+    session: Option<Held>,
+    /// Counts the changes of the account that the state of the profile preset belongs
+    /// to. A try to send the avatar records its result only for the count that it read.
+    preset_owner: u64,
+    /// The recoveries that this device acknowledged since the client started. The server
+    /// never tells them again, except in the answer of a login that it computed before the
+    /// acknowledgement.
+    acknowledged: Vec<RecoveryId>,
+    announced: Option<(ConnectionLevel, Option<SecretToken>)>,
+    /// The membership or the profile state in memory is not in the book yet: a write
+    /// failed. It is cleared only by a write that succeeded.
+    unsaved: bool,
+    retired: bool,
+}
+
+pub(crate) struct Server {
+    id: ServerId,
+    /// The entry of the book that this object was made from.
+    key: EntryKey,
+    address: ServerAddress,
+    core: Arc<Core>,
+    state: Mutex<ServerState>,
+    /// Held while an action of the access flow or a renewal of the session runs.
+    gate: tokio::sync::Mutex<()>,
+    /// Held from the snapshot of what a save writes to the clearing of the unsaved mark,
+    /// so that two saves cannot write in another order than they read.
+    saving: Mutex<()>,
+    /// Held while the avatar of the preset is sent, so that one try ends before the next
+    /// reads the state.
+    applying: tokio::sync::Mutex<()>,
+}
+
+/// One saved server.
+#[derive(Clone)]
+pub struct ServerHandle {
+    server: Arc<Server>,
+}
+
+impl ServerHandle {
+    pub fn id(&self) -> ServerId {
+        self.server.id
+    }
+
+    /// The entry of the server book as the client holds it now.
+    pub fn entry(&self) -> ServerEntry {
+        lock(&self.server.state).entry.clone()
+    }
+
+    pub fn reach(&self) -> Reach {
+        lock(&self.server.state).reach
+    }
+
+    /// The access flow: its state, its actions, the running action and the last error.
+    pub fn access(&self) -> FlowView<AccessState, ActionKind> {
+        let state = lock(&self.server.state);
+        let actions = match (state.in_progress, state.retired) {
+            (None, false) => access::actions(&state.access).to_vec(),
+            _ => Vec::new(),
+        };
+        FlowView {
+            state: state.access.clone(),
+            in_progress: state.in_progress,
+            actions,
+            error: state.error.clone(),
+        }
+    }
+
+    /// Runs one action of the access flow. The action runs to its end when the returned
+    /// future is dropped. After an action that succeeded, the avatar of the profile preset
+    /// is sent to an account that waits for it (ADR 0717).
+    pub fn dispatch(
+        &self,
+        action: AccessAction,
+    ) -> impl Future<Output = Result<(), FlowError>> + Send + 'static + use<> {
+        let server = self.server.clone();
+        let work = self.server.core.runtime.run(async move {
+            let result = server.clone().dispatch(action).await;
+            if result.is_ok()
+                && let Ok(applying) = server.applying.try_lock()
+            {
+                // A try that runs already is not waited for.
+                let _ = server.apply_profile(applying).await;
+            }
+            result
+        });
+        async move { work.await? }
+    }
+
+    /// Contacts the server and brings the flow to its present state. A device that
+    /// belongs to an account logs in; no action of the user is needed (ADR 0109).
+    pub fn connect(&self) -> impl Future<Output = Result<(), FlowError>> + Send + 'static + use<> {
+        let kind = if matches!(self.access().state, AccessState::LoggedOut { .. }) {
+            AccessAction::LogIn
+        } else {
+            AccessAction::Check
+        };
+        self.dispatch(kind)
+    }
+
+    /// Asks the server every `interval` until a join request or a device link is decided,
+    /// and returns the state then. The first question is asked after one interval.
+    /// Dropping the future stops the asking.
+    pub fn wait_for_decision(
+        &self,
+        interval: Duration,
+    ) -> impl Future<Output = Result<AccessState, FlowError>> + Send + 'static + use<> {
+        let handle = self.clone();
+        async move {
+            let mut pause = interval;
+            loop {
+                let view = handle.access();
+                let waiting = matches!(
+                    view.state,
+                    AccessState::WaitingForApproval { .. } | AccessState::WaitingForLink { .. }
+                );
+                if !waiting {
+                    return Ok(view.state);
+                }
+                if handle.sleep(pause).await.is_err() {
+                    return Err(FlowError::Stopped);
+                }
+                pause = interval;
+                match handle.dispatch(AccessAction::Check).await {
+                    Ok(())
+                    | Err(
+                        FlowError::Unavailable
+                        | FlowError::Unreachable(_)
+                        | FlowError::Busy
+                        | FlowError::UnknownCode {
+                            category: ErrorCategory::ServerFault,
+                            ..
+                        },
+                    ) => {}
+                    Err(
+                        FlowError::Limited { retry_after }
+                        | FlowError::UnknownCode {
+                            category: ErrorCategory::Limited,
+                            retry_after,
+                            ..
+                        },
+                    ) => {
+                        pause = pause.max(retry_after.unwrap_or(interval));
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+    }
+
+    fn sleep(
+        &self,
+        duration: Duration,
+    ) -> impl Future<Output = Result<(), crate::runtime::Stopped>> + Send + 'static + use<> {
+        self.server
+            .core
+            .runtime
+            .run(async move { tokio::time::sleep(duration).await })
+    }
+
+    /// States that the interface has shown a recovery to the person (ADR 0118). The server
+    /// removes the notice of this device, and the recovery leaves the state `logged in`.
+    /// Until then every login tells the recovery again. The acknowledgement is sent for the
+    /// account that the flow shows. When the server holds no such notice of this device,
+    /// the recovery leaves the state too and the call fails with `not_found`.
+    pub fn acknowledge_recovery(
+        &self,
+        recovery_id: RecoveryId,
+    ) -> impl Future<Output = Result<(), ApiError>> + Send + 'static + use<> {
+        let server = self.server.clone();
+        let work = self
+            .server
+            .core
+            .runtime
+            .run(async move { server.acknowledge_recovery(recovery_id).await });
+        async move { work.await.unwrap_or(Err(ApiError::Stopped)) }
+    }
+
+    /// The account of the session that this device holds on the server now.
+    pub fn account(&self) -> Option<AccountId> {
+        lock(&self.server.state)
+            .session
+            .as_ref()
+            .map(|held| held.account_id)
+    }
+
+    /// The operations of the logged-in account. Each request belongs to the account that
+    /// the device has when the request starts. A session that ended is renewed with the
+    /// device key once; a ban or a removal found then changes the state of the access
+    /// flow and the call fails with [`ApiError::AccessLost`]. When the renewed session
+    /// belongs to another account, the call fails with [`ApiError::AccountChanged`] and
+    /// is not sent again.
+    pub fn api(&self) -> ServerApi {
+        ServerApi::new(Arc::new(Managed {
+            server: self.server.clone(),
+            account: None,
+        }))
+    }
+
+    /// Like [`ServerHandle::api`], for one account only: a request fails with
+    /// [`ApiError::AccountChanged`] when the device has another account. What a user
+    /// confirmed for one account is sent through this.
+    pub fn api_for(&self, account_id: AccountId) -> ServerApi {
+        self.server.api_for(account_id)
+    }
+
+    /// Starts the flow in which this logged-in device approves a new device (ADR 0112).
+    pub fn approve_link(&self) -> ApproveLinkFlow {
+        ApproveLinkFlow::new(self.clone())
+    }
+
+    pub(crate) fn core(&self) -> &Arc<Core> {
+        &self.server.core
+    }
+
+    /// The public key of this device for the server, created when there is none. The
+    /// server owner needs it for a recovery (ADR 0112).
+    pub fn device_public_key(&self) -> Result<PublicKey, KeyStoreError> {
+        match self.server.key_or_new() {
+            Ok(key) => Ok(key.public_key()),
+            Err(KeyFault::Key(error)) => Err(error),
+            Err(KeyFault::Book(error)) => Err(KeyStoreError::Other(error.to_string())),
+        }
+    }
+
+    pub fn set_connection_mode(&self, mode: ConnectionMode) -> Result<(), BookError> {
+        let entry = self
+            .server
+            .core
+            .book
+            .update(self.server.key, |entry| entry.connection_mode = mode)?;
+        lock(&self.server.state).entry.connection_mode = entry.connection_mode;
+        self.server.announce_level();
+        self.server.core.notify();
+        Ok(())
+    }
+
+    /// Stores the position of this device in the event stream of the server.
+    pub fn store_cursor(&self, cursor: EventCursor) -> Result<(), BookError> {
+        let stored = cursor.clone();
+        self.server
+            .core
+            .book
+            .update(self.server.key, |entry| entry.last_cursor = Some(cursor))?;
+        lock(&self.server.state).entry.last_cursor = Some(stored);
+        Ok(())
+    }
+
+    /// The level that the event stream of this server should have now.
+    pub fn connection_level(&self) -> ConnectionLevel {
+        self.server.level().0
+    }
+
+    /// Whether the avatar of the profile preset still waits to be sent to the account on
+    /// this server.
+    pub fn profile_sync(&self) -> ProfileSync {
+        lock(&self.server.state).entry.profile_sync
+    }
+
+    /// Sends the avatar of the profile preset to the account when it waits, and records the
+    /// result: a success ends the waiting, a refusal of the image ends it too, and another
+    /// failure is counted (ADR 0717).
+    pub fn apply_profile(
+        &self,
+    ) -> impl Future<Output = Result<ProfileSync, ApiError>> + Send + 'static + use<> {
+        let server = self.server.clone();
+        let work = self.server.core.runtime.run(async move {
+            let applying = server.applying.lock().await;
+            server.apply_profile(applying).await
+        });
+        async move { work.await.unwrap_or(Err(ApiError::Stopped)) }
+    }
+}
+
+struct Managed {
+    server: Arc<Server>,
+    /// The only account that the requests may run for.
+    account: Option<AccountId>,
+}
+
+impl Authority for Managed {
+    fn send(&self, outline: Outline) -> AuthorityFuture {
+        let (server, account) = (self.server.clone(), self.account);
+        let work = self
+            .server
+            .core
+            .runtime
+            .run(async move { server.authorized(outline, account).await });
+        Box::pin(async move { work.await.unwrap_or(Err(ApiError::Stopped)) })
+    }
+}
+
+/// A running action of the access flow or a renewal of the session. Its end clears the
+/// mark of the running action, also when the work stops before its end.
+struct Running<'a>(&'a Server);
+
+impl Running<'_> {
+    fn finish(self, error: Option<FlowError>) {
+        self.end(error);
+        std::mem::forget(self);
+    }
+
+    fn end(&self, error: Option<FlowError>) {
+        {
+            let mut state = lock(&self.0.state);
+            state.in_progress = None;
+            state.error = error;
+        }
+        self.0.announce_level();
+        self.0.core.notify();
+    }
+}
+
+impl Drop for Running<'_> {
+    fn drop(&mut self) {
+        self.end(Some(FlowError::Stopped));
+    }
+}
+
+fn held_of(probe: &Probe) -> Option<Held> {
+    match probe {
+        Probe::LoggedIn(session) => Some(Held {
+            token: session.token.clone(),
+            account_id: session.account_id,
+        }),
+        Probe::UnknownDevice | Probe::Banned => None,
+    }
+}
+
+/// True when the server did not complete the operation for a reason that a login can
+/// explain: the answer was lost, or the key already belongs to an account.
+fn login_explains(error: &ApiError) -> bool {
+    matches!(error, ApiError::OutcomeUnknown)
+        || error.code() == Some(ErrorCode::KeyAlreadyRegistered)
+}
+
+/// What an operation of the access flow creates when it succeeds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Creates {
+    /// No account: a login, a check, a request for a link.
+    Nothing,
+    /// An account for this device: a join with a code, an approved join request.
+    Account,
+    /// A claim: the owner account, or a new device of the owner account that exists. The
+    /// second is a recovery and leaves a notice for the new device (ADR 0114).
+    Owner,
+}
+
+enum KeyFault {
+    Key(KeyStoreError),
+    Book(BookError),
+}
+
+impl From<KeyFault> for FlowError {
+    fn from(fault: KeyFault) -> Self {
+        match fault {
+            KeyFault::Key(error) => error.into(),
+            KeyFault::Book(error) => error.into(),
+        }
+    }
+}
+
+impl Server {
+    fn new(core: Arc<Core>, entry: ServerEntry) -> Arc<Self> {
+        Arc::new(Self {
+            id: entry.server_id,
+            key: entry.key(),
+            address: entry.address.clone(),
+            core,
+            state: Mutex::new(ServerState {
+                access: access::initial(&entry.membership),
+                entry,
+                reach: Reach::Unknown,
+                in_progress: None,
+                error: None,
+                api: None,
+                session: None,
+                preset_owner: 0,
+                acknowledged: Vec::new(),
+                announced: None,
+                unsaved: false,
+                retired: false,
+            }),
+            gate: tokio::sync::Mutex::new(()),
+            saving: Mutex::new(()),
+            applying: tokio::sync::Mutex::new(()),
+        })
+    }
+
+    fn retire(&self) {
+        {
+            let mut state = lock(&self.state);
+            state.retired = true;
+            state.session = None;
+            state.api = None;
+        }
+        self.announce_level();
+    }
+
+    fn membership(&self) -> Membership {
+        lock(&self.state).entry.membership.clone()
+    }
+
+    fn level(&self) -> (ConnectionLevel, Option<StreamTarget>) {
+        let selected = *lock(&self.core.selected);
+        let state = lock(&self.state);
+        let (Some(api), Some(held), false) = (&state.api, &state.session, state.retired) else {
+            return (ConnectionLevel::Off, None);
+        };
+        let level = if selected == Some(self.id) {
+            ConnectionLevel::Selected
+        } else if state.entry.connection_mode == ConnectionMode::Always {
+            ConnectionLevel::Background
+        } else {
+            return (ConnectionLevel::Off, None);
+        };
+        let target = StreamTarget {
+            address: state.entry.address.clone(),
+            api_version: api.version(),
+            token: held.token.clone(),
+            cursor: state.entry.last_cursor.clone(),
+        };
+        (level, Some(target))
+    }
+
+    fn forget_announcement(&self) {
+        lock(&self.state).announced = None;
+    }
+
+    /// Tells the event streams the level of this server when it or its session changed.
+    fn announce_level(&self) {
+        let Some(streams) = lock(&self.core.streams).clone() else {
+            return;
+        };
+        let (level, target) = self.level();
+        let now = (level, target.as_ref().map(|target| target.token.clone()));
+        {
+            let mut state = lock(&self.state);
+            if state.announced.as_ref() == Some(&now) {
+                return;
+            }
+            if state.announced.is_none() && level == ConnectionLevel::Off {
+                state.announced = Some(now);
+                return;
+            }
+            state.announced = Some(now);
+        }
+        streams.set_level(self.id, level, target);
+    }
+
+    async fn dispatch(self: Arc<Self>, action: AccessAction) -> Result<(), FlowError> {
+        let Ok(_gate) = self.gate.try_lock() else {
+            return Err(FlowError::Busy);
+        };
+        let kind = action.kind();
+        let before = {
+            let mut state = lock(&self.state);
+            if state.retired || !access::actions(&state.access).contains(&kind) {
+                return Err(FlowError::NotAvailable);
+            }
+            state.in_progress = Some(kind);
+            state.error = None;
+            state.access.clone()
+        };
+        self.core.notify();
+        let running = Running(&self);
+        let mut result = match action.checked() {
+            Ok(action) => self.perform(&before, action).await,
+            Err(error) => Err(error),
+        };
+        if result.is_ok() {
+            self.answered();
+            result = self.save();
+        }
+        running.finish(result.as_ref().err().cloned());
+        result
+    }
+
+    async fn perform(&self, before: &AccessState, action: AccessAction) -> Result<(), FlowError> {
+        match action {
+            AccessAction::Check => {
+                let api = self.contact(true).await?;
+                self.reconcile(&api, before).await
+            }
+            AccessAction::LogIn => {
+                let api = self.contact(false).await?;
+                self.reconcile(&api, before).await
+            }
+            AccessAction::LogOut => self.log_out().await,
+            AccessAction::ForgetAccount => self.forget_account(),
+            AccessAction::Join {
+                code,
+                name,
+                device_name,
+            } => {
+                let api = self.contact(false).await?;
+                let key = self.key_or_new()?;
+                match api.join(&key, code, name, device_name).await {
+                    Ok(session) => {
+                        self.settle_probe(before, Probe::LoggedIn(session), Creates::Account)
+                    }
+                    Err(error) => {
+                        self.explain_by_login(&api, &key, before, error, Creates::Account)
+                            .await
+                    }
+                }
+            }
+            AccessAction::ClaimOwner {
+                code,
+                name,
+                device_name,
+            } => {
+                let api = self.contact(false).await?;
+                let key = self.key_or_new()?;
+                match api.claim_owner(&key, code, name, device_name).await {
+                    Ok(session) => {
+                        self.settle_probe(before, Probe::LoggedIn(session), Creates::Owner)
+                    }
+                    Err(error) => {
+                        self.explain_by_login(&api, &key, before, error, Creates::Owner)
+                            .await
+                    }
+                }
+            }
+            AccessAction::RequestAccess { name } => self.request_access(before, name).await,
+            AccessAction::RequestLink { device_name } => {
+                let api = self.contact(false).await?;
+                let key = self.key_or_new()?;
+                match api.request_device_link(&key, device_name).await {
+                    Ok(link) if !link_code_is_plain(&link.code) => {
+                        // A code that a person cannot type or that does not fit a link
+                        // request is not shown and not passed on.
+                        Err(self.failed(ApiError::InvalidResponse {
+                            status: 201,
+                            reason: "link code",
+                        }))
+                    }
+                    Ok(link) => self.settle(
+                        Settled {
+                            state: AccessState::WaitingForLink {
+                                code: link.code,
+                                public_key: key.public_key(),
+                                expires_at: link.expires_at,
+                            },
+                            membership: Membership::None,
+                        },
+                        None,
+                    ),
+                    Err(error) => {
+                        self.explain_by_login(&api, &key, before, error, Creates::Nothing)
+                            .await
+                    }
+                }
+            }
+        }
+    }
+
+    /// Asks for access without a code. The intent is stored before the request is sent,
+    /// so a client that stops before it stores the answer asks the server at its next
+    /// start what became of the request.
+    async fn request_access(&self, before: &AccessState, name: String) -> Result<(), FlowError> {
+        let api = self.contact(false).await?;
+        let key = self.key_or_new()?;
+        let previous = self.membership();
+        self.remember(Membership::JoinRequested {
+            join_request_id: None,
+            name: name.clone(),
+        })?;
+        let waiting = |join_request_id| Settled {
+            state: AccessState::WaitingForApproval {
+                join_request_id,
+                name: name.clone(),
+            },
+            membership: Membership::JoinRequested {
+                join_request_id,
+                name: name.clone(),
+            },
+        };
+        match api.request_to_join(&key, name.clone()).await {
+            Ok(request) => self.settle(waiting(Some(request.id)), None),
+            Err(error)
+                if matches!(error, ApiError::OutcomeUnknown)
+                    || error.code() == Some(ErrorCode::JoinRequestPending) =>
+            {
+                match api.join_request_status(&key).await {
+                    Ok(status) => match after_request_status(&status, &name) {
+                        Some(settled) => self.settle(settled, None),
+                        None => self.reconcile(&api, before).await,
+                    },
+                    Err(lookup) if lookup.code() == Some(ErrorCode::NotFound) => {
+                        let _ = self.remember(previous);
+                        Err(self.failed(error))
+                    }
+                    Err(_) => {
+                        // Nobody knows whether the server holds the request. The flow
+                        // waits without an identifier, and a check finds the answer.
+                        let _ = self.settle(waiting(None), None);
+                        Err(self.failed(error))
+                    }
+                }
+            }
+            Err(error) => {
+                let _ = self.remember(previous);
+                self.explain_by_login(&api, &key, before, error, Creates::Nothing)
+                    .await
+            }
+        }
+    }
+
+    /// Asks the server for its information, compares its identifier with the saved one
+    /// and chooses the API version. Before this succeeds nothing else is sent.
+    async fn contact(&self, refresh: bool) -> Result<ApiClient, FlowError> {
+        let cached = lock(&self.state).api.clone();
+        if let (false, Some(api)) = (refresh, cached) {
+            return Ok(api);
+        }
+        let info = server_info(
+            self.core.transport.as_ref(),
+            &self.address,
+            &self.core.policy,
+        )
+        .await
+        .map_err(|error| self.failed(error))?;
+        if info.server_id != self.id {
+            self.cut_off(Reach::OtherServer {
+                reported: info.server_id,
+            });
+            return Err(FlowError::OtherServer);
+        }
+        let version = match self.core.versions.negotiate(&info.api_versions) {
+            Ok(version) => version,
+            Err(incompatibility) => {
+                self.cut_off(Reach::Incompatible(incompatibility));
+                return Err(FlowError::Incompatible(incompatibility));
+            }
+        };
+        let api = ApiClient::new(
+            self.core.transport.clone(),
+            self.address.clone(),
+            self.id,
+            version,
+            self.core.policy,
+        );
+        let refreshed = {
+            let mut state = lock(&self.state);
+            let mut entry = state.entry.clone();
+            entry.refresh(&info);
+            let changed = entry != state.entry;
+            state.entry = entry.clone();
+            state.reach = Reach::Reachable { version };
+            if state.api.as_ref().map(ApiClient::version) != Some(version) {
+                state.api = Some(api.clone());
+            }
+            changed.then_some(entry)
+        };
+        if let Some(entry) = refreshed {
+            let stored = self.core.book.update(self.key, |saved| {
+                saved.name = entry.name;
+                saved.logo_path = entry.logo_path;
+                saved.api_versions = entry.api_versions;
+            });
+            if let Err(error) = stored {
+                tracing::warn!(server = %self.id, %error, "the server book was not updated");
+            }
+        }
+        Ok(api)
+    }
+
+    /// Stops every use of the server: no cached API, no session.
+    fn cut_off(&self, reach: Reach) {
+        let mut state = lock(&self.state);
+        state.reach = reach;
+        state.api = None;
+        state.session = None;
+        if let AccessState::LoggedIn { account_id, .. } = state.access {
+            state.access = AccessState::LoggedOut { account_id };
+        }
+    }
+
+    /// Records a failed request and turns it into the error of the flow.
+    fn failed(&self, error: ApiError) -> FlowError {
+        self.note(&error);
+        FlowError::from(&error)
+    }
+
+    fn note(&self, error: &ApiError) {
+        tracing::debug!(server = %self.id, %error, "a request failed");
+        match error {
+            ApiError::Unreachable(_) | ApiError::OutcomeUnknown => self.unanswered(),
+            ApiError::InvalidResponse { status, .. } if *status >= 500 => self.unanswered(),
+            ApiError::Rejected(_) | ApiError::InvalidResponse { .. } => self.answered(),
+            _ => {}
+        }
+    }
+
+    fn unanswered(&self) {
+        lock(&self.state).reach = Reach::Unreachable;
+    }
+
+    /// The server answered, so it is reachable again after a failure.
+    fn answered(&self) {
+        let mut state = lock(&self.state);
+        if let (Some(api), Reach::Unreachable | Reach::Unknown) = (&state.api, state.reach) {
+            state.reach = Reach::Reachable {
+                version: api.version(),
+            };
+        }
+    }
+
+    /// The key of this device for the server, when it was created for the saved address.
+    fn stored_key(&self) -> Result<Option<DeviceKey>, KeyStoreError> {
+        self.core.keys.load(self.id, &self.address)
+    }
+
+    /// The stored key, or a new one. A key is created only while the book still has the
+    /// entry of this object, under the lock of the book.
+    fn key_or_new(&self) -> Result<DeviceKey, KeyFault> {
+        let book = &self.core.book;
+        let _lock = book.lock().map_err(|error| KeyFault::Book(error.into()))?;
+        let saved = book
+            .has(self.key)
+            .map_err(|error| KeyFault::Book(error.into()))?;
+        if !saved {
+            return Err(KeyFault::Book(BookError::NotSaved { server_id: self.id }));
+        }
+        keys::load_or_create(self.core.keys.as_ref(), self.id, &self.address).map_err(KeyFault::Key)
+    }
+
+    async fn probe(&self, api: &ApiClient, key: &DeviceKey) -> Result<Probe, ApiError> {
+        let mut attempt = api.log_in(key, ExpectedAccount::Any).await;
+        if matches!(attempt, Err(ApiError::OutcomeUnknown)) {
+            attempt = api.log_in(key, ExpectedAccount::Any).await;
+        }
+        match attempt {
+            Ok(session) => Ok(Probe::LoggedIn(session)),
+            Err(error) if error.code() == Some(ErrorCode::UnknownDevice) => {
+                Ok(Probe::UnknownDevice)
+            }
+            Err(error) if error.code() == Some(ErrorCode::AccountBanned) => Ok(Probe::Banned),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Finds out what this device is on the server and moves the flow there.
+    async fn reconcile(&self, api: &ApiClient, before: &AccessState) -> Result<(), FlowError> {
+        let membership = self.membership();
+        let Some(key) = self.stored_key()? else {
+            let settled = match membership {
+                Membership::None => Settled {
+                    state: AccessState::NoAccount { notice: None },
+                    membership: Membership::None,
+                },
+                Membership::Removed => Settled {
+                    state: AccessState::NoAccount {
+                        notice: Some(Notice::Removed),
+                    },
+                    membership: Membership::Removed,
+                },
+                Membership::Member { .. }
+                | Membership::Banned { .. }
+                | Membership::JoinRequested { .. } => Settled {
+                    state: AccessState::NoAccount {
+                        notice: Some(Notice::KeyMissing),
+                    },
+                    membership: Membership::None,
+                },
+            };
+            return self.settle(settled, None);
+        };
+        let mut approved = false;
+        if let Membership::JoinRequested { name, .. } = &membership {
+            match api.join_request_status(&key).await {
+                Ok(status) => match after_request_status(&status, name) {
+                    Some(settled) => return self.settle(settled, None),
+                    None => approved = true,
+                },
+                Err(error) if error.code() == Some(ErrorCode::NotFound) => {}
+                Err(error) => return Err(self.failed(error)),
+            }
+        }
+        let probe = self
+            .probe(api, &key)
+            .await
+            .map_err(|error| self.failed(error))?;
+        let unknown_without_a_trace = probe == Probe::UnknownDevice
+            && matches!(membership, Membership::None | Membership::Removed)
+            && !matches!(before, AccessState::WaitingForLink { .. });
+        if unknown_without_a_trace
+            && let Ok(status) = api.join_request_status(&key).await
+            && status.state == JoinRequestState::Pending
+            && let Some(settled) = after_request_status(&status, "")
+        {
+            // The server holds a request of this key that the book does not know: the
+            // client stopped before it stored the request, or the book was replaced.
+            return self.settle(settled, None);
+        }
+        let creates = if approved {
+            Creates::Account
+        } else {
+            Creates::Nothing
+        };
+        self.settle_probe(before, probe, creates)
+    }
+
+    /// After an operation failed in a way that a login can explain, logs in. A session
+    /// means that the device has its account; anything else leaves the first error.
+    /// `creates` says what the operation creates when it succeeds.
+    async fn explain_by_login(
+        &self,
+        api: &ApiClient,
+        key: &DeviceKey,
+        before: &AccessState,
+        error: ApiError,
+        creates: Creates,
+    ) -> Result<(), FlowError> {
+        if !login_explains(&error) {
+            return Err(self.failed(error));
+        }
+        match self.probe(api, key).await {
+            Ok(Probe::UnknownDevice) | Err(_) => Err(self.failed(error)),
+            Ok(probe) => {
+                // A lost answer: the operation was done. Otherwise the key had its account
+                // before the operation, and only an approved join request of this device
+                // can have created that account for it.
+                let creates = if matches!(error, ApiError::OutcomeUnknown) {
+                    creates
+                } else if self.approved_request_created(api, key, &probe).await {
+                    Creates::Account
+                } else {
+                    Creates::Nothing
+                };
+                self.settle_probe(before, probe, creates)
+            }
+        }
+    }
+
+    /// True when the book holds a join request of this device and the server states that
+    /// the request was approved into the account of the login.
+    async fn approved_request_created(
+        &self,
+        api: &ApiClient,
+        key: &DeviceKey,
+        probe: &Probe,
+    ) -> bool {
+        let Probe::LoggedIn(session) = probe else {
+            return false;
+        };
+        if !matches!(self.membership(), Membership::JoinRequested { .. }) {
+            return false;
+        }
+        matches!(
+            api.join_request_status(key).await,
+            Ok(status) if status.state == JoinRequestState::Approved
+                && status.account_id == Some(session.account_id)
+        )
+    }
+
+    /// Moves the flow to the state that a login attempt gives. When the operation created
+    /// the account of the login, the avatar of the profile preset is sent to it (ADR 0717).
+    fn settle_probe(
+        &self,
+        before: &AccessState,
+        probe: Probe,
+        creates: Creates,
+    ) -> Result<(), FlowError> {
+        let held = held_of(&probe);
+        let new_account = match (&probe, creates) {
+            (Probe::LoggedIn(_), Creates::Account) => true,
+            (Probe::LoggedIn(session), Creates::Owner) => session.recoveries.is_empty(),
+            _ => false,
+        };
+        let preset_waits = new_account
+            && matches!(self.core.profile.load(), Ok(preset) if preset.avatar.is_some());
+        let settled = after_probe(before, &self.membership(), probe, OffsetDateTime::now_utc());
+        self.settle_account(settled, held, preset_waits)
+    }
+
+    /// Moves the flow to a state and stores the membership that belongs to it. The state
+    /// in memory is what the server said. When the book cannot be written, the action
+    /// reports that and the entry stays marked as unsaved until a write succeeds.
+    fn settle(&self, settled: Settled, session: Option<Held>) -> Result<(), FlowError> {
+        self.settle_account(settled, session, false)
+    }
+
+    /// The state of the profile preset belongs to one account (ADR 0717): it starts again
+    /// when the device has another account or none, and it waits when `preset_waits`.
+    fn settle_account(
+        &self,
+        mut settled: Settled,
+        session: Option<Held>,
+        preset_waits: bool,
+    ) -> Result<(), FlowError> {
+        {
+            let mut state = lock(&self.state);
+            if let AccessState::LoggedIn { recoveries, .. } = &mut settled.state {
+                // The answer of a login can be older than an acknowledgement.
+                recoveries.retain(|notice| !state.acknowledged.contains(&notice.id));
+            }
+            state.access = settled.state;
+            state.session = session;
+            let other_account = access::account_of(&state.entry.membership)
+                != access::account_of(&settled.membership);
+            let profile_sync = if preset_waits {
+                ProfileSync::Pending { attempts: 0 }
+            } else if other_account {
+                ProfileSync::NotNeeded
+            } else {
+                state.entry.profile_sync
+            };
+            if preset_waits || other_account {
+                state.preset_owner += 1;
+            }
+            if state.entry.membership != settled.membership
+                || state.entry.profile_sync != profile_sync
+            {
+                state.entry.membership = settled.membership;
+                state.entry.profile_sync = profile_sync;
+                state.unsaved = true;
+            }
+        }
+        self.save()
+    }
+
+    /// Stores a membership before anything else happens. A failure leaves the membership
+    /// as it was.
+    fn remember(&self, membership: Membership) -> Result<(), FlowError> {
+        let previous = {
+            let mut state = lock(&self.state);
+            let previous = state.entry.membership.clone();
+            if previous == membership {
+                return Ok(());
+            }
+            state.entry.membership = membership;
+            (previous, std::mem::replace(&mut state.unsaved, true))
+        };
+        self.save().inspect_err(|_| {
+            let mut state = lock(&self.state);
+            state.entry.membership = previous.0.clone();
+            state.unsaved = previous.1;
+        })
+    }
+
+    /// Writes the membership and the profile state to the book when they wait to be
+    /// written.
+    fn save(&self) -> Result<(), FlowError> {
+        let _saving = lock(&self.saving);
+        let (membership, profile_sync) = {
+            let state = lock(&self.state);
+            if !state.unsaved || state.retired {
+                return Ok(());
+            }
+            (state.entry.membership.clone(), state.entry.profile_sync)
+        };
+        let written = membership.clone();
+        #[cfg(test)]
+        {
+            let pause = lock(&self.core.before_write).clone();
+            if let Some(pause) = pause {
+                pause();
+            }
+        }
+        self.core.book.update(self.key, |entry| {
+            entry.membership = membership;
+            entry.profile_sync = profile_sync;
+        })?;
+        let mut state = lock(&self.state);
+        if state.entry.membership == written && state.entry.profile_sync == profile_sync {
+            state.unsaved = false;
+        }
+        Ok(())
+    }
+
+    async fn log_out(&self) -> Result<(), FlowError> {
+        let (api, held, account_id) = {
+            let mut state = lock(&self.state);
+            let AccessState::LoggedIn { account_id, .. } = state.access else {
+                return Err(FlowError::NotAvailable);
+            };
+            state.access = AccessState::LoggedOut { account_id };
+            (state.api.clone(), state.session.take(), account_id)
+        };
+        tracing::debug!(server = %self.id, account = %account_id, "logging out");
+        match (api, held) {
+            (Some(api), Some(held)) => match api.log_out(&held.token).await {
+                Ok(()) => Ok(()),
+                Err(error) if error.category() == Some(ErrorCategory::SessionEnded) => Ok(()),
+                Err(error) => Err(self.failed(error)),
+            },
+            _ => Ok(()),
+        }
+    }
+
+    /// Deletes the key and the membership in one step under the lock of the book.
+    fn forget_account(&self) -> Result<(), FlowError> {
+        let _saving = lock(&self.saving);
+        let keys = self.core.keys.clone();
+        self.core.book.transact(self.key, |entry| {
+            entry.membership = Membership::None;
+            entry.profile_sync = ProfileSync::NotNeeded;
+            keys.remove(entry.server_id).map_err(FlowError::from)
+        })?;
+        let mut state = lock(&self.state);
+        state.access = AccessState::NoAccount { notice: None };
+        state.session = None;
+        state.entry.membership = Membership::None;
+        state.entry.profile_sync = ProfileSync::NotNeeded;
+        state.preset_owner += 1;
+        state.unsaved = false;
+        Ok(())
+    }
+
+    fn session(&self) -> Result<(ApiClient, Held), ApiError> {
+        let state = lock(&self.state);
+        match (&state.api, &state.session, state.retired) {
+            (Some(api), Some(held), false) => Ok((api.clone(), held.clone())),
+            _ => Err(ApiError::NotLoggedIn),
+        }
+    }
+
+    /// Sends one request of the account that the device has now. The request belongs to
+    /// that account: after a renewal into another account it is not sent again.
+    async fn authorized(
+        self: Arc<Self>,
+        outline: Outline,
+        only_for: Option<AccountId>,
+    ) -> Result<HttpResponse, ApiError> {
+        let (api, held) = self.session()?;
+        let started_for = only_for.unwrap_or(held.account_id);
+        if held.account_id != started_for {
+            return Err(ApiError::AccountChanged {
+                was: started_for,
+                now: held.account_id,
+            });
+        }
+        let repeat = Outline {
+            method: outline.method,
+            path: outline.path.clone(),
+            query: outline.query.clone(),
+            body: outline.body.clone(),
+        };
+        let result = match send_with_token(&api, &held.token, outline).await {
+            Err(error) if error.category() == Some(ErrorCategory::SessionEnded) => {
+                let (api, renewed) = self.renew(&held.token).await?;
+                if renewed.account_id != started_for {
+                    return Err(ApiError::AccountChanged {
+                        was: started_for,
+                        now: renewed.account_id,
+                    });
+                }
+                send_with_token(&api, &renewed.token, repeat).await
+            }
+            other => other,
+        };
+        match &result {
+            Ok(_) => self.answered(),
+            Err(error) => self.note(error),
+        }
+        result
+    }
+
+    /// The server did not accept the session any more: it expired, the device was
+    /// removed, or the account was banned, removed or recovered. The device logs in again
+    /// with its key, and the answer decides the state.
+    async fn renew(&self, ended: &SecretToken) -> Result<(ApiClient, Held), ApiError> {
+        let _gate = self.gate.lock().await;
+        let (api, current) = self.session()?;
+        if current.token != *ended {
+            return Ok((api, current));
+        }
+        let before = {
+            let mut state = lock(&self.state);
+            state.session = None;
+            state.in_progress = Some(ActionKind::LogIn);
+            state.error = None;
+            state.access.clone()
+        };
+        self.core.notify();
+        let running = Running(self);
+        let result = self.log_in_again(&before, api, current.account_id).await;
+        running.finish(result.as_ref().err().map(FlowError::from));
+        result
+    }
+
+    async fn log_in_again(
+        &self,
+        before: &AccessState,
+        api: ApiClient,
+        account_id: AccountId,
+    ) -> Result<(ApiClient, Held), ApiError> {
+        let logged_out = || {
+            lock(&self.state).access = AccessState::LoggedOut { account_id };
+        };
+        let key = match self.stored_key() {
+            Ok(Some(key)) => key,
+            Ok(None) => {
+                let _ = self.settle(
+                    Settled {
+                        state: AccessState::NoAccount {
+                            notice: Some(Notice::KeyMissing),
+                        },
+                        membership: Membership::None,
+                    },
+                    None,
+                );
+                return Err(ApiError::AccessLost(AccessLoss::Removed));
+            }
+            Err(error) => {
+                logged_out();
+                return Err(error.into());
+            }
+        };
+        let probe = match self.probe(&api, &key).await {
+            Ok(probe) => probe,
+            Err(error) => {
+                logged_out();
+                self.note(&error);
+                return Err(error);
+            }
+        };
+        let outcome = match held_of(&probe) {
+            Some(held) => Ok((api, held)),
+            None if probe == Probe::Banned => Err(ApiError::AccessLost(AccessLoss::Banned)),
+            None => Err(ApiError::AccessLost(AccessLoss::Removed)),
+        };
+        if let Err(error) = self.settle_probe(before, probe, Creates::Nothing) {
+            tracing::warn!(server = %self.id, %error, "the server book was not updated");
+        }
+        outcome
+    }
+
+    /// Sends the avatar of the profile preset to the account when it waits (ADR 0717).
+    /// The name is not sent: it travelled with the join, the claim or the join request.
+    /// The caller holds the lock of the tries.
+    ///
+    /// The request uses the session that the device has when the try starts and is not
+    /// sent again with a renewed session: after a removal and a return, the account can be
+    /// the same one and the avatar is no longer wanted.
+    async fn apply_profile(
+        &self,
+        _applying: tokio::sync::MutexGuard<'_, ()>,
+    ) -> Result<ProfileSync, ApiError> {
+        let (sync, session, owner) = {
+            let state = lock(&self.state);
+            let session = match (&state.api, &state.session, state.retired) {
+                (Some(api), Some(held), false) => Some((api.clone(), held.token.clone())),
+                _ => None,
+            };
+            (state.entry.profile_sync, session, state.preset_owner)
+        };
+        let ProfileSync::Pending { attempts } = sync else {
+            return Ok(sync);
+        };
+        let (api, token) = session.ok_or(ApiError::NotLoggedIn)?;
+        let failed_try = ProfileSync::Pending {
+            attempts: attempts.saturating_add(1),
+        };
+        let image = match self.core.profile.avatar() {
+            Ok(Some((_, image))) => image,
+            Ok(None) => return Ok(self.record_sync(owner, ProfileSync::NotNeeded)),
+            Err(error) => {
+                // A stored image that is larger than an avatar can be is never sent.
+                let refused = matches!(error, StorageError::TooLarge { .. });
+                self.record_sync(
+                    owner,
+                    if refused {
+                        ProfileSync::Refused
+                    } else {
+                        failed_try
+                    },
+                );
+                return Err(error.into());
+            }
+        };
+        let stored = api.with_token(token).set_avatar(image).await;
+        match &stored {
+            Ok(_) => self.answered(),
+            Err(error) => self.note(error),
+        }
+        match stored {
+            Ok(_) => Ok(self.record_sync(owner, ProfileSync::Applied)),
+            Err(error) => {
+                // A server that refuses the image itself refuses it at every try.
+                let refused = matches!(error, ApiError::Avatar(_))
+                    || matches!(
+                        error.code(),
+                        Some(ErrorCode::ImageTooLarge | ErrorCode::ImageUnsupported)
+                    );
+                self.record_sync(
+                    owner,
+                    if refused {
+                        ProfileSync::Refused
+                    } else {
+                        failed_try
+                    },
+                );
+                Err(error)
+            }
+        }
+    }
+
+    fn api_for(self: &Arc<Self>, account_id: AccountId) -> ServerApi {
+        ServerApi::new(Arc::new(Managed {
+            server: self.clone(),
+            account: Some(account_id),
+        }))
+    }
+
+    /// Sends the acknowledgement of a recovery for the account that the flow shows, and
+    /// takes the recovery out of the state when the server holds its notice no longer.
+    async fn acknowledge_recovery(
+        self: &Arc<Self>,
+        recovery_id: RecoveryId,
+    ) -> Result<(), ApiError> {
+        let account = match &lock(&self.state).access {
+            AccessState::LoggedIn { account_id, .. } => *account_id,
+            _ => return Err(ApiError::NotLoggedIn),
+        };
+        let result = self
+            .api_for(account)
+            .acknowledge_recovery(recovery_id)
+            .await;
+        let gone = match &result {
+            Ok(()) => true,
+            Err(error) => error.code() == Some(ErrorCode::NotFound),
+        };
+        if gone {
+            {
+                let mut state = lock(&self.state);
+                if !state.acknowledged.contains(&recovery_id) {
+                    state.acknowledged.push(recovery_id);
+                }
+                if let AccessState::LoggedIn { recoveries, .. } = &mut state.access {
+                    recoveries.retain(|notice| notice.id != recovery_id);
+                }
+            }
+            self.core.notify();
+        }
+        result
+    }
+
+    /// Records the result of a try to send the avatar. `owner` is the count that the try
+    /// read when it started: a result for an account that the device left meanwhile, also
+    /// when it has returned to it, is dropped.
+    fn record_sync(&self, owner: u64, sync: ProfileSync) -> ProfileSync {
+        {
+            let mut state = lock(&self.state);
+            if state.preset_owner != owner {
+                return state.entry.profile_sync;
+            }
+            state.entry.profile_sync = sync;
+            state.unsaved = true;
+        }
+        if let Err(error) = self.save() {
+            tracing::warn!(server = %self.id, %error, "the server book was not updated");
+        }
+        self.core.notify();
+        sync
+    }
+}
+
+#[cfg(test)]
+mod tests;
