@@ -1315,6 +1315,47 @@ async fn ending_a_session_waits_for_a_renewal_and_ends_the_session_that_it_made(
 }
 
 #[tokio::test(start_paused = true)]
+async fn an_action_that_waits_runs_after_the_action_that_holds_the_flow() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle.dispatch(claim()).await.unwrap();
+    handle.dispatch(AccessAction::LogOut).await.unwrap();
+
+    // A login waits for its answer and holds the flow.
+    network.suspend_path("acme", "/auth/sessions");
+    let login = tokio::spawn(handle.dispatch(AccessAction::LogIn));
+    while handle.access().in_progress != Some(ActionKind::LogIn) {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        handle.dispatch(AccessAction::Check).await,
+        Err(FlowError::Busy)
+    );
+    let waiting = tokio::spawn(handle.dispatch_when_free(AccessAction::LogOut));
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+    assert!(!waiting.is_finished());
+
+    // The login ends, and the action that waited runs in the state that the login left.
+    network.resume("acme");
+    login.await.unwrap().unwrap();
+    waiting.await.unwrap().unwrap();
+    assert_eq!(server.session_count(), 0);
+    assert!(matches!(
+        handle.access().state,
+        AccessState::LoggedOut { .. }
+    ));
+    // An action that the state does not accept is refused, and is not tried again.
+    assert_eq!(
+        handle.dispatch_when_free(AccessAction::LogOut).await,
+        Err(FlowError::NotAvailable)
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn removing_a_server_deletes_its_entry_and_its_key_and_stops_its_flow() {
     let network = Arc::new(Network::default());
     network.host("acme");

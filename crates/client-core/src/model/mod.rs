@@ -21,6 +21,7 @@ use junto_protocol::call::{
 };
 use junto_protocol::events::Cursor;
 use junto_protocol::ids::{AccountId, CallId, ChannelId, DeviceId, WorkspaceId, WorkspaceRoleId};
+use junto_protocol::recording::Recording;
 use junto_protocol::roles::WorkspaceRole;
 use junto_protocol::snapshot::{Snapshot, WorkspaceState};
 use junto_protocol::structure::{Category, Channel, Workspace, WorkspaceMember};
@@ -72,6 +73,10 @@ pub struct CallModel {
     /// The people who speak now, as the last `call_speaking` told it (ADR 0513). A
     /// snapshot does not carry the marks, so the list is empty until the next change.
     pub speaking: Vec<AccountId>,
+    /// The recording of the call that is starting or runs (ADR 0601). A reader shows the
+    /// recording indicator while it is present. A recording that has ended leaves the
+    /// state; its later changes are notices.
+    pub recording: Option<Recording>,
 }
 
 impl CallModel {
@@ -84,6 +89,7 @@ impl CallModel {
             meeting: None,
             participants: Vec::new(),
             speaking: Vec::new(),
+            recording: None,
         }
     }
 
@@ -96,6 +102,9 @@ impl CallModel {
             meeting: call.meeting,
             participants: call.participants,
             speaking: Vec::new(),
+            recording: call
+                .recording
+                .filter(|recording| recording.state.is_active()),
         }
     }
 

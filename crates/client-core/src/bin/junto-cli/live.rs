@@ -18,6 +18,7 @@ use junto_client_core::protocol::events::{Cursor, Event};
 use junto_client_core::protocol::ids::{
     AccountId, CallId, CallInvitationId, CallMoveId, ChannelId, EntryRequestId,
 };
+use junto_client_core::protocol::recording::Recording;
 use junto_client_core::protocol::structure::{Channel, ChannelKind};
 use junto_client_core::{Client, ServerHandle};
 use time::OffsetDateTime;
@@ -488,6 +489,18 @@ fn meeting_line(meeting: Option<&Meeting>, indent: &str) -> String {
     }
 }
 
+fn recording_line(recording: Option<&Recording>, indent: &str) -> String {
+    match recording {
+        Some(recording) => format!(
+            "{indent}recording: {}  state: {}  started by {}",
+            recording.id,
+            word(&recording.state),
+            recording.started_by
+        ),
+        None => format!("{indent}recording: none"),
+    }
+}
+
 fn started_line(started_at: Option<OffsetDateTime>, indent: &str) -> String {
     match started_at {
         Some(started_at) => format!("{indent}started: {started_at}"),
@@ -501,6 +514,7 @@ fn call_lines(call: &Call, indent: &str) -> Vec<String> {
         started_line(call.started_at, indent),
         lock_line(call.lock.as_ref(), indent),
         meeting_line(call.meeting.as_ref(), indent),
+        recording_line(call.recording.as_ref(), indent),
     ];
     lines.extend(
         call.participants
@@ -608,6 +622,7 @@ fn state_lines(model: &ServerModel) -> Vec<String> {
             };
             lines.push(lock_line(call.lock.as_ref(), "  "));
             lines.push(meeting_line(call.meeting.as_ref(), "  "));
+            lines.push(recording_line(call.recording.as_ref(), "  "));
             lines.extend(call.participants.iter().map(|participant| {
                 let speaking = call.speaking.contains(&participant.account_id);
                 participant_line(participant, Some(speaking), "  ")
@@ -789,6 +804,13 @@ fn event_details(event: &Event) -> String {
             let speakers: Vec<String> = account_ids.iter().map(ToString::to_string).collect();
             format!("{} speaking={}", at(call_id, place), speakers.join(","))
         }
+        Event::RecordingStarted { recording } | Event::RecordingUpdated { recording } => format!(
+            "recording={} call={} channel={} state={}",
+            recording.id,
+            recording.call_id,
+            recording.channel_id,
+            word(&recording.state)
+        ),
         Event::CallEntryRequested { request } => format!(
             "request={} {} account={}",
             request.id,

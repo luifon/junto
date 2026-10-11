@@ -17,6 +17,7 @@ Contract of every flow:
 - An action runs to its end and leaves the flow in a state: the next state after a success, the state before after a failure, with the reason. The next action clears the reason.
 - While an action runs, the flow accepts no other action and reports none. A second action gets the error `busy` and changes nothing. An action that the state does not accept gets `not available` and changes nothing.
 - No flow waits for the interface. Waiting for a person is a state, not a running action.
+- A server object offers a second way to run an action of the access flow: it waits for the action or the renewal of the session that runs now and then runs the action. An interface uses it for what a person asked for; `end_session` is that way for a logout.
 - An action runs as a task of the client (ADR 0715). It runs to its end when the interface drops its future. If the task itself stops, the flow returns to its state with the reason `stopped` and accepts actions again.
 - Text that the user typed is checked before any request: a name has 1 to 64 characters and no control character, as on the server.
 - The reason of a failure holds no secret. It names the error code of the server, or the cause of a failed connection, and holds no text of the server, with one exception.

@@ -587,6 +587,43 @@ async fn a_busy_answer_gets_the_same_signed_request_again_and_the_server_accepts
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_action_that_waits_for_the_flow_runs_when_the_running_action_has_ended() {
+    const CLAIM: &str = "/api/v1/owner/claim";
+    let server = TestServer::start("Acme").await;
+    let proxy = FaultProxy::start(&server).await;
+    let device = Device::new();
+    let handle = device.add(&proxy.address()).await;
+
+    // The claim waits at the proxy, so the access flow is busy until the test says so.
+    proxy.hold(CLAIM);
+    let claiming = tokio::spawn(handle.dispatch(claim(&server, "Ada")));
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while proxy.seen(CLAIM).is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "the claim did not reach the proxy"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(matches!(
+        handle.dispatch(AccessAction::LogOut).await,
+        Err(FlowError::Busy)
+    ));
+    let logging_out = tokio::spawn(handle.dispatch_when_free(AccessAction::LogOut));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!claiming.is_finished() && !logging_out.is_finished());
+
+    proxy.release();
+    claiming.await.unwrap().unwrap();
+    logging_out.await.unwrap().unwrap();
+    assert!(matches!(
+        handle.access().state,
+        AccessState::LoggedOut { .. }
+    ));
+    assert_eq!(proxy.seen(CLAIM).len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_join_whose_answer_was_lost_is_repeated_and_creates_one_account() {
     let server = TestServer::start("Acme").await;
     let first = Device::new();

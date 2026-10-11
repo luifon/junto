@@ -32,10 +32,11 @@ Calls in the state:
 - The request of the account itself to enter is in no event and in no snapshot. The caller has it from the answer to its request and waits for the notice `call_entry_answered`.
 - `call_access_ended` names nothing, and the client cannot decide the contact rule of ADR 0307 by itself. The state is reloaded (ADR 0718).
 - A snapshot carries no speaking marks. They are empty until the next `call_speaking`.
+- The details of a call hold its recording while the recording is `starting` or `recording` (ADR 0601, ADR 0604). The snapshot and the two views of a call carry it. `recording_started` and `recording_updated` change it only for a call that the state holds with the same identifier: the people in a call start a recording, so the events of the call came first, and a replay can deliver the recording of an earlier call of the channel. A recording in another state leaves the details; its later changes are notices.
 
 Parts read on demand (ADR 0207):
 
-- The members of a workspace are read when a reader asks for them. The part is `not loaded`, `loading` or `loaded`.
+- The members of a workspace are read when a reader asks for them. The part is `not loaded`, `loading` or `loaded`. The reader is answered after the state with the members was given to the readers, so that it finds them there.
 - The call of the account and the call of a channel that stopped hiding are read by the client itself, as stated above.
 - One rule for all of them: the events that arrive after the request was sent are kept, and after the answer they are applied to that part in their order. A read during which more than 4096 events or 4 MiB of events arrive starts again.
 - A reload discards every part, because the client no longer knows which changes it missed. The members that a reader asked for are read again without a new request, until the reader releases them. The call of the account is read again.
@@ -62,6 +63,7 @@ Later parts:
 - A reader that only draws the state needs `watch` alone. A reader that shows single changes, such as a ringing call or the outcome of a request, reads the notices and treats a missed notice by reading the state.
 - At the background level the workspaces and channels are as old as the last snapshot, because the server delivers no change of the structure at that level (ADR 0107). The view states the level.
 - After a reload the members are `loading` for the time of one request, and the speaking marks are empty until they change.
+- A reader shows the recording indicator of a voice channel from the details of its call. An account outside a channel that hides who is inside holds no details and shows no indicator, as the server sends it none.
 - A lock that was set before the first person of a call was seen is in the state before the channel is in use. A reader shows a lock only for a channel in use.
 - The client reads one more route when the account enters a call, and one when a channel in use stops hiding who is inside.
 - The function that applies events is tested without a server, for every event that it applies; the stream client and the real server are tested with it (ADR 0718).

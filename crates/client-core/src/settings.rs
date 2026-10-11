@@ -1,0 +1,240 @@
+//! The settings of the interface that belong to one installation and to no server: the
+//! interface scale and the form of the server book (ADR 0703, ADR 0710).
+
+use serde::{Deserialize, Serialize};
+
+use crate::paths::{DataDir, SETTINGS_FILE};
+use crate::storage::{StorageError, Versioned};
+
+pub const SETTINGS_FORMAT_VERSION: u32 = 1;
+
+/// The narrowest and the widest interface scale, in percent (ADR 0703).
+pub const SCALE_MIN_PERCENT: u32 = 90;
+pub const SCALE_MAX_PERCENT: u32 = 150;
+
+const SETTINGS: Versioned = Versioned {
+    name: SETTINGS_FILE,
+    kind: "settings",
+    version: SETTINGS_FORMAT_VERSION,
+    migrations: &[],
+    limit: 64 * 1024,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InterfaceSettings {
+    /// The interface scale in percent, from 90 to 150.
+    pub scale_percent: u32,
+    /// The server book shows icons only.
+    pub server_book_collapsed: bool,
+}
+
+impl Default for InterfaceSettings {
+    fn default() -> Self {
+        Self {
+            scale_percent: 100,
+            server_book_collapsed: false,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct SettingsFile {
+    format_version: u32,
+    scale_percent: u32,
+    #[serde(default)]
+    server_book_collapsed: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct SettingsStore {
+    data_dir: DataDir,
+}
+
+impl SettingsStore {
+    pub fn new(data_dir: DataDir) -> Self {
+        Self { data_dir }
+    }
+
+    /// The stored settings, or the defaults when there is no file. A scale outside its
+    /// range is read as the nearest bound.
+    pub fn load(&self) -> Result<InterfaceSettings, StorageError> {
+        let Some(file) = SETTINGS.load::<SettingsFile>(self.data_dir.files())? else {
+            return Ok(InterfaceSettings::default());
+        };
+        Ok(InterfaceSettings {
+            scale_percent: file
+                .scale_percent
+                .clamp(SCALE_MIN_PERCENT, SCALE_MAX_PERCENT),
+            server_book_collapsed: file.server_book_collapsed,
+        })
+    }
+
+    /// Replaces the stored settings. See [`SettingsStore::update`] for a file that cannot
+    /// be read.
+    pub fn save(&self, settings: InterfaceSettings) -> Result<(), StorageError> {
+        self.update(|stored| *stored = settings).map(|_| ())
+    }
+
+    /// Changes the stored settings in one step under the lock of the data directory: the
+    /// file is read again, changed and written, so that a change of one setting keeps what
+    /// another program wrote of the others meanwhile. Returns what was written.
+    ///
+    /// A file that is not a settings file is replaced with the defaults and the change:
+    /// the settings hold nothing that a person cannot set again. Every other file that
+    /// cannot be read stays as it is, and the change fails: a file of a newer format, a
+    /// file that is larger than this client reads, a file that cannot be opened.
+    pub fn update(
+        &self,
+        change: impl FnOnce(&mut InterfaceSettings),
+    ) -> Result<InterfaceSettings, StorageError> {
+        let _lock = self.data_dir.lock()?;
+        let mut settings = match self.load() {
+            Ok(settings) => settings,
+            Err(StorageError::Corrupted { .. }) => InterfaceSettings::default(),
+            Err(other) => return Err(other),
+        };
+        change(&mut settings);
+        settings.scale_percent = settings
+            .scale_percent
+            .clamp(SCALE_MIN_PERCENT, SCALE_MAX_PERCENT);
+        self.write(settings)?;
+        Ok(settings)
+    }
+
+    fn write(&self, settings: InterfaceSettings) -> Result<(), StorageError> {
+        SETTINGS.store(
+            self.data_dir.files(),
+            &SettingsFile {
+                format_version: SETTINGS_FORMAT_VERSION,
+                scale_percent: settings
+                    .scale_percent
+                    .clamp(SCALE_MIN_PERCENT, SCALE_MAX_PERCENT),
+                server_book_collapsed: settings.server_book_collapsed,
+            },
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+
+    fn store() -> (tempfile::TempDir, DataDir, SettingsStore) {
+        let directory = tempfile::tempdir().unwrap();
+        let data_dir = DataDir::open(directory.path().join("junto")).unwrap();
+        let store = SettingsStore::new(data_dir.clone());
+        (directory, data_dir, store)
+    }
+
+    #[test]
+    fn the_settings_start_with_their_defaults_and_keep_what_is_saved() {
+        let (_directory, data_dir, store) = store();
+        assert_eq!(store.load().unwrap(), InterfaceSettings::default());
+        assert!(!data_dir.root().join(SETTINGS_FILE).exists());
+
+        let chosen = InterfaceSettings {
+            scale_percent: 125,
+            server_book_collapsed: true,
+        };
+        store.save(chosen).unwrap();
+        assert_eq!(store.load().unwrap(), chosen);
+        let text = fs::read_to_string(data_dir.root().join(SETTINGS_FILE)).unwrap();
+        assert!(text.contains("\"format_version\": 1"), "{text}");
+    }
+
+    #[test]
+    fn a_scale_outside_its_range_becomes_the_nearest_bound() {
+        let (_directory, data_dir, store) = store();
+        store
+            .save(InterfaceSettings {
+                scale_percent: 400,
+                server_book_collapsed: false,
+            })
+            .unwrap();
+        assert_eq!(store.load().unwrap().scale_percent, SCALE_MAX_PERCENT);
+        fs::write(
+            data_dir.root().join(SETTINGS_FILE),
+            r#"{"format_version":1,"scale_percent":10}"#,
+        )
+        .unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.scale_percent, SCALE_MIN_PERCENT);
+        assert!(!loaded.server_book_collapsed);
+    }
+
+    #[test]
+    fn a_file_of_a_newer_format_stays_and_an_unreadable_file_is_replaced() {
+        let (_directory, data_dir, store) = store();
+        let file = data_dir.root().join(SETTINGS_FILE);
+        let newer = r#"{"format_version":2,"scale_percent":110,"later":true}"#;
+        fs::write(&file, newer).unwrap();
+        assert!(matches!(
+            store.load(),
+            Err(StorageError::NewerFormat {
+                found: 2,
+                supported: 1,
+                ..
+            })
+        ));
+        assert!(matches!(
+            store.save(InterfaceSettings::default()),
+            Err(StorageError::NewerFormat { .. })
+        ));
+        assert_eq!(fs::read_to_string(&file).unwrap(), newer);
+
+        fs::write(&file, "not json").unwrap();
+        assert!(matches!(store.load(), Err(StorageError::Corrupted { .. })));
+        store.save(InterfaceSettings::default()).unwrap();
+        assert_eq!(store.load().unwrap(), InterfaceSettings::default());
+    }
+
+    #[test]
+    fn a_file_whose_format_cannot_be_read_from_its_start_is_not_replaced() {
+        let (_directory, data_dir, store) = store();
+        let file = data_dir.root().join(SETTINGS_FILE);
+        // A file of a later format that holds more than this client reads of a settings file.
+        let later = format!(
+            r#"{{"format_version":2,"scale_percent":110,"later":"{}"}}"#,
+            "x".repeat(70 * 1024)
+        );
+        fs::write(&file, &later).unwrap();
+        assert!(matches!(store.load(), Err(StorageError::TooLarge { .. })));
+        assert!(matches!(
+            store.save(InterfaceSettings::default()),
+            Err(StorageError::TooLarge { .. })
+        ));
+        assert_eq!(fs::read_to_string(&file).unwrap(), later);
+    }
+
+    #[test]
+    fn a_change_of_one_setting_keeps_what_another_program_wrote_of_the_others() {
+        let (_directory, data_dir, first) = store();
+        let second = SettingsStore::new(data_dir);
+        // Both programs read the defaults. The first collapses the server book, and then the
+        // second, which still holds the defaults, changes the scale.
+        let (held_by_first, held_by_second) = (first.load().unwrap(), second.load().unwrap());
+        assert_eq!(held_by_first, held_by_second);
+        first
+            .update(|settings| settings.server_book_collapsed = true)
+            .unwrap();
+        let written = second
+            .update(|settings| settings.scale_percent = 125)
+            .unwrap();
+        let both = InterfaceSettings {
+            scale_percent: 125,
+            server_book_collapsed: true,
+        };
+        assert_eq!(written, both);
+        assert_eq!(first.load().unwrap(), both);
+        // A scale outside its range is written as the nearest bound.
+        assert_eq!(
+            first
+                .update(|settings| settings.scale_percent = 10)
+                .unwrap()
+                .scale_percent,
+            SCALE_MIN_PERCENT
+        );
+    }
+}

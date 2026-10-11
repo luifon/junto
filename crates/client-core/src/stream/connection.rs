@@ -188,6 +188,9 @@ async fn until(deadline: Option<Instant>) {
     }
 }
 
+/// Where a reader that asked for the members of a workspace gets its answer.
+type MembersReply = oneshot::Sender<Result<(), LoadError>>;
+
 struct Client {
     shared: Arc<Shared>,
     host: Arc<dyn Host>,
@@ -202,7 +205,10 @@ struct Client {
     tickets: u64,
     /// The workspaces whose members a reader asked for.
     wanted_members: BTreeSet<WorkspaceId>,
-    waiting_for_members: BTreeMap<WorkspaceId, Vec<oneshot::Sender<Result<(), LoadError>>>>,
+    waiting_for_members: BTreeMap<WorkspaceId, Vec<MembersReply>>,
+    /// The answers to readers that asked for members, until the view that holds the result
+    /// is given to the readers: a reader that is answered finds the members in the view.
+    answers: Vec<(MembersReply, Result<(), LoadError>)>,
     link: Option<Link>,
     opening: Option<Opening>,
     /// The earliest time of the next connection attempt.
@@ -257,6 +263,7 @@ pub(crate) async fn run(
         tickets: 0,
         wanted_members: BTreeSet::new(),
         waiting_for_members: BTreeMap::new(),
+        answers: Vec::new(),
         link: None,
         opening: None,
         retry_at: None,
@@ -944,7 +951,7 @@ impl Client {
             .remove(&workspace_id)
             .unwrap_or_default()
         {
-            let _ = waiting.send(answer());
+            self.answers.push((waiting, answer()));
         }
     }
 
@@ -1008,9 +1015,7 @@ impl Client {
                 };
                 self.wanted_members.insert(workspace_id);
                 match held {
-                    Some(Loadable::Loaded(_)) => {
-                        let _ = reply.send(Ok(()));
-                    }
+                    Some(Loadable::Loaded(_)) => self.answers.push((reply, Ok(()))),
                     Some(Loadable::NotLoaded) => {
                         self.waiting_for_members
                             .entry(workspace_id)
@@ -1111,6 +1116,9 @@ impl Client {
             });
             self.shown = Some((status, level));
             self.model_changed = false;
+        }
+        for (waiting, answer) in self.answers.drain(..) {
+            let _ = waiting.send(answer);
         }
         for notice in self.untold.drain(..) {
             self.shared.tell(notice);

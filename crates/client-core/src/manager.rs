@@ -42,6 +42,7 @@ use crate::paths::DataDir;
 use crate::profile::ProfileStore;
 use crate::runtime::Runtime;
 use crate::secret::SecretToken;
+use crate::settings::SettingsStore;
 use crate::storage::StorageError;
 use crate::stream::{
     Desired, Environment, Host, ReqwestStreamTransport, StreamPolicy, StreamTransport, Streams,
@@ -209,6 +210,11 @@ impl Client {
     /// The local profile preset (ADR 0105).
     pub fn profile(&self) -> &ProfileStore {
         &self.inner.core.profile
+    }
+
+    /// The settings of the interface of this installation (ADR 0710).
+    pub fn settings(&self) -> SettingsStore {
+        SettingsStore::new(self.inner.core.data_dir.clone())
     }
 
     /// The saved servers in the order of the server book.
@@ -519,6 +525,26 @@ impl ServerHandle {
         async move { work.await? }
     }
 
+    /// Runs one action of the access flow after an action or a renewal of the session that
+    /// runs now has ended. `dispatch` answers `busy` in that case (ADR 0712); an interface
+    /// uses this for what a person asked for, so that the request is not lost because the
+    /// client asked the server something by itself at the same moment.
+    pub fn dispatch_when_free(
+        &self,
+        action: AccessAction,
+    ) -> impl Future<Output = Result<(), FlowError>> + Send + 'static + use<> {
+        let handle = self.clone();
+        let work = self.server.core.runtime.run(async move {
+            loop {
+                match handle.dispatch(action.clone()).await {
+                    Err(FlowError::Busy) => drop(handle.server.gate.lock().await),
+                    result => return result,
+                }
+            }
+        });
+        async move { work.await? }
+    }
+
     /// Logs out, after an action or a renewal of the session that runs now has ended.
     /// `dispatch` refuses a second action while one runs (ADR 0712); a program that ends
     /// uses this, so that a session that the running action creates is ended too. Without
@@ -526,17 +552,13 @@ impl ServerHandle {
     pub fn end_session(
         &self,
     ) -> impl Future<Output = Result<(), FlowError>> + Send + 'static + use<> {
-        let handle = self.clone();
-        let work = self.server.core.runtime.run(async move {
-            loop {
-                match handle.dispatch(AccessAction::LogOut).await {
-                    Err(FlowError::Busy) => drop(handle.server.gate.lock().await),
-                    Err(FlowError::NotAvailable) => return Ok(()),
-                    result => return result,
-                }
+        let ending = self.dispatch_when_free(AccessAction::LogOut);
+        async move {
+            match ending.await {
+                Err(FlowError::NotAvailable) => Ok(()),
+                result => result,
             }
-        });
-        async move { work.await? }
+        }
     }
 
     /// Contacts the server and brings the flow to its present state. A device that

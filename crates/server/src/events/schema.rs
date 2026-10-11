@@ -39,8 +39,26 @@ fn event_name(alternative: &Value) -> Option<&str> {
         .and_then(Value::as_str)
 }
 
+/// The keys of every object in the order of their text. `serde_json` holds them in that
+/// order unless another crate of the same build turns on its feature `preserve_order`, and
+/// the committed document must not depend on what else is built.
+fn sorted(value: Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut entries: Vec<(String, Value)> = map
+                .into_iter()
+                .map(|(key, value)| (key, sorted(value)))
+                .collect();
+            entries.sort_by(|one, other| one.0.cmp(&other.0));
+            Value::Object(entries.into_iter().collect())
+        }
+        Value::Array(items) => Value::Array(items.into_iter().map(sorted).collect()),
+        other => other,
+    }
+}
+
 pub fn document() -> Result<Document, serde_json::Error> {
-    let components = serde_json::to_value(StreamTypes::openapi().components)?;
+    let components = sorted(serde_json::to_value(StreamTypes::openapi().components)?);
     let alternatives = components
         .pointer("/schemas/Event/oneOf")
         .and_then(Value::as_array)

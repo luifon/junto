@@ -17,6 +17,7 @@ pub mod paths;
 pub mod profile;
 pub mod runtime;
 pub mod secret;
+pub mod settings;
 pub mod storage;
 pub mod stream;
 pub mod version;

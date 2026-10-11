@@ -1094,6 +1094,7 @@ async fn the_call_of_the_account_is_read_with_its_requests_and_reported_to_the_c
             lock: None,
             meeting: None,
             participants: vec![participant(rig.scene.account_id)],
+            recording: None,
         },
         entry_requests: vec![request.clone()],
     });
@@ -1540,6 +1541,7 @@ async fn a_new_session_reads_again_every_part_that_was_on_its_way() {
             lock: None,
             meeting: None,
             participants: vec![inside.clone()],
+            recording: None,
         }),
     });
     let gate = rig.http.hold("/call");

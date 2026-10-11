@@ -6,7 +6,7 @@ It consists of a server written in Rust with PostgreSQL, a native desktop client
 
 ## Status
 
-Design reviewed. The technical tests of step 0 are in progress. The server exists in `crates/` as far as this: accounts, device keys, profiles, invites, roles, channels, the audit log, the event stream, and the server side of calls (admission, room privacy, meeting mode, moderation and direct-message calls) behind the public API. Text messages, recording and transcripts are not built. There is no client yet, and there is still no usable application.
+Design reviewed. The technical tests of step 0 are in progress. The server exists in `crates/` as far as this: accounts, device keys, profiles, invites, roles, channels, the audit log, the event stream, and the server side of calls (admission, room privacy, meeting mode, moderation and direct-message calls) behind the public API. Text messages, recording and transcripts are not built. A first desktop application exists in [`crates/client`](crates/client/README.md): it joins a server and shows the servers, workspaces, channels and the people in voice channels, without messages and without calls. There is still no usable application.
 
 ## Main design points
 

@@ -9,8 +9,9 @@ use junto_protocol::call::{
 use junto_protocol::events::{Cursor, Event};
 use junto_protocol::ids::{
     AccountId, CallId, CallInvitationId, CallMoveId, CategoryId, ChannelId, DeviceId,
-    EntryRequestId, StreamEpoch, WorkspaceId, WorkspaceRoleId,
+    EntryRequestId, RecordingId, StreamEpoch, WorkspaceId, WorkspaceRoleId,
 };
+use junto_protocol::recording::{Recording, RecordingState, RecordingStop, RecordingStopReason};
 use junto_protocol::roles::WorkspaceRole;
 use junto_protocol::snapshot::{Snapshot, WorkspaceState};
 use junto_protocol::structure::{Category, Channel, ChannelKind, Workspace, WorkspaceMember};
@@ -204,6 +205,7 @@ fn a_snapshot_gives_the_structure_the_calls_and_the_permissions_of_the_roles() {
                 lock: None,
                 meeting: None,
                 participants: vec![participant(other)],
+                recording: None,
             }),
         },
         ChannelCall {
@@ -698,6 +700,7 @@ fn the_account_that_leaves_a_call_that_never_started_keeps_nothing_of_it() {
             lock: None,
             meeting: None,
             participants: Vec::new(),
+            recording: None,
         },
         entry_requests: Vec::new(),
     }));
@@ -751,6 +754,7 @@ fn the_answer_for_the_own_call_gives_the_people_and_the_requests_of_that_call_on
             lock: None,
             meeting: None,
             participants: vec![participant(scene.account_id)],
+            recording: None,
         },
         entry_requests: vec![request.clone()],
     };
@@ -1028,6 +1032,7 @@ fn the_events_that_arrived_during_a_read_are_applied_to_its_part_after_the_answe
             lock: None,
             meeting: None,
             participants: vec![speaker.clone()],
+            recording: None,
         }),
     };
     let late = participant(AccountId::generate());
@@ -1101,6 +1106,7 @@ fn direct_calls_and_muted_conversations_follow_their_events() {
             lock: None,
             meeting: None,
             participants: Vec::new(),
+            recording: None,
         },
         entry_requests: Vec::new(),
     }));
@@ -1144,6 +1150,7 @@ fn the_answer_for_the_call_of_a_channel_shows_nobody_when_the_channel_hides_agai
             lock: None,
             meeting: None,
             participants: vec![participant(AccountId::generate())],
+            recording: None,
         }),
     };
     // The server made the answer while the channel showed who is inside. Before the
@@ -1228,9 +1235,226 @@ fn the_events_of_a_read_do_not_show_the_people_of_a_channel_that_hides_again() {
             lock: None,
             meeting: None,
             participants: vec![person],
+            recording: None,
         }),
     });
     model.replay(Part::ChannelCall(scene.hidden), &during);
     let held = model.channel(scene.hidden).unwrap();
     assert!(held.in_use && held.call.is_none());
+}
+
+fn recording(scene: &Scene, channel_id: ChannelId, call_id: CallId) -> Recording {
+    Recording {
+        id: RecordingId::generate(),
+        workspace_id: scene.workspace_id,
+        channel_id,
+        call_id,
+        state: RecordingState::Starting,
+        started_by: AccountId::generate(),
+        requested_at: time(),
+        recording_since: None,
+        stop: None,
+        ended_at: None,
+        failure: None,
+        language: "auto".to_owned(),
+        segments: 0,
+        failed_segments: 0,
+    }
+}
+
+fn updated(recording: &Recording) -> Event {
+    Event::RecordingUpdated {
+        recording: Box::new(recording.clone()),
+    }
+}
+
+#[test]
+fn a_recording_is_in_the_state_of_its_call_while_it_is_starting_or_runs() {
+    let scene = scene();
+    let mut model = scene.model();
+    let (call_id, place) = (CallId::generate(), scene.place(scene.daily));
+    model.apply(&started(call_id, place));
+    model.apply(&joined(call_id, place, &participant(AccountId::generate())));
+    assert_eq!(model.call_at(&place).unwrap().recording, None);
+
+    let mut record = recording(&scene, scene.daily, call_id);
+    let asked = Event::RecordingStarted {
+        recording: Box::new(record.clone()),
+    };
+    assert_eq!(model.apply(&asked), Follow::default());
+    assert_eq!(
+        model.call_at(&place).unwrap().recording,
+        Some(record.clone())
+    );
+    let once = model.clone();
+    model.apply(&asked);
+    assert_eq!(model, once);
+
+    record.state = RecordingState::Recording;
+    record.recording_since = Some(time());
+    record.segments = 2;
+    model.apply(&updated(&record));
+    assert_eq!(
+        model.call_at(&place).unwrap().recording,
+        Some(record.clone())
+    );
+
+    // A stop that was asked for leaves the state `recording` until every job has ended.
+    record.stop = Some(RecordingStop {
+        reason: RecordingStopReason::Stopped,
+        by: Some(scene.account_id),
+        at: time(),
+    });
+    model.apply(&updated(&record));
+    assert_eq!(
+        model.call_at(&place).unwrap().recording,
+        Some(record.clone())
+    );
+
+    // A recording of the call that ended earlier does not remove the one that runs.
+    let mut earlier = recording(&scene, scene.daily, call_id);
+    earlier.state = RecordingState::Ready;
+    model.apply(&updated(&earlier));
+    assert_eq!(
+        model.call_at(&place).unwrap().recording,
+        Some(record.clone())
+    );
+
+    for state in [
+        RecordingState::Processing,
+        RecordingState::Ready,
+        RecordingState::PartlyFailed,
+        RecordingState::Failed,
+    ] {
+        let mut with_recording = model.clone();
+        record.state = state;
+        with_recording.apply(&updated(&record));
+        let call = with_recording.call_at(&place).unwrap();
+        assert_eq!(call.recording, None, "{state:?}");
+        assert_eq!(call.participants.len(), 1);
+        let once = with_recording.clone();
+        with_recording.apply(&updated(&record));
+        assert_eq!(with_recording, once);
+    }
+}
+
+#[test]
+fn a_recording_changes_only_a_call_that_the_state_holds() {
+    let scene = scene();
+    let mut model = scene.model();
+    let (call_id, place) = (CallId::generate(), scene.place(scene.daily));
+
+    // No call is held at the place: the event creates none.
+    let before = model.clone();
+    model.apply(&updated(&recording(&scene, scene.daily, call_id)));
+    assert_eq!(model, before);
+
+    // A replay can deliver the recording of an earlier call of the channel.
+    model.apply(&started(call_id, place));
+    let before = model.clone();
+    model.apply(&updated(&recording(
+        &scene,
+        scene.daily,
+        CallId::generate(),
+    )));
+    assert_eq!(model, before);
+    assert_eq!(model.call_at(&place).unwrap().id, call_id);
+
+    // A workspace that the state does not hold.
+    let mut elsewhere = recording(&scene, scene.daily, call_id);
+    elsewhere.workspace_id = WorkspaceId::generate();
+    model.apply(&updated(&elsewhere));
+    assert_eq!(model, before);
+
+    // An account outside a channel that hides who is inside holds no details of its call.
+    let (hidden_call, hidden_place) = (CallId::generate(), scene.place(scene.hidden));
+    model.apply(&started(hidden_call, hidden_place));
+    let record = recording(&scene, scene.hidden, hidden_call);
+    model.apply(&updated(&record));
+    let hidden = model.channel(scene.hidden).unwrap();
+    assert!(hidden.in_use && hidden.call.is_none());
+
+    // The account inside is shown the recording, and loses it with the call when it leaves.
+    model.apply(&Event::OwnCallChanged {
+        call: Some(scene.own_call(hidden_call, scene.hidden)),
+        left: None,
+    });
+    model.apply(&joined(
+        hidden_call,
+        hidden_place,
+        &participant(scene.account_id),
+    ));
+    model.apply(&updated(&record));
+    assert_eq!(
+        model.call_at(&hidden_place).unwrap().recording,
+        Some(record)
+    );
+    model.apply(&Event::OwnCallChanged {
+        call: None,
+        left: Some(LeaveReason::Left),
+    });
+    assert!(model.channel(scene.hidden).unwrap().call.is_none());
+}
+
+#[test]
+fn the_views_of_a_call_carry_its_recording_and_a_read_keeps_the_events_of_it() {
+    let mut scene = scene();
+    let (call_id, place) = (CallId::generate(), scene.place(scene.daily));
+    let record = recording(&scene, scene.daily, call_id);
+    let call = |recording: Option<Recording>| Call {
+        id: call_id,
+        place,
+        started_at: Some(time()),
+        lock: None,
+        meeting: None,
+        participants: vec![participant(scene.account_id)],
+        recording,
+    };
+    let shown = |recording: Option<Recording>| ChannelCall {
+        workspace_id: scene.workspace_id,
+        channel_id: scene.daily,
+        in_use: true,
+        call: Some(call(recording)),
+    };
+
+    // The snapshot.
+    scene.snapshot.workspaces[0].calls = vec![shown(Some(record.clone()))];
+    let mut model = scene.model();
+    assert_eq!(
+        model.call_at(&place).unwrap().recording,
+        Some(record.clone())
+    );
+
+    // The view of a call names the recording that is starting or runs. The state keeps no
+    // other one, whatever a server sends.
+    let mut ended = record.clone();
+    ended.state = RecordingState::Processing;
+    model.set_channel_call(shown(Some(ended.clone())));
+    assert_eq!(model.call_at(&place).unwrap().recording, None);
+
+    // The call of the account.
+    model.apply(&Event::OwnCallChanged {
+        call: Some(scene.own_call(call_id, scene.daily)),
+        left: None,
+    });
+    model.set_own_call(Some(OwnCallState {
+        own: scene.own_call(call_id, scene.daily),
+        call: call(Some(record.clone())),
+        entry_requests: Vec::new(),
+    }));
+    assert_eq!(
+        model.call_at(&place).unwrap().recording,
+        Some(record.clone())
+    );
+
+    // While the call of the channel is read: the answer is older than the end of the
+    // recording, and the event that was kept is applied after it.
+    let during = [updated(&ended)];
+    assert!(Part::ChannelCall(scene.daily).concerns(&during[0], &model));
+    assert!(Part::OwnCall.concerns(&during[0], &model));
+    assert!(!Part::ChannelCall(scene.hidden).concerns(&during[0], &model));
+    assert!(!Part::Members(scene.workspace_id).concerns(&during[0], &model));
+    model.set_channel_call(shown(Some(record)));
+    model.replay(Part::ChannelCall(scene.daily), &during);
+    assert_eq!(model.call_at(&place).unwrap().recording, None);
 }

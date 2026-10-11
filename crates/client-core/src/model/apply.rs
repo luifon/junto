@@ -9,6 +9,7 @@ use std::sync::Arc;
 use junto_protocol::call::{BlockReason, CallParticipant, CallPlace, MicrophoneBlock};
 use junto_protocol::events::Event;
 use junto_protocol::ids::{CallId, ChannelId, WorkspaceId};
+use junto_protocol::recording::Recording;
 use junto_protocol::structure::Channel;
 
 use super::{CallModel, ChannelModel, Loadable, ServerModel, WorkspaceModel};
@@ -109,7 +110,17 @@ fn call_of(event: &Event) -> Option<(CallId, CallPlace)> {
         | Event::CallMeetingStarted { call_id, place, .. }
         | Event::CallMeetingEnded { call_id, place, .. }
         | Event::CallSpeaking { call_id, place, .. } => Some((*call_id, *place)),
+        Event::RecordingStarted { recording } | Event::RecordingUpdated { recording } => {
+            Some((recording.call_id, place_of(recording)))
+        }
         _ => None,
+    }
+}
+
+fn place_of(recording: &Recording) -> CallPlace {
+    CallPlace::Channel {
+        workspace_id: recording.workspace_id,
+        channel_id: recording.channel_id,
     }
 }
 
@@ -379,6 +390,9 @@ impl ServerModel {
                     call.speaking.clone_from(account_ids);
                 }
             }
+            Event::RecordingStarted { recording } | Event::RecordingUpdated { recording } => {
+                self.put_recording(recording);
+            }
             Event::CallEntryRequested { request } => {
                 let own = self.own_call.as_ref().map(|own| own.call_id);
                 if own == Some(request.call_id) {
@@ -462,6 +476,36 @@ impl ServerModel {
             if part.concerns(event, self) {
                 self.apply(event);
             }
+        }
+    }
+
+    /// A recording belongs to a call that the state holds: the people in a call start it,
+    /// so the events of the call came first. An event of a recording of another call, which
+    /// a replay can deliver for an earlier call of the channel (ADR 0604), changes nothing.
+    /// The state keeps a recording while it is starting or runs, as the view of a call does.
+    fn put_recording(&mut self, recording: &Recording) {
+        let place = place_of(recording);
+        let Some(held) = self
+            .call_at(&place)
+            .filter(|call| call.id == recording.call_id && self.shows_inside(&place))
+        else {
+            return;
+        };
+        let next = if recording.state.is_active() {
+            Some(recording.clone())
+        } else if held
+            .recording
+            .as_ref()
+            .is_some_and(|shown| shown.id == recording.id)
+        {
+            None
+        } else {
+            return;
+        };
+        if held.recording != next
+            && let Some(call) = self.call_mut(recording.call_id, &place, false)
+        {
+            call.recording = next;
         }
     }
 

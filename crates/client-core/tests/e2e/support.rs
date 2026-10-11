@@ -396,6 +396,8 @@ struct ProxyState {
     seen: Vec<Seen>,
     /// An upgrade request is not passed on: its connection is closed.
     streams_blocked: bool,
+    /// A request to one of these paths waits at the proxy until the test releases it.
+    held: Vec<String>,
 }
 
 /// An HTTP proxy in front of one server. It passes every request on unless a fault is
@@ -405,6 +407,8 @@ pub struct FaultProxy {
     state: Arc<Mutex<ProxyState>>,
     /// A new value ends every upgraded connection that the proxy carries.
     cut: watch::Sender<u64>,
+    /// A new value passes on every request that the proxy holds.
+    released: watch::Sender<u64>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -439,14 +443,17 @@ impl FaultProxy {
         let shared = state.clone();
         let cut = watch::Sender::new(0);
         let cuts = cut.clone();
+        let released = watch::Sender::new(0);
+        let releases = released.clone();
         let task = tokio::spawn(async move {
             loop {
                 let Ok((stream, _)) = listener.accept().await else {
                     return;
                 };
                 let (state, cut) = (shared.clone(), cuts.subscribe());
+                let released = releases.subscribe();
                 tokio::spawn(async move {
-                    let _ = serve(stream, upstream_port, state, cut).await;
+                    let _ = serve(stream, upstream_port, state, cut, released).await;
                 });
             }
         });
@@ -454,6 +461,7 @@ impl FaultProxy {
             port,
             state,
             cut,
+            released,
             task,
         }
     }
@@ -462,6 +470,18 @@ impl FaultProxy {
     /// close frame, as a network that fails does.
     pub fn cut_streams(&self) {
         self.cut.send_modify(|cuts| *cuts += 1);
+    }
+
+    /// From now on a request to `path` is recorded and then waits at the proxy until
+    /// [`FaultProxy::release`]. A test uses it to act while a request is on its way.
+    pub fn hold(&self, path: &str) {
+        self.state.lock().unwrap().held.push(path.to_owned());
+    }
+
+    /// Passes on every request that waits, and holds no further one.
+    pub fn release(&self) {
+        self.state.lock().unwrap().held.clear();
+        self.released.send_modify(|releases| *releases += 1);
     }
 
     /// While blocked, a new connection of the event stream is closed at once.
@@ -506,6 +526,7 @@ async fn serve(
     upstream_port: u16,
     state: Arc<Mutex<ProxyState>>,
     mut cut: watch::Receiver<u64>,
+    mut released: watch::Receiver<u64>,
 ) -> std::io::Result<()> {
     let mut request = Vec::new();
     let mut buffer = [0u8; 4096];
@@ -589,6 +610,12 @@ async fn serve(
     let answered = |status: u16, body: &[u8]| {
         state.lock().unwrap().seen[index].answer = Some((status, body.to_vec()));
     };
+    released.borrow_and_update();
+    while state.lock().unwrap().held.contains(&path) {
+        if released.changed().await.is_err() {
+            return Ok(());
+        }
+    }
     if fault == Some(Fault::Busy) {
         let body = br#"{"error":{"code":"busy","message":"the proxy of the test answered"}}"#;
         let head = format!(
