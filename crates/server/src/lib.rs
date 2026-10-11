@@ -9,6 +9,7 @@ pub mod clock;
 pub mod config;
 pub mod database;
 pub mod db;
+pub mod download;
 pub mod error;
 pub mod events;
 pub mod extract;
@@ -78,13 +79,18 @@ pub async fn prepare(
         client
     });
     let recorder = api.zip(config.recorder.clone()).map(|(api, settings)| {
-        let egress = recorder::livekit::Egress::new(api, &config.limits.recordings);
-        recordings::Backend {
-            recorder: Arc::new(egress),
-            disk: Arc::new(storage::Directory::new(settings.directory.clone())),
-            settings,
-        }
+        let limits = &config.limits.recordings;
+        let egress = recorder::livekit::Egress::new(api, limits);
+        let disk = storage::Directory::new(settings.directory.clone());
+        recordings::Backend::new(Arc::new(egress), Arc::new(disk), settings, limits)
     });
+    if let Some(backend) = &recorder {
+        backend
+            .tools
+            .available()
+            .await
+            .map_err(StartError::MediaTools)?;
+    }
     prepare_with(database, config, clock, media, recorder).await
 }
 
@@ -114,9 +120,10 @@ pub fn events_document() -> Result<String, serde_json::Error> {
 /// The tasks that run beside the requests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tasks {
-    /// The admission check of calls, the publication of speaking marks and the controller
-    /// of recordings, at their intervals (ADR 0509, ADR 0513, ADR 0604). Tests that fix the
-    /// order of things switch them off and run each check themselves.
+    /// The admission check of calls, the publication of speaking marks, the controller of
+    /// recordings, the processing of their files and the transcription, at their intervals
+    /// (ADR 0509, ADR 0513, ADR 0604, ADR 0606, ADR 0607). Tests that fix the order of
+    /// things switch them off and run each step themselves.
     pub calls: bool,
 }
 
@@ -137,13 +144,16 @@ pub async fn serve_with(
     tasks: Tasks,
 ) -> std::io::Result<()> {
     let watcher = tokio::spawn(events::watcher::run(state.clone()));
-    let calls = (tasks.calls && state.calls.media().is_some()).then(|| {
-        (
-            tokio::spawn(calls::admission::run(state.clone())),
-            tokio::spawn(calls::speaking::run(state.clone())),
-            tokio::spawn(recordings::control::run(state.clone())),
-        )
-    });
+    let mut running = Vec::new();
+    if tasks.calls && state.calls.media().is_some() {
+        running.push(tokio::spawn(calls::admission::run(state.clone())));
+        running.push(tokio::spawn(calls::speaking::run(state.clone())));
+        running.push(tokio::spawn(recordings::control::run(state.clone())));
+    }
+    if tasks.calls && state.recordings.backend().is_some() {
+        running.push(tokio::spawn(recordings::process::run(state.clone())));
+        running.push(tokio::spawn(recordings::transcribe::run(state.clone())));
+    }
     let stopping = state.clone();
     let stop = async move {
         shutdown.await;
@@ -156,10 +166,8 @@ pub async fn serve_with(
     let limit = state.config.limits.stream.stop_timeout.unsigned_abs();
     state.streams.stop(limit).await;
     watcher.abort();
-    if let Some((admission, speaking, recording)) = calls {
-        admission.abort();
-        speaking.abort();
-        recording.abort();
+    for task in running {
+        task.abort();
     }
     served
 }

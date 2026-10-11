@@ -2,7 +2,14 @@
 //! each job is a participant of the room, a job of a lost recorder is reported as running
 //! without end, a stop for such a job has no answer, and a recorder that starts again
 //! resumes nothing.
+//!
+//! With a directory, it also writes the files of its jobs as the recorder does (ADR 0602):
+//! the pieces of a composite into the directory of the request while the job runs, and the
+//! file of a track when its job ends. A job of a lost recorder leaves its pieces and no
+//! file of a track, unless the start script that saves the files is in use.
 
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use futures_util::FutureExt;
@@ -12,10 +19,41 @@ use time::OffsetDateTime;
 use crate::clock::Clock;
 use crate::media::ParticipantKind;
 use crate::media::fake::FakeMedia;
+use crate::recorder::samples::{self, Pieces};
 use crate::recorder::{
-    COMPOSITE_PLAYLIST, FileResult, Job, JobStatus, Recorder, RecorderError, RecorderResult,
-    StartComposite, StartTrack,
+    COMPOSITE_PIECE_PREFIX, COMPOSITE_PLAYLIST, FileResult, Job, JobStatus, Recorder,
+    RecorderError, RecorderResult, StartComposite, StartTrack,
 };
+
+/// Where the fake writes its files: the directory of the recordings as the recorder names
+/// it in a request, and as the test finds it.
+#[derive(Debug, Clone)]
+struct Output {
+    named: String,
+    directory: PathBuf,
+}
+
+impl Output {
+    /// The place of a path of a request.
+    fn place(&self, requested: &str) -> PathBuf {
+        let below = requested
+            .strip_prefix(&self.named)
+            .unwrap_or(requested)
+            .trim_start_matches('/');
+        self.directory.join(below)
+    }
+}
+
+fn written(result: std::io::Result<()>) {
+    if let Err(error) = result {
+        panic!("the fake recorder could not write a file: {error}");
+    }
+}
+
+fn write(path: &Path, bytes: &[u8]) {
+    written(path.parent().map_or(Ok(()), std::fs::create_dir_all));
+    written(std::fs::write(path, bytes));
+}
 
 /// What a job of the fake recorder was asked to record.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,6 +145,54 @@ struct State {
     report_delay: Option<std::time::Duration>,
     slow_reports: Vec<(String, std::time::Duration)>,
     long_identifiers: bool,
+    output: Option<Output>,
+    /// What the files of the jobs hold. Absent: the plain samples.
+    track: Option<Arc<Vec<u8>>>,
+    tracks: HashMap<String, Arc<Vec<u8>>>,
+    pieces: Option<Pieces>,
+    /// The start script that saves the files of a lost recorder is in use.
+    rescues: bool,
+    /// The jobs write no file.
+    loses_files: bool,
+}
+
+impl State {
+    /// Writes the pieces of a composite that starts, as far as the recorder has them.
+    fn write_pieces(&self, request: &StartComposite) {
+        let (Some(output), false) = (&self.output, self.loses_files) else {
+            return;
+        };
+        let directory = output.place(&request.directory);
+        let pieces = self.pieces.clone().unwrap_or_else(samples::composite);
+        for (number, piece) in pieces.iter().enumerate() {
+            let name = format!("{COMPOSITE_PIECE_PREFIX}_{number:05}.ts");
+            write(&directory.join(name), piece);
+        }
+        write(&directory.join(COMPOSITE_PLAYLIST), b"#EXTM3U\n");
+    }
+
+    /// Writes the file of a track whose job ended, or saves what a lost job had written.
+    fn write_track(&self, job: &FakeJob) {
+        let (Some(output), false) = (&self.output, self.loses_files) else {
+            return;
+        };
+        let Asked::Track(request) = &job.asked else {
+            return;
+        };
+        let bytes = self
+            .tracks
+            .get(&request.track_id)
+            .or(self.track.as_ref())
+            .cloned()
+            .unwrap_or_else(samples::track);
+        let path = output.place(&format!("{}.ogg", request.path));
+        if job.alive {
+            write(&path, &bytes);
+        } else if let (true, Some(name)) = (self.rescues, path.file_name()) {
+            let saved = output.directory.join("rescued").join(&job.id).join(name);
+            write(&saved, &bytes);
+        }
+    }
 }
 
 pub struct FakeRecorder {
@@ -134,6 +220,12 @@ impl FakeRecorder {
                 report_delay: None,
                 slow_reports: Vec::new(),
                 long_identifiers: false,
+                output: None,
+                track: None,
+                tracks: HashMap::new(),
+                pieces: None,
+                rescues: false,
+                loses_files: false,
             }),
         }
     }
@@ -147,6 +239,7 @@ impl FakeRecorder {
     fn settle(&self, state: &mut State) {
         let now = self.clock.now();
         let holds = state.holds_ends;
+        let mut ended = Vec::new();
         for job in &mut state.jobs {
             let Asked::Track(request) = &job.asked else {
                 continue;
@@ -169,7 +262,11 @@ impl FakeRecorder {
                 job.ended_at = Some(now);
                 job.held = holds;
                 self.media.leave(&request.room, &job.id);
+                ended.push(job.clone());
             }
+        }
+        for job in &ended {
+            state.write_track(job);
         }
     }
 
@@ -201,6 +298,9 @@ impl FakeRecorder {
         if !state.without_participant {
             self.media
                 .enter(job.room(), &job.id, ParticipantKind::Recorder, None);
+        }
+        if let Asked::Composite(request) = &job.asked {
+            state.write_pieces(request);
         }
         let id = job.id.clone();
         state.jobs.push(job);
@@ -253,11 +353,51 @@ impl FakeRecorder {
         let mut state = self.state();
         self.settle(&mut state);
         state.running = false;
+        let mut lost = Vec::new();
         for job in &mut state.jobs {
             if job.status == JobStatus::Running {
                 job.alive = false;
+                lost.push(job.clone());
             }
         }
+        for job in &lost {
+            state.write_track(job);
+        }
+    }
+
+    /// Makes the fake write the files of its jobs. `named` is the directory of the
+    /// recordings as the requests name it, and `directory` is where the files go.
+    pub fn write_files(&self, named: &str, directory: &Path) {
+        self.state().output = Some(Output {
+            named: named.to_owned(),
+            directory: directory.to_path_buf(),
+        });
+    }
+
+    /// The bytes of the file of every track whose job ends from now on.
+    pub fn set_track(&self, bytes: Arc<Vec<u8>>) {
+        self.state().track = Some(bytes);
+    }
+
+    /// The bytes of the file of one track.
+    pub fn set_track_of(&self, track_id: &str, bytes: Arc<Vec<u8>>) {
+        self.state().tracks.insert(track_id.to_owned(), bytes);
+    }
+
+    /// The pieces of every composite that starts from now on.
+    pub fn set_pieces(&self, pieces: Pieces) {
+        self.state().pieces = Some(pieces);
+    }
+
+    /// While this is on, the files of the tracks of a recorder that is killed are saved
+    /// below `rescued/<job>/`, as the start script of the deployment does (ADR 0602).
+    pub fn rescue_files(&self, rescues: bool) {
+        self.state().rescues = rescues;
+    }
+
+    /// While this is on, a job writes no file.
+    pub fn lose_files(&self, loses: bool) {
+        self.state().loses_files = loses;
     }
 
     /// The media server no longer lists the participants of the lost jobs.
@@ -378,6 +518,8 @@ impl Recorder for FakeRecorder {
                     job.ended_at = Some(now);
                     job.held = holds;
                     self.media.leave(job.room(), &job.id);
+                    let ended = job.clone();
+                    state.write_track(&ended);
                     Ok(())
                 }
             }

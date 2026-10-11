@@ -25,6 +25,17 @@ pub enum StartError {
     Migration(#[from] sqlx::migrate::MigrateError),
     #[error("the client of the media server could not be built: {0}")]
     MediaServer(String),
+    #[error(
+        "the programs that read the files of recordings do not run: {0}. Install ffmpeg and \
+         ffprobe, or set JUNTO_FFMPEG and JUNTO_FFPROBE"
+    )]
+    MediaTools(String),
+    #[error(
+        "a recording is starting or runs, and this version of the server changes the database. \
+         No migration runs while a recording runs. Start the earlier version of the server, \
+         end the recording, and start this version again"
+    )]
+    RecordingRuns,
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
     #[error(transparent)]
@@ -62,10 +73,47 @@ pub async fn start(
     server_name: &str,
     now: OffsetDateTime,
 ) -> Result<Started, StartError> {
+    if migration_waits(database).await? && recordings_that_run(database).await? > 0 {
+        return Err(StartError::RecordingRuns);
+    }
     database.migrate(&MIGRATIONS).await?;
     transact!(database, |connection| {
         start_in(connection, server_name, now).await
     })
+}
+
+/// True when the database has a schema of an earlier version of the server, so that this
+/// start would apply a migration. False for a database without any schema.
+async fn migration_waits(database: &Database) -> Result<bool, sqlx::Error> {
+    let recorded: bool =
+        sqlx::query_scalar("select to_regclass('public._sqlx_migrations') is not null")
+            .fetch_one(database.pool())
+            .await?;
+    if !recorded {
+        return Ok(false);
+    }
+    let applied: Vec<i64> =
+        sqlx::query_scalar("select version from _sqlx_migrations where success")
+            .fetch_all(database.pool())
+            .await?;
+    Ok(MIGRATIONS
+        .iter()
+        .filter(|migration| !migration.migration_type.is_down_migration())
+        .any(|migration| !applied.contains(&migration.version)))
+}
+
+/// The number of recordings that are starting or run. The server does not migrate while
+/// this is above zero (ADR 0005), and the host command `check-upgrade` prints it.
+pub async fn recordings_that_run(database: &Database) -> Result<i64, sqlx::Error> {
+    let known: bool = sqlx::query_scalar("select to_regclass('public.recordings') is not null")
+        .fetch_one(database.pool())
+        .await?;
+    if !known {
+        return Ok(0);
+    }
+    sqlx::query_scalar("select count(*) from recordings where state in ('starting', 'recording')")
+        .fetch_one(database.pool())
+        .await
 }
 
 async fn start_in(

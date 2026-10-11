@@ -203,6 +203,19 @@ pub enum AuditEvent {
         recording_id: RecordingId,
         reason: RecordingStopReason,
     },
+    /// A person removed a recording of the channel with its files and its transcript.
+    RecordingRemoved {
+        recording_id: RecordingId,
+    },
+    /// A person asked for the transcript of a recording of the channel again.
+    TranscriptRequested {
+        recording_id: RecordingId,
+    },
+    /// A person replaced the glossary of the workspace. The entry states the number of
+    /// terms, not the terms.
+    GlossaryReplaced {
+        terms: u32,
+    },
     /// An action that this build does not know. It is read and never written.
     #[serde(other, skip_serializing)]
     Unknown,
@@ -253,6 +266,9 @@ impl AuditEvent {
             Self::CallMemberMovedIn { .. } => "call_member_moved_in",
             Self::RecordingStarted { .. } => "recording_started",
             Self::RecordingStopped { .. } => "recording_stopped",
+            Self::RecordingRemoved { .. } => "recording_removed",
+            Self::TranscriptRequested { .. } => "transcript_requested",
+            Self::GlossaryReplaced { .. } => "glossary_replaced",
             Self::Unknown => "unknown",
         }
     }
@@ -332,6 +348,13 @@ mod tests {
                 recording_id: RecordingId::generate(),
                 reason: RecordingStopReason::StorageReserve,
             },
+            AuditEvent::RecordingRemoved {
+                recording_id: RecordingId::generate(),
+            },
+            AuditEvent::TranscriptRequested {
+                recording_id: RecordingId::generate(),
+            },
+            AuditEvent::GlossaryReplaced { terms: 12 },
         ];
         for event in events {
             let json = serde_json::to_value(&event).unwrap();

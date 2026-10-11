@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 use crate::ids::{AccountId, CallId, ChannelId, RecordingId, RecordingSegmentId, WorkspaceId};
+use crate::transcript::TranscriptState;
 
 /// The state of a recording. The states follow each other in this order; the last three are
 /// final.
@@ -19,10 +20,12 @@ pub enum RecordingState {
     /// At least one job of the recorder runs. A stop that was asked for is in `stop`; the
     /// state stays until every job has ended.
     Recording,
-    /// Every job has ended. The server checks the files and builds the results.
+    /// Every job has ended. The server checks the files and joins the video.
     Processing,
+    /// Every file exists and passed its check.
     Ready,
-    /// A part of the recording was saved and a part was not.
+    /// A part of the recording was saved and a part was not: a segment failed, a file is
+    /// missing, or a file failed its check.
     PartlyFailed,
     /// Nothing was saved.
     Failed,
@@ -66,6 +69,8 @@ pub enum RecordingFailure {
     RecorderUnavailable,
     /// Every job of the recording ended without a file.
     NothingRecorded,
+    /// Jobs of the recording ran, and the server found no file of them.
+    FilesMissing,
     #[serde(other, skip_serializing)]
     Unknown,
 }
@@ -110,6 +115,15 @@ pub struct Recording {
     pub segments: u32,
     /// The number of segments that failed. The segments state what was saved of each.
     pub failed_segments: u32,
+    /// The bytes of the files of the recording. Absent until the files are processed.
+    pub bytes: Option<u64>,
+    /// The first sample of the earliest file of the recording. The times of the transcript
+    /// count from it. Absent until the files are processed, and without a file.
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub timeline_started_at: Option<OffsetDateTime>,
+    pub transcript: TranscriptState,
+    /// The number of lines of the transcript.
+    pub transcript_lines: u32,
 }
 
 /// What a segment records.
@@ -155,6 +169,68 @@ pub enum SegmentFailure {
     Unknown,
 }
 
+/// Whether the file of a segment passed the check of the server (ADR 0606).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum FileCheck {
+    Passed,
+    Failed,
+}
+
+/// What the check found wrong with a file. Read with an unknown value as
+/// [`RecordingStopReason`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum FileProblem {
+    /// The file cannot be read as media.
+    Unreadable,
+    /// The sound or the picture is absent.
+    StreamMissing,
+    /// The sound or the picture begins later or ends earlier than the file.
+    StreamShort,
+    /// The timestamps of the sound or of the picture have a hole.
+    TimestampHole,
+    /// The video is silent in a range in which a microphone file has sound.
+    SoundMissing,
+    /// Key frames of the picture are dark or of one colour.
+    PictureBlank,
+    /// The length of the media differs from the length that the recorder reported.
+    LengthMismatch,
+    /// The server could not run the check.
+    NotChecked,
+    #[serde(other, skip_serializing)]
+    Unknown,
+}
+
+/// The file of a segment as the server found and checked it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct SegmentFile {
+    /// `video/mp4` for the composite and `audio/ogg` for an audio track.
+    pub media_type: String,
+    pub bytes: u64,
+    /// The length of the media in milliseconds.
+    pub duration_ms: u64,
+    /// The first sample of the file on the timeline of the recording. Absent when the
+    /// recorder reported no time for the file.
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub starts_at: Option<OffsetDateTime>,
+    /// The size of the picture of the composite.
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub check: FileCheck,
+    /// Present with the check `failed`.
+    pub problems: Vec<FileProblem>,
+    /// The sound of the whole file is digital silence. A microphone that was muted for the
+    /// whole recording gives such a file.
+    pub silent: bool,
+    /// The recorder did not end the file in order: the server took it from what a lost
+    /// recorder left.
+    pub recovered: bool,
+}
+
 /// One file of a recording: the composite, or one audio track of one person.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -178,6 +254,10 @@ pub struct RecordingSegment {
     pub ended_at: Option<OffsetDateTime>,
     /// The length of the file in milliseconds, as the recorder reports it.
     pub duration_ms: Option<u64>,
+    /// The file, after the recording was processed. Absent before, and when no file was
+    /// found. `GET /api/v1/recordings/{recording_id}/segments/{segment_id}/file` returns
+    /// its bytes.
+    pub file: Option<SegmentFile>,
 }
 
 /// A recording with its segments, in the order in which they were asked for.
@@ -260,6 +340,19 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<SegmentFailure>("\"file_damaged\"").unwrap(),
             SegmentFailure::Unknown
+        );
+        assert_eq!(
+            serde_json::from_str::<FileProblem>("\"wrong_sound\"").unwrap(),
+            FileProblem::Unknown
+        );
+        assert!(serde_json::to_string(&FileProblem::Unknown).is_err());
+        assert_eq!(
+            serde_json::to_value(RecordingFailure::FilesMissing).unwrap(),
+            "files_missing"
+        );
+        assert_eq!(
+            serde_json::to_value(FileProblem::PictureBlank).unwrap(),
+            "picture_blank"
         );
         assert!(serde_json::to_string(&RecordingStopReason::Unknown).is_err());
         assert!(serde_json::to_string(&RecordingFailure::Unknown).is_err());

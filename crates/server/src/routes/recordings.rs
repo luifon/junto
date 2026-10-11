@@ -3,12 +3,14 @@
 
 use axum::Json;
 use axum::extract::State;
-use axum::http::StatusCode;
-use junto_authz::{Request, WorkspacePermission};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::Response;
+use junto_authz::{ChannelScope, Request, WorkspacePermission};
 use junto_protocol::error::ErrorCode;
-use junto_protocol::ids::{ChannelId, RecordingId, WorkspaceId};
+use junto_protocol::ids::{ChannelId, RecordingId, RecordingSegmentId, WorkspaceId};
 use junto_protocol::recording::{
-    Recording, RecordingDetail, RecordingPage, RecordingQuery, RecordingStopReason, StartRecording,
+    Recording, RecordingDetail, RecordingPage, RecordingQuery, RecordingState, RecordingStopReason,
+    StartRecording,
 };
 use junto_protocol::structure::ChannelKind;
 use sqlx::PgConnection;
@@ -16,10 +18,12 @@ use sqlx::PgConnection;
 use crate::access::Access;
 use crate::calls::entry::not_in_call;
 use crate::calls::store as calls;
+use crate::download::{self, Described};
 use crate::error::{ApiError, ApiResult};
 use crate::extract::{ApiJson, ApiPath, ApiQuery, Bearer};
 use crate::proof;
-use crate::recordings::store::{self, NewRecording, Of};
+use crate::recordings::files::{self, Place};
+use crate::recordings::store::{self, NewRecording, Of, RecordingRow};
 use crate::routes::calls::{Voice, inside, voice};
 use crate::state::AppState;
 use crate::storage;
@@ -249,6 +253,40 @@ pub async fn list_recordings(
     .map(Json)
 }
 
+/// A recording that the caller may read, with the caller's standing in its voice channel
+/// (ADR 0604): the caller sees the channel, and while the call of the recording runs in a
+/// channel that hides who is inside, the caller is inside. With `for_change`, the row of
+/// the recording is locked. Every route about a recording, its files and its transcript
+/// uses this rule.
+pub(crate) async fn readable(
+    connection: &mut PgConnection,
+    access: &Access,
+    recording_id: RecordingId,
+    for_change: bool,
+) -> ApiResult<(RecordingRow, ChannelScope)> {
+    let row = store::recording(&mut *connection, Of::Id(recording_id), false)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    let (record, scope) = access.channel(&mut *connection, row.channel_id).await?;
+    access.require(Request::Channel {
+        scope: &scope,
+        permission: WorkspacePermission::ViewChannel,
+    })?;
+    if record.channel.hides_occupants && store::call_runs(&mut *connection, row.call_id).await? {
+        let member = calls::member_of(&mut *connection, access.account_id, false).await?;
+        if member.is_none_or(|member| member.call_id != row.call_id) {
+            return Err(ApiError::not_found());
+        }
+    }
+    if !for_change {
+        return Ok((row, scope));
+    }
+    let locked = store::recording(connection, Of::Id(recording_id), true)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    Ok((locked, scope))
+}
+
 /// One recording with its segments. The caller may see its voice channel. While the call of
 /// the recording runs in a channel that hides who is inside, only the people inside read it.
 #[utoipa::path(
@@ -267,20 +305,7 @@ pub async fn get_recording(
     let now = app.now();
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        let row = store::recording(connection, Of::Id(recording_id), false)
-            .await?
-            .ok_or_else(ApiError::not_found)?;
-        let (record, scope) = access.channel(connection, row.channel_id).await?;
-        access.require(Request::Channel {
-            scope: &scope,
-            permission: WorkspacePermission::ViewChannel,
-        })?;
-        if record.channel.hides_occupants && store::call_runs(connection, row.call_id).await? {
-            let member = calls::member_of(connection, access.account_id, false).await?;
-            if member.is_none_or(|member| member.call_id != row.call_id) {
-                return Err(ApiError::not_found());
-            }
-        }
+        let (row, _) = readable(connection, &access, recording_id, false).await?;
         let segments = store::segments(connection, recording_id).await?;
         Ok(RecordingDetail {
             recording: store::summary(connection, &row).await?,
@@ -288,4 +313,131 @@ pub async fn get_recording(
         })
     })
     .map(Json)
+}
+
+/// Removes a recording with its files and its transcript. The caller holds
+/// `manage_recordings` in its voice channel. A recording that is starting, runs or is
+/// processed is not removed: its stop is asked for first.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/recordings/{recording_id}",
+    tag = "recordings",
+    params(("recording_id" = RecordingId, Path)),
+    security(("session" = [])),
+    responses((status = 204), ApiError)
+)]
+pub async fn remove_recording(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath(recording_id): ApiPath<RecordingId>,
+) -> ApiResult<StatusCode> {
+    let now = app.now();
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        let (recording, scope) = readable(connection, &access, recording_id, true).await?;
+        access.require(Request::Channel {
+            scope: &scope,
+            permission: WorkspacePermission::ManageRecordings,
+        })?;
+        if recording.state.is_active() || recording.state == RecordingState::Processing {
+            return Err(ApiError::conflict(
+                "the recording runs or its files are processed; it can be removed afterwards",
+            ));
+        }
+        store::remove(connection, now, &recording, access.account_id).await
+    })?;
+    app.recordings.process_now();
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// The bytes of a file as the whole body of a response.
+pub struct FileBytes;
+
+impl utoipa::PartialSchema for FileBytes {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        use utoipa::openapi::schema::{KnownFormat, ObjectBuilder, SchemaFormat, Type};
+        ObjectBuilder::new()
+            .schema_type(Type::String)
+            .format(Some(SchemaFormat::KnownFormat(KnownFormat::Binary)))
+            .into()
+    }
+}
+
+impl utoipa::ToSchema for FileBytes {}
+
+/// The file of one segment of a recording: the video of a composite as MP4, or an audio
+/// track as Ogg with Opus. The caller may read the recording. A request with the header
+/// `Range: bytes=<first>-<last>` gets that part of the file with the status 206; a range
+/// outside the file gets `range_not_satisfiable`.
+#[utoipa::path(
+    get,
+    path = "/api/v1/recordings/{recording_id}/segments/{segment_id}/file",
+    tag = "recordings",
+    params(
+        ("recording_id" = RecordingId, Path),
+        ("segment_id" = RecordingSegmentId, Path),
+        ("Range" = Option<String>, Header, description = "One range of bytes")
+    ),
+    security(("session" = [])),
+    responses(
+        (status = 200, description = "The whole file.", content(
+            (inline(FileBytes) = "video/mp4"),
+            (inline(FileBytes) = "audio/ogg")
+        )),
+        (status = 206, description = "The range of the file that `Content-Range` states.", content(
+            (inline(FileBytes) = "video/mp4"),
+            (inline(FileBytes) = "audio/ogg")
+        )),
+        ApiError
+    )
+)]
+pub async fn get_segment_file(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath((recording_id, segment_id)): ApiPath<(RecordingId, RecordingSegmentId)>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    let now = app.now();
+    let is_track = read!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        readable(connection, &access, recording_id, false).await?;
+        let segments = store::segments(connection, recording_id).await?;
+        segments
+            .iter()
+            .find(|segment| segment.id == segment_id && segment.file.is_some())
+            .map(store::SegmentRow::is_track)
+            .ok_or_else(ApiError::not_found)
+    })?;
+    let backend = app.recordings.backend().ok_or_else(ApiError::not_found)?;
+    let place = app.recordings.download().ok_or_else(|| {
+        ApiError::new(
+            ErrorCode::Busy,
+            "the server sends as many files as it sends at one time; send the request again",
+        )
+        .retry_after(time::Duration::seconds(1))
+    })?;
+    let (file_place, media_type, extension) = if is_track {
+        (Place::track(recording_id, segment_id), "audio/ogg", "ogg")
+    } else {
+        (Place::video(recording_id, segment_id), "video/mp4", "mp4")
+    };
+    let root = backend.settings.directory.clone();
+    let opened = tokio::task::spawn_blocking(move || files::open(&root, &file_place))
+        .await
+        .map_err(|error| ApiError::internal(&error))?;
+    // A file that is gone, a link in its place and a file that cannot be opened give the
+    // same answer: no file of the recording is at that place.
+    let file = opened.map_err(|error| {
+        if !files::is_absent(&error) {
+            tracing::warn!(%error, segment = %segment_id, "a file of a recording cannot be opened");
+        }
+        ApiError::not_found()
+    })?;
+    let file_name = format!("{segment_id}.{extension}");
+    let described = Described {
+        media_type,
+        file_name: &file_name,
+    };
+    let stall = app.config.limits.recordings.download_stall.unsigned_abs();
+    download::send(file, &headers, described, place, stall).await
 }

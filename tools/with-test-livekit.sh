@@ -25,8 +25,8 @@ tcp_port="${JUNTO_TEST_LIVEKIT_TCP_PORT:-17881}"
 udp_port="${JUNTO_TEST_LIVEKIT_UDP_PORT:-17882}"
 webhook_address="${JUNTO_TEST_WEBHOOK_ADDRESS:-127.0.0.1:17890}"
 webhook_port="${webhook_address##*:}"
-key=devkey
-secret=secret
+key="${JUNTO_TEST_LIVEKIT_API_KEY:-devkey}"
+secret="${JUNTO_TEST_LIVEKIT_API_SECRET:-secret}"
 
 remove() {
     docker rm -f -v "$name" >/dev/null 2>&1 || true
@@ -37,6 +37,8 @@ trap remove EXIT
 trap 'exit 130' INT TERM
 
 config="port: 7880
+keys:
+  ${key}: ${secret}
 rtc:
   tcp_port: ${tcp_port}
   udp_port: ${udp_port}

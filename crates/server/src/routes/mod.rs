@@ -25,6 +25,7 @@ pub mod audit_log;
 pub mod auth;
 pub mod calls;
 pub mod channels;
+pub mod glossary;
 pub mod health;
 pub mod internal;
 pub mod invites;
@@ -34,6 +35,7 @@ pub mod server_info;
 pub mod server_roles;
 pub mod snapshot;
 pub mod stream;
+pub mod transcripts;
 pub mod workspace_roles;
 pub mod workspaces;
 
@@ -60,7 +62,8 @@ pub const SESSION_SECURITY: &str = "session";
         (name = "workspaces", description = "Workspaces, their members and roles"),
         (name = "channels", description = "Categories, channels and channel overrides"),
         (name = "calls", description = "Calls in voice channels and direct messages"),
-        (name = "recordings", description = "Recordings of calls in voice channels"),
+        (name = "recordings", description = "Recordings of calls in voice channels, their \
+                                             files, their transcripts and the glossary"),
         (name = "audit", description = "The audit log"),
         (name = "events", description = "The event stream and the snapshot it continues")
     )
@@ -187,7 +190,20 @@ fn documented_routes() -> OpenApiRouter<AppState> {
             recordings::stop_recording
         ))
         .routes(routes!(recordings::list_recordings))
-        .routes(routes!(recordings::get_recording))
+        .routes(routes!(
+            recordings::get_recording,
+            recordings::remove_recording
+        ))
+        .routes(routes!(recordings::get_segment_file))
+        .routes(routes!(
+            transcripts::get_transcript,
+            transcripts::request_transcript
+        ))
+        .routes(routes!(transcripts::list_transcript_lines))
+        .routes(routes!(transcripts::correct_transcript_line))
+        .routes(routes!(transcripts::rename_transcript_speaker))
+        .routes(routes!(transcripts::get_transcript_text))
+        .routes(routes!(glossary::get_glossary, glossary::set_glossary))
         .routes(routes!(audit_log::get_server_audit_log))
         .routes(routes!(audit_log::get_workspace_audit_log))
         .routes(routes!(snapshot::get_snapshot))

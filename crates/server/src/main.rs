@@ -12,19 +12,23 @@ use tokio::signal;
 
 const DATABASE_CONNECTIONS: u32 = 16;
 const HOST_COMMAND_CONNECTIONS: u32 = 1;
+/// The exit code of `check-upgrade` while a recording runs.
+const RECORDING_RUNS: u8 = 3;
 const USAGE: &str = "usage:
   junto-server                             serve the API
   junto-server assign-owner <account-id>   make an active account the server owner
   junto-server issue-owner-code            print a new one-time owner code
   junto-server new-event-epoch             make every client load a snapshot, after a restore
+  junto-server check-upgrade               tell whether a recording runs; an upgrade waits for it
 
-Every form reads JUNTO_DATABASE_URL. The three commands work on the database directly.";
+Every form reads JUNTO_DATABASE_URL. The four commands work on the database directly.";
 
 enum Command {
     Serve,
     AssignOwner(AccountId),
     IssueOwnerCode,
     NewEventEpoch,
+    CheckUpgrade,
 }
 
 fn command(arguments: &[String]) -> Result<Command, String> {
@@ -33,6 +37,7 @@ fn command(arguments: &[String]) -> Result<Command, String> {
         [name] if name == "serve" => Ok(Command::Serve),
         [name] if name == "issue-owner-code" => Ok(Command::IssueOwnerCode),
         [name] if name == "new-event-epoch" => Ok(Command::NewEventEpoch),
+        [name] if name == "check-upgrade" => Ok(Command::CheckUpgrade),
         [name, account_id] if name == "assign-owner" => account_id
             .parse()
             .map(Command::AssignOwner)
@@ -68,6 +73,11 @@ async fn main() -> ExitCode {
         Command::AssignOwner(account_id) => assign_owner(config, account_id).await,
         Command::IssueOwnerCode => issue_owner_code(config).await,
         Command::NewEventEpoch => new_event_epoch(config).await,
+        Command::CheckUpgrade => match check_upgrade(config).await {
+            Ok(true) => return ExitCode::from(RECORDING_RUNS),
+            Ok(false) => Ok(()),
+            Err(error) => Err(error),
+        },
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -136,6 +146,23 @@ async fn new_event_epoch(config: Config) -> Result<(), Failure> {
          subscribes the next time."
     );
     Ok(())
+}
+
+/// Prints whether a recording is starting or runs. The server does not migrate its database
+/// during a recording, and the recorder is not replaced during one (ADR 0005). Returns true
+/// while one runs.
+async fn check_upgrade(config: Config) -> Result<bool, Failure> {
+    let database = connect(&config, HOST_COMMAND_CONNECTIONS).await?;
+    let running = junto_server::bootstrap::recordings_that_run(&database).await?;
+    if running == 0 {
+        println!("No recording runs. An upgrade can start.");
+    } else {
+        println!(
+            "{running} recording(s) are starting or run. End them before an upgrade of the \
+             server or of the recorder."
+        );
+    }
+    Ok(running > 0)
 }
 
 async fn issue_owner_code(config: Config) -> Result<(), Failure> {

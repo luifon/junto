@@ -57,7 +57,7 @@ Versioning:
 
 ## Consequences
 
-- The server can map a recording to the partly-failed state from the segment results without reading logs, and it can tell a transcript of a whole file from a transcript of a part of a file.
+- The server can tell a transcript of a whole file from a transcript of a part of a file from the segment results, without reading logs. A transcript with a damaged or failed segment is `partial` (ADR 0607).
 - A recording file that simply ends early, without a packet that fails, is decoded to its end and reported as `ok`. The worker cannot know that more audio was meant to follow; the server knows the expected length of a segment and can compare it with `audio_ms`.
 - A link anywhere in an audio path is refused, also a link that points inside the audio root. The directory of the job file, a named audio root and the output directory may not be links themselves; the directories above them can be. The server must store audio files as regular files under the audio root.
 - A recorder file with several audio streams must be split before it becomes a segment.
@@ -66,4 +66,4 @@ Versioning:
 - A worker and a server of different releases do not work together when one of them uses a field that the other does not know. They are deployed together (ADR 0003).
 - The worker writes no partial transcript. A reader that finds the file finds a complete and valid one.
 - The transcript holds the original machine text only. Corrections and renames (ADR 0603) are stored by the server and are not part of this format.
-- How the server starts the worker and passes the files is not fixed by this record.
+- How the server starts the worker and passes the files is in ADR 0607.

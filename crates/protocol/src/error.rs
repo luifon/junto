@@ -61,6 +61,8 @@ pub enum ErrorCode {
     StorageLow,
     /// As many recordings run as the server allows at one time (ADR 0006).
     RecordingsFull,
+    /// The byte range of the request lies outside the file.
+    RangeNotSatisfiable,
     MethodNotAllowed,
     Timeout,
     Busy,
@@ -115,6 +117,7 @@ impl ErrorCode {
         Self::RecorderUnavailable,
         Self::StorageLow,
         Self::RecordingsFull,
+        Self::RangeNotSatisfiable,
         Self::MethodNotAllowed,
         Self::Timeout,
         Self::Busy,
@@ -161,6 +164,7 @@ impl ErrorCode {
             Self::MethodNotAllowed => 405,
             Self::ImageTooLarge => 413,
             Self::ImageUnsupported => 415,
+            Self::RangeNotSatisfiable => 416,
             Self::Timeout
             | Self::Busy
             | Self::Unavailable

@@ -91,7 +91,8 @@ pub const fn category(code: ErrorCode, status: u16) -> ErrorCategory {
         ErrorCode::InvalidRequest
         | ErrorCode::MethodNotAllowed
         | ErrorCode::ImageTooLarge
-        | ErrorCode::ImageUnsupported => ErrorCategory::ClientFault,
+        | ErrorCode::ImageUnsupported
+        | ErrorCode::RangeNotSatisfiable => ErrorCategory::ClientFault,
         ErrorCode::Unavailable
         | ErrorCode::MediaUnavailable
         | ErrorCode::RecorderUnavailable
@@ -338,6 +339,7 @@ mod tests {
             (ErrorCode::MethodNotAllowed, C::ClientFault),
             (ErrorCode::ImageTooLarge, C::ClientFault),
             (ErrorCode::ImageUnsupported, C::ClientFault),
+            (ErrorCode::RangeNotSatisfiable, C::ClientFault),
             (ErrorCode::Unavailable, C::ServerFault),
             (ErrorCode::MediaUnavailable, C::ServerFault),
             (ErrorCode::RecorderUnavailable, C::ServerFault),

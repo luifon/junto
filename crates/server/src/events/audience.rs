@@ -9,7 +9,6 @@ use junto_protocol::account::AccountStatus;
 use junto_protocol::call::CallPlace;
 use junto_protocol::events::{Event, Level};
 use junto_protocol::ids::{AccountId, ChannelId, ServerRoleId, WorkspaceId, WorkspaceRoleId};
-use junto_protocol::recording::Recording;
 use serde::{Deserialize, Serialize};
 
 use crate::access::{role_key, stored_override};
@@ -105,7 +104,11 @@ impl Class {
             | Event::CallEntryRequested { .. }
             | Event::CallEntryResolved { .. }
             | Event::RecordingStarted { .. }
-            | Event::RecordingUpdated { .. } => Self::General,
+            | Event::RecordingUpdated { .. }
+            | Event::RecordingRemoved { .. }
+            | Event::TranscriptLineCorrected { .. }
+            | Event::TranscriptSpeakerRenamed { .. }
+            | Event::GlossaryReplaced { .. } => Self::General,
         }
     }
 }
@@ -255,14 +258,41 @@ fn of_call(place: &CallPlace, reach: Option<CallReach>) -> Audience {
     }
 }
 
-/// The audience of an event about a recording. A recording tells who is in its call, so
-/// while the call runs it reaches the accounts that may see who is inside. When the call has
-/// ended, it reaches the accounts that may see the voice channel. This is the rule of the
-/// routes that read recordings (ADR 0604).
-pub fn of_recording(recording: &Recording, call_runs: bool) -> Audience {
+/// The workspace and the voice channel of the recording that an event is about. `None` for
+/// an event that is not about a recording.
+pub fn recording_place(event: &Event) -> Option<(WorkspaceId, ChannelId)> {
+    match event {
+        Event::RecordingStarted { recording } | Event::RecordingUpdated { recording } => {
+            Some((recording.workspace_id, recording.channel_id))
+        }
+        Event::RecordingRemoved {
+            workspace_id,
+            channel_id,
+            ..
+        }
+        | Event::TranscriptLineCorrected {
+            workspace_id,
+            channel_id,
+            ..
+        }
+        | Event::TranscriptSpeakerRenamed {
+            workspace_id,
+            channel_id,
+            ..
+        } => Some((*workspace_id, *channel_id)),
+        _ => None,
+    }
+}
+
+/// The audience of an event about a recording of a voice channel. A recording and its
+/// transcript tell who is in its call, so while the call runs the event reaches the
+/// accounts that may see who is inside. When the call has ended, it reaches the accounts
+/// that may see the voice channel. This is the rule of the routes that read recordings
+/// (ADR 0604).
+pub fn of_recording(workspace_id: WorkspaceId, channel_id: ChannelId, call_runs: bool) -> Audience {
     let place = CallPlace::Channel {
-        workspace_id: recording.workspace_id,
-        channel_id: recording.channel_id,
+        workspace_id,
+        channel_id,
     };
     of_call(&place, call_runs.then_some(CallReach::Occupancy))
 }
@@ -439,7 +469,11 @@ impl Audience {
             | Event::DirectMuteSet { .. }
             | Event::DirectMuteRemoved { .. }
             | Event::RecordingStarted { .. }
-            | Event::RecordingUpdated { .. } => None,
+            | Event::RecordingUpdated { .. }
+            | Event::RecordingRemoved { .. }
+            | Event::TranscriptLineCorrected { .. }
+            | Event::TranscriptSpeakerRenamed { .. } => None,
+            Event::GlossaryReplaced { workspace_id } => workspace(*workspace_id),
             Event::CallStarted { place, .. } | Event::CallEnded { place, .. } => {
                 Some(of_call(place, None))
             }
@@ -545,11 +579,18 @@ impl Audience {
                     ..
                 },
             ) => *self == of_call(place, Some(CallReach::Inside)),
-            (Event::RecordingStarted { recording } | Event::RecordingUpdated { recording }, _) => {
+            (
+                Event::RecordingStarted { .. }
+                | Event::RecordingUpdated { .. }
+                | Event::RecordingRemoved { .. }
+                | Event::TranscriptLineCorrected { .. }
+                | Event::TranscriptSpeakerRenamed { .. },
+                _,
+            ) => recording_place(event).is_some_and(|(workspace_id, channel_id)| {
                 [true, false]
                     .into_iter()
-                    .any(|call_runs| *self == of_recording(recording, call_runs))
-            }
+                    .any(|call_runs| *self == of_recording(workspace_id, channel_id, call_runs))
+            }),
             (Event::PermissionsChanged { workspace_id: None }, Self::ServerRoleHolders { .. }) => {
                 true
             }

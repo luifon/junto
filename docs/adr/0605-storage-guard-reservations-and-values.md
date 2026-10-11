@@ -17,7 +17,7 @@ Reservations:
 - A start is refused with `storage_low` (503) unless the free space is at least the reserve, plus every reservation that exists, plus the new one.
 - The check and the new row are in the transaction of the start (ADR 0009), so two starts at the same time cannot both pass on the same space.
 - A reservation counts in full for as long as its row exists. The bytes that its recording has written are not subtracted.
-- The reservation of a recording ends when the recording fails without a file. For every other recording it stays until the processing of its files has ended (ADR 0604).
+- The reservation of a recording ends when the recording fails without a file. For every other recording it stays until the processing of its files has ended (ADR 0606).
 
 Reserve:
 

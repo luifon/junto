@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
@@ -176,6 +177,9 @@ pub struct TestServer {
     /// The recorder and the disk of a server that was started for calls.
     pub recorder: Option<Arc<FakeRecorder>>,
     pub disk: Option<Arc<FakeDisk>>,
+    /// The directory of the recordings of a server that was started for calls. It is
+    /// deleted when the last server process on it is dropped.
+    scratch: Option<Arc<Scratch>>,
     http: reqwest::Client,
     database: PgConnectOptions,
     config: Config,
@@ -192,17 +196,43 @@ struct Fakes {
     media: Arc<FakeMedia>,
     recorder: Arc<FakeRecorder>,
     disk: Arc<FakeDisk>,
+    scratch: Option<Arc<Scratch>>,
+}
+
+/// A directory of one test that is deleted with its content when it is dropped.
+pub struct Scratch(pub PathBuf);
+
+impl Scratch {
+    pub fn new() -> Self {
+        let scratch = Self(scratch_path());
+        std::fs::create_dir_all(&scratch.0).unwrap();
+        scratch
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn scratch_path() -> PathBuf {
+    std::env::temp_dir().join(format!("junto-test-{}", uuid::Uuid::new_v4().simple()))
 }
 
 /// The free space of the fake disk of a test server at its start.
 pub const FREE_DISK: u64 = 1 << 40;
 
-/// Where the recorder of a test server writes.
+/// Where the recorder of a test server writes: a new directory of the test, which the
+/// recorder names `/out`.
 pub fn recorder_settings() -> RecorderSettings {
     RecorderSettings {
-        directory: "/srv/junto/recordings".into(),
+        directory: scratch_path(),
         recorder_directory: "/out".to_owned(),
         layout_url: "http://server.example.test/layout/".to_owned(),
+        ffmpeg: "ffmpeg".into(),
+        ffprobe: "ffprobe".into(),
+        transcriber: None,
     }
 }
 
@@ -395,6 +425,7 @@ impl TestServer {
                 media: media.clone(),
                 recorder: recorder.clone(),
                 disk: disk.clone(),
+                scratch: self.scratch.clone(),
             })),
             _ => Media::Configured,
         }
@@ -436,20 +467,26 @@ impl TestServer {
             Media::Fake(Some(fakes)) => Some(fakes),
             Media::Fake(None) => {
                 let media = Arc::new(FakeMedia::new(clock.clone()));
+                let recorder = Arc::new(FakeRecorder::new(clock.clone(), media.clone()));
+                let scratch = config.recorder.as_ref().map(|settings| {
+                    std::fs::create_dir_all(&settings.directory).unwrap();
+                    recorder.write_files(&settings.recorder_directory, &settings.directory);
+                    Arc::new(Scratch(settings.directory.clone()))
+                });
                 Some(Fakes {
-                    recorder: Arc::new(FakeRecorder::new(clock.clone(), media.clone())),
+                    recorder,
                     disk: Arc::new(FakeDisk::new(FREE_DISK)),
                     media,
+                    scratch,
                 })
             }
         };
         let prepared = match &fakes {
             Some(fakes) => {
                 let media: Arc<dyn MediaServer> = fakes.media.clone();
-                let backend = config.recorder.clone().map(|settings| Backend {
-                    recorder: fakes.recorder.clone(),
-                    disk: fakes.disk.clone(),
-                    settings,
+                let backend = config.recorder.clone().map(|settings| {
+                    let limits = &config.limits.recordings;
+                    Backend::new(fakes.recorder.clone(), fakes.disk.clone(), settings, limits)
                 });
                 let (config, clock) = (config.clone(), clock.clone());
                 junto_server::prepare_with(connected, config, clock, Some(media), backend).await
@@ -457,9 +494,14 @@ impl TestServer {
             None => junto_server::prepare(connected, config.clone(), clock.clone()).await,
         }
         .unwrap();
-        let (media, recorder, disk) = match fakes {
-            Some(fakes) => (Some(fakes.media), Some(fakes.recorder), Some(fakes.disk)),
-            None => (None, None, None),
+        let (media, recorder, disk, scratch) = match fakes {
+            Some(fakes) => (
+                Some(fakes.media),
+                Some(fakes.recorder),
+                Some(fakes.disk),
+                fakes.scratch,
+            ),
+            None => (None, None, None, None),
         };
         let state = prepared.state.clone();
         let owner_code = prepared
@@ -511,6 +553,7 @@ impl TestServer {
             media,
             recorder,
             disk,
+            scratch,
             http,
             database,
             config,
@@ -638,6 +681,7 @@ pub async fn host_command_on(database_url: String, arguments: &[&str]) -> HostCo
         }
         let output = child.wait_with_output().unwrap();
         HostCommand {
+            code: output.status.code(),
             success: output.status.success(),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
@@ -852,6 +896,7 @@ impl TestServer {
 }
 
 pub struct HostCommand {
+    pub code: Option<i32>,
     pub success: bool,
     pub stdout: String,
     pub stderr: String,

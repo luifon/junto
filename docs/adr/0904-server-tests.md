@@ -27,10 +27,12 @@ The server builds its SQL statements at run time (ADR 0008) and relies on constr
 - On a machine where other work compiles, heavy commands run through `tools/serial.sh`.
 - The tests of calls have two tiers. The first tier is part of the integration tests: the server gets a media server in memory that behaves as step 0 measured LiveKit (ADR 0508), the tasks of calls do not run by themselves, and a test runs each admission check itself, so that the order of things is fixed.
 - The second tier runs against a real LiveKit server. The script `tools/with-test-livekit.sh` starts one in Docker in development mode with the name `junto-dev-livekit`, runs a command, and removes the container. Real participants are processes of `spikes/test-participant` (ADR 0902). These tests are marked as ignored, so the plain run does not need LiveKit; they wait for the media server with bounded polling.
+- The tests of recordings use a recorder in memory that behaves as step 0 measured the recorder (ADR 0604) and writes the files of its jobs. The files are generated with `ffmpeg`, so that the server reads, joins and checks real media with the programs of the product (ADR 0606). A test runs each pass of the controller, each attempt of the processing and each transcription job itself.
+- The transcription worker of these tests is a stand-in script that the server runs as it runs the worker. It keeps the job file that it got and writes the transcript that the test prepared, so a test states both sides of the contract (ADR 0611). One more tier runs the worker of `workers/transcription` with its development model on generated speech; it is ignored in the plain run and fails with a message when the worker is not installed.
 
 ## Consequences
 
-- The tests need Docker.
+- The tests need Docker, and the tests of recordings need `ffmpeg` and `ffprobe` with the encoders `libopus` and `libx264`.
 - A rule that depends on a lock or a constraint is tested with the lock or the constraint.
 - A test of a time limit takes no real time.
 - A machine under load makes a test slower and does not change its result: no preparation step runs under a shortened time limit.

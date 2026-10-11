@@ -23,7 +23,7 @@ Upgrades:
 - Database migrations go forward only.
 - The server copies the database before a migration.
 - The server takes a lock so that only one migration runs.
-- The server does not migrate while a recording runs.
+- The server does not migrate while a recording runs. It refuses to start instead, and a host command tells beforehand whether a recording runs (ADR 0608).
 - The recorder container is not stopped, restarted or upgraded while a recording runs. A restart of the recorder loses the recordings in progress, and the recorder does not resume them (ADR 0601).
 - The server refuses to start on a schema that is newer than the schema it knows.
 - The server is never updated automatically (ADR 0704).

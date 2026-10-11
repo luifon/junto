@@ -57,7 +57,7 @@ impl AppState {
         let stream_opens = RateLimiter::with_capacity(limits.stream.opens, entries);
         let streams = Arc::new(Streams::new(&limits.stream));
         let calls = Calls::new(media, server_id, limits);
-        let recordings = Recordings::new(recorder);
+        let recordings = Recordings::new(recorder, &limits.recordings);
         let bodies = Arc::new(BodyBudget::new(
             limits.request_bodies_held_bytes,
             limits.request_bodies_held_per_address,
