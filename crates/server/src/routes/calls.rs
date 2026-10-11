@@ -35,21 +35,21 @@ use crate::state::AppState;
 use crate::{read, transact};
 
 /// A voice channel that the caller may see.
-struct Voice {
-    record: ChannelRecord,
-    scope: ChannelScope,
-    place: CallPlace,
+pub(super) struct Voice {
+    pub(super) record: ChannelRecord,
+    pub(super) scope: ChannelScope,
+    pub(super) place: CallPlace,
 }
 
 impl Voice {
-    fn about(&self) -> About {
+    pub(super) fn about(&self) -> About {
         About::Channel(self.record.channel.workspace_id, self.record.channel.id)
     }
 }
 
 /// Access to a voice channel is the permission to see it: a member who sees a voice channel
 /// can enter it, unless its lock or its user limit stops the entry (ADR 0504).
-async fn voice(
+pub(super) async fn voice(
     connection: &mut PgConnection,
     access: &Access,
     channel_id: ChannelId,
@@ -74,7 +74,7 @@ async fn voice(
 }
 
 /// The call of a voice channel, locked for a change, and the caller's membership in it.
-async fn inside(
+pub(super) async fn inside(
     connection: &mut PgConnection,
     access: &Access,
     voice: &Voice,
@@ -521,6 +521,9 @@ pub async fn update_call_settings(
             channel: channel.clone(),
         };
         events::publish(connection, now, &updated).await?;
+        if voice.record.channel.hides_occupants && !channel.hides_occupants {
+            crate::recordings::store::occupants_shown(connection, now, channel_id).await?;
+        }
         Ok(channel)
     })?;
     Ok(Json(channel))

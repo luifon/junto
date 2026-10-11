@@ -63,6 +63,8 @@ identifier!(CallId);
 identifier!(EntryRequestId);
 identifier!(CallInvitationId);
 identifier!(CallMoveId);
+identifier!(RecordingId);
+identifier!(RecordingSegmentId);
 identifier!(
     /// Identifies one history of event positions. It changes when positions start again.
     StreamEpoch

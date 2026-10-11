@@ -51,6 +51,9 @@ utoipa = { workspace = true, features = ["axum_extras"] }
 utoipa-axum = { workspace = true }
 uuid = { workspace = true }
 
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true }
+
 [dev-dependencies]
 tokio-tungstenite = { workspace = true, features = ["connect"] }
 

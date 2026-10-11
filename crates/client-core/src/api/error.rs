@@ -79,7 +79,9 @@ pub const fn category(code: ErrorCode, status: u16) -> ErrorCategory {
         | ErrorCode::PublicKeyMismatch
         | ErrorCode::CallLocked
         | ErrorCode::CallFull
-        | ErrorCode::NotInCall => ErrorCategory::Conflict,
+        | ErrorCode::NotInCall
+        | ErrorCode::StorageLow
+        | ErrorCode::RecordingsFull => ErrorCategory::Conflict,
         ErrorCode::OwnerCodeInvalid
         | ErrorCode::InviteNotFound
         | ErrorCode::InviteExpired
@@ -90,9 +92,10 @@ pub const fn category(code: ErrorCode, status: u16) -> ErrorCategory {
         | ErrorCode::MethodNotAllowed
         | ErrorCode::ImageTooLarge
         | ErrorCode::ImageUnsupported => ErrorCategory::ClientFault,
-        ErrorCode::Unavailable | ErrorCode::MediaUnavailable | ErrorCode::Internal => {
-            ErrorCategory::ServerFault
-        }
+        ErrorCode::Unavailable
+        | ErrorCode::MediaUnavailable
+        | ErrorCode::RecorderUnavailable
+        | ErrorCode::Internal => ErrorCategory::ServerFault,
         ErrorCode::Unknown => match status {
             401 | 403 => ErrorCategory::NotAllowed,
             404 => ErrorCategory::NotFound,
@@ -323,6 +326,8 @@ mod tests {
             (ErrorCode::CallLocked, C::Conflict),
             (ErrorCode::CallFull, C::Conflict),
             (ErrorCode::NotInCall, C::Conflict),
+            (ErrorCode::StorageLow, C::Conflict),
+            (ErrorCode::RecordingsFull, C::Conflict),
             (ErrorCode::OwnerCodeInvalid, C::CodeRefused),
             (ErrorCode::InviteNotFound, C::CodeRefused),
             (ErrorCode::InviteExpired, C::CodeRefused),
@@ -335,6 +340,7 @@ mod tests {
             (ErrorCode::ImageUnsupported, C::ClientFault),
             (ErrorCode::Unavailable, C::ServerFault),
             (ErrorCode::MediaUnavailable, C::ServerFault),
+            (ErrorCode::RecorderUnavailable, C::ServerFault),
             (ErrorCode::Internal, C::ServerFault),
         ];
         assert_eq!(cases.len(), ErrorCode::ALL.len());

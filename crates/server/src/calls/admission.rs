@@ -53,8 +53,46 @@ pub enum Outcome {
 struct Orders {
     removals: Vec<(String, String)>,
     updates: Vec<(String, String, Publishing)>,
+    /// The jobs of the recorder in the room that no recording allows there (ADR 0604).
+    recorder_stops: Vec<String>,
     /// The record changed in a way that the next check has to carry to the media server.
     again: bool,
+}
+
+/// The participants of the recorder in a room that has no recording which is starting or
+/// runs: jobs whose start answer the server did not store, or that were declared lost while
+/// their recorder lived. The recorder is asked to stop them.
+async fn unallowed_recorder_jobs(
+    app: &AppState,
+    room: &str,
+    participants: &[Participant],
+) -> Vec<String> {
+    let jobs: Vec<String> = participants
+        .iter()
+        .filter(|participant| participant.kind == ParticipantKind::Recorder)
+        .map(|participant| participant.identity.clone())
+        .collect();
+    if jobs.is_empty() || app.recordings.backend().is_none() {
+        return Vec::new();
+    }
+    let recorded: ApiResult<bool> = async {
+        read!(app.background(), |connection| {
+            let recorded: bool = sqlx::query_scalar(
+                "select exists (
+                     select 1 from recordings
+                     where room_name = $1 and state in ('starting', 'recording'))",
+            )
+            .bind(room)
+            .fetch_one(connection)
+            .await?;
+            Ok(recorded)
+        })
+    }
+    .await;
+    match recorded {
+        Ok(false) => jobs,
+        Ok(true) | Err(_) => Vec::new(),
+    }
 }
 
 /// Whether the account of a member may still be in the call: its session counts, and the
@@ -791,6 +829,7 @@ async fn observe(
         }
     };
 
+    let recorder_stops = unallowed_recorder_jobs(app, room, &participants).await;
     let Some(call_id) = call_id else {
         return Some(Orders {
             removals: participants
@@ -798,6 +837,7 @@ async fn observe(
                 .filter(|participant| participant.kind != ParticipantKind::Recorder)
                 .map(|participant| (room.to_owned(), participant.identity))
                 .collect(),
+            recorder_stops,
             ..Orders::default()
         });
     };
@@ -812,7 +852,10 @@ async fn observe(
     match applied {
         Ok(orders) => {
             app.calls.observed(room, era);
-            Some(orders)
+            Some(Orders {
+                recorder_stops,
+                ..orders
+            })
         }
         Err(error) => {
             let code = format!("{:?}", error.code());
@@ -901,7 +944,19 @@ async fn check_room(
         &failure,
         "the permission of a participant could not be set",
     );
-    let (removed, updated) = tokio::join!(removing, updating);
+    let stopping = async {
+        let Some(backend) = app.recordings.backend() else {
+            return;
+        };
+        let stops = orders
+            .recorder_stops
+            .iter()
+            .map(|job_id| backend.recorder.stop(job_id));
+        // A stop without an answer is no failure of the room: the job of a lost recorder
+        // leaves by itself, and the next check asks again for one that is still there.
+        let _ = tokio::time::timeout_at(deadline, futures_util::future::join_all(stops)).await;
+    };
+    let (removed, updated, ()) = tokio::join!(removing, updating, stopping);
     let every_action_done = removed == orders.removals.len() && updated == orders.updates.len();
     if every_action_done && app.calls.room_served(room) {
         tracing::info!(room, "the room is checked again");

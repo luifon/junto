@@ -55,6 +55,12 @@ pub enum ErrorCode {
     NotInCall,
     /// The server does not reach its media server. No call can be joined.
     MediaUnavailable,
+    /// The server has no recorder, or no recorder took the request. No recording starts.
+    RecorderUnavailable,
+    /// The free disk space of the server is below what a new recording needs (ADR 0006).
+    StorageLow,
+    /// As many recordings run as the server allows at one time (ADR 0006).
+    RecordingsFull,
     MethodNotAllowed,
     Timeout,
     Busy,
@@ -106,6 +112,9 @@ impl ErrorCode {
         Self::CallFull,
         Self::NotInCall,
         Self::MediaUnavailable,
+        Self::RecorderUnavailable,
+        Self::StorageLow,
+        Self::RecordingsFull,
         Self::MethodNotAllowed,
         Self::Timeout,
         Self::Busy,
@@ -147,11 +156,17 @@ impl ErrorCode {
             | Self::JoinRequestsFull
             | Self::ChallengesFull
             | Self::DeviceLinksFull
-            | Self::TooManyConnections => 429,
+            | Self::TooManyConnections
+            | Self::RecordingsFull => 429,
             Self::MethodNotAllowed => 405,
             Self::ImageTooLarge => 413,
             Self::ImageUnsupported => 415,
-            Self::Timeout | Self::Busy | Self::Unavailable | Self::MediaUnavailable => 503,
+            Self::Timeout
+            | Self::Busy
+            | Self::Unavailable
+            | Self::MediaUnavailable
+            | Self::RecorderUnavailable
+            | Self::StorageLow => 503,
             Self::Internal | Self::Unknown => 500,
         }
     }

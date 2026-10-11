@@ -3,9 +3,10 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 use crate::ids::{
-    AccountId, AuditEntryId, CategoryId, ChannelId, DeviceId, InviteId, JoinRequestId,
+    AccountId, AuditEntryId, CategoryId, ChannelId, DeviceId, InviteId, JoinRequestId, RecordingId,
     ServerRoleId, WorkspaceId, WorkspaceRoleId,
 };
+use crate::recording::RecordingStopReason;
 use crate::structure::ChannelKind;
 
 /// What was done. New actions are added; the fields of an existing action do not change.
@@ -192,6 +193,16 @@ pub enum AuditEvent {
     CallMemberMovedIn {
         account_id: AccountId,
     },
+    /// A person in the call of the channel started a recording.
+    RecordingStarted {
+        recording_id: RecordingId,
+    },
+    /// A recording of the call of the channel was stopped. The entry has no acting account
+    /// when the server stopped it.
+    RecordingStopped {
+        recording_id: RecordingId,
+        reason: RecordingStopReason,
+    },
     /// An action that this build does not know. It is read and never written.
     #[serde(other, skip_serializing)]
     Unknown,
@@ -240,6 +251,8 @@ impl AuditEvent {
             Self::CallMemberDisconnected { .. } => "call_member_disconnected",
             Self::CallMemberMovedOut { .. } => "call_member_moved_out",
             Self::CallMemberMovedIn { .. } => "call_member_moved_in",
+            Self::RecordingStarted { .. } => "recording_started",
+            Self::RecordingStopped { .. } => "recording_stopped",
             Self::Unknown => "unknown",
         }
     }
@@ -312,6 +325,13 @@ mod tests {
             AuditEvent::CallMemberDisconnected { account_id },
             AuditEvent::CallMemberMovedOut { account_id },
             AuditEvent::CallMemberMovedIn { account_id },
+            AuditEvent::RecordingStarted {
+                recording_id: RecordingId::generate(),
+            },
+            AuditEvent::RecordingStopped {
+                recording_id: RecordingId::generate(),
+                reason: RecordingStopReason::StorageReserve,
+            },
         ];
         for event in events {
             let json = serde_json::to_value(&event).unwrap();

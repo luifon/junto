@@ -25,17 +25,17 @@ Start:
 - A recording starts only when a participant with the "record calls" permission starts it.
 - Every participant sees an indicator while a recording runs.
 - The server checks and reserves disk space before a recording starts (ADR 0006).
-- The server waits longer than 22 seconds for the answer to a start request. When no recorder is running, the LiveKit server answers with an error only after 22 seconds. The client then shows that the recorder is not available.
+- The server waits longer than 22 seconds for the answer to a start request. When no recorder is running, the LiveKit server answers with an error only after 22 seconds. The client then shows that the recorder is not available. The request of the client does not wait for that answer: the recording is `starting` until then, and the client learns the result from an event (ADR 0604).
 
 Third parties:
 
-- The indicator reaches only the people in the call.
+- The indicator reaches only the people in the call, and the members who may see who is in the call (ADR 0604). It does not reach a person outside the server who appears in a shared window.
 - Whether people outside the call who appear in a shared window may be recorded is a legal question for the operator of the server.
 
 Tracked job:
 
 - A recording is a tracked job. The server keeps one record per recording, with its segments and a state.
-- The states are: starting, recording, partly failed, failed, processing, ready.
+- The states are: starting, recording, processing, and the final states ready, partly failed and failed. A recording that runs with a failed segment stays in the state recording (ADR 0604).
 - A call, a recording and a segment each have their own identifier.
 - A segment stores the recording, the participant, the source, the track identifier, the job identifier of the recorder, and the start time, end time, length and file name that the recorder reports for the file.
 - A failure appears in the call header and in the text chat of the voice channel, with the time ranges that were saved for each part.
@@ -57,6 +57,7 @@ Detection of a lost recorder:
 - At short intervals and after its own restart, the server reads the participant list of each room with a recording. A job that was started more than 10 seconds ago and has no recorder participant with its identifier is lost.
 - On the host of the recorder, two local signals show the loss earlier: the health port of the recorder does not answer, or the newest segment of the composite is older than three segment lengths.
 - For a lost job, the server marks the segment as failed with the time range that was saved, recovers the files that are on disk (ADR 0602), and starts new jobs when the call still runs.
+- A job that the recorder reports as ended is not lost, and a job whose stop was delivered has 20 seconds to report its end (ADR 0604).
 - The end time of a segment comes from the file result that the recorder reports, not from the time at which the server saw the change. After a loss of the private link, a job that had ended was reported as active until 16 seconds after the link returned.
 
 Result:

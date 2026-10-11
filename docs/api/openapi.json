@@ -2331,6 +2331,96 @@
         ]
       }
     },
+    "/api/v1/channels/{channel_id}/call/recording": {
+      "put": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "Starts the recording of the call of a voice channel. The caller is in the call and holds\n`record_calls`. The answer carries the recording in the state `starting`; the events\n`recording_updated` tell whether the recorder took it. When the call has a recording that\nis starting or runs, the answer carries that one and nothing changes.",
+        "operationId": "start_recording",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartRecording"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Recording"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "Stops the recording of the call of a voice channel. The caller is in the call and holds\n`record_calls`. The recorder ends every job, so that the files are complete; the recording\nkeeps the state `recording` until then. Without a recording nothing changes.",
+        "operationId": "stop_recording",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/channels/{channel_id}/call/settings": {
       "patch": {
         "tags": [
@@ -2735,7 +2825,7 @@
         "tags": [
           "server"
         ],
-        "summary": "Whether the server reaches its database, and whether its last admission check reached the\nmedia server (ADR 0012). The status follows the database only.",
+        "summary": "Whether the server reaches its database, whether its last admission check reached the\nmedia server, and whether the free disk space of the recordings is at the reserve\n(ADR 0012, ADR 0605). The status follows the database only.",
         "operationId": "get_health",
         "responses": {
           "200": {
@@ -3217,6 +3307,51 @@
             }
           }
         }
+      }
+    },
+    "/api/v1/recordings/{recording_id}": {
+      "get": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "One recording with its segments. The caller may see its voice channel. While the call of\nthe recording runs in a channel that hides who is inside, only the people inside read it.",
+        "operationId": "get_recording",
+        "parameters": [
+          {
+            "name": "recording_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/RecordingId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordingDetail"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
       }
     },
     "/api/v1/server-roles": {
@@ -3986,6 +4121,71 @@
         ],
         "responses": {
           "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/recordings": {
+      "get": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "The recordings of a workspace, newest first. A recording is returned when the caller may\nsee its voice channel. While its call runs in a channel that hides who is inside, it is\nreturned only to the people inside.",
+        "operationId": "list_recordings",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Return recordings older than this one.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/RecordingId"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "The largest number of recordings to return, from 1 to 200. Absent: 50.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordingPage"
+                }
+              }
+            }
+          },
           "default": {
             "description": "An error. The field `error.code` states which one.",
             "content": {
@@ -5281,6 +5481,48 @@
                 ]
               }
             }
+          },
+          {
+            "type": "object",
+            "description": "A person in the call of the channel started a recording.",
+            "required": [
+              "recording_id",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "recording_started"
+                ]
+              },
+              "recording_id": {
+                "$ref": "#/components/schemas/RecordingId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A recording of the call of the channel was stopped. The entry has no acting account\nwhen the server stopped it.",
+            "required": [
+              "recording_id",
+              "reason",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "recording_stopped"
+                ]
+              },
+              "reason": {
+                "$ref": "#/components/schemas/RecordingStopReason"
+              },
+              "recording_id": {
+                "$ref": "#/components/schemas/RecordingId"
+              }
+            }
           }
         ],
         "description": "What was done. New actions are added; the fields of an existing action do not change.\n\nAn action that this build does not know is read as [`AuditEvent::Unknown`], so that a\nclient can show the entry with its time and its actor (ADR 0209). `Unknown` is never\nwritten."
@@ -5394,6 +5636,17 @@
           },
           "place": {
             "$ref": "#/components/schemas/CallPlace"
+          },
+          "recording": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Recording",
+                "description": "The recording of the call that is starting or runs. The people in the call see an\nindicator while it is present (ADR 0601)."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "started_at": {
             "type": [
@@ -6261,6 +6514,9 @@
           "call_full",
           "not_in_call",
           "media_unavailable",
+          "recorder_unavailable",
+          "storage_low",
+          "recordings_full",
           "method_not_allowed",
           "timeout",
           "busy",
@@ -6307,6 +6563,13 @@
               "null"
             ],
             "description": "Whether the last admission check reached the media server. Absent on a server that\nhas no media server configured. While it is false, no call can be joined."
+          },
+          "storage_low": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "True while the free disk space of the recordings is at or below the reserve: the\nserver starts no recording and stops the ones that run (ADR 0006). Absent on a server\nwithout a recorder, and when the free space cannot be read."
           }
         }
       },
@@ -6771,6 +7034,284 @@
         "minLength": 43,
         "pattern": "^[A-Za-z0-9_-]+$"
       },
+      "Recording": {
+        "type": "object",
+        "description": "A recording without its segments. Events and lists carry this form.",
+        "required": [
+          "id",
+          "workspace_id",
+          "channel_id",
+          "call_id",
+          "state",
+          "started_by",
+          "requested_at",
+          "language",
+          "segments",
+          "failed_segments"
+        ],
+        "properties": {
+          "call_id": {
+            "$ref": "#/components/schemas/CallId"
+          },
+          "channel_id": {
+            "$ref": "#/components/schemas/ChannelId"
+          },
+          "ended_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the last job of the recorder had ended. Absent while the recording is active."
+          },
+          "failed_segments": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The number of segments that failed. The segments state what was saved of each.",
+            "minimum": 0
+          },
+          "failure": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RecordingFailure",
+                "description": "Present with the state `failed`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/components/schemas/RecordingId"
+          },
+          "language": {
+            "type": "string",
+            "description": "`auto`, or the language code that the person who started the recording set for the\ntranscript (ADR 0603)."
+          },
+          "recording_since": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the first job of the recorder was started. Absent before."
+          },
+          "requested_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the recording was asked for."
+          },
+          "segments": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The number of segments of the recording.",
+            "minimum": 0
+          },
+          "started_by": {
+            "$ref": "#/components/schemas/AccountId"
+          },
+          "state": {
+            "$ref": "#/components/schemas/RecordingState"
+          },
+          "stop": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RecordingStop",
+                "description": "Present from the moment a stop is asked for."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "workspace_id": {
+            "$ref": "#/components/schemas/WorkspaceId"
+          }
+        }
+      },
+      "RecordingDetail": {
+        "type": "object",
+        "description": "A recording with its segments, in the order in which they were asked for.",
+        "required": [
+          "recording",
+          "segments"
+        ],
+        "properties": {
+          "recording": {
+            "$ref": "#/components/schemas/Recording"
+          },
+          "segments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RecordingSegment"
+            }
+          }
+        }
+      },
+      "RecordingFailure": {
+        "type": "string",
+        "description": "Why nothing of a recording was saved. Read with an unknown value as\n[`RecordingStopReason`] is.",
+        "enum": [
+          "recorder_unavailable",
+          "nothing_recorded"
+        ]
+      },
+      "RecordingId": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "RecordingPage": {
+        "type": "object",
+        "required": [
+          "recordings"
+        ],
+        "properties": {
+          "next_before": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RecordingId",
+                "description": "Pass as `before` to read the next page. Absent on the last page."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recordings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Recording"
+            },
+            "description": "Newest first."
+          }
+        }
+      },
+      "RecordingSegment": {
+        "type": "object",
+        "description": "One file of a recording: the composite, or one audio track of one person.",
+        "required": [
+          "id",
+          "source",
+          "state",
+          "requested_at"
+        ],
+        "properties": {
+          "account_id": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AccountId",
+                "description": "The person whose track the segment records. Absent for the composite."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The length of the file in milliseconds, as the recorder reports it.",
+            "minimum": 0
+          },
+          "ended_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "failure": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SegmentFailure",
+                "description": "Present with the state `failed`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/components/schemas/RecordingSegmentId"
+          },
+          "requested_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the server asked the recorder for the job."
+          },
+          "source": {
+            "$ref": "#/components/schemas/SegmentSource"
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The start of the file, as the recorder reports it. Absent until the recorder has\nreported it. Of a failed segment, `started_at` and `ended_at` state the time range\nthat was saved, as far as the recorder reported it."
+          },
+          "state": {
+            "$ref": "#/components/schemas/SegmentState"
+          }
+        }
+      },
+      "RecordingSegmentId": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "RecordingState": {
+        "type": "string",
+        "description": "The state of a recording. The states follow each other in this order; the last three are\nfinal.",
+        "enum": [
+          "starting",
+          "recording",
+          "processing",
+          "ready",
+          "partly_failed",
+          "failed"
+        ]
+      },
+      "RecordingStop": {
+        "type": "object",
+        "required": [
+          "reason",
+          "at"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "by": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AccountId",
+                "description": "The person who stopped the recording. Absent when the server stopped it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "$ref": "#/components/schemas/RecordingStopReason"
+          }
+        }
+      },
+      "RecordingStopReason": {
+        "type": "string",
+        "description": "Why a recording was stopped. A server can add reasons within one API version; a reason\nthat this build does not know is read as [`RecordingStopReason::Unknown`], which is never\nwritten (ADR 0209).",
+        "enum": [
+          "stopped",
+          "call_ended",
+          "storage_reserve",
+          "segment_limit",
+          "recorder_lost"
+        ]
+      },
       "RecoverAccount": {
         "type": "object",
         "required": [
@@ -6949,6 +7490,35 @@
             "format": "date-time"
           }
         }
+      },
+      "SegmentFailure": {
+        "type": "string",
+        "description": "Why a segment failed. Read with an unknown value as [`RecordingStopReason`] is.",
+        "enum": [
+          "recorder_unavailable",
+          "start_refused",
+          "start_interrupted",
+          "recorder_lost",
+          "recorder_error"
+        ]
+      },
+      "SegmentSource": {
+        "type": "string",
+        "description": "What a segment records.",
+        "enum": [
+          "composite",
+          "microphone",
+          "screen_share_audio"
+        ]
+      },
+      "SegmentState": {
+        "type": "string",
+        "enum": [
+          "starting",
+          "recording",
+          "ended",
+          "failed"
+        ]
       },
       "ServerId": {
         "type": "string",
@@ -7161,6 +7731,18 @@
         "properties": {
           "by": {
             "$ref": "#/components/schemas/AccountId"
+          }
+        }
+      },
+      "StartRecording": {
+        "type": "object",
+        "properties": {
+          "language": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The language of the speech, as a Whisper language code of two or three lower-case\nletters. Absent or `auto`: the language of each speech clip is detected (ADR 0603)."
           }
         }
       },
@@ -7504,6 +8086,10 @@
     {
       "name": "calls",
       "description": "Calls in voice channels and direct messages"
+    },
+    {
+      "name": "recordings",
+      "description": "Recordings of calls in voice channels"
     },
     {
       "name": "audit",

@@ -29,6 +29,7 @@ pub mod health;
 pub mod internal;
 pub mod invites;
 pub mod moderation;
+pub mod recordings;
 pub mod server_info;
 pub mod server_roles;
 pub mod snapshot;
@@ -59,6 +60,7 @@ pub const SESSION_SECURITY: &str = "session";
         (name = "workspaces", description = "Workspaces, their members and roles"),
         (name = "channels", description = "Categories, channels and channel overrides"),
         (name = "calls", description = "Calls in voice channels and direct messages"),
+        (name = "recordings", description = "Recordings of calls in voice channels"),
         (name = "audit", description = "The audit log"),
         (name = "events", description = "The event stream and the snapshot it continues")
     )
@@ -180,6 +182,12 @@ fn documented_routes() -> OpenApiRouter<AppState> {
             calls::mute_direct_conversation,
             calls::unmute_direct_conversation
         ))
+        .routes(routes!(
+            recordings::start_recording,
+            recordings::stop_recording
+        ))
+        .routes(routes!(recordings::list_recordings))
+        .routes(routes!(recordings::get_recording))
         .routes(routes!(audit_log::get_server_audit_log))
         .routes(routes!(audit_log::get_workspace_audit_log))
         .routes(routes!(snapshot::get_snapshot))

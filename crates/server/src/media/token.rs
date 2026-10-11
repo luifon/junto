@@ -70,11 +70,23 @@ pub fn join_claims(key: &str, grant: &JoinGrant<'_>) -> Value {
     })
 }
 
+/// What one request of the server to the API of the media server may do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiGrant<'a> {
+    /// List the rooms.
+    RoomList,
+    /// Read and change one room.
+    RoomAdmin(&'a str),
+    /// Start, stop and read the jobs of the recorder.
+    Record,
+}
+
 /// The claims of a token for one request of the server to the API of the media server.
-pub fn api_claims(key: &str, room: Option<&str>, now: OffsetDateTime) -> Value {
-    let grant = match room {
-        Some(room) => json!({ "roomAdmin": true, "room": room }),
-        None => json!({ "roomList": true }),
+pub fn api_claims(key: &str, grant: ApiGrant<'_>, now: OffsetDateTime) -> Value {
+    let grant = match grant {
+        ApiGrant::RoomAdmin(room) => json!({ "roomAdmin": true, "room": room }),
+        ApiGrant::RoomList => json!({ "roomList": true }),
+        ApiGrant::Record => json!({ "roomRecord": true }),
     };
     json!({
         "iss": key,
@@ -116,10 +128,15 @@ pub fn notification(
     let valid_until = OffsetDateTime::from_unix_timestamp(ends).ok()? + TOLERANCE;
     Some(Notification {
         event: body.get("event")?.as_str()?.to_owned(),
-        room: body
-            .pointer("/room/name")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
+        room: [
+            "/room/name",
+            "/egressInfo/roomName",
+            "/egress_info/room_name",
+        ]
+        .into_iter()
+        .find_map(|pointer| body.pointer(pointer))
+        .and_then(Value::as_str)
+        .map(str::to_owned),
         valid_until,
         key,
     })
@@ -273,5 +290,34 @@ mod tests {
             None
         );
         assert_eq!(notification("key", b"secret", "", body, now()), None);
+    }
+
+    #[test]
+    fn a_notification_of_the_recorder_names_the_room_of_its_job() {
+        for body in [
+            br#"{"event":"egress_ended","egressInfo":{"egressId":"EG_1","roomName":"jr-a-b"}}"#
+                .as_slice(),
+            br#"{"event":"egress_ended","egress_info":{"egress_id":"EG_1","room_name":"jr-a-b"}}"#
+                .as_slice(),
+        ] {
+            let authorization = signed_notification("key", b"secret", body, now());
+            let read = notification("key", b"secret", &authorization, body, now()).unwrap();
+            assert_eq!(read.event, "egress_ended");
+            assert_eq!(read.room.as_deref(), Some("jr-a-b"));
+        }
+    }
+
+    #[test]
+    fn a_request_token_grants_one_thing() {
+        let admin = api_claims("key", ApiGrant::RoomAdmin("jr-a-b"), now());
+        assert_eq!(
+            admin["video"],
+            json!({ "roomAdmin": true, "room": "jr-a-b" })
+        );
+        let list = api_claims("key", ApiGrant::RoomList, now());
+        assert_eq!(list["video"], json!({ "roomList": true }));
+        let record = api_claims("key", ApiGrant::Record, now());
+        assert_eq!(record["video"], json!({ "roomRecord": true }));
+        assert_eq!(record["iss"], "key");
     }
 }

@@ -218,6 +218,12 @@ async fn livekit_accepts_the_join_token_and_its_participant_list_drives_who_is_i
     assert_eq!(participants[0].identity, join.identity);
     assert_eq!(participants[0].publishing, Some(Publishing::open()));
     assert!(participants[0].publishes(TrackSource::Microphone));
+    let microphone = participants[0]
+        .tracks
+        .iter()
+        .find(|track| track.source == TrackSource::Microphone)
+        .unwrap();
+    assert!(microphone.id.starts_with("TR_"), "{:?}", microphone.id);
 
     drop(client);
     until("the person who lost the connection has left", async || {

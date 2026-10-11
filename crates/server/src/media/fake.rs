@@ -36,6 +36,15 @@ struct State {
     most_in_flight: usize,
     removed: Vec<(String, String)>,
     updated: Vec<(String, String, Publishing)>,
+    tracks: u64,
+}
+
+impl State {
+    /// A new track identifier. A track that is published again gets another one.
+    fn track_id(&mut self) -> String {
+        self.tracks += 1;
+        format!("TR_{:08}", self.tracks)
+    }
 }
 
 pub struct FakeMedia {
@@ -142,6 +151,7 @@ impl FakeMedia {
         source: TrackSource,
     ) -> bool {
         let mut state = self.state();
+        let id = state.track_id();
         let Some(participant) = state
             .rooms
             .get_mut(room)
@@ -159,6 +169,7 @@ impl FakeMedia {
                 kind,
                 source,
                 muted: false,
+                id,
             });
         }
         allowed
@@ -168,6 +179,7 @@ impl FakeMedia {
     /// if it did not check the source of a track.
     pub fn force_track(&self, room: &str, identity: &str, kind: TrackKind, source: TrackSource) {
         let mut state = self.state();
+        let id = state.track_id();
         if let Some(participant) = state
             .rooms
             .get_mut(room)
@@ -177,8 +189,36 @@ impl FakeMedia {
                 kind,
                 source,
                 muted: false,
+                id,
             });
         }
+    }
+
+    /// Mutes or unmutes a track. The track keeps its identifier.
+    pub fn set_muted(&self, room: &str, identity: &str, source: TrackSource, muted: bool) {
+        let mut state = self.state();
+        if let Some(participant) = state
+            .rooms
+            .get_mut(room)
+            .and_then(|room| room.iter_mut().find(|other| other.identity == identity))
+        {
+            for track in &mut participant.tracks {
+                if track.source == source {
+                    track.muted = muted;
+                }
+            }
+        }
+    }
+
+    /// The identifier of the track that a participant publishes from `source`.
+    pub fn track_id(&self, room: &str, identity: &str, source: TrackSource) -> Option<String> {
+        self.participants(room)
+            .into_iter()
+            .find(|participant| participant.identity == identity)?
+            .tracks
+            .into_iter()
+            .find(|track| track.source == source)
+            .map(|track| track.id)
     }
 
     pub fn unpublish(&self, room: &str, identity: &str, source: TrackSource) {

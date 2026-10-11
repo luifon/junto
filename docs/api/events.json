@@ -1069,6 +1069,44 @@
       ],
       "type": "object"
     },
+    "recording_started": {
+      "description": "A recording of the call of a voice channel was asked for. The event carries the\nrecording without its segments.",
+      "properties": {
+        "recording": {
+          "$ref": "#/components/schemas/Recording"
+        },
+        "type": {
+          "enum": [
+            "recording_started"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "recording",
+        "type"
+      ],
+      "type": "object"
+    },
+    "recording_updated": {
+      "description": "The state of a recording changed, a stop was asked for, or a segment was added or\nfailed. The event carries the whole recording without its segments; the segments\nare read from the route of the recording.",
+      "properties": {
+        "recording": {
+          "$ref": "#/components/schemas/Recording"
+        },
+        "type": {
+          "enum": [
+            "recording_updated"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "recording",
+        "type"
+      ],
+      "type": "object"
+    },
     "server_role_created": {
       "properties": {
         "role": {
@@ -3079,6 +3117,44 @@
               "type"
             ],
             "type": "object"
+          },
+          {
+            "description": "A recording of the call of a voice channel was asked for. The event carries the\nrecording without its segments.",
+            "properties": {
+              "recording": {
+                "$ref": "#/components/schemas/Recording"
+              },
+              "type": {
+                "enum": [
+                  "recording_started"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "recording",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The state of a recording changed, a stop was asked for, or a segment was added or\nfailed. The event carries the whole recording without its segments; the segments\nare read from the route of the recording.",
+            "properties": {
+              "recording": {
+                "$ref": "#/components/schemas/Recording"
+              },
+              "type": {
+                "enum": [
+                  "recording_updated"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "recording",
+              "type"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -3303,6 +3379,163 @@
         "maxLength": 43,
         "minLength": 43,
         "pattern": "^[A-Za-z0-9_-]+$",
+        "type": "string"
+      },
+      "Recording": {
+        "description": "A recording without its segments. Events and lists carry this form.",
+        "properties": {
+          "call_id": {
+            "$ref": "#/components/schemas/CallId"
+          },
+          "channel_id": {
+            "$ref": "#/components/schemas/ChannelId"
+          },
+          "ended_at": {
+            "description": "When the last job of the recorder had ended. Absent while the recording is active.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "failed_segments": {
+            "description": "The number of segments that failed. The segments state what was saved of each.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "failure": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RecordingFailure",
+                "description": "Present with the state `failed`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "$ref": "#/components/schemas/RecordingId"
+          },
+          "language": {
+            "description": "`auto`, or the language code that the person who started the recording set for the\ntranscript (ADR 0603).",
+            "type": "string"
+          },
+          "recording_since": {
+            "description": "When the first job of the recorder was started. Absent before.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requested_at": {
+            "description": "When the recording was asked for.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "segments": {
+            "description": "The number of segments of the recording.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "started_by": {
+            "$ref": "#/components/schemas/AccountId"
+          },
+          "state": {
+            "$ref": "#/components/schemas/RecordingState"
+          },
+          "stop": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RecordingStop",
+                "description": "Present from the moment a stop is asked for."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "workspace_id": {
+            "$ref": "#/components/schemas/WorkspaceId"
+          }
+        },
+        "required": [
+          "id",
+          "workspace_id",
+          "channel_id",
+          "call_id",
+          "state",
+          "started_by",
+          "requested_at",
+          "language",
+          "segments",
+          "failed_segments"
+        ],
+        "type": "object"
+      },
+      "RecordingFailure": {
+        "description": "Why nothing of a recording was saved. Read with an unknown value as\n[`RecordingStopReason`] is.",
+        "enum": [
+          "recorder_unavailable",
+          "nothing_recorded"
+        ],
+        "type": "string"
+      },
+      "RecordingId": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "RecordingState": {
+        "description": "The state of a recording. The states follow each other in this order; the last three are\nfinal.",
+        "enum": [
+          "starting",
+          "recording",
+          "processing",
+          "ready",
+          "partly_failed",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "RecordingStop": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "by": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AccountId",
+                "description": "The person who stopped the recording. Absent when the server stopped it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "$ref": "#/components/schemas/RecordingStopReason"
+          }
+        },
+        "required": [
+          "reason",
+          "at"
+        ],
+        "type": "object"
+      },
+      "RecordingStopReason": {
+        "description": "Why a recording was stopped. A server can add reasons within one API version; a reason\nthat this build does not know is read as [`RecordingStopReason::Unknown`], which is never\nwritten (ADR 0209).",
+        "enum": [
+          "stopped",
+          "call_ended",
+          "storage_reserve",
+          "segment_limit",
+          "recorder_lost"
+        ],
         "type": "string"
       },
       "RecoveryId": {

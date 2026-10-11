@@ -12,4 +12,5 @@ pub mod watcher;
 
 pub use log::{
     channel_deleted, permissions_changed, publish, tell_account, tell_account_at, tell_inside,
+    tell_of_recording,
 };

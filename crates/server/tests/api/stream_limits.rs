@@ -325,6 +325,7 @@ async fn the_health_route_reports_the_database() {
             database: true,
             media_server: None,
             failing_call_rooms: 0,
+            storage_low: None,
         }
     );
 
