@@ -286,6 +286,18 @@ impl Window {
         self.cx.run_until_parked();
     }
 
+    /// Clicks the element with this name when it is drawn now. A test uses it for an
+    /// element that a reload of the state takes away for a moment.
+    pub fn click_if_shown(&mut self, selector: &'static str) -> bool {
+        self.cx.run_until_parked();
+        let Some(bounds) = self.cx.debug_bounds(selector) else {
+            return false;
+        };
+        self.cx.simulate_click(bounds.center(), Modifiers::none());
+        self.cx.run_until_parked();
+        true
+    }
+
     /// True when an element with a name that the test builds is drawn now.
     pub fn shows_named(&mut self, name: String) -> bool {
         self.shows(selector(name))

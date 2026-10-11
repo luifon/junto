@@ -106,6 +106,11 @@ pub(crate) fn scene() -> Scene {
         call_invitations: Vec::new(),
         direct_mutes: Vec::new(),
         messages: Vec::new(),
+        threads: Vec::new(),
+        threads_more: false,
+        threads_next: None,
+        notifications: Vec::new(),
+        notification_settings: Vec::new(),
     };
     Scene {
         account_id,

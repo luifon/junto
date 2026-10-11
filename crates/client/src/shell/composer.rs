@@ -20,11 +20,11 @@ use junto_client_core::protocol::message::{Document, Message};
 use junto_client_core::protocol::structure::ChannelKind;
 use junto_client_core::transfers::{UploadSource, UploadStage};
 
-use super::{Layer, Shell};
+use super::{EmojiTarget, Layer, Pane, Shell};
 use crate::assets::Icon;
 use crate::compose::{self, Mention, MentionTarget};
 use crate::state::feed::{Feed, FeedRow, plain_text};
-use crate::state::view::{Members, ShellView, WorkspaceView};
+use crate::state::view::{DraftFile, Members, ShellView, WorkspaceView};
 use crate::text;
 use crate::theme::{theme, u};
 use crate::ui::{
@@ -267,99 +267,126 @@ impl Composer {
 
 impl Shell {
     /// The place that the composer writes to.
-    fn composer_place(&self) -> Option<(ServerId, PlaceId)> {
-        self.composer
+    fn composer_place(&self, pane: Pane) -> Option<(ServerId, PlaceId)> {
+        self.pen(pane)
             .place
             .map(|(server_id, _, place)| (server_id, place))
     }
 
-    fn composer_feed(&self) -> Option<&Feed> {
-        self.view.as_ref()?.workspace()?.feed.as_ref()
+    fn composer_feed(&self, pane: Pane) -> Option<&Feed> {
+        self.pane_feed(pane)
     }
 
-    /// The composer holds the text of the place that the window shows. The text of the
-    /// place before stays with that place.
+    /// Each composer holds the text of the place that its pane shows: the place of the
+    /// main area, and the thread of the side panel. The text of the place before stays
+    /// with that place.
     pub(crate) fn composer_follows(
         &mut self,
         view: &ShellView,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let shown: Option<Desk> = (|| {
-            let server_id = view.selected.as_ref()?.id;
-            let account_id = view.person.account_id?;
-            let channel = view.workspace()?.channel.as_ref()?;
-            Some((server_id, account_id, PlaceId::Channel(channel.id)))
-        })();
-        if shown == self.composer.place {
+        let desk = |place: Option<PlaceId>| -> Option<Desk> {
+            Some((view.selected.as_ref()?.id, view.person.account_id?, place?))
+        };
+        let workspace = view.workspace();
+        let shown = view.shown();
+        let main: SharedString = workspace
+            .map(
+                |workspace| match (&workspace.conversation, &workspace.channel) {
+                    (Some(conversation), _) => text::direct_placeholder(
+                        conversation.name.as_deref().unwrap_or(text::UNKNOWN_PERSON),
+                    ),
+                    (None, Some(channel)) => {
+                        text::message_placeholder(&channel.name, channel.kind == ChannelKind::Voice)
+                    }
+                    (None, None) => String::new(),
+                },
+            )
+            .unwrap_or_default()
+            .into();
+        self.pen_follows(Pane::Main, desk(shown.place()), main, window, cx);
+        let thread = desk(shown.thread_place());
+        self.pen_follows(
+            Pane::Thread,
+            thread,
+            text::REPLY_IN_THREAD.into(),
+            window,
+            cx,
+        );
+    }
+
+    fn pen_follows(
+        &mut self,
+        pane: Pane,
+        shown: Option<Desk>,
+        placeholder: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let pen = self.pen_mut(pane);
+        if shown == pen.place {
             return;
         }
         if let Some((server_id, account_id, _)) = shown {
             // The server has another account now: the texts of the one before are gone.
-            self.composer
-                .drafts
+            pen.drafts
                 .retain(|(server, account, _), _| *server != server_id || *account == account_id);
         }
-        let content = self.composer.input.read(cx).content();
-        if let Some(before) = self.composer.place.take() {
+        let content = pen.input.read(cx).content();
+        if let Some(before) = pen.place.take() {
             let draft = Draft {
                 content,
-                reply_to: self.composer.reply_to.take(),
-                editing: self.composer.editing.take(),
+                reply_to: pen.reply_to.take(),
+                editing: pen.editing.take(),
             };
             let empty = draft.content.text().trim().is_empty()
                 && draft.reply_to.is_none()
                 && draft.editing.is_none();
             if empty {
-                self.composer.drafts.remove(&before);
+                pen.drafts.remove(&before);
             } else {
-                self.composer.drafts.insert(before, draft);
+                pen.drafts.insert(before, draft);
             }
         }
-        let first = shown.is_some() && !std::mem::replace(&mut self.composer.placed, true);
-        let held = shown.and_then(|place| self.composer.drafts.remove(&place));
+        let first = shown.is_some() && !std::mem::replace(&mut pen.placed, true);
+        let held = shown.and_then(|place| pen.drafts.remove(&place));
         let (content, reply_to, editing) = match held {
             Some(draft) => (draft.content, draft.reply_to, draft.editing),
             // What was put into the composer before the window had a place stays.
             None if first => (
-                self.composer.input.read(cx).content(),
-                self.composer.reply_to,
-                self.composer.editing.clone(),
+                pen.input.read(cx).content(),
+                pen.reply_to,
+                pen.editing.clone(),
             ),
             None => (InputContent::new(""), None, None),
         };
-        let placeholder: SharedString = view
-            .workspace()
-            .and_then(|workspace| workspace.channel.as_ref())
-            .map(|channel| {
-                text::message_placeholder(&channel.name, channel.kind == ChannelKind::Voice)
-            })
-            .unwrap_or_default()
-            .into();
-        self.composer.input.update(cx, |input, cx| {
+        pen.input.update(cx, |input, cx| {
             input.set_value(content, window, cx);
             input.set_placeholder(placeholder, window, cx);
         });
-        self.composer.place = shown;
-        self.composer.reply_to = reply_to;
-        self.composer.editing = editing;
+        pen.place = shown;
+        pen.reply_to = reply_to;
+        pen.editing = editing;
         if !first {
-            self.composer.problem = None;
-            self.composer.mention = None;
+            pen.problem = None;
+            pen.mention = None;
         }
     }
 
     /// The text of the composer changed: the mention picker follows the text before the
     /// cursor, and a statement about the text before is put away.
-    pub(crate) fn composer_changed(&mut self, cx: &mut Context<Self>) {
-        self.composer.problem = None;
+    pub(crate) fn composer_changed(&mut self, pane: Pane, cx: &mut Context<Self>) {
+        let pen = self.pen_mut(pane);
+        pen.problem = None;
         let (value, cursor) = {
-            let input = self.composer.input.read(cx);
+            let input = pen.input.read(cx);
             (input.value(), input.cursor())
         };
         let query = mention_query(&value, cursor);
-        self.composer.mention = query.map(|(start, query)| MentionPicker {
-            chosen: match &self.composer.mention {
+        let open = pen.mention.take();
+        pen.mention = query.map(|(start, query)| MentionPicker {
+            chosen: match &open {
                 Some(open) if open.start == start && open.query == query => open.chosen,
                 _ => 0,
             },
@@ -369,8 +396,8 @@ impl Shell {
         cx.notify();
     }
 
-    fn mention_candidates(&self) -> Vec<Candidate> {
-        let (Some(view), Some(open)) = (&self.view, &self.composer.mention) else {
+    fn mention_candidates(&self, pane: Pane) -> Vec<Candidate> {
+        let (Some(view), Some(open)) = (&self.view, &self.pen(pane).mention) else {
             return Vec::new();
         };
         view.workspace()
@@ -381,15 +408,16 @@ impl Shell {
     /// Puts a mention into the text in place of the typed `@` and its query.
     fn take_candidate(
         &mut self,
+        pane: Pane,
         candidate: &Candidate,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(open) = self.composer.mention.take() else {
+        let Some(open) = self.pen_mut(pane).mention.take() else {
             return;
         };
         let token = InlineToken::new(token_id(candidate.target), format!("@{}", candidate.name));
-        self.composer.input.update(cx, |input, cx| {
+        self.pen_mut(pane).input.update(cx, |input, cx| {
             let end = input.cursor();
             if input
                 .replace_range_with_token(open.start..end, token, window, cx)
@@ -405,11 +433,17 @@ impl Shell {
     /// A key of the text area before the text area takes it. The mention picker takes the
     /// arrow keys, Tab and Escape; an empty composer edits the last own message with the
     /// arrow up; Escape ends a reply or an edit. True when the key was taken.
-    fn composer_step(&mut self, step: Step, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if self.composer.mention.is_some() {
-            let found = self.mention_candidates();
+    fn composer_step(
+        &mut self,
+        pane: Pane,
+        step: Step,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.pen_mut(pane).mention.is_some() {
+            let found = self.mention_candidates(pane);
             if !found.is_empty() {
-                let Some(open) = &mut self.composer.mention else {
+                let Some(open) = &mut self.pen_mut(pane).mention else {
                     return false;
                 };
                 match step {
@@ -417,22 +451,25 @@ impl Shell {
                     Step::Up => open.chosen = (open.chosen + found.len() - 1) % found.len(),
                     Step::Tab => {
                         let chosen = found[open.chosen.min(found.len() - 1)].clone();
-                        self.take_candidate(&chosen, window, cx);
+                        self.take_candidate(pane, &chosen, window, cx);
                     }
-                    Step::Escape => self.composer.mention = None,
+                    Step::Escape => self.pen_mut(pane).mention = None,
                 }
                 cx.notify();
                 return true;
             }
         }
-        let empty = self.composer.input.read(cx).value().is_empty();
+        let empty = self.pen_mut(pane).input.read(cx).value().is_empty();
         match step {
-            Step::Escape if self.composer.editing.is_some() || self.composer.reply_to.is_some() => {
-                self.cancel_compose_state(window, cx);
+            Step::Escape
+                if self.pen_mut(pane).editing.is_some()
+                    || self.pen_mut(pane).reply_to.is_some() =>
+            {
+                self.cancel_compose_state(pane, window, cx);
                 true
             }
-            Step::Up if empty && self.composer.editing.is_none() => {
-                let last = self.composer_feed().and_then(|feed| {
+            Step::Up if empty && self.pen_mut(pane).editing.is_none() => {
+                let last = self.composer_feed(pane).and_then(|feed| {
                     feed.rows.iter().rev().find_map(|row| match row {
                         FeedRow::Message(row) if row.can_edit => Some(row.message.id),
                         _ => None,
@@ -440,7 +477,7 @@ impl Shell {
                 });
                 match last {
                     Some(message_id) => {
-                        self.edit_message(message_id, window, cx);
+                        self.edit_message(pane, message_id, window, cx);
                         true
                     }
                     None => false,
@@ -453,6 +490,7 @@ impl Shell {
     /// A key that the text area has no action for: the keys of bold and italic.
     fn composer_key(
         &mut self,
+        pane: Pane,
         event: &KeyDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -462,8 +500,8 @@ impl Shell {
             return false;
         }
         match event.keystroke.key.as_str() {
-            "b" => self.wrap_selection("**", "**", window, cx),
-            "i" => self.wrap_selection("*", "*", window, cx),
+            "b" => self.wrap_selection(pane, "**", "**", window, cx),
+            "i" => self.wrap_selection(pane, "*", "*", window, cx),
             _ => return false,
         }
         true
@@ -471,7 +509,7 @@ impl Shell {
 
     /// A picture in the clipboard becomes a file of the message. False when the clipboard
     /// holds no picture: the text area pastes its text.
-    fn paste_picture(&mut self, cx: &mut Context<Self>) -> bool {
+    fn paste_picture(&mut self, pane: Pane, cx: &mut Context<Self>) -> bool {
         let Some(item) = cx.read_from_clipboard() else {
             return false;
         };
@@ -490,28 +528,42 @@ impl Shell {
         if pictures.is_empty() {
             return false;
         }
-        self.attach(pictures, cx);
+        self.attach(pane, pictures, cx);
         true
     }
 
     /// Attaches files to the next message of the shown place.
-    pub(crate) fn attach(&mut self, sources: Vec<UploadSource>, cx: &mut Context<Self>) {
-        let Some((server_id, place)) = self.composer_place() else {
+    pub(crate) fn attach(
+        &mut self,
+        pane: Pane,
+        sources: Vec<UploadSource>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((server_id, place)) = self.composer_place(pane) else {
             return;
         };
         let refused = self
             .state
             .update(cx, |state, cx| state.attach(server_id, place, sources, cx));
-        self.composer.problem = refused.first().map(text::attach_refusal);
+        self.pen_mut(pane).problem = refused.first().map(text::attach_refusal);
         cx.notify();
     }
 
     /// Attaches the files at these paths, as the file dialog and a drop do.
-    pub fn attach_paths(&mut self, paths: Vec<std::path::PathBuf>, cx: &mut Context<Self>) {
-        self.attach(paths.into_iter().map(UploadSource::File).collect(), cx);
+    pub fn attach_paths(
+        &mut self,
+        pane: Pane,
+        paths: Vec<std::path::PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        self.attach(
+            pane,
+            paths.into_iter().map(UploadSource::File).collect(),
+            cx,
+        );
     }
 
-    fn choose_files(&mut self, cx: &mut Context<Self>) {
+    fn choose_files(&mut self, pane: Pane, cx: &mut Context<Self>) {
         let chosen = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -520,7 +572,7 @@ impl Shell {
         });
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = chosen.await {
-                let _ = this.update(cx, |this, cx| this.attach_paths(paths, cx));
+                let _ = this.update(cx, |this, cx| this.attach_paths(pane, paths, cx));
             }
         })
         .detach();
@@ -529,13 +581,14 @@ impl Shell {
     /// Puts marks around the selected text, or around the place of the cursor.
     fn wrap_selection(
         &mut self,
+        pane: Pane,
         before: &str,
         after: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let (before, after) = (before.to_owned(), after.to_owned());
-        self.composer.input.update(cx, |input, cx| {
+        self.pen_mut(pane).input.update(cx, |input, cx| {
             let range = input.selected_range();
             let selected = input.value()[range.clone()].to_owned();
             input.replace(format!("{before}{selected}{after}"), window, cx);
@@ -544,13 +597,19 @@ impl Shell {
             input.set_selected_range(start..start + selected.len(), cx);
             input.focus(window, cx);
         });
-        self.composer_changed(cx);
+        self.composer_changed(pane, cx);
     }
 
     /// Puts a mark at the start of the line of the cursor, or of each selected line.
-    fn prefix_lines(&mut self, prefix: &str, window: &mut Window, cx: &mut Context<Self>) {
+    fn prefix_lines(
+        &mut self,
+        pane: Pane,
+        prefix: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let prefix = prefix.to_owned();
-        self.composer.input.update(cx, |input, cx| {
+        self.pen_mut(pane).input.update(cx, |input, cx| {
             let value = input.value().to_string();
             let range = input.selected_range();
             let start = value[..range.start].rfind('\n').map_or(0, |at| at + 1);
@@ -566,46 +625,51 @@ impl Shell {
             input.set_selected_range(cursor..cursor, cx);
             input.focus(window, cx);
         });
-        self.composer_changed(cx);
+        self.composer_changed(pane, cx);
     }
 
     /// Starts a reply to a message of the shown place.
     pub fn reply_to_message(
         &mut self,
+        pane: Pane,
         message_id: MessageId,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.composer.reply_to = Some(message_id);
-        self.composer.editing = None;
-        self.composer
+        self.pen_mut(pane).reply_to = Some(message_id);
+        self.pen_mut(pane).editing = None;
+        self.pen_mut(pane)
             .input
             .update(cx, |input, cx| input.focus(window, cx));
         cx.notify();
     }
 
-    fn held_message(&self, message_id: MessageId) -> Option<Arc<Message>> {
-        self.composer_feed()?.rows.iter().find_map(|row| match row {
-            FeedRow::Message(row) if row.message.id == message_id => Some(row.message.clone()),
-            _ => None,
-        })
+    fn held_message(&self, pane: Pane, message_id: MessageId) -> Option<Arc<Message>> {
+        self.composer_feed(pane)?
+            .rows
+            .iter()
+            .find_map(|row| match row {
+                FeedRow::Message(row) if row.message.id == message_id => Some(row.message.clone()),
+                _ => None,
+            })
     }
 
     /// Puts the text of an own message into the composer, to change it.
     pub fn edit_message(
         &mut self,
+        pane: Pane,
         message_id: MessageId,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(message) = self.held_message(message_id) else {
+        let Some(message) = self.held_message(pane, message_id) else {
             return;
         };
         let Some(document) = &message.document else {
             return;
         };
         let names = self
-            .composer_feed()
+            .composer_feed(pane)
             .map(|feed| feed.names.clone())
             .unwrap_or_default();
         let name = |target: MentionTarget| match target {
@@ -632,13 +696,13 @@ impl Shell {
                 content = with;
             }
         }
-        self.composer.editing = Some(Editing {
+        self.pen_mut(pane).editing = Some(Editing {
             message_id,
             original: Arc::new((document.clone(), shown)),
         });
-        self.composer.reply_to = None;
-        self.composer.problem = None;
-        self.composer.input.update(cx, |input, cx| {
+        self.pen_mut(pane).reply_to = None;
+        self.pen_mut(pane).problem = None;
+        self.pen_mut(pane).input.update(cx, |input, cx| {
             input.set_value(content, window, cx);
             let end = input.value().len();
             input.set_selected_range(end..end, cx);
@@ -648,35 +712,35 @@ impl Shell {
     }
 
     /// Ends a reply or an edit without sending.
-    fn cancel_compose_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.composer.editing.take().is_some() {
-            self.composer
+    fn cancel_compose_state(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pen_mut(pane).editing.take().is_some() {
+            self.pen_mut(pane)
                 .input
                 .update(cx, |input, cx| input.set_value("", window, cx));
         }
-        self.composer.reply_to = None;
-        self.composer.problem = None;
+        self.pen_mut(pane).reply_to = None;
+        self.pen_mut(pane).problem = None;
         cx.notify();
     }
 
     /// Sends what the composer holds: a new message, or the new text of the message that
     /// is edited. A text that the server would refuse is not sent, and the reason is told.
-    pub fn submit_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.composer.mention.is_some() {
-            let found = self.mention_candidates();
-            if let Some(open) = &self.composer.mention
+    pub fn submit_message(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pen_mut(pane).mention.is_some() {
+            let found = self.mention_candidates(pane);
+            if let Some(open) = &self.pen_mut(pane).mention
                 && let Some(chosen) = found.get(open.chosen.min(found.len().saturating_sub(1)))
             {
                 let chosen = chosen.clone();
-                self.take_candidate(&chosen, window, cx);
+                self.take_candidate(pane, &chosen, window, cx);
                 return;
             }
         }
-        let Some((server_id, place)) = self.composer_place() else {
+        let Some((server_id, place)) = self.composer_place(pane) else {
             return;
         };
-        let content = self.composer.input.read(cx).content();
-        let editing = self.composer.editing.clone();
+        let content = self.pen_mut(pane).input.read(cx).content();
+        let editing = self.pen_mut(pane).editing.clone();
         let document = match &editing {
             Some(editing) => {
                 let (original, shown) = editing.original.as_ref();
@@ -689,28 +753,32 @@ impl Shell {
             .view
             .as_ref()
             .and_then(|view| view.workspace())
-            .map(|workspace| workspace.draft.clone())
+            .map(|workspace| match (pane, &workspace.thread) {
+                (Pane::Thread, Some(thread)) => thread.draft.clone(),
+                (Pane::Thread, None) => Vec::new(),
+                (Pane::Main, _) => workspace.draft.clone(),
+            })
             .unwrap_or_default();
         if draft
             .iter()
             .any(|file| matches!(file.progress.stage, UploadStage::Failed(_)))
         {
-            self.composer.problem = Some(text::REMOVE_FAILED_FILE.to_owned());
+            self.pen_mut(pane).problem = Some(text::REMOVE_FAILED_FILE.to_owned());
             cx.notify();
             return;
         }
         let has_files = match editing {
             Some(message_id) => self
-                .held_message(message_id)
+                .held_message(pane, message_id)
                 .is_some_and(|message| !message.attachments.is_empty()),
             None => !draft.is_empty(),
         };
         if let Err(problem) = compose::check(&document, has_files) {
-            self.composer.problem = Some(text::compose_problem(problem));
+            self.pen_mut(pane).problem = Some(text::compose_problem(problem));
             cx.notify();
             return;
         }
-        let reply_to = self.composer.reply_to;
+        let reply_to = self.pen_mut(pane).reply_to;
         let sent = self.state.update(cx, |state, cx| match editing {
             Some(message_id) => {
                 state.edit_message(server_id, message_id, document, cx);
@@ -719,35 +787,34 @@ impl Shell {
             None => state.send_message(server_id, place, document, reply_to, cx),
         });
         if !sent {
-            self.composer.problem = Some(text::NOT_SENT.to_owned());
+            self.pen_mut(pane).problem = Some(text::NOT_SENT.to_owned());
             cx.notify();
             return;
         }
-        self.composer.editing = None;
-        self.composer.reply_to = None;
-        self.composer.problem = None;
-        self.composer
+        self.pen_mut(pane).editing = None;
+        self.pen_mut(pane).reply_to = None;
+        self.pen_mut(pane).problem = None;
+        self.pen_mut(pane)
             .input
             .update(cx, |input, cx| input.set_value("", window, cx));
         // The person sent a message: the list shows its end.
         if editing.is_none() {
-            self.feed.list.set_follow_mode(gpui::FollowMode::Tail);
+            self.list(pane).list.set_follow_mode(gpui::FollowMode::Tail);
         }
         cx.notify();
     }
 
-    /// Opens the emoji picker: for a reaction to a message, or for the text of the
-    /// composer.
+    /// Opens the emoji picker: for a reaction to a message, or for the text of a composer.
     pub fn open_emoji_picker(
         &mut self,
-        message_id: Option<MessageId>,
+        target: EmojiTarget,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.composer
             .emoji_find
             .update(cx, |find, cx| find.set_value("", window, cx));
-        self.open_layer(Layer::Emoji(message_id), window, cx);
+        self.open_layer(Layer::Emoji(target), window, cx);
         self.focus_field(&self.composer.emoji_find.clone(), window, cx);
     }
 
@@ -756,18 +823,24 @@ impl Shell {
             return;
         };
         self.close_layer(window, cx);
-        match (target, self.composer_place()) {
-            (Some(message_id), Some((server_id, _))) => {
+        let server_id = self
+            .view
+            .as_ref()
+            .and_then(|view| view.selected.as_ref())
+            .map(|server| server.id);
+        match (target, server_id) {
+            (EmojiTarget::React(message_id), Some(server_id)) => {
                 self.state.update(cx, |state, cx| {
                     state.react(server_id, message_id, emoji.to_owned(), true, cx);
                 });
             }
-            _ => {
-                self.composer.input.update(cx, |input, cx| {
+            (EmojiTarget::React(_), None) => {}
+            (EmojiTarget::Compose(pane), _) => {
+                self.pen_mut(pane).input.update(cx, |input, cx| {
                     input.insert(emoji, window, cx);
                     input.focus(window, cx);
                 });
-                self.composer_changed(cx);
+                self.composer_changed(pane, cx);
             }
         }
     }
@@ -870,12 +943,15 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The composer of the shown channel (view A of the design).
+    /// The composer of a pane (view A of the design): of the place of the main area, or
+    /// of the thread of the side panel. `draft` holds the files of the next message, and
+    /// `permanent` states that a sent message of the place cannot be edited.
     pub(crate) fn render_composer(
         &mut self,
-        workspace: &WorkspaceView,
+        pane: Pane,
+        draft: &[DraftFile],
         compact: bool,
-        _: &mut Window,
+        permanent: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
@@ -883,7 +959,7 @@ impl Shell {
         let side = if compact { 12.0 } else { 16.0 };
         let ring_width = theme.metrics.focus_ring;
         let radius_small = theme.metrics.radius_small;
-        self.composer.input.update(cx, |input, _| {
+        self.pen_mut(pane).input.update(cx, |input, _| {
             input.set_editor_style(InputEditorStyle {
                 foreground: colors.ink.into(),
                 muted_foreground: colors.ink_3.into(),
@@ -947,9 +1023,9 @@ impl Shell {
                     text::BOLD,
                     letter("B", FontWeight::EXTRA_BOLD),
                 )
-                .on_click(
-                    cx.listener(|this, _, window, cx| this.wrap_selection("**", "**", window, cx)),
-                ),
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.wrap_selection(pane, "**", "**", window, cx)
+                })),
             )
             .child(
                 tool(
@@ -961,9 +1037,9 @@ impl Shell {
                         .child("I")
                         .into_any_element(),
                 )
-                .on_click(
-                    cx.listener(|this, _, window, cx| this.wrap_selection("*", "*", window, cx)),
-                ),
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.wrap_selection(pane, "*", "*", window, cx)
+                })),
             )
             .child(
                 tool(
@@ -971,15 +1047,15 @@ impl Shell {
                     text::STRIKETHROUGH,
                     div().line_through().child("S").into_any_element(),
                 )
-                .on_click(
-                    cx.listener(|this, _, window, cx| this.wrap_selection("~~", "~~", window, cx)),
-                ),
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.wrap_selection(pane, "~~", "~~", window, cx)
+                })),
             )
             .child(divider())
             .child(
-                tool("format-code", text::INLINE_CODE, shown(Icon::Code)).on_click(
-                    cx.listener(|this, _, window, cx| this.wrap_selection("`", "`", window, cx)),
-                ),
+                tool("format-code", text::INLINE_CODE, shown(Icon::Code)).on_click(cx.listener(
+                    move |this, _, window, cx| this.wrap_selection(pane, "`", "`", window, cx),
+                )),
             )
             .child(
                 tool(
@@ -987,55 +1063,62 @@ impl Shell {
                     text::CODE_BLOCK,
                     shown(Icon::CodeBlock),
                 )
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.wrap_selection("```\n", "\n```", window, cx);
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.wrap_selection(pane, "```\n", "\n```", window, cx);
                 })),
             )
             .child(divider())
             .child(
                 tool("format-link", text::LINK, shown(Icon::Link)).on_click(cx.listener(
-                    |this, _, window, cx| this.wrap_selection("[", "](https://)", window, cx),
+                    move |this, _, window, cx| {
+                        this.wrap_selection(pane, "[", "](https://)", window, cx);
+                    },
                 )),
             )
+            .child(tool("format-list", text::LIST, shown(Icon::List)).on_click(
+                cx.listener(move |this, _, window, cx| this.prefix_lines(pane, "- ", window, cx)),
+            ))
             .child(
-                tool("format-list", text::LIST, shown(Icon::List)).on_click(
-                    cx.listener(|this, _, window, cx| this.prefix_lines("- ", window, cx)),
-                ),
-            )
-            .child(
-                tool("format-quote", text::QUOTE, shown(Icon::Quote)).on_click(
-                    cx.listener(|this, _, window, cx| this.prefix_lines("> ", window, cx)),
-                ),
+                tool("format-quote", text::QUOTE, shown(Icon::Quote)).on_click(cx.listener(
+                    move |this, _, window, cx| this.prefix_lines(pane, "> ", window, cx),
+                )),
             )
             .child(divider())
             .child(
                 tool("attach-file", text::ATTACH_FILE, shown(Icon::Clip))
-                    .on_click(cx.listener(|this, _, _, cx| this.choose_files(cx))),
+                    .on_click(cx.listener(move |this, _, _, cx| this.choose_files(pane, cx))),
             )
             .child(
-                tool("insert-emoji", text::EMOJI, shown(Icon::Smile)).on_click(
-                    cx.listener(|this, _, window, cx| this.open_emoji_picker(None, window, cx)),
-                ),
+                tool("insert-emoji", text::EMOJI, shown(Icon::Smile)).on_click(cx.listener(
+                    move |this, _, window, cx| {
+                        this.open_emoji_picker(EmojiTarget::Compose(pane), window, cx)
+                    },
+                )),
             )
             .when(!compact, |tools| {
                 tools.child(div().flex_1()).child(
                     div()
+                        .id("composer-hint")
+                        .debug_selector(|| "composer-hint".to_owned())
                         .flex_none()
                         .pr(u(5.0))
                         .text_size(u(12.5))
                         .ink(colors.ink_3)
-                        .child(text::SEND_HINT),
+                        .child(if permanent {
+                            text::PERMANENT_COMPOSER
+                        } else {
+                            text::SEND_HINT
+                        }),
                 )
             });
 
         // The state above the box: a reply or an edit, with the control that ends it.
-        let banner = match (&self.composer.editing, self.composer.reply_to) {
-            (Some(_), _) => Some((Icon::Edit, SharedString::from(text::EDITING_MESSAGE), None)),
-            (None, Some(message_id)) => {
-                let quoted = self.held_message(message_id);
-                let names = workspace
-                    .feed
-                    .as_ref()
+        let banner = match (self.pen(pane).editing.is_some(), self.pen(pane).reply_to) {
+            (true, _) => Some((Icon::Edit, SharedString::from(text::EDITING_MESSAGE), None)),
+            (false, Some(message_id)) => {
+                let quoted = self.held_message(pane, message_id);
+                let names = self
+                    .pane_feed(pane)
                     .map(|feed| feed.names.clone())
                     .unwrap_or_default();
                 let author = quoted
@@ -1048,7 +1131,7 @@ impl Shell {
                     .map(|document| plain_text(document, &names, 80));
                 Some((Icon::Reply, text::replying_to(&author).into(), excerpt))
             }
-            (None, None) => None,
+            (false, None) => None,
         }
         .map(|(shown, title, excerpt)| {
             div()
@@ -1082,17 +1165,21 @@ impl Shell {
                         .icon(Icon::X)
                         .tooltip(text::CANCEL)
                         .selector("cancel-compose-state")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.cancel_compose_state(window, cx);
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.cancel_compose_state(pane, window, cx);
                         })),
                 )
         });
 
         // The files of the next message, each with the state of its upload.
-        let place = self.composer_place();
-        let files = (!workspace.draft.is_empty()).then(|| {
-            div().flex().flex_wrap().gap(u(6.0)).mb(u(5.0)).children(
-                workspace.draft.iter().enumerate().map(|(index, file)| {
+        let place = self.composer_place(pane);
+        let files = (!draft.is_empty()).then(|| {
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(u(6.0))
+                .mb(u(5.0))
+                .children(draft.iter().enumerate().map(|(index, file)| {
                     let upload = file.upload;
                     let progress = file.progress;
                     let (state, failed): (SharedString, bool) = match progress.stage {
@@ -1169,12 +1256,11 @@ impl Shell {
                                     }
                                 })),
                         )
-                }),
-            )
+                }))
         });
 
         let problem = self
-            .composer
+            .pen(pane)
             .problem
             .clone()
             .or_else(|| self.state.read(cx).pending().message_refused.clone())
@@ -1190,13 +1276,13 @@ impl Shell {
             });
 
         // The mention picker, above the box.
-        let found = self.mention_candidates();
+        let found = self.mention_candidates(pane);
         let chosen = self
-            .composer
+            .pen(pane)
             .mention
             .as_ref()
             .map_or(0, |open| open.chosen.min(found.len().saturating_sub(1)));
-        let picker = (self.composer.mention.is_some() && !found.is_empty()).then(|| {
+        let picker = (self.pen(pane).mention.is_some() && !found.is_empty()).then(|| {
             div()
                 .id("mention-picker")
                 .role(Role::ListBox)
@@ -1237,7 +1323,7 @@ impl Shell {
                         })
                         .hover(move |style| style.bg(Hsla::from(colors.plaster)))
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.take_candidate(&taken, window, cx);
+                            this.take_candidate(pane, &taken, window, cx);
                         }))
                         .child(match seed {
                             Some(seed) => Mosaic::new(MosaicKind::Large, seed, 18.0)
@@ -1265,10 +1351,21 @@ impl Shell {
                 }))
         });
 
-        let editing = self.composer.editing.is_some();
+        // A side panel has no room for the statement in its toolbar.
+        let permanence = (permanent && compact).then(|| {
+            div()
+                .id("composer-permanent")
+                .debug_selector(|| "composer-permanent".to_owned())
+                .mb(u(4.0))
+                .text_size(u(12.5))
+                .line_height(u(17.0))
+                .ink(colors.ink_2)
+                .child(text::PERMANENT_COMPOSER)
+        });
+        let editing = self.pen(pane).editing.is_some();
         let token_wash = colors.terracotta_wash;
         let token_ink = colors.terracotta_deep;
-        let input = Textarea::new(&self.composer.input).token(move |context, _, _| {
+        let input = Textarea::new(&self.pen(pane).input).token(move |context, _, _| {
             div()
                 .px(u(3.0))
                 .rounded(u(2.0))
@@ -1296,10 +1393,13 @@ impl Shell {
                     .py(u(6.0))
                     .child(
                         div()
-                            .id("composer-input")
+                            .id(pane.id("composer-input"))
                             .role(Role::TextInput)
-                            .aria_label(text::MESSAGES)
-                            .debug_selector(|| "composer-input".to_owned())
+                            .aria_label(match pane {
+                                Pane::Main => text::MESSAGES,
+                                Pane::Thread => text::REPLY_IN_THREAD,
+                            })
+                            .debug_selector(move || pane.id("composer-input").to_owned())
                             .flex_1()
                             .min_w_0()
                             .text_size(u(14.5))
@@ -1309,10 +1409,10 @@ impl Shell {
                     )
                     .child(
                         div()
-                            .id("send-message")
+                            .id(pane.id("send-message"))
                             .role(Role::Button)
                             .aria_label(if editing { text::SAVE_EDIT } else { text::SEND })
-                            .debug_selector(|| "send-message".to_owned())
+                            .debug_selector(move || pane.id("send-message").to_owned())
                             .flex()
                             .flex_none()
                             .items_center()
@@ -1332,8 +1432,8 @@ impl Shell {
                                 ))
                             })
                             .tooltip(tooltip(if editing { text::SAVE_EDIT } else { text::SEND }))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.submit_message(window, cx);
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.submit_message(pane, window, cx);
                             }))
                             .child(icon(
                                 if editing { Icon::Check } else { Icon::Send },
@@ -1345,41 +1445,43 @@ impl Shell {
             .children(picker);
 
         div()
-            .id("composer")
-            .debug_selector(|| "composer".to_owned())
+            .id(pane.id("composer"))
+            .debug_selector(move || pane.id("composer").to_owned())
             .flex_none()
             .pt(u(2.0))
             .px(u(side))
             .pb(u(10.0))
-            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                if this.composer_key(event, window, cx) {
+            .capture_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                if this.composer_key(pane, event, window, cx) {
                     cx.stop_propagation();
                 }
             }))
             // The text area binds these keys to its actions, and an action is dispatched
             // before a key: the composer takes the action first.
-            .capture_action(cx.listener(|this, _: &input::MoveUp, window, cx| {
-                if this.composer_step(Step::Up, window, cx) {
+            .capture_action(cx.listener(move |this, _: &input::MoveUp, window, cx| {
+                if this.composer_step(pane, Step::Up, window, cx) {
                     cx.stop_propagation();
                 }
             }))
-            .capture_action(cx.listener(|this, _: &input::MoveDown, window, cx| {
-                if this.composer_step(Step::Down, window, cx) {
+            .capture_action(cx.listener(move |this, _: &input::MoveDown, window, cx| {
+                if this.composer_step(pane, Step::Down, window, cx) {
                     cx.stop_propagation();
                 }
             }))
-            .capture_action(cx.listener(|this, _: &input::IndentInline, window, cx| {
-                if this.composer_step(Step::Tab, window, cx) {
+            .capture_action(
+                cx.listener(move |this, _: &input::IndentInline, window, cx| {
+                    if this.composer_step(pane, Step::Tab, window, cx) {
+                        cx.stop_propagation();
+                    }
+                }),
+            )
+            .capture_action(cx.listener(move |this, _: &input::Escape, window, cx| {
+                if this.composer_step(pane, Step::Escape, window, cx) {
                     cx.stop_propagation();
                 }
             }))
-            .capture_action(cx.listener(|this, _: &input::Escape, window, cx| {
-                if this.composer_step(Step::Escape, window, cx) {
-                    cx.stop_propagation();
-                }
-            }))
-            .capture_action(cx.listener(|this, _: &input::Paste, _, cx| {
-                if this.paste_picture(cx) {
+            .capture_action(cx.listener(move |this, _: &input::Paste, _, cx| {
+                if this.paste_picture(pane, cx) {
                     cx.stop_propagation();
                 }
             }))
@@ -1390,12 +1492,13 @@ impl Shell {
                     cx.propagate();
                 }
             })
-            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
-                this.attach_paths(paths.paths().to_vec(), cx);
+            .on_drop(cx.listener(move |this, paths: &ExternalPaths, _, cx| {
+                this.attach_paths(pane, paths.paths().to_vec(), cx);
             }))
             .drag_over::<ExternalPaths>(move |style, _, _, _| {
                 style.bg(Hsla::from(colors.terracotta_wash))
             })
+            .children(permanence)
             .children(banner)
             .children(files)
             .children(problem)
@@ -1405,6 +1508,7 @@ impl Shell {
 
     /// Follows the text area of the composer: a change of the text, and Enter.
     pub(crate) fn observe_composer(
+        pane: Pane,
         input: &Entity<TextareaState>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1412,9 +1516,11 @@ impl Shell {
         cx.subscribe_in(
             input,
             window,
-            |this, _, event: &InputEvent, window, cx| match event {
-                InputEvent::Change => this.composer_changed(cx),
-                InputEvent::PressEnter { shift: false, .. } => this.submit_message(window, cx),
+            move |this, _, event: &InputEvent, window, cx| match event {
+                InputEvent::Change => this.composer_changed(pane, cx),
+                InputEvent::PressEnter { shift: false, .. } => {
+                    this.submit_message(pane, window, cx)
+                }
                 InputEvent::PressEnter { .. } | InputEvent::Focus | InputEvent::Blur => {
                     cx.notify();
                 }
@@ -1423,8 +1529,8 @@ impl Shell {
     }
 
     /// Moves the keyboard focus into the composer.
-    pub fn focus_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.composer
+    pub fn focus_composer(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
+        self.pen_mut(pane)
             .input
             .update(cx, |input, cx| input.focus(window, cx));
     }
@@ -1439,31 +1545,37 @@ impl Shell {
     }
 
     /// Puts text into the composer, as typing does.
-    pub fn type_message(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn type_message(
+        &mut self,
+        pane: Pane,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let text = text.to_owned();
-        self.composer.input.update(cx, |input, cx| {
+        self.pen_mut(pane).input.update(cx, |input, cx| {
             let end = text.len();
             input.set_value(text, window, cx);
             input.set_selected_range(end..end, cx);
         });
-        self.composer_changed(cx);
+        self.composer_changed(pane, cx);
     }
 
     /// The text that the composer holds.
-    pub fn composer_text(&self, cx: &gpui::App) -> String {
-        self.composer.input.read(cx).value().to_string()
+    pub fn composer_text(&self, pane: Pane, cx: &gpui::App) -> String {
+        self.pen(pane).input.read(cx).value().to_string()
     }
 
     /// Why the composer did not send its text.
-    pub fn composer_problem(&self) -> Option<&str> {
-        self.composer.problem.as_deref()
+    pub fn composer_problem(&self, pane: Pane) -> Option<&str> {
+        self.pen(pane).problem.as_deref()
     }
 
     /// The message that the composer answers, and the message that it changes.
-    pub fn compose_state(&self) -> (Option<MessageId>, Option<MessageId>) {
+    pub fn compose_state(&self, pane: Pane) -> (Option<MessageId>, Option<MessageId>) {
         (
-            self.composer.reply_to,
-            self.composer
+            self.pen(pane).reply_to,
+            self.pen(pane)
                 .editing
                 .as_ref()
                 .map(|editing| editing.message_id),
@@ -1473,15 +1585,16 @@ impl Shell {
     /// Takes the entry of the mention picker with this name.
     pub fn pick_mention(
         &mut self,
+        pane: Pane,
         name: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let found = self.mention_candidates();
+        let found = self.mention_candidates(pane);
         match found.iter().find(|candidate| candidate.name == name) {
             Some(candidate) => {
                 let candidate = candidate.clone();
-                self.take_candidate(&candidate, window, cx);
+                self.take_candidate(pane, &candidate, window, cx);
                 true
             }
             None => false,

@@ -1,8 +1,8 @@
 # junto-client
 
-The Junto desktop application: a gpui window on `junto-client-core` and `junto-media`. The binary is `junto`. The design decisions are in [`docs/adr/`](../../docs/adr/README.md): ADR 0730 describes this crate, ADR 0731 its theme and components, ADR 0732 joining a server in the window, ADR 0733 the media engine, ADR 0734 the call of a client, ADR 0735 the screens of a voice call, ADR 0736 the screen capture, ADR 0737 shares in the media engine, ADR 0738 the screens of a share and of a recording, ADR 0739 the rules of a call, and ADR 0740 the message list and the composer.
+The Junto desktop application: a gpui window on `junto-client-core` and `junto-media`. The binary is `junto`. The design decisions are in [`docs/adr/`](../../docs/adr/README.md): ADR 0730 describes this crate, ADR 0731 its theme and components, ADR 0732 joining a server in the window, ADR 0733 the media engine, ADR 0734 the call of a client, ADR 0735 the screens of a voice call, ADR 0736 the screen capture, ADR 0737 shares in the media engine, ADR 0738 the screens of a share and of a recording, ADR 0739 the rules of a call, ADR 0740 the message list and the composer, and ADR 0741 the thread panel, pins, permanent messages and direct conversations.
 
-This version shows the servers of the server book, their workspaces and channels, the people in voice channels, and the state of each server. It joins a server with a code or a request for access, and it holds a voice call in a voice channel: microphone, sound, mute, a volume per person, levels, push-to-talk and the choice of the sound devices. In a call a person shares a screen or a window with its sound, watches the shares of the others, starts and stops a recording, and uses the rules of the room: meeting mode with raised hands, the lock, the user limit, requests to enter, invitations, the menu of a person with blocks, removal and move. A person reads and writes messages in a text channel and in the chat of a voice channel: formatted text, replies, mentions, reactions, files, edits and deletions, with unread signs in the channel list. It has no direct conversations in the window, no threads, no search, no camera and no direct-message calls. It is built and tested on macOS and builds for Linux, where the screen capture is not built yet; Windows is not supported yet.
+This version shows the servers of the server book, their workspaces and channels, the people in voice channels, and the state of each server. It joins a server with a code or a request for access, and it holds a voice call in a voice channel: microphone, sound, mute, a volume per person, levels, push-to-talk and the choice of the sound devices. In a call a person shares a screen or a window with its sound, watches the shares of the others, starts and stops a recording, and uses the rules of the room: meeting mode with raised hands, the lock, the user limit, requests to enter, invitations, the menu of a person with blocks, removal and move. A person reads and writes messages in a text channel, in the chat of a voice channel and in a direct conversation: formatted text, replies, mentions, reactions, files, edits and deletions, with unread signs in the channel list. A person answers in the thread of a message, forks a thread into a channel, and pins messages. It has no list of notices, no notification settings, no system notifications, no search, no camera and no direct-message calls. It is built and tested on macOS and builds for Linux, where the screen capture is not built yet; Windows is not supported yet.
 
 ## Run it locally
 
@@ -66,6 +66,29 @@ JUNTO_DATA_DIR=/tmp/junto-first cargo run -p junto-client-core --bin junto-cli -
 ```
 
 `state` prints the identifiers of the channels and the unread counts. `junto-cli` without arguments lists the other actions of `messages`.
+
+## Threads, pins and direct conversations between two instances
+
+Start two instances as above and select the same text channel in both.
+
+- **Thread.** The bar at a message under the pointer has "Reply in thread", and so has the menu of the message. The thread opens in the side panel with the message, its replies and a composer of its own. The message in the channel then shows the count of the replies and the time of the last one. A reply is not shown in the list of the channel.
+- **What is new in a thread.** Close the panel in the first instance and answer in the thread with the second one. The first instance shows the count of the new replies on the message, and lists the thread under its channel in the channel column. With the default notification level, the name of the channel gets a sign only for a mention.
+- **Fork.** The panel has "Fork thread into…" with "Text channel" and "Voice channel" for a person whose roles hold "manage channel"; the owner of a new server may do it, a member sees the two controls disabled. The dialog takes a name. The new channel holds a copy of the message and of its replies, and the panel then names the channel in place of the two controls. A second fork of the same thread is refused, and the dialog says so.
+- **Pins.** "Pin" is in the bar and in the menu of a message for a person whose roles hold "manage messages". "Pins" in the header opens the list of the channel, with "Go to message" and "Unpin".
+- **Permanent messages.** `junto-cli` has no command for the setting of a channel; a channel that has it shows "Permanent messages" in its header, and its messages offer no edit.
+- **Direct conversation.** Open "Members" and press the button beside a member. The conversation takes the place of the channel, and the channel column lists it under "Direct messages". Two accounts without a common workspace cannot write to each other, unless one of them administers the server; the refusal is stated at the member.
+
+The same routes from a terminal:
+
+```sh
+JUNTO_DATA_DIR=/tmp/junto-first cargo run -p junto-client-core --bin junto-cli -- threads list <message id>
+JUNTO_DATA_DIR=/tmp/junto-first cargo run -p junto-client-core --bin junto-cli -- threads unread
+JUNTO_DATA_DIR=/tmp/junto-first cargo run -p junto-client-core --bin junto-cli -- pins list <channel id>
+JUNTO_DATA_DIR=/tmp/junto-first cargo run -p junto-client-core --bin junto-cli -- notices list
+JUNTO_DATA_DIR=/tmp/junto-first cargo run -p junto-client-core --bin junto-cli -- \
+    notices set-settings channel:<channel id> --level all
+JUNTO_DATA_DIR=/tmp/junto-first cargo run -p junto-client-core --bin junto-cli -- search "retention spec"
+```
 
 ## A call on one machine
 
@@ -144,7 +167,7 @@ The variable `JUNTO_LOG_LEVEL` sets the level of the log on standard error (`war
 tools/with-test-postgres.sh tools/serial.sh cargo test -p junto-client
 ```
 
-The tests in `tests/app` open the window code on gpui's test platform, with a client on a data directory of its own, against the server binary of this checkout. They click what is drawn and read what the window shows. A second client without a window is the administrator of the server. `tests/app/messages.rs` writes, answers, edits and deletes messages, reacts, sends and saves a file, follows the unread signs, follows a quoted message that changes, and checks that the text of one account is not shown to the next account of the server.
+The tests in `tests/app` open the window code on gpui's test platform, with a client on a data directory of its own, against the server binary of this checkout. They click what is drawn and read what the window shows. A second client without a window is the administrator of the server. `tests/app/messages.rs` writes, answers, edits and deletes messages, reacts, sends and saves a file, follows the unread signs, follows a quoted message that changes, and checks that the text of one account is not shown to the next account of the server. `tests/app/threads.rs` answers in a thread and follows its count and its unread sign, asks for a fork with each refusal and with success, pins and unpins a message, writes in a direct conversation, and checks the marker of permanent messages.
 
 No test opens a microphone, plays a sound or captures a screen: the microphone of each client is a tone, its output is a sink that measures what would be played, and its screen capture is a picture of two colours with a tone on each channel. No test causes a permission question of the system. The tests of a call need a LiveKit server and are ignored in the plain run:
 

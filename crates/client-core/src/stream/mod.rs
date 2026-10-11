@@ -52,6 +52,9 @@ pub struct StreamPolicy {
     /// request: the server ends a request after 30 seconds (ADR 0008), and until then the
     /// first request can still take effect (ADR 0721).
     pub send_again_after: Duration,
+    /// The shortest time between two reads of the list of unread threads (ADR 0722). The
+    /// limit of the server for reads (120 in a minute) is shared with the history.
+    pub threads_interval: Duration,
 }
 
 impl Default for StreamPolicy {
@@ -67,6 +70,7 @@ impl Default for StreamPolicy {
             messages_per_minute: 20,
             connections_per_minute: 20,
             send_again_after: Duration::from_secs(30),
+            threads_interval: Duration::from_secs(2),
         }
     }
 }

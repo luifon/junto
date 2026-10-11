@@ -8,6 +8,7 @@
 pub mod feed;
 mod messages;
 pub mod recording;
+mod threads;
 pub mod view;
 
 pub use messages::AttachRefusal;
@@ -285,6 +286,18 @@ pub struct AppState {
     /// The places whose messages the window shows, with the task that opens each in the
     /// client core.
     open_places: HashMap<(ServerId, PlaceId), Task<()>>,
+    /// The channel whose pin list the window shows, with the task that opens it in the
+    /// client core.
+    open_pins: Option<((ServerId, ChannelId), Task<()>)>,
+    /// The number of the last fork that the person asked for. An answer to an earlier
+    /// request does not change what the dialog shows.
+    fork_asks: u64,
+    /// The number of the last direct conversation that the person asked for.
+    conversation_asks: u64,
+    /// How often the person selected a server, a workspace, a channel, a direct
+    /// conversation or the call. An answer that arrives after such a selection does not
+    /// move the person to another place.
+    navigations: u64,
     /// The messages of replies that were asked for from the server.
     /// The quoted messages that were asked for, with the number of the read.
     asked_quotes: HashMap<(ServerId, MessageId), u64>,
@@ -456,6 +469,10 @@ impl AppState {
             call_asks: 0,
             made_invitations: HashSet::new(),
             open_places: HashMap::new(),
+            open_pins: None,
+            fork_asks: 0,
+            conversation_asks: 0,
+            navigations: 0,
             asked_quotes: HashMap::new(),
             quote_asks: 0,
             upload_owners: HashMap::new(),
@@ -1201,6 +1218,7 @@ impl AppState {
             return;
         };
         let target = call.target;
+        self.navigations += 1;
         self.selection.server = Some(target.server_id);
         if let CallPlace::Channel {
             workspace_id,
@@ -1530,6 +1548,14 @@ impl AppState {
                 self.load_members(key, cx);
             }
         }
+        // The side panel belongs to the channel that is shown: a thread or a pin list of
+        // a channel that left the main area is closed, and does not open again by itself.
+        if self.selection.thread.is_some() && shown.thread.is_none() {
+            self.selection.thread = None;
+        }
+        if self.selection.pins.is_some() && shown.pins.is_none() {
+            self.selection.pins = None;
+        }
         self.shown = shown;
         self.ask_missing_names(&view, cx);
         self.follow_places(shown, cx);
@@ -1565,8 +1591,9 @@ impl AppState {
         }
     }
 
-    /// A person in a voice channel who is not in the member list of the workspace has no
-    /// name there. The name is read once from the profile route.
+    /// A person in a voice channel, or of a direct conversation, who is not in the member
+    /// list of the workspace has no name there. The name is read once from the profile
+    /// route.
     fn ask_missing_names(&mut self, view: &ShellView, cx: &mut Context<Self>) {
         let (Some(selected), Some(workspace)) = (&view.selected, view.workspace()) else {
             return;
@@ -1586,6 +1613,15 @@ impl AppState {
             .flat_map(|voice| voice.occupants.iter())
             .filter(|occupant| occupant.name.is_none())
             .map(|occupant| occupant.account_id)
+            // The other person of a direct conversation can be a member of another
+            // workspace, or an administrator of the server (ADR 0307).
+            .chain(
+                workspace
+                    .directs
+                    .iter()
+                    .filter(|row| row.name.is_none())
+                    .map(|row| row.account_id),
+            )
             .filter(|account_id| {
                 let read = self
                     .asked_names
@@ -1648,6 +1684,7 @@ impl AppState {
     }
 
     pub fn select_server(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
+        self.navigations += 1;
         self.selection.server = Some(server_id);
         self.changed(cx);
     }
@@ -1658,6 +1695,7 @@ impl AppState {
         workspace_id: WorkspaceId,
         cx: &mut Context<Self>,
     ) {
+        self.navigations += 1;
         self.selection.server = Some(server_id);
         self.selection.workspaces.insert(server_id, workspace_id);
         self.changed(cx);
@@ -1669,7 +1707,12 @@ impl AppState {
         channel_id: ChannelId,
         cx: &mut Context<Self>,
     ) {
+        self.navigations += 1;
         self.selection.channels.insert(workspace_id, channel_id);
+        // The channel takes the place of a direct conversation that the server showed.
+        if let Some(server_id) = self.shown.server {
+            self.selection.conversations.remove(&server_id);
+        }
         self.changed(cx);
     }
 

@@ -7,6 +7,7 @@ mod calls_live;
 mod messages;
 mod stream;
 mod support;
+mod threads;
 mod tool_live;
 
 use std::path::Path;

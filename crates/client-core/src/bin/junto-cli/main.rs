@@ -1,6 +1,7 @@
 //! `junto-cli`: operates Junto servers from a terminal with the client library and nothing
 //! else.
 
+mod discovery;
 mod live;
 mod messages;
 mod secret_input;
@@ -83,6 +84,14 @@ commands:
   call <action> [arguments]    send one request of the call routes
   messages <action> [arguments]
                                send one request of the message routes
+  threads <action> [arguments] send one request of the thread routes
+  pins <action> [arguments]    send one request of the pin routes
+  notices <action> [arguments] send one request of the notice and notification routes
+  search <text>                search the messages and transcript lines that the account
+                               can read; the text takes words, a phrase in quotation
+                               marks, `or`, and a minus before a word
+                               [--channel <id>] [--author <account>] [--from <time>]
+                               [--until <time>] [--limit <n>] [--cursor <continuation>]
 
 actions of call:
   show [<channel>]             the call of a voice channel, or the call of this account
@@ -130,6 +139,38 @@ actions of messages:
 
 A place is channel:<id>, direct:<conversation id>, or the identifier of a channel.
 
+actions of threads:
+  list <root message> [--before <position> | --after <position>] [--limit <n>]
+                               the root, one page of the replies, and the fork channels
+  reply <root message> [--text <text>] [--reply <message>] [--file <path>]...
+  state <root message>         the read position and the unread counts in the thread
+  read <root message> <position>
+  unread [--before <continuation>] [--limit <n>]
+                               the threads that hold something unread, the newest first
+  fork <root message> --name <name> [--kind <text|voice>]
+                               copy the thread into a new channel
+
+actions of pins:
+  list <channel>
+  add <message>, remove <message>
+
+actions of notices:
+  list [--before <notice>] [--limit <n>]
+  read <notice>
+  settings <scope>             the stored notification settings of a scope
+  set-settings <scope> [--level <all|mentions|nothing|inherit>]
+               [--mute <yes|no>] [--mute-hours <n>]
+               [--role-mentions <yes|no|inherit>] [--everyone-mentions <yes|no|inherit>]
+               [--dnd <yes|no>] [--quiet <HH:MM-HH:MM> [--utc-offset <minutes>]] [--no-quiet]
+                               change the named settings of a scope and keep the others;
+                               the mute and the mention switches belong to a channel,
+                               --dnd and --quiet to the account
+  default <workspace>          the level that an administrator set for a workspace
+  set-default <workspace> <all|mentions|nothing>
+
+A scope is account, workspace:<id> or channel:<id>. A time is written as
+2026-01-31T00:00:00Z.
+
 An action that joins a call prints the token for the media server only with --show-token.
 A place in a call belongs to the session that asked for it, and every command ends its
 session, so a place that `call` takes ends with the command. `watch` takes the same actions
@@ -169,6 +210,20 @@ const VALUE_OPTIONS: &[&str] = &[
     "bytes",
     "files",
     "to",
+    "kind",
+    "level",
+    "mute",
+    "mute-hours",
+    "role-mentions",
+    "everyone-mentions",
+    "dnd",
+    "quiet",
+    "utc-offset",
+    "channel",
+    "author",
+    "from",
+    "until",
+    "cursor",
 ];
 const FLAGS: &[&str] = &[
     "when-selected",
@@ -177,6 +232,7 @@ const FLAGS: &[&str] = &[
     "no-avatar",
     "no-limit",
     "show-token",
+    "no-quiet",
 ];
 const WAIT_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -489,6 +545,9 @@ async fn run(arguments: Arguments) -> Result<(), Failure> {
         "watch" => live::watch(&client, &arguments).await,
         "call" => live::call(&client, &arguments).await,
         "messages" => messages::messages(&client, &arguments).await,
+        "threads" | "pins" | "notices" | "search" => {
+            discovery::run(&client, command, &arguments).await
+        }
         other => Err(usage(format!("unknown command {other}"))),
     }
 }

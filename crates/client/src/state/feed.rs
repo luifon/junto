@@ -12,7 +12,9 @@ use std::sync::Arc;
 use junto_client_core::model::{
     PendingMessage, PlaceId, ReadFailure, Reading, SendState, ServerModel, Timeline,
 };
-use junto_client_core::protocol::ids::{AccountId, MessageId, ServerId, WorkspaceRoleId};
+use junto_client_core::protocol::ids::{
+    AccountId, ChannelId, MessageId, ServerId, WorkspaceRoleId,
+};
 use junto_client_core::protocol::message::{
     AttachmentLimits, Block, Document, Inline, Message, SystemMessage,
 };
@@ -95,6 +97,27 @@ pub struct Part {
     pub strong: bool,
 }
 
+/// What a message of a channel shows of the thread under it (ADR 0403).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadMark {
+    pub replies: u64,
+    /// The author and the time of the last reply, once that reply was read.
+    pub last: Option<LastReply>,
+    /// The side panel shows this thread.
+    pub open: bool,
+    /// What the person has not read in the thread. 100 means 100 or more.
+    pub unread: u64,
+    pub mentions: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LastReply {
+    pub author_id: Option<AccountId>,
+    pub author: String,
+    /// The time of day in the zone of the list.
+    pub time: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct MessageRow {
     pub message: Arc<Message>,
@@ -111,7 +134,33 @@ pub struct MessageRow {
     /// The roles of the person allow the change. The server decides each request.
     pub can_edit: bool,
     pub can_delete: bool,
+    /// The message can be pinned or unpinned, and the roles of the person allow it.
+    pub can_pin: bool,
+    /// The message can have a thread: an authored message of a channel that is no reply
+    /// in a thread itself.
+    pub can_thread: bool,
+    /// The thread under the message, when it has replies.
+    pub thread: Option<ThreadMark>,
 }
+
+impl PartialEq for MessageRow {
+    /// Two rows are the same when they draw the same. A message is compared by the copy
+    /// that the state holds, which is replaced when the message changes.
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.message, &other.message)
+            && self.grouped == other.grouped
+            && self.author == other.author
+            && self.time == other.time
+            && self.reply == other.reply
+            && self.can_edit == other.can_edit
+            && self.can_delete == other.can_delete
+            && self.can_pin == other.can_pin
+            && self.can_thread == other.can_thread
+            && self.thread == other.thread
+    }
+}
+
+impl Eq for MessageRow {}
 
 #[derive(Debug, Clone)]
 pub struct SystemRow {
@@ -151,23 +200,13 @@ pub enum FeedRow {
 }
 
 impl PartialEq for FeedRow {
-    /// Two rows are the same when they draw the same. A message is compared by the copy
-    /// that the state holds, which is replaced when the message changes.
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Start, Self::Start) | (Self::Unread, Self::Unread) => true,
             (Self::Earlier { reading: one }, Self::Earlier { reading: other })
             | (Self::Later { reading: one }, Self::Later { reading: other }) => one == other,
             (Self::Day(one), Self::Day(other)) => one == other,
-            (Self::Message(one), Self::Message(other)) => {
-                Arc::ptr_eq(&one.message, &other.message)
-                    && one.grouped == other.grouped
-                    && one.author == other.author
-                    && one.time == other.time
-                    && one.reply == other.reply
-                    && one.can_edit == other.can_edit
-                    && one.can_delete == other.can_delete
-            }
+            (Self::Message(one), Self::Message(other)) => one == other,
             (Self::System(one), Self::System(other)) => {
                 Arc::ptr_eq(&one.message, &other.message)
                     && one.parts == other.parts
@@ -224,6 +263,15 @@ pub struct Feed {
     pub today: Option<Date>,
 }
 
+impl Feed {
+    /// True when the list holds a message that waits to be sent.
+    pub fn has_waiting(&self) -> bool {
+        self.rows
+            .iter()
+            .any(|row| matches!(row, FeedRow::Waiting(_)))
+    }
+}
+
 /// The names that the messages of a place mention.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Names {
@@ -240,8 +288,13 @@ pub struct Source<'a> {
     /// The roles of the account in the workspace of the channel. Empty for a direct
     /// conversation.
     pub own_roles: &'a [WorkspaceRoleId],
-    /// The roles of the person allow the deletion of messages of other people.
+    /// The roles of the person allow the deletion of messages of other people, and pins.
     pub may_manage: bool,
+    /// The thread that the side panel shows.
+    pub open_thread: Option<MessageId>,
+    /// The list offers the thread of a message. The chat of the call of this device does
+    /// not: its side panel is the panel of the call.
+    pub threads: bool,
     pub quoted: &'a HashMap<(ServerId, MessageId), Quoted>,
     pub zone: Zone,
     pub today: Option<Date>,
@@ -382,7 +435,7 @@ fn quote_of(message: &Message, names: &Names) -> Quote {
 /// The loaded messages of a timeline by their identifiers. It is built for the first
 /// reply of a derivation: a list without a reply does not pay for it.
 #[derive(Default)]
-struct Loaded<'a>(Option<HashMap<MessageId, &'a Arc<Message>>>);
+pub struct Loaded<'a>(Option<HashMap<MessageId, &'a Arc<Message>>>);
 
 impl<'a> Loaded<'a> {
     fn get(&mut self, timeline: &'a Timeline, message_id: MessageId) -> Option<&'a Arc<Message>> {
@@ -462,23 +515,106 @@ pub fn system_parts(system: &SystemMessage, names: &Names) -> (SystemKind, Vec<P
     (kind, parts)
 }
 
+/// What a message of a channel shows of its thread. `None` for a message without replies.
+fn thread_mark<'a>(
+    source: &Source<'a>,
+    message: &Message,
+    loaded: &mut Loaded<'a>,
+) -> Option<ThreadMark> {
+    if message.reply_count == 0 {
+        return None;
+    }
+    let last = message.last_reply.and_then(|reply_id| {
+        // The last reply lies in the thread, not in this list: the open thread holds it,
+        // or the window read it.
+        let held = loaded.get(source.timeline, reply_id).cloned().or_else(|| {
+            source
+                .model
+                .timelines
+                .iter()
+                .filter(|timeline| timeline.place.thread_root() == Some(message.id))
+                .find_map(|timeline| timeline.message(reply_id).cloned())
+        });
+        let read = match source.quoted.get(&(source.server_id, reply_id)) {
+            Some(Quoted::Read(read)) => Some(read.clone()),
+            _ => None,
+        };
+        held.or(read).map(|reply| LastReply {
+            author_id: reply.author_id,
+            author: author_name(&reply, &source.names),
+            time: clock(source.zone.local(reply.created_at)),
+        })
+    });
+    let state = source.model.thread_state(message.id);
+    Some(ThreadMark {
+        replies: message.reply_count,
+        last,
+        open: source.open_thread == Some(message.id),
+        unread: state.map_or(0, |state| state.unread),
+        mentions: state.map_or(0, |state| state.mentions),
+    })
+}
+
+/// One message of a person as a row. The caller decides whether it continues a group.
+pub fn message_row<'a>(
+    source: &Source<'a>,
+    message: &'a Arc<Message>,
+    loaded: &mut Loaded<'a>,
+) -> MessageRow {
+    let own = source.model.account.id;
+    let names = &source.names;
+    let local = source.zone.local(message.created_at);
+    let is_own = message.author_id == Some(own);
+    let changeable = !message.deleted && message.system.is_none();
+    let in_channel = matches!(
+        message.place,
+        junto_client_core::protocol::message::MessagePlace::Channel { .. }
+    );
+    let has_thread = changeable && in_channel && message.thread_root.is_none();
+    let can_thread = has_thread && source.threads;
+    MessageRow {
+        author: author_name(message, names),
+        time: clock(local),
+        grouped: false,
+        own: is_own,
+        mentions_own: message
+            .document
+            .as_ref()
+            .is_some_and(|document| mentions(document, own, source.own_roles)),
+        reply: message.reply_to.map(|id| quote(source, loaded, id)),
+        can_edit: changeable && is_own && !message.permanent,
+        can_delete: changeable && !message.permanent && (is_own || source.may_manage),
+        can_pin: changeable && in_channel && source.may_manage,
+        can_thread,
+        thread: has_thread
+            .then(|| thread_mark(source, message, loaded))
+            .flatten(),
+        message: message.clone(),
+    }
+}
+
 /// The rows of the messages of one place.
 pub fn derive(source: &Source<'_>) -> Feed {
     let timeline = source.timeline;
     let own = source.model.account.id;
     let names = &source.names;
     let mut rows = Vec::with_capacity(timeline.messages.len() + 8);
-    if timeline.loaded {
-        rows.push(if timeline.more_before {
-            FeedRow::Earlier {
-                reading: timeline.reading.older,
-            }
-        } else {
-            FeedRow::Start
+    // The replies of a thread stand under its root: the root is the start of their
+    // history, and its day is named with it.
+    let in_thread = timeline.place.thread_root().is_some();
+    if timeline.loaded && timeline.more_before {
+        rows.push(FeedRow::Earlier {
+            reading: timeline.reading.older,
         });
+    } else if timeline.loaded && !in_thread {
+        rows.push(FeedRow::Start);
     }
     let mut loaded = Loaded::default();
-    let mut day: Option<Date> = None;
+    let mut day: Option<Date> = timeline
+        .root
+        .as_ref()
+        .filter(|_| in_thread && !timeline.more_before)
+        .map(|root| source.zone.local(root.created_at).date());
     // The author and the time of the message row before, while a group can go on.
     let mut group: Option<(AccountId, OffsetDateTime)> = None;
     // The line needs a loaded message before it that the person has read. When every
@@ -518,7 +654,6 @@ pub fn derive(source: &Source<'_>) -> Feed {
             group = None;
             continue;
         }
-        let is_own = message.author_id == Some(own);
         let grouped = !message.deleted
             && message.reply_to.is_none()
             && message.author_id.is_some_and(|author| {
@@ -532,28 +667,17 @@ pub fn derive(source: &Source<'_>) -> Feed {
             (Some(author), false) => Some((author, message.created_at)),
             _ => None,
         };
-        let changeable = !message.deleted && message.system.is_none();
-        rows.push(FeedRow::Message(MessageRow {
-            author: author_name(message, names),
-            time: clock(local),
-            grouped,
-            own: is_own,
-            mentions_own: message
-                .document
-                .as_ref()
-                .is_some_and(|document| mentions(document, own, source.own_roles)),
-            reply: message.reply_to.map(|id| quote(source, &mut loaded, id)),
-            can_edit: changeable && is_own && !message.permanent,
-            can_delete: changeable && !message.permanent && (is_own || source.may_manage),
-            message: message.clone(),
-        }));
+        let mut row = message_row(source, message, &mut loaded);
+        row.grouped = grouped;
+        rows.push(FeedRow::Message(row));
     }
     if timeline.more_after {
         rows.push(FeedRow::Later {
             reading: timeline.reading.newer,
         });
-    } else if timeline.loaded {
-        // The messages that wait are drawn after the end of the history.
+    } else if timeline.loaded || timeline.failed.is_some() {
+        // The messages that wait are drawn after the end of the history, also when the
+        // history was not read: the person can send them again or discard them.
         for pending in source.model.shown_waiting(timeline.place) {
             let local = source.zone.local(pending.created_at);
             if day != Some(local.date()) {
@@ -575,7 +699,16 @@ pub fn derive(source: &Source<'_>) -> Feed {
             }));
         }
     }
-    let state = source.model.message_state(timeline.place);
+    let unread = match timeline.place {
+        PlaceId::Thread { root_id, .. } => source
+            .model
+            .thread_state(root_id)
+            .map_or(0, |state| state.unread.max(state.mentions)),
+        PlaceId::Channel(_) | PlaceId::Direct(_) => source
+            .model
+            .message_state(timeline.place)
+            .map_or(0, |state| state.unread),
+    };
     Feed {
         server_id: source.server_id,
         place: timeline.place,
@@ -589,22 +722,34 @@ pub fn derive(source: &Source<'_>) -> Feed {
         end_position: (!timeline.more_after)
             .then(|| timeline.messages.last().map(|last| last.position))
             .flatten(),
-        unread: state.map_or(0, |state| state.unread),
+        unread,
         limits: source.model.attachment_limits.clone(),
         names: source.names.clone(),
         today: source.today,
     }
 }
 
-/// The messages that the replies of a timeline name and that the timeline does not hold.
+/// The messages that the rows of a timeline name and that the timeline does not hold: the
+/// message that a reply answers, and the last reply of a thread.
 pub fn named_quotes(timeline: &Timeline) -> std::collections::HashSet<MessageId> {
     let mut loaded = Loaded::default();
     timeline
         .messages
         .iter()
-        .filter_map(|message| message.reply_to)
+        .flat_map(|message| {
+            let last_reply = message.last_reply.filter(|_| message.reply_count > 0);
+            message.reply_to.into_iter().chain(last_reply)
+        })
         .filter(|id| loaded.get(timeline, *id).is_none())
         .collect()
+}
+
+/// The channel of a place of messages, when it has one.
+pub fn channel_of(place: PlaceId) -> Option<ChannelId> {
+    match place.container() {
+        PlaceId::Channel(channel_id) => Some(channel_id),
+        _ => None,
+    }
 }
 
 /// The replies of a timeline whose message is not loaded: the window reads them once.
@@ -713,6 +858,11 @@ mod tests {
             call_invitations: Vec::new(),
             direct_mutes: Vec::new(),
             messages: Vec::new(),
+            threads: Vec::new(),
+            threads_more: false,
+            threads_next: None,
+            notifications: Vec::new(),
+            notification_settings: Vec::new(),
         };
         let names = Names {
             accounts: HashMap::from([(own, "Luca".to_owned()), (ana, "Ana".to_owned())]),
@@ -750,6 +900,11 @@ mod tests {
                 deleted: false,
                 attachments: Vec::new(),
                 reactions: Vec::new(),
+                thread_root: None,
+                reply_count: 0,
+                last_reply: None,
+                pinned: false,
+                files_removed_by_retention: false,
             }
         }
 
@@ -764,6 +919,8 @@ mod tests {
                 failed: None,
                 stale: false,
                 unread_after: None,
+                root: None,
+                forks: Vec::new(),
             }
         }
 
@@ -775,11 +932,74 @@ mod tests {
                 names: self.names.clone(),
                 own_roles: &[self.role],
                 may_manage,
+                open_thread: None,
+                threads: true,
                 quoted: &self.quoted,
                 zone: Zone::Fixed(UtcOffset::UTC),
                 today: Some(morning().date()),
             })
         }
+    }
+
+    #[test]
+    fn a_message_with_replies_shows_its_thread_and_offers_it_where_the_list_has_threads() {
+        let mut scene = scene();
+        let mut root = scene.message(1, scene.ana, 0, "root");
+        let mut reply = scene.message(2, scene.own, 3, "a reply");
+        reply.thread_root = Some(root.id);
+        root.reply_count = 1;
+        root.last_reply = Some(reply.id);
+        scene.quoted.insert(
+            (scene.server_id, reply.id),
+            Quoted::Read(Arc::new(reply.clone())),
+        );
+        scene.model.threads = vec![junto_client_core::protocol::message::ThreadState {
+            root_id: root.id,
+            last_read: 1,
+            latest: 2,
+            unread: 1,
+            mentions: 0,
+        }];
+        let timeline = scene.timeline(vec![root.clone()]);
+        assert_eq!(named_quotes(&timeline), [reply.id].into_iter().collect());
+        let row_of = |threads: bool, open_thread| {
+            let feed = derive(&Source {
+                server_id: scene.server_id,
+                model: &scene.model,
+                timeline: &timeline,
+                names: scene.names.clone(),
+                own_roles: &[],
+                may_manage: false,
+                open_thread,
+                threads,
+                quoted: &scene.quoted,
+                zone: Zone::Fixed(UtcOffset::UTC),
+                today: None,
+            });
+            feed.rows
+                .iter()
+                .find_map(|row| match row {
+                    FeedRow::Message(row) => Some(row.clone()),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let row = row_of(true, Some(root.id));
+        assert!(row.can_thread && !row.can_pin);
+        let mark = row.thread.unwrap();
+        assert_eq!((mark.replies, mark.unread, mark.open), (1, 1, true));
+        let last = mark.last.unwrap();
+        assert_eq!(
+            (last.author.as_str(), last.time.as_str()),
+            ("Luca", "09:03")
+        );
+        // The chat of the call of this device shows the count and offers no thread.
+        let row = row_of(false, None);
+        assert!(!row.can_thread);
+        assert!(
+            row.thread
+                .is_some_and(|mark| mark.replies == 1 && !mark.open)
+        );
     }
 
     /// One letter for each row: the kind of the row, and for a message whether it is
@@ -845,6 +1065,8 @@ mod tests {
             names: scene.names.clone(),
             own_roles: &[],
             may_manage: true,
+            open_thread: None,
+            threads: true,
             quoted: &scene.quoted,
             zone: Zone::Fixed(UtcOffset::from_hms(14, 55, 0).unwrap()),
             today: None,
@@ -1089,6 +1311,9 @@ mod tests {
             latest: 2,
             unread: 1,
             mentions: 0,
+            unread_sign: true,
+            notification_mentions: 0,
+            muted: false,
         }];
         let mut timeline = scene.timeline(vec![
             scene.message(1, scene.ana, 0, "one"),
@@ -1108,6 +1333,10 @@ mod tests {
         let mut unloaded = scene.timeline(Vec::new());
         unloaded.loaded = false;
         assert_eq!(shape(&scene.feed(&unloaded, false)), "");
+        // A place that the server does not give any more has no history. Its waiting
+        // messages stay, so that the person can send them again or discard them.
+        unloaded.failed = Some(ReadFailure::NotFound);
+        assert_eq!(shape(&scene.feed(&unloaded, false)), "DWw");
     }
 
     #[test]

@@ -275,6 +275,7 @@ impl Shell {
                 )
                 .selected(channel.selected)
                 .unread(unread_sign(channel.unread))
+                .muted(channel.unread.muted)
                 .states(
                     channel
                         .voice
@@ -297,6 +298,43 @@ impl Shell {
                         .child(row)
                         .into_any_element(),
                 );
+                // The threads of the channel that hold something unread, and the thread
+                // of the side panel.
+                for (place, entry) in channel.threads.iter().enumerate() {
+                    let root_id = entry.root_id;
+                    let title: SharedString = entry
+                        .title
+                        .clone()
+                        .unwrap_or_else(|| text::THREAD.to_owned())
+                        .into();
+                    let sign =
+                        (entry.unread > 0 || entry.mentions > 0).then(|| crate::ui::UnreadSign {
+                            mentions: (entry.mentions > 0)
+                                .then(|| text::mention_badge(entry.mentions).into()),
+                            label: text::unread_tooltip(entry.unread, entry.mentions).into(),
+                        });
+                    let row = ChannelRow::new(("thread", index * 1000 + place), Icon::Chat, title)
+                        .nested()
+                        .selected(entry.open)
+                        .unread(sign)
+                        .unavailable((!entry.available).then_some(text::THREAD_IN_CALL))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            let Some(server_id) = server_id else {
+                                return;
+                            };
+                            this.state.update(cx, |state, cx| {
+                                state.select_channel(workspace_id, channel_id, cx);
+                            });
+                            this.open_thread(server_id, channel_id, root_id, window, cx);
+                        }));
+                    rows.push(
+                        div()
+                            .flex_none()
+                            .debug_selector(move || format!("thread-row:{root_id}"))
+                            .child(row)
+                            .into_any_element(),
+                    );
+                }
                 let occupants = channel
                     .voice
                     .as_ref()
@@ -353,6 +391,38 @@ impl Shell {
                     .typeface(theme.types.small, theme)
                     .ink(colors.ink_2)
                     .child(text::NO_CHANNELS)
+                    .into_any_element(),
+            );
+        }
+        // The direct conversations of the server, after the channels of the workspace.
+        if !workspace.directs.is_empty() {
+            rows.push(CategoryHeader::new(text::DIRECT_MESSAGES).into_any_element());
+        }
+        for (index, direct) in workspace.directs.iter().enumerate() {
+            let conversation_id = direct.id;
+            let name: SharedString = direct
+                .name
+                .clone()
+                .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned())
+                .into();
+            let row = ChannelRow::new(("direct", index), Icon::People, name)
+                .avatar(direct.account_id.as_uuid().as_u128())
+                .selected(direct.selected)
+                .unread(unread_sign(direct.unread))
+                .muted(direct.unread.muted)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    let Some(server_id) = server_id else {
+                        return;
+                    };
+                    this.state.update(cx, |state, cx| {
+                        state.select_conversation(server_id, conversation_id, cx);
+                    });
+                }));
+            rows.push(
+                div()
+                    .flex_none()
+                    .debug_selector(move || format!("direct-row:{conversation_id}"))
+                    .child(row)
                     .into_any_element(),
             );
         }

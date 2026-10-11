@@ -665,6 +665,22 @@ fn state_lines(model: &ServerModel) -> Vec<String> {
             .map(crate::messages::conversation_line),
     );
     lines.extend(model.message_states.iter().map(crate::messages::state_line));
+    lines.extend(model.threads.iter().map(crate::discovery::thread_line));
+    if model.threads_more {
+        lines.push("more unread threads: yes".to_owned());
+    }
+    lines.extend(model.notices.iter().map(crate::discovery::notice_line));
+    for held in &model.notification_settings {
+        let scope = if held.scope_id.is_nil() {
+            "account".to_owned()
+        } else {
+            held.scope_id.to_string()
+        };
+        lines.extend(crate::discovery::scoped_settings_lines(
+            &scope,
+            &held.settings,
+        ));
+    }
     lines.push(format!("cursor: {}", model.cursor.position));
     lines
 }
@@ -922,6 +938,15 @@ fn event_details(event: &Event) -> String {
         Event::MessageRead { place, position } => {
             format!("{} position={position}", message_place(place))
         }
+        Event::ThreadRead { root_id, position } => {
+            format!("thread={root_id} position={position}")
+        }
+        Event::NotificationChanged { message_id } => format!("message={message_id}"),
+        Event::NotificationSettingsChanged {} => String::new(),
+        Event::RetentionChanged { workspace_id } => match workspace_id {
+            Some(workspace_id) => format!("workspace={workspace_id}"),
+            None => "direct_messages".to_owned(),
+        },
     }
 }
 

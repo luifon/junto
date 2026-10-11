@@ -40,6 +40,11 @@ pub(crate) fn message(
         deleted: false,
         attachments: Vec::new(),
         reactions: Vec::new(),
+        thread_root: None,
+        reply_count: 0,
+        last_reply: None,
+        pinned: false,
+        files_removed_by_retention: false,
     }
 }
 
@@ -52,12 +57,15 @@ impl Scene {
     }
 }
 
-fn general(scene: &Scene) -> PlaceId {
+pub(crate) fn general(scene: &Scene) -> PlaceId {
     PlaceId::Channel(scene.general)
 }
 
 /// A model with the timeline of the text channel open and loaded with `positions`.
-fn opened(scene: &Scene, positions: std::ops::RangeInclusive<u64>) -> (ServerModel, Vec<Message>) {
+pub(crate) fn opened(
+    scene: &Scene,
+    positions: std::ops::RangeInclusive<u64>,
+) -> (ServerModel, Vec<Message>) {
     let mut model = scene.model();
     let place = general(scene);
     model.open_timeline(place);
@@ -72,7 +80,7 @@ fn opened(scene: &Scene, positions: std::ops::RangeInclusive<u64>) -> (ServerMod
     (model, messages)
 }
 
-fn changed(message: &Message, deleted: bool) -> Event {
+pub(crate) fn changed(message: &Message, deleted: bool) -> Event {
     Event::MessageChanged {
         place: message.place,
         message_id: message.id,
@@ -91,13 +99,16 @@ fn positions(model: &ServerModel, place: PlaceId) -> Vec<u64> {
         .collect()
 }
 
-fn state(place: MessagePlace, last_read: u64, latest: u64, unread: u64) -> MessageState {
+pub(crate) fn state(place: MessagePlace, last_read: u64, latest: u64, unread: u64) -> MessageState {
     MessageState {
         place,
         last_read,
         latest,
         unread,
         mentions: 0,
+        unread_sign: unread > 0,
+        notification_mentions: 0,
+        muted: false,
     }
 }
 
@@ -158,18 +169,22 @@ fn a_changed_message_asks_for_the_summary_and_for_what_a_reader_has_loaded() {
         model.apply(&changed(&outside, false)).load,
         [Part::MessageState(place), Part::Message(place, outside.id)]
     );
+    // An event of a message that is not new can be the notice of the root of a thread:
+    // it also asks for the unread threads (ADR 0722).
     assert_eq!(
         model.apply(&changed(&loaded[1], true)).load,
         [
             Part::MessageState(place),
-            Part::Message(place, loaded[1].id)
+            Part::Message(place, loaded[1].id),
+            Part::UnreadThreads
         ]
     );
 
     // A timeline with more messages after its end does not take what lies beyond it.
     model.timeline_mut(place).unwrap().more_after = true;
+    let beyond = message(scene.text_place(), 5, other, "newer");
     assert_eq!(
-        model.apply(&changed(&outside, false)).load,
+        model.apply(&changed(&beyond, false)).load,
         [Part::MessageState(place)]
     );
     // A line that shares the position of a loaded message lies inside the range.
@@ -274,6 +289,26 @@ fn pages_extend_the_range_at_both_ends_without_a_second_copy() {
 }
 
 #[test]
+fn a_page_that_adds_no_message_does_not_promise_more_messages() {
+    let scene = scene();
+    let place = general(&scene);
+    let (mut model, loaded) = opened(&scene, 10..=12);
+    let timeline = model.timeline_mut(place).unwrap();
+    let nothing_new = |has_more| MessagePage {
+        messages: vec![loaded[0].clone()],
+        has_more,
+    };
+    timeline.add_older(nothing_new(true));
+    assert!(!timeline.more_before);
+    timeline.add_newer(MessagePage {
+        messages: Vec::new(),
+        has_more: true,
+    });
+    assert!(!timeline.more_after);
+    assert_eq!(positions(&model, place), [10, 11, 12]);
+}
+
+#[test]
 fn a_timeline_holds_a_bounded_number_of_messages() {
     let scene = scene();
     let place = general(&scene);
@@ -353,7 +388,11 @@ fn a_read_position_moves_forward_and_asks_for_the_counts_when_they_are_not_known
         message_id: MessageId::generate(),
         position: 10,
     };
-    assert_eq!(model.apply(&mention).load, [Part::MessageState(place)]);
+    // The mention can be one of a thread: the unread threads are asked for too.
+    assert_eq!(
+        model.apply(&mention).load,
+        [Part::MessageState(place), Part::UnreadThreads]
+    );
 }
 
 #[test]

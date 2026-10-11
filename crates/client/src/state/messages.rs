@@ -41,17 +41,25 @@ pub enum AttachRefusal {
 }
 
 impl AppState {
-    /// The place whose messages the window shows is held open in the client core, and
-    /// every other place is released (ADR 0721).
+    /// The places whose messages the window shows are held open in the client core: the
+    /// place of the main area and the thread of the side panel. Every other place is
+    /// released (ADR 0721). The pin list of the side panel is held in the same way.
     pub(super) fn follow_places(&mut self, shown: Shown, cx: &mut Context<Self>) {
-        let wanted = shown
+        let wanted: Vec<(ServerId, PlaceId)> = shown
             .server
-            .zip(shown.channel)
-            .map(|(server_id, channel_id)| (server_id, PlaceId::Channel(channel_id)));
+            .into_iter()
+            .flat_map(|server_id| {
+                shown
+                    .place()
+                    .into_iter()
+                    .chain(shown.thread_place())
+                    .map(move |place| (server_id, place))
+            })
+            .collect();
         let gone: Vec<(ServerId, PlaceId)> = self
             .open_places
             .keys()
-            .filter(|key| Some(**key) != wanted)
+            .filter(|key| !wanted.contains(key))
             .copied()
             .collect();
         for key in gone {
@@ -61,49 +69,92 @@ impl AppState {
                 server.live().release_messages(key.1);
             }
         }
+        for key in wanted {
+            if self.open_places.contains_key(&key) {
+                continue;
+            }
+            let Some(server) = self.client.server(key.0) else {
+                continue;
+            };
+            let opening = server.live().open_messages(key.1);
+            let task = cx.spawn(async move |this, cx| {
+                let result = opening.await;
+                let _ = this.update(cx, |this, cx| {
+                    // The client core did not take the place: the next change of the state
+                    // asks again. A read that failed leaves the place open with its
+                    // failure.
+                    if matches!(result, Err(LoadError::Off | LoadError::NotInState)) {
+                        this.open_places.remove(&key);
+                    }
+                    cx.notify();
+                });
+            });
+            self.open_places.insert(key, task);
+        }
+        self.follow_pins(shown, cx);
+    }
+
+    fn follow_pins(&mut self, shown: Shown, cx: &mut Context<Self>) {
+        let wanted = shown.server.zip(shown.pins);
+        if self.open_pins.as_ref().map(|(key, _)| *key) == wanted {
+            return;
+        }
+        if let Some(((server_id, channel_id), _)) = self.open_pins.take()
+            && let Some(server) = self.client.server(server_id)
+        {
+            server.live().release_pins(channel_id);
+        }
         let Some(key) = wanted else {
             return;
         };
-        if self.open_places.contains_key(&key) {
-            return;
-        }
         let Some(server) = self.client.server(key.0) else {
             return;
         };
-        let opening = server.live().open_messages(key.1);
+        let opening = server.live().open_pins(key.1);
         let task = cx.spawn(async move |this, cx| {
             let result = opening.await;
             let _ = this.update(cx, |this, cx| {
-                // The client core did not take the place: the next change of the state
-                // asks again. A read that failed leaves the place open with its failure.
-                if matches!(result, Err(LoadError::Off | LoadError::NotInState)) {
-                    this.open_places.remove(&key);
+                if matches!(result, Err(LoadError::Off | LoadError::NotInState))
+                    && this
+                        .open_pins
+                        .as_ref()
+                        .is_some_and(|(held, _)| *held == key)
+                {
+                    // The client core holds no list: the next change asks again.
+                    this.open_pins = None;
                 }
                 cx.notify();
             });
         });
-        self.open_places.insert(key, task);
+        self.open_pins = Some((key, task));
     }
 
-    /// Reads each message that a reply of the shown place names and that the loaded
-    /// messages do not hold. The window shows one place: what the replies of that place
-    /// do not name any more is put away, and at most [`QUOTE_READS`] reads are on their
-    /// way.
+    /// Reads each message that a row of the shown places names and that the loaded
+    /// messages do not hold: the message that a reply answers, and the last reply of a
+    /// thread. What the rows of those places do not name any more is put away, and at
+    /// most [`QUOTE_READS`] reads are on their way.
     pub(super) fn ask_missing_quotes(&mut self, shown: Shown, cx: &mut Context<Self>) {
-        let place = shown.server.zip(shown.channel);
-        let server = place.and_then(|(server_id, _)| self.client.server(server_id));
+        let server = shown
+            .server
+            .and_then(|server_id| self.client.server(server_id));
         let model = server
             .as_ref()
             .and_then(|server| server.live().view().model);
-        let timeline = place
-            .zip(model.as_ref())
-            .and_then(|((_, channel_id), model)| model.timeline(PlaceId::Channel(channel_id)));
-        let (Some((server_id, _)), Some(server), Some(timeline)) = (place, server, timeline) else {
+        let mut named = std::collections::HashSet::new();
+        let mut held = false;
+        if let Some(model) = &model {
+            for place in shown.place().into_iter().chain(shown.thread_place()) {
+                if let Some(timeline) = model.timeline(place) {
+                    held = true;
+                    named.extend(feed::named_quotes(timeline));
+                }
+            }
+        }
+        let (Some(server_id), Some(server), true) = (shown.server, server, held) else {
             self.known.quoted.clear();
             self.asked_quotes.clear();
             return;
         };
-        let named = feed::named_quotes(timeline);
         let wanted = |(of, message_id): &(ServerId, MessageId)| {
             *of == server_id && named.contains(message_id)
         };

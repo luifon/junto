@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use junto_client::compose::{self, Mention, MentionTarget};
 use junto_client::shell::call::CallTab;
-use junto_client::shell::{Open, Shell};
+use junto_client::shell::{EmojiTarget, Open, Pane, Shell};
 use junto_client::state::feed::Zone;
 use junto_client::state::view::{DraftFile, ServerSnapshot};
 use junto_client_core::model::{
@@ -27,15 +27,15 @@ use super::{
     Phase, Screen, Studio, acme, acme_with_luca, harbor, id, in_call, person, select_channel,
 };
 
-const GENERAL: u32 = 30;
+pub(crate) const GENERAL: u32 = 30;
 const DAILY: u32 = 34;
 
 /// Thursday, 8 October 2026 at 09:00 in the time zone of the screens.
-fn morning() -> OffsetDateTime {
+pub(crate) fn morning() -> OffsetDateTime {
     OffsetDateTime::from_unix_timestamp(1_791_450_000).unwrap_or(OffsetDateTime::UNIX_EPOCH)
 }
 
-fn place(channel: u32) -> MessagePlace {
+pub(crate) fn place(channel: u32) -> MessagePlace {
     MessagePlace::Channel {
         workspace_id: id(10),
         channel_id: id(channel),
@@ -44,7 +44,7 @@ fn place(channel: u32) -> MessagePlace {
 
 /// The document of a text of the composer. Each `@Name` of a person of the design is a
 /// mention.
-fn document(text: &str) -> Document {
+pub(crate) fn document(text: &str) -> Document {
     let mut mentions = Vec::new();
     for name in super::PEOPLE {
         let sign = format!("@{name}");
@@ -58,14 +58,14 @@ fn document(text: &str) -> Document {
     compose::parse(text, &mentions)
 }
 
-struct Made {
-    channel: u32,
-    position: u64,
-    messages: Vec<Arc<Message>>,
+pub(crate) struct Made {
+    pub(crate) channel: u32,
+    pub(crate) position: u64,
+    pub(crate) messages: Vec<Arc<Message>>,
 }
 
 impl Made {
-    fn new(channel: u32) -> Self {
+    pub(crate) fn new(channel: u32) -> Self {
         Self {
             channel,
             position: 0,
@@ -73,7 +73,7 @@ impl Made {
         }
     }
 
-    fn message(&mut self, author: &str, minutes: i64, text: &str) -> &mut Message {
+    pub(crate) fn message(&mut self, author: &str, minutes: i64, text: &str) -> &mut Message {
         self.position += 1;
         self.messages.push(Arc::new(Message {
             id: id(5000 + self.channel * 100 + self.position as u32),
@@ -90,12 +90,23 @@ impl Made {
             deleted: false,
             attachments: Vec::new(),
             reactions: Vec::new(),
+            thread_root: None,
+            reply_count: 0,
+            last_reply: None,
+            pinned: false,
+            files_removed_by_retention: false,
         }));
         let last = self.messages.len() - 1;
         Arc::make_mut(&mut self.messages[last])
     }
 
-    fn system(&mut self, minutes: i64, action: &str, actor: Option<&str>, subject: Option<&str>) {
+    pub(crate) fn system(
+        &mut self,
+        minutes: i64,
+        action: &str,
+        actor: Option<&str>,
+        subject: Option<&str>,
+    ) {
         let message = self.message("Luca", minutes, "");
         message.author_id = None;
         message.author_name = None;
@@ -108,7 +119,7 @@ impl Made {
         });
     }
 
-    fn timeline(self) -> Timeline {
+    pub(crate) fn timeline(self) -> Timeline {
         Timeline {
             place: PlaceId::Channel(id(self.channel)),
             messages: self.messages,
@@ -119,11 +130,13 @@ impl Made {
             failed: None,
             stale: false,
             unread_after: None,
+            root: None,
+            forks: Vec::new(),
         }
     }
 }
 
-fn reaction(emoji: &str, count: u32, own: bool) -> Reaction {
+pub(crate) fn reaction(emoji: &str, count: u32, own: bool) -> Reaction {
     Reaction {
         emoji: emoji.to_owned(),
         count,
@@ -149,7 +162,7 @@ fn file(number: u32, name: &str, bytes: u64, picture: Option<(u32, u32)>) -> Att
 }
 
 /// The messages of `#general` of the design (view A).
-fn general() -> Made {
+pub(crate) fn general() -> Made {
     let mut made = Made::new(GENERAL);
     made.system(-30, "channel_created", Some("Ana"), None);
     let ana = made.message(
@@ -276,19 +289,22 @@ fn daily_chat() -> Made {
     made
 }
 
-fn state(channel: u32, unread: u64, mentions: u64) -> MessageState {
+pub(crate) fn state(channel: u32, unread: u64, mentions: u64) -> MessageState {
     MessageState {
         place: place(channel),
         last_read: 0,
         latest: 9,
         unread,
         mentions,
+        unread_sign: true,
+        notification_mentions: mentions,
+        muted: false,
     }
 }
 
 /// "Acme Studio" with these messages loaded, and the unread signs of the design: mentions
 /// in `client-alpha` and new messages in `deploys`.
-fn acme_with(change: impl FnOnce(&mut ServerModel)) -> ServerSnapshot {
+pub(crate) fn acme_with(change: impl FnOnce(&mut ServerModel)) -> ServerSnapshot {
     let mut server = acme();
     if let Some(model) = &mut server.model {
         let model = Arc::make_mut(model);
@@ -337,7 +353,7 @@ fn timeline_picture() -> Vec<u8> {
     }
 }
 
-type Fixture = (
+pub(crate) type Fixture = (
     HashMap<(ServerId, PlaceId), Vec<DraftFile>>,
     HashMap<u64, UploadProgress>,
     HashMap<(ServerId, AttachmentId), DownloadProgress>,
@@ -345,7 +361,7 @@ type Fixture = (
 );
 
 /// Shows the times in UTC, the pictures of the design, and these states of files.
-fn prepare(shell: &mut Shell, fixture: Fixture, cx: &mut gpui::Context<Shell>) {
+pub(crate) fn prepare(shell: &mut Shell, fixture: Fixture, cx: &mut gpui::Context<Shell>) {
     shell.show_picture(id(7001), &timeline_picture());
     let (drafts, uploads, downloads, refused) = fixture;
     shell.state().clone().update(cx, |state, cx| {
@@ -360,7 +376,7 @@ fn prepare(shell: &mut Shell, fixture: Fixture, cx: &mut gpui::Context<Shell>) {
     });
 }
 
-fn none() -> Fixture {
+pub(crate) fn none() -> Fixture {
     (HashMap::new(), HashMap::new(), HashMap::new(), None)
 }
 
@@ -444,6 +460,9 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
                         latest: 8,
                         unread: 3,
                         mentions: 1,
+                        unread_sign: true,
+                        notification_mentions: 1,
+                        muted: false,
                     });
                     model.timelines = vec![Arc::new(unread)];
                 }),
@@ -548,8 +567,13 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
         ),
         move |shell, window, cx| {
             prepare(shell, (drafts, uploads, downloads, None), cx);
-            shell.reply_to_message(quoted, window, cx);
-            shell.type_message("Yes: **30 days**, then only the mixdown. @", window, cx);
+            shell.reply_to_message(Pane::Main, quoted, window, cx);
+            shell.type_message(
+                Pane::Main,
+                "Yes: **30 days**, then only the mixdown. @",
+                window,
+                cx,
+            );
         },
     )?;
 
@@ -558,8 +582,8 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
         Screen::new("messages-too-long", with_timeline(general().timeline())),
         |shell, window, cx| {
             prepare(shell, none(), cx);
-            shell.type_message(&"word ".repeat(4000), window, cx);
-            shell.submit_message(window, cx);
+            shell.type_message(Pane::Main, &"word ".repeat(4000), window, cx);
+            shell.submit_message(Pane::Main, window, cx);
         },
     )?;
 
@@ -570,14 +594,14 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
         Screen::new("messages-emoji-picker", with_timeline(general().timeline())),
         move |shell, window, cx| {
             prepare(shell, none(), cx);
-            shell.open_emoji_picker(Some(other), window, cx);
+            shell.open_emoji_picker(EmojiTarget::React(other), window, cx);
         },
     )?;
     studio.draw(
         Screen::new("messages-menu", with_timeline(general().timeline())),
         move |shell, window, cx| {
             prepare(shell, none(), cx);
-            shell.open_message_menu(own, window, cx);
+            shell.open_message_menu(Pane::Main, own, window, cx);
         },
     )?;
     studio.draw(
@@ -594,7 +618,7 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
         Screen::new("messages-editing", with_timeline(general().timeline())),
         move |shell, window, cx| {
             prepare(shell, none(), cx);
-            shell.edit_message(own, window, cx);
+            shell.edit_message(Pane::Main, own, window, cx);
         },
     )?;
 

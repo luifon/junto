@@ -12,12 +12,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use junto_protocol::call::{ChannelCall, OwnCallView};
+use junto_protocol::discovery::NotificationPage;
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::{
     ClientMessage, CloseCode, Cursor, EndReason, Event, Level, Received, ServerMessage, decode,
 };
 use junto_protocol::ids::WorkspaceId;
-use junto_protocol::message::{AttachmentLimits, Message, MessageState};
+use junto_protocol::message::{AttachmentLimits, Message, MessageState, ThreadPage, UnreadThreads};
 use junto_protocol::snapshot::Snapshot;
 use junto_protocol::structure::WorkspaceMember;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -27,7 +28,9 @@ use tokio::time::Instant;
 use super::socket::{Incoming, OpenError, StreamRequest, StreamSocket};
 use super::{Desired, Environment, Host, StreamPolicy};
 use crate::api::error::read_rejection;
-use crate::api::{ApiClient, ApiError, ErrorCategory, TransportError, TransportErrorKind};
+use crate::api::{
+    ApiClient, ApiError, ErrorCategory, PageQuery, TransportError, TransportErrorKind,
+};
 use crate::events::{ConnectionLevel, StreamTarget};
 use crate::live::{Command, LiveView, LoadError, Notice, Shared, StreamFault, StreamStatus};
 use crate::model::{Follow, Loadable, Part, ServerModel};
@@ -58,6 +61,10 @@ enum Payload {
     Message(Box<Message>),
     Pages(messages::Pages),
     Limits(AttachmentLimits),
+    Threads(UnreadThreads),
+    ThreadHead(Box<ThreadPage>),
+    Pins(Vec<Message>),
+    Notices(NotificationPage),
 }
 
 struct Loaded {
@@ -878,6 +885,25 @@ impl Client {
             }
             _ => None,
         };
+        let continuation = match load {
+            Load::Part(Part::MoreThreads) => {
+                let Some(token) = self
+                    .model
+                    .as_ref()
+                    .and_then(|model| model.threads_continuation())
+                    .map(str::to_owned)
+                else {
+                    return;
+                };
+                self.messages.continued_threads = Some(token.clone());
+                Some(token)
+            }
+            _ => None,
+        };
+        if let (Load::Part(Part::Pins(channel_id)), Some(model)) = (load, &mut self.model) {
+            model.set_pins_reading(channel_id, None);
+            self.model_changed = true;
+        }
         let Some(target) = &self.target else {
             return;
         };
@@ -929,6 +955,39 @@ impl Client {
                 Load::Part(Part::AttachmentLimits) => {
                     api.attachment_limits().await.map(Payload::Limits)
                 }
+                Load::Part(Part::UnreadThreads) => api
+                    .unread_threads(None, Some(messages::LIST_PAGE))
+                    .await
+                    .map(Payload::Threads),
+                Load::Part(Part::MoreThreads) => api
+                    .unread_threads(continuation.as_deref(), Some(messages::LIST_PAGE))
+                    .await
+                    .map(Payload::Threads),
+                Load::Part(Part::ThreadHead(place)) => match place.thread_root() {
+                    Some(root_id) => {
+                        let one = PageQuery {
+                            limit: Some(1),
+                            ..PageQuery::default()
+                        };
+                        api.thread(root_id, &one)
+                            .await
+                            .map(|page| Payload::ThreadHead(Box::new(page)))
+                    }
+                    None => Err(ApiError::Stopped),
+                },
+                Load::Part(Part::Pins(channel_id)) => api.pins(channel_id).await.map(Payload::Pins),
+                Load::Part(Part::Notices) => api
+                    .notifications(None, Some(messages::NOTICES_PAGE))
+                    .await
+                    .map(Payload::Notices),
+                Load::Part(Part::MoreNotices(before)) => api
+                    .notifications(Some(before), Some(messages::NOTICES_PAGE))
+                    .await
+                    .map(Payload::Notices),
+                Load::Part(Part::Named(message_id)) => api
+                    .message(message_id)
+                    .await
+                    .map(|message| Payload::Message(Box::new(message))),
             };
             let _ = loaded.send(Loaded { ticket, result });
         });

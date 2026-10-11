@@ -4,9 +4,11 @@ mod calls;
 mod client;
 pub(crate) mod error;
 mod messages;
+mod notices;
 pub(crate) mod proof;
 mod retry;
 pub(crate) mod session;
+mod threads;
 pub(crate) mod transport;
 
 #[cfg(test)]
@@ -17,6 +19,7 @@ pub use error::{
     AccessLoss, ApiError, ErrorCategory, Rejection, category, code_name, unknown_refusal,
 };
 pub use messages::{CHUNK_BYTES, FileBody, PageQuery};
+pub use notices::{SearchQuery, SettingsScope};
 pub use proof::{ChallengeMismatch, ExpectedAccount};
 pub use retry::RetryPolicy;
 pub use session::{AvatarImage, ServerApi};

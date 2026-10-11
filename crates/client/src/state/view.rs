@@ -17,8 +17,8 @@ use junto_client_core::protocol::account::RecoveryNotice;
 use junto_client_core::protocol::call::{BlockReason, CallPlace, LeaveReason, ShareAudio};
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::protocol::ids::{
-    AccountId, AttachmentId, CallId, CallInvitationId, ChannelId, EntryRequestId, MessageId,
-    ServerId, WorkspaceId, WorkspaceRoleId,
+    AccountId, AttachmentId, CallId, CallInvitationId, ChannelId, ConversationId, EntryRequestId,
+    MessageId, ServerId, WorkspaceId, WorkspaceRoleId,
 };
 use junto_client_core::protocol::recording::{
     Recording, RecordingFailure, RecordingState, RecordingStopReason,
@@ -35,7 +35,7 @@ use junto_media::permission::MicrophoneAccess;
 use junto_media::share::{CaptureError, ShareKind};
 use time::OffsetDateTime;
 
-use super::feed::{self, Feed, Names, Quoted, Zone};
+use super::feed::{self, Feed, MessageRow, Names, Quoted, Zone};
 
 /// What the client core holds of one saved server at one moment.
 #[derive(Debug, Clone)]
@@ -91,6 +91,12 @@ pub struct Selection {
     pub server: Option<ServerId>,
     pub workspaces: HashMap<ServerId, WorkspaceId>,
     pub channels: HashMap<WorkspaceId, ChannelId>,
+    /// The direct conversation that a server shows in place of a channel.
+    pub conversations: HashMap<ServerId, ConversationId>,
+    /// The thread that the side panel shows: its server, its channel and its root.
+    pub thread: Option<(ServerId, ChannelId, MessageId)>,
+    /// The channel whose pinned messages the side panel shows.
+    pub pins: Option<(ServerId, ChannelId)>,
 }
 
 /// The levels of the call that this device is in, as the meters show them.
@@ -154,6 +160,29 @@ pub struct Known {
     pub uploads: HashMap<u64, UploadProgress>,
     /// The date of this moment in the time zone of the messages.
     pub today: Option<time::Date>,
+    /// The fork of a thread that the person asked for.
+    pub fork: Option<ForkAsked>,
+    /// Why the server did not open a direct conversation, with the account that was asked
+    /// for.
+    pub conversation_refused: Option<(ServerId, AccountId, String)>,
+    /// The account whose direct conversation the server was asked for, while the answer
+    /// is on its way.
+    pub conversation_asked: Option<(ServerId, AccountId)>,
+}
+
+/// Where the fork of a thread stands that the person asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ForkState {
+    Sending,
+    /// The server did not make the channel, for this reason.
+    Refused(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkAsked {
+    pub server_id: ServerId,
+    pub root_id: MessageId,
+    pub state: ForkState,
 }
 
 /// A file that the person attached to a message that is not sent yet, or that waits to be
@@ -166,22 +195,39 @@ pub struct DraftFile {
     pub progress: UploadProgress,
 }
 
-/// What a place holds that the person has not read (ADR 0408). A count of 100 means 100
-/// or more.
+/// What a place holds that the person has not read (ADR 0408), and what of it the
+/// notification settings of the person let through (ADR 0404, ADR 0409). A count of 100
+/// means 100 or more.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Unread {
+    /// The unread messages, whatever the settings say.
     pub messages: u64,
+    /// The unread mentions that the settings let through.
     pub mentions: u64,
+    /// The place shows its unread sign: its level wants what is unread.
+    pub sign: bool,
+    /// The person muted the place: no sign, and its name is drawn lighter.
+    pub muted: bool,
 }
 
 impl Unread {
+    /// True when a sign is drawn.
     pub const fn any(self) -> bool {
+        self.sign || self.mentions > 0
+    }
+
+    /// True when something is unread, with a sign or without one.
+    pub const fn unread(self) -> bool {
         self.messages > 0 || self.mentions > 0
     }
 
     fn add(&mut self, other: Self) {
+        if !other.any() {
+            return;
+        }
         self.messages = (self.messages + other.messages).min(100);
         self.mentions = (self.mentions + other.mentions).min(100);
+        self.sign |= other.sign;
     }
 
     fn of(model: &ServerModel, place: PlaceId) -> Self {
@@ -189,9 +235,78 @@ impl Unread {
             .message_state(place)
             .map_or(Self::default(), |state| Self {
                 messages: state.unread,
-                mentions: state.mentions,
+                mentions: state.notification_mentions,
+                sign: state.unread_sign,
+                muted: state.muted,
             })
     }
+}
+
+/// An unread thread of a channel, or the thread that the side panel shows, as the channel
+/// column lists it under its channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadEntry {
+    pub root_id: MessageId,
+    /// The start of the text of the root. Absent while the root was not read.
+    pub title: Option<String>,
+    pub unread: u64,
+    pub mentions: u64,
+    /// The side panel shows this thread.
+    pub open: bool,
+    /// False for a thread of the voice channel of the call of this device: the view of
+    /// that channel is the call, which shows no thread (ADR 0741).
+    pub available: bool,
+}
+
+/// One direct conversation of the server (ADR 0302).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectRow {
+    pub id: ConversationId,
+    /// The other account of the conversation.
+    pub account_id: AccountId,
+    /// Absent while the client has not read the name of the account.
+    pub name: Option<String>,
+    pub selected: bool,
+    pub unread: Unread,
+}
+
+/// The thread that the side panel shows (ADR 0403).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadPanel {
+    pub channel_id: ChannelId,
+    pub channel_name: String,
+    pub root_id: MessageId,
+    /// The root of the thread. Absent until the first page of the thread has arrived.
+    pub root: Option<MessageRow>,
+    /// The replies. Absent until the client holds the timeline of the thread.
+    pub feed: Option<Feed>,
+    /// The channels that the thread was forked into and that the person can see.
+    pub forks: Vec<(ChannelId, String, ChannelKind)>,
+    /// The roles of the person allow a fork: "manage channel". The server decides.
+    pub may_fork: bool,
+    /// The files that the person attached to the next reply.
+    pub draft: Vec<DraftFile>,
+    /// The fork of this thread that the person asked for.
+    pub fork: Option<ForkState>,
+    /// The messages of the channel cannot be edited after they are sent (ADR 0402).
+    pub permanent: bool,
+}
+
+/// The pinned messages of the shown channel, as the side panel shows them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PinsState {
+    Loading,
+    Failed,
+    Loaded(Vec<MessageRow>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PinsPanel {
+    pub channel_id: ChannelId,
+    pub channel_name: String,
+    pub state: PinsState,
+    /// The names for the mentions of the messages.
+    pub names: Arc<Names>,
 }
 
 /// Where the request of the person to enter a voice channel stands (ADR 0514).
@@ -424,6 +539,10 @@ pub struct ChannelRow {
     /// Present for a voice channel.
     pub voice: Option<VoiceState>,
     pub unread: Unread,
+    /// The messages of the channel cannot be edited after they are sent (ADR 0402).
+    pub permanent: bool,
+    /// The unread threads of the channel, and the thread that the side panel shows.
+    pub threads: Vec<ThreadEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -706,6 +825,19 @@ pub struct WorkspaceView {
     pub roles: Vec<(WorkspaceRoleId, String)>,
     /// The uploads of the messages that wait to be sent, by the number of the upload.
     pub uploads: Arc<HashMap<u64, UploadProgress>>,
+    /// The direct conversations of the server.
+    pub directs: Vec<DirectRow>,
+    /// The direct conversation that the main area shows in place of a channel.
+    pub conversation: Option<DirectRow>,
+    /// The thread that the side panel shows.
+    pub thread: Option<ThreadPanel>,
+    /// The pinned messages that the side panel shows.
+    pub pins: Option<PinsPanel>,
+    /// Why the server did not open a direct conversation, with the account asked for.
+    pub conversation_refused: Option<(AccountId, String)>,
+    /// The account whose direct conversation the server was asked for, while the answer
+    /// is on its way.
+    pub conversation_asked: Option<AccountId>,
 }
 
 /// The menu of a person in a voice channel (ADR 0739): what the person of this device can
@@ -935,6 +1067,29 @@ pub struct Shown {
     pub server: Option<ServerId>,
     pub workspace: Option<WorkspaceId>,
     pub channel: Option<ChannelId>,
+    /// The direct conversation that the main area shows in place of a channel.
+    pub conversation: Option<ConversationId>,
+    /// The thread of the side panel: its channel and its root.
+    pub thread: Option<(ChannelId, MessageId)>,
+    /// The channel whose pinned messages the side panel shows.
+    pub pins: Option<ChannelId>,
+}
+
+impl Shown {
+    /// The place whose messages the main area shows.
+    pub fn place(&self) -> Option<PlaceId> {
+        self.conversation
+            .map(PlaceId::Direct)
+            .or(self.channel.map(PlaceId::Channel))
+    }
+
+    /// The thread of the side panel as a place of messages.
+    pub fn thread_place(&self) -> Option<PlaceId> {
+        self.thread.map(|(channel_id, root_id)| PlaceId::Thread {
+            channel_id,
+            root_id,
+        })
+    }
 }
 
 impl ShellView {
@@ -946,6 +1101,15 @@ impl ShellView {
             channel: workspace
                 .and_then(|workspace| workspace.channel.as_ref())
                 .map(|channel| channel.id),
+            conversation: workspace
+                .and_then(|workspace| workspace.conversation.as_ref())
+                .map(|conversation| conversation.id),
+            thread: workspace
+                .and_then(|workspace| workspace.thread.as_ref())
+                .map(|thread| (thread.channel_id, thread.root_id)),
+            pins: workspace
+                .and_then(|workspace| workspace.pins.as_ref())
+                .map(|pins| pins.channel_id),
         }
     }
 }
@@ -1190,7 +1354,67 @@ fn channel_row(
         voice: (channel.channel.kind == ChannelKind::Voice)
             .then(|| voice_state(server_id, channel, workspace, model, known)),
         unread: Unread::of(model, PlaceId::Channel(channel.channel.id)),
+        permanent: channel.channel.permanent_messages,
+        threads: Vec::new(),
     }
+}
+
+/// The characters of the root of a thread that the channel column shows.
+const THREAD_TITLE_CHARACTERS: usize = 48;
+
+/// The unread threads of a channel, in the order of the server, and after them the thread
+/// that the side panel shows when nothing of it is unread.
+fn thread_entries(
+    channel_id: ChannelId,
+    model: &ServerModel,
+    names: &Names,
+    open: Option<MessageId>,
+) -> Vec<ThreadEntry> {
+    use junto_client_core::model::Named;
+    let title = |root: &junto_client_core::protocol::message::Message| {
+        root.document
+            .as_ref()
+            .map(|document| feed::plain_text(document, names, THREAD_TITLE_CHARACTERS))
+            .filter(|title| !title.is_empty())
+            .or_else(|| root.attachments.first().map(|file| file.name.clone()))
+    };
+    let mut entries: Vec<ThreadEntry> = model
+        .threads
+        .iter()
+        .filter_map(|state| match model.named(state.root_id) {
+            Some(Named::Read(root)) if PlaceId::of(&root.place) == PlaceId::Channel(channel_id) => {
+                Some(ThreadEntry {
+                    root_id: state.root_id,
+                    title: title(root),
+                    unread: state.unread,
+                    mentions: state.mentions,
+                    open: open == Some(state.root_id),
+                    available: true,
+                })
+            }
+            _ => None,
+        })
+        .collect();
+    if let Some(root_id) = open
+        && entries.iter().all(|entry| entry.root_id != root_id)
+    {
+        let place = PlaceId::Thread {
+            channel_id,
+            root_id,
+        };
+        entries.push(ThreadEntry {
+            root_id,
+            title: model
+                .timeline(place)
+                .and_then(|timeline| timeline.root.as_deref())
+                .and_then(title),
+            unread: 0,
+            mentions: 0,
+            open: true,
+            available: true,
+        });
+    }
+    entries
 }
 
 /// The channels of a workspace in the groups of the channel column: first the channels
@@ -1286,6 +1510,46 @@ fn members(
     }
 }
 
+/// The direct conversations of a server, by the name of the other person. A person whose
+/// name is not known yet stands at the end.
+fn directs(
+    server_id: ServerId,
+    workspace: &WorkspaceModel,
+    model: &ServerModel,
+    known: &Known,
+    selected: Option<ConversationId>,
+) -> Vec<DirectRow> {
+    let own = model.account.id;
+    let mut rows: Vec<DirectRow> = model
+        .conversations
+        .iter()
+        .map(|conversation| {
+            let other = if conversation.low_account_id == own {
+                conversation.high_account_id
+            } else {
+                conversation.low_account_id
+            };
+            DirectRow {
+                id: conversation.id,
+                account_id: other,
+                name: name_of(server_id, other, workspace, model, known),
+                selected: selected == Some(conversation.id),
+                unread: Unread::of(model, PlaceId::Direct(conversation.id)),
+            }
+        })
+        .collect();
+    rows.sort_by(|one, other| {
+        let key = |row: &DirectRow| {
+            (
+                row.name.is_none(),
+                row.name.as_ref().map(|name| name.to_lowercase()),
+            )
+        };
+        key(one).cmp(&key(other)).then(one.id.cmp(&other.id))
+    });
+    rows
+}
+
 fn workspace_view(
     server_id: ServerId,
     workspace: &WorkspaceModel,
@@ -1294,21 +1558,51 @@ fn workspace_view(
     known: &Known,
 ) -> WorkspaceView {
     let mut sections = sections(server_id, workspace, model, known);
+    // A direct conversation is shown in place of a channel while the state holds it.
+    let conversation_id = selection
+        .conversations
+        .get(&server_id)
+        .copied()
+        .filter(|id| model.conversations.iter().any(|held| held.id == *id));
+    let directs = directs(server_id, workspace, model, known, conversation_id);
+    let conversation = directs.iter().find(|row| row.selected).cloned();
     let wanted = selection.channels.get(&workspace.workspace.id).copied();
     let rows = || sections.iter().flat_map(|section| section.rows.iter());
-    let shown = wanted
-        .filter(|id| rows().any(|row| row.id == *id))
-        .or_else(|| {
-            rows()
-                .find(|row| row.kind == ChannelKind::Text)
-                .map(|row| row.id)
-        })
-        .or_else(|| rows().next().map(|row| row.id));
+    let shown = if conversation.is_some() {
+        None
+    } else {
+        wanted
+            .filter(|id| rows().any(|row| row.id == *id))
+            .or_else(|| {
+                rows()
+                    .find(|row| row.kind == ChannelKind::Text)
+                    .map(|row| row.id)
+            })
+            .or_else(|| rows().next().map(|row| row.id))
+    };
+    // The thread of the side panel belongs to the shown channel.
+    let open_thread = selection
+        .thread
+        .filter(|(server, channel_id, _)| *server == server_id && Some(*channel_id) == shown)
+        .map(|(_, channel_id, root_id)| (channel_id, root_id));
+    let names = Arc::new(names(server_id, workspace, model, known));
     let mut channel = None;
     for row in sections
         .iter_mut()
         .flat_map(|section| section.rows.iter_mut())
     {
+        let open = open_thread
+            .filter(|(channel_id, _)| *channel_id == row.id)
+            .map(|(_, root_id)| root_id);
+        row.threads = thread_entries(row.id, model, &names, open);
+        // The view of the voice channel of the call of this device is the call.
+        let in_call = row
+            .voice
+            .as_ref()
+            .is_some_and(|voice| voice.relation == Relation::Inside);
+        for entry in &mut row.threads {
+            entry.available = !in_call;
+        }
         if Some(row.id) == shown {
             row.selected = true;
             channel = Some(row.clone());
@@ -1324,21 +1618,107 @@ fn workspace_view(
         .zip(known.media.calls.call.as_ref())
         .map(|(row, active)| call_panel(server_id, row, active, workspace, model, known));
     let allowed = allowed(workspace, model);
-    let place = channel.as_ref().map(|row| PlaceId::Channel(row.id));
-    let feed = place.and_then(|place| {
-        let timeline = model.timeline(place)?;
-        Some(feed::derive(&feed::Source {
-            server_id,
-            model,
-            timeline,
-            names: Arc::new(names(server_id, workspace, model, known)),
-            own_roles: &workspace.own_role_ids,
-            may_manage: allowed.manage_messages,
-            quoted: &known.quoted,
-            zone: known.zone,
-            today: known.today,
-        }))
-    });
+    let place = conversation
+        .as_ref()
+        .map(|row| PlaceId::Direct(row.id))
+        .or(channel.as_ref().map(|row| PlaceId::Channel(row.id)));
+    // A direct conversation has no workspace: no role of one counts in it (ADR 0302).
+    let direct = conversation.is_some();
+    let source = |timeline| feed::Source {
+        server_id,
+        model,
+        timeline,
+        names: names.clone(),
+        own_roles: if direct { &[] } else { &workspace.own_role_ids },
+        may_manage: allowed.manage_messages && !direct,
+        open_thread: open_thread.map(|(_, root_id)| root_id),
+        threads: call.is_none(),
+        quoted: &known.quoted,
+        zone: known.zone,
+        today: known.today,
+    };
+    let feed = place
+        .and_then(|place| model.timeline(place))
+        .map(|timeline| feed::derive(&source(timeline)));
+    let draft_of = |place: PlaceId| {
+        known
+            .drafts
+            .get(&(server_id, place))
+            .cloned()
+            .unwrap_or_default()
+    };
+    // The side panel of the call of this device is the panel of the call: its chat
+    // shows no thread and no pin list.
+    let thread = open_thread
+        .filter(|_| call.is_none())
+        .zip(channel.as_ref())
+        .map(|((channel_id, root_id), row)| {
+            let place = PlaceId::Thread {
+                channel_id,
+                root_id,
+            };
+            let timeline = model.timeline(place);
+            ThreadPanel {
+                channel_id,
+                channel_name: row.name.clone(),
+                root_id,
+                root: timeline
+                    .and_then(|timeline| Some((timeline, timeline.root.as_ref()?)))
+                    .map(|(timeline, root)| {
+                        feed::message_row(&source(timeline), root, &mut feed::Loaded::default())
+                    }),
+                feed: timeline.map(|timeline| feed::derive(&source(timeline))),
+                forks: timeline
+                    .map(|timeline| timeline.forks.as_slice())
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|fork| {
+                        let held = model.channel(*fork)?;
+                        Some((*fork, held.channel.name.clone(), held.channel.kind))
+                    })
+                    .collect(),
+                may_fork: allowed.manage,
+                draft: draft_of(place),
+                fork: known
+                    .fork
+                    .as_ref()
+                    .filter(|asked| asked.server_id == server_id && asked.root_id == root_id)
+                    .map(|asked| asked.state.clone()),
+                permanent: row.permanent,
+            }
+        });
+    let pins = selection
+        .pins
+        .filter(|(server, channel_id)| *server == server_id && Some(*channel_id) == shown)
+        .filter(|_| thread.is_none() && call.is_none())
+        .zip(channel.as_ref())
+        .map(|((_, channel_id), row)| {
+            let list = model.pin_list(channel_id);
+            let timeline = model.timeline(PlaceId::Channel(channel_id));
+            let state = match (list, timeline) {
+                (Some(list), Some(timeline)) => match (&list.messages, list.failed) {
+                    (Loadable::Loaded(pinned), _) => {
+                        let source = source(timeline);
+                        let mut loaded = feed::Loaded::default();
+                        PinsState::Loaded(
+                            pinned
+                                .iter()
+                                .map(|message| feed::message_row(&source, message, &mut loaded))
+                                .collect(),
+                        )
+                    }
+                    (_, Some(_)) => PinsState::Failed,
+                    _ => PinsState::Loading,
+                },
+                _ => PinsState::Loading,
+            };
+            PinsPanel {
+                channel_id,
+                channel_name: row.name.clone(),
+                state,
+                names: names.clone(),
+            }
+        });
     WorkspaceView {
         id: workspace.workspace.id,
         name: workspace.workspace.name.clone(),
@@ -1348,10 +1728,7 @@ fn workspace_view(
         call,
         allowed,
         feed,
-        draft: place
-            .and_then(|place| known.drafts.get(&(server_id, place)))
-            .cloned()
-            .unwrap_or_default(),
+        draft: place.map(draft_of).unwrap_or_default(),
         roles: workspace
             .roles
             .iter()
@@ -1359,6 +1736,19 @@ fn workspace_view(
             .map(|role| (role.id, role.name.clone()))
             .collect(),
         uploads: Arc::new(known.uploads.clone()),
+        directs,
+        conversation,
+        thread,
+        pins,
+        conversation_refused: known
+            .conversation_refused
+            .as_ref()
+            .filter(|(server, _, _)| *server == server_id)
+            .map(|(_, account_id, reason)| (*account_id, reason.clone())),
+        conversation_asked: known
+            .conversation_asked
+            .filter(|(server, _)| *server == server_id)
+            .map(|(_, account_id)| account_id),
     }
 }
 
@@ -1403,14 +1793,12 @@ fn workspace_unread(workspace: &WorkspaceModel, model: &ServerModel) -> Unread {
     unread
 }
 
-/// What the places of a server hold that the person has not read.
+/// What the places of a server hold that the person has not read and that their settings
+/// let through.
 fn server_unread(model: &ServerModel) -> Unread {
     let mut unread = Unread::default();
     for state in &model.message_states {
-        unread.add(Unread {
-            messages: state.unread,
-            mentions: state.mentions,
-        });
+        unread.add(Unread::of(model, PlaceId::of(&state.place)));
     }
     unread
 }
@@ -2058,5 +2446,7 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
     view
 }
 
+#[cfg(test)]
+mod panel_tests;
 #[cfg(test)]
 mod tests;

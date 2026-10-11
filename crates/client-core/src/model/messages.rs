@@ -13,20 +13,57 @@ use time::OffsetDateTime;
 use super::ServerModel;
 use crate::api::{ApiError, ErrorCategory};
 
-/// A place that holds messages: a channel, or a direct conversation.
+/// A place that holds messages: a channel, a direct conversation, or the thread under one
+/// message of a channel (ADR 0403).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum PlaceId {
     Channel(ChannelId),
     Direct(ConversationId),
+    /// The replies under the message `root_id` of a channel. They have positions of the
+    /// channel and are not in its history (ADR 0409).
+    Thread {
+        channel_id: ChannelId,
+        root_id: MessageId,
+    },
 }
 
 impl PlaceId {
+    /// The channel or the direct conversation that the server names.
     pub const fn of(place: &MessagePlace) -> Self {
         match place {
             MessagePlace::Channel { channel_id, .. } => Self::Channel(*channel_id),
             MessagePlace::Direct {
                 conversation_id, ..
             } => Self::Direct(*conversation_id),
+        }
+    }
+
+    /// The place whose history holds a message: its thread for a reply in a thread, and
+    /// else its channel or direct conversation.
+    pub const fn of_message(message: &Message) -> Self {
+        match (message.thread_root, &message.place) {
+            (Some(root_id), MessagePlace::Channel { channel_id, .. }) => Self::Thread {
+                channel_id: *channel_id,
+                root_id,
+            },
+            _ => Self::of(&message.place),
+        }
+    }
+
+    /// The channel of a thread, and every other place itself. The events and the summary
+    /// of the server name this place.
+    pub const fn container(self) -> Self {
+        match self {
+            Self::Thread { channel_id, .. } => Self::Channel(channel_id),
+            other => other,
+        }
+    }
+
+    /// The root message, for a thread.
+    pub const fn thread_root(self) -> Option<MessageId> {
+        match self {
+            Self::Thread { root_id, .. } => Some(root_id),
+            Self::Channel(_) | Self::Direct(_) => None,
         }
     }
 }
@@ -76,6 +113,8 @@ pub(crate) enum Reach {
     Newer,
     /// The latest page, in place of what is loaded.
     End,
+    /// The messages around a position, in place of what is loaded.
+    At(u64),
 }
 
 /// The loaded messages of one place: one range of its history without a hole.
@@ -100,6 +139,11 @@ pub struct Timeline {
     /// The read position of the account when the place was opened with unread messages.
     /// A reader draws the line of the first unread message after it.
     pub unread_after: Option<u64>,
+    /// For a thread: the message that the replies hang under, once a page has arrived.
+    pub root: Option<Arc<Message>>,
+    /// For a thread: the channels that it was forked into and that the account can read
+    /// (ADR 0409).
+    pub forks: Vec<ChannelId>,
 }
 
 fn key(message: &Message) -> (u64, MessageId) {
@@ -118,6 +162,8 @@ impl Timeline {
             failed: None,
             stale: false,
             unread_after: None,
+            root: None,
+            forks: Vec::new(),
         }
     }
 
@@ -197,30 +243,33 @@ impl Timeline {
         self.bound(true);
     }
 
-    /// Adds the page before the first loaded message.
+    /// Adds the page before the first loaded message. A page that adds no message does
+    /// not promise older messages: the next read would start at the same message.
     pub(crate) fn add_older(&mut self, page: MessagePage) {
-        self.more_before = page.has_more;
         self.failed = None;
         let first = self.messages.first().map(|first| key(first));
         let mut older: Vec<Arc<Message>> = sorted(page.messages)
             .into_iter()
             .filter(|message| first.is_none_or(|first| key(message) < first))
             .collect();
+        self.more_before = page.has_more && !older.is_empty();
         older.append(&mut self.messages);
         self.messages = older;
         self.bound(false);
     }
 
-    /// Adds the page after the last loaded message.
+    /// Adds the page after the last loaded message. A page that adds no message does
+    /// not promise later messages: the next read would start at the same message.
     pub(crate) fn add_newer(&mut self, page: MessagePage) {
-        self.more_after = page.has_more;
         self.failed = None;
         let last = self.messages.last().map(|last| key(last));
+        let held = self.messages.len();
         self.messages.extend(
             sorted(page.messages)
                 .into_iter()
                 .filter(|message| last.is_none_or(|last| key(message) > last)),
         );
+        self.more_after = page.has_more && self.messages.len() > held;
         self.bound(true);
     }
 
@@ -348,7 +397,7 @@ impl PendingMessage {
         wanted.sort_unstable();
         held.sort_unstable();
         message.author_id == Some(own)
-            && PlaceId::of(&message.place) == self.place
+            && PlaceId::of_message(message) == self.place
             && message.position > self.after
             && message.reply_to == self.reply_to
             && message.document.as_ref() == Some(&self.document)
@@ -363,6 +412,9 @@ fn empty_state(place: MessagePlace) -> MessageState {
         latest: 0,
         unread: 0,
         mentions: 0,
+        unread_sign: false,
+        notification_mentions: 0,
+        muted: false,
     }
 }
 
@@ -390,10 +442,11 @@ impl ServerModel {
             .filter(move |pending| pending.place == place)
     }
 
-    /// The place as the server names it, when the state holds it.
+    /// The place as the server names it, when the state holds it. A thread is named by
+    /// its channel.
     pub fn place(&self, place: PlaceId) -> Option<MessagePlace> {
         match place {
-            PlaceId::Channel(channel_id) => {
+            PlaceId::Channel(channel_id) | PlaceId::Thread { channel_id, .. } => {
                 self.channel(channel_id).map(|held| MessagePlace::Channel {
                     workspace_id: held.channel.workspace_id,
                     channel_id,
@@ -460,20 +513,32 @@ impl ServerModel {
         };
         let held = &mut self.message_states[index];
         held.last_read = held.last_read.max(position);
-        if held.last_read >= held.latest {
-            held.unread = 0;
-            held.mentions = 0;
-            true
-        } else {
-            false
+        if held.last_read < held.latest {
+            return false;
         }
+        held.unread = 0;
+        // A mention can be one of a thread, which this read position does not reach
+        // (ADR 0409): with a mention the counts are not known.
+        if held.mentions > 0 || held.notification_mentions > 0 {
+            return false;
+        }
+        held.unread_sign = false;
+        true
     }
 
+    /// A channel or a conversation is gone: nothing of it stays, and nothing of its
+    /// threads.
     pub(crate) fn forget_place(&mut self, place: PlaceId) {
         self.message_states
             .retain(|held| PlaceId::of(&held.place) != place);
-        self.timelines.retain(|held| held.place != place);
-        self.outbox.retain(|held| held.place != place);
+        self.timelines
+            .retain(|held| held.place.container() != place);
+        self.outbox.retain(|held| held.place.container() != place);
+        self.seen_positions.remove(&place);
+        if let PlaceId::Channel(channel_id) = place {
+            self.pins.retain(|held| held.channel_id != channel_id);
+        }
+        self.forget_named_of(place);
     }
 
     pub(crate) fn timeline_mut(&mut self, place: PlaceId) -> Option<&mut Timeline> {
@@ -481,6 +546,37 @@ impl ServerModel {
             .iter_mut()
             .find(|timeline| timeline.place == place)
             .map(Arc::make_mut)
+    }
+
+    /// The server gives no such place to the account: nothing of it stays in the state
+    /// of its timeline, which says why.
+    pub(crate) fn empty_timeline(&mut self, place: PlaceId) {
+        if let Some(timeline) = self.timeline_mut(place) {
+            timeline.messages.clear();
+            timeline.root = None;
+            timeline.forks.clear();
+            timeline.loaded = false;
+            timeline.stale = false;
+            timeline.more_before = false;
+            timeline.more_after = false;
+            timeline.unread_after = None;
+            timeline.failed = Some(ReadFailure::NotFound);
+        }
+    }
+
+    /// Marks the timelines that can hold a message of a channel or a conversation as
+    /// not current: the timeline of the place, and the threads of the channel.
+    pub(crate) fn mark_stale(&mut self, place: PlaceId, failure: ReadFailure) -> bool {
+        let mut changed = false;
+        for timeline in &mut self.timelines {
+            if timeline.place.container() == place {
+                let timeline = Arc::make_mut(timeline);
+                timeline.stale = true;
+                timeline.failed = Some(failure);
+                changed = true;
+            }
+        }
+        changed
     }
 
     /// Starts to hold the messages of a place for a reader.
@@ -494,16 +590,56 @@ impl ServerModel {
         self.timelines.retain(|held| held.place != place);
     }
 
-    /// Puts a message that the server returned into the timeline of its place.
+    /// True when a holder of messages wants the message `message_id` of the channel or
+    /// conversation `place`: the timeline of the place, an open thread of the channel, the
+    /// open pin list of the channel, or the lists that name messages. The event of a
+    /// change names the place and not the thread (ADR 0409), so every open thread of the
+    /// channel is asked.
+    pub(crate) fn wants_message(
+        &self,
+        place: PlaceId,
+        message_id: MessageId,
+        position: Option<u64>,
+    ) -> bool {
+        let wants = |timeline: &Timeline| match position {
+            Some(position) => timeline.wants(message_id, position),
+            None => true,
+        };
+        self.timelines.iter().any(|timeline| {
+            timeline.place.container() == place
+                && (wants(timeline) || timeline.place.thread_root() == Some(message_id))
+        }) || matches!(place, PlaceId::Channel(channel_id) if self.pin_list(channel_id).is_some())
+            || self.names(message_id)
+    }
+
+    /// Puts a message that the server returned where the state holds it: into the
+    /// timeline of its place or of its thread, into the root of an open thread, into the
+    /// open pin list of its channel, and into the named messages. A reply in a thread
+    /// never enters the timeline of its channel.
     pub(crate) fn put_message(&mut self, message: Message) -> bool {
-        let place = PlaceId::of(&message.place);
+        let place = PlaceId::of_message(&message);
+        let mut changed = false;
         let wanted = self
             .timeline(place)
             .is_some_and(|timeline| timeline.wants(message.id, message.position));
-        wanted
-            && self
-                .timeline_mut(place)
-                .is_some_and(|timeline| timeline.put(message))
+        if wanted && let Some(timeline) = self.timeline_mut(place) {
+            changed |= timeline.put(message.clone());
+        }
+        let shared = Arc::new(message);
+        if shared.thread_root.is_none() {
+            let root_of = |timeline: &Arc<Timeline>| {
+                timeline.place.thread_root() == Some(shared.id)
+                    && timeline.place.container() == place
+                    && timeline.root.as_ref() != Some(&shared)
+            };
+            for timeline in self.timelines.iter_mut().filter(|held| root_of(held)) {
+                Arc::make_mut(timeline).root = Some(shared.clone());
+                changed = true;
+            }
+        }
+        changed |= self.put_pin(&shared);
+        changed |= self.put_named(&shared);
+        changed
     }
 
     /// Records a message that the server returned as the answer to a send of this client.
@@ -576,13 +712,29 @@ impl ServerModel {
 
     /// The server holds no such message for the account: a message that was deleted
     /// without a reply to it leaves no marker (ADR 0408).
+    /// `place` is the channel or the conversation of the message. Every holder of the
+    /// message loses it: the timeline, the open threads of the channel, the pin list, and
+    /// the named messages. A thread whose root is gone holds nothing any more.
     pub(crate) fn remove_message(&mut self, place: PlaceId, message_id: MessageId) -> bool {
-        let held = self
-            .timeline(place)
-            .is_some_and(|timeline| timeline.message(message_id).is_some());
-        held && self
-            .timeline_mut(place)
-            .is_some_and(|timeline| timeline.remove(message_id))
+        let mut changed = false;
+        for timeline in &mut self.timelines {
+            if timeline.place.container() != place {
+                continue;
+            }
+            if timeline.place.thread_root() == Some(message_id) {
+                let timeline = Arc::make_mut(timeline);
+                timeline.root = None;
+                timeline.messages.clear();
+                timeline.forks.clear();
+                timeline.failed = Some(ReadFailure::NotFound);
+                changed = true;
+            } else if timeline.message(message_id).is_some() {
+                changed |= Arc::make_mut(timeline).remove(message_id);
+            }
+        }
+        changed |= self.remove_pin(place, message_id);
+        changed |= self.lose_named(message_id);
+        changed
     }
 
     pub(crate) fn pending_mut(&mut self, id: u64) -> Option<&mut PendingMessage> {
@@ -604,6 +756,16 @@ impl ServerModel {
         self.attachment_limits.clone_from(&before.attachment_limits);
         for timeline in &before.timelines {
             if wanted.contains(&timeline.place) {
+                // A conversation without a message is in no snapshot (ADR 0408). The
+                // one that a reader has open stays; the server decides each request.
+                if let PlaceId::Direct(conversation_id) = timeline.place
+                    && let Some(held) = before
+                        .conversations
+                        .iter()
+                        .find(|held| held.id == conversation_id)
+                {
+                    self.put_conversation(held);
+                }
                 let mut carried = timeline.as_ref().clone();
                 carried.stale = true;
                 carried.reading = Reading::default();

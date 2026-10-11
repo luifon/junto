@@ -14,6 +14,7 @@ pub mod room;
 mod server_menu;
 mod settings;
 pub mod share;
+mod threads;
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -56,8 +57,52 @@ pub(crate) enum Layer {
     MessageMenu(feed::MessageMenuOpen),
     /// The question before a message is deleted.
     ConfirmDelete(junto_client_core::protocol::ids::MessageId),
-    /// The emoji picker: for a reaction to this message, or for the text of the composer.
-    Emoji(Option<junto_client_core::protocol::ids::MessageId>),
+    /// The emoji picker: for a reaction to a message, or for the text of a composer.
+    Emoji(EmojiTarget),
+    /// The dialog that forks the thread of the side panel into a channel.
+    Fork(threads::ForkDialog),
+}
+
+/// What the emoji of the picker is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmojiTarget {
+    React(junto_client_core::protocol::ids::MessageId),
+    Compose(Pane),
+}
+
+/// A list of messages with its composer: the one of the main area, or the thread of the
+/// side panel (ADR 0741).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pane {
+    Main,
+    Thread,
+}
+
+impl Pane {
+    /// The pane that shows a place of messages.
+    pub fn of(place: junto_client_core::model::PlaceId) -> Self {
+        match place.thread_root() {
+            Some(_) => Self::Thread,
+            None => Self::Main,
+        }
+    }
+
+    /// The identifier of a part of the pane. The parts of the thread have names of
+    /// their own, so that both panes can be drawn at once.
+    pub(crate) fn id(self, part: &'static str) -> &'static str {
+        match (self, part) {
+            (Self::Main, part) => part,
+            (Self::Thread, "feed") => "thread-feed",
+            (Self::Thread, "message-list") => "thread-message-list",
+            (Self::Thread, "go-to-end") => "thread-go-to-end",
+            (Self::Thread, "composer") => "thread-composer",
+            (Self::Thread, "composer-input") => "thread-composer-input",
+            (Self::Thread, "send-message") => "thread-send-message",
+            (Self::Thread, "messages-state") => "thread-messages-state",
+            (Self::Thread, "no-messages") => "thread-no-messages",
+            (Self::Thread, part) => part,
+        }
+    }
 }
 
 /// A part of the window that can be opened without a click.
@@ -167,6 +212,12 @@ pub struct Shell {
     pub(crate) feed: feed::FeedList,
     pub(crate) message_pictures: feed::MessagePictures,
     pub(crate) composer: composer::Composer,
+    /// The list and the composer of the thread of the side panel.
+    pub(crate) thread_feed: feed::FeedList,
+    pub(crate) thread_composer: composer::Composer,
+    pub(crate) pins_scroll: ScrollHandle,
+    /// The name of the channel that a thread is forked into.
+    pub(crate) fork_name: Entity<InputState>,
     /// What the window drew last. A test reads the data of the window from it, and not
     /// from the client core, which can be ahead of the window.
     #[cfg(feature = "test-support")]
@@ -182,13 +233,31 @@ impl Shell {
         let code = Field::state("", window, cx);
         let invite_find = Field::state(text::FIND_A_MEMBER, window, cx);
         let composer = composer::Composer::new(window, cx);
-        let feed = feed::FeedList::new();
+        let thread_composer = composer::Composer::new(window, cx);
+        let fork_name = Field::state(text::FORK_NAME, window, cx);
+        let feed = feed::FeedList::new(Pane::Main);
         feed.list
             .set_scroll_handler(cx.listener(|this, event, window, cx| {
-                this.feed_scrolled(event, window, cx);
+                this.feed_scrolled(Pane::Main, event, window, cx);
+            }));
+        let thread_feed = feed::FeedList::new(Pane::Thread);
+        thread_feed
+            .list
+            .set_scroll_handler(cx.listener(|this, event, window, cx| {
+                this.feed_scrolled(Pane::Thread, event, window, cx);
             }));
         let subscriptions = vec![
-            Self::observe_composer(&composer.input, window, cx),
+            Self::observe_composer(Pane::Main, &composer.input, window, cx),
+            Self::observe_composer(Pane::Thread, &thread_composer.input, window, cx),
+            Field::observe(
+                &fork_name,
+                window,
+                cx,
+                |this: &mut Self, event, window, cx| match event {
+                    FieldEvent::Changed => this.fork_name_changed(cx),
+                    FieldEvent::Submitted => this.submit_fork(window, cx),
+                },
+            ),
             // The emoji of the picker follow the text that they are searched for.
             Field::observe(
                 &composer.emoji_find,
@@ -312,6 +381,10 @@ impl Shell {
             feed,
             message_pictures: feed::MessagePictures::default(),
             composer,
+            thread_feed,
+            thread_composer,
+            pins_scroll: ScrollHandle::new(),
+            fork_name,
             #[cfg(feature = "test-support")]
             drawn: None,
             _subscriptions: subscriptions,
@@ -326,6 +399,34 @@ impl Shell {
             shell.focus.focus(window, cx);
         }
         shell
+    }
+
+    pub(crate) fn pen(&self, pane: Pane) -> &composer::Composer {
+        match pane {
+            Pane::Main => &self.composer,
+            Pane::Thread => &self.thread_composer,
+        }
+    }
+
+    pub(crate) fn pen_mut(&mut self, pane: Pane) -> &mut composer::Composer {
+        match pane {
+            Pane::Main => &mut self.composer,
+            Pane::Thread => &mut self.thread_composer,
+        }
+    }
+
+    pub(crate) fn list(&self, pane: Pane) -> &feed::FeedList {
+        match pane {
+            Pane::Main => &self.feed,
+            Pane::Thread => &self.thread_feed,
+        }
+    }
+
+    pub(crate) fn list_mut(&mut self, pane: Pane) -> &mut feed::FeedList {
+        match pane {
+            Pane::Main => &mut self.feed,
+            Pane::Thread => &mut self.thread_feed,
+        }
     }
 
     /// The pane of the panel of the call that is shown.
@@ -787,18 +888,34 @@ impl Shell {
             // The person left the voice channel, or the channel is no longer shown.
             Layer::PersonMenu(open) => view.person_menu(open.channel_id, open.account_id).is_none(),
             // The message is no longer among the shown ones.
-            Layer::MessageMenu(feed::MessageMenuOpen { message_id })
+            Layer::MessageMenu(feed::MessageMenuOpen { message_id, .. })
             | Layer::ConfirmDelete(message_id)
-            | Layer::Emoji(Some(message_id)) => !view
-                .workspace()
-                .and_then(|workspace| workspace.feed.as_ref())
-                .is_some_and(|feed| {
-                    feed.rows.iter().any(|row| {
-                        matches!(row, crate::state::feed::FeedRow::Message(row)
-                            if row.message.id == *message_id)
+            | Layer::Emoji(EmojiTarget::React(message_id)) => {
+                let held = |feed: Option<&crate::state::feed::Feed>| {
+                    feed.is_some_and(|feed| {
+                        feed.rows.iter().any(|row| {
+                            matches!(row, crate::state::feed::FeedRow::Message(row)
+                                if row.message.id == *message_id)
+                        })
                     })
-                }),
-            Layer::Emoji(None) => view.workspace().is_none(),
+                };
+                let workspace = view.workspace();
+                let thread = workspace.and_then(|workspace| workspace.thread.as_ref());
+                !held(workspace.and_then(|workspace| workspace.feed.as_ref()))
+                    && !held(thread.and_then(|thread| thread.feed.as_ref()))
+                    && thread.is_none_or(|thread| thread.root_id != *message_id)
+            }
+            Layer::Emoji(EmojiTarget::Compose(Pane::Main)) => view.workspace().is_none(),
+            // The thread of the side panel was closed.
+            Layer::Emoji(EmojiTarget::Compose(Pane::Thread)) => view
+                .workspace()
+                .is_none_or(|workspace| workspace.thread.is_none()),
+            // The thread was closed, or the server made the channel.
+            Layer::Fork(dialog) => {
+                view.workspace()
+                    .is_none_or(|workspace| workspace.thread.is_none())
+                    || Self::fork_is_done(dialog, view)
+            }
             Layer::None | Layer::Welcome | Layer::Settings => false,
         };
         if stale {
@@ -820,6 +937,7 @@ impl Shell {
             }
             Layer::ConfirmDelete(message_id) => self.render_confirm_delete(*message_id, window, cx),
             Layer::Emoji(_) => self.render_emoji_picker(window, cx),
+            Layer::Fork(_) => self.render_fork_dialog(view, window, cx),
             Layer::Welcome => self.render_welcome(window, cx).into_any_element(),
             Layer::Settings => self.render_settings(window, cx).into_any_element(),
             Layer::Join(_) => self.render_join(view, window, cx).into_any_element(),

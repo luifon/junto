@@ -21,14 +21,14 @@ use junto_client_core::protocol::message::{
 };
 use junto_client_core::transfers::{DownloadStage, UploadStage};
 
-use super::{Layer, Shell};
+use super::{EmojiTarget, Layer, Pane, Shell};
 use crate::assets::Icon;
 use crate::compose;
 use crate::state::feed::{
     Feed, FeedRow, MessageRow, Names, Quote, QuoteText, SystemKind, SystemRow, WaitingRow,
     can_send_again,
 };
-use crate::state::view::{ShellView, WorkspaceView};
+use crate::state::view::{DraftFile, ShellView, WorkspaceView};
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
@@ -55,10 +55,16 @@ pub(crate) struct FeedList {
 }
 
 impl FeedList {
-    pub(crate) fn new() -> Self {
+    /// The list of a pane. The list of the main area stands at its end; the replies of
+    /// a thread start under the root of the thread.
+    pub(crate) fn new(pane: Pane) -> Self {
+        let alignment = match pane {
+            Pane::Main => ListAlignment::Bottom,
+            Pane::Thread => ListAlignment::Top,
+        };
         Self {
             key: None,
-            list: ListState::new(0, ListAlignment::Bottom, px(800.0)),
+            list: ListState::new(0, alignment, px(800.0)),
             rows: Arc::default(),
             drawn: false,
         }
@@ -126,10 +132,37 @@ pub(crate) struct MessagePictures {
     order: VecDeque<AttachmentId>,
 }
 
+/// What a pane draws: its feed, the files of its next message, and what it says of a
+/// place that the server does not give and of a place without a message.
+pub(crate) struct PaneShown<'a> {
+    pub feed: Option<&'a Feed>,
+    pub draft: &'a [DraftFile],
+    /// The pane stands in a side panel.
+    pub compact: bool,
+    /// A sent message of the place cannot be edited (ADR 0402).
+    pub permanent: bool,
+    pub gone: &'static str,
+    pub empty: &'static str,
+}
+
+/// How a message is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MessageShape {
+    /// In the list of the main area.
+    Wide,
+    /// In a list of a side panel.
+    Compact,
+    /// In a side panel, without its actions, its menu, its pin mark and the mark of its
+    /// thread: the root of the thread of the side panel, and a message of the pin list.
+    Bare,
+}
+
 /// The message whose menu is open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MessageMenuOpen {
     pub message_id: MessageId,
+    /// The list that the message was drawn in.
+    pub pane: Pane,
 }
 
 /// True when the server marked the file as a picture that a client can show (ADR 0408).
@@ -382,12 +415,17 @@ fn code_block(code: &str, language: Option<&str>, theme: &Theme) -> AnyElement {
 }
 
 impl Shell {
-    /// The feed of the workspace that the window shows.
-    fn shown_feed(&self) -> Option<&Feed> {
-        self.view.as_ref()?.workspace()?.feed.as_ref()
+    /// The feed that a pane shows: the one of the main area, or the replies of the thread
+    /// of the side panel.
+    pub(crate) fn pane_feed(&self, pane: Pane) -> Option<&Feed> {
+        let workspace = self.view.as_ref()?.workspace()?;
+        match pane {
+            Pane::Main => workspace.feed.as_ref(),
+            Pane::Thread => workspace.thread.as_ref()?.feed.as_ref(),
+        }
     }
 
-    /// Takes a new view: the list gets the rows of the feed, and the read position
+    /// Takes a new view: each list gets the rows of its feed, and the read position
     /// follows what is shown.
     pub(crate) fn feed_changed(
         &mut self,
@@ -395,21 +433,35 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let feed = view
-            .workspace()
-            .and_then(|workspace| workspace.feed.as_ref());
-        self.feed.take(feed);
+        let workspace = view.workspace();
+        let main = workspace.and_then(|workspace| workspace.feed.as_ref());
+        let thread = workspace
+            .and_then(|workspace| workspace.thread.as_ref())
+            .and_then(|thread| thread.feed.as_ref());
+        self.feed.take(main);
+        self.thread_feed.take(thread);
+        if thread.is_none() {
+            self.thread_feed.drawn = false;
+        }
         self.composer_follows(view, window, cx);
-        self.feed_seen(feed, window, cx);
+        self.feed_seen(Pane::Main, main, window, cx);
+        self.feed_seen(Pane::Thread, thread, window, cx);
     }
 
-    /// The person sees the end of the list in an active window: the read position moves
+    /// The person sees the end of a list in an active window: the read position moves
     /// there (ADR 0740).
-    fn feed_seen(&mut self, feed: Option<&Feed>, window: &mut Window, cx: &mut Context<Self>) {
+    fn feed_seen(
+        &mut self,
+        pane: Pane,
+        feed: Option<&Feed>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(feed) = feed else {
             return;
         };
-        if !window.is_window_active() || !self.feed.drawn || !self.feed.at_end() {
+        let list = self.list(pane);
+        if !window.is_window_active() || !list.drawn || !list.at_end() {
             return;
         }
         if let Some(position) = feed.end_position.filter(|_| feed.unread > 0) {
@@ -419,15 +471,16 @@ impl Shell {
         }
     }
 
-    /// The list was scrolled: the next page is read near an end, the client core is told
+    /// A list was scrolled: the next page is read near an end, the client core is told
     /// where the list stands, and the read position follows the end.
     pub(crate) fn feed_scrolled(
         &mut self,
+        pane: Pane,
         event: &ListScrollEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(feed) = self.shown_feed().cloned() else {
+        let Some(feed) = self.pane_feed(pane).cloned() else {
             return;
         };
         let (server_id, place) = (feed.server_id, feed.place);
@@ -447,14 +500,14 @@ impl Shell {
             }
             state.set_anchor(server_id, place, if at_end { None } else { first_position });
         });
-        self.feed_seen(Some(&feed), window, cx);
+        self.feed_seen(pane, Some(&feed), window, cx);
         cx.notify();
     }
 
-    /// Shows the end of the history: the list goes there, and the latest page replaces
-    /// what is loaded when the list does not reach the end.
-    pub fn go_to_end(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(feed) = self.shown_feed().cloned() else {
+    /// Shows the end of the history of a pane: the list goes there, and the latest page
+    /// replaces what is loaded when the list does not reach the end.
+    pub fn go_to_end(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(feed) = self.pane_feed(pane).cloned() else {
             return;
         };
         if feed.more_after {
@@ -462,14 +515,14 @@ impl Shell {
             self.state
                 .update(cx, |state, _| state.read_latest(server_id, place));
         }
-        self.feed.list.set_follow_mode(FollowMode::Tail);
-        self.feed_seen(Some(&feed), window, cx);
+        self.list(pane).list.set_follow_mode(FollowMode::Tail);
+        self.feed_seen(pane, Some(&feed), window, cx);
         cx.notify();
     }
 
-    /// Moves the read position of the shown channel to its latest message.
+    /// Moves the read position of the place of the main area to its latest message.
     pub fn mark_shown_as_read(&mut self, cx: &mut Context<Self>) {
-        let Some(feed) = self.shown_feed().cloned() else {
+        let Some(feed) = self.pane_feed(Pane::Main).cloned() else {
             return;
         };
         let (server_id, place) = (feed.server_id, feed.place);
@@ -479,8 +532,8 @@ impl Shell {
         cx.notify();
     }
 
-    /// The message area of a channel: its list with the states of a list that has no
-    /// rows, and the composer under it. `compact` is the chat of a call in its panel.
+    /// The message area of the place of the main area: its list and its composer.
+    /// `compact` is the chat of a call in its panel.
     pub(crate) fn render_feed(
         &mut self,
         workspace: &WorkspaceView,
@@ -488,37 +541,83 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let permanent = workspace
+            .channel
+            .as_ref()
+            .is_some_and(|channel| channel.permanent);
+        let gone = match &workspace.conversation {
+            Some(_) => text::CONVERSATION_CLOSED,
+            None => text::MESSAGES_GONE,
+        };
+        let empty = match &workspace.conversation {
+            Some(_) => text::NO_DIRECT_MESSAGES,
+            None => text::NO_MESSAGES,
+        };
+        let shown = PaneShown {
+            feed: workspace.feed.as_ref(),
+            draft: &workspace.draft,
+            compact,
+            permanent,
+            gone,
+            empty,
+        };
+        self.render_pane(Pane::Main, &shown, window, cx)
+    }
+
+    /// The message area of a pane: its list with the states of a list that has no rows,
+    /// and the composer under it.
+    pub(crate) fn render_pane(
+        &mut self,
+        pane: Pane,
+        shown: &PaneShown<'_>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = theme(cx);
         let colors = theme.colors;
-        self.feed.drawn = true;
+        let compact = shown.compact;
+        self.list_mut(pane).drawn = true;
         // The list can reach its end without a scroll of the person: all of it fits, or a
         // new message arrived at the end. What is shown in an active window is seen.
-        let seen = workspace.feed.as_ref().is_some_and(|feed| {
-            feed.unread > 0 && feed.end_position.is_some() && self.feed.at_end()
+        let seen = shown.feed.is_some_and(|feed| {
+            feed.unread > 0 && feed.end_position.is_some() && self.list(pane).at_end()
         });
         if seen && window.is_window_active() {
-            cx.defer_in(window, |this, window, cx| {
-                let feed = this.shown_feed().cloned();
-                this.feed_seen(feed.as_ref(), window, cx);
+            cx.defer_in(window, move |this, window, cx| {
+                let feed = this.pane_feed(pane).cloned();
+                this.feed_seen(pane, feed.as_ref(), window, cx);
             });
         }
-        let body: AnyElement = match &workspace.feed {
-            None => self.feed_state(text::MESSAGES, text::MESSAGES_LOADING, None, &theme, cx),
+        let body: AnyElement = match shown.feed {
+            None => self.feed_state(pane, text::MESSAGES, text::MESSAGES_LOADING, None, cx),
             Some(feed) if !feed.loaded => match feed.failed {
                 Some(failure) => {
                     let sentence = match failure {
-                        ReadFailure::NotFound => text::MESSAGES_GONE,
+                        ReadFailure::NotFound => shown.gone,
                         ReadFailure::Refused(_) | ReadFailure::NoAnswer => text::MESSAGES_FAILED,
                     };
-                    self.feed_state(
+                    let state = self.feed_state(
+                        pane,
                         text::MESSAGES_FAILED_TITLE,
                         sentence,
                         Some((feed.server_id, feed.place)),
-                        &theme,
                         cx,
-                    )
+                    );
+                    // The messages that wait keep their rows under the statement.
+                    if feed.has_waiting() {
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_h_0()
+                            .child(state)
+                            .child(self.feed_list(feed, compact, &theme, cx))
+                            .into_any_element()
+                    } else {
+                        state
+                    }
                 }
-                None => self.feed_state(text::MESSAGES, text::MESSAGES_LOADING, None, &theme, cx),
+                None => self.feed_state(pane, text::MESSAGES, text::MESSAGES_LOADING, None, cx),
             },
             Some(feed) => {
                 let rows = feed.rows.clone();
@@ -529,17 +628,29 @@ impl Shell {
                     )
                 });
                 if empty && !feed.more_before && !feed.more_after {
-                    StatePanel::new(text::NO_MESSAGES_TITLE, text::NO_MESSAGES)
-                        .selector("no-messages")
-                        .into_any_element()
+                    match pane {
+                        Pane::Main => StatePanel::new(text::NO_MESSAGES_TITLE, shown.empty)
+                            .selector(pane.id("no-messages"))
+                            .into_any_element(),
+                        // A thread without replies shows its root above this line.
+                        Pane::Thread => div()
+                            .id(pane.id("no-messages"))
+                            .debug_selector(move || pane.id("no-messages").to_owned())
+                            .flex_1()
+                            .px(u(14.0))
+                            .pt(u(10.0))
+                            .typeface(theme.types.small, &theme)
+                            .ink(colors.ink_2)
+                            .child(shown.empty)
+                            .into_any_element(),
+                    }
                 } else {
                     self.feed_list(feed, compact, &theme, cx)
                 }
             }
         };
-        let stale = workspace
+        let stale = shown
             .feed
-            .as_ref()
             .filter(|feed| feed.loaded && (feed.stale || feed.failed.is_some()))
             .map(|feed| {
                 let (server_id, place) = (feed.server_id, feed.place);
@@ -560,8 +671,8 @@ impl Shell {
                 )
             });
         div()
-            .id("feed")
-            .debug_selector(|| "feed".to_owned())
+            .id(pane.id("feed"))
+            .debug_selector(move || pane.id("feed").to_owned())
             .flex()
             .flex_col()
             .flex_1()
@@ -574,19 +685,19 @@ impl Shell {
             }))
             .children(stale)
             .child(body)
-            .child(self.render_composer(workspace, compact, window, cx))
+            .child(self.render_composer(pane, shown.draft, compact, shown.permanent, cx))
             .into_any_element()
     }
 
     fn feed_state(
         &mut self,
+        pane: Pane,
         title: &'static str,
         sentence: &'static str,
         retry: Option<(ServerId, PlaceId)>,
-        _: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let panel = StatePanel::new(title, sentence).selector("messages-state");
+        let panel = StatePanel::new(title, sentence).selector(pane.id("messages-state"));
         match retry {
             Some((server_id, place)) => panel
                 .action(
@@ -604,7 +715,7 @@ impl Shell {
         }
     }
 
-    fn feed_list(
+    pub(crate) fn feed_list(
         &mut self,
         feed: &Feed,
         compact: bool,
@@ -612,7 +723,8 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme.colors;
-        let state = self.feed.list.clone();
+        let pane = Pane::of(feed.place);
+        let state = self.list(pane).list.clone();
         let rows = feed.rows.clone();
         let feed_of_rows = feed.clone();
         let render =
@@ -624,7 +736,7 @@ impl Shell {
                     None => div().into_any_element(),
                 },
             );
-        let away = !self.feed.at_end() || feed.more_after;
+        let away = !self.list(pane).at_end() || feed.more_after;
         div()
             .relative()
             .flex()
@@ -633,10 +745,13 @@ impl Shell {
             .min_h_0()
             .child(
                 div()
-                    .id("message-list")
+                    .id(pane.id("message-list"))
                     .role(Role::List)
-                    .aria_label(text::MESSAGES)
-                    .debug_selector(|| "message-list".to_owned())
+                    .aria_label(match pane {
+                        Pane::Main => text::MESSAGES,
+                        Pane::Thread => text::THREAD,
+                    })
+                    .debug_selector(move || pane.id("message-list").to_owned())
                     .size_full()
                     .child(list(state.clone(), render).size_full()),
             )
@@ -671,9 +786,9 @@ impl Shell {
                                 text::GO_TO_END.into()
                             })
                             .tooltip(text::GO_TO_END)
-                            .selector("go-to-end")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.go_to_end(window, cx);
+                            .selector(pane.id("go-to-end"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.go_to_end(pane, window, cx);
                             })),
                     ),
                 )
@@ -768,7 +883,14 @@ impl Shell {
                 )
                 .into_any_element(),
             FeedRow::System(row) => system_line(row, &theme),
-            FeedRow::Message(row) => self.render_message(index, row, feed, compact, window, cx),
+            FeedRow::Message(row) => {
+                let shape = if compact {
+                    MessageShape::Compact
+                } else {
+                    MessageShape::Wide
+                };
+                self.render_message(index, row, feed, shape, window, cx)
+            }
             FeedRow::Waiting(row) => self.render_waiting(index, row, feed, compact, cx),
         }
     }
@@ -1054,7 +1176,7 @@ impl Shell {
                         .cursor_pointer()
                         .tooltip(tooltip(text::REACT))
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_emoji_picker(Some(message_id), window, cx);
+                            this.open_emoji_picker(EmojiTarget::React(message_id), window, cx);
                         }))
                         .child(icon(Icon::Smile, 14.0, colors.ink_2)),
                 )
@@ -1362,7 +1484,9 @@ impl Shell {
         let colors = theme.colors;
         let message_id = row.message.id;
         let server_id = feed.server_id;
-        let _ = server_id;
+        let pane = Pane::of(feed.place);
+        let pinned = row.message.pinned;
+        let channel_id = crate::state::feed::channel_of(feed.place);
         let action = |id: &'static str, shown: Icon, label: &'static str| {
             div()
                 .id(id)
@@ -1383,6 +1507,7 @@ impl Shell {
             .top(u(-10.0))
             .right(u(18.0))
             .flex()
+            .items_center()
             .gap(u(1.0))
             .px(u(3.0))
             .py(u(2.0))
@@ -1395,17 +1520,45 @@ impl Shell {
             .group_hover("message", |style| style.visible())
             .child(
                 action("react", Icon::Smile, text::REACT).on_click(cx.listener(
-                    move |this, _, window, cx| this.open_emoji_picker(Some(message_id), window, cx),
+                    move |this, _, window, cx| {
+                        this.open_emoji_picker(EmojiTarget::React(message_id), window, cx);
+                    },
                 )),
             )
             .child(
                 action("reply", Icon::Reply, text::REPLY).on_click(cx.listener(
-                    move |this, _, window, cx| this.reply_to_message(message_id, window, cx),
+                    move |this, _, window, cx| this.reply_to_message(pane, message_id, window, cx),
                 )),
             )
+            .when_some(
+                channel_id.filter(|_| row.can_thread && pane == Pane::Main),
+                |bar, channel_id| {
+                    bar.child(
+                        action("thread", Icon::Chat, text::REPLY_IN_THREAD).on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.open_thread(server_id, channel_id, message_id, window, cx);
+                            },
+                        )),
+                    )
+                },
+            )
+            .when(row.can_pin, |bar| {
+                bar.child(
+                    action(
+                        "pin",
+                        Icon::Pin,
+                        if pinned { text::UNPIN } else { text::PIN },
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.state.update(cx, |state, cx| {
+                            state.set_pinned(server_id, message_id, !pinned, cx);
+                        });
+                    })),
+                )
+            })
             .when(row.can_edit, |bar| {
                 bar.child(action("edit", Icon::Edit, text::EDIT).on_click(cx.listener(
-                    move |this, _, window, cx| this.edit_message(message_id, window, cx),
+                    move |this, _, window, cx| this.edit_message(pane, message_id, window, cx),
                 )))
             })
             .when(row.can_delete, |bar| {
@@ -1417,18 +1570,183 @@ impl Shell {
                     )),
                 )
             })
+            // A permanent message has no edit and no delete for its author (ADR 0402).
+            .when(row.message.permanent && !row.message.deleted, |bar| {
+                bar.child(
+                    div()
+                        .id("no-edit")
+                        .debug_selector(move || format!("no-edit:{message_id}"))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(u(5.0))
+                        .h(u(22.0))
+                        .ml(u(3.0))
+                        .pl(u(7.0))
+                        .pr(u(5.0))
+                        .border_l_1()
+                        .border_color(Hsla::from(colors.rule_soft))
+                        .text_size(u(12.5))
+                        .ink(colors.ink_2)
+                        .whitespace_nowrap()
+                        .child(icon(Icon::EditOff, 14.0, colors.ink_2))
+                        .child(text::NO_EDIT_OR_DELETE),
+                )
+            })
             .into_any_element()
     }
 
-    fn render_message(
+    /// The line above a pinned message.
+    fn pin_mark(theme: &Theme) -> AnyElement {
+        let colors = theme.colors;
+        div()
+            .flex()
+            .items_center()
+            .gap(u(6.0))
+            .pl(u(44.0))
+            .mb(u(1.0))
+            .text_size(u(12.5))
+            .line_height(u(17.0))
+            .font_weight(FontWeight::SEMIBOLD)
+            .ink(colors.ink_2)
+            .child(icon(Icon::Pin, 12.0, colors.ink_2))
+            .child(text::PINNED)
+            .into_any_element()
+    }
+
+    /// What a message of a channel shows of its thread: the count of the replies, the
+    /// author and the time of the last one, and what the person has not read in it. A
+    /// press opens the thread in the side panel.
+    fn thread_chip(
+        &mut self,
+        feed: &Feed,
+        row: &MessageRow,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let colors = theme.colors;
+        let mark = row.thread.as_ref()?;
+        let channel_id = crate::state::feed::channel_of(feed.place)?;
+        let (server_id, message_id) = (feed.server_id, row.message.id);
+        let unread = (mark.unread > 0 || mark.mentions > 0)
+            .then(|| text::thread_unread(mark.unread, mark.mentions));
+        let label: SharedString = match &mark.last {
+            Some(last) => format!(
+                "{}, {}, {}",
+                text::replies(mark.replies),
+                last.author,
+                text::last_reply(&last.time)
+            ),
+            None => text::replies(mark.replies),
+        }
+        .into();
+        Some(
+            div()
+                .flex()
+                .mt(u(4.0))
+                .child(
+                    div()
+                        .id(("thread-chip", row.message.position as usize))
+                        .role(if row.can_thread {
+                            Role::Button
+                        } else {
+                            Role::Note
+                        })
+                        .aria_label(label)
+                        .debug_selector(move || format!("thread-chip:{message_id}"))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(u(8.0))
+                        .h(u(28.0))
+                        .pl(u(7.0))
+                        .pr(u(9.0))
+                        .rounded(u(theme.metrics.radius))
+                        .border_1()
+                        .border_color(Hsla::from(colors.rule))
+                        .bg(Hsla::from(colors.travertine_hi))
+                        .text_size(u(13.0))
+                        .when(row.can_thread, |chip| {
+                            chip.cursor_pointer()
+                                .focusable()
+                                .tab_stop(true)
+                                .hover(move |style| style.bg(Hsla::from(colors.plaster)))
+                                .focus_visible(move |style| {
+                                    style.shadow(focus_ring_inside(
+                                        colors.terracotta_deep,
+                                        theme.metrics.focus_ring,
+                                    ))
+                                })
+                        })
+                        .when(row.can_thread, |chip| {
+                            chip.tooltip(tooltip(text::OPEN_THREAD))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.open_thread(server_id, channel_id, message_id, window, cx);
+                                }))
+                        })
+                        .when_some(mark.last.as_ref(), |chip, last| {
+                            let seed = last
+                                .author_id
+                                .map_or(0, |author| author.as_uuid().as_u128());
+                            chip.child(Mosaic::new(MosaicKind::Large, seed, 18.0).radius(2.0))
+                        })
+                        .child(
+                            div()
+                                .flex_none()
+                                .font_weight(FontWeight::BOLD)
+                                .ink(colors.terracotta_deep)
+                                .child(SharedString::from(text::replies(mark.replies))),
+                        )
+                        .when_some(mark.last.as_ref(), |chip, last| {
+                            chip.child(
+                                div()
+                                    .flex_none()
+                                    .text_size(u(12.5))
+                                    .ink(colors.ink_2)
+                                    .child(SharedString::from(text::last_reply(&last.time))),
+                            )
+                        })
+                        .when_some(unread, |chip, unread| {
+                            chip.child(
+                                div()
+                                    .debug_selector(move || format!("thread-unread:{message_id}"))
+                                    .flex_none()
+                                    .px(u(5.0))
+                                    .rounded(u(theme.metrics.radius_small))
+                                    .bg(Hsla::from(colors.terracotta))
+                                    .text_size(u(12.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .ink(colors.on_terracotta)
+                                    .child(SharedString::from(unread)),
+                            )
+                        })
+                        .when(mark.open, |chip| {
+                            chip.child(
+                                div()
+                                    .flex_none()
+                                    .text_size(u(12.5))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .ink(colors.terracotta_deep)
+                                    .child(text::SHOWN_IN_PANEL),
+                            )
+                        }),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// One message of a person.
+    pub(crate) fn render_message(
         &mut self,
         index: usize,
         row: &MessageRow,
         feed: &Feed,
-        compact: bool,
+        shape: MessageShape,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let compact = shape != MessageShape::Wide;
+        let bare = shape == MessageShape::Bare;
         let theme = theme(cx);
         let colors = theme.colors;
         let message = &row.message;
@@ -1457,8 +1775,12 @@ impl Shell {
             };
             body.extend(self.attachments(feed, message, None, &theme, cx));
             body.extend(self.reactions(feed, message, &theme, cx));
+            if !bare {
+                body.extend(self.thread_chip(feed, row, &theme, cx));
+            }
             body
         };
+        let pane = Pane::of(feed.place);
         let header = (!row.grouped).then(|| {
             div()
                 .flex()
@@ -1490,11 +1812,12 @@ impl Shell {
                     )
                 })
         });
-        let open_menu =
-            matches!(&self.layer, Layer::MessageMenu(open) if open.message_id == message_id);
+        let open_menu = !bare
+            && matches!(&self.layer, Layer::MessageMenu(open)
+                if open.message_id == message_id && open.pane == pane);
         let menu = open_menu.then(|| self.render_message_menu(row, feed, window, cx));
         let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
-        let actions = (!message.deleted).then(|| self.action_bar(feed, row, &theme, cx));
+        let actions = (!message.deleted && !bare).then(|| self.action_bar(feed, row, &theme, cx));
         let label: SharedString = format!(
             "{}, {}: {}",
             row.author,
@@ -1511,7 +1834,13 @@ impl Shell {
             .group("message")
             .role(Role::ListItem)
             .aria_label(label)
-            .debug_selector(move || format!("message:{message_id}"))
+            .debug_selector(move || {
+                if bare {
+                    format!("shown-message:{message_id}")
+                } else {
+                    format!("message:{message_id}")
+                }
+            })
             .relative()
             .pt(u(if row.grouped { 1.0 } else { 4.0 }))
             .pb(u(if row.grouped { 1.0 } else { 4.0 }))
@@ -1520,12 +1849,14 @@ impl Shell {
             .when(row.mentions_own, |frame| {
                 frame.bg(Hsla::from(colors.mention_wash))
             })
-            .hover(move |style| style.bg(Hsla::from(colors.row_hover)))
+            .when(!bare, |frame| {
+                frame.hover(move |style| style.bg(Hsla::from(colors.row_hover)))
+            })
             .when(open_menu, |frame| frame.bg(Hsla::from(colors.row_hover)))
-            .when(!message.deleted, |frame| {
+            .when(!message.deleted && !bare, |frame| {
                 let (by_click, by_key) = (
                     cx.listener(move |this, _: &gpui::MouseDownEvent, window, cx| {
-                        this.open_message_menu(message_id, window, cx);
+                        this.open_message_menu(pane, message_id, window, cx);
                     }),
                     cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
                         let keys = &event.keystroke;
@@ -1535,7 +1866,7 @@ impl Shell {
                             _ => false,
                         };
                         if opens {
-                            this.open_message_menu(message_id, window, cx);
+                            this.open_message_menu(pane, message_id, window, cx);
                             cx.stop_propagation();
                         }
                     }),
@@ -1547,6 +1878,7 @@ impl Shell {
                     .on_mouse_down(MouseButton::Right, by_click)
                     .on_key_down(by_key)
             })
+            .children((message.pinned && !message.deleted && !bare).then(|| Self::pin_mark(&theme)))
             .children(
                 row.reply
                     .as_ref()
@@ -1751,15 +2083,34 @@ impl Shell {
 
     pub fn open_message_menu(
         &mut self,
+        pane: Pane,
         message_id: MessageId,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.open_layer(
-            Layer::MessageMenu(MessageMenuOpen { message_id }),
+            Layer::MessageMenu(MessageMenuOpen { message_id, pane }),
             window,
             cx,
         );
+    }
+
+    /// Shows the thread under a message of a channel in the side panel, with the keyboard
+    /// focus in its composer.
+    pub fn open_thread(
+        &mut self,
+        server_id: ServerId,
+        channel_id: junto_client_core::protocol::ids::ChannelId,
+        root_id: MessageId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.members_open = false;
+        self.state.update(cx, |state, cx| {
+            state.open_thread(server_id, channel_id, root_id, cx);
+        });
+        self.focus_composer(Pane::Thread, window, cx);
+        cx.notify();
     }
 
     /// Asks whether a message is to be deleted.
@@ -1773,26 +2124,29 @@ impl Shell {
     }
 
     /// True while the list shows the end of its rows.
-    pub fn feed_is_at_end(&self) -> bool {
-        self.feed.at_end()
+    pub fn feed_is_at_end(&self, pane: Pane) -> bool {
+        self.list(pane).at_end()
     }
 
     /// The menu of a message: the actions of its bar for the keyboard.
     fn render_message_menu(
         &mut self,
         row: &MessageRow,
-        _: &Feed,
+        feed: &Feed,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let message_id = row.message.id;
+        let server_id = feed.server_id;
+        let pane = Pane::of(feed.place);
+        let pinned = row.message.pinned;
         let mut items = vec![
             MenuItem::new("message-react", text::REACT)
                 .icon(Icon::Smile)
                 .selector("message-react")
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.close_layer(window, cx);
-                    this.open_emoji_picker(Some(message_id), window, cx);
+                    this.open_emoji_picker(EmojiTarget::React(message_id), window, cx);
                 }))
                 .into_any_element(),
             MenuItem::new("message-reply", text::REPLY)
@@ -1800,10 +2154,38 @@ impl Shell {
                 .selector("message-reply")
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.close_layer(window, cx);
-                    this.reply_to_message(message_id, window, cx);
+                    this.reply_to_message(pane, message_id, window, cx);
                 }))
                 .into_any_element(),
         ];
+        if let Some(channel_id) = crate::state::feed::channel_of(feed.place)
+            .filter(|_| row.can_thread && pane == Pane::Main)
+        {
+            items.push(
+                MenuItem::new("message-thread", text::REPLY_IN_THREAD)
+                    .icon(Icon::Chat)
+                    .selector("message-thread")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.close_layer(window, cx);
+                        this.open_thread(server_id, channel_id, message_id, window, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
+        if row.can_pin {
+            items.push(
+                MenuItem::new("message-pin", if pinned { text::UNPIN } else { text::PIN })
+                    .icon(Icon::Pin)
+                    .selector("message-pin")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.close_layer(window, cx);
+                        this.state.update(cx, |state, cx| {
+                            state.set_pinned(server_id, message_id, !pinned, cx);
+                        });
+                    }))
+                    .into_any_element(),
+            );
+        }
         if row.can_edit {
             items.push(
                 MenuItem::new("message-edit", text::EDIT)
@@ -1811,7 +2193,7 @@ impl Shell {
                     .selector("message-edit")
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.close_layer(window, cx);
-                        this.edit_message(message_id, window, cx);
+                        this.edit_message(pane, message_id, window, cx);
                     }))
                     .into_any_element(),
             );
@@ -1829,7 +2211,8 @@ impl Shell {
         }
         gpui::deferred(
             gpui::anchored().child(
-                div().absolute().top(u(4.0)).right(u(18.0)).child(
+                // The menu opens at the start of the text of its message, inside the list.
+                div().absolute().top(u(4.0)).left(u(44.0)).child(
                     Menu::new("message-menu", text::MESSAGE_ACTIONS, self.layer_focus())
                         .selector("message-menu")
                         .on_close(Self::handler(cx, |this, window, cx| {
@@ -1852,7 +2235,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
-        let server_id = self.shown_feed().map(|feed| feed.server_id);
+        let server_id = self.pane_feed(Pane::Main).map(|feed| feed.server_id);
         crate::ui::Dialog::new(text::DELETE_MESSAGE_TITLE, self.layer_focus())
             .selector("confirm-delete-message")
             .on_close(Self::handler(cx, |this, window, cx| {

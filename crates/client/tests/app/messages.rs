@@ -3,6 +3,7 @@
 //! follow what another account writes.
 
 use gpui::TestAppContext;
+use junto_client::shell::{EmojiTarget, Pane};
 use junto_client::state::feed::{Feed, FeedRow, MessageRow, QuoteText, plain_text};
 use junto_client::text;
 use junto_client_core::model::PlaceId;
@@ -13,7 +14,7 @@ use junto_client_core::transfers::{DownloadStage, UploadStage};
 
 use crate::harness::{Admin, Window, World, member};
 
-fn document(text: &str) -> Document {
+pub fn document(text: &str) -> Document {
     Document {
         blocks: vec![Block::Paragraph {
             content: vec![Inline::Text {
@@ -25,7 +26,7 @@ fn document(text: &str) -> Document {
 }
 
 impl Admin {
-    fn send(&self, world: &World, channel_id: ChannelId, document: Document) -> Message {
+    pub fn send(&self, world: &World, channel_id: ChannelId, document: Document) -> Message {
         let message = SendMessage {
             document,
             reply_to: None,
@@ -42,12 +43,12 @@ impl Admin {
 }
 
 impl Window {
-    fn feed(&mut self) -> Option<Feed> {
+    pub fn feed(&mut self) -> Option<Feed> {
         self.view().workspace()?.feed.clone()
     }
 
     /// The messages of people that the window draws, in their order.
-    fn messages(&mut self) -> Vec<MessageRow> {
+    pub fn messages(&mut self) -> Vec<MessageRow> {
         self.feed()
             .map(|feed| {
                 feed.rows
@@ -61,7 +62,7 @@ impl Window {
             .unwrap_or_default()
     }
 
-    fn texts(&mut self) -> Vec<String> {
+    pub fn texts(&mut self) -> Vec<String> {
         let Some(feed) = self.feed() else {
             return Vec::new();
         };
@@ -88,7 +89,7 @@ impl Window {
     }
 
     #[track_caller]
-    fn until_message(&mut self, text: &str) -> MessageRow {
+    pub fn until_message(&mut self, text: &str) -> MessageRow {
         self.until(&format!("the message {text:?} is drawn"), |window| {
             window.waiting() == 0 && window.texts().iter().any(|held| held == text)
         });
@@ -107,20 +108,20 @@ impl Window {
     /// Types a text into the composer and sends it with Enter.
     fn write(&mut self, text: &str) {
         self.in_shell(|shell, window, cx| {
-            shell.type_message(text, window, cx);
-            shell.focus_composer(window, cx);
+            shell.type_message(Pane::Main, text, window, cx);
+            shell.focus_composer(Pane::Main, window, cx);
         });
         self.press("enter");
     }
 
-    fn selected_channel(&mut self) -> ChannelId {
+    pub fn selected_channel(&mut self) -> ChannelId {
         self.view()
             .workspace()
             .and_then(|workspace| workspace.channel.as_ref().map(|channel| channel.id))
             .unwrap()
     }
 
-    fn own_account(&mut self) -> AccountId {
+    pub fn own_account(&mut self) -> AccountId {
         self.view().person.account_id.unwrap()
     }
 }
@@ -144,7 +145,7 @@ fn a_person_writes_answers_changes_and_deletes_messages(cx: &mut TestAppContext)
     assert!(hello.own && hello.can_edit && hello.can_delete);
     assert_eq!(hello.author, "Luca");
     assert_eq!(
-        window.in_shell(|shell, _, cx| shell.composer_text(cx)),
+        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
         "",
         "the composer is empty after a send"
     );
@@ -152,28 +153,28 @@ fn a_person_writes_answers_changes_and_deletes_messages(cx: &mut TestAppContext)
 
     // Shift and Enter adds a line and sends nothing.
     window.in_shell(|shell, window, cx| {
-        shell.type_message("first line", window, cx);
-        shell.focus_composer(window, cx);
+        shell.type_message(Pane::Main, "first line", window, cx);
+        shell.focus_composer(Pane::Main, window, cx);
     });
     window.press("shift-enter");
     assert_eq!(window.waiting(), 0);
     assert!(
         window
-            .in_shell(|shell, _, cx| shell.composer_text(cx))
+            .in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx))
             .starts_with("first line\n")
     );
-    window.in_shell(|shell, window, cx| shell.type_message("", window, cx));
+    window.in_shell(|shell, window, cx| shell.type_message(Pane::Main, "", window, cx));
 
     // A text that the server would refuse is not sent, and the composer says why.
     window.write("   ");
     assert_eq!(
-        window.in_shell(|shell, _, _| shell.composer_problem().map(str::to_owned)),
+        window.in_shell(|shell, _, _| shell.composer_problem(Pane::Main).map(str::to_owned)),
         Some(text::compose_problem(junto_client::compose::Problem::Empty))
     );
     window.write(&"word ".repeat(4000));
     assert!(window.shows("compose-problem"));
     assert_eq!(window.messages().len(), 1);
-    window.in_shell(|shell, window, cx| shell.type_message("", window, cx));
+    window.in_shell(|shell, window, cx| shell.type_message(Pane::Main, "", window, cx));
 
     // The administrator writes with a mention of the person: the message arrives with
     // the name of the person in it, and is marked.
@@ -195,7 +196,7 @@ fn a_person_writes_answers_changes_and_deletes_messages(cx: &mut TestAppContext)
     assert_eq!(arrived.author, "Ada");
 
     // A reply names its message, and shows the start of it.
-    window.in_shell(|shell, window, cx| shell.reply_to_message(welcome, window, cx));
+    window.in_shell(|shell, window, cx| shell.reply_to_message(Pane::Main, welcome, window, cx));
     assert!(window.shows("compose-state"));
     window.write("Thank you");
     let reply = window.until_message("Thank you");
@@ -204,30 +205,31 @@ fn a_person_writes_answers_changes_and_deletes_messages(cx: &mut TestAppContext)
     assert_eq!(quote.author.as_deref(), Some("Ada"));
     assert_eq!(quote.text, QuoteText::Text("Welcome, @Luca".to_owned()));
     assert_eq!(
-        window.in_shell(|shell, _, _| shell.compose_state()),
+        window.in_shell(|shell, _, _| shell.compose_state(Pane::Main)),
         (None, None)
     );
 
     // The arrow up in an empty composer edits the last own message; the composer holds
     // its text with the marks, and Enter saves.
-    window.in_shell(|shell, window, cx| shell.focus_composer(window, cx));
+    window.in_shell(|shell, window, cx| shell.focus_composer(Pane::Main, window, cx));
     window.press("up");
     assert_eq!(
-        window.in_shell(|shell, _, _| shell.compose_state()),
+        window.in_shell(|shell, _, _| shell.compose_state(Pane::Main)),
         (None, Some(reply.message.id))
     );
     assert_eq!(
-        window.in_shell(|shell, _, cx| shell.composer_text(cx)),
+        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
         "Thank you"
     );
     window.press("escape");
     assert_eq!(
-        window.in_shell(|shell, _, _| shell.compose_state()),
+        window.in_shell(|shell, _, _| shell.compose_state(Pane::Main)),
         (None, None)
     );
-    window.in_shell(|shell, window, cx| shell.edit_message(hello.message.id, window, cx));
+    window
+        .in_shell(|shell, window, cx| shell.edit_message(Pane::Main, hello.message.id, window, cx));
     assert_eq!(
-        window.in_shell(|shell, _, cx| shell.composer_text(cx)),
+        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
         "Hello **world**, see `main.rs`"
     );
     window.write("Hello *everyone*");
@@ -237,7 +239,7 @@ fn a_person_writes_answers_changes_and_deletes_messages(cx: &mut TestAppContext)
 
     // A reaction is added through the picker and taken away at its sign.
     window.in_shell(|shell, window, cx| {
-        shell.open_emoji_picker(Some(welcome), window, cx);
+        shell.open_emoji_picker(EmojiTarget::React(welcome), window, cx);
         shell.find_emoji("thumbs up", window, cx);
     });
     assert!(window.shows("emoji-picker"));
@@ -261,7 +263,9 @@ fn a_person_writes_answers_changes_and_deletes_messages(cx: &mut TestAppContext)
     });
 
     // The menu of a message has its actions for the keyboard, and a deletion asks first.
-    window.in_shell(|shell, window, cx| shell.open_message_menu(reply.message.id, window, cx));
+    window.in_shell(|shell, window, cx| {
+        shell.open_message_menu(Pane::Main, reply.message.id, window, cx)
+    });
     assert!(window.shows("message-menu") && window.shows("message-edit"));
     window.click("message-delete");
     assert!(window.shows("confirm-delete-message"));
@@ -279,7 +283,7 @@ fn a_person_writes_answers_changes_and_deletes_messages(cx: &mut TestAppContext)
             .all(|row| row.message.id != reply.message.id)
     });
     // The menu of a message of another person has no edit and no delete for a member.
-    window.in_shell(|shell, window, cx| shell.open_message_menu(welcome, window, cx));
+    window.in_shell(|shell, window, cx| shell.open_message_menu(Pane::Main, welcome, window, cx));
     assert!(window.shows("message-reply"));
     assert!(!window.shows("message-edit") && !window.shows("message-delete"));
     window.press("escape");
@@ -314,7 +318,7 @@ fn a_file_is_sent_with_a_message_and_saved_from_one(cx: &mut TestAppContext) {
     std::fs::write(&path, &content).unwrap();
 
     // The file is attached before the send: its upload starts, and the composer shows it.
-    window.in_shell(|shell, _, cx| shell.attach_paths(vec![path.clone()], cx));
+    window.in_shell(|shell, _, cx| shell.attach_paths(Pane::Main, vec![path.clone()], cx));
     window.until("the upload is complete", |window| {
         window.view().workspace().is_some_and(|workspace| {
             workspace.draft.len() == 1
@@ -325,7 +329,7 @@ fn a_file_is_sent_with_a_message_and_saved_from_one(cx: &mut TestAppContext) {
     assert!(window.shows_named("draft-file:0".to_owned()));
     // A file that does not exist is not attached, and the composer says so.
     window.in_shell(|shell, _, cx| {
-        shell.attach_paths(vec![files.path().join("missing.bin")], cx);
+        shell.attach_paths(Pane::Main, vec![files.path().join("missing.bin")], cx);
     });
     assert!(window.shows("compose-problem"));
     assert_eq!(window.view().workspace().unwrap().draft.len(), 1);
@@ -453,10 +457,10 @@ fn the_text_of_one_account_is_not_shown_to_the_next_account_of_the_server(cx: &m
     let first = window.own_account();
     window.until("the composer", |window| window.shows("composer"));
     window.in_shell(|shell, window, cx| {
-        shell.type_message("a text of the first account", window, cx)
+        shell.type_message(Pane::Main, "a text of the first account", window, cx)
     });
     assert_eq!(
-        window.in_shell(|shell, _, cx| shell.composer_text(cx)),
+        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
         "a text of the first account"
     );
 
@@ -471,7 +475,10 @@ fn the_text_of_one_account_is_not_shown_to_the_next_account_of_the_server(cx: &m
     window.until("the composer of the new account", |window| {
         window.shows("composer")
     });
-    assert_eq!(window.in_shell(|shell, _, cx| shell.composer_text(cx)), "");
+    assert_eq!(
+        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
+        ""
+    );
 }
 
 #[gpui::test]

@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use junto_protocol::account::RecoveryNotice;
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::{Cursor, EndReason, Event, Level};
-use junto_protocol::ids::{AttachmentId, MessageId, WorkspaceId};
+use junto_protocol::ids::{AttachmentId, ChannelId, MessageId, WorkspaceId};
 use junto_protocol::message::{Document, Message};
 use time::OffsetDateTime;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
@@ -142,6 +142,15 @@ pub(crate) enum Command {
     FilesFailed(u64),
     SendAgain(u64),
     Discard(u64),
+    OpenPins {
+        channel_id: ChannelId,
+        reply: oneshot::Sender<Result<(), LoadError>>,
+    },
+    ReleasePins(ChannelId),
+    /// The page of unread threads after the loaded ones.
+    MoreThreads,
+    /// The page of notices after the loaded ones.
+    MoreNotices,
 }
 
 /// What the stream client of one server and its readers share.
@@ -294,6 +303,14 @@ impl LiveServer {
         self.shared.send(Command::ReadMessages { place, reach });
     }
 
+    /// Replaces the loaded messages of an open place by the messages around a position:
+    /// the ones up to it and the ones after it. A reader uses it to show one message of
+    /// the history, such as a search result. The position becomes the anchor of the place.
+    pub fn read_messages_around(&self, place: PlaceId, position: u64) {
+        let reach = Reach::At(position);
+        self.shared.send(Command::ReadMessages { place, reach });
+    }
+
     /// Tells where the reader of an open place is: at the position of a message, or at the
     /// end (`None`). After a reload of the state the client reads the page from there.
     pub fn set_message_anchor(&self, place: PlaceId, position: Option<u64>) {
@@ -351,6 +368,42 @@ impl LiveServer {
     /// the server may hold the message all the same.
     pub fn discard_message(&self, id: u64) {
         self.shared.send(Command::Discard(id));
+    }
+}
+
+impl LiveServer {
+    /// Asks for the pinned messages of a channel (ADR 0722). The list is read, appears in
+    /// the state, and follows the events from then on; after a reload of the state the
+    /// client reads it again by itself. The future ends when the list is in the state or
+    /// the read failed. Each call needs one [`LiveServer::release_pins`].
+    pub fn open_pins(
+        &self,
+        channel_id: ChannelId,
+    ) -> impl Future<Output = Result<(), LoadError>> + Send + 'static + use<> {
+        let (reply, answer) = oneshot::channel();
+        let sent = self.shared.send(Command::OpenPins { channel_id, reply });
+        async move {
+            if !sent {
+                return Err(LoadError::Off);
+            }
+            answer.await.unwrap_or(Err(LoadError::Off))
+        }
+    }
+
+    /// States that a reader needs the pinned messages of a channel no longer.
+    pub fn release_pins(&self, channel_id: ChannelId) {
+        self.shared.send(Command::ReleasePins(channel_id));
+    }
+
+    /// Reads the page of unread threads after the loaded ones, while the state says that
+    /// there are more. A later change of the threads replaces the list by its first page.
+    pub fn read_more_threads(&self) {
+        self.shared.send(Command::MoreThreads);
+    }
+
+    /// Reads the page of notices after the loaded ones.
+    pub fn read_more_notices(&self) {
+        self.shared.send(Command::MoreNotices);
     }
 }
 

@@ -8,8 +8,11 @@
 //! that keeps an old copy costs the memory of the changed workspaces only.
 
 mod apply;
+mod discovery;
 mod messages;
 
+#[cfg(test)]
+mod discovery_tests;
 #[cfg(test)]
 pub(crate) mod message_tests;
 #[cfg(test)]
@@ -22,9 +25,14 @@ use junto_protocol::call::{
     Call, CallInvitation, CallLock, CallMove, CallParticipant, CallPlace, ChannelCall, DirectMute,
     EntryRequest, Meeting, OwnCall, OwnCallState,
 };
+use junto_protocol::discovery::{Notification, ScopedNotificationSettings};
 use junto_protocol::events::Cursor;
-use junto_protocol::ids::{AccountId, CallId, ChannelId, DeviceId, WorkspaceId, WorkspaceRoleId};
-use junto_protocol::message::{AttachmentLimits, Conversation, MessagePlace, MessageState};
+use junto_protocol::ids::{
+    AccountId, CallId, ChannelId, DeviceId, MessageId, WorkspaceId, WorkspaceRoleId,
+};
+use junto_protocol::message::{
+    AttachmentLimits, Conversation, MessagePlace, MessageState, ThreadState,
+};
 use junto_protocol::recording::Recording;
 use junto_protocol::roles::WorkspaceRole;
 use junto_protocol::snapshot::{Snapshot, WorkspaceState};
@@ -33,11 +41,16 @@ use junto_protocol::{ServerPermission, WorkspacePermission};
 use time::OffsetDateTime;
 
 pub(crate) use apply::{Follow, Part};
+pub(crate) use discovery::ThreadMoved;
+pub use discovery::{MOST_NOTICES, MOST_PINS, MOST_THREADS, Named, PinList, in_daily_quiet};
 pub(crate) use messages::Reach;
 pub use messages::{
     MOST_LOADED, PendingFile, PendingMessage, PlaceId, ReadFailure, Reading, SendFailure,
     SendState, Timeline,
 };
+
+/// How many notices a snapshot carries at most (ADR 0409).
+const SNAPSHOT_NOTICES: usize = 50;
 
 /// A part of the state that the snapshot does not carry. The client loads it from its
 /// route when a reader asks for it and keeps it current from then on (ADR 0207).
@@ -247,7 +260,26 @@ pub struct ServerModel {
     /// The messages that the person sent and that the server has not confirmed.
     pub outbox: Vec<Arc<PendingMessage>>,
     /// The newest messages that the server returned as answers to sends of this client.
-    pub(crate) sent_ids: Vec<junto_protocol::ids::MessageId>,
+    pub(crate) sent_ids: Vec<MessageId>,
+    /// The threads that hold something unread for the account, the newest first, as far
+    /// as their pages were read (ADR 0409).
+    pub threads: Vec<ThreadState>,
+    /// The server lists more unread threads after the loaded ones.
+    pub threads_more: bool,
+    pub(crate) threads_next: Option<String>,
+    /// The notices of the account, the newest first, as far as their pages were read.
+    pub notices: Vec<Notification>,
+    /// The server may hold more notices after the loaded ones.
+    pub notices_more: bool,
+    /// The notification settings that the account stored, by their scope.
+    pub notification_settings: Vec<ScopedNotificationSettings>,
+    /// The messages that the unread threads and the notices name, as far as they were
+    /// read.
+    pub named: Vec<(MessageId, Named)>,
+    /// The pin lists of the channels that a reader has open.
+    pub pins: Vec<PinList>,
+    /// The highest position of each place that an event named since the snapshot.
+    pub(crate) seen_positions: std::collections::BTreeMap<PlaceId, u64>,
 }
 
 impl ServerModel {
@@ -269,6 +301,13 @@ impl ServerModel {
             })
             .collect();
         conversations.sort_by_key(|held| held.id);
+        let mut threads = snapshot.threads;
+        threads.truncate(MOST_THREADS);
+        let mut notices = snapshot.notifications;
+        // The snapshot carries the newest 50 notices and does not tell whether there are
+        // more (ADR 0409). A full list is taken as one that goes on.
+        let notices_more = notices.len() >= SNAPSHOT_NOTICES;
+        notices.truncate(MOST_NOTICES);
         Self {
             cursor: snapshot.cursor,
             account: snapshot.account,
@@ -293,6 +332,15 @@ impl ServerModel {
             timelines: Vec::new(),
             outbox: Vec::new(),
             sent_ids: Vec::new(),
+            threads,
+            threads_more: snapshot.threads_more,
+            threads_next: snapshot.threads_next,
+            notices,
+            notices_more,
+            notification_settings: snapshot.notification_settings,
+            named: Vec::new(),
+            pins: Vec::new(),
+            seen_positions: std::collections::BTreeMap::new(),
         }
     }
 

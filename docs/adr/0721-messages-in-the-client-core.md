@@ -13,7 +13,7 @@ ADR 0408 defines the message routes. Its events carry no content: `message_chang
 Routes:
 
 - The API object of a server has one function for each message route: the history of a channel and of a direct conversation with its four cursors, send, get, edit, delete, the two reaction routes, the read position, the direct conversations, the attachment limits, and the upload and download routes.
-- A place is named by one type: a channel, or a direct conversation. The chat of a voice channel is the place of its channel.
+- A place is named by one type: a channel, or a direct conversation. The chat of a voice channel is the place of its channel. ADR 0722 adds the thread under a message of a channel as a third kind.
 - An emoji in a path is written as escapes of its bytes, because an emoji can contain `#` and `*`.
 
 State (ADR 0719):
@@ -26,9 +26,9 @@ State (ADR 0719):
 
 Reads that events ask for:
 
-- `message_changed` asks for the unread summary of its place. When a timeline of the place holds the message, or the message lies inside its range, or after its end while the history has no more after it, the event also asks for the message.
+- `message_changed` asks for the unread summary of its place. When a timeline of the place holds the message, or the message lies inside its range, or after its end while the history has no more after it, the event also asks for the message. ADR 0722 adds further holders that ask for a message, and puts a reply of a thread into the timeline of its thread only.
 - An answer `not_found` removes the message from the timeline. A deleted message that the server keeps as a marker arrives with its `deleted` mark and replaces the content.
-- `message_read` moves the read position. When the position is the latest one, the counts are zero without a read; otherwise the summary is read. `message_mentioned` asks for the summary.
+- `message_read` moves the read position. When the position is the latest one, the counts are zero without a read; otherwise the summary is read. ADR 0722 reads the summary also at the latest position when it showed a mention. `message_mentioned` asks for the summary.
 - These reads follow the rule of ADR 0719 for parts in one changed form: an event that arrives while such a read is on its way is kept; the answer is applied, and then the kept events start the read of what they name again. The answer can be older than those events, and no event carries the content that could be applied to it.
 - A read of a summary or of one message that is on its way is not started a second time. At most 4 reads of single messages are on their way; the others wait in a queue.
 - A read of a summary or of a message that gets no answer is sent again after 2 seconds, with waits that double. No event tells the change a second time. A read of a message is sent 5 times; after that the timeline is marked as not current, and a reader offers to read it again. A read of a summary has no last try and is sent every 64 seconds after the fifth: no reader can ask for a summary, and a place that nobody has open has no timeline to mark.

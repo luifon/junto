@@ -2,9 +2,11 @@
 //! of a message makes the client read, the bound on those reads, the read position, a
 //! reload, and a message whose answer is lost.
 
-use junto_protocol::ids::MessageId;
+use junto_protocol::discovery::{Notification, NotificationPage};
+use junto_protocol::ids::{ChannelId, MessageId};
 use junto_protocol::message::{
-    AttachmentLimits, MarkRead, Message, MessagePage, MessageState, SendMessage,
+    AttachmentLimits, MarkRead, Message, MessagePage, MessageState, SendMessage, ThreadPage,
+    ThreadState, UnreadThreads,
 };
 
 use super::*;
@@ -28,6 +30,22 @@ pub(super) struct Chat {
     /// The answer to the next read position that the client sends: a summary that the
     /// server made before a later change.
     pub(super) mark_answer: Option<MessageState>,
+    /// The replies of the threads of the text channel.
+    pub(super) replies: Vec<Message>,
+    /// The threads that hold something unread for the account.
+    pub(super) threads: Vec<ThreadState>,
+    /// The channels that the threads were forked into.
+    pub(super) forks: Vec<ChannelId>,
+    pub(super) notices: Vec<Notification>,
+    /// The read positions of threads that the client sent, in their order.
+    pub(super) thread_marked: Vec<(MessageId, u64)>,
+    /// The answer to the next read position of a thread: a state that the server made
+    /// before a later change.
+    pub(super) thread_mark_answer: Option<ThreadState>,
+    /// A request for one of these messages is answered with another message.
+    pub(super) answered_wrongly: Vec<MessageId>,
+    /// The summary of the channel says that the account muted it.
+    pub(super) muted: bool,
 }
 
 fn json<T: serde::Serialize>(status: u16, body: &T) -> Result<HttpResponse, TransportError> {
@@ -61,10 +79,17 @@ impl Chat {
             latest: self.messages.last().map_or(0, |held| held.position),
             unread,
             mentions: 0,
+            unread_sign: unread > 0 && !self.muted,
+            notification_mentions: 0,
+            muted: self.muted,
         })
     }
 
     fn page(&self, request: &HttpRequest) -> MessagePage {
+        Self::page_of(&self.messages, request)
+    }
+
+    fn page_of(messages: &[Message], request: &HttpRequest) -> MessagePage {
         let value = |name: &str| {
             request
                 .url
@@ -75,7 +100,7 @@ impl Chat {
         let position_of = |name: &str| {
             value(name)
                 .and_then(|id| id.parse::<MessageId>().ok())
-                .and_then(|id| self.messages.iter().find(|held| held.id == id))
+                .and_then(|id| messages.iter().find(|held| held.id == id))
                 .map(|held| held.position)
         };
         let limit: usize = value("limit").map_or(50, |limit| limit.parse().unwrap());
@@ -85,8 +110,7 @@ impl Chat {
         let before = value("before")
             .map(|before| before.parse::<u64>().unwrap())
             .or_else(|| position_of("before_message"));
-        let mut found: Vec<Message> = self
-            .messages
+        let mut found: Vec<Message> = messages
             .iter()
             .filter(|held| {
                 after.is_none_or(|after| held.position > after)
@@ -136,11 +160,53 @@ impl Chat {
                 None => not_found(),
             });
         }
-        if let Some(id) = path.strip_prefix("/api/v1/messages/") {
+        if path.ends_with("/threads/unread") {
+            return Some(json(
+                200,
+                &UnreadThreads {
+                    threads: self.threads.clone(),
+                    more: false,
+                    next: None,
+                },
+            ));
+        }
+        if path.ends_with("/notifications") {
+            return Some(json(
+                200,
+                &NotificationPage {
+                    notifications: self.notices.clone(),
+                    has_more: false,
+                },
+            ));
+        }
+        if path.ends_with("/pins") {
+            let pins: Vec<&Message> = self
+                .messages
+                .iter()
+                .chain(&self.replies)
+                .filter(|held| held.pinned)
+                .collect();
+            return Some(json(200, &pins));
+        }
+        if let Some(rest) = path.strip_prefix("/api/v1/messages/") {
+            let (id, route) = rest.split_once('/').unwrap_or((rest, ""));
             let id: MessageId = id.parse().unwrap();
-            return Some(match self.messages.iter().find(|held| held.id == id) {
-                Some(held) => json(200, held),
-                None => not_found(),
+            if route.is_empty() && self.answered_wrongly.contains(&id) {
+                return Some(json(200, &self.messages[0]));
+            }
+            return Some(match route {
+                "" => match self
+                    .messages
+                    .iter()
+                    .chain(&self.replies)
+                    .find(|held| held.id == id)
+                {
+                    Some(held) => json(200, held),
+                    None => not_found(),
+                },
+                "thread/read" => self.thread_read(id, request),
+                "thread" => self.thread(id, request),
+                other => panic!("the stream client asked for the route {other} of a message"),
             });
         }
         if !path.ends_with("/messages") {
@@ -169,23 +235,103 @@ impl Chat {
     }
 }
 
-struct Room {
-    rig: Rig,
-    peer: Peer,
-    place: PlaceId,
-    other: AccountId,
+impl Chat {
+    fn thread_read(
+        &mut self,
+        root_id: MessageId,
+        request: &HttpRequest,
+    ) -> Result<HttpResponse, TransportError> {
+        if request.method == Method::Put {
+            let body: MarkRead =
+                serde_json::from_slice(request.body.as_ref().unwrap().as_slice()).unwrap();
+            self.thread_marked.push((root_id, body.position));
+            if let Some(answer) = self.thread_mark_answer.take() {
+                return json(200, &answer);
+            }
+            if let Some(held) = self.threads.iter_mut().find(|held| held.root_id == root_id) {
+                held.last_read = held.last_read.max(body.position);
+                if held.last_read >= held.latest {
+                    held.unread = 0;
+                    held.mentions = 0;
+                }
+            }
+        }
+        match self.threads.iter().find(|held| held.root_id == root_id) {
+            Some(held) => json(200, held),
+            // The account does not follow the thread (ADR 0409).
+            None => not_found(),
+        }
+    }
+
+    fn thread(
+        &mut self,
+        root_id: MessageId,
+        request: &HttpRequest,
+    ) -> Result<HttpResponse, TransportError> {
+        let Some(mut root) = self
+            .messages
+            .iter()
+            .find(|held| held.id == root_id)
+            .cloned()
+        else {
+            return not_found();
+        };
+        let mut replies: Vec<Message> = self
+            .replies
+            .iter()
+            .filter(|held| held.thread_root == Some(root_id))
+            .cloned()
+            .collect();
+        if request.method == Method::Get {
+            root.reply_count = replies.len() as u64;
+            root.last_reply = replies.last().map(|held| held.id);
+            return json(
+                200,
+                &ThreadPage {
+                    root,
+                    replies: Self::page_of(&replies, request),
+                    forks: self.forks.clone(),
+                },
+            );
+        }
+        let body: SendMessage =
+            serde_json::from_slice(request.body.as_ref().unwrap().as_slice()).unwrap();
+        let head = self
+            .messages
+            .iter()
+            .chain(&self.replies)
+            .map(|held| held.position)
+            .max()
+            .unwrap_or(0);
+        let mut sent = message(root.place, head + 1, self.own.unwrap(), "");
+        sent.document = Some(body.document);
+        sent.reply_to = body.reply_to;
+        sent.thread_root = Some(root_id);
+        self.posted
+            .push(serde_json::to_string(&sent.document).unwrap());
+        replies.push(sent.clone());
+        self.replies.push(sent.clone());
+        json(201, &sent)
+    }
+}
+
+pub(super) struct Room {
+    pub(super) rig: Rig,
+    pub(super) peer: Peer,
+    pub(super) place: PlaceId,
+    pub(super) other: AccountId,
 }
 
 impl Room {
-    fn chat<R>(&self, act: impl FnOnce(&mut Chat) -> R) -> R {
+    pub(super) fn chat<R>(&self, act: impl FnOnce(&mut Chat) -> R) -> R {
         act(&mut self.rig.http.routes.lock().unwrap().chat)
     }
 
-    fn held(&self, position: u64, text: &str) -> Message {
+    pub(super) fn held(&self, position: u64, text: &str) -> Message {
         message(self.rig.scene.text_place(), position, self.other, text)
     }
 
-    async fn changed(&self, id: u64, held: &Message, deleted: bool) {
+    pub(super) async fn changed(&self, id: u64, held: &Message, deleted: bool) {
         self.peer
             .event(
                 id,
@@ -200,7 +346,7 @@ impl Room {
     }
 
     /// How many requests the client has sent to paths that start with a text.
-    fn sent_to(&self, start: &str) -> usize {
+    pub(super) fn sent_to(&self, start: &str) -> usize {
         let routes = self.rig.http.routes.lock().unwrap();
         routes
             .seen
@@ -209,7 +355,7 @@ impl Room {
             .count()
     }
 
-    async fn until_sent_to(&self, start: &str, count: usize) {
+    pub(super) async fn until_sent_to(&self, start: &str, count: usize) {
         soon("the requests", async {
             while self.sent_to(start) < count {
                 tokio::task::yield_now().await;
@@ -219,7 +365,7 @@ impl Room {
     }
 }
 
-fn positions(model: &ServerModel, place: PlaceId) -> Vec<u64> {
+pub(super) fn positions(model: &ServerModel, place: PlaceId) -> Vec<u64> {
     model
         .timeline(place)
         .map(|timeline| timeline.messages.iter().map(|held| held.position).collect())
@@ -227,7 +373,7 @@ fn positions(model: &ServerModel, place: PlaceId) -> Vec<u64> {
 }
 
 /// A served connection with three messages in the text channel and its timeline open.
-async fn room() -> Room {
+pub(super) async fn room() -> Room {
     let mut rig = rig();
     let place = PlaceId::Channel(rig.scene.general);
     let other = AccountId::generate();
@@ -611,6 +757,9 @@ async fn the_answer_to_a_read_position_does_not_replace_a_newer_summary() {
         latest: 3,
         unread: 0,
         mentions: 0,
+        unread_sign: false,
+        notification_mentions: 0,
+        muted: false,
     };
     room.chat(|chat| {
         chat.mark_answer = Some(old);
@@ -677,6 +826,9 @@ async fn the_answer_to_a_read_position_does_not_replace_what_an_event_told_meanw
         latest: 3,
         unread: 1,
         mentions: 0,
+        unread_sign: true,
+        notification_mentions: 0,
+        muted: false,
     };
     room.chat(|chat| {
         chat.last_read = 3;

@@ -239,6 +239,12 @@ pub struct ChannelRow {
     unread: Option<UnreadSign>,
     selector: Option<&'static str>,
     on_click: Option<ClickHandler>,
+    /// The seed of the avatar that stands in place of the icon.
+    avatar: Option<u128>,
+    nested: bool,
+    muted: bool,
+    /// Why the row cannot be used.
+    unavailable: Option<SharedString>,
 }
 
 impl ChannelRow {
@@ -252,11 +258,39 @@ impl ChannelRow {
             unread: None,
             selector: None,
             on_click: None,
+            avatar: None,
+            nested: false,
+            muted: false,
+            unavailable: None,
         }
+    }
+
+    /// The row cannot be used: it takes no click, and tells the reason.
+    pub fn unavailable(mut self, reason: Option<impl Into<SharedString>>) -> Self {
+        self.unavailable = reason.map(Into::into);
+        self
     }
 
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
+        self
+    }
+
+    /// The row of a person: the avatar of the person stands in place of the icon.
+    pub fn avatar(mut self, seed: u128) -> Self {
+        self.avatar = Some(seed);
+        self
+    }
+
+    /// The row of a thread under its channel: lower, and set in from the left.
+    pub fn nested(mut self) -> Self {
+        self.nested = true;
+        self
+    }
+
+    /// The person muted the place: its name is drawn lighter (ADR 0404).
+    pub fn muted(mut self, muted: bool) -> Self {
+        self.muted = muted;
         self
     }
 
@@ -301,6 +335,11 @@ impl RenderOnce for ChannelRow {
             Some(sign) => format!("{}, {}", self.name, sign.label).into(),
             None => self.name.clone(),
         };
+        let label: SharedString = match &self.unavailable {
+            Some(reason) => format!("{label}, {reason}").into(),
+            None => label,
+        };
+        let usable = self.unavailable.is_none();
         let sign = self.unread.as_ref().map(|sign| {
             let label = sign.label.clone();
             div()
@@ -352,13 +391,22 @@ impl RenderOnce for ChannelRow {
             .flex_none()
             .items_center()
             .gap(u(8.0))
-            .h(u(theme.metrics.channel_row_height))
-            .pl(u(14.0))
+            .h(u(if self.nested {
+                theme.metrics.channel_row_height - 4.0
+            } else {
+                theme.metrics.channel_row_height
+            }))
+            .pl(u(if self.nested { 34.0 } else { 14.0 }))
             .pr(u(10.0))
             .typeface(style, &theme)
+            .when(self.nested, |row| row.text_size(u(13.0)))
             .when(unread, |row| row.font_weight(gpui::FontWeight::BOLD))
-            .ink(if self.selected || unread {
+            .ink(if !usable {
+                colors.ink_3
+            } else if self.selected || unread {
                 colors.ink
+            } else if self.muted {
+                colors.ink_3
             } else {
                 colors.ink_2
             })
@@ -366,27 +414,38 @@ impl RenderOnce for ChannelRow {
                 row.bg(Hsla::from(colors.limestone_lo))
                     .child(selection_mark(cx))
             })
-            .cursor_pointer()
             .focusable()
             .tab_stop(true)
-            .when(!self.selected, |row| {
-                row.hover(move |style| style.bg(Hsla::from(colors.limestone_hover)))
-            })
             .focus_visible(move |style| style.shadow(ring))
-            .when_some(self.on_click, |row, handler| {
-                row.on_click(move |event, window, cx| handler(event, window, cx))
+            .when_some(self.unavailable, |row, reason| {
+                row.cursor_not_allowed().tooltip(tooltip(reason))
             })
-            .child(icon(
-                self.icon,
-                15.0,
-                if self.selected {
-                    colors.terracotta_deep
-                } else if unread {
-                    colors.ink
-                } else {
-                    colors.ink_3
-                },
-            ))
+            .when(usable, |row| {
+                row.cursor_pointer()
+                    .when(!self.selected, |row| {
+                        row.hover(move |style| style.bg(Hsla::from(colors.limestone_hover)))
+                    })
+                    .when_some(self.on_click, |row, handler| {
+                        row.on_click(move |event, window, cx| handler(event, window, cx))
+                    })
+            })
+            .child(match self.avatar {
+                Some(seed) => Mosaic::new(MosaicKind::Small, seed, 16.0)
+                    .radius(2.0)
+                    .into_any_element(),
+                None => icon(
+                    self.icon,
+                    if self.nested { 13.0 } else { 15.0 },
+                    if self.selected {
+                        colors.terracotta_deep
+                    } else if unread {
+                        colors.ink
+                    } else {
+                        colors.ink_3
+                    },
+                )
+                .into_any_element(),
+            })
             .child(div().flex_1().min_w_0().truncate().child(self.name))
             .children(sign)
             .when(!states.is_empty(), |row| {

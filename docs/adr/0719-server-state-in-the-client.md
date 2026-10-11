@@ -56,6 +56,7 @@ Copies for readers:
 Later parts:
 
 - The messages are in the state as ADR 0721 states: the unread summary of each place, the timelines of the places that a reader has open, and the messages that wait to be sent, with new cases of the function that applies events and new parts. A timeline belongs to the state of the server and not to its channel, because a direct conversation has no channel. No field or case of before changed.
+- Threads, pins, notices and notification settings are in the state as ADR 0722 states: the threads with something unread, the notices and the settings of the snapshot, the pin lists that a reader has open, and the messages that those lists name.
 
 ## Consequences
 

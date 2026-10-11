@@ -53,6 +53,19 @@ impl Shell {
             .zip(channel)
             .and_then(|(workspace, channel)| Some((channel, workspace.call.as_ref()?)));
         let members_open = self.members_open && workspace.is_some() && call.is_none();
+        // The side panel shows one thing: a thread, the pinned messages, or the members.
+        let side_of = |this: &mut Self,
+                       shown: &WorkspaceView,
+                       window: &mut Window,
+                       cx: &mut Context<Self>| {
+            match (&shown.thread, &shown.pins) {
+                (Some(thread), _) => Some(this.render_thread_panel(thread, window, cx)),
+                (None, Some(pins)) => {
+                    Some(this.render_pins_panel(pins, shown.feed.as_ref(), window, cx))
+                }
+                _ => members_open.then(|| this.render_members(shown, &theme, cx)),
+            }
+        };
 
         let (body, side): (AnyElement, Option<AnyElement>) = match (&view.selected, workspace) {
             (None, _) => (
@@ -67,13 +80,18 @@ impl Shell {
                 }
                 (None, Some(_)) => (
                     self.render_feed(shown, false, window, cx),
-                    members_open.then(|| self.render_members(shown, &theme, cx)),
+                    side_of(self, shown, window, cx),
+                ),
+                // A direct conversation in place of a channel.
+                (None, None) if shown.conversation.is_some() => (
+                    self.render_feed(shown, false, window, cx),
+                    side_of(self, shown, window, cx),
                 ),
                 (None, None) => (
                     StatePanel::new(text::NO_CHANNEL_TITLE, text::NO_CHANNELS)
                         .selector("no-channel")
                         .into_any_element(),
-                    members_open.then(|| self.render_members(shown, &theme, cx)),
+                    side_of(self, shown, window, cx),
                 ),
             },
             (Some(server), None) => (
@@ -90,6 +108,8 @@ impl Shell {
         };
 
         let in_call = call.is_some();
+        let thread_open = workspace.is_some_and(|workspace| workspace.thread.is_some());
+        let pins_open = workspace.is_some_and(|workspace| workspace.pins.is_some());
         let split = div()
             .relative()
             .flex()
@@ -108,9 +128,13 @@ impl Shell {
                 if narrow {
                     // The panel lies over the content, with a flat cover behind it.
                     split
-                        .child(Self::side_cover(&theme, cx, move |this, _| {
+                        .child(Self::side_cover(&theme, cx, move |this, cx| {
                             if in_call {
                                 this.call_panel_open = false;
+                            } else if thread_open {
+                                this.state.update(cx, |state, cx| state.close_thread(cx));
+                            } else if pins_open {
+                                this.state.update(cx, |state, cx| state.close_pins(cx));
                             } else {
                                 this.members_open = false;
                             }
@@ -155,15 +179,37 @@ impl Shell {
     ) -> impl IntoElement + use<> {
         let colors = theme.colors;
         let members_open = self.members_open && call.is_none();
-        let title: Option<(Icon, SharedString)> = channel.map(|channel| {
-            (
+        let conversation = view
+            .workspace()
+            .and_then(|workspace| workspace.conversation.as_ref());
+        let title: Option<(Icon, SharedString)> = match (conversation, channel) {
+            (Some(conversation), _) => Some((
+                Icon::People,
+                conversation
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned())
+                    .into(),
+            )),
+            (None, Some(channel)) => Some((
                 match channel.kind {
                     ChannelKind::Text => Icon::Hash,
                     ChannelKind::Voice => Icon::Speaker,
                 },
                 channel.name.clone().into(),
-            )
-        });
+            )),
+            (None, None) => None,
+        };
+        let server_id = view.selected.as_ref().map(|server| server.id);
+        let pins_open = view
+            .workspace()
+            .is_some_and(|workspace| workspace.pins.is_some());
+        let unread = match (conversation, channel) {
+            (Some(conversation), _) => conversation.unread.unread(),
+            (None, Some(channel)) => channel.unread.unread(),
+            (None, None) => false,
+        };
+        let permanent = channel.is_some_and(|channel| channel.permanent) && call.is_none();
         let voice = channel.and_then(|channel| channel.voice.as_ref());
         // What follows the title: for a voice channel that this device is not in, the
         // line about its chat and the action that enters the call; for the call of this
@@ -201,6 +247,9 @@ impl Shell {
                 after.extend(self.render_call_panel_buttons(cx));
             }
         } else {
+            if permanent {
+                after.push(Self::render_permanent_marker(theme));
+            }
             after.push(div().flex_1().into_any_element());
         }
         div()
@@ -243,16 +292,42 @@ impl Shell {
                 )
             })
             .children(after)
-            .when(
-                call.is_none() && channel.is_some_and(|channel| channel.unread.any()),
-                |header| {
+            .when(call.is_none() && unread, |header| {
+                header.child(
+                    Button::new("mark-as-read")
+                        .icon(Icon::Check)
+                        .label(text::MARK_AS_READ)
+                        .tooltip(text::MARK_AS_READ_HELP)
+                        .selector("mark-as-read")
+                        .on_click(cx.listener(|this, _, _, cx| this.mark_shown_as_read(cx))),
+                )
+            })
+            .when_some(
+                server_id
+                    .zip(channel.map(|channel| channel.id))
+                    .filter(|_| call.is_none()),
+                |header, (server_id, channel_id)| {
                     header.child(
-                        Button::new("mark-as-read")
-                            .icon(Icon::Check)
-                            .label(text::MARK_AS_READ)
-                            .tooltip(text::MARK_AS_READ_HELP)
-                            .selector("mark-as-read")
-                            .on_click(cx.listener(|this, _, _, cx| this.mark_shown_as_read(cx))),
+                        Button::new("pins")
+                            .icon(Icon::Pin)
+                            .label(text::PINS)
+                            .tooltip(if pins_open {
+                                text::CLOSE_PINS
+                            } else {
+                                text::SHOW_PINS
+                            })
+                            .accessible_label(text::PINS)
+                            .selector("pins-button")
+                            .when(pins_open, |button| {
+                                button.bg(Hsla::from(colors.limestone_lo)).shadow_none()
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if pins_open {
+                                    this.state.update(cx, |state, cx| state.close_pins(cx));
+                                } else {
+                                    this.open_pins(server_id, channel_id, cx);
+                                }
+                            })),
                     )
                 },
             )
@@ -273,10 +348,51 @@ impl Shell {
                         })
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.members_open = !this.members_open;
+                            if this.members_open {
+                                // The side panel shows one thing.
+                                this.state.update(cx, |state, cx| {
+                                    state.close_thread(cx);
+                                    state.close_pins(cx);
+                                });
+                            }
                             cx.notify();
                         })),
                 )
             })
+    }
+
+    /// The marker of a channel whose messages are permanent, with its explanation on
+    /// hover and on focus (view J of the design, ADR 0402).
+    fn render_permanent_marker(theme: &Theme) -> AnyElement {
+        let colors = theme.colors;
+        let ring = crate::ui::focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
+        let about: SharedString = format!("{}{}", text::PERMANENT_ON, text::PERMANENT_ABOUT).into();
+        div()
+            .id("permanent-marker")
+            .role(Role::Note)
+            .aria_label(about.clone())
+            .debug_selector(|| "permanent-marker".to_owned())
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(u(6.0))
+            .h(u(26.0))
+            .px(u(8.0))
+            .rounded(u(theme.metrics.radius))
+            .border_1()
+            .border_color(Hsla::from(colors.rule))
+            .bg(Hsla::from(colors.plaster))
+            .typeface(theme.types.control_strong, theme)
+            .text_size(u(13.0))
+            .ink(colors.ink)
+            .whitespace_nowrap()
+            .focusable()
+            .tab_stop(true)
+            .focus_visible(move |style| style.shadow(ring))
+            .tooltip(tooltip(about))
+            .child(icon(Icon::EditOff, 14.0, colors.terracotta_deep))
+            .child(text::PERMANENT_MESSAGES)
+            .into_any_element()
     }
 
     /// The recording of the call of this device in the header of its voice channel
@@ -811,8 +927,48 @@ impl Shell {
                 )
                 .into_any_element(),
             Members::Loaded(members) => {
+                let server_id = self
+                    .view
+                    .as_ref()
+                    .and_then(|view| view.selected.as_ref())
+                    .map(|server| server.id);
+                let refused = workspace.conversation_refused.clone();
+                let asked = workspace.conversation_asked;
                 let rows = members.iter().enumerate().map(|(index, member)| {
                     let detail: SharedString = member.roles.join(" · ").into();
+                    let account_id = member.account_id;
+                    let write = (!member.is_self).then(|| {
+                        div()
+                            .flex_none()
+                            .debug_selector(move || format!("message-member:{account_id}"))
+                            .child(
+                                Button::new(("message-member", index))
+                                    .kind(ButtonKind::Ghost)
+                                    .icon(Icon::Chat)
+                                    .tooltip(text::message_person(&member.name))
+                                    .accessible_label(text::message_person(&member.name))
+                                    .disabled(asked == Some(account_id))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        let Some(server_id) = server_id else {
+                                            return;
+                                        };
+                                        this.state.update(cx, |state, cx| {
+                                            state.open_conversation(server_id, account_id, cx);
+                                        });
+                                    })),
+                            )
+                    });
+                    let refusal = refused
+                        .as_ref()
+                        .filter(|(asked, _)| *asked == account_id)
+                        .map(|(_, reason)| {
+                            div()
+                                .debug_selector(|| "conversation-refused".to_owned())
+                                .typeface(theme.types.small, theme)
+                                .line_height(u(17.0))
+                                .ink(colors.cinnabar_ink)
+                                .child(SharedString::from(reason.clone()))
+                        });
                     div()
                         .id(("member", index))
                         .role(Role::ListItem)
@@ -874,8 +1030,10 @@ impl Shell {
                                             .truncate()
                                             .child(detail),
                                     )
-                                }),
+                                })
+                                .children(refusal),
                         )
+                        .children(write)
                 });
                 ScrollArea::new("member-list", &self.members_scroll, text::MEMBERS)
                     .child(SectionLabel::new(text::MEMBERS).count(members.len()))

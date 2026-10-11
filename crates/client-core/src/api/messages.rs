@@ -34,7 +34,7 @@ pub struct PageQuery {
 }
 
 impl PageQuery {
-    fn pairs(&self) -> Vec<(&'static str, String)> {
+    pub(super) fn pairs(&self) -> Vec<(&'static str, String)> {
         let mut pairs = Vec::new();
         if let Some(before) = self.before {
             pairs.push(("before", before.to_string()));
@@ -67,6 +67,7 @@ fn messages_of(place: PlaceId) -> String {
     match place {
         PlaceId::Channel(channel_id) => format!("/channels/{channel_id}/messages"),
         PlaceId::Direct(conversation_id) => format!("/conversations/{conversation_id}/messages"),
+        PlaceId::Thread { root_id, .. } => format!("/messages/{root_id}/thread"),
     }
 }
 
@@ -79,12 +80,16 @@ fn emoji_segment(emoji: &str) -> String {
 impl ServerApi {
     // History and writes.
 
-    /// One page of the messages of a place, in the order of their positions.
+    /// One page of the messages of a place, in the order of their positions. For a
+    /// thread these are its replies; [`ServerApi::thread`] also gives its root.
     pub async fn messages(
         &self,
         place: PlaceId,
         page: &PageQuery,
     ) -> Result<MessagePage, ApiError> {
+        if let PlaceId::Thread { root_id, .. } = place {
+            return Ok(self.thread(root_id, page).await?.replies);
+        }
         let response = self
             .call(Method::Get, messages_of(place), page.pairs(), None)
             .await?;
@@ -144,12 +149,15 @@ impl ServerApi {
 
     // Read positions.
 
-    /// The read position of the account in a place, with the unread counts.
+    /// The read position of the account in a channel or a direct conversation, with the
+    /// unread counts. A thread has [`ServerApi::thread_state`].
     pub async fn message_state(&self, place: PlaceId) -> Result<MessageState, ApiError> {
         self.get(format!("{}/read", messages_of(place))).await
     }
 
-    /// Moves the read position of the account forward. A lower position changes nothing.
+    /// Moves the read position of the account in a channel or a direct conversation
+    /// forward. A lower position changes nothing. A thread has
+    /// [`ServerApi::mark_thread_read`].
     pub async fn mark_read(&self, place: PlaceId, position: u64) -> Result<MessageState, ApiError> {
         let path = format!("{}/read", messages_of(place));
         self.send(Method::Put, path, &MarkRead { position }).await

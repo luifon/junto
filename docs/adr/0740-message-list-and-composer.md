@@ -54,13 +54,13 @@ Composer:
 
 Unread signs:
 
-- A channel with unread messages has a bold name and a dot, and with mentions the sign "@ n" (view A). A workspace of the server book and the icon of a collapsed server carry the same signs for their channels. 100 or more is shown as "99+".
+- A channel with unread messages has a bold name and a dot, and with mentions the sign "@ n" (view A). ADR 0741 makes both follow the notification settings of the person. A workspace of the server book and the icon of a collapsed server carry the same signs for their channels. 100 or more is shown as "99+".
 - The read position moves to the last loaded message when the window is active, draws the list, and the list shows its end. The chat of a call is not drawn while the panel shows the members or the settings, and its messages stay unread until the chat tab is shown. "Mark as read" in the header moves the position to the latest one of the channel.
 
 Places:
 
 - A text channel and the chat of a voice channel are the same list and composer. The chat tab of a call (ADR 0735) shows the chat of its voice channel in the panel.
-- The window holds one place open in the client core: the selected channel.
+- The window holds the place of the main area open in the client core. ADR 0741 adds the thread of the side panel, with a list and a composer of its own, and direct conversations as places of the main area.
 
 ## Consequences
 
@@ -71,5 +71,5 @@ Places:
 - The derivation of 10,000 loaded messages takes about 10 milliseconds in a debug build; the list draws the rows in view and a margin of 800 pixels.
 - A system line of an action that this build does not know is drawn as a line without detail.
 - A finished recording is a system line in the chat of its voice channel. Its card with the video, the downloads and the transcript (view G) is not built yet.
-- Direct conversations have no place in the window yet.
+- Direct conversations, threads and pins are in the window as ADR 0741 states.
 - New direct dependencies of the desktop client: `chrono` for the time zone of the system, `dirs` for the download directory, `emojis` in the version of the server, and `url` for the check of a link. All four were in the lock file already.

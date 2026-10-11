@@ -13,7 +13,9 @@ use junto_protocol::message::MessagePlace;
 use junto_protocol::recording::Recording;
 use junto_protocol::structure::Channel;
 
-use super::{CallModel, ChannelModel, Loadable, PlaceId, Reach, ServerModel, WorkspaceModel};
+use super::{
+    CallModel, ChannelModel, Loadable, PlaceId, Reach, ServerModel, ThreadMoved, WorkspaceModel,
+};
 
 /// A part of the state that is read from a route of its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -31,15 +33,30 @@ pub(crate) enum Part {
     Messages(PlaceId, Reach),
     /// The limits of the server for the files of a message.
     AttachmentLimits,
+    /// The first page of the threads that hold something unread.
+    UnreadThreads,
+    /// The page of unread threads after the loaded ones.
+    MoreThreads,
+    /// The root and the fork channels of a thread that a reader has open.
+    ThreadHead(PlaceId),
+    /// The pinned messages of a channel that a reader has open.
+    Pins(ChannelId),
+    /// The first page of the notices.
+    Notices,
+    /// The page of notices after this notice.
+    MoreNotices(uuid::Uuid),
+    /// A message that a list of the state names by its identifier.
+    Named(MessageId),
 }
 
 impl Part {
-    /// True for a part whose content no event carries (ADR 0408): an event that arrives
-    /// while the part is read is not applied to the answer; it starts the read again.
+    /// True for a part whose content no event carries (ADR 0408, ADR 0409): an event that
+    /// arrives while the part is read is not applied to the answer; it starts the read
+    /// again.
     pub(crate) const fn is_read_again(&self) -> bool {
-        matches!(
+        !matches!(
             self,
-            Self::MessageState(_) | Self::Message(..) | Self::Messages(..) | Self::AttachmentLimits
+            Self::Members(_) | Self::OwnCall | Self::ChannelCall(_)
         )
     }
 }
@@ -140,9 +157,40 @@ impl Part {
                 matches!(event, Event::MessageChanged { message_id: of, .. } if of == message_id)
             }
             Self::Messages(place, _) => {
-                matches!(event, Event::MessageChanged { place: of, .. } if PlaceId::of(of) == *place)
+                matches!(event, Event::MessageChanged { place: of, .. }
+                    if PlaceId::of(of) == place.container())
             }
             Self::AttachmentLimits => matches!(event, Event::AttachmentLimitsChanged { .. }),
+            Self::UnreadThreads => matches!(
+                event,
+                Event::MessageChanged {
+                    place: MessagePlace::Channel { .. },
+                    ..
+                } | Event::ThreadRead { .. }
+                    | Event::NotificationChanged { .. }
+                    | Event::MessageMentioned { .. }
+            ),
+            Self::ThreadHead(_) => matches!(
+                event,
+                Event::ChannelCreated { .. } | Event::ChannelDeleted { .. }
+            ),
+            Self::Pins(channel_id) => matches!(
+                event,
+                Event::MessageChanged { place: of, .. }
+                    if PlaceId::of(of) == PlaceId::Channel(*channel_id)
+            ),
+            Self::Notices => matches!(
+                event,
+                Event::NotificationChanged { .. }
+                    | Event::MessageRead { .. }
+                    | Event::ThreadRead { .. }
+            ),
+            Self::Named(message_id) => {
+                matches!(event, Event::MessageChanged { message_id: of, .. } if of == message_id)
+            }
+            // A page after the loaded ones is added only while the list before it is the
+            // one that the request continued; no event changes its answer.
+            Self::MoreThreads | Self::MoreNotices(_) => false,
         }
     }
 }
@@ -311,11 +359,15 @@ impl ServerModel {
             }
             Event::ChannelCreated { channel } | Event::ChannelUpdated { channel } => {
                 let inside = self.is_inside(channel.id);
-                if let Some(workspace) = self.workspace_mut(channel.workspace_id)
-                    && let Some(part) = workspace.put_channel(channel, inside)
-                {
-                    return Follow::load(part);
+                // A fork of a thread is a new channel (ADR 0409).
+                let mut load = match event {
+                    Event::ChannelCreated { .. } => self.thread_heads(),
+                    _ => Vec::new(),
+                };
+                if let Some(workspace) = self.workspace_mut(channel.workspace_id) {
+                    load.extend(workspace.put_channel(channel, inside));
                 }
+                return Follow::loads(load);
             }
             Event::ChannelDeleted {
                 workspace_id,
@@ -335,6 +387,8 @@ impl ServerModel {
                 self.entry_requests.retain(|held| !gone(&held.place));
                 self.moves
                     .retain(|held| !gone(&held.from) && !gone(&held.to));
+                // The deleted channel can be the fork of an open thread.
+                return Follow::loads(self.thread_heads());
             }
             Event::CallStarted {
                 call_id,
@@ -523,7 +577,11 @@ impl ServerModel {
             }
             Event::MessageMentioned { channel_id, .. } => {
                 if self.channel(*channel_id).is_some() {
-                    return Follow::load(Part::MessageState(PlaceId::Channel(*channel_id)));
+                    // The mention can be one of a thread (ADR 0409).
+                    return Follow::loads(vec![
+                        Part::MessageState(PlaceId::Channel(*channel_id)),
+                        Part::UnreadThreads,
+                    ]);
                 }
             }
             Event::MessageChanged {
@@ -536,21 +594,65 @@ impl ServerModel {
                     return Follow::default();
                 }
                 let id = PlaceId::of(place);
+                let known = self.see_position(id, *position);
                 let mut load = vec![Part::MessageState(id)];
                 // The event carries no content (ADR 0408). The message is read when a
-                // reader has its place open and the change lies in what is loaded.
-                if self
-                    .timeline(id)
-                    .is_some_and(|timeline| timeline.wants(*message_id, *position))
-                {
+                // holder of messages wants it: a place or a thread that a reader has
+                // open, an open pin list, or a list that names the message.
+                if self.wants_message(id, *message_id, Some(*position)) {
                     load.push(Part::Message(id, *message_id));
+                }
+                // The event names no thread. A message of a channel that is not new can
+                // be the root of a thread whose replies changed.
+                if known && matches!(id, PlaceId::Channel(_)) {
+                    load.push(Part::UnreadThreads);
                 }
                 return Follow::loads(load);
             }
-            Event::MessageRead { place, position } => {
-                if self.holds_place(place) && !self.move_read_position(*place, *position) {
-                    return Follow::load(Part::MessageState(PlaceId::of(place)));
+            Event::ThreadRead { root_id, position } => {
+                // The event names no channel, and an unread mention of a thread counts
+                // in the summary of its channel.
+                let mut load: Vec<Part> = self
+                    .places_with_mentions()
+                    .into_iter()
+                    .map(Part::MessageState)
+                    .collect();
+                let inside = |message: &junto_protocol::message::Message| {
+                    message.thread_root == Some(*root_id)
+                };
+                if self.read_covers_notice(inside, *position) {
+                    load.push(Part::Notices);
                 }
+                if self.move_thread_read(*root_id, *position) == ThreadMoved::Unsettled {
+                    load.push(Part::UnreadThreads);
+                }
+                return Follow::loads(load);
+            }
+            Event::NotificationChanged { .. } => {
+                // A notice of a reply or of a mention in a thread changes the unread
+                // threads too.
+                return Follow::loads(vec![Part::Notices, Part::UnreadThreads]);
+            }
+            // The event names nothing. A setting changes the signs of every summary in
+            // its scope, and only the snapshot lists every setting (ADR 0409).
+            Event::NotificationSettingsChanged {} => return Follow::reload(),
+            Event::MessageRead { place, position } => {
+                if !self.holds_place(place) {
+                    return Follow::default();
+                }
+                let id = PlaceId::of(place);
+                let mut load = Vec::new();
+                if !self.move_read_position(*place, *position) {
+                    load.push(Part::MessageState(id));
+                }
+                // Replies of threads have a read position of their own.
+                let inside = |message: &junto_protocol::message::Message| {
+                    message.thread_root.is_none() && PlaceId::of(&message.place) == id
+                };
+                if self.read_covers_notice(inside, *position) {
+                    load.push(Part::Notices);
+                }
+                return Follow::loads(load);
             }
             // The collections of these events are read from their routes when a reader
             // needs them (ADR 0207). The state holds none of them.
@@ -576,7 +678,8 @@ impl ServerModel {
             | Event::CallEntryAnswered { .. }
             | Event::TranscriptLineCorrected { .. }
             | Event::TranscriptSpeakerRenamed { .. }
-            | Event::GlossaryReplaced { .. } => {}
+            | Event::GlossaryReplaced { .. }
+            | Event::RetentionChanged { .. } => {}
         }
         Follow::default()
     }
@@ -607,7 +710,11 @@ impl ServerModel {
                 // A read of a page is followed by the reads of single messages, and each
                 // other part by its own read.
                 let follows = match part {
-                    Part::Messages(..) => matches!(read, Part::Message(..)),
+                    Part::Messages(..) | Part::Pins(_) => matches!(read, Part::Message(..)),
+                    // The event names the place of the message, which the list did not.
+                    Part::Named(message_id) => {
+                        matches!(read, Part::Message(_, of) if of == message_id)
+                    }
                     _ => read == part,
                 };
                 if follows && !reads.contains(&read) {
@@ -616,6 +723,16 @@ impl ServerModel {
             }
         }
         reads
+    }
+
+    /// The threads that a reader has open: their fork channels are read from the route of
+    /// the thread.
+    fn thread_heads(&self) -> Vec<Part> {
+        self.timelines
+            .iter()
+            .filter(|timeline| timeline.place.thread_root().is_some())
+            .map(|timeline| Part::ThreadHead(timeline.place))
+            .collect()
     }
 
     /// True when the state holds the place of a message: a channel that the account can

@@ -356,8 +356,11 @@ async fn upload(
         progress.bytes = bytes;
         progress.stage = UploadStage::Sending;
     });
+    // The file of a reply in a thread belongs to the channel of the thread.
     let (channel_id, conversation_id) = match place {
-        PlaceId::Channel(channel_id) => (Some(channel_id), None),
+        PlaceId::Channel(channel_id) | PlaceId::Thread { channel_id, .. } => {
+            (Some(channel_id), None)
+        }
         PlaceId::Direct(conversation_id) => (None, Some(conversation_id)),
     };
     let declared = StartUpload {

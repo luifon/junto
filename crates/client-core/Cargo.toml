@@ -34,6 +34,8 @@ tokio = { workspace = true }
 tokio-tungstenite = { workspace = true }
 tracing = { workspace = true }
 url = "2"
+# The identifiers of notices and of the scopes of notification settings (ADR 0409).
+uuid = { workspace = true }
 zeroize = "1"
 
 [target.'cfg(unix)'.dependencies]
@@ -53,7 +55,6 @@ windows-sys = { version = "0.61", features = [
 sqlx = { workspace = true }
 tempfile = "3"
 tokio = { workspace = true, features = ["io-util", "test-util"] }
-uuid = { workspace = true }
 
 [target.'cfg(unix)'.dev-dependencies]
 rustix = { version = "1", features = ["pty"] }

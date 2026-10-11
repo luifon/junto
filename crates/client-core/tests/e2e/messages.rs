@@ -19,7 +19,7 @@ use junto_client_core::transfers::{DownloadStage, UploadSource, UploadStage};
 use crate::stream::{PATIENCE, Pair, channel, live, model_when, pair, text_channel, when};
 use crate::support::{Device, Fault, FaultProxy, TestServer, logged_in};
 
-fn document(text: &str) -> Document {
+pub fn document(text: &str) -> Document {
     Document {
         blocks: vec![Block::Paragraph {
             content: vec![Inline::Text {
@@ -30,7 +30,7 @@ fn document(text: &str) -> Document {
     }
 }
 
-fn text_of(message: &Message) -> Option<String> {
+pub fn text_of(message: &Message) -> Option<String> {
     let document = message.document.as_ref()?;
     Some(
         document
@@ -50,7 +50,7 @@ fn text_of(message: &Message) -> Option<String> {
 }
 
 /// The texts of the messages of people that a timeline holds, in its order.
-fn texts(model: &ServerModel, place: PlaceId) -> Vec<String> {
+pub fn texts(model: &ServerModel, place: PlaceId) -> Vec<String> {
     model
         .timeline(place)
         .map(|timeline| {
@@ -63,7 +63,7 @@ fn texts(model: &ServerModel, place: PlaceId) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn found(model: &ServerModel, place: PlaceId, text: &str) -> Option<Arc<Message>> {
+pub fn found(model: &ServerModel, place: PlaceId, text: &str) -> Option<Arc<Message>> {
     model
         .timeline(place)?
         .messages
@@ -72,7 +72,7 @@ fn found(model: &ServerModel, place: PlaceId, text: &str) -> Option<Arc<Message>
         .cloned()
 }
 
-async fn timeline_when(
+pub async fn timeline_when(
     handle: &ServerHandle,
     place: PlaceId,
     what: &str,
@@ -86,7 +86,7 @@ async fn timeline_when(
     .await
 }
 
-async fn message_when(handle: &ServerHandle, place: PlaceId, text: &str) -> Arc<Message> {
+pub async fn message_when(handle: &ServerHandle, place: PlaceId, text: &str) -> Arc<Message> {
     let model = model_when(handle, &format!("the message {text:?}"), |model| {
         found(model, place, text).is_some()
     })
@@ -144,7 +144,7 @@ async fn agrees_with_the_history(handle: &ServerHandle, place: PlaceId) {
 }
 
 /// Two clients with their event streams, and the place open on both.
-async fn both_open(scene: &Pair, place: PlaceId) {
+pub async fn both_open(scene: &Pair, place: PlaceId) {
     for handle in [&scene.owner, &scene.member] {
         // The event of a new channel reaches the client that created it after the answer
         // to its request.

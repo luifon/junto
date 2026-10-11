@@ -32,6 +32,7 @@ use crate::model::tests::{Scene, channel, member, participant, scene, time};
 use crate::model::{Loadable, ServerModel};
 use crate::version::SupportedVersions;
 
+mod discovery;
 mod messages;
 
 const PATIENCE: Duration = Duration::from_secs(24 * 60 * 60);

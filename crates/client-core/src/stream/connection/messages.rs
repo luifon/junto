@@ -9,8 +9,8 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
 
-use junto_protocol::ids::{AttachmentId, MessageId};
-use junto_protocol::message::{Message, MessagePage, MessageState, SendMessage};
+use junto_protocol::ids::{AttachmentId, ChannelId, MessageId};
+use junto_protocol::message::{Message, MessagePage, MessageState, SendMessage, ThreadState};
 use tokio::sync::oneshot;
 use tokio::task::AbortHandle;
 use tokio::time::Instant;
@@ -44,6 +44,15 @@ const SEARCH_PAGES: usize = 5;
 /// again without an end, with the longest of these waits.
 const READ_TRIES: u8 = 5;
 const READ_RETRY: Duration = Duration::from_secs(2);
+/// The entries of one page of the unread threads, and of one page of the notices.
+pub(super) const LIST_PAGE: u32 = 200;
+pub(super) const NOTICES_PAGE: u32 = 50;
+/// The time after the end of a mute at which the summary of its channel is read: the
+/// clock of the server decides the end.
+const MUTE_MARGIN: Duration = Duration::from_secs(2);
+/// The wait before the summary is read again while it says "muted" after the end that
+/// the settings state: the clock of this machine is ahead of the one of the server.
+const MUTE_RECHECK: Duration = Duration::from_secs(30);
 
 type Reply = oneshot::Sender<Result<(), LoadError>>;
 
@@ -59,8 +68,8 @@ pub(super) enum PageAsk {
     After(MessageId),
 }
 
-/// The answer to a read of a page.
-pub(super) enum Pages {
+/// The messages of the answer to a read of a page.
+pub(super) enum PageKind {
     /// The messages that replace what is loaded.
     Opened {
         messages: Vec<Message>,
@@ -68,6 +77,30 @@ pub(super) enum Pages {
         more_after: bool,
     },
     Page(MessagePage),
+}
+
+/// The answer to a read of a page.
+pub(super) struct Pages {
+    kind: PageKind,
+    /// For a thread: its root and the channels that it was forked into.
+    head: Option<(Message, Vec<ChannelId>)>,
+}
+
+/// One page of a place. The page of a thread also carries its root and its forks.
+async fn page_of(
+    api: &ServerApi,
+    place: PlaceId,
+    query: &PageQuery,
+    head: &mut Option<(Message, Vec<ChannelId>)>,
+) -> Result<MessagePage, ApiError> {
+    match place.thread_root() {
+        Some(root_id) => {
+            let page = api.thread(root_id, query).await?;
+            *head = Some((page.root, page.forks));
+            Ok(page.replies)
+        }
+        None => api.messages(place, query).await,
+    }
 }
 
 pub(super) async fn read_pages(
@@ -79,61 +112,63 @@ pub(super) async fn read_pages(
         limit: Some(limit),
         ..PageQuery::default()
     };
-    match ask {
+    let mut head = None;
+    let kind = match ask {
         PageAsk::Latest => {
-            let page = api.messages(place, &limit(PAGE)).await?;
-            Ok(Pages::Opened {
+            let page = page_of(api, place, &limit(PAGE), &mut head).await?;
+            PageKind::Opened {
                 messages: page.messages,
                 more_before: page.has_more,
                 more_after: false,
-            })
+            }
         }
         PageAsk::Around(position) => {
             let query = PageQuery {
                 before: Some(position.saturating_add(1)),
                 ..limit(READ_CONTEXT)
             };
-            let before = api.messages(place, &query).await?;
+            let before = page_of(api, place, &query, &mut head).await?;
             let query = PageQuery {
                 after: Some(position),
                 ..limit(FROM_PAGE)
             };
-            let after = api.messages(place, &query).await?;
+            let after = page_of(api, place, &query, &mut head).await?;
             let mut messages = before.messages;
             messages.extend(after.messages);
-            Ok(Pages::Opened {
+            PageKind::Opened {
                 messages,
                 more_before: before.has_more,
                 more_after: after.has_more,
-            })
+            }
         }
         PageAsk::From(position) => {
             let query = PageQuery {
                 after: Some(position.saturating_sub(1)),
                 ..limit(FROM_PAGE)
             };
-            let page = api.messages(place, &query).await?;
-            Ok(Pages::Opened {
+            let page = page_of(api, place, &query, &mut head).await?;
+            PageKind::Opened {
                 messages: page.messages,
                 more_before: position > 1,
                 more_after: page.has_more,
-            })
+            }
         }
         PageAsk::Before(message_id) => {
             let query = PageQuery {
                 before_message: Some(message_id),
                 ..limit(PAGE)
             };
-            api.messages(place, &query).await.map(Pages::Page)
+            PageKind::Page(page_of(api, place, &query, &mut head).await?)
         }
         PageAsk::After(message_id) => {
             let query = PageQuery {
                 after_message: Some(message_id),
                 ..limit(PAGE)
             };
-            api.messages(place, &query).await.map(Pages::Page)
+            PageKind::Page(page_of(api, place, &query, &mut head).await?)
         }
-    }
+    };
+    Ok(Pages { kind, head })
 }
 
 /// A place whose messages a reader has open.
@@ -183,8 +218,14 @@ pub(super) enum Outcome {
     Marked {
         place: PlaceId,
         position: u64,
-        result: Result<MessageState, ApiError>,
+        result: Result<Marked, ApiError>,
     },
+}
+
+/// The answer to a read position: the summary of a place, or the state of a thread.
+pub(super) enum Marked {
+    Place(MessageState),
+    Thread(ThreadState),
 }
 
 /// The history that one search read.
@@ -214,6 +255,18 @@ pub(super) struct Work {
     sends: BTreeMap<u64, Sending>,
     /// The time of the last step that started what was due.
     advanced_at: Option<Instant>,
+    /// The channels whose pin list a reader has open, with the number of their readers.
+    pins: BTreeMap<ChannelId, usize>,
+    /// The readers that wait for the pin list of a channel.
+    opening_pins: BTreeMap<ChannelId, Vec<Reply>>,
+    /// The earliest time of the next read of the unread threads.
+    threads_at: Option<Instant>,
+    /// A read of the unread threads waits for that time.
+    threads_wait: bool,
+    /// The continuation that the read of a further page of unread threads was sent with.
+    pub(super) continued_threads: Option<String>,
+    /// The times at which the mute of a channel ends (ADR 0409).
+    mute_ends: Vec<(Instant, ChannelId)>,
 }
 
 impl Drop for Work {
@@ -260,9 +313,13 @@ impl Work {
             .filter(|sending| sending.request.is_none())
             .filter_map(|sending| sending.search_at);
         let retries = self.retries.iter().map(|(_, _, due)| *due);
+        let threads = self.threads_at.filter(|_| self.threads_wait);
+        let mutes = self.mute_ends.iter().map(|(due, _)| *due);
         marks
             .chain(searches)
             .chain(retries)
+            .chain(threads)
+            .chain(mutes)
             .filter(|at| self.advanced_at.is_none_or(|step| *at > step))
             .min()
     }
@@ -291,10 +348,11 @@ impl Client {
     pub(super) fn forget_messages(&mut self) {
         let mut work = std::mem::take(&mut self.messages);
         work.end_requests();
-        for (_, waiting) in std::mem::take(&mut work.opening) {
-            for reply in waiting {
-                let _ = reply.send(Err(LoadError::Off));
-            }
+        let waiting = std::mem::take(&mut work.opening)
+            .into_values()
+            .chain(std::mem::take(&mut work.opening_pins).into_values());
+        for reply in waiting.flatten() {
+            let _ = reply.send(Err(LoadError::Off));
         }
     }
 
@@ -312,8 +370,14 @@ impl Client {
     pub(super) fn message_read_needed(&self, part: Part, model: &ServerModel) -> bool {
         match part {
             Part::MessageState(place) => model.place(place).is_some(),
-            Part::Message(place, _) | Part::Messages(place, _) => self.messages.wants(place),
+            Part::Message(place, message_id) => model.wants_message(place, message_id, None),
+            Part::Messages(place, _) | Part::ThreadHead(place) => self.messages.wants(place),
             Part::AttachmentLimits => !self.messages.wanted.is_empty(),
+            Part::UnreadThreads | Part::Notices => true,
+            // A reader asks for a further page again.
+            Part::MoreThreads | Part::MoreNotices(_) => false,
+            Part::Pins(channel_id) => self.messages.pins.contains_key(&channel_id),
+            Part::Named(message_id) => model.names(message_id),
             Part::Members(_) | Part::OwnCall | Part::ChannelCall(_) => false,
         }
     }
@@ -325,14 +389,38 @@ impl Client {
         if self.pending.iter().any(|pending| pending.load == load) {
             return;
         }
-        if let Part::Message(..) = part {
+        if let Part::Message(..) | Part::Named(_) = part {
             if !self.messages.queue.contains(&part) {
                 self.messages.queue.push_back(part);
             }
             self.pump_message_reads();
             return;
         }
+        if part == Part::UnreadThreads {
+            // Every change of a thread asks for this list, and the limit of the server
+            // for reads is shared with the history (ADR 0409): two reads keep a distance.
+            let now = Instant::now();
+            if self.messages.threads_at.is_some_and(|at| at > now) {
+                self.messages.threads_wait = true;
+                return;
+            }
+            self.messages.threads_at = Some(now + self.environment.policy.threads_interval);
+            self.messages.threads_wait = false;
+        }
         self.start(load);
+    }
+
+    /// Reads the messages that the lists of the state name and that the state does not
+    /// hold yet.
+    pub(super) fn read_missing_named(&mut self) {
+        let missing = self
+            .model
+            .as_ref()
+            .map(ServerModel::missing_named)
+            .unwrap_or_default();
+        for message_id in missing {
+            self.read(Part::Named(message_id));
+        }
     }
 
     /// Starts the reads of single messages that wait, up to the bound.
@@ -341,7 +429,9 @@ impl Client {
             let flying = self
                 .pending
                 .iter()
-                .filter(|pending| matches!(pending.load, Load::Part(Part::Message(..))))
+                .filter(|pending| {
+                    matches!(pending.load, Load::Part(Part::Message(..) | Part::Named(_)))
+                })
                 .count();
             if flying >= MESSAGE_READS || self.halted || self.not_before.is_some() {
                 return;
@@ -349,7 +439,13 @@ impl Client {
             let Some(part) = self.messages.queue.pop_front() else {
                 return;
             };
-            let wanted = matches!(part, Part::Message(place, _) if self.messages.wants(place));
+            let wanted = self.model.as_ref().is_some_and(|model| match part {
+                Part::Message(place, message_id) => model.wants_message(place, message_id, None),
+                Part::Named(message_id) => {
+                    model.names(message_id) && model.named(message_id).is_none()
+                }
+                _ => false,
+            });
             if wanted {
                 self.start(Load::Part(part));
             }
@@ -364,13 +460,12 @@ impl Client {
         let timeline = model.timeline(place)?;
         match reach {
             Reach::End => Some(PageAsk::Latest),
+            Reach::At(position) => Some(PageAsk::Around(position)),
             Reach::Open => Some(match wanted.anchor {
                 Some(position) => PageAsk::From(position),
                 None if timeline.loaded => PageAsk::Latest,
-                None => match model.message_state(place) {
-                    Some(state) if state.unread > 0 && state.last_read > 0 => {
-                        PageAsk::Around(state.last_read)
-                    }
+                None => match unread_from(model, place) {
+                    Some(last_read) if last_read > 0 => PageAsk::Around(last_read),
                     _ => PageAsk::Latest,
                 },
             }),
@@ -397,7 +492,7 @@ impl Client {
             return;
         };
         match reach {
-            Reach::Open | Reach::End => timeline.reading.open = reading,
+            Reach::Open | Reach::End | Reach::At(_) => timeline.reading.open = reading,
             Reach::Older => timeline.reading.older = reading,
             Reach::Newer => timeline.reading.newer = reading,
         }
@@ -426,38 +521,89 @@ impl Client {
             return;
         };
         match (part, payload) {
-            (Part::MessageState(_), Payload::MessageState(state)) => {
+            (Part::MessageState(asked), Payload::MessageState(state)) => {
                 if model.place(PlaceId::of(&state.place)).is_some() {
                     model.set_message_state(state);
                 }
+                if let PlaceId::Channel(channel_id) = asked {
+                    self.messages.mute_ends.retain(|(_, of)| *of != channel_id);
+                    if let Some(until) = model.stated_mute_end(channel_id) {
+                        // Before the stated end "muted" is the expected answer, and the
+                        // summary is read after that end. After it the two clocks
+                        // differ, and the summary is read again.
+                        let left = until - time::OffsetDateTime::now_utc();
+                        let wait = match Duration::try_from(left) {
+                            Ok(left) => left.checked_add(MUTE_MARGIN),
+                            Err(_) => Some(MUTE_RECHECK),
+                        };
+                        let due = wait.and_then(|wait| Instant::now().checked_add(wait));
+                        if let Some(due) = due {
+                            self.messages.mute_ends.push((due, channel_id));
+                        }
+                    }
+                }
             }
-            (Part::Message(place, _), Payload::Message(message)) => {
-                model.put_message(*message);
-                model.confirm_arrived(place);
+            (Part::Message(_, asked) | Part::Named(asked), Payload::Message(message)) => {
+                if message.id == asked {
+                    let place = PlaceId::of_message(&message);
+                    model.put_message(*message);
+                    model.confirm_arrived(place);
+                } else {
+                    // Not the message that was asked for (ADR 0714): the answer is not
+                    // used, and the message is not asked for again. A named message is
+                    // settled as failed. The change of another message is not in the
+                    // state, so its place is not current.
+                    match part {
+                        Part::Message(place, _) => {
+                            model.mark_stale(place, ReadFailure::NoAnswer);
+                        }
+                        _ => {
+                            model.settle_named(asked, false);
+                        }
+                    }
+                }
             }
             (Part::Messages(place, reach), Payload::Pages(pages)) => {
                 let first = model.timeline(place).is_some_and(|held| !held.loaded);
-                let unread_after = model
-                    .message_state(place)
-                    .filter(|state| first && state.unread > 0)
-                    .map(|state| state.last_read);
+                let unread_after = unread_from(model, place).filter(|_| first);
+                if let Some((root, forks)) = pages.head {
+                    model.set_thread_head(place, root, forks);
+                }
                 if let Some(timeline) = model.timeline_mut(place) {
-                    match (pages, reach) {
+                    // A message of another place is not taken (ADR 0714), and the
+                    // timeline says that its read failed.
+                    let mut foreign = false;
+                    let mut of_place = |messages: &mut Vec<Message>| {
+                        let all = messages.len();
+                        messages.retain(|message| PlaceId::of_message(message) == place);
+                        foreign |= messages.len() != all;
+                    };
+                    match (pages.kind, reach) {
                         (
-                            Pages::Opened {
-                                messages,
+                            PageKind::Opened {
+                                mut messages,
                                 more_before,
                                 more_after,
                             },
                             _,
                         ) => {
+                            of_place(&mut messages);
                             timeline.replace(messages, more_before, more_after);
                             if first {
                                 timeline.unread_after = unread_after;
                             }
                         }
-                        (Pages::Page(page), Reach::Older) => timeline.add_older(page),
-                        (Pages::Page(page), _) => timeline.add_newer(page),
+                        (PageKind::Page(mut page), Reach::Older) => {
+                            of_place(&mut page.messages);
+                            timeline.add_older(page);
+                        }
+                        (PageKind::Page(mut page), _) => {
+                            of_place(&mut page.messages);
+                            timeline.add_newer(page);
+                        }
+                    }
+                    if foreign {
+                        timeline.failed = Some(ReadFailure::NoAnswer);
                     }
                 }
                 model.confirm_arrived(place);
@@ -465,17 +611,39 @@ impl Client {
             (Part::AttachmentLimits, Payload::Limits(limits)) => {
                 model.attachment_limits = Some(limits);
             }
+            (Part::UnreadThreads, Payload::Threads(page)) => model.set_threads(page),
+            (Part::MoreThreads, Payload::Threads(page)) => {
+                // The page continues the list that it was asked for. A first page that
+                // arrived meanwhile replaced that list.
+                let continued = self.messages.continued_threads.take();
+                if continued.is_some() && continued.as_deref() == model.threads_continuation() {
+                    model.add_threads(page);
+                }
+            }
+            (Part::ThreadHead(place), Payload::ThreadHead(page)) => {
+                model.set_thread_forks(place, page.root, page.forks);
+            }
+            (Part::Pins(channel_id), Payload::Pins(messages)) => {
+                model.set_pins(channel_id, messages);
+            }
+            (Part::Notices, Payload::Notices(page)) => model.set_notices(page),
+            (Part::MoreNotices(before), Payload::Notices(page)) => {
+                model.add_notices(before, page);
+            }
             _ => return,
         }
         let reads = model.replay_reads(part, kept.iter().map(std::sync::Arc::as_ref));
         self.model_changed = true;
         self.messages.retries.retain(|(held, _, _)| *held != part);
-        if let Part::Messages(place, _) = part {
-            self.answer_opening(place, || Ok(()));
+        match part {
+            Part::Messages(place, _) => self.answer_opening(place, || Ok(())),
+            Part::Pins(channel_id) => self.answer_pins(channel_id, || Ok(())),
+            _ => {}
         }
         for read in reads {
             self.read(read);
         }
+        self.read_missing_named();
     }
 
     fn read_failed(&mut self, part: Part, error: ApiError) {
@@ -494,8 +662,12 @@ impl Client {
         // read of a summary has no last try.
         let again = transient(&error)
             && match part {
-                Part::Messages(..) => false,
-                Part::MessageState(_) => true,
+                Part::Messages(..) | Part::Pins(_) | Part::MoreThreads | Part::MoreNotices(_) => {
+                    false
+                }
+                // No reader can ask for these lists, and no event tells a change a
+                // second time.
+                Part::MessageState(_) | Part::UnreadThreads | Part::Notices => true,
                 _ => tries < READ_TRIES,
             };
         if again {
@@ -516,15 +688,32 @@ impl Client {
             }
             Part::Message(place, _) => {
                 // The change of this message is not in the state, and no event tells it
-                // again: the loaded messages are not current any more.
-                if let Some(timeline) = model.timeline_mut(place) {
-                    timeline.stale = true;
-                    timeline.failed = Some(ReadFailure::of(&error));
-                    self.model_changed = true;
-                }
+                // again: the loaded messages of its place and of the threads of its
+                // channel are not current any more.
+                self.model_changed |= model.mark_stale(place, ReadFailure::of(&error));
             }
-            Part::Messages(place, _) => {
-                if let Some(timeline) = model.timeline_mut(place) {
+            Part::Messages(place, reach) => {
+                // A page before or after the loaded messages starts at a message. The
+                // server answers `not_found` when that message is gone, also for a place
+                // that it still gives. The read around the position of that message
+                // names no message, and its answer decides.
+                let around = model
+                    .timeline(place)
+                    .filter(|_| gone)
+                    .and_then(|timeline| match reach {
+                        Reach::Older => timeline.messages.first(),
+                        Reach::Newer => timeline.messages.last(),
+                        Reach::Open | Reach::End | Reach::At(_) => None,
+                    })
+                    .map(|held| held.position);
+                if let Some(position) = around {
+                    self.read(Part::Messages(place, Reach::At(position)));
+                    return;
+                }
+                if gone {
+                    model.empty_timeline(place);
+                    self.model_changed = true;
+                } else if let Some(timeline) = model.timeline_mut(place) {
                     timeline.failed = Some(ReadFailure::of(&error));
                     self.model_changed = true;
                 }
@@ -538,7 +727,23 @@ impl Client {
                     .retain(|held| PlaceId::of(&held.place) != place);
                 self.model_changed |= model.message_states.len() != before;
             }
+            Part::Named(message_id) => {
+                self.model_changed |= model.settle_named(message_id, gone);
+            }
+            Part::Pins(channel_id) => {
+                model.set_pins_reading(channel_id, Some(ReadFailure::of(&error)));
+                self.model_changed = true;
+                let error = std::sync::Arc::new(error);
+                self.answer_pins(channel_id, || Err(LoadError::Request(error.clone())));
+            }
             _ => {}
+        }
+    }
+
+    fn answer_pins(&mut self, channel_id: ChannelId, answer: impl Fn() -> Result<(), LoadError>) {
+        let waiting = self.messages.opening_pins.remove(&channel_id);
+        for waiting in waiting.unwrap_or_default() {
+            self.answers.push((waiting, answer()));
         }
     }
 
@@ -553,6 +758,8 @@ impl Client {
     pub(super) fn carry_messages(&mut self, before: Option<&ServerModel>) {
         self.messages.queue.clear();
         self.messages.retries.clear();
+        self.messages.threads_wait = false;
+        self.messages.continued_threads = None;
         let wanted = self.messages.wanted_places();
         let Some(model) = &mut self.model else {
             return;
@@ -569,8 +776,23 @@ impl Client {
                 unseen.push(*place);
             }
         }
+        let mut pins: Vec<ChannelId> = self.messages.pins.keys().copied().collect();
+        let mut unpinned = Vec::new();
+        pins.retain(|channel_id| {
+            let held = model.channel(*channel_id).is_some();
+            if held {
+                model.open_pins(*channel_id);
+            } else {
+                unpinned.push(*channel_id);
+            }
+            held
+        });
         for place in unseen {
             self.answer_opening(place, || Err(LoadError::NotInState));
+        }
+        for channel_id in unpinned {
+            self.messages.pins.remove(&channel_id);
+            self.answer_pins(channel_id, || Err(LoadError::NotInState));
         }
         for place in &wanted {
             self.read(Part::Messages(*place, Reach::Open));
@@ -578,6 +800,32 @@ impl Client {
         if !wanted.is_empty() {
             self.read(Part::AttachmentLimits);
         }
+        for channel_id in pins {
+            self.read(Part::Pins(channel_id));
+        }
+        self.read_missing_named();
+        self.schedule_mute_ends();
+    }
+
+    /// Takes from the settings of the state the times at which the mute of a channel
+    /// ends. No event tells that end: the server decides it by its clock when it is asked
+    /// (ADR 0409), so the client reads the summary of the channel after that time.
+    fn schedule_mute_ends(&mut self) {
+        let Some(model) = &self.model else {
+            return;
+        };
+        let (clock, now) = (time::OffsetDateTime::now_utc(), Instant::now());
+        self.messages.mute_ends = model
+            .mute_ends(clock)
+            .into_iter()
+            .filter_map(|(channel_id, until)| {
+                // An end that has passed here while the server still says "muted" is
+                // asked for at once.
+                let wait = Duration::try_from(until - clock).unwrap_or_default();
+                let due = now.checked_add(wait)?.checked_add(MUTE_MARGIN)?;
+                Some((due, channel_id))
+            })
+            .collect();
     }
 
     /// Takes a command of a reader about messages.
@@ -589,14 +837,26 @@ impl Client {
                 if !self.messages.wants(place) || self.stale {
                     return;
                 }
-                if reach == Reach::End {
+                if let Reach::End | Reach::At(_) = reach {
                     if let Some(wanted) = self.messages.wanted.get_mut(&place) {
-                        wanted.anchor = None;
+                        wanted.anchor = match reach {
+                            Reach::At(position) => Some(position),
+                            _ => None,
+                        };
                     }
-                    // The pages before and after belong to what is replaced.
+                    // The pages before and after belong to what is replaced: their reads
+                    // end, and the timeline does not wait for them any more.
                     self.pending.retain(|pending| {
                         !matches!(pending.load, Load::Part(Part::Messages(of, _)) if of == place)
                     });
+                    if let Some(timeline) = self
+                        .model
+                        .as_mut()
+                        .and_then(|model| model.timeline_mut(place))
+                    {
+                        timeline.reading = crate::model::Reading::default();
+                        self.model_changed = true;
+                    }
                 }
                 self.read(Part::Messages(place, reach));
             }
@@ -613,11 +873,14 @@ impl Client {
                 }
             }
             Command::MarkRead { place, position } => {
-                let read = self
-                    .model
-                    .as_ref()
-                    .and_then(|model| model.message_state(place))
-                    .map_or(0, |state| state.last_read);
+                let read = self.model.as_ref().map_or(0, |model| match place {
+                    PlaceId::Thread { root_id, .. } => model
+                        .thread_state(root_id)
+                        .map_or(0, |state| state.last_read),
+                    PlaceId::Channel(_) | PlaceId::Direct(_) => model
+                        .message_state(place)
+                        .map_or(0, |state| state.last_read),
+                });
                 let mark = self.messages.marks.entry(place).or_default();
                 mark.settled = mark.settled.max(read);
                 mark.wanted = mark.wanted.max(position);
@@ -643,7 +906,87 @@ impl Client {
                     self.model_changed |= model.outbox.len() != before;
                 }
             }
+            Command::OpenPins { channel_id, reply } => self.open_pins(channel_id, reply),
+            Command::ReleasePins(channel_id) => self.release_pins(channel_id),
+            Command::MoreThreads => {
+                if !self.stale {
+                    self.read(Part::MoreThreads);
+                }
+            }
+            Command::MoreNotices => {
+                let last = self
+                    .model
+                    .as_ref()
+                    .filter(|model| model.notices_more && !self.stale)
+                    .and_then(|model| model.notices.last())
+                    .map(|last| last.id);
+                if let Some(last) = last {
+                    self.read(Part::MoreNotices(last));
+                }
+            }
             Command::LoadMembers { .. } | Command::ReleaseMembers(_) => {}
+        }
+    }
+
+    fn open_pins(&mut self, channel_id: ChannelId, reply: Reply) {
+        if self.target.is_none() {
+            let _ = reply.send(Err(LoadError::Off));
+            return;
+        }
+        let ready = match &mut self.model {
+            Some(model) if !self.stale => {
+                if model.channel(channel_id).is_none() {
+                    let _ = reply.send(Err(LoadError::NotInState));
+                    return;
+                }
+                model.open_pins(channel_id);
+                self.model_changed = true;
+                Some(
+                    model
+                        .pin_list(channel_id)
+                        .is_some_and(|list| list.messages.loaded().is_some()),
+                )
+            }
+            // The list is read when the state has arrived.
+            _ => None,
+        };
+        *self.messages.pins.entry(channel_id).or_default() += 1;
+        match ready {
+            Some(true) => self.answers.push((reply, Ok(()))),
+            Some(false) => {
+                self.messages
+                    .opening_pins
+                    .entry(channel_id)
+                    .or_default()
+                    .push(reply);
+                self.read(Part::Pins(channel_id));
+            }
+            None => self
+                .messages
+                .opening_pins
+                .entry(channel_id)
+                .or_default()
+                .push(reply),
+        }
+    }
+
+    fn release_pins(&mut self, channel_id: ChannelId) {
+        let Some(readers) = self.messages.pins.get_mut(&channel_id) else {
+            return;
+        };
+        *readers = readers.saturating_sub(1);
+        if *readers > 0 {
+            return;
+        }
+        self.messages.pins.remove(&channel_id);
+        self.messages.opening_pins.remove(&channel_id);
+        let part = Part::Pins(channel_id);
+        self.resume.retain(|held| *held != part);
+        self.pending
+            .retain(|pending| pending.load != Load::Part(part));
+        if let Some(model) = &mut self.model {
+            model.close_pins(channel_id);
+            self.model_changed = true;
         }
     }
 
@@ -693,7 +1036,9 @@ impl Client {
         }
         self.messages.wanted.remove(&place);
         self.messages.opening.remove(&place);
-        let of_place = |part: &Part| matches!(part, Part::Message(of, _) | Part::Messages(of, _) if *of == place);
+        // A read of one message stays: an open thread of the channel, or its pin list,
+        // can want the message still. The read is dropped at its start when nothing does.
+        let of_place = |part: &Part| matches!(part, Part::Messages(of, _) | Part::ThreadHead(of) if *of == place);
         self.messages.queue.retain(|part| !of_place(part));
         self.messages.retries.retain(|(part, _, _)| !of_place(part));
         self.resume.retain(|part| !of_place(part));
@@ -724,6 +1069,22 @@ impl Client {
             let far = now + Duration::from_secs(24 * 60 * 60);
             self.messages.retries.push((part, tries, far));
             self.read(part);
+        }
+        if self.messages.threads_wait && self.messages.threads_at.is_none_or(|at| at <= now) {
+            self.messages.threads_wait = false;
+            self.read(Part::UnreadThreads);
+        }
+        let mut ended = Vec::new();
+        self.messages.mute_ends.retain(|(due, channel_id)| {
+            if *due <= now {
+                ended.push(*channel_id);
+                false
+            } else {
+                true
+            }
+        });
+        for channel_id in ended {
+            self.read(Part::MessageState(PlaceId::Channel(channel_id)));
         }
         self.pump_message_reads();
         self.send_marks(now);
@@ -763,7 +1124,15 @@ impl Client {
                 (*place, mark.wanted, api.clone(), self.done.clone());
             let token = token.clone();
             let request = tokio::spawn(async move {
-                let result = api.mark_read(place, position).await;
+                let result = match place {
+                    PlaceId::Thread { root_id, .. } => api
+                        .mark_thread_read(root_id, position)
+                        .await
+                        .map(Marked::Thread),
+                    PlaceId::Channel(_) | PlaceId::Direct(_) => {
+                        api.mark_read(place, position).await.map(Marked::Place)
+                    }
+                };
                 let outcome = Outcome::Marked {
                     place,
                     position,
@@ -795,7 +1164,7 @@ impl Client {
         &mut self,
         place: PlaceId,
         position: u64,
-        result: Result<MessageState, ApiError>,
+        result: Result<Marked, ApiError>,
         current: bool,
     ) {
         let Some(mark) = self.messages.marks.get_mut(&place) else {
@@ -804,7 +1173,7 @@ impl Client {
         mark.flying = None;
         let overtaken = std::mem::take(&mut mark.overtaken);
         match result {
-            Ok(state) => {
+            Ok(Marked::Place(state)) => {
                 mark.settled = mark.settled.max(position);
                 if overtaken {
                     self.read(Part::MessageState(place));
@@ -814,6 +1183,24 @@ impl Client {
                     model.set_message_state(state);
                     self.model_changed = true;
                 }
+            }
+            Ok(Marked::Thread(state)) => {
+                mark.settled = mark.settled.max(position);
+                // The list can hold a reply or a read position of another device that
+                // arrived after the server made this answer. Then the answer is not
+                // applied, and the list is read.
+                let older = self.model.as_ref().is_some_and(|model| {
+                    model.thread_state(state.root_id).is_some_and(|held| {
+                        held.latest > state.latest || held.last_read > state.last_read
+                    })
+                });
+                if older {
+                    self.read(Part::UnreadThreads);
+                } else if let Some(model) = &mut self.model {
+                    self.model_changed |= model.set_thread_state(state);
+                }
+                // An unread mention of a thread counts in the summary of its channel.
+                self.read(Part::MessageState(place.container()));
             }
             Err(error) if error.category() == Some(ErrorCategory::SessionEnded) => {
                 if current {
@@ -849,9 +1236,10 @@ impl Client {
         let Some(model) = &mut self.model else {
             return;
         };
+        // A reply in a thread gets a position of its channel.
         pending.after = model
-            .message_state(pending.place)
-            .map_or(0, |state| state.latest);
+            .latest_known(pending.place)
+            .max(model.latest_known(pending.place.container()));
         self.messages.sends.insert(pending.id, Sending::default());
         model.outbox.push(std::sync::Arc::new(pending));
         self.model_changed = true;
@@ -1118,6 +1506,21 @@ async fn history_after(api: &ServerApi, place: PlaceId, after: u64) -> Result<Se
         messages,
         complete: false,
     })
+}
+
+/// The read position that a place opens at: the one of the summary of a place, or of the
+/// state of a thread, while something after it is unread.
+fn unread_from(model: &ServerModel, place: PlaceId) -> Option<u64> {
+    match place {
+        PlaceId::Thread { root_id, .. } => model
+            .thread_state(root_id)
+            .filter(|state| state.unread > 0 || state.mentions > 0)
+            .map(|state| state.last_read),
+        PlaceId::Channel(_) | PlaceId::Direct(_) => model
+            .message_state(place)
+            .filter(|state| state.unread > 0)
+            .map(|state| state.last_read),
+    }
 }
 
 #[cfg(test)]

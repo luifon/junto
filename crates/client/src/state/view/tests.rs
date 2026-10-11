@@ -27,7 +27,7 @@ use time::OffsetDateTime;
 
 use super::*;
 
-fn time() -> OffsetDateTime {
+pub(super) fn time() -> OffsetDateTime {
     OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap()
 }
 
@@ -70,18 +70,18 @@ fn participant(account_id: AccountId) -> CallParticipant {
 /// One server with the workspaces "Studio" (default) and "Lab". "Studio" has the text
 /// channels "general" and "random" and the voice channels "Daily" and "HR", which hides
 /// who is inside.
-struct Scene {
-    own: AccountId,
-    studio: WorkspaceId,
-    lab: WorkspaceId,
-    general: ChannelId,
-    random: ChannelId,
-    daily: ChannelId,
-    hidden: ChannelId,
-    snapshot: Snapshot,
+pub(super) struct Scene {
+    pub(super) own: AccountId,
+    pub(super) studio: WorkspaceId,
+    pub(super) lab: WorkspaceId,
+    pub(super) general: ChannelId,
+    pub(super) random: ChannelId,
+    pub(super) daily: ChannelId,
+    pub(super) hidden: ChannelId,
+    pub(super) snapshot: Snapshot,
 }
 
-fn scene() -> Scene {
+pub(super) fn scene() -> Scene {
     let own = AccountId::generate();
     let (studio, lab) = (WorkspaceId::generate(), WorkspaceId::generate());
     let general = channel(studio, ChannelKind::Text, "general", 0);
@@ -134,6 +134,11 @@ fn scene() -> Scene {
         call_invitations: Vec::new(),
         direct_mutes: Vec::new(),
         messages: Vec::new(),
+        threads: Vec::new(),
+        threads_more: false,
+        threads_next: None,
+        notifications: Vec::new(),
+        notification_settings: Vec::new(),
     };
     Scene {
         own,
@@ -148,7 +153,7 @@ fn scene() -> Scene {
 }
 
 impl Scene {
-    fn studio_mut(&mut self) -> &mut WorkspaceState {
+    pub(super) fn studio_mut(&mut self) -> &mut WorkspaceState {
         &mut self.snapshot.workspaces[1]
     }
 
@@ -175,7 +180,7 @@ impl Scene {
         calls.last_mut().unwrap().call.as_mut().unwrap()
     }
 
-    fn model(&self) -> ServerModel {
+    pub(super) fn model(&self) -> ServerModel {
         ServerModel::from_snapshot(self.snapshot.clone())
     }
 
@@ -188,7 +193,7 @@ impl Scene {
     }
 }
 
-fn logged_in(account_id: AccountId, recoveries: Vec<RecoveryNotice>) -> AccessState {
+pub(super) fn logged_in(account_id: AccountId, recoveries: Vec<RecoveryNotice>) -> AccessState {
     AccessState::LoggedIn {
         account_id,
         device_id: DeviceId::generate(),
@@ -198,7 +203,11 @@ fn logged_in(account_id: AccountId, recoveries: Vec<RecoveryNotice>) -> AccessSt
     }
 }
 
-fn server(name: &str, model: Option<ServerModel>, access: AccessState) -> ServerSnapshot {
+pub(super) fn server(
+    name: &str,
+    model: Option<ServerModel>,
+    access: AccessState,
+) -> ServerSnapshot {
     ServerSnapshot {
         id: ServerId::generate(),
         name: name.to_owned(),
@@ -292,6 +301,7 @@ fn the_first_server_its_default_workspace_and_its_first_text_channel_are_shown_a
             server: Some(servers[0].id),
             workspace: Some(scene.studio),
             channel: Some(scene.general),
+            ..Shown::default()
         }
     );
     assert_eq!(
@@ -1079,6 +1089,70 @@ mod calls {
         known.media.now = Some(time() - time::Duration::seconds(5));
         let early = derive(servers, &selected(&scene, daily), &known);
         assert_eq!(early.call.unwrap().elapsed, Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn the_chat_of_the_call_of_this_device_has_no_thread_and_its_threads_cannot_be_opened() {
+        use junto_client_core::model::Named;
+        use junto_client_core::protocol::message::{MessagePlace, ThreadState};
+
+        let mut scene = scene();
+        let (own, daily) = (scene.own, scene.daily);
+        scene.call(daily, vec![participant(own)]);
+        let mut model = scene.model();
+        let place = MessagePlace::Channel {
+            workspace_id: scene.studio,
+            channel_id: daily,
+        };
+        let root = super::super::panel_tests::message(place, 2, own, "Who takes notes?");
+        model.threads = vec![ThreadState {
+            root_id: root.id,
+            last_read: 2,
+            latest: 4,
+            unread: 2,
+            mentions: 0,
+        }];
+        model.named = vec![(root.id, Named::Read(Arc::new(root.clone())))];
+        let server = server("Acme Studio", Some(model), logged_in(own, Vec::new()));
+        let servers = std::slice::from_ref(&server);
+        let mut selection = selected(&scene, daily);
+        selection.thread = Some((server.id, daily, root.id));
+        let entry = |view: &ShellView| {
+            let workspace = view.workspace().unwrap();
+            let row = workspace
+                .sections
+                .iter()
+                .flat_map(|section| section.rows.iter())
+                .find(|row| row.id == daily)
+                .unwrap();
+            assert_eq!(row.threads.len(), 1);
+            row.threads[0].clone()
+        };
+
+        // Outside the call the thread of the voice channel is shown and can be opened.
+        let outside = derive(servers, &selection, &Known::default());
+        assert!(outside.workspace().unwrap().thread.is_some());
+        assert!(entry(&outside).available);
+
+        // In the call the side panel is the panel of the call: no thread and no pin list
+        // is shown, and the row of the thread says that it cannot be opened.
+        let known = in_call(active(target(&server, &scene, daily)));
+        let inside = derive(servers, &selection, &known);
+        let workspace = inside.workspace().unwrap();
+        assert!(workspace.call.is_some());
+        assert!(workspace.thread.is_none() && workspace.pins.is_none());
+        assert_eq!(inside.shown().thread, None);
+        assert!(!entry(&inside).available);
+        selection.thread = None;
+        selection.pins = Some((server.id, daily));
+        let inside = derive(servers, &selection, &known);
+        assert!(inside.workspace().unwrap().pins.is_none());
+
+        // Another channel is shown: a selection of the voice channel shows the call, so
+        // its thread still cannot be opened.
+        let general = scene.general;
+        let elsewhere = derive(servers, &selected(&scene, general), &known);
+        assert!(!entry(&elsewhere).available);
     }
 
     #[test]

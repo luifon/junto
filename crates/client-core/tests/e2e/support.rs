@@ -323,6 +323,7 @@ impl Device {
             longest_delay: Duration::from_secs(2),
             connections_per_minute: 120,
             send_again_after: Duration::from_secs(2),
+            threads_interval: Duration::from_millis(200),
             ..StreamPolicy::default()
         };
         Client::open(options).unwrap()

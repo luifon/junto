@@ -7,7 +7,8 @@ use junto_client_core::api::PageQuery;
 use junto_client_core::model::PlaceId;
 use junto_client_core::protocol::ids::{AccountId, AttachmentId, MessageId};
 use junto_client_core::protocol::message::{
-    AttachmentLimits, Block, Conversation, Document, Inline, Message, MessageState, SendMessage,
+    AttachmentLimits, Block, Conversation, Document, Inline, Message, MessagePlace, MessageState,
+    SendMessage,
 };
 use junto_client_core::transfers::{Transfers, UploadSource};
 use junto_client_core::{Client, ServerHandle};
@@ -149,7 +150,7 @@ fn parse(words: &[String], arguments: &Arguments) -> Result<Action, Failure> {
 
 /// The document of a text without formatting: one paragraph for each part that an empty
 /// line ends.
-fn plain(text: &str) -> Document {
+pub(crate) fn plain(text: &str) -> Document {
     let blocks = text
         .split("\n\n")
         .map(str::trim)
@@ -230,8 +231,20 @@ pub(crate) fn message_lines(message: &Message) -> Vec<String> {
     if message.permanent {
         marks.push_str("  permanent");
     }
+    if message.pinned {
+        marks.push_str("  pinned");
+    }
+    if message.files_removed_by_retention {
+        marks.push_str("  files removed by retention");
+    }
     if let Some(reply_to) = message.reply_to {
         marks.push_str(&format!("  reply to {reply_to}"));
+    }
+    if let Some(thread_root) = message.thread_root {
+        marks.push_str(&format!("  in thread {thread_root}"));
+    }
+    if message.reply_count > 0 {
+        marks.push_str(&format!("  thread replies {}", message.reply_count));
     }
     let mut lines = vec![format!(
         "message: {}  position {}  {}  {author}{marks}",
@@ -275,24 +288,35 @@ pub(crate) fn message_lines(message: &Message) -> Vec<String> {
     lines
 }
 
+/// A count of the server, which is exact up to 99 (ADR 0408).
+pub(crate) fn count(count: u64) -> String {
+    if count >= 100 {
+        "100 or more".to_owned()
+    } else {
+        count.to_string()
+    }
+}
+
 pub(crate) fn state_line(state: &MessageState) -> String {
-    let count = |count: u64| {
-        if count >= 100 {
-            "100 or more".to_owned()
-        } else {
-            count.to_string()
-        }
+    let place = match state.place {
+        MessagePlace::Channel { channel_id, .. } => format!("channel:{channel_id}"),
+        MessagePlace::Direct {
+            conversation_id, ..
+        } => format!("direct:{conversation_id}"),
     };
-    let place = match PlaceId::of(&state.place) {
-        PlaceId::Channel(channel_id) => format!("channel:{channel_id}"),
-        PlaceId::Direct(conversation_id) => format!("direct:{conversation_id}"),
+    let sign = match (state.muted, state.unread_sign) {
+        (true, _) => "muted",
+        (false, true) => "unread sign",
+        (false, false) => "no sign",
     };
     format!(
-        "messages: {place}  latest {}  read {}  unread {}  mentions {}",
+        "messages: {place}  latest {}  read {}  unread {}  mentions {}  {sign}  \
+         mentions that notify {}",
         state.latest,
         state.last_read,
         count(state.unread),
-        count(state.mentions)
+        count(state.mentions),
+        count(state.notification_mentions)
     )
 }
 

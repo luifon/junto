@@ -1307,6 +1307,100 @@ pub const PICTURE_LOADING: &str = "The picture arrives…";
 pub const PICTURE_FAILED: &str = "The picture could not be shown. You can download the file.";
 pub const OPENS_IN_BROWSER: &str = "Opens in your browser";
 
+// Threads, pins, permanent messages and direct conversations (ADR 0741).
+pub const THREAD: &str = "Thread";
+pub const CLOSE_THREAD: &str = "Close the thread";
+pub const REPLY_IN_THREAD: &str = "Reply in thread";
+pub const OPEN_THREAD: &str = "Open the thread";
+pub const SHOWN_IN_PANEL: &str = "Shown in panel";
+pub const THREAD_LOADING: &str = "Reading the thread…";
+pub const THREAD_GONE_TITLE: &str = "This thread does not exist any more";
+pub const THREAD_GONE: &str = "Its first message was deleted, or the channel is not open to you.";
+pub const THREAD_FAILED: &str = "The thread could not be read.";
+pub const NO_REPLIES: &str = "No replies yet. Write the first one.";
+pub const THREADS_OF_CHANNEL: &str = "Threads with something new";
+pub const THREAD_IN_CALL: &str = "This thread opens after you leave the call of its channel.";
+pub const FORK_THREAD: &str = "Fork thread into…";
+pub const FORK_COPIES: &str = "replies are copied to it";
+pub const FORK_TEXT: &str = "Text channel";
+pub const FORK_VOICE: &str = "Voice channel";
+pub const FORK_TITLE: &str = "Fork this thread into a channel";
+pub const FORK_ABOUT: &str = "The new channel gets a copy of the first message and of every \
+     reply, in the category and with the permissions of this channel. The thread stays and \
+     shows a link to the channel. A thread can be forked once.";
+pub const FORK_NAME: &str = "Name of the new channel";
+pub const FORK_CREATE: &str = "Create the channel";
+pub const FORK_SENDING: &str = "Creating the channel…";
+pub const FORK_NOT_ALLOWED: &str = "Your roles do not allow this. A fork needs \"manage channel\" in this channel and in \
+     its workspace.";
+pub const FORK_NEEDS_PERMISSION: &str = "A fork needs the permission \"manage channel\".";
+pub const FORK_EXISTS: &str = "This thread was forked already. A thread has one fork.";
+pub const FORK_THREAD_GONE: &str = "This thread does not exist any more.";
+pub const FORK_NAME_REFUSED: &str =
+    "The server does not take this name. A name has 1 to 64 characters.";
+pub const FORKED_INTO: &str = "Forked into";
+pub const PINS: &str = "Pins";
+pub const SHOW_PINS: &str = "Show the pinned messages";
+pub const CLOSE_PINS: &str = "Close the pinned messages";
+pub const PINS_LOADING: &str = "Reading the pinned messages…";
+pub const PINS_FAILED: &str = "The pinned messages could not be read.";
+pub const NO_PINS_TITLE: &str = "No pinned messages";
+pub const NO_PINS: &str = "A person with \"manage messages\" pins a message from its actions.";
+pub const PIN: &str = "Pin";
+pub const UNPIN: &str = "Unpin";
+pub const PINNED: &str = "Pinned";
+pub const PIN_LIMIT: &str = "This channel has 100 pinned messages. Unpin one first.";
+pub const PIN_NOT_ALLOWED: &str = "Your roles do not allow this. A pin needs \"manage messages\".";
+pub const GO_TO_MESSAGE: &str = "Go to message";
+pub const PERMANENT_MESSAGES: &str = "Permanent messages";
+pub const PERMANENT_ON: &str = "Permanent messages are on.";
+pub const PERMANENT_ABOUT: &str = " Nobody can edit a message in this channel. Only an \
+     administrator can delete one. Each deletion leaves a line here and an entry in the \
+     audit log.";
+pub const NO_EDIT_OR_DELETE: &str = "No edit or delete here";
+pub const PERMANENT_COMPOSER: &str = "Permanent messages: a sent message cannot be edited";
+pub const DIRECT_MESSAGES: &str = "Direct messages";
+pub const MESSAGE_PERSON: &str = "Message";
+pub const NO_CONTACT: &str =
+    "You cannot write to this person: you share no workspace with them on this server.";
+pub const CONVERSATION_CLOSED: &str = "You and this person share no workspace on this server any more. The messages are kept \
+     and are shown again when you share one.";
+pub const NO_DIRECT_MESSAGES: &str = "Write the first message of this conversation.";
+
+pub fn message_person(name: &str) -> String {
+    format!("Write a direct message to {name}")
+}
+
+/// The text of the field in which a person writes to another person.
+pub fn direct_placeholder(name: &str) -> String {
+    format!("Message {name}")
+}
+
+pub fn replies(count: u64) -> String {
+    if count == 1 {
+        "1 reply".to_owned()
+    } else {
+        format!("{count} replies")
+    }
+}
+
+pub fn last_reply(time: &str) -> String {
+    format!("Last reply {time}")
+}
+
+pub fn thread_of(channel: &str) -> String {
+    format!("Thread in #{channel}")
+}
+
+/// What a thread holds that the person has not read, as its sign says it.
+pub fn thread_unread(unread: u64, mentions: u64) -> String {
+    if mentions > 0 {
+        mention_badge(mentions)
+    } else {
+        format!("{} new", unread_count(unread))
+    }
+}
+
 /// The text of the field in which a person writes a message of a channel.
 pub fn message_placeholder(name: &str, voice: bool) -> String {
     if voice {

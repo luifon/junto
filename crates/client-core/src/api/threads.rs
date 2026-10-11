@@ -1,0 +1,118 @@
+//! The routes of threads, forks and pins (ADR 0409).
+
+use junto_protocol::ids::{ChannelId, MessageId};
+use junto_protocol::message::{
+    ForkThread, MarkRead, Message, SendMessage, ThreadPage, ThreadState, UnreadThreads,
+};
+use junto_protocol::structure::{Channel, ChannelKind};
+
+use super::client::read_json;
+use super::error::ApiError;
+use super::messages::PageQuery;
+use super::session::ServerApi;
+use super::transport::Method;
+
+fn thread_of(root_id: MessageId) -> String {
+    format!("/messages/{root_id}/thread")
+}
+
+impl ServerApi {
+    // Threads.
+
+    /// The root of a thread, one page of its replies in the order of their positions, and
+    /// the channels that the thread was forked into which the caller can read.
+    pub async fn thread(
+        &self,
+        root_id: MessageId,
+        page: &PageQuery,
+    ) -> Result<ThreadPage, ApiError> {
+        let response = self
+            .call(Method::Get, thread_of(root_id), page.pairs(), None)
+            .await?;
+        read_json(&response)
+    }
+
+    /// Sends a reply into a thread. As a send into a place, the call does not tell after a
+    /// lost answer whether the reply exists (ADR 0721).
+    pub async fn reply_in_thread(
+        &self,
+        root_id: MessageId,
+        message: &SendMessage,
+    ) -> Result<Message, ApiError> {
+        self.send(Method::Post, thread_of(root_id), message).await
+    }
+
+    /// Copies a thread into a new channel of the workspace of its channel. The caller
+    /// needs "manage channel" in the channel and in the workspace. A thread has one fork:
+    /// a second request answers with a conflict (ADR 0409).
+    pub async fn fork_thread(
+        &self,
+        root_id: MessageId,
+        name: &str,
+        kind: ChannelKind,
+    ) -> Result<Channel, ApiError> {
+        let body = ForkThread {
+            name: name.to_owned(),
+            kind,
+        };
+        self.send(Method::Post, format!("/messages/{root_id}/fork"), &body)
+            .await
+    }
+
+    /// The read position of the caller in a thread. The server holds one only for an
+    /// account that wrote in the thread or was mentioned in it; every other account gets
+    /// `not_found`.
+    pub async fn thread_state(&self, root_id: MessageId) -> Result<ThreadState, ApiError> {
+        self.get(format!("{}/read", thread_of(root_id))).await
+    }
+
+    /// Moves the read position of the caller in a thread forward.
+    pub async fn mark_thread_read(
+        &self,
+        root_id: MessageId,
+        position: u64,
+    ) -> Result<ThreadState, ApiError> {
+        let path = format!("{}/read", thread_of(root_id));
+        self.send(Method::Put, path, &MarkRead { position }).await
+    }
+
+    /// One page of the threads that hold something unread for the caller, the newest
+    /// first. `before` is the continuation of the page before.
+    pub async fn unread_threads(
+        &self,
+        before: Option<&str>,
+        limit: Option<u32>,
+    ) -> Result<UnreadThreads, ApiError> {
+        let mut query = Vec::new();
+        if let Some(before) = before {
+            query.push(("before", before.to_owned()));
+        }
+        if let Some(limit) = limit {
+            query.push(("limit", limit.to_string()));
+        }
+        let response = self
+            .call(Method::Get, "/threads/unread".to_owned(), query, None)
+            .await?;
+        read_json(&response)
+    }
+
+    // Pins.
+
+    /// The pinned messages of a channel as they are now, in the order in which they were
+    /// pinned.
+    pub async fn pins(&self, channel_id: ChannelId) -> Result<Vec<Message>, ApiError> {
+        self.get(format!("/channels/{channel_id}/pins")).await
+    }
+
+    /// Pins a message of a channel. The caller needs "manage messages". Pinning a pinned
+    /// message changes nothing.
+    pub async fn pin_message(&self, message_id: MessageId) -> Result<(), ApiError> {
+        self.act(Method::Put, format!("/messages/{message_id}/pin"))
+            .await
+    }
+
+    pub async fn unpin_message(&self, message_id: MessageId) -> Result<(), ApiError> {
+        self.act(Method::Delete, format!("/messages/{message_id}/pin"))
+            .await
+    }
+}
