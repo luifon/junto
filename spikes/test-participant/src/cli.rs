@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser)]
@@ -77,6 +79,18 @@ pub struct PublishArgs {
     /// Publish a screen-share audio track with a tone of this frequency in Hz.
     #[arg(long)]
     pub screen_audio_hz: Option<f64>,
+    /// Publish this WAV file (16-bit PCM, mono) as the microphone. Until the file starts,
+    /// the microphone carries its tone; after the file it is silent.
+    #[arg(long)]
+    pub mic_file: Option<PathBuf>,
+    /// Publish this WAV file (16-bit PCM, mono) as the share audio (needs --screen). Until
+    /// the file starts, the track carries the tone of --screen-audio-hz, or silence.
+    #[arg(long)]
+    pub screen_audio_file: Option<PathBuf>,
+    /// Start the files when the line `play` arrives on standard input. Without this
+    /// option a file starts with its track.
+    #[arg(long)]
+    pub play_on_stdin: bool,
     /// Start the screen share (video and audio) this many seconds after start.
     #[arg(long, default_value_t = 0.0)]
     pub screen_after: f64,

@@ -4,7 +4,7 @@
 
 Accepted, pending step 0
 
-Open: the public entry on port 443 with three server names and TURN over TLS was not run (`docs/step-0/README.md`, test 5, first check), and the capacity of a media host that also carries that entry and TURN was not measured (test 6). The recorder in the two-host form is tested (test 3).
+Open: the public entry on port 443 with three server names and TURN over TLS was not run on a public address (`docs/step-0/README.md`, test 5, first check), and the capacity of a media host that also carries that entry and TURN was not measured (test 6). The configuration of the entry selected each of the three names in a test with certificates that the entry signed itself, and both forms were started on one machine in that way (ADR 0015); a certificate from a public authority and a call over TURN were not run. The recorder in the two-host form is tested (test 3).
 
 ## Context
 
@@ -29,7 +29,7 @@ Redis:
 
 - Redis is part of the call path. It runs on the host of the LiveKit server, with a restart policy and a health check.
 - Redis requires a password. Its port is not published, or is published on the loopback address only. A rule of the host firewall does not protect a port that Docker publishes.
-- In the two-host form Redis also accepts connections on the address of the private link, and on no other address.
+- In the two-host form Redis is also reachable on the address of the private link, through a forwarder of the link container, and on no other address outside its host.
 
 Forms:
 
@@ -58,7 +58,8 @@ Media host:
 
 - The LiveKit server and Redis have a restart policy.
 - The media host sets the kernel limits for UDP receive and send buffers to the 5,000,000 bytes that LiveKit asks for. With the default limits the host counted UDP send-buffer errors under load.
-- The firewall opens the media ports for IPv4 and IPv6 and keeps the metrics port of LiveKit closed. With host networking that port listens on all addresses.
+- The firewall opens the media ports for IPv4 and IPv6. The metrics port of LiveKit is not configured; when it is, it listens on all addresses with host networking, and the firewall keeps it closed.
+- The Compose files, their networks, users, limits and secrets are in ADR 0015, and the images in ADR 0014.
 
 ## Consequences
 

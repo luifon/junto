@@ -1,0 +1,56 @@
+# The entry on port 443 (ADR 0004): three server names on one address. The connection of
+# the TURN name is ended here and passed to LiveKit as plain TCP (turn.external_tls); the
+# other two names are HTTP sites.
+{
+	admin off
+	email {$JUNTO_ACME_EMAIL}
+	# Empty in a deployment. "local_certs" in the test of this file: the entry then signs
+	# the certificates itself and asks no certificate authority.
+	{$JUNTO_ENTRY_CERTIFICATES}
+
+	# The address of a LiveKit signalling request carries a join token in its query.
+	log {
+		format filter {
+			wrap json
+			fields {
+				request>uri query {
+					replace access_token redacted
+					replace token redacted
+				}
+			}
+		}
+	}
+
+	servers :443 {
+		# HTTP/3 would open UDP port 443, which no part of the deployment needs.
+		protocols h1 h2
+		listener_wrappers {
+			layer4 {
+				@turn tls sni {$JUNTO_TURN_HOST}
+				route @turn {
+					tls
+					proxy {$JUNTO_ENTRY_TURN_UPSTREAM}
+				}
+			}
+			tls
+		}
+	}
+}
+
+{$JUNTO_SERVER_HOST} {
+	# Routes of the server that only the media server and the recorder call (ADR 0508,
+	# ADR 0615). They are not reachable from outside.
+	@inside path /internal /internal/* /recording-layout /recording-layout/*
+	respond @inside 404
+	reverse_proxy {$JUNTO_ENTRY_SERVER_UPSTREAM}
+}
+
+{$JUNTO_LIVEKIT_HOST} {
+	reverse_proxy {$JUNTO_ENTRY_LIVEKIT_UPSTREAM}
+}
+
+# This site exists for the certificate of the TURN name. A connection with that name is
+# passed on by the listener above and does not reach it.
+{$JUNTO_TURN_HOST} {
+	respond 404
+}

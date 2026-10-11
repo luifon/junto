@@ -41,6 +41,7 @@ Limits:
 Isolation:
 
 - The worker runs in a container with `--network none`, as a user that is not root, with a read-only file system. The model directory is mounted read-only. The job directory is the only writable mount.
+- In the Compose deployment the first process of the worker container is a loop that takes the jobs. It runs as root with three capabilities and runs the worker as the user above; the container mounts the recordings and a spool directory (ADR 0016).
 - There are two images from one definition: one for the CPU and one for NVIDIA GPUs. The worker image is the last stage of the definition, so a build without a target gives the worker image. The test tools are in a separate stage that is built only when it is named.
 - Only the command `models fetch` uses the network (ADR 0612). Its code is in one module, and a test fails when another module imports a network module.
 - The worker opens the directory of the job file, the audio root and the output directory when it reads the job file, before a model is loaded, and without following a link. It reaches the job file, every audio file and the transcript from those descriptors (ADR 0611).

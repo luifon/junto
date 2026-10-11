@@ -1,0 +1,6 @@
+# The Rust version of every build: developers with rustup, CI and the server image
+# (deploy/images/server/Dockerfile). tools/check-pins.sh compares them.
+[toolchain]
+channel = "1.98.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

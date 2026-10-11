@@ -1,0 +1,200 @@
+#!/bin/bash
+# The command that the server runs for one transcription job when the worker is another
+# container (ADR 0016). The server calls it as it calls the worker:
+#
+#   junto-transcribe-handover [options] run <job file> --out <transcript file> --audio-root <directory>
+#
+# It writes a request into the spool directory, which the worker container also mounts,
+# passes the log of the worker on to standard error, and ends with the exit code of the
+# worker. A stop signal becomes a cancel file. Exit code 75: no worker took the job, or the
+# spool could not be used.
+#
+# A request leaves the spool only after the loop of the worker container stated its end. A
+# request that was given up stays there with a cancel file, and a later hand-over removes it
+# when its end is stated.
+#
+# Two groups: the group of the spool directory is the group of that loop, which reads the
+# request and writes the log and the result. The group of the directory above the recording
+# is the group of the worker process, which reads the recording and writes into the
+# directory of its run. The worker process has no access to the spool.
+#
+# Options, before "run": --spool <directory>, --take-seconds <n>, --stop-seconds <n>,
+# --poll-seconds <n>.
+set -u
+umask 027
+
+spool=/var/lib/junto/spool
+take_seconds=60
+stop_seconds=5
+poll_seconds=0.5
+log_limit=1048576
+# The worker writes the result file. Only its first bytes are read.
+result_limit=4096
+unusable=75
+
+fail() {
+    echo "handover: $1" >&2
+    exit "${2:-2}"
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --spool | --take-seconds | --stop-seconds | --poll-seconds)
+            [ "$#" -ge 2 ] || fail "$1 needs a value"
+            case "$1" in
+                --spool) spool=$2 ;;
+                --take-seconds) take_seconds=$2 ;;
+                --stop-seconds) stop_seconds=$2 ;;
+                --poll-seconds) poll_seconds=$2 ;;
+            esac
+            shift 2
+            ;;
+        run)
+            shift
+            break
+            ;;
+        *) fail "unknown argument" ;;
+    esac
+done
+if [ "$#" -ne 5 ] || [ "$2" != "--out" ] || [ "$4" != "--audio-root" ]; then
+    fail "expected: run <job file> --out <transcript file> --audio-root <directory>"
+fi
+job=$1
+transcript=$3
+audio_root=$5
+for value in "$job" "$transcript" "$audio_root"; do
+    case "$value" in
+        *$'\n'*) fail "a path contains a line break" ;;
+        /*) ;;
+        *) fail "a path is not absolute" ;;
+    esac
+done
+case "$take_seconds$stop_seconds" in
+    '' | *[!0-9]*) fail "--take-seconds and --stop-seconds need a whole number" ;;
+esac
+run_directory=$(dirname -- "$job")
+if [ "$(dirname -- "$transcript")" != "$run_directory" ]; then
+    fail "the transcript is not in the directory of the job file"
+fi
+if [ -L "$spool" ] || [ ! -d "$spool" ]; then
+    fail "the spool directory does not exist" "$unusable"
+fi
+group=$(stat -c %g -- "$spool") || fail "the spool directory cannot be read" "$unusable"
+job_group=$(stat -c %g -- "$(dirname -- "$audio_root")") \
+    || fail "the directory of the recordings cannot be read" "$unusable"
+
+# The group of the worker reads the files of the recording and writes into the directory of
+# this run only. Links are not followed, and a file of another user is left as it is.
+own=$(id -u)
+if ! { find "$audio_root" -xdev -user "$own" ! -type l -exec chgrp -h -- "$job_group" {} + \
+    && find "$audio_root" -xdev -user "$own" ! -type l -exec chmod g=rX -- {} + \
+    && chmod 2770 -- "$run_directory"; }; then
+    fail "the files of the recording could not be prepared for the worker" "$unusable"
+fi
+
+exit_line() {
+    head -c "$result_limit" -- "$1" 2>/dev/null | grep -a -m 1 -E '^exit [0-9]{1,3}$'
+}
+
+was_taken() {
+    head -c "$result_limit" -- "$1" 2>/dev/null | grep -a -q -x taken
+}
+
+cancel() {
+    if [ ! -e "$1.cancel" ]; then
+        : > "$1.cancel"
+        chgrp -- "$group" "$1.cancel" && chmod 0640 -- "$1.cancel"
+    fi
+}
+
+# One job runs at a time (ADR 0607). Every other request is of a server process that no
+# longer waits: a finished one is removed, an unfinished one is cancelled and stays until
+# the loop stated its end.
+for other in "$spool"/*.request; do
+    [ -f "$other" ] || continue
+    other_base=${other%.request}
+    if [ -n "$(exit_line "$other_base.result")" ]; then
+        rm -f -- "$other_base.request" "$other_base.cancel" "$other_base.log" "$other_base.result"
+    else
+        cancel "$other_base"
+    fi
+done
+
+identifier="$(date +%s)-$$-${RANDOM}${RANDOM}"
+base="$spool/$identifier"
+pending="$spool/.$identifier.pending"
+
+# The loop of the worker container writes into the log and the result. It cannot create,
+# replace or remove a file of the spool, so the two files stay the regular files that are
+# created here.
+if ! { : > "$base.log" && : > "$base.result" \
+    && chgrp -- "$group" "$base.log" "$base.result" \
+    && chmod 0660 -- "$base.log" "$base.result" \
+    && printf '%s\n%s\n%s\n' "$job" "$transcript" "$audio_root" > "$pending" \
+    && chgrp -- "$group" "$pending" \
+    && chmod 0640 -- "$pending" \
+    && mv -- "$pending" "$base.request"; }; then
+    rm -f -- "$pending" "$base.log" "$base.result"
+    fail "the request could not be written to the spool" "$unusable"
+fi
+
+forwarded=0
+forward_log() {
+    local size
+    size=$(stat -c %s -- "$base.log" 2>/dev/null) || return 0
+    if [ "$size" -gt "$log_limit" ]; then
+        size=$log_limit
+    fi
+    if [ "$size" -gt "$forwarded" ]; then
+        tail -c "+$((forwarded + 1))" -- "$base.log" | head -c "$((size - forwarded))" >&2
+        forwarded=$size
+        if [ "$size" -eq "$log_limit" ]; then
+            printf '\nhandover: the log of the worker reached %s bytes; the rest is not passed on\n' "$log_limit" >&2
+        fi
+    fi
+}
+
+remove_request() {
+    rm -f -- "$base.request" "$base.cancel" "$base.log" "$base.result"
+}
+
+stopping=""
+stopped_at=""
+trap 'stopping=1' TERM INT HUP
+
+started=$SECONDS
+taken=""
+while :; do
+    forward_log
+    if [ "$(stat -c %s -- "$base.result" 2>/dev/null || echo 0)" -gt "$result_limit" ]; then
+        cancel "$base"
+        fail "the result file of the request is larger than a result can be" "$unusable"
+    fi
+    result=$(exit_line "$base.result")
+    if [ -n "$result" ]; then
+        forward_log
+        remove_request
+        if [ -n "$stopping" ]; then
+            exit 143
+        fi
+        exit "${result#exit }"
+    fi
+    if [ -n "$stopping" ]; then
+        cancel "$base"
+        [ -n "$stopped_at" ] || stopped_at=$SECONDS
+    fi
+    if [ -z "$taken" ] && was_taken "$base.result"; then
+        taken=1
+    fi
+    if [ -z "$taken" ]; then
+        # The request stays with its cancel file: a worker that takes it at this moment
+        # finds the cancel file, and the next hand-over removes the request.
+        if [ -n "$stopping" ] && [ "$((SECONDS - stopped_at))" -ge "$stop_seconds" ]; then
+            exit 143
+        elif [ -z "$stopping" ] && [ "$((SECONDS - started))" -ge "$take_seconds" ]; then
+            cancel "$base"
+            fail "no worker took the job within $take_seconds seconds; is the worker container running?" "$unusable"
+        fi
+    fi
+    sleep "$poll_seconds"
+done

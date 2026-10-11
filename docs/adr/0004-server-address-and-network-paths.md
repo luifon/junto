@@ -4,7 +4,7 @@
 
 Accepted, pending step 0
 
-Open: a call on a network that allows only TLS on port 443 was not run. The entry on port 443 with three server names and TURN over TLS exists as a written configuration and was not applied (`docs/step-0/README.md`, test 5, first check). The UDP path and the TCP fallback are tested.
+Open: a call on a network that allows only TLS on port 443 was not run. The entry on port 443 with three server names and TURN over TLS is the configuration of the deployment (ADR 0015). It selected each of the three names in tests with certificates that the entry signed itself, and was not applied on a public address (`docs/step-0/README.md`, test 5, first check). The UDP path and the TCP fallback are tested.
 
 ## Context
 
@@ -21,11 +21,13 @@ Step 0 measured the paths without TLS (`docs/step-0/README.md`, test 5): a call 
 - The media ports are open for IPv4 and IPv6. Clients used IPv6 for media when they had it.
 - Three services use port 443 on the public address: the server's HTTPS, LiveKit's signalling, and TURN over TLS.
 - Each of the three services has its own hostname. A router in front of them selects the service by server name.
+- The router obtains the certificates of the three names by ACME. For the requests of the certificate authority the public address also accepts TCP port 80, which otherwise answers with a redirect to HTTPS.
 
 ## Consequences
 
 - An operator needs a domain name, three hostnames and a valid certificate for each.
 - A server keeps its address when it moves to another host, because the address is a name.
-- The public host must run a router that selects by server name on port 443.
+- The public host must run a router that selects by server name on port 443. In the one-host form that host is the only host.
+- The firewall of the public address opens port 80 in addition to port 443 and the media ports.
 - A network that blocks UDP and the TCP media port, and allows only port 443, depends on TURN over TLS. That path is not tested, so the first version cannot yet state that a call works on such a network.
 - TURN relays media through the media host. The CPU cost of the relay was not measured (ADR 0003).
