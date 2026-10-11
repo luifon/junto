@@ -13,8 +13,8 @@ The desktop client is built with gpui (ADR 0701), which has its own executor and
 Crate:
 
 - The crate `junto-client-core` holds everything of the client that is not interface: the data directory, the device keys, the API client, the flows and the manager of servers. It has no dependency on gpui.
-- The binary `junto-cli` is in the same crate and uses only the public interface of the library. Its commands are: `servers`, `add`, `remove`, `status`, `claim`, `join`, `request`, `login`, `link`, `approve-link`, `link-offer`, `link-all`, `approve-all`, `devices`, `recoveries`, `acknowledge-recovery`, `account`, `invite`, `requests`, `approve-request` and `profile`.
-- Each command of `junto-cli` is one process. A command that logs in ends its session before it exits.
+- The binary `junto-cli` is in the same crate and uses only the public interface of the library. Its commands are: `servers`, `add`, `remove`, `status`, `claim`, `join`, `request`, `login`, `link`, `approve-link`, `link-offer`, `link-all`, `approve-all`, `devices`, `recoveries`, `acknowledge-recovery`, `account`, `invite`, `requests`, `approve-request`, `profile`, `state`, `watch` and `call` (ADR 0720).
+- Each command of `junto-cli` is one process. A command that logs in ends its session before it exits. `watch` is the one command that runs until it is stopped.
 - An owner code, an invite code, a link code and a link request are never accepted as arguments, because an argument is visible to other programs of the user and stays in the history of the shell. The tool reads them from standard input: one line when standard input is not a terminal, and a prompt with the echo off when it is. An option that names a code is refused.
 - On a terminal the tool turns the echo off first and shows the prompt after that, and restores the echo when the line was read or the read failed.
 - A line is read byte by byte into one buffer of a fixed size that is overwritten when it is dropped: 256 bytes for a code, and the size of a link text for an offer or a request. Nothing after the end of the line is read, and a longer line is an error. The text stays in such a buffer until a type of the protocol crate takes it. On Windows the bytes pass through the input buffer of the standard library.
@@ -44,12 +44,12 @@ Event stream attachment:
 
 - Each server has a connection level that the client derives: `off`, `background` or `selected` (ADR 0107).
   - `selected`: the device is logged in and the server is the selected one.
-  - `background`: the device is logged in, the server is not selected, and its connection mode is "always".
+  - `background`: the device is logged in, the server is not selected, and its connection mode is "always" or this device is in a call on it (ADR 0720).
   - `off`: every other case.
-- The event stream client implements one interface with one operation: the level of a server changed. With a level other than `off` it receives the address, the API version, the session token and the cursor that was stored last.
-- The client core calls it after a login, a logout, a renewal of the session, a ban, a removal, a change of the selected server and a change of the connection mode.
-- The stream client stores its position through one operation of the server object, which writes the cursor to the server book (ADR 0710).
-- Nothing else of the event stream is defined by this record.
+- The event stream client (ADR 0718) is a part of this crate. The client core tells it through one operation that the level or the session of a server changed. With a level other than `off` it receives the address, the API version, the session token, and the account and the device of the session.
+- The client core calls it after a login, a logout, a renewal of the session, a ban, a removal, a change of the selected server, a change of the connection mode, and when this device enters or leaves a call.
+- The stream client tells the client core two things: that the server no longer accepts a session, and whether this device is in a call.
+- The cursor is not written to the server book (ADR 0718).
 
 ## Consequences
 
@@ -58,7 +58,6 @@ Event stream attachment:
 - A script gives a code to `junto-cli` through a pipe. A code cannot be passed on the command line.
 - The console code that turns the echo off on Windows is unsafe code of the tool and is not executed by any test yet (ADR 0711).
 - The library runs inside gpui without a tokio runtime in the interface code, at the cost of two more threads.
-- The event stream client needs no access to keys or to the book. It gets a token and a cursor and reports a cursor.
+- The event stream client needs no access to keys or to the book. It gets a token and reports an ended session; the client core logs in.
 - A session token that is renewed reaches the stream client as a new call with the same level.
-- The call for a server in a call (ADR 0107: a server sends every event of a call that the client is in) is not covered by the three levels and is added with the call features.
 - An interface that shows many servers reads all their states after each notification. The notification does not say what changed.

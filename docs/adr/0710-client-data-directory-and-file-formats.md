@@ -41,7 +41,7 @@ Server book:
 - A server identifier is saved once and an address is saved once. A second address that reports a saved identifier is refused.
 - The identifier, the generation and the address of an entry never change. A server at a new address is a new entry.
 - The name is stored without control characters and with at most 64 characters. The logo path is stored only when it is a path on the same server. At most 16 API versions are stored.
-- The event cursor is text of at most 512 bytes that the client stores and does not read.
+- The event cursor is text of at most 512 bytes. The client keeps what a file holds there and writes no cursor: it stores no state of a server that a cursor could continue (ADR 0718).
 
 Not stored:
 

@@ -20,6 +20,7 @@ junto-protocol = { workspace = true }
 base64 = { workspace = true }
 bytes = "1"
 ed25519-dalek = { workspace = true }
+futures-util = { workspace = true }
 getrandom = { workspace = true }
 # The 0.12 line with the trust store of the operating system (ADR 0714).
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots"] }
@@ -29,6 +30,8 @@ sha2 = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }
+# The frames of the event stream. The HTTP library makes the upgrade request (ADR 0718).
+tokio-tungstenite = { workspace = true }
 tracing = { workspace = true }
 url = "2"
 zeroize = "1"

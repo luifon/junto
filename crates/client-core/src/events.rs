@@ -1,13 +1,10 @@
-//! Where the event stream of a server attaches (ADR 0107).
-//!
-//! The stream client is not part of this crate yet. This module fixes what it gets from
-//! the client core: the level that each server should have, what it needs to connect, and
-//! the cursor that it stores through `ServerHandle::store_cursor`.
+//! The connection level of each server, and what the client core gives the event stream
+//! client of a server (ADR 0107, ADR 0715).
 
-use junto_protocol::ids::ServerId;
+use junto_protocol::ids::{AccountId, DeviceId, ServerId};
 
 use crate::address::ServerAddress;
-use crate::book::EventCursor;
+use crate::manager::Server;
 use crate::secret::SecretToken;
 use crate::version::ApiVersion;
 
@@ -15,7 +12,7 @@ use crate::version::ApiVersion;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ConnectionLevel {
     /// No connection: the device is not logged in, or the server has the mode "connect
-    /// only when selected" and is not selected.
+    /// only when selected", is not selected, and this device is in no call on it.
     #[default]
     Off,
     /// Direct messages, mentions, call invites and control events.
@@ -24,19 +21,22 @@ pub enum ConnectionLevel {
     Selected,
 }
 
-/// What a stream needs to connect to one server.
+/// What a stream needs to connect to one server. The state that the stream keeps belongs
+/// to `account_id`; `device_id` tells whether a call of the account is on this device.
 #[derive(Debug, Clone)]
-pub struct StreamTarget {
-    pub address: ServerAddress,
-    pub api_version: ApiVersion,
-    pub token: SecretToken,
-    /// The cursor that was stored last, to continue after it.
-    pub cursor: Option<EventCursor>,
+pub(crate) struct StreamTarget {
+    pub(crate) server_id: ServerId,
+    pub(crate) address: ServerAddress,
+    pub(crate) api_version: ApiVersion,
+    pub(crate) token: SecretToken,
+    pub(crate) account_id: AccountId,
+    pub(crate) device_id: DeviceId,
 }
 
 /// The event streams of all servers. The client core calls it when the level of a server
-/// changes: after a login, a logout, a ban, a removal, a selection or a change of the
-/// connection mode. `target` is present when the level is not [`ConnectionLevel::Off`].
-pub trait EventStreams: Send + Sync + 'static {
-    fn set_level(&self, server_id: ServerId, level: ConnectionLevel, target: Option<StreamTarget>);
+/// or its session changes: after a login, a logout, a renewal of the session, a ban, a
+/// removal, a selection, a change of the connection mode, and when this device enters or
+/// leaves a call. `target` is present when the level is not [`ConnectionLevel::Off`].
+pub(crate) trait EventStreams: Send + Sync + 'static {
+    fn set_level(&self, server: &Server, level: ConnectionLevel, target: Option<StreamTarget>);
 }

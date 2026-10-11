@@ -1209,8 +1209,11 @@ struct Recorder {
 }
 
 impl EventStreams for Recorder {
-    fn set_level(&self, server_id: ServerId, level: ConnectionLevel, target: Option<StreamTarget>) {
-        self.calls.lock().unwrap().push((server_id, level, target));
+    fn set_level(&self, server: &Server, level: ConnectionLevel, target: Option<StreamTarget>) {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((server.id(), level, target));
     }
 }
 
@@ -1226,7 +1229,7 @@ impl Recorder {
 }
 
 #[tokio::test(start_paused = true)]
-async fn the_event_streams_learn_the_level_of_each_server_and_get_the_stored_cursor() {
+async fn the_event_streams_learn_the_level_of_each_server_and_get_its_session() {
     use ConnectionLevel::{Background, Off, Selected};
     let network = Arc::new(Network::default());
     let server = network.host("acme");
@@ -1248,9 +1251,7 @@ async fn the_event_streams_learn_the_level_of_each_server_and_get_the_stored_cur
     assert_eq!(recorder.levels(), [Background, Selected, Off]);
     handle.set_connection_mode(ConnectionMode::Always).unwrap();
 
-    handle
-        .store_cursor(EventCursor::new("cursor-17").unwrap())
-        .unwrap();
+    let account_id = handle.account().unwrap();
     server.end_sessions();
     handle.api().own_account().await.unwrap();
     {
@@ -1259,26 +1260,58 @@ async fn the_event_streams_learn_the_level_of_each_server_and_get_the_stored_cur
         let (server_id, level, target) = &calls[4];
         let target = target.as_ref().unwrap();
         assert_eq!((*server_id, *level), (handle.id(), Background));
-        assert_eq!(target.cursor.as_ref().unwrap().as_str(), "cursor-17");
+        assert_eq!(target.server_id, handle.id());
+        assert_eq!(target.account_id, account_id);
         assert_eq!(target.api_version.number(), 1);
         assert_eq!(target.address.as_str(), "https://acme.example.test");
-        let first_token = calls[0].2.as_ref().unwrap().token.expose().to_owned();
-        assert_ne!(target.token.expose(), first_token);
+        let first = calls[0].2.as_ref().unwrap();
+        assert_eq!(first.device_id, target.device_id);
+        assert_ne!(target.token.expose(), first.token.expose());
     }
 
     handle.dispatch(AccessAction::LogOut).await.unwrap();
     assert_eq!(recorder.levels().last(), Some(&Off));
+}
+
+#[tokio::test(start_paused = true)]
+async fn ending_a_session_waits_for_a_renewal_and_ends_the_session_that_it_made() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle.dispatch(claim()).await.unwrap();
+    assert_eq!(server.session_count(), 1);
+
+    // The server ended the session, and the login of the renewal waits for its answer.
+    server.end_sessions();
+    network.suspend_path("acme", "/auth/sessions");
+    let api = handle.api();
+    let request = tokio::spawn(async move { api.own_account().await });
+    while handle.access().in_progress != Some(ActionKind::LogIn) {
+        tokio::task::yield_now().await;
+    }
     assert_eq!(
-        device
-            .reopened(&network)
-            .servers()
-            .remove(0)
-            .entry()
-            .last_cursor
-            .unwrap()
-            .as_str(),
-        "cursor-17"
+        handle.dispatch(AccessAction::LogOut).await,
+        Err(FlowError::Busy)
     );
+    let ending = tokio::spawn(handle.end_session());
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+    assert!(!ending.is_finished());
+
+    network.resume("acme");
+    ending.await.unwrap().unwrap();
+    let _ = request.await.unwrap();
+    assert_eq!(server.session_count(), 0);
+    assert!(matches!(
+        handle.access().state,
+        AccessState::LoggedOut { .. }
+    ));
+    // Without a session nothing is sent.
+    let sent = server.seen().len();
+    handle.end_session().await.unwrap();
+    assert_eq!(server.seen().len(), sent);
 }
 
 #[tokio::test(start_paused = true)]

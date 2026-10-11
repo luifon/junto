@@ -1,6 +1,7 @@
 //! `junto-cli`: operates Junto servers from a terminal with the client library and nothing
 //! else.
 
+mod live;
 mod secret_input;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -73,6 +74,43 @@ commands:
   approve-request <id>         approve a join request
   profile                      show or set the local profile preset
                                [--name <name>] [--avatar <file>] [--no-avatar]
+  state                        connect the event stream of the server and show the state
+                               that it gives: workspaces, channels, calls, invitations
+  watch                        show the state and then every event of the server, until
+                               the line `quit` on standard input or an interrupt
+                               [--seconds <n>]
+  call <action> [arguments]    send one request of the call routes
+
+actions of call:
+  show [<channel>]             the call of a voice channel, or the call of this account
+  join <channel>               ask for a place in the call of a voice channel
+  leave
+  state <muted yes|no> <deafened yes|no>
+  share <application|system|none>      report a screen share and its sound
+  unshare
+  hand <up|down>
+  speaking <yes|no>
+  settings <channel> [--limit <n> | --no-limit] [--hide <yes|no>]
+  lock <channel>, unlock <channel>
+  meeting <channel> <on|off>
+  ask <channel>                ask to enter a locked or full voice channel
+  answer <request> <accept|deny>
+  cancel-request <request>
+  invite <channel> <account>
+  accept <invitation>, refuse <invitation>, cancel-invitation <invitation>
+  move <channel> <account> <to channel>
+  join-move <move>, fail-move <move>
+  block-microphone, unblock-microphone, block-sound, unblock-sound, disconnect
+                               each with <channel> <account>
+  direct <account>             ask for a place in the direct-message call with an account
+  refuse-direct <account>
+  mute-direct <account> [--hours <n>], unmute-direct <account>
+
+An action that joins a call prints the token for the media server only with --show-token.
+A place in a call belongs to the session that asked for it, and every command ends its
+session, so a place that `call` takes ends with the command. `watch` takes the same actions
+as lines on standard input, without the word `call`, and sends them with its own session,
+which lasts until the watch ends.
 
 Commands that work on one server take --server <identifier, address or name>. It can be
 left out while one server is saved. --name can be left out when the profile preset has a
@@ -95,8 +133,19 @@ const VALUE_OPTIONS: &[&str] = &[
     "workspace",
     "avatar",
     "save-avatar",
+    "seconds",
+    "limit",
+    "hide",
+    "hours",
 ];
-const FLAGS: &[&str] = &["when-selected", "wait", "yes", "no-avatar"];
+const FLAGS: &[&str] = &[
+    "when-selected",
+    "wait",
+    "yes",
+    "no-avatar",
+    "no-limit",
+    "show-token",
+];
 const WAIT_INTERVAL: Duration = Duration::from_secs(5);
 
 enum Failure {
@@ -404,6 +453,9 @@ async fn run(arguments: Arguments) -> Result<(), Failure> {
             println!("request {}: {:?}", status.id, status.state);
             Ok(())
         }
+        "state" => live::state(&client, &arguments).await,
+        "watch" => live::watch(&client, &arguments).await,
+        "call" => live::call(&client, &arguments).await,
         other => Err(usage(format!("unknown command {other}"))),
     }
 }
@@ -717,12 +769,11 @@ fn all_notices(client: &Client) {
     }
 }
 
-/// A command is one process, so it ends the session that it started.
+/// A command is one process, so it ends the session that it started, also one that a
+/// login of this moment creates.
 async fn end_session(server: &ServerHandle) {
     notices(server);
-    if matches!(server.access().state, AccessState::LoggedIn { .. }) {
-        let _ = server.dispatch(AccessAction::LogOut).await;
-    }
+    let _ = server.end_session().await;
 }
 
 async fn wait_or_show(server: &ServerHandle, arguments: &Arguments) -> Result<(), Failure> {

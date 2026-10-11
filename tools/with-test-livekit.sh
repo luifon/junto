@@ -7,6 +7,10 @@
 # JUNTO_TEST_LIVEKIT_PORT (signalling and API, TCP), JUNTO_TEST_LIVEKIT_TCP_PORT and
 # JUNTO_TEST_LIVEKIT_UDP_PORT when the defaults are taken. The server sends its notifications
 # to JUNTO_TEST_WEBHOOK_ADDRESS on the machine that runs the tests.
+#
+# The container is named by JUNTO_TEST_LIVEKIT_CONTAINER (default junto-dev-livekit). Two
+# checkouts on one machine run their tests at the same time when each sets another name and
+# other ports.
 set -eu
 
 if [ "$#" -eq 0 ]; then
@@ -14,7 +18,7 @@ if [ "$#" -eq 0 ]; then
     exit 2
 fi
 
-name=junto-dev-livekit
+name="${JUNTO_TEST_LIVEKIT_CONTAINER:-junto-dev-livekit}"
 image="${JUNTO_TEST_LIVEKIT_IMAGE:-livekit/livekit-server:v1.13.9}"
 port="${JUNTO_TEST_LIVEKIT_PORT:-17880}"
 tcp_port="${JUNTO_TEST_LIVEKIT_TCP_PORT:-17881}"

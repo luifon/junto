@@ -129,7 +129,7 @@ impl ServerApi {
         Self { authority }
     }
 
-    async fn call(
+    pub(super) async fn call(
         &self,
         method: Method,
         path: String,
@@ -146,11 +146,11 @@ impl ServerApi {
             .await
     }
 
-    async fn get<R: DeserializeOwned>(&self, path: String) -> Result<R, ApiError> {
+    pub(super) async fn get<R: DeserializeOwned>(&self, path: String) -> Result<R, ApiError> {
         read_json(&self.call(Method::Get, path, Vec::new(), None).await?)
     }
 
-    async fn send<B: Serialize, R: DeserializeOwned>(
+    pub(super) async fn send<B: Serialize, R: DeserializeOwned>(
         &self,
         method: Method,
         path: String,
@@ -160,7 +160,7 @@ impl ServerApi {
         read_json(&self.call(method, path, Vec::new(), body).await?)
     }
 
-    async fn act(&self, method: Method, path: String) -> Result<(), ApiError> {
+    pub(super) async fn act(&self, method: Method, path: String) -> Result<(), ApiError> {
         self.call(method, path, Vec::new(), None).await.map(|_| ())
     }
 

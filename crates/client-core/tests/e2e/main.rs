@@ -3,7 +3,10 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod calls_live;
+mod stream;
 mod support;
+mod tool_live;
 
 use std::path::Path;
 use std::process::Command;

@@ -5,11 +5,11 @@
 use std::future::Future;
 use std::io;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use junto_protocol::error::ErrorCode;
-use junto_protocol::ids::{AccountId, RecoveryId, ServerId};
+use junto_protocol::ids::{AccountId, DeviceId, RecoveryId, ServerId};
 use junto_protocol::invite::JoinRequestState;
 use junto_protocol::keys::PublicKey;
 use time::OffsetDateTime;
@@ -22,8 +22,7 @@ use crate::api::{
     ReqwestTransport, RetryPolicy, ServerApi, Transport, TransportError, server_info,
 };
 use crate::book::{
-    BookError, ConnectionMode, EntryKey, EventCursor, Membership, ProfileSync, ServerBook,
-    ServerEntry,
+    BookError, ConnectionMode, EntryKey, Membership, ProfileSync, ServerBook, ServerEntry,
 };
 use crate::events::{ConnectionLevel, EventStreams, StreamTarget};
 use crate::flow::access::{
@@ -38,11 +37,15 @@ use crate::flow::link_all::{
 use crate::flow::machine::lock;
 use crate::flow::{FlowError, FlowView};
 use crate::keys::{self, DeviceKey, FileKeyStore, KeyStore, KeyStoreError};
+use crate::live::{LiveServer, Shared};
 use crate::paths::DataDir;
 use crate::profile::ProfileStore;
 use crate::runtime::Runtime;
 use crate::secret::SecretToken;
 use crate::storage::StorageError;
+use crate::stream::{
+    Desired, Environment, Host, ReqwestStreamTransport, StreamPolicy, StreamTransport, Streams,
+};
 use crate::version::{ApiVersion, Incompatibility, SupportedVersions};
 
 /// How a client is opened. Every part except the data directory has a default.
@@ -53,6 +56,10 @@ pub struct ClientOptions {
     pub versions: SupportedVersions,
     pub retry: RetryPolicy,
     pub runtime: Option<Runtime>,
+    /// What carries the connections of the event stream. The default is made when the
+    /// streams start.
+    pub stream_transport: Option<Arc<dyn StreamTransport>>,
+    pub stream: StreamPolicy,
 }
 
 impl ClientOptions {
@@ -64,6 +71,8 @@ impl ClientOptions {
             versions: SupportedVersions::THIS_BUILD,
             retry: RetryPolicy::default(),
             runtime: None,
+            stream_transport: None,
+            stream: StreamPolicy::default(),
         }
     }
 }
@@ -106,6 +115,8 @@ pub(crate) struct Core {
     pub(crate) versions: SupportedVersions,
     pub(crate) policy: RetryPolicy,
     pub(crate) runtime: Runtime,
+    stream_transport: Option<Arc<dyn StreamTransport>>,
+    stream_policy: StreamPolicy,
     /// Runs between the snapshot and the write of a save. Only tests set it, to fix the
     /// order of two saves.
     #[cfg(test)]
@@ -171,6 +182,8 @@ impl Client {
             versions: options.versions,
             policy: options.retry,
             runtime,
+            stream_transport: options.stream_transport,
+            stream_policy: options.stream,
             #[cfg(test)]
             before_write: Mutex::new(None),
             selected: Mutex::new(None),
@@ -295,9 +308,40 @@ impl Client {
         *lock(&self.inner.core.selected)
     }
 
+    /// Starts the event streams: from now on every saved server has the connection that
+    /// its level asks for (ADR 0107), and [`ServerHandle::live`] gives its state. A second
+    /// call changes nothing.
+    pub fn start_event_streams(&self) -> Result<(), TransportError> {
+        let core = &self.inner.core;
+        {
+            let mut streams = lock(&core.streams);
+            if streams.is_some() {
+                return Ok(());
+            }
+            let sockets = match &core.stream_transport {
+                Some(sockets) => sockets.clone(),
+                None => Arc::new(ReqwestStreamTransport::new()?),
+            };
+            let environment = Environment {
+                transport: core.transport.clone(),
+                sockets,
+                retry: core.policy,
+                policy: core.stream_policy,
+            };
+            *streams = Some(Arc::new(Streams::new(environment, core.runtime.clone())));
+        }
+        self.announce_levels();
+        Ok(())
+    }
+
     /// Attaches the event streams and tells them the present level of every server.
-    pub fn attach_event_streams(&self, streams: Arc<dyn EventStreams>) {
+    #[cfg(test)]
+    pub(crate) fn attach_event_streams(&self, streams: Arc<dyn EventStreams>) {
         *lock(&self.inner.core.streams) = Some(streams);
+        self.announce_levels();
+    }
+
+    fn announce_levels(&self) {
         for handle in self.servers() {
             handle.server.forget_announcement();
             handle.server.announce_level();
@@ -371,6 +415,7 @@ impl Changes {
 struct Held {
     token: SecretToken,
     account_id: AccountId,
+    device_id: DeviceId,
 }
 
 struct ServerState {
@@ -389,6 +434,8 @@ struct ServerState {
     /// acknowledgement.
     acknowledged: Vec<RecoveryId>,
     announced: Option<(ConnectionLevel, Option<SecretToken>)>,
+    /// The account is in a call with this device, as the event stream tells it.
+    in_call: bool,
     /// The membership or the profile state in memory is not in the book yet: a write
     /// failed. It is cleared only by a write that succeeded.
     unsaved: bool,
@@ -396,6 +443,10 @@ struct ServerState {
 }
 
 pub(crate) struct Server {
+    /// This object, for the tasks that must not keep it alive.
+    this: Weak<Server>,
+    /// What the event stream client of the server and its readers share.
+    live: Arc<Shared>,
     id: ServerId,
     /// The entry of the book that this object was made from.
     key: EntryKey,
@@ -464,6 +515,26 @@ impl ServerHandle {
                 let _ = server.apply_profile(applying).await;
             }
             result
+        });
+        async move { work.await? }
+    }
+
+    /// Logs out, after an action or a renewal of the session that runs now has ended.
+    /// `dispatch` refuses a second action while one runs (ADR 0712); a program that ends
+    /// uses this, so that a session that the running action creates is ended too. Without
+    /// a session nothing is sent.
+    pub fn end_session(
+        &self,
+    ) -> impl Future<Output = Result<(), FlowError>> + Send + 'static + use<> {
+        let handle = self.clone();
+        let work = self.server.core.runtime.run(async move {
+            loop {
+                match handle.dispatch(AccessAction::LogOut).await {
+                    Err(FlowError::Busy) => drop(handle.server.gate.lock().await),
+                    Err(FlowError::NotAvailable) => return Ok(()),
+                    result => return result,
+                }
+            }
         });
         async move { work.await? }
     }
@@ -616,15 +687,13 @@ impl ServerHandle {
         Ok(())
     }
 
-    /// Stores the position of this device in the event stream of the server.
-    pub fn store_cursor(&self, cursor: EventCursor) -> Result<(), BookError> {
-        let stored = cursor.clone();
-        self.server
-            .core
-            .book
-            .update(self.server.key, |entry| entry.last_cursor = Some(cursor))?;
-        lock(&self.server.state).entry.last_cursor = Some(stored);
-        Ok(())
+    /// The state of the server as the event stream keeps it, and its changes
+    /// (ADR 0719). Without a call of [`Client::start_event_streams`] the state stays
+    /// absent.
+    pub fn live(&self) -> LiveServer {
+        LiveServer {
+            shared: self.server.live.clone(),
+        }
     }
 
     /// The level that the event stream of this server should have now.
@@ -703,6 +772,7 @@ fn held_of(probe: &Probe) -> Option<Held> {
         Probe::LoggedIn(session) => Some(Held {
             token: session.token.clone(),
             account_id: session.account_id,
+            device_id: session.device_id,
         }),
         Probe::UnknownDevice | Probe::Banned => None,
     }
@@ -743,7 +813,9 @@ impl From<KeyFault> for FlowError {
 
 impl Server {
     fn new(core: Arc<Core>, entry: ServerEntry) -> Arc<Self> {
-        Arc::new(Self {
+        Arc::new_cyclic(|this| Self {
+            this: this.clone(),
+            live: Shared::new(),
             id: entry.server_id,
             key: entry.key(),
             address: entry.address.clone(),
@@ -759,6 +831,7 @@ impl Server {
                 preset_owner: 0,
                 acknowledged: Vec::new(),
                 announced: None,
+                in_call: false,
                 unsaved: false,
                 retired: false,
             }),
@@ -774,8 +847,13 @@ impl Server {
             state.retired = true;
             state.session = None;
             state.api = None;
+            state.announced = Some((ConnectionLevel::Off, None));
         }
-        self.announce_level();
+        // The streams are told in every case, so that the task of this server ends.
+        let streams = lock(&self.core.streams).clone();
+        if let Some(streams) = streams {
+            streams.set_level(self, ConnectionLevel::Off, None);
+        }
     }
 
     fn membership(&self) -> Membership {
@@ -788,18 +866,22 @@ impl Server {
         let (Some(api), Some(held), false) = (&state.api, &state.session, state.retired) else {
             return (ConnectionLevel::Off, None);
         };
+        // A call goes on while another server is shown (ADR 0107), so the server of a
+        // call keeps a connection in every connection mode.
         let level = if selected == Some(self.id) {
             ConnectionLevel::Selected
-        } else if state.entry.connection_mode == ConnectionMode::Always {
+        } else if state.entry.connection_mode == ConnectionMode::Always || state.in_call {
             ConnectionLevel::Background
         } else {
             return (ConnectionLevel::Off, None);
         };
         let target = StreamTarget {
+            server_id: self.id,
             address: state.entry.address.clone(),
             api_version: api.version(),
             token: held.token.clone(),
-            cursor: state.entry.last_cursor.clone(),
+            account_id: held.account_id,
+            device_id: held.device_id,
         };
         (level, Some(target))
     }
@@ -826,7 +908,12 @@ impl Server {
             }
             state.announced = Some(now);
         }
-        streams.set_level(self.id, level, target);
+        streams.set_level(self, level, target);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn id(&self) -> ServerId {
+        self.id
     }
 
     async fn dispatch(self: Arc<Self>, action: AccessAction) -> Result<(), FlowError> {
@@ -1636,6 +1723,43 @@ impl Server {
         }
         self.core.notify();
         sync
+    }
+}
+
+/// The server object as its event stream client reaches it.
+struct StreamHost(Weak<Server>);
+
+impl Host for StreamHost {
+    /// Logs in again with the device key, once (ADR 0712). The result reaches the stream
+    /// client as another session, or as the level `off`.
+    fn session_ended(&self, token: &SecretToken) {
+        let Some(server) = self.0.upgrade() else {
+            return;
+        };
+        let token = token.clone();
+        let runtime = server.core.runtime.clone();
+        drop(runtime.run(async move {
+            let _ = server.renew(&token).await;
+        }));
+    }
+
+    fn in_call(&self, in_call: bool) {
+        let Some(server) = self.0.upgrade() else {
+            return;
+        };
+        if std::mem::replace(&mut lock(&server.state).in_call, in_call) == in_call {
+            return;
+        }
+        server.announce_level();
+        server.core.notify();
+    }
+}
+
+impl EventStreams for Streams {
+    fn set_level(&self, server: &Server, level: ConnectionLevel, target: Option<StreamTarget>) {
+        let host = || Arc::new(StreamHost(server.this.clone())) as Arc<dyn Host>;
+        let gone = lock(&server.state).retired;
+        self.set(&server.live, host, Desired { level, target }, gone);
     }
 }
 

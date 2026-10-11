@@ -15,7 +15,7 @@ use crate::secret::{SecretBytes, SecretToken};
 /// The largest response body that the client reads.
 pub const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Longer than the 30 seconds after which the server ends a request (ADR 0008).
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(40);
 const LONGEST_RETRY_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
@@ -195,40 +195,44 @@ impl Transport for ReqwestTransport {
                     .header(reqwest::header::CONTENT_TYPE, body.media_type)
                     .body(shared_body(&body.bytes));
             }
-            let mut response = builder.send().await.map_err(failure)?;
-            let status = response.status().as_u16();
-            let retry_after = response
-                .headers()
-                .get(reqwest::header::RETRY_AFTER)
-                .and_then(|value| value.to_str().ok())
-                .and_then(parse_retry_after);
-            let too_large = || {
-                TransportError::new(
-                    TransportErrorKind::TooLarge,
-                    format!("more than {MAX_RESPONSE_BYTES} bytes"),
-                )
-            };
-            if response
-                .content_length()
-                .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
-            {
-                return Err(too_large());
-            }
-            let expected = response.content_length().unwrap_or(0) as usize;
-            let mut body = SecretBytes::with_capacity(expected.min(MAX_RESPONSE_BYTES));
-            while let Some(chunk) = response.chunk().await.map_err(failure)? {
-                if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
-                    return Err(too_large());
-                }
-                body.extend(&chunk);
-            }
-            Ok(HttpResponse {
-                status,
-                retry_after,
-                body,
-            })
+            read(builder.send().await.map_err(failure)?).await
         })
     }
+}
+
+/// Reads a response up to the largest body that the client accepts.
+pub(crate) async fn read(mut response: reqwest::Response) -> Result<HttpResponse, TransportError> {
+    let status = response.status().as_u16();
+    let retry_after = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_retry_after);
+    let too_large = || {
+        TransportError::new(
+            TransportErrorKind::TooLarge,
+            format!("more than {MAX_RESPONSE_BYTES} bytes"),
+        )
+    };
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
+    {
+        return Err(too_large());
+    }
+    let expected = response.content_length().unwrap_or(0) as usize;
+    let mut body = SecretBytes::with_capacity(expected.min(MAX_RESPONSE_BYTES));
+    while let Some(chunk) = response.chunk().await.map_err(failure)? {
+        if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
+            return Err(too_large());
+        }
+        body.extend(&chunk);
+    }
+    Ok(HttpResponse {
+        status,
+        retry_after,
+        body,
+    })
 }
 
 /// The body of a request as the HTTP library takes it: the buffer of the request itself,
@@ -246,7 +250,7 @@ fn shared_body(body: &Arc<SecretBytes>) -> bytes::Bytes {
     bytes::Bytes::from_owner(Shared(body.clone()))
 }
 
-fn failure(error: reqwest::Error) -> TransportError {
+pub(crate) fn failure(error: reqwest::Error) -> TransportError {
     let kind = if error.is_connect() {
         TransportErrorKind::Connect
     } else if error.is_timeout() {

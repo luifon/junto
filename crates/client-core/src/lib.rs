@@ -10,12 +10,15 @@ pub mod book;
 pub mod events;
 pub mod flow;
 pub mod keys;
+pub mod live;
 pub mod manager;
+pub mod model;
 pub mod paths;
 pub mod profile;
 pub mod runtime;
 pub mod secret;
 pub mod storage;
+pub mod stream;
 pub mod version;
 
 pub use junto_protocol as protocol;

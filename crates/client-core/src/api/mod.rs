@@ -1,11 +1,12 @@
 //! The client of the public API of one server (ADR 0201, ADR 0205).
 
+mod calls;
 mod client;
-mod error;
+pub(crate) mod error;
 pub(crate) mod proof;
 mod retry;
 pub(crate) mod session;
-mod transport;
+pub(crate) mod transport;
 
 #[cfg(test)]
 pub(crate) mod testing;
