@@ -121,6 +121,16 @@ pub struct Message {
     pub deleted: bool,
     pub attachments: Vec<Attachment>,
     pub reactions: Vec<Reaction>,
+    #[serde(default)]
+    pub thread_root: Option<MessageId>,
+    #[serde(default)]
+    pub reply_count: u64,
+    #[serde(default)]
+    pub last_reply: Option<MessageId>,
+    #[serde(default)]
+    pub pinned: bool,
+    #[serde(default)]
+    pub files_removed_by_retention: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -166,6 +176,12 @@ pub struct MessageState {
     pub unread: u64,
     /// Exact through 99; 100 means 100 or more unread mentions.
     pub mentions: u64,
+    #[serde(default)]
+    pub unread_sign: bool,
+    #[serde(default)]
+    pub notification_mentions: u64,
+    #[serde(default)]
+    pub muted: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -224,4 +240,40 @@ pub struct Upload {
 pub struct AttachmentLimits {
     pub bytes_per_file: u64,
     pub files_per_message: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ForkThread {
+    pub name: String,
+    pub kind: crate::structure::ChannelKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ThreadPage {
+    pub root: Message,
+    pub replies: MessagePage,
+    pub forks: Vec<ChannelId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ThreadState {
+    pub root_id: MessageId,
+    pub last_read: u64,
+    pub latest: u64,
+    pub unread: u64,
+    pub mentions: u64,
+}
+
+/// One page of threads with unread replies or mentions, newest first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct UnreadThreads {
+    pub threads: Vec<ThreadState>,
+    pub more: bool,
+    /// Opaque continuation for the next unread-thread page.
+    pub next: Option<String>,
 }

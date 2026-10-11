@@ -225,6 +225,27 @@ fn decide(
     let Some(audience) = &candidate.audience else {
         return Ok(Decision::Unsendable);
     };
+    if let Audience::Notification {
+        message_id,
+        notice_id,
+    } = audience
+        && (!standing.notifications.contains_key(message_id)
+            || !standing.notification_notices.contains_key(notice_id)
+            || (level == Level::Background && !standing.notification_notices[notice_id].0))
+    {
+        return Ok(Decision::Hidden);
+    }
+    let alert = match audience {
+        Audience::Notification { notice_id, .. } => standing
+            .notification_notices
+            .get(notice_id)
+            .is_some_and(|(_, alert)| *alert),
+        Audience::Mention { .. } => true,
+        _ => matches!(candidate.event, Some(Event::CallInvited { .. })),
+    };
+    if standing.quiet && alert {
+        return Ok(Decision::Hidden);
+    }
     let wanted = candidate.class.is_none_or(|class| class.reaches(level))
         || (in_call.is_some() && audience.call_key() == in_call);
     let recipient = Recipient {
@@ -340,7 +361,7 @@ pub async fn subscribe(
                     event: None,
                 })
                 .collect();
-            let standing = Standing::load(connection, &access, &candidates).await?;
+            let standing = Standing::load(connection, &access, &candidates, app.now()).await?;
             for candidate in candidates {
                 let decision = decide(&access, &standing, level, in_call, candidate)?;
                 if !matches!(decision, Decision::Hidden) {
@@ -446,7 +467,7 @@ pub async fn next_batch(
                 },
             )
             .collect();
-        let standing = Standing::load(connection, &access, &candidates).await?;
+        let standing = Standing::load(connection, &access, &candidates, app.now()).await?;
 
         let mut deliveries = Vec::new();
         let mut skipped = false;
@@ -478,11 +499,15 @@ pub async fn next_batch(
 /// The standing of one account in the workspaces and channels that a batch names, read in
 /// the transaction of the batch.
 struct Standing {
+    quiet: bool,
     workspaces: HashMap<WorkspaceId, WorkspaceStanding>,
     fellows: HashSet<AccountId>,
     contacts: HashMap<AccountId, junto_authz::Contact>,
     mentioned: HashSet<junto_protocol::ids::MessageId>,
     mention_notices: HashSet<Uuid>,
+    notification_notices: HashMap<Uuid, (bool, bool)>,
+    notifications:
+        HashMap<junto_protocol::ids::MessageId, junto_protocol::discovery::NotificationKind>,
 }
 
 impl Standing {
@@ -490,7 +515,53 @@ impl Standing {
         connection: &mut PgConnection,
         access: &Access,
         candidates: &[Candidate],
+        now: OffsetDateTime,
     ) -> ApiResult<Self> {
+        let notification_events: Vec<_> = candidates
+            .iter()
+            .filter_map(|candidate| match &candidate.audience {
+                Some(Audience::Notification { notice_id, .. }) => Some(*notice_id),
+                _ => None,
+            })
+            .collect();
+        let notification_notices: HashMap<Uuid, (bool, bool)> = if notification_events.is_empty() {
+            HashMap::new()
+        } else {
+            let rows: Vec<(Uuid, bool, bool)> = sqlx::query_as("select event_id,background,alert from notification_receivers where event_id=any($1) and account_id=$2")
+                .bind(notification_events)
+                .bind(access.account_id)
+                .fetch_all(&mut *connection)
+                .await?;
+            rows.into_iter()
+                .map(|(id, background, alert)| (id, (background, alert)))
+                .collect()
+        };
+        let notification_ids: Vec<_> = candidates
+            .iter()
+            .filter_map(|candidate| match &candidate.audience {
+                Some(Audience::Notification {
+                    message_id,
+                    notice_id,
+                }) if notification_notices.contains_key(notice_id) => Some(*message_id),
+                _ => None,
+            })
+            .collect();
+        let notifications = if notification_ids.is_empty() {
+            HashMap::new()
+        } else {
+            crate::messages::notifications::visible(
+                connection,
+                access,
+                now,
+                Some(&notification_ids),
+                None,
+                notification_ids.len() as i64,
+            )
+            .await?
+            .into_iter()
+            .map(|notice| (notice.message_id, notice.kind))
+            .collect()
+        };
         let notice_ids: Vec<_> = candidates
             .iter()
             .filter_map(|candidate| match &candidate.audience {
@@ -499,7 +570,12 @@ impl Standing {
             })
             .collect();
         let mention_notices = sqlx::query_scalar("select event_id from message_mention_receivers where event_id=any($1) and account_id=$2")
-            .bind(notice_ids).bind(access.account_id).fetch_all(&mut *connection).await?.into_iter().collect();
+            .bind(notice_ids)
+            .bind(access.account_id)
+            .fetch_all(&mut *connection)
+            .await?
+            .into_iter()
+            .collect();
         let ids: Vec<junto_protocol::ids::MessageId> = candidates
             .iter()
             .filter_map(|c| match c.audience.as_ref() {
@@ -509,7 +585,7 @@ impl Standing {
             .collect();
         let mut mentioned = HashSet::new();
         for id in ids {
-            if crate::messages::is_mentioned(connection, access.account_id, id).await? {
+            if crate::messages::is_mentioned(connection, access.account_id, id, now).await? {
                 mentioned.insert(id);
             }
         }
@@ -604,11 +680,20 @@ impl Standing {
             );
         }
         Ok(Self {
+            quiet: candidates.iter().any(|candidate| {
+                matches!(
+                    candidate.audience,
+                    Some(Audience::Mention { .. } | Audience::Notification { .. })
+                ) || matches!(candidate.event, Some(Event::CallInvited { .. }))
+            }) && crate::messages::notifications::quiet(connection, access.account_id, now)
+                .await?,
             workspaces,
             fellows,
             contacts,
             mentioned,
             mention_notices,
+            notification_notices,
+            notifications,
         })
     }
 }

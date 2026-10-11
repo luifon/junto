@@ -1267,7 +1267,7 @@ pub async fn remove(
     connection: &mut PgConnection,
     now: OffsetDateTime,
     recording: &RecordingRow,
-    by: AccountId,
+    by: Option<AccountId>,
 ) -> ApiResult<()> {
     let call_runs = call_runs(&mut *connection, recording.call_id).await?;
     let event = Event::RecordingRemoved {
@@ -1327,7 +1327,7 @@ pub async fn remove(
     let entry = AuditEvent::RecordingRemoved {
         recording_id: recording.id,
     };
-    audit::record(connection, now, Some(by), recording.about(), &entry).await?;
+    audit::record(connection, now, by, recording.about(), &entry).await?;
     sqlx::query("delete from recordings where id = $1")
         .bind(recording.id)
         .execute(&mut *connection)

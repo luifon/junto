@@ -1122,6 +1122,38 @@
       ],
       "type": "object"
     },
+    "notification_changed": {
+      "properties": {
+        "message_id": {
+          "$ref": "#/components/schemas/MessageId"
+        },
+        "type": {
+          "enum": [
+            "notification_changed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "message_id",
+        "type"
+      ],
+      "type": "object"
+    },
+    "notification_settings_changed": {
+      "properties": {
+        "type": {
+          "enum": [
+            "notification_settings_changed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
     "own_call_changed": {
       "description": "The call that the account of the recipient is in has changed. An event that names a\nvoice channel reaches the account only while it can see that channel; the event of a\nleave names no place.",
       "properties": {
@@ -1277,6 +1309,30 @@
       ],
       "type": "object"
     },
+    "retention_changed": {
+      "properties": {
+        "type": {
+          "enum": [
+            "retention_changed"
+          ],
+          "type": "string"
+        },
+        "workspace_id": {
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/WorkspaceId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
     "server_role_created": {
       "properties": {
         "role": {
@@ -1309,6 +1365,30 @@
       },
       "required": [
         "role",
+        "type"
+      ],
+      "type": "object"
+    },
+    "thread_read": {
+      "properties": {
+        "position": {
+          "format": "int64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "root_id": {
+          "$ref": "#/components/schemas/MessageId"
+        },
+        "type": {
+          "enum": [
+            "thread_read"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "root_id",
+        "position",
         "type"
       ],
       "type": "object"
@@ -3665,6 +3745,86 @@
               "message_id",
               "position",
               "deleted",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "message_id": {
+                "$ref": "#/components/schemas/MessageId"
+              },
+              "type": {
+                "enum": [
+                  "notification_changed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "message_id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "notification_settings_changed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "retention_changed"
+                ],
+                "type": "string"
+              },
+              "workspace_id": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/WorkspaceId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "position": {
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "root_id": {
+                "$ref": "#/components/schemas/MessageId"
+              },
+              "type": {
+                "enum": [
+                  "thread_read"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "root_id",
+              "position",
               "type"
             ],
             "type": "object"

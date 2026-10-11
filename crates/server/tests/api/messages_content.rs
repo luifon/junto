@@ -114,6 +114,9 @@ async fn role_and_everyone_mentions_reach_readers_once_and_never_the_author_or_h
         assert!(
             matches!(reader_stream.event().await.1,Event::MessageMentioned{message_id,..} if message_id==sent.id)
         );
+        assert!(
+            matches!(reader_stream.event().await.1,Event::NotificationChanged{message_id} if message_id==sent.id)
+        );
         server
             .put(
                 &owner,
@@ -165,6 +168,9 @@ async fn an_edit_notifies_only_the_newly_mentioned_account() {
         first_stream.event().await.1,
         Event::MessageMentioned { .. }
     ));
+    assert!(
+        matches!(first_stream.event().await.1,Event::NotificationChanged{message_id} if message_id==sent.id)
+    );
     server
         .put(
             &owner,
@@ -175,6 +181,9 @@ async fn an_edit_notifies_only_the_newly_mentioned_account() {
         .ok::<Message>(StatusCode::OK);
     assert!(
         matches!(second_stream.event().await.1,Event::MessageMentioned{message_id,..} if message_id==sent.id)
+    );
+    assert!(
+        matches!(second_stream.event().await.1,Event::NotificationChanged{message_id} if message_id==sent.id)
     );
     assert!(server.traffic(&first, &mut first_stream).await.is_empty());
 }

@@ -32,11 +32,16 @@ pub mod internal;
 pub mod invites;
 pub mod messages;
 pub mod moderation;
+pub mod notifications;
+pub mod pins;
 pub mod recordings;
+pub mod retention;
+pub mod search;
 pub mod server_info;
 pub mod server_roles;
 pub mod snapshot;
 pub mod stream;
+pub mod threads;
 pub mod transcripts;
 pub mod workspace_roles;
 pub mod workspaces;
@@ -93,6 +98,26 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::with_openapi(ApiDocument::openapi())
         .routes(routes!(server_info::get_server_info))
         .routes(routes!(health::get_health))
+        .routes(routes!(threads::history, threads::reply))
+        .routes(routes!(threads::fork))
+        .routes(routes!(threads::read_state, threads::mark_read))
+        .routes(routes!(threads::unread))
+        .routes(routes!(pins::list))
+        .routes(routes!(pins::pin, pins::unpin))
+        .routes(routes!(search::search))
+        .routes(routes!(
+            notifications::get_settings,
+            notifications::set_settings
+        ))
+        .routes(routes!(
+            notifications::get_default,
+            notifications::set_default
+        ))
+        .routes(routes!(notifications::list))
+        .routes(routes!(notifications::mark_read))
+        .routes(routes!(retention::get_workspace, retention::set_workspace))
+        .routes(routes!(retention::get_direct, retention::set_direct))
+        .routes(routes!(retention::get_recording, retention::set_recording))
         .routes(routes!(attachments::start_upload))
         .routes(routes!(attachments::get_limits, attachments::set_limits))
         .routes(routes!(attachments::get_upload, attachments::cancel_upload))

@@ -67,16 +67,19 @@ impl Class {
             | Event::CallAccessEnded {}
             | Event::DirectMuteSet { .. }
             | Event::DirectMuteRemoved { .. }
+            | Event::ThreadRead { .. }
             | Event::MessageRead { .. }
+            | Event::NotificationSettingsChanged { .. }
             | Event::AttachmentLimitsChanged { .. } => Self::Control,
             Event::ConversationOpened { .. } => Self::DirectMessage,
-            Event::MessageMentioned { .. } => Self::Mention,
+            Event::MessageMentioned { .. } | Event::NotificationChanged { .. } => Self::Mention,
             Event::CallInvited { .. } | Event::CallInvitationResolved { .. } => Self::CallInvite,
             Event::MessageChanged { place, .. } => match place {
                 junto_protocol::message::MessagePlace::Direct { .. } => Self::DirectMessage,
                 _ => Self::General,
             },
-            Event::AccountAdded { .. }
+            Event::RetentionChanged { .. }
+            | Event::AccountAdded { .. }
             | Event::AccountProfileUpdated { .. }
             | Event::AccountStatusChanged { .. }
             | Event::AccountServerRolesChanged { .. }
@@ -227,6 +230,10 @@ pub enum Audience {
         high_account_id: AccountId,
     },
     ActiveAccounts,
+    Notification {
+        message_id: junto_protocol::ids::MessageId,
+        notice_id: uuid::Uuid,
+    },
     SystemMessage {
         workspace_id: WorkspaceId,
         channel_id: ChannelId,
@@ -432,7 +439,8 @@ impl Audience {
             | Self::Channel { workspace_id, .. }
             | Self::DeletedChannel { workspace_id, .. }
             | Self::Call { workspace_id, .. } => Some(*workspace_id),
-            Self::ActiveAccounts
+            Self::Notification { .. }
+            | Self::ActiveAccounts
             | Self::Account { .. }
             | Self::AccountSeeing { .. }
             | Self::AccountViewers { .. }
@@ -500,7 +508,14 @@ impl Audience {
                 notice_id: None,
             }),
             Event::MessageChanged { place, .. } => Some(of_call(&message_call_place(*place), None)),
-            Event::MessageRead { .. } => None,
+            Event::ThreadRead { .. }
+            | Event::MessageRead { .. }
+            | Event::NotificationChanged { .. }
+            | Event::NotificationSettingsChanged { .. } => None,
+            Event::RetentionChanged { workspace_id } => match workspace_id {
+                Some(id) => workspace(*id),
+                None => permission(ServerPermission::Administrator),
+            },
             Event::DeviceAdded { .. }
             | Event::DeviceRenamed { .. }
             | Event::DeviceRemoved { .. }
@@ -587,6 +602,13 @@ impl Audience {
     pub fn fits(&self, event: &Event) -> bool {
         match (event, self) {
             (
+                Event::NotificationChanged { message_id },
+                Self::Notification {
+                    message_id: subject,
+                    ..
+                },
+            ) => message_id == subject,
+            (
                 Event::MessageMentioned {
                     workspace_id,
                     channel_id,
@@ -625,6 +647,10 @@ impl Audience {
                 Self::Account { .. },
             ) => true,
             (
+                Event::NotificationSettingsChanged { .. },
+                Self::Account { .. } | Self::ActiveAccounts,
+            ) => true,
+            (
                 Event::PermissionsChanged { .. }
                 | Event::CallAccessEnded {}
                 | Event::DirectMuteSet { .. }
@@ -632,7 +658,8 @@ impl Audience {
                 Self::Account { .. },
             ) => true,
             (
-                Event::MessageRead { .. }
+                Event::ThreadRead { .. }
+                | Event::MessageRead { .. }
                 | Event::CallInvited { .. }
                 | Event::CallMoveRequested { .. }
                 | Event::OwnCallChanged { call: Some(_), .. },
@@ -818,7 +845,7 @@ pub fn receives<'a>(
     };
     let workspace = audience.workspace_id().and_then(standing);
     match audience {
-        Audience::ActiveAccounts => allows(Request::OwnAccount),
+        Audience::Notification { .. } | Audience::ActiveAccounts => allows(Request::OwnAccount),
         Audience::Account { account_id } => {
             *account_id == recipient.account_id && allows(Request::OwnAccount)
         }

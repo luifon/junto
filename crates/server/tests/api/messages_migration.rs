@@ -49,6 +49,21 @@ async fn migration_backfills_notes_and_audit_actions_in_order_without_private_de
     .await
     .unwrap();
     let count:i64=sqlx::query_scalar("select (select count(*) from call_notes where channel_id=$1)+(select count(*) from audit_entries where channel_id=$1 and action not in ('recording_started','recording_stopped'))").bind(scene.voice.id).fetch_one(&server.db).await.unwrap();
+    // Rebuild the old schema, assert its backfill, then upgrade it before using current APIs.
+    sqlx::raw_sql(
+        "drop table thread_forks,message_pins,notification_settings,workspace_notification_defaults,
+             notifications,workspace_file_retention,direct_message_retention,notification_receivers,
+             thread_reads,workspace_recording_retention,notification_trim_accounts cascade;
+         drop function message_search_text(jsonb),notification_policy(uuid,uuid,timestamptz),
+             notification_mentioned(uuid,uuid,boolean,boolean),notification_quiet(uuid,timestamptz),
+             update_thread_summary(),initialize_thread_read(),refresh_mention_head(),queue_notification_trim(),
+             transcript_search_original(),transcript_search_correction() cascade;
+         alter table transcript_lines drop column search_text cascade;
+         drop index recordings_retention;",
+    )
+    .execute(&server.db)
+    .await
+    .unwrap();
     sqlx::raw_sql("drop table message_mention_accounts,message_mention_receivers,attachment_limits,attachment_chunks,attachments,message_mentions_notified,message_mentions,message_reactions,message_reads,messages,message_places,conversations,call_message_members,call_message_privacy cascade; drop function remember_call_message_member(),refresh_call_message_privacy(uuid),remember_hidden_call_members() cascade;")
         .execute(&server.db).await.unwrap();
     sqlx::raw_sql(include_str!("../../migrations/0007_messages.sql"))
@@ -79,6 +94,12 @@ async fn migration_backfills_notes_and_audit_actions_in_order_without_private_de
         assert_eq!(row.2, Some(call_id));
         assert_eq!(row.3["action"], kind);
     }
+    sqlx::raw_sql(include_str!(
+        "../../migrations/0008_threads_notifications_search.sql"
+    ))
+    .execute(&server.db)
+    .await
+    .unwrap();
     let outside: MessagePage = server
         .get(
             &scene.owner,

@@ -29,7 +29,8 @@ pub async fn mentions(
     id: MessageId,
     doc: &Document,
     now: OffsetDateTime,
-) -> ApiResult<()> {
+) -> ApiResult<Vec<AccountId>> {
+    let mut added_recipients = Vec::new();
     let previous: Option<Json<Document>> =
         sqlx::query_scalar("select document from messages where id=$1")
             .bind(id)
@@ -153,8 +154,7 @@ pub async fn mentions(
                 }
             }
         }
-        sqlx::query(
-            "insert into message_mentions(message_id,account_id,role_id,everyone,place_id,position,recipients)
+        sqlx::query("insert into message_mentions(message_id,account_id,role_id,everyone,place_id,position,recipients)
              select $1,$2,$3,$4,m.place_id,m.position,coalesce($5::uuid[],array(
                  select a.id from accounts a where a.status='active' and (
                      a.id=$2 or exists(
@@ -166,32 +166,44 @@ pub async fn mentions(
                                or exists(select 1 from workspace_roles wr where wr.id=$3 and wr.is_everyone))
                      )
                  )
-             )) from messages m where m.id=$1",
-        )
-        .bind(id)
-        .bind(account)
-        .bind(role)
-        .bind(everyone)
-        .bind(old_recipients.iter()
-            .find(|old| (old.account_id, old.role_id, old.everyone) == (account, role, everyone))
-            .map(|old| &old.recipients))
-        .execute(&mut *connection)
-        .await?;
+             )) from messages m where m.id=$1")
+            .bind(id)
+            .bind(account)
+            .bind(role)
+            .bind(everyone)
+            .bind(
+                old_recipients
+                    .iter()
+                    .find(|old| {
+                        (old.account_id, old.role_id, old.everyone) == (account, role, everyone)
+                    })
+                    .map(|old| &old.recipients),
+            )
+            .execute(&mut *connection)
+            .await?;
     }
     sqlx::query("delete from message_mention_accounts where message_id=$1")
         .bind(id)
         .execute(&mut *connection)
         .await?;
-    sqlx::query(
-        "insert into message_mention_accounts(place_id,account_id,position,message_id)
-         select distinct m.place_id,recipient,m.position,m.id from messages m
+    sqlx::query("insert into message_mention_accounts(place_id,account_id,position,message_id,thread_root,unread)
+         select distinct m.place_id,recipient,m.position,m.id,m.thread_root,
+             m.position>coalesce((select position from thread_reads where root_id=m.thread_root and account_id=recipient),0) from messages m
          join message_mentions mm on mm.message_id=m.id
          cross join lateral unnest(mm.recipients) recipient
-         where m.id=$1 and m.author_id<>recipient and not m.deleted and m.thread_root is null",
-    )
-    .bind(id)
-    .execute(&mut *connection)
-    .await?;
+         where m.id=$1 and m.author_id<>recipient and not m.deleted")
+        .bind(id)
+        .execute(&mut *connection)
+        .await?;
+    sqlx::query("insert into thread_reads(root_id,account_id,following)
+         select distinct m.thread_root,mm.account_id,true from messages m
+         join message_mentions mm on mm.message_id=m.id
+         where m.id=$1 and m.thread_root is not null and mm.account_id is not null
+         on conflict(root_id,account_id) do update set following=true,latest=excluded.latest,latest_id=excluded.latest_id")
+        .bind(id)
+        .execute(&mut *connection)
+        .await?;
+
     if let MessagePlace::Channel {
         workspace_id,
         channel_id,
@@ -229,6 +241,7 @@ pub async fn mentions(
             .bind(id)
             .fetch_one(&mut *connection)
             .await?;
+        added_recipients = recipients.clone();
         if !recipients.is_empty() {
             let notice_id = uuid::Uuid::now_v7();
             events::log::record_at_id(
@@ -250,37 +263,29 @@ pub async fn mentions(
                 },
             )
             .await?;
-            sqlx::query("insert into message_mention_receivers(event_id,account_id) select $1,unnest($2::uuid[])")
-                .bind(notice_id).bind(&recipients).execute(connection).await?;
+            sqlx::query("insert into message_mention_receivers(event_id,account_id) select $1,account_id from unnest($2::uuid[]) account_id where not notification_quiet(account_id,$3)")
+                .bind(notice_id)
+                .bind(&recipients)
+                .bind(now)
+                .execute(connection)
+                .await?;
         }
     }
-    Ok(())
+    Ok(added_recipients)
 }
 
 pub async fn is_mentioned(
     connection: &mut PgConnection,
     account: AccountId,
     id: MessageId,
+    now: OffsetDateTime,
 ) -> ApiResult<bool> {
-    Ok(sqlx::query_scalar(
-        "select exists(select 1
-             from message_mentions mm
-             join messages m on m.id=mm.message_id
-             where mm.message_id=$1
-             and m.author_id is distinct
-             from $2
-             and (mm.account_id=$2 or mm.everyone or exists(select 1
-             from member_roles mr
-             where mr.account_id=$2
-             and mr.role_id=mm.role_id) or exists(select 1
-             from workspace_roles r
-             join workspace_members wm on wm.workspace_id=r.workspace_id
-             where r.id=mm.role_id
-             and r.is_everyone
-             and wm.account_id=$2)))",
-    )
-    .bind(id)
-    .bind(account)
-    .fetch_one(connection)
-    .await?)
+    Ok(sqlx::query_scalar("select exists(select 1 from messages m cross join lateral notification_policy($2,m.place_id,$3) p
+         where m.id=$1 and m.author_id<>$2 and not m.deleted and not p.muted and p.level<>'nothing'
+         and notification_mentioned($2,m.id,p.roles,p.everyone))")
+        .bind(id)
+        .bind(account)
+        .bind(now)
+        .fetch_one(connection)
+        .await?)
 }

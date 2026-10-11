@@ -1,3 +1,5 @@
+pub mod visibility;
+
 use std::collections::HashMap;
 
 use junto_authz::{

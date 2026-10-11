@@ -8,7 +8,7 @@ use crate::{
 use junto_protocol::{
     events::Event,
     ids::{ChannelId, MessageId},
-    message::*,
+    message::{Document, Message, MessagePlace, MessageState, Reaction, SystemMessage},
 };
 use sqlx::{PgConnection, Row, types::Json};
 use time::OffsetDateTime;
@@ -69,18 +69,13 @@ pub async fn get(
     access: &Access,
     id: MessageId,
 ) -> ApiResult<(Place, Message)> {
-    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "select m.*, a.name as display_name
-             from messages m
-             left join accounts a on a.id=m.author_id
-             where m.id=$1
-             and {VISIBLE}"
-    )))
-    .bind(id)
-    .bind(access.account_id)
-    .fetch_optional(&mut *connection)
-    .await?
-    .ok_or_else(ApiError::not_found)?;
+    let row = sqlx::query(sqlx::AssertSqlSafe(format!("select m.*, a.name as display_name from messages m left join accounts a on a.id=m.author_id where m.id=$1
+             and {VISIBLE}")))
+        .bind(id)
+        .bind(access.account_id)
+        .fetch_optional(&mut *connection)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     let place = Place::load(connection, access, row.try_get("place_id")?).await?;
     let mut messages = load_messages(connection, access, &place, &[id]).await?;
     Ok((place, messages.pop().ok_or_else(ApiError::not_found)?))
@@ -93,31 +88,20 @@ pub async fn load_messages(
     place: &Place,
     ids: &[MessageId],
 ) -> ApiResult<Vec<Message>> {
-    let rows = sqlx::query(
-        "select m.*,a.name as display_name,
-             case when exists(select 1 from messages target where target.id=m.reply_to
-                  and (target.readers is null or $2=any(target.readers)))
-                  then m.reply_to end as visible_reply_to
-             from messages m
-             left join accounts a on a.id=m.author_id
-             where m.id=any($1)
-             order by m.position,m.id",
-    )
-    .bind(ids)
-    .bind(access.account_id)
-    .fetch_all(&mut *connection)
-    .await?;
-    let reactions: Vec<(MessageId, String, i64, bool)> = sqlx::query_as(
-        "select message_id,emoji,count(*),bool_or(account_id=$2)
-             from message_reactions
-             where message_id=any($1)
-             group by message_id,emoji
-             order by emoji",
-    )
-    .bind(ids)
-    .bind(access.account_id)
-    .fetch_all(&mut *connection)
-    .await?;
+    let rows = sqlx::query("select m.*,a.name as display_name, exists(select 1 from message_pins pin where pin.message_id=m.id) as
+             pinned, case when exists(select 1 from messages target where target.id=m.reply_to and (target.readers is
+             null or $2=any(target.readers))) then m.reply_to end as visible_reply_to from messages m left join
+             accounts a on a.id=m.author_id where m.id=any($1) order by m.position,m.id")
+        .bind(ids)
+        .bind(access.account_id)
+        .fetch_all(&mut *connection)
+        .await?;
+    let reactions: Vec<(MessageId, String, i64, bool)> = sqlx::query_as("select message_id,emoji,count(*),bool_or(account_id=$2) from message_reactions where message_id=any($1)
+             group by message_id,emoji order by emoji")
+        .bind(ids)
+        .bind(access.account_id)
+        .fetch_all(&mut *connection)
+        .await?;
     let mut attachments = uploads::of_messages(connection, ids).await?;
     rows.into_iter()
         .map(|row| {
@@ -144,6 +128,11 @@ pub async fn load_messages(
                 permanent: row.try_get("permanent")?,
                 deleted: row.try_get("deleted")?,
                 attachments: attachments.remove(&id).unwrap_or_default(),
+                thread_root: row.try_get("thread_root")?,
+                reply_count: row.try_get::<i64, _>("reply_count")? as u64,
+                last_reply: row.try_get("last_reply")?,
+                pinned: row.try_get("pinned")?,
+                files_removed_by_retention: row.try_get("files_removed_by_retention")?,
                 reactions: reactions
                     .iter()
                     .filter(|(message, _, _, _)| *message == id)
@@ -162,8 +151,9 @@ pub async fn state(
     connection: &mut PgConnection,
     access: &Access,
     place: &Place,
+    now: OffsetDateTime,
 ) -> ApiResult<MessageState> {
-    let states = states(connection, access, &[place.value]).await?;
+    let states = states(connection, access, &[place.value], now).await?;
     states.into_iter().next().ok_or_else(ApiError::not_found)
 }
 
@@ -172,6 +162,7 @@ async fn states(
     connection: &mut PgConnection,
     access: &Access,
     places: &[MessagePlace],
+    now: OffsetDateTime,
 ) -> ApiResult<Vec<MessageState>> {
     let ids: Vec<Uuid> = places
         .iter()
@@ -186,8 +177,20 @@ async fn states(
     let rows: Vec<(Uuid, i64, i64, i64, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(query))
         .bind(&ids)
         .bind(access.account_id)
-        .fetch_all(connection)
+        .fetch_all(&mut *connection)
         .await?;
+    let selected = mention_rows(true);
+    let policy_query = format!("select p.id,policy.level,policy.muted,
+        (select count(*) from (select * from ({selected}) candidates limit 100) bounded)
+        from unnest($1::uuid[]) p(id) left join message_reads r on r.place_id=p.id and r.account_id=$2
+        left join message_places floor on floor.id=p.id cross join lateral notification_policy($2,p.id,$3) policy");
+    let policies: Vec<(Uuid, String, bool, i64)> =
+        sqlx::query_as(sqlx::AssertSqlSafe(policy_query))
+            .bind(&ids)
+            .bind(access.account_id)
+            .bind(now)
+            .fetch_all(connection)
+            .await?;
     let mut values: std::collections::HashMap<_, _> = rows
         .into_iter()
         .map(|(id, last, latest, unread, mentions)| (id, (last, latest, unread, mentions)))
@@ -204,6 +207,28 @@ async fn states(
                     latest: latest as u64,
                     unread: unread as u64,
                     mentions: mentions as u64,
+                    muted: policies
+                        .iter()
+                        .find(|(subject, ..)| *subject == id)
+                        .is_some_and(|(_, _, muted, _)| *muted),
+                    unread_sign: policies
+                        .iter()
+                        .find(|(subject, ..)| *subject == id)
+                        .is_some_and(|(_, level, muted, mentions)| {
+                            !muted
+                                && ((level == "all" && unread > 0)
+                                    || (level == "mentions" && *mentions > 0))
+                        }),
+                    notification_mentions: policies
+                        .iter()
+                        .find(|(subject, ..)| *subject == id)
+                        .map_or(0, |(_, level, muted, mentions)| {
+                            if *muted || level == "nothing" {
+                                0
+                            } else {
+                                *mentions as u64
+                            }
+                        }),
                 })
         })
         .collect())
@@ -213,6 +238,7 @@ pub async fn snapshot(
     connection: &mut PgConnection,
     access: &Access,
     workspaces: &[junto_protocol::snapshot::WorkspaceState],
+    now: OffsetDateTime,
 ) -> ApiResult<Vec<MessageState>> {
     let mut places: Vec<MessagePlace> = workspaces
         .iter()
@@ -233,7 +259,7 @@ pub async fn snapshot(
             high_account_id: conversation.high_account_id,
         });
     }
-    states(connection, access, &places).await
+    states(connection, access, &places, now).await
 }
 
 pub async fn system(
@@ -271,16 +297,13 @@ pub async fn system(
                 .execute(&mut *connection)
                 .await?;
         }
-        sqlx::query_scalar(
-            "select case when hidden then
-                case when cardinality(readers)>0 then readers else
-                    array(select account_id from call_message_members where call_id=$1 order by account_id)
-                end end from call_message_privacy where call_id=$1",
-        )
-        .bind(call_id)
-        .fetch_optional(&mut *connection)
-        .await?
-        .flatten()
+        sqlx::query_scalar("select case when hidden then case when cardinality(readers)>0 then readers else array(select account_id
+             from call_message_members where call_id=$1 order by account_id) end end from call_message_privacy where
+             call_id=$1")
+            .bind(call_id)
+            .fetch_optional(&mut *connection)
+            .await?
+            .flatten()
     } else {
         None
     };
@@ -295,7 +318,7 @@ pub async fn system(
     };
     sqlx::query(
         "insert into messages(id,place_id,position,created_at,system,call_id,recording_id,readers)
-         values($1,$2,$3,$4,$5,$6,$7,$8)",
+             values($1,$2,$3,$4,$5,$6,$7,$8)",
     )
     .bind(id)
     .bind(place.id)
@@ -337,6 +360,13 @@ pub async fn remove(
     message: &Message,
 ) -> ApiResult<()> {
     erase(connection, now, message.id).await?;
+    if let Some(root) = message.thread_root {
+        let position: i64 = sqlx::query_scalar("select position from messages where id=$1")
+            .bind(root)
+            .fetch_one(&mut *connection)
+            .await?;
+        changed(connection, now, place.value, root, position as u64, false).await?;
+    }
     if message.permanent {
         sqlx::query(
             "update channels set permanent_message_count=permanent_message_count-1
@@ -364,6 +394,14 @@ pub(crate) async fn erase(
     id: MessageId,
 ) -> ApiResult<()> {
     uploads::remove_message(connection, now, id).await?;
+    sqlx::query("delete from message_pins where message_id=$1")
+        .bind(id)
+        .execute(&mut *connection)
+        .await?;
+    sqlx::query("delete from notifications where message_id=$1")
+        .bind(id)
+        .execute(&mut *connection)
+        .await?;
     sqlx::query("delete from message_mentions where message_id=$1")
         .bind(id)
         .execute(&mut *connection)
@@ -383,9 +421,12 @@ pub(crate) async fn erase(
     .fetch_one(&mut *connection)
     .await?;
     if has_replies {
-        sqlx::query("update messages set document=null,system=null,author_id=null,edited_at=null,permanent=false,deleted=true,recording_id=null
+        sqlx::query("update messages set
+             document=null,system=null,author_id=null,edited_at=null,permanent=false,deleted=true,recording_id=null
              where id=$1")
-            .bind(id).execute(&mut *connection).await?;
+            .bind(id)
+            .execute(&mut *connection)
+            .await?;
     } else {
         sqlx::query("delete from messages where id=$1")
             .bind(id)
@@ -395,33 +436,35 @@ pub(crate) async fn erase(
     Ok(())
 }
 
+fn mention_rows(policy: bool) -> String {
+    let eligible = if policy {
+        "and exists(select 1 from message_mentions mm left join workspace_roles wr on wr.id=mm.role_id
+        where mm.message_id=ma.message_id and $2=any(mm.recipients) and (mm.account_id=$2
+        or (policy.everyone and (mm.everyone or wr.is_everyone))
+        or (policy.roles and mm.role_id is not null and not coalesce(wr.is_everyone,false))))"
+    } else {
+        ""
+    };
+    format!("(select ma.message_id from message_mention_accounts ma
+        where ma.place_id=p.id and ma.account_id=$2 and ma.thread_root is null
+        and ma.position>greatest(coalesce(r.position,0),coalesce(floor.read_floor,0)) {eligible}
+        order by ma.position limit 100)
+        union all (select ma.message_id from message_mention_accounts ma
+        where ma.place_id=p.id and ma.account_id=$2 and ma.thread_root is not null and ma.unread {eligible}
+        order by ma.position limit 100)")
+}
+
 pub fn state_query() -> String {
-    "select p.id,coalesce(r.position,0),coalesce(latest.position,0),
-            unread.count,mentioned.count
-     from unnest($1::uuid[]) p(id)
-     left join message_reads r on r.place_id=p.id and r.account_id=$2
-     left join lateral (
-         select position from messages m
-         where m.place_id=p.id and m.thread_root is null and m.readers is null
-         order by position desc limit 1
-     ) latest on true
-     cross join lateral (
-         select count(*) from (
-             select 1 from messages m
-             where m.place_id=p.id and m.thread_root is null
-               and m.position>coalesce(r.position,0)
-               and m.author_id is not null and m.author_id<>$2 and not m.deleted
-             order by m.position limit 100
-         ) bounded
-     ) unread
-     cross join lateral (
-         select count(*) from (
-             select 1 from message_mention_accounts mm
-             where mm.place_id=p.id and mm.account_id=$2
-               and mm.position>coalesce(r.position,0)
-             order by mm.position
-             limit 100
-         ) bounded
-     ) mentioned"
-        .to_owned()
+    let selected = mention_rows(false);
+    format!("select p.id,greatest(coalesce(r.position,0),coalesce(floor.read_floor,0)),coalesce(latest.position,0),
+        unread.count,mentioned.count from unnest($1::uuid[]) p(id)
+        left join message_reads r on r.place_id=p.id and r.account_id=$2
+        left join message_places floor on floor.id=p.id
+        left join lateral (select position from messages m where m.place_id=p.id and m.thread_root is null
+            and m.readers is null order by position desc limit 1) latest on true
+        cross join lateral (select count(*) from (select 1 from messages m where m.place_id=p.id
+            and m.thread_root is null and m.position>greatest(coalesce(r.position,0),coalesce(floor.read_floor,0))
+            and m.author_id is not null and m.author_id<>$2 and not m.deleted
+            order by m.position limit 100) bounded) unread
+        cross join lateral (select count(*) from (select * from ({selected}) candidates limit 100) bounded) mentioned")
 }

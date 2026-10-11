@@ -470,6 +470,10 @@ pub async fn delete_channel(
         if deleted.rows_affected() == 0 {
             return Err(ApiError::conflict("the channel changed during the request"));
         }
+        sqlx::query("delete from thread_forks where channel_id=$1")
+            .bind(channel_id)
+            .execute(&mut *connection)
+            .await?;
         sqlx::query("update attachments set removed_at=$2 where place_id=$1")
             .bind(channel_id)
             .bind(now)

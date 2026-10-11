@@ -529,6 +529,17 @@ pub enum Event {
         position: u64,
         deleted: bool,
     },
+    NotificationChanged {
+        message_id: crate::ids::MessageId,
+    },
+    NotificationSettingsChanged {},
+    RetentionChanged {
+        workspace_id: Option<WorkspaceId>,
+    },
+    ThreadRead {
+        root_id: crate::ids::MessageId,
+        position: u64,
+    },
     MessageRead {
         place: crate::message::MessagePlace,
         position: u64,
@@ -597,10 +608,14 @@ impl Event {
         "transcript_speaker_renamed",
         "glossary_replaced",
         "message_changed",
+        "thread_read",
         "message_read",
         "message_mentioned",
         "conversation_opened",
         "attachment_limits_changed",
+        "notification_changed",
+        "notification_settings_changed",
+        "retention_changed",
     ];
 
     pub const fn name(&self) -> &'static str {
@@ -666,6 +681,10 @@ impl Event {
             Self::GlossaryReplaced { .. } => "glossary_replaced",
             Self::MessageChanged { .. } => "message_changed",
             Self::MessageRead { .. } => "message_read",
+            Self::ThreadRead { .. } => "thread_read",
+            Self::NotificationChanged { .. } => "notification_changed",
+            Self::NotificationSettingsChanged { .. } => "notification_settings_changed",
+            Self::RetentionChanged { .. } => "retention_changed",
             Self::MessageMentioned { .. } => "message_mentioned",
             Self::ConversationOpened { .. } => "conversation_opened",
             Self::AttachmentLimitsChanged { .. } => "attachment_limits_changed",
@@ -1114,6 +1133,10 @@ mod tests {
                 position: 1,
                 deleted: false,
             },
+            Event::ThreadRead {
+                root_id: crate::ids::MessageId::generate(),
+                position: 1,
+            },
             Event::MessageRead {
                 place: crate::message::MessagePlace::Channel {
                     workspace_id,
@@ -1139,6 +1162,13 @@ mod tests {
                     bytes_per_file: 100_000_000,
                     files_per_message: 10,
                 },
+            },
+            Event::NotificationChanged {
+                message_id: crate::ids::MessageId::generate(),
+            },
+            Event::NotificationSettingsChanged {},
+            Event::RetentionChanged {
+                workspace_id: Some(workspace_id),
             },
         ]
     }
