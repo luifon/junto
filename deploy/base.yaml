@@ -1,0 +1,325 @@
+# The services of a Junto deployment, each defined once (ADR 0015). This file is not used
+# alone. one-host.yaml, two-hosts-data.yaml, two-hosts-public.yaml and local.yaml extend
+# these services and add what differs between the forms: networks, published ports and
+# addresses.
+#
+# Every setting comes from deploy/.env (see env.example). This file reads only settings that
+# have a default. A setting without a default, such as a secret, is read by the form that
+# needs it, and Compose stops and names the variable when it is missing.
+
+x-restart-and-log: &restart-and-log
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: ${JUNTO_LOG_MAX_SIZE:-10m}
+      max-file: "5"
+
+x-service: &service
+  <<: *restart-and-log
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+
+x-server-build: &server-build
+  context: ..
+  dockerfile: deploy/images/server/Dockerfile
+
+services:
+  # Sets owner and mode of the volume directories, then exits. The only container of the
+  # deployment's own images that runs as root: no network, two capabilities.
+  init:
+    build: *server-build
+    restart: "no"
+    user: "0:0"
+    network_mode: none
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER]
+    entrypoint: ["/usr/local/bin/junto-volumes"]
+    mem_limit: 64m
+    cpus: 0.5
+    pids_limit: 32
+    logging:
+      driver: json-file
+      options:
+        max-size: 1m
+        max-file: "2"
+
+  postgres:
+    <<: *service
+    image: postgres:17.11-alpine3.24@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    user: "70:70"
+    read_only: true
+    environment:
+      POSTGRES_USER: junto
+      POSTGRES_DB: junto
+      PGDATA: /var/lib/postgresql/data/pgdata
+    # The password is part of the database URL of the server (ADR 0015).
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        case "$$POSTGRES_PASSWORD" in
+          "" | *[!A-Za-z0-9]*)
+            echo "JUNTO_POSTGRES_PASSWORD must consist of letters and digits (deploy/generate-secrets.sh)" >&2
+            exit 1 ;;
+        esac
+        exec docker-entrypoint.sh postgres
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    tmpfs:
+      - /var/run/postgresql:uid=70,gid=70,mode=0755
+      - /tmp
+    shm_size: 128m
+    healthcheck:
+      test: ["CMD", "pg_isready", "-q", "-h", "127.0.0.1", "-U", "junto", "-d", "junto"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 60s
+    stop_grace_period: 1m
+    mem_limit: ${JUNTO_POSTGRES_MEMORY:-1g}
+    cpus: ${JUNTO_POSTGRES_CPUS:-2}
+    pids_limit: 256
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  server:
+    <<: *service
+    build: *server-build
+    init: true
+    # The group of the worker process (10001) and the group of the spool (10002): the
+    # hand-over gives the first access to one recording and the second the request
+    # (ADR 0016).
+    group_add: ["10001", "10002"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      JUNTO_LISTEN_ADDRESS: 0.0.0.0:8080
+      JUNTO_SERVER_NAME: ${JUNTO_SERVER_NAME:-Junto}
+      JUNTO_LOG_FORMAT: ${JUNTO_LOG_FORMAT:-json}
+      JUNTO_LOG_LEVEL: ${JUNTO_LOG_LEVEL:-info}
+      JUNTO_ATTACHMENTS_DIR: /var/lib/junto/attachments
+      JUNTO_ATTACHMENT_BYTES: ${JUNTO_ATTACHMENT_BYTES:-100000000}
+      JUNTO_ATTACHMENTS_PER_MESSAGE: ${JUNTO_ATTACHMENTS_PER_MESSAGE:-10}
+      JUNTO_RECORDINGS_DIR: /var/lib/junto/recordings
+      JUNTO_RECORDER_LAYOUT_DIR: /usr/share/junto/recording-layout
+      # An empty value turns transcripts off.
+      JUNTO_TRANSCRIBE_COMMAND: ${JUNTO_TRANSCRIBE_COMMAND-/usr/local/bin/junto-transcribe-handover}
+      JUNTO_TRANSCRIBE_SEPARATE_SPEAKERS: ${JUNTO_TRANSCRIBE_SEPARATE_SPEAKERS:-true}
+    volumes:
+      - attachments:/var/lib/junto/attachments
+      - recordings:/var/lib/junto/recordings
+      - spool:/var/lib/junto/spool
+    stop_grace_period: 45s
+    mem_limit: ${JUNTO_SERVER_MEMORY:-1g}
+    cpus: ${JUNTO_SERVER_CPUS:-2}
+    pids_limit: 512
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+
+  # Redis 7.2 is the last version line under the BSD licence (ADR 0003). It holds no data
+  # that outlives a restart, so it has no volume.
+  redis:
+    <<: *service
+    image: redis:7.2.16-alpine3.21@sha256:29e8589c3f9ba699b5f7aa4b3c7733c58852a3626439e619aa0ee78de08c6ca0
+    user: "999:1000"
+    read_only: true
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        case "$$REDIS_PASSWORD" in
+          "" | *[!A-Za-z0-9]*)
+            echo "JUNTO_REDIS_PASSWORD must consist of letters and digits (deploy/generate-secrets.sh)" >&2
+            exit 1 ;;
+        esac
+        exec redis-server - <<CONF
+        bind 0.0.0.0
+        port 6379
+        requirepass $$REDIS_PASSWORD
+        save ""
+        appendonly no
+        maxmemory 128mb
+        maxmemory-policy noeviction
+        CONF
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -h 127.0.0.1 ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 20s
+    mem_limit: ${JUNTO_REDIS_MEMORY:-192m}
+    cpus: ${JUNTO_REDIS_CPUS:-1}
+    pids_limit: 64
+
+  # The media server. Its configuration is the variable LIVEKIT_CONFIG of each form.
+  livekit:
+    <<: *service
+    image: livekit/livekit-server:v1.13.9@sha256:d0c04791bf63ca8dcea123571827d56ba9504bd57c8d5de60ee03b5408cc3154
+    user: "65532:65532"
+    read_only: true
+    # The key, the secret and the Redis password are written into YAML bodies (ADR 0015).
+    # Each form gives them to this check as JUNTO_CHECK_1 to JUNTO_CHECK_3.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        for value in "$$JUNTO_CHECK_1" "$$JUNTO_CHECK_2" "$$JUNTO_CHECK_3"; do
+          case "$$value" in
+            "" | *[!A-Za-z0-9]*)
+              echo "JUNTO_LIVEKIT_API_KEY, JUNTO_LIVEKIT_API_SECRET and JUNTO_REDIS_PASSWORD must consist of letters and digits (deploy/generate-secrets.sh)" >&2
+              exit 1 ;;
+          esac
+        done
+        exec /livekit-server
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:7880/"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 30s
+    mem_limit: ${JUNTO_LIVEKIT_MEMORY:-2g}
+    cpus: ${JUNTO_LIVEKIT_CPUS:-2}
+    pids_limit: 512
+
+  # The recorder, LiveKit Egress. Its configuration is the variable EGRESS_CONFIG_BODY of
+  # each form. It keeps the capabilities that step 0 ran it with; see ADR 0015.
+  recorder:
+    <<: *restart-and-log
+    image: livekit/egress:v1.15.0@sha256:ac244a40268ce1dd1510fbff6eb529609ec68aceff1602343f79be8ca08c355b
+    cap_add: [SYS_ADMIN]
+    entrypoint: ["/tini", "--", "/usr/local/bin/junto-recorder-start"]
+    environment:
+      JUNTO_RECORDER_DIR: /var/lib/junto/recordings
+    volumes:
+      - ./images/recorder/start.sh:/usr/local/bin/junto-recorder-start:ro
+      - recordings:/var/lib/junto/recordings
+      - recorder-work:/home/egress/tmp
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:9090/"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 60s
+    # A recording that the server ended needs this time to finish its files. The recorder
+    # is stopped only when no recording runs (docs/install.md, "Upgrade").
+    stop_grace_period: 2m
+    mem_limit: ${JUNTO_RECORDER_MEMORY:-4g}
+    cpus: ${JUNTO_RECORDER_CPUS:-6}
+    pids_limit: 4096
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  # The transcription worker. No network: the spool and the recordings are its only links
+  # to the server (ADR 0016). Each form mounts the directory of the model files, which the
+  # worker cannot write to (ADR 0612), at /models.
+  #
+  # The first process is the loop that takes the jobs. It runs as root with three
+  # capabilities and the group of the spool, and runs each job as the user 10001 without
+  # capabilities, so that a job cannot write its own result or stop the loop.
+  worker:
+    <<: *service
+    build:
+      context: ../workers/transcription
+      dockerfile: docker/Dockerfile
+      target: worker
+      args:
+        VARIANT: ${JUNTO_WORKER_VARIANT:-cpu}
+    network_mode: none
+    init: true
+    user: "0:10002"
+    cap_add: [SETUID, SETGID, KILL]
+    read_only: true
+    entrypoint: ["/bin/bash", "/usr/local/bin/junto-worker-loop"]
+    environment:
+      JUNTO_TRANSCRIBE_MODELS: /models
+      JUNTO_WORKER_JOB_USER: "10001:10001"
+      JUNTO_TRANSCRIBE_WHISPER_MODEL: ${JUNTO_TRANSCRIBE_WHISPER_MODEL:-large-v3-turbo}
+      JUNTO_TRANSCRIBE_DEVICE: ${JUNTO_TRANSCRIBE_DEVICE:-auto}
+      # The limits of a job (workers/transcription/README.md). Each reaches the worker only
+      # when it is set in deploy/.env.
+      JUNTO_TRANSCRIBE_MAX_JOB_BYTES:
+      JUNTO_TRANSCRIBE_MAX_SEGMENTS:
+      JUNTO_TRANSCRIBE_MAX_SEGMENT_SECONDS:
+      JUNTO_TRANSCRIBE_MAX_JOB_SECONDS:
+      JUNTO_TRANSCRIBE_MAX_PROCESSING_SECONDS:
+      JUNTO_TRANSCRIBE_MAX_GAP_SECONDS:
+      JUNTO_TRANSCRIBE_MAX_SPEAKER_WINDOWS:
+    tmpfs:
+      - /tmp
+    volumes:
+      - ./images/worker/junto-worker-loop:/usr/local/bin/junto-worker-loop:ro
+      - recordings:/var/lib/junto/recordings
+      - spool:/var/lib/junto/spool
+    stop_grace_period: 20s
+    mem_limit: ${JUNTO_WORKER_MEMORY:-6g}
+    memswap_limit: ${JUNTO_WORKER_MEMORY:-6g}
+    cpus: ${JUNTO_WORKER_CPUS:-4}
+    pids_limit: 512
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  # The entry on port 443 with the three server names (ADR 0004). It uses the network of the
+  # host, so it sees the address of each client, also over IPv6. It runs as root with one
+  # capability, which it needs for the ports 80 and 443.
+  entry:
+    <<: *service
+    image: livekit/caddyl4:v2.11.3@sha256:9dd090159a6042a907dbff0ce9dda27a21d2a559dc7b03b60a8e6b1b60b8348e
+    network_mode: host
+    cap_add: [NET_BIND_SERVICE]
+    read_only: true
+    command: ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+    environment:
+      HOME: /data
+      XDG_DATA_HOME: /data
+      XDG_CONFIG_HOME: /config
+      JUNTO_ENTRY_CERTIFICATES: ${JUNTO_ENTRY_CERTIFICATES:-}
+      JUNTO_ENTRY_LIVEKIT_UPSTREAM: 127.0.0.1:7880
+      JUNTO_ENTRY_TURN_UPSTREAM: 127.0.0.1:5349
+    volumes:
+      - ./entry/Caddyfile:/etc/caddy/Caddyfile:ro
+      - entry-data:/data
+    tmpfs:
+      - /config
+      - /tmp
+    healthcheck:
+      # Port 80: a connection without a TLS greeting on port 443 is an error in the log.
+      test: ["CMD", "nc", "-z", "127.0.0.1", "80"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 30s
+    mem_limit: ${JUNTO_ENTRY_MEMORY:-256m}
+    cpus: ${JUNTO_ENTRY_CPUS:-1}
+    pids_limit: 256
+
+  # One end of the private link of the two-host form (ADR 0003). The process creates a
+  # network interface, so it runs as root with the capability NET_ADMIN in its own network
+  # namespace.
+  link:
+    <<: *service
+    build:
+      context: images/link
+    cap_add: [NET_ADMIN, SETUID, SETGID]
+    devices:
+      - /dev/net/tun
+    read_only: true
+    tmpfs:
+      - /var/run/wireguard
+    volumes:
+      - link-keys:/keys
+    healthcheck:
+      test: ["CMD-SHELL", "wg show wg0 latest-handshakes | awk -v now=\"$$(date +%s)\" '{ if ($$2 > 0 && now - $$2 < 180) ok = 1 } END { exit !ok }'"]
+      interval: 15s
+      timeout: 3s
+      retries: 4
+      start_period: 30s
+    mem_limit: ${JUNTO_LINK_MEMORY:-256m}
+    cpus: ${JUNTO_LINK_CPUS:-1}
+    pids_limit: 2048

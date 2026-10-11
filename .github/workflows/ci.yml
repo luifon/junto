@@ -1,0 +1,228 @@
+# The checks of every commit (ADR 0902, ADR 0905). Every action is named by its commit hash
+# and every container image by its digest; tools/check-pins.sh fails when one is not.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # The images that tools/with-test-postgres.sh and tools/with-test-livekit.sh start: the
+  # images of deploy/base.yaml, by digest. tools/check-pins.sh compares them.
+  JUNTO_TEST_POSTGRES_IMAGE: postgres:17.11-alpine3.24@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+  JUNTO_TEST_LIVEKIT_IMAGE: livekit/livekit-server:v1.13.9@sha256:d0c04791bf63ca8dcea123571827d56ba9504bd57c8d5de60ee03b5408cc3154
+
+jobs:
+  rust-linux:
+    name: Rust on Linux
+    # A pull request from a branch of this repository is already checked by its push.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the Rust version of rust-toolchain.toml
+        shell: bash
+        run: |
+          version=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$version" --profile minimal --component rustfmt --component clippy
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            target
+          key: rust-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+      - name: Install ffmpeg, which the tests of recordings run
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Tests with PostgreSQL
+        run: tools/with-test-postgres.sh cargo test --workspace --locked
+      - name: The committed API documents equal the generated ones
+        run: |
+          cargo run --locked -p junto-server --bin junto-openapi
+          git diff --exit-code -- docs/api
+
+  rust-other-systems:
+    name: Rust on ${{ matrix.system }}
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    strategy:
+      fail-fast: false
+      matrix:
+        system: [macos-15, windows-2025]
+    runs-on: ${{ matrix.system }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the Rust version of rust-toolchain.toml
+        shell: bash
+        run: |
+          version=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$version" --profile minimal --component rustfmt --component clippy
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            target
+          key: rust-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+      - name: Build every target
+        run: cargo build --workspace --all-targets --locked
+      # The tests that need PostgreSQL run on Linux only (ADR 0905).
+      - name: Tests that need no database
+        run: |
+          cargo test --locked -p junto-authz -p junto-protocol
+          cargo test --locked -p junto-client-core --lib --bins
+
+  licences:
+    name: Licences of the Rust dependencies
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the Rust version of rust-toolchain.toml
+        shell: bash
+        run: |
+          version=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$version" --profile minimal
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-deny
+          key: cargo-deny-0.20.2-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}
+      - name: Install cargo-deny 0.20.2
+        run: test -x ~/.cargo/bin/cargo-deny || cargo install --locked cargo-deny@0.20.2
+      - name: Licences, sources and advisories
+        run: cargo deny check
+
+  layout-page:
+    name: Recording layout page
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: recording-layout
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.23.3
+      - name: Install the locked packages
+        run: npm ci --ignore-scripts
+      - name: Install the browser of the locked Playwright version
+        run: npx --no-install playwright install --with-deps chromium
+      - name: Build
+        run: node build.mjs
+      - name: Browser tests against a LiveKit server in Docker
+        run: node tests/run.mjs
+
+  transcription-worker:
+    name: Transcription worker
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: workers/transcription
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install uv 0.11.13
+        run: pipx install uv==0.11.13
+      - name: Install Python 3.12 and the locked packages
+        run: uv sync --frozen
+      - name: Lint
+        run: |
+          uv run --frozen ruff check src tests
+          uv run --frozen ruff format --check src tests
+      - name: Types
+        run: uv run --frozen mypy
+      - name: Unit tests
+        run: uv run --frozen pytest
+
+  deployment:
+    name: Images and the Compose deployment
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Pinned versions agree
+        run: tools/check-pins.sh
+      - name: Workflow files
+        run: >
+          docker run --rm --network none -v "$PWD:/repository:ro" -w /repository
+          rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+          -color
+      - name: Shell scripts
+        run: >
+          docker run --rm --network none -v "$PWD:/repository:ro" -w /repository
+          koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d
+          --severity=warning
+          tools/serial.sh tools/check-pins.sh tools/with-test-postgres.sh tools/with-test-livekit.sh
+          deploy/generate-secrets.sh deploy/backup.sh deploy/restore.sh
+          deploy/images/server/junto-healthcheck deploy/images/server/junto-transcribe-handover
+          deploy/images/server/junto-volumes deploy/images/worker/junto-worker-loop
+          deploy/images/recorder/start.sh deploy/images/link/entrypoint.sh
+          deploy/tests/compose-config.sh deploy/tests/smoke.sh deploy/tests/entry.sh
+          deploy/tests/one-host.sh deploy/tests/two-hosts.sh deploy/tests/backup-restore.sh
+          deploy/tests/recorder-start.sh
+          deploy/tests/transcribe-handover.sh deploy/tests/transcribe-handover-inside.sh
+      - name: Compose files of every form
+        run: deploy/tests/compose-config.sh
+      - name: Server image
+        run: docker build -f deploy/images/server/Dockerfile -t junto-ci-server .
+      - name: Link image
+        run: docker build -t junto-ci-link deploy/images/link
+      - name: Hand-over of a transcription job between two containers
+        run: deploy/tests/transcribe-handover.sh junto-ci-server
+      - name: The start script of the recorder saves partial files
+        run: deploy/tests/recorder-start.sh junto-ci-server
+      - name: The entry selects by server name
+        run: deploy/tests/entry.sh junto-ci-entry
+      - name: The local form starts, with the worker image
+        run: deploy/tests/smoke.sh junto-ci
+      - name: Backup, and restore into an empty deployment
+        run: deploy/tests/backup-restore.sh junto-ci-backup
+      - name: The one-host form starts behind the entry
+        run: deploy/tests/one-host.sh junto-ci-one
+      - name: The two-host form starts as two projects joined by the link
+        run: deploy/tests/two-hosts.sh junto-ci-two

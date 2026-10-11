@@ -1,0 +1,126 @@
+# Form 2 of ADR 0003, the data host: the server, PostgreSQL, the files, the recorder, the
+# transcription worker and one end of the private link. The host needs no inbound
+# connection and publishes no port: its link container opens the link to the public host.
+#
+#   cd deploy && docker compose -f two-hosts-data.yaml run --rm link genkey
+#   cd deploy && docker compose -f two-hosts-data.yaml up -d --build
+#
+# The server reaches the API of the media server through the link, and the recorder reaches
+# Redis through it. The recorder reaches the media server on its public address, so a loss
+# of the link does not interrupt a recording (ADR 0003).
+
+name: junto-data
+
+services:
+  init:
+    extends:
+      file: base.yaml
+      service: init
+    command:
+      - /var/lib/postgresql/data:70:70:0700
+      - /var/lib/junto/attachments:1001:1001:0700
+      - /var/lib/junto/recordings:1001:10001:0750
+      - /var/lib/junto/spool:1001:10002:0750
+      - /home/egress/tmp:1001:0:0700
+    volumes:
+      - postgres:/var/lib/postgresql/data
+      - attachments:/var/lib/junto/attachments
+      - recordings:/var/lib/junto/recordings
+      - spool:/var/lib/junto/spool
+      - recorder-work:/home/egress/tmp
+
+  postgres:
+    extends:
+      file: base.yaml
+      service: postgres
+    environment:
+      POSTGRES_PASSWORD: ${JUNTO_POSTGRES_PASSWORD:?set JUNTO_POSTGRES_PASSWORD in deploy/.env (deploy/generate-secrets.sh)}
+    networks: [database]
+
+  server:
+    extends:
+      file: base.yaml
+      service: server
+    environment:
+      JUNTO_DATABASE_URL: postgres://junto:${JUNTO_POSTGRES_PASSWORD:?set JUNTO_POSTGRES_PASSWORD in deploy/.env (deploy/generate-secrets.sh)}@postgres:5432/junto
+      JUNTO_LIVEKIT_API_KEY: ${JUNTO_LIVEKIT_API_KEY:?set JUNTO_LIVEKIT_API_KEY in deploy/.env (deploy/generate-secrets.sh)}
+      JUNTO_LIVEKIT_API_SECRET: ${JUNTO_LIVEKIT_API_SECRET:?set JUNTO_LIVEKIT_API_SECRET in deploy/.env (deploy/generate-secrets.sh)}
+      JUNTO_PUBLIC_ORIGINS: https://${JUNTO_SERVER_HOST:?set JUNTO_SERVER_HOST in deploy/.env}
+      JUNTO_TRUSTED_PROXIES: ${JUNTO_BACKEND_LINK:-172.31.240.12}
+      JUNTO_LIVEKIT_API_URL: http://${JUNTO_BACKEND_LINK:-172.31.240.12}:7880
+      JUNTO_LIVEKIT_URL: wss://${JUNTO_LIVEKIT_HOST:?set JUNTO_LIVEKIT_HOST in deploy/.env}
+      JUNTO_RECORDER_LAYOUT_URL: http://server:8080/recording-layout/
+    networks:
+      database:
+      backend:
+        ipv4_address: ${JUNTO_BACKEND_SERVER:-172.31.240.10}
+
+  recorder:
+    extends:
+      file: base.yaml
+      service: recorder
+    environment:
+      EGRESS_CONFIG_BODY: |
+        api_key: ${JUNTO_LIVEKIT_API_KEY:?set JUNTO_LIVEKIT_API_KEY in deploy/.env (deploy/generate-secrets.sh)}
+        api_secret: ${JUNTO_LIVEKIT_API_SECRET:?set JUNTO_LIVEKIT_API_SECRET in deploy/.env (deploy/generate-secrets.sh)}
+        ws_url: wss://${JUNTO_LIVEKIT_HOST:?set JUNTO_LIVEKIT_HOST in deploy/.env}
+        health_port: 9090
+        redis:
+          address: ${JUNTO_BACKEND_LINK:-172.31.240.12}:6379
+          password: ${JUNTO_REDIS_PASSWORD:?set JUNTO_REDIS_PASSWORD in deploy/.env (deploy/generate-secrets.sh)}
+        logging:
+          level: info
+        cpu_cost:
+          max_cpu_utilization: 0.8
+          room_composite_cpu_cost: 3.0
+          track_composite_cpu_cost: 0.5
+          track_cpu_cost: 0.1
+    networks: [backend]
+    depends_on:
+      link:
+        condition: service_started
+
+  worker:
+    extends:
+      file: base.yaml
+      service: worker
+    volumes:
+      - ${JUNTO_MODELS_DIR:?set JUNTO_MODELS_DIR in deploy/.env to the directory of the transcription models}:/models:ro
+
+  link:
+    extends:
+      file: base.yaml
+      service: link
+    environment:
+      LINK_ADDRESS: ${JUNTO_LINK_DATA_ADDRESS:-10.99.0.2}
+      LINK_PEER_ADDRESS: ${JUNTO_LINK_PUBLIC_ADDRESS:-10.99.0.1}
+      # Not required here: "link genkey" runs before the key of the other host exists. The
+      # link container stops with a message while it is missing.
+      LINK_PEER_PUBLIC_KEY: ${JUNTO_LINK_PUBLIC_PUBLIC_KEY:-}
+      LINK_PEER_PUBLIC_KEY_SETTING: JUNTO_LINK_PUBLIC_PUBLIC_KEY
+      LINK_ENDPOINT: ${JUNTO_PUBLIC_IP:?set JUNTO_PUBLIC_IP in deploy/.env}:${JUNTO_LINK_PORT:-51820}
+      LINK_KEEPALIVE: "25"
+      LINK_FORWARDS: >-
+        ${JUNTO_BACKEND_LINK:-172.31.240.12}:6379=${JUNTO_LINK_PUBLIC_ADDRESS:-10.99.0.1}:6379
+        ${JUNTO_BACKEND_LINK:-172.31.240.12}:7880=${JUNTO_LINK_PUBLIC_ADDRESS:-10.99.0.1}:7880
+        ${JUNTO_LINK_DATA_ADDRESS:-10.99.0.2}:8080=${JUNTO_BACKEND_SERVER:-172.31.240.10}:8080
+    networks:
+      backend:
+        ipv4_address: ${JUNTO_BACKEND_LINK:-172.31.240.12}
+
+volumes:
+  postgres:
+  attachments:
+  recordings:
+  spool:
+  recorder-work:
+  link-keys:
+
+networks:
+  database:
+    internal: true
+  backend:
+    ipam:
+      config:
+        - subnet: ${JUNTO_BACKEND_SUBNET:-172.31.240.0/24}
+          gateway: ${JUNTO_BACKEND_GATEWAY:-172.31.240.1}

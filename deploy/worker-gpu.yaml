@@ -1,0 +1,20 @@
+# The transcription worker on an NVIDIA GPU (ADR 0610). Name this file after the file of the
+# form, with JUNTO_WORKER_VARIANT=gpu in .env:
+#
+#   docker compose -f one-host.yaml -f worker-gpu.yaml up -d --build
+#
+# The host needs the NVIDIA driver and the NVIDIA Container Toolkit. Where the GPU device
+# nodes belong to a group, set JUNTO_GPU_GROUP to it: stat -c %g /dev/nvidiactl
+
+services:
+  worker:
+    environment:
+      # The groups of the worker process: its own, and the group of the GPU device nodes.
+      JUNTO_WORKER_JOB_GROUPS: "10001,${JUNTO_GPU_GROUP:-10001}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

@@ -1,0 +1,13 @@
+#!/bin/bash
+# The health check of the server container: one request to the health route of the server
+# in this container (ADR 0012). The exit code is 0 for the status 200 and 1 otherwise.
+set -u
+address="${JUNTO_LISTEN_ADDRESS:-127.0.0.1:8080}"
+port="${address##*:}"
+exec 3<>"/dev/tcp/127.0.0.1/${port}" || exit 1
+printf 'GET /api/v1/health HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3 || exit 1
+IFS= read -r -t 4 status <&3 || exit 1
+case "$status" in
+    "HTTP/1."?" 200"*) exit 0 ;;
+esac
+exit 1

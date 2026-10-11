@@ -1,0 +1,148 @@
+"""Rules for the rendered Compose configuration of one form (ADR 0015).
+
+usage: check_rendered.py <form> <file with the output of `docker compose config --format json`>
+"""
+
+import json
+import sys
+
+# Every published port of each form: (service, container port, protocol, host address).
+# None means every address of the host. A form publishes exactly these, each once.
+PUBLISHED = {
+    "local": [
+        ("livekit", 7880, "tcp", "127.0.0.1"),
+        ("livekit", 7881, "tcp", "127.0.0.1"),
+        ("livekit", 7882, "udp", "127.0.0.1"),
+        ("server", 8080, "tcp", "127.0.0.1"),
+    ],
+    "one-host": [],
+    "two-hosts-data": [],
+    "two-hosts-public": [("link", 51820, "udp", None)],
+}
+# The containers of each network that is not "database" or "backend".
+OTHER_NETWORKS = {
+    "local": {},
+    "one-host": {},
+    "two-hosts-data": {},
+    "two-hosts-public": {"inbound": {"link"}},
+}
+HOST_NETWORK = {
+    "local": set(),
+    "one-host": {"livekit", "entry"},
+    "two-hosts-data": set(),
+    "two-hosts-public": {"livekit", "entry"},
+}
+SERVICES = {
+    "local": {"init", "postgres", "server", "redis", "livekit", "recorder", "worker"},
+    "one-host": {"init", "postgres", "server", "redis", "livekit", "recorder", "worker", "entry"},
+    "two-hosts-data": {"init", "postgres", "server", "recorder", "worker", "link"},
+    "two-hosts-public": {"redis", "livekit", "entry", "link"},
+}
+BUILT = {"init", "server", "worker", "link"}
+# Services that run as root, each with the capabilities that it may add.
+ROOT = {
+    "init": {"CHOWN", "FOWNER"},
+    "entry": {"NET_BIND_SERVICE"},
+    "link": {"NET_ADMIN", "SETUID", "SETGID"},
+    # The loop of the worker container; a job runs as the user 10001 (ADR 0016).
+    "worker": {"SETUID", "SETGID", "KILL"},
+}
+# The recorder keeps the default capabilities of Docker and adds one (ADR 0015).
+KEEPS_DEFAULT_CAPABILITIES = {"recorder": {"SYS_ADMIN"}}
+NO_HEALTH_CHECK = {"init", "worker"}
+DATABASE_NETWORK = {"postgres", "server"}
+
+
+def check(form: str, project: dict) -> list[str]:
+    problems: list[str] = []
+    services = project["services"]
+    if set(services) != SERVICES[form]:
+        problems.append(f"services are {sorted(services)}, expected {sorted(SERVICES[form])}")
+
+    published = []
+    members: dict[str, set[str]] = {}
+    for name, service in services.items():
+        def problem(text: str, name: str = name) -> None:
+            problems.append(f"{name}: {text}")
+
+        for port in service.get("ports", []):
+            published.append((name, int(port["target"]), port.get("protocol", "tcp"), port.get("host_ip")))
+        if (service.get("network_mode") == "host") != (name in HOST_NETWORK[form]):
+            problem("wrong use of the network of the host")
+
+        image = service.get("image", "")
+        if name in BUILT:
+            if "build" not in service:
+                problem("is not built from the repository")
+        elif "@sha256:" not in image:
+            problem(f"image {image!r} is not pinned by digest")
+
+        for key in ("mem_limit", "cpus", "pids_limit"):
+            if not service.get(key):
+                problem(f"has no {key}")
+        logging = service.get("logging", {})
+        if logging.get("driver") != "json-file" or not logging.get("options", {}).get("max-size"):
+            problem("has no log limit")
+        expected_restart = "no" if name == "init" else "unless-stopped"
+        if service.get("restart", "no") != expected_restart:
+            problem(f"restart rule is {service.get('restart')!r}")
+        if name not in NO_HEALTH_CHECK and "healthcheck" not in service and name != "server":
+            problem("has no health check")
+
+        if service.get("privileged"):
+            problem("is privileged")
+        added = set(service.get("cap_add", []))
+        if name in KEEPS_DEFAULT_CAPABILITIES:
+            if added != KEEPS_DEFAULT_CAPABILITIES[name]:
+                problem(f"adds the capabilities {sorted(added)}")
+        else:
+            if service.get("cap_drop") != ["ALL"]:
+                problem("does not drop every capability")
+            if "no-new-privileges:true" not in service.get("security_opt", []):
+                problem("may gain new privileges")
+            if added != ROOT.get(name, set()):
+                problem(f"adds the capabilities {sorted(added)}")
+            user = str(service.get("user", ""))
+            is_root = user in ("", "root") or user.split(":")[0] == "0"
+            # The server image names its user itself.
+            if name == "server" and user == "":
+                is_root = False
+            if is_root != (name in ROOT):
+                problem(f"user is {user!r}")
+            if not service.get("read_only"):
+                problem("file system is not read-only")
+
+        networks = set(service.get("networks", {}) or {})
+        if ("database" in networks) != (name in DATABASE_NETWORK and "postgres" in services):
+            problem("wrong use of the network of the database")
+        for network in networks - {"database", "backend"}:
+            members.setdefault(network, set()).add(name)
+        if name == "worker" and service.get("network_mode") != "none":
+            problem("has a network")
+        if name == "worker" and service.get("environment", {}).get("JUNTO_WORKER_JOB_USER") != "10001:10001":
+            problem("does not run its jobs as the user 10001")
+        for volume in service.get("volumes", []):
+            if volume.get("source") == "/var/run/docker.sock" or volume.get("target") == "/var/run/docker.sock":
+                problem("mounts the Docker socket")
+
+    if "database" in project.get("networks", {}) and not project["networks"]["database"].get("internal"):
+        problems.append("the network of the database is not internal")
+    if members != OTHER_NETWORKS[form]:
+        problems.append(f"other networks have the containers {members}, expected {OTHER_NETWORKS[form]}")
+    if sorted(published, key=repr) != sorted(PUBLISHED[form], key=repr):
+        problems.append(f"published ports are {published}, expected {PUBLISHED[form]}")
+    return problems
+
+
+def main() -> int:
+    form, path = sys.argv[1], sys.argv[2]
+    with open(path, encoding="utf-8") as file:
+        project = json.load(file)
+    problems = check(form, project)
+    for text in problems:
+        print(f"      {form}: {text}")
+    return 1 if problems else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

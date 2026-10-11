@@ -1,0 +1,167 @@
+# Form 1 of ADR 0003: every component on one host with a public address.
+#
+#   cd deploy && docker compose -f one-host.yaml up -d --build
+#
+# The media server and the entry use the network of the host. No other container publishes
+# a port. The media server reaches Redis and the server, and the entry reaches the server,
+# at fixed addresses of the network "backend"; the server reaches the API of the media
+# server at the address of the host on that network (ADR 0015).
+
+name: junto
+
+services:
+  init:
+    extends:
+      file: base.yaml
+      service: init
+    command:
+      - /var/lib/postgresql/data:70:70:0700
+      - /var/lib/junto/attachments:1001:1001:0700
+      - /var/lib/junto/recordings:1001:10001:0750
+      - /var/lib/junto/spool:1001:10002:0750
+      - /home/egress/tmp:1001:0:0700
+    volumes:
+      - postgres:/var/lib/postgresql/data
+      - attachments:/var/lib/junto/attachments
+      - recordings:/var/lib/junto/recordings
+      - spool:/var/lib/junto/spool
+      - recorder-work:/home/egress/tmp
+
+  postgres:
+    extends:
+      file: base.yaml
+      service: postgres
+    environment:
+      POSTGRES_PASSWORD: ${JUNTO_POSTGRES_PASSWORD:?set JUNTO_POSTGRES_PASSWORD in deploy/.env (deploy/generate-secrets.sh)}
+    networks: [database]
+
+  server:
+    extends:
+      file: base.yaml
+      service: server
+    environment:
+      JUNTO_DATABASE_URL: postgres://junto:${JUNTO_POSTGRES_PASSWORD:?set JUNTO_POSTGRES_PASSWORD in deploy/.env (deploy/generate-secrets.sh)}@postgres:5432/junto
+      JUNTO_LIVEKIT_API_KEY: ${JUNTO_LIVEKIT_API_KEY:?set JUNTO_LIVEKIT_API_KEY in deploy/.env (deploy/generate-secrets.sh)}
+      JUNTO_LIVEKIT_API_SECRET: ${JUNTO_LIVEKIT_API_SECRET:?set JUNTO_LIVEKIT_API_SECRET in deploy/.env (deploy/generate-secrets.sh)}
+      JUNTO_PUBLIC_ORIGINS: https://${JUNTO_SERVER_HOST:?set JUNTO_SERVER_HOST in deploy/.env}
+      JUNTO_TRUSTED_PROXIES: ${JUNTO_BACKEND_GATEWAY:-172.31.240.1}
+      JUNTO_LIVEKIT_API_URL: http://${JUNTO_BACKEND_GATEWAY:-172.31.240.1}:7880
+      JUNTO_LIVEKIT_URL: wss://${JUNTO_LIVEKIT_HOST:?set JUNTO_LIVEKIT_HOST in deploy/.env}
+      JUNTO_RECORDER_LAYOUT_URL: http://server:8080/recording-layout/
+    networks:
+      database:
+      backend:
+        ipv4_address: ${JUNTO_BACKEND_SERVER:-172.31.240.10}
+
+  redis:
+    extends:
+      file: base.yaml
+      service: redis
+    environment:
+      REDIS_PASSWORD: ${JUNTO_REDIS_PASSWORD:?set JUNTO_REDIS_PASSWORD in deploy/.env (deploy/generate-secrets.sh)}
+      REDISCLI_AUTH: ${JUNTO_REDIS_PASSWORD:?set JUNTO_REDIS_PASSWORD in deploy/.env (deploy/generate-secrets.sh)}
+    networks:
+      backend:
+        ipv4_address: ${JUNTO_BACKEND_REDIS:-172.31.240.11}
+
+  livekit:
+    extends:
+      file: base.yaml
+      service: livekit
+    network_mode: host
+    environment:
+      JUNTO_CHECK_1: ${JUNTO_LIVEKIT_API_KEY:?set JUNTO_LIVEKIT_API_KEY in deploy/.env}
+      JUNTO_CHECK_2: ${JUNTO_LIVEKIT_API_SECRET:?set JUNTO_LIVEKIT_API_SECRET in deploy/.env}
+      JUNTO_CHECK_3: ${JUNTO_REDIS_PASSWORD:?set JUNTO_REDIS_PASSWORD in deploy/.env}
+      LIVEKIT_CONFIG: |
+        port: 7880
+        bind_addresses:
+          - 127.0.0.1
+          - ${JUNTO_BACKEND_GATEWAY:-172.31.240.1}
+        keys:
+          ${JUNTO_LIVEKIT_API_KEY:?set JUNTO_LIVEKIT_API_KEY in deploy/.env (deploy/generate-secrets.sh)}: ${JUNTO_LIVEKIT_API_SECRET:?set JUNTO_LIVEKIT_API_SECRET in deploy/.env (deploy/generate-secrets.sh)}
+        redis:
+          address: ${JUNTO_BACKEND_REDIS:-172.31.240.11}:6379
+          password: ${JUNTO_REDIS_PASSWORD:?set JUNTO_REDIS_PASSWORD in deploy/.env (deploy/generate-secrets.sh)}
+        rtc:
+          tcp_port: 7881
+          udp_port: 7882
+          use_external_ip: false
+          node_ip: ${JUNTO_PUBLIC_IP:?set JUNTO_PUBLIC_IP in deploy/.env}
+          stun_servers:
+            - ${JUNTO_TURN_HOST:?set JUNTO_TURN_HOST in deploy/.env}:3478
+        turn:
+          enabled: true
+          domain: ${JUNTO_TURN_HOST:?set JUNTO_TURN_HOST in deploy/.env}
+          tls_port: 5349
+          external_tls: true
+          udp_port: 3478
+        webhook:
+          api_key: ${JUNTO_LIVEKIT_API_KEY:?set JUNTO_LIVEKIT_API_KEY in deploy/.env}
+          urls:
+            - http://${JUNTO_BACKEND_SERVER:-172.31.240.10}:8080/internal/media/notifications
+        logging:
+          level: info
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  recorder:
+    extends:
+      file: base.yaml
+      service: recorder
+    environment:
+      EGRESS_CONFIG_BODY: |
+        api_key: ${JUNTO_LIVEKIT_API_KEY:?set JUNTO_LIVEKIT_API_KEY in deploy/.env}
+        api_secret: ${JUNTO_LIVEKIT_API_SECRET:?set JUNTO_LIVEKIT_API_SECRET in deploy/.env}
+        ws_url: wss://${JUNTO_LIVEKIT_HOST:?set JUNTO_LIVEKIT_HOST in deploy/.env}
+        health_port: 9090
+        redis:
+          address: redis:6379
+          password: ${JUNTO_REDIS_PASSWORD:?set JUNTO_REDIS_PASSWORD in deploy/.env}
+        logging:
+          level: info
+        cpu_cost:
+          max_cpu_utilization: 0.8
+          room_composite_cpu_cost: 3.0
+          track_composite_cpu_cost: 0.5
+          track_cpu_cost: 0.1
+    networks: [backend]
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker:
+    extends:
+      file: base.yaml
+      service: worker
+    volumes:
+      - ${JUNTO_MODELS_DIR:?set JUNTO_MODELS_DIR in deploy/.env to the directory of the transcription models}:/models:ro
+
+  entry:
+    extends:
+      file: base.yaml
+      service: entry
+    environment:
+      JUNTO_ACME_EMAIL: ${JUNTO_ACME_EMAIL:?set JUNTO_ACME_EMAIL in deploy/.env}
+      JUNTO_SERVER_HOST: ${JUNTO_SERVER_HOST:?set JUNTO_SERVER_HOST in deploy/.env}
+      JUNTO_LIVEKIT_HOST: ${JUNTO_LIVEKIT_HOST:?set JUNTO_LIVEKIT_HOST in deploy/.env}
+      JUNTO_TURN_HOST: ${JUNTO_TURN_HOST:?set JUNTO_TURN_HOST in deploy/.env}
+      JUNTO_ENTRY_SERVER_UPSTREAM: ${JUNTO_BACKEND_SERVER:-172.31.240.10}:8080
+
+volumes:
+  postgres:
+  attachments:
+  recordings:
+  spool:
+  recorder-work:
+  entry-data:
+
+networks:
+  database:
+    internal: true
+  backend:
+    ipam:
+      config:
+        - subnet: ${JUNTO_BACKEND_SUBNET:-172.31.240.0/24}
+          gateway: ${JUNTO_BACKEND_GATEWAY:-172.31.240.1}
