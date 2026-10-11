@@ -30,6 +30,8 @@ pub struct Snapshot {
     /// The direct-message conversations that the account has muted.
     #[serde(default)]
     pub direct_mutes: Vec<DirectMute>,
+    #[serde(default)]
+    pub messages: Vec<crate::message::MessageState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

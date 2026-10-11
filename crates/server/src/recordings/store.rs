@@ -373,12 +373,13 @@ async fn note(
     kind: &'static str,
     account_id: Option<AccountId>,
 ) -> ApiResult<()> {
+    let message_id = junto_protocol::ids::MessageId::generate();
     sqlx::query(
         "insert into call_notes
              (id, occurred_at, workspace_id, channel_id, call_id, kind, account_id, recording_id)
          values ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
-    .bind(Uuid::now_v7())
+    .bind(message_id)
     .bind(now)
     .bind(recording.workspace_id)
     .bind(recording.channel_id)
@@ -386,7 +387,21 @@ async fn note(
     .bind(kind)
     .bind(account_id)
     .bind(recording.id)
-    .execute(connection)
+    .execute(&mut *connection)
+    .await?;
+    crate::messages::system(
+        connection,
+        now,
+        recording.channel_id,
+        message_id,
+        &junto_protocol::message::SystemMessage {
+            action: kind.to_owned(),
+            actor_id: account_id,
+            recording_id: Some(recording.id),
+            subject_id: None,
+        },
+        Some(recording.call_id),
+    )
     .await?;
     Ok(())
 }
@@ -1261,6 +1276,36 @@ pub async fn remove(
         channel_id: recording.channel_id,
     };
     events::tell_of_recording(&mut *connection, now, call_runs, &event).await?;
+    let posts: Vec<(junto_protocol::ids::MessageId, i64, Option<Vec<AccountId>>)> = sqlx::query_as(
+        "select id, position, readers from messages
+         where recording_id=$1 and system->>'action'='recording_ready'",
+    )
+    .bind(recording.id)
+    .fetch_all(&mut *connection)
+    .await?;
+    for (id, position, readers) in posts {
+        crate::messages::erase(connection, now, id).await?;
+        events::log::record(
+            connection,
+            now,
+            &events::audience::Audience::SystemMessage {
+                workspace_id: recording.workspace_id,
+                channel_id: recording.channel_id,
+                call_id: recording.call_id,
+                readers,
+            },
+            &Event::MessageChanged {
+                place: junto_protocol::message::MessagePlace::Channel {
+                    workspace_id: recording.workspace_id,
+                    channel_id: recording.channel_id,
+                },
+                message_id: id,
+                position: position as u64,
+                deleted: true,
+            },
+        )
+        .await?;
+    }
     sqlx::query("delete from call_notes where recording_id = $1 and kind = 'recording_ready'")
         .bind(recording.id)
         .execute(&mut *connection)
@@ -1279,6 +1324,10 @@ pub async fn remove(
             queue_removal(&mut *connection, now, &rescued).await?;
         }
     }
+    let entry = AuditEvent::RecordingRemoved {
+        recording_id: recording.id,
+    };
+    audit::record(connection, now, Some(by), recording.about(), &entry).await?;
     sqlx::query("delete from recordings where id = $1")
         .bind(recording.id)
         .execute(&mut *connection)
@@ -1286,8 +1335,5 @@ pub async fn remove(
     storage::release(&mut *connection, recording.id.as_uuid()).await?;
     let place = crate::recordings::files::Place::recording(recording.id);
     queue_removal(&mut *connection, now, &place).await?;
-    let entry = AuditEvent::RecordingRemoved {
-        recording_id: recording.id,
-    };
-    audit::record(connection, now, Some(by), recording.about(), &entry).await
+    Ok(())
 }

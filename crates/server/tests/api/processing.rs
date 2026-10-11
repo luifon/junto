@@ -568,9 +568,22 @@ async fn the_final_state_is_an_event_for_the_people_who_see_the_channel() {
         .into_iter()
         .map(|(_, event)| event)
         .collect();
-    let [Event::RecordingUpdated { recording }] = &events[..] else {
+    let [
+        Event::MessageChanged {
+            message_id,
+            deleted: false,
+            ..
+        },
+        Event::RecordingUpdated { recording },
+    ] = &events[..]
+    else {
         panic!("{events:?}");
     };
+    let post: junto_protocol::message::Message = server
+        .get(&outsider, &format!("/api/v1/messages/{message_id}"))
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(post.system.unwrap().recording_id, Some(started.id));
     assert_eq!(recording.state, RecordingState::Ready);
     assert_eq!(recording.id, started.id);
 }

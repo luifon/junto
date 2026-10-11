@@ -926,6 +926,383 @@
         ]
       }
     },
+    "/api/v1/attachment-limits": {
+      "get": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "get_limits",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttachmentLimits"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "set_limits",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AttachmentLimits"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttachmentLimits"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/attachments": {
+      "post": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "start_upload",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartUpload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Upload"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/attachments/{attachment_id}/chunks/{offset}": {
+      "put": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "put_chunk",
+        "parameters": [
+          {
+            "name": "attachment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/AttachmentId"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Upload"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/attachments/{attachment_id}/complete": {
+      "post": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "complete_upload",
+        "parameters": [
+          {
+            "name": "attachment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/AttachmentId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Upload"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/attachments/{attachment_id}/file": {
+      "get": {
+        "tags": [
+          "messages"
+        ],
+        "summary": "Downloads the file, or one byte range. An outside range gets `range_not_satisfiable`.",
+        "operationId": "download",
+        "parameters": [
+          {
+            "name": "attachment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/AttachmentId"
+            }
+          },
+          {
+            "name": "Range",
+            "in": "header",
+            "description": "One range of bytes",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The whole file.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "206": {
+            "description": "The range stated by Content-Range.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/attachments/{attachment_id}/upload": {
+      "get": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "get_upload",
+        "parameters": [
+          {
+            "name": "attachment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/AttachmentId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Upload"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "cancel_upload",
+        "parameters": [
+          {
+            "name": "attachment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/AttachmentId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/audit-log": {
       "get": {
         "tags": [
@@ -2476,6 +2853,267 @@
         ]
       }
     },
+    "/api/v1/channels/{channel_id}/messages": {
+      "get": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "channel_history",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          },
+          {
+            "name": "before",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "after",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "before_message",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/MessageId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "name": "after_message",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/MessageId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessagePage"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "send_channel_message",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendMessage"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Message"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/channels/{channel_id}/messages/read": {
+      "get": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "channel_message_state",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageState"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "read_channel_messages",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarkRead"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageState"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/channels/{channel_id}/overrides": {
       "get": {
         "tags": [
@@ -2565,6 +3203,346 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ChannelOverride"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/conversations": {
+      "get": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "list_conversations",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Conversation"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "open_conversation",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenConversation"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Conversation"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/conversations/{conversation_id}/messages": {
+      "get": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "conversation_history",
+        "parameters": [
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ConversationId"
+            }
+          },
+          {
+            "name": "before",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "after",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "before_message",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/MessageId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "name": "after_message",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/MessageId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessagePage"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "send_conversation_message",
+        "parameters": [
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ConversationId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendMessage"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Message"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/conversations/{conversation_id}/messages/read": {
+      "get": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "conversation_message_state",
+        "parameters": [
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ConversationId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageState"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "read_conversation_messages",
+        "parameters": [
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ConversationId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarkRead"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageState"
                 }
               }
             }
@@ -3251,6 +4229,226 @@
               }
             }
           },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/messages/{message_id}": {
+      "get": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "get_message",
+        "parameters": [
+          {
+            "name": "message_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/MessageId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Message"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "edit_message",
+        "parameters": [
+          {
+            "name": "message_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/MessageId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EditMessage"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Message"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "delete_message",
+        "parameters": [
+          {
+            "name": "message_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/MessageId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/messages/{message_id}/reaction": {
+      "put": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "add_reaction",
+        "parameters": [
+          {
+            "name": "message_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/MessageId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetReaction"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/messages/{message_id}/reaction/{emoji}": {
+      "delete": {
+        "tags": [
+          "messages"
+        ],
+        "operationId": "remove_reaction",
+        "parameters": [
+          {
+            "name": "message_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/MessageId"
+            }
+          },
+          {
+            "name": "emoji",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
           "default": {
             "description": "An error. The field `error.code` states which one.",
             "content": {
@@ -5040,6 +6238,75 @@
           }
         }
       },
+      "Attachment": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "bytes",
+          "sha256",
+          "media_type"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "height": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "id": {
+            "$ref": "#/components/schemas/AttachmentId"
+          },
+          "media_type": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "width": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "AttachmentId": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "AttachmentLimits": {
+        "type": "object",
+        "required": [
+          "bytes_per_file",
+          "files_per_message"
+        ],
+        "properties": {
+          "bytes_per_file": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "files_per_message": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
       "AuditEntry": {
         "type": "object",
         "description": "One line of the audit log: who did it, what was done and when.",
@@ -6138,6 +7405,50 @@
                 "minimum": 0
               }
             }
+          },
+          {
+            "type": "object",
+            "required": [
+              "bytes_per_file",
+              "files_per_message",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "attachment_limits_changed"
+                ]
+              },
+              "bytes_per_file": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "files_per_message": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "message_id",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "permanent_message_deleted"
+                ]
+              },
+              "message_id": {
+                "$ref": "#/components/schemas/MessageId"
+              }
+            }
           }
         ],
         "description": "What was done. New actions are added; the fields of an existing action do not change.\n\nAn action that this build does not know is read as [`AuditEvent::Unknown`], so that a\nclient can show the entry with its time and its actor (ADR 0209). `Unknown` is never\nwritten."
@@ -6202,6 +7513,125 @@
             "minimum": 0
           }
         }
+      },
+      "Block": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "content",
+              "kind"
+            ],
+            "properties": {
+              "content": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Inline"
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "paragraph"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "content",
+              "kind"
+            ],
+            "properties": {
+              "content": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Inline"
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "quote"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "text",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "code"
+                ]
+              },
+              "language": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "text": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "ordered",
+              "items",
+              "kind"
+            ],
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Inline"
+                  }
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "list"
+                ]
+              },
+              "ordered": {
+                "type": "boolean"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "items",
+              "kind"
+            ],
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CheckItem"
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "checklist"
+                ]
+              }
+            }
+          }
+        ]
       },
       "BlockReason": {
         "type": "string",
@@ -6764,6 +8194,25 @@
           }
         }
       },
+      "CheckItem": {
+        "type": "object",
+        "required": [
+          "checked",
+          "content"
+        ],
+        "properties": {
+          "checked": {
+            "type": "boolean"
+          },
+          "content": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Inline"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
       "ClaimOwner": {
         "type": "object",
         "required": [
@@ -6785,6 +8234,29 @@
             "$ref": "#/components/schemas/Proof"
           }
         }
+      },
+      "Conversation": {
+        "type": "object",
+        "required": [
+          "id",
+          "low_account_id",
+          "high_account_id"
+        ],
+        "properties": {
+          "high_account_id": {
+            "$ref": "#/components/schemas/AccountId"
+          },
+          "id": {
+            "$ref": "#/components/schemas/ConversationId"
+          },
+          "low_account_id": {
+            "$ref": "#/components/schemas/AccountId"
+          }
+        }
+      },
+      "ConversationId": {
+        "type": "string",
+        "format": "uuid"
       },
       "CorrectLine": {
         "type": "object",
@@ -7049,6 +8521,33 @@
           }
         }
       },
+      "Document": {
+        "type": "object",
+        "required": [
+          "blocks"
+        ],
+        "properties": {
+          "blocks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Block"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "EditMessage": {
+        "type": "object",
+        "required": [
+          "document"
+        ],
+        "properties": {
+          "document": {
+            "$ref": "#/components/schemas/Document"
+          }
+        },
+        "additionalProperties": false
+      },
       "EntryRequest": {
         "type": "object",
         "description": "A request of a person outside to enter a locked or full voice channel.",
@@ -7271,6 +8770,124 @@
           "image/png",
           "image/jpeg",
           "image/webp"
+        ]
+      },
+      "Inline": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "text",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "text"
+                ]
+              },
+              "marks": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Mark"
+                }
+              },
+              "text": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "text",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "code"
+                ]
+              },
+              "text": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "text",
+              "url",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "link"
+                ]
+              },
+              "text": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "account_id",
+              "kind"
+            ],
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "account"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "role_id",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "role"
+                ]
+              },
+              "role_id": {
+                "$ref": "#/components/schemas/WorkspaceRoleId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "everyone"
+                ]
+              }
+            }
+          }
         ]
       },
       "Invite": {
@@ -7498,6 +9115,28 @@
           }
         }
       },
+      "Mark": {
+        "type": "string",
+        "enum": [
+          "bold",
+          "italic",
+          "strikethrough"
+        ]
+      },
+      "MarkRead": {
+        "type": "object",
+        "required": [
+          "position"
+        ],
+        "properties": {
+          "position": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
       "Meeting": {
         "type": "object",
         "description": "Meeting mode: every microphone except the presenter's is blocked (ADR 0505).",
@@ -7512,6 +9151,218 @@
           "started_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "Message": {
+        "type": "object",
+        "required": [
+          "id",
+          "place",
+          "position",
+          "created_at",
+          "permanent",
+          "attachments",
+          "reactions"
+        ],
+        "properties": {
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Attachment"
+            }
+          },
+          "author_id": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "author_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "deleted": {
+            "type": "boolean"
+          },
+          "document": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Document"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "edited_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "id": {
+            "$ref": "#/components/schemas/MessageId"
+          },
+          "permanent": {
+            "type": "boolean"
+          },
+          "place": {
+            "$ref": "#/components/schemas/MessagePlace"
+          },
+          "position": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Public sequence position; private system lines share the latest public position.",
+            "minimum": 0
+          },
+          "reactions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Reaction"
+            }
+          },
+          "reply_to": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MessageId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "system": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SystemMessage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "MessageId": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "MessagePage": {
+        "type": "object",
+        "required": [
+          "messages",
+          "has_more"
+        ],
+        "properties": {
+          "has_more": {
+            "type": "boolean"
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Message"
+            }
+          }
+        }
+      },
+      "MessagePlace": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "workspace_id",
+              "channel_id",
+              "kind"
+            ],
+            "properties": {
+              "channel_id": {
+                "$ref": "#/components/schemas/ChannelId"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "channel"
+                ]
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "conversation_id",
+              "low_account_id",
+              "high_account_id",
+              "kind"
+            ],
+            "properties": {
+              "conversation_id": {
+                "$ref": "#/components/schemas/ConversationId"
+              },
+              "high_account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "direct"
+                ]
+              },
+              "low_account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              }
+            }
+          }
+        ]
+      },
+      "MessageState": {
+        "type": "object",
+        "required": [
+          "place",
+          "last_read",
+          "latest",
+          "unread",
+          "mentions"
+        ],
+        "properties": {
+          "last_read": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "latest": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "mentions": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Exact through 99; 100 means 100 or more unread mentions.",
+            "minimum": 0
+          },
+          "place": {
+            "$ref": "#/components/schemas/MessagePlace"
+          },
+          "unread": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Exact through 99; 100 means 100 or more unread messages.",
+            "minimum": 0
           }
         }
       },
@@ -7561,6 +9412,18 @@
         "maxLength": 43,
         "minLength": 43,
         "pattern": "^[A-Za-z0-9_-]+$"
+      },
+      "OpenConversation": {
+        "type": "object",
+        "required": [
+          "account_id"
+        ],
+        "properties": {
+          "account_id": {
+            "$ref": "#/components/schemas/AccountId"
+          }
+        },
+        "additionalProperties": false
       },
       "Origin": {
         "type": "string",
@@ -7731,6 +9594,27 @@
         "maxLength": 43,
         "minLength": 43,
         "pattern": "^[A-Za-z0-9_-]+$"
+      },
+      "Reaction": {
+        "type": "object",
+        "required": [
+          "emoji",
+          "count",
+          "own"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "emoji": {
+            "type": "string"
+          },
+          "own": {
+            "type": "boolean"
+          }
+        }
       },
       "Recording": {
         "type": "object",
@@ -8374,6 +10258,34 @@
           "not_transcribed"
         ]
       },
+      "SendMessage": {
+        "type": "object",
+        "required": [
+          "document"
+        ],
+        "properties": {
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttachmentId"
+            }
+          },
+          "document": {
+            "$ref": "#/components/schemas/Document"
+          },
+          "reply_to": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MessageId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
       "ServerId": {
         "type": "string",
         "format": "uuid",
@@ -8517,6 +10429,18 @@
           }
         }
       },
+      "SetReaction": {
+        "type": "object",
+        "required": [
+          "emoji"
+        ],
+        "properties": {
+          "emoji": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
       "ShareAudio": {
         "type": "string",
         "description": "The sound that a screen share sends (ADR 0502).",
@@ -8570,6 +10494,12 @@
               "$ref": "#/components/schemas/DirectMute"
             },
             "description": "The direct-message conversations that the account has muted."
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MessageState"
+            }
           },
           "own_call": {
             "oneOf": [
@@ -8638,10 +10568,93 @@
           }
         }
       },
+      "StartUpload": {
+        "type": "object",
+        "required": [
+          "name",
+          "bytes",
+          "sha256"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "channel_id": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ChannelId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "conversation_id": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ConversationId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
       "StreamEpoch": {
         "type": "string",
         "format": "uuid",
         "description": "Identifies one history of event positions. It changes when positions start again."
+      },
+      "SystemMessage": {
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "actor_id": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recording_id": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RecordingId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subject_id": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
       },
       "Transcript": {
         "type": "object",
@@ -9079,6 +11092,38 @@
             "items": {
               "$ref": "#/components/schemas/WorkspacePermission"
             }
+          }
+        }
+      },
+      "Upload": {
+        "type": "object",
+        "required": [
+          "id",
+          "received",
+          "bytes",
+          "complete",
+          "expires_at"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "$ref": "#/components/schemas/AttachmentId"
+          },
+          "received": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },

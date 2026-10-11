@@ -174,9 +174,19 @@ pub async fn channel_deleted(
     record(connection, now, &audience, &event).await
 }
 
-async fn record(
+pub(crate) async fn record(
     connection: &mut PgConnection,
     now: OffsetDateTime,
+    audience: &Audience,
+    event: &Event,
+) -> ApiResult<()> {
+    record_at_id(connection, now, Uuid::now_v7(), audience, event).await
+}
+
+pub(crate) async fn record_at_id(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    id: Uuid,
     audience: &Audience,
     event: &Event,
 ) -> ApiResult<()> {
@@ -207,7 +217,7 @@ async fn record(
               revalidates_account_id, payload)
          values ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
-    .bind(Uuid::now_v7())
+    .bind(id)
     .bind(now)
     .bind(Class::of(event).stored())
     .bind(event.name())

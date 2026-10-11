@@ -120,6 +120,7 @@ pub async fn get_snapshot(
             }
         }
         let direct_mutes = calls::direct_mutes(connection, now, access.account_id).await?;
+        let messages = crate::messages::snapshot(connection, &access, &workspaces).await?;
         Ok(Snapshot {
             cursor: log.cursor(log.head)?,
             account,
@@ -128,6 +129,7 @@ pub async fn get_snapshot(
             direct_calls,
             call_invitations,
             direct_mutes,
+            messages,
         })
     })
     .map(Json)

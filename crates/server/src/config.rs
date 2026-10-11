@@ -289,6 +289,7 @@ pub struct Config {
     pub media: Option<MediaSettings>,
     /// Absent: the server has no recorder and no recording starts.
     pub recorder: Option<RecorderSettings>,
+    pub attachments_directory: Option<PathBuf>,
     pub limits: Limits,
 }
 
@@ -429,6 +430,8 @@ pub struct Limits {
     pub request_bodies_held_bytes: usize,
     /// The bytes of request bodies that the server holds at one time for one client address.
     pub request_bodies_held_per_address: usize,
+    pub attachment_bytes: u64,
+    pub attachments_per_message: usize,
     pub avatar_bytes: usize,
     pub avatar_longest_side: u32,
     pub calls: CallLimits,
@@ -563,6 +566,8 @@ impl Default for Limits {
             request_body_drained_bytes: 16 * 1024 * 1024,
             request_bodies_held_bytes: 64 * 1024 * 1024,
             request_bodies_held_per_address: 4 * 1024 * 1024,
+            attachment_bytes: 100_000_000,
+            attachments_per_message: 10,
             avatar_bytes: 256 * 1024,
             avatar_longest_side: 1024,
             calls: CallLimits::default(),
@@ -829,7 +834,44 @@ impl Config {
             }
         };
 
+        let attachments_directory = value("JUNTO_ATTACHMENTS_DIR").map(PathBuf::from);
+        if attachments_directory
+            .as_ref()
+            .is_some_and(|p| !p.is_absolute() || !p.is_dir())
+        {
+            return Err(invalid(
+                "JUNTO_ATTACHMENTS_DIR",
+                "expected an existing absolute directory".to_owned(),
+            ));
+        }
+        let mut limits = limits;
+        if let Some(v) = value("JUNTO_ATTACHMENT_BYTES") {
+            limits.attachment_bytes = v
+                .parse()
+                .map_err(|_| invalid("JUNTO_ATTACHMENT_BYTES", "expected bytes".to_owned()))?;
+            if !(1..=1_073_741_824).contains(&limits.attachment_bytes) {
+                return Err(invalid(
+                    "JUNTO_ATTACHMENT_BYTES",
+                    "expected 1 to 1073741824".to_owned(),
+                ));
+            }
+        }
+        if let Some(v) = value("JUNTO_ATTACHMENTS_PER_MESSAGE") {
+            limits.attachments_per_message = v.parse().map_err(|_| {
+                invalid(
+                    "JUNTO_ATTACHMENTS_PER_MESSAGE",
+                    "expected a count".to_owned(),
+                )
+            })?;
+            if !(1..=100).contains(&limits.attachments_per_message) {
+                return Err(invalid(
+                    "JUNTO_ATTACHMENTS_PER_MESSAGE",
+                    "expected 1 to 100".to_owned(),
+                ));
+            }
+        }
         Ok(Self {
+            attachments_directory,
             database_url,
             listen_address,
             public_origins,
@@ -1169,5 +1211,38 @@ mod tests {
         )]))
         .unwrap();
         assert!(!format!("{config:?}").contains("database-password"));
+    }
+    #[test]
+    fn attachment_settings_require_an_existing_directory_and_bounded_limits() {
+        const DATABASE: (&str, &str) = ("JUNTO_DATABASE_URL", "postgres://db.example.test/junto");
+        let config = Config::from_lookup(lookup(&[
+            DATABASE,
+            ("JUNTO_ATTACHMENTS_DIR", "/tmp"),
+            ("JUNTO_ATTACHMENT_BYTES", "1024"),
+            ("JUNTO_ATTACHMENTS_PER_MESSAGE", "3"),
+        ]))
+        .unwrap();
+        assert_eq!(config.limits.attachment_bytes, 1024);
+        assert_eq!(config.limits.attachments_per_message, 3);
+        for (name, value) in [
+            ("JUNTO_ATTACHMENTS_DIR", "/nonexistent/junto-attachments"),
+            ("JUNTO_ATTACHMENTS_DIR", "relative"),
+            ("JUNTO_ATTACHMENT_BYTES", "0"),
+            ("JUNTO_ATTACHMENT_BYTES", "1073741825"),
+            ("JUNTO_ATTACHMENTS_PER_MESSAGE", "0"),
+            ("JUNTO_ATTACHMENTS_PER_MESSAGE", "101"),
+        ] {
+            assert!(
+                Config::from_lookup(move |key| if key == name {
+                    Some(value.to_owned())
+                } else if key == DATABASE.0 {
+                    Some(DATABASE.1.to_owned())
+                } else {
+                    None
+                })
+                .is_err(),
+                "{name}={value}"
+            );
+        }
     }
 }

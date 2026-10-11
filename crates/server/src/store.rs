@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use junto_authz::{Acquaintance, Contact, Request};
 use junto_protocol::account::{
@@ -659,4 +659,50 @@ pub async fn recover(
     };
     events::tell_account(connection, now, account_id, &recovered).await?;
     Ok(notice)
+}
+
+/// Contact standing for a set of peers, loaded without a query per conversation.
+pub async fn contacts(
+    connection: &mut PgConnection,
+    access: &Access,
+    accounts: &[AccountId],
+) -> ApiResult<HashMap<AccountId, Contact>> {
+    let rows: Vec<(AccountId, bool, Vec<i64>)> = sqlx::query_as(
+        "select a.id,coalesce(a.id=s.owner_account_id,false),
+                coalesce(array_agg(r.permissions) filter(where r.id is not null),'{}')
+         from accounts a cross join server_state s
+         left join account_server_roles held on held.account_id=a.id
+         left join server_roles r on r.id=held.role_id
+         where a.id=any($1) and a.status='active'
+         group by a.id,s.owner_account_id",
+    )
+    .bind(accounts)
+    .fetch_all(&mut *connection)
+    .await?;
+    let fellows = fellow_members(connection, access.account_id, accounts).await?;
+    rows.into_iter()
+        .map(|(id, owner, roles)| {
+            let actor = junto_authz::Actor {
+                position: if owner {
+                    junto_authz::Position::Owner
+                } else {
+                    junto_authz::Position::Member
+                },
+                server_roles: roles
+                    .into_iter()
+                    .map(db::server_permissions)
+                    .collect::<ApiResult<_>>()?,
+            };
+            Ok((
+                id,
+                if fellows.contains(&id) {
+                    Contact::SharedWorkspace
+                } else if actor.is_administrator() {
+                    Contact::Administrator
+                } else {
+                    Contact::Unrelated
+                },
+            ))
+        })
+        .collect()
 }

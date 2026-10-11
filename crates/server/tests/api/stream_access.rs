@@ -83,7 +83,7 @@ async fn the_background_level_receives_control_events_only() {
     let channel = server.channel(&owner, workspace.id, "plans").await;
     rename_channel(&server, &owner, channel.id, "roadmap").await;
     set_roles(&server, &owner, workspace.id, &member, &helpers, true).await;
-    let mut in_full = full.events(5).await;
+    let mut in_full = full.events(7).await;
     let mut in_background = background.events(1).await;
     server
         .delete(&owner, &format!("/api/v1/channels/{}", channel.id))
@@ -114,7 +114,9 @@ async fn the_background_level_receives_control_events_only() {
         types(&in_full),
         [
             "category_created",
+            "message_changed",
             "channel_created",
+            "message_changed",
             "channel_updated",
             "workspace_member_roles_changed",
             "permissions_changed",
@@ -148,9 +150,9 @@ async fn an_account_in_a_call_receives_every_event_of_the_channel_of_the_call() 
     rename_channel(&server, &owner, call.id, "call-2").await;
     server.category(&owner, workspace.id, "Projects", 0).await;
     let during = server.traffic(&member, &mut background).await;
-    assert_eq!(types(&during), ["channel_updated"]);
+    assert_eq!(types(&during), ["message_changed", "channel_updated"]);
     assert!(matches!(
-        &during[0].1,
+        &during[1].1,
         Event::ChannelUpdated { channel } if channel.id == call.id
     ));
 
@@ -236,8 +238,11 @@ async fn a_permission_removed_while_events_wait_hides_them() {
     assert_eq!(
         types(&kept),
         [
+            "message_changed",
             "channel_updated",
+            "message_changed",
             "channel_updated",
+            "message_changed",
             "channel_updated",
             "workspace_member_roles_changed"
         ]
@@ -367,6 +372,7 @@ async fn a_permission_granted_while_events_wait_shows_them() {
     assert_eq!(
         types(&received),
         [
+            "message_changed",
             "channel_updated",
             "workspace_member_roles_changed",
             "permissions_changed"
@@ -409,8 +415,8 @@ async fn nothing_about_a_private_channel_reaches_an_account_that_cannot_see_it()
         )
         .await
         .ok::<Value>(StatusCode::OK);
-    let mut to_manager = managing.events(3).await;
-    let mut to_insider = inside.events(2).await;
+    let mut to_manager = managing.events(6).await;
+    let mut to_insider = inside.events(5).await;
     server
         .delete(owner, &format!("/api/v1/channels/{channel_id}"))
         .await
@@ -419,14 +425,24 @@ async fn nothing_about_a_private_channel_reaches_an_account_that_cannot_see_it()
     to_insider.extend(server.traffic(&world.insider, &mut inside).await);
     assert_eq!(
         types(&to_insider),
-        ["channel_updated", "channel_updated", "channel_deleted"]
+        [
+            "message_changed",
+            "channel_updated",
+            "message_changed",
+            "channel_updated",
+            "message_changed",
+            "channel_deleted"
+        ]
     );
     to_manager.extend(server.traffic(owner, &mut managing).await);
     assert_eq!(
         types(&to_manager),
         [
+            "message_changed",
             "channel_updated",
+            "message_changed",
             "channel_updated",
+            "message_changed",
             "channel_override_set",
             "channel_deleted"
         ]
@@ -507,8 +523,8 @@ async fn the_events_of_a_workspace_reach_its_members_and_administrators_only() {
         .await
         .empty(StatusCode::NO_CONTENT);
     set_roles(&server, &owner, closed.id, &newcomer, &helpers, true).await;
-    let mut to_owner = inside.events(5).await;
-    let mut to_administrator = overseeing.events(5).await;
+    let mut to_owner = inside.events(6).await;
+    let mut to_administrator = overseeing.events(6).await;
     server
         .delete(&owner, &format!("/api/v1/channels/{}", channel.id))
         .await
@@ -516,6 +532,7 @@ async fn the_events_of_a_workspace_reach_its_members_and_administrators_only() {
 
     let expected = [
         "category_created",
+        "message_changed",
         "channel_created",
         "workspace_role_created",
         "workspace_member_added",

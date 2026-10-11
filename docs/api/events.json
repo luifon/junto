@@ -112,6 +112,24 @@
       ],
       "type": "object"
     },
+    "attachment_limits_changed": {
+      "properties": {
+        "limits": {
+          "$ref": "#/components/schemas/AttachmentLimits"
+        },
+        "type": {
+          "enum": [
+            "attachment_limits_changed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "limits",
+        "type"
+      ],
+      "type": "object"
+    },
     "call_access_ended": {
       "description": "The account of the recipient lost the access to a voice channel, or can no longer\nreach the other account of a direct message, while something of it waited there: an\ninvitation that it got or made, a request to enter, a move, or a direct-message call.\nThose have ended, and no outcome of them follows. The event names nothing: the client\ndiscards what it holds for the places that it can no longer see.",
       "properties": {
@@ -686,6 +704,24 @@
       ],
       "type": "object"
     },
+    "conversation_opened": {
+      "properties": {
+        "conversation": {
+          "$ref": "#/components/schemas/Conversation"
+        },
+        "type": {
+          "enum": [
+            "conversation_opened"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "conversation",
+        "type"
+      ],
+      "type": "object"
+    },
     "device_added": {
       "description": "A device was added to the account of the recipient.",
       "properties": {
@@ -994,6 +1030,94 @@
       "required": [
         "join_request_id",
         "state",
+        "type"
+      ],
+      "type": "object"
+    },
+    "message_changed": {
+      "properties": {
+        "deleted": {
+          "type": "boolean"
+        },
+        "message_id": {
+          "$ref": "#/components/schemas/MessageId"
+        },
+        "place": {
+          "$ref": "#/components/schemas/MessagePlace"
+        },
+        "position": {
+          "format": "int64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "type": {
+          "enum": [
+            "message_changed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "place",
+        "message_id",
+        "position",
+        "deleted",
+        "type"
+      ],
+      "type": "object"
+    },
+    "message_mentioned": {
+      "properties": {
+        "channel_id": {
+          "$ref": "#/components/schemas/ChannelId"
+        },
+        "message_id": {
+          "$ref": "#/components/schemas/MessageId"
+        },
+        "position": {
+          "format": "int64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "type": {
+          "enum": [
+            "message_mentioned"
+          ],
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/components/schemas/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "channel_id",
+        "message_id",
+        "position",
+        "type"
+      ],
+      "type": "object"
+    },
+    "message_read": {
+      "properties": {
+        "place": {
+          "$ref": "#/components/schemas/MessagePlace"
+        },
+        "position": {
+          "format": "int64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "type": {
+          "enum": [
+            "message_read"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "place",
+        "position",
         "type"
       ],
       "type": "object"
@@ -1499,6 +1623,26 @@
         ],
         "type": "object"
       },
+      "AttachmentLimits": {
+        "additionalProperties": false,
+        "properties": {
+          "bytes_per_file": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "files_per_message": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "bytes_per_file",
+          "files_per_message"
+        ],
+        "type": "object"
+      },
       "Avatar": {
         "description": "The stored avatar of an account. The image itself is read from\n`GET /api/v1/accounts/{account_id}/avatar`.",
         "properties": {
@@ -1884,6 +2028,29 @@
             "type": "object"
           }
         ]
+      },
+      "Conversation": {
+        "properties": {
+          "high_account_id": {
+            "$ref": "#/components/schemas/AccountId"
+          },
+          "id": {
+            "$ref": "#/components/schemas/ConversationId"
+          },
+          "low_account_id": {
+            "$ref": "#/components/schemas/AccountId"
+          }
+        },
+        "required": [
+          "id",
+          "low_account_id",
+          "high_account_id"
+        ],
+        "type": "object"
+      },
+      "ConversationId": {
+        "format": "uuid",
+        "type": "string"
       },
       "Cursor": {
         "description": "A place in the order of the events of one server. An event with a position at or below the\nposition of a cursor is covered by the state that the cursor belongs to.",
@@ -3401,6 +3568,130 @@
               "type"
             ],
             "type": "object"
+          },
+          {
+            "properties": {
+              "conversation": {
+                "$ref": "#/components/schemas/Conversation"
+              },
+              "type": {
+                "enum": [
+                  "conversation_opened"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "conversation",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "limits": {
+                "$ref": "#/components/schemas/AttachmentLimits"
+              },
+              "type": {
+                "enum": [
+                  "attachment_limits_changed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "limits",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "channel_id": {
+                "$ref": "#/components/schemas/ChannelId"
+              },
+              "message_id": {
+                "$ref": "#/components/schemas/MessageId"
+              },
+              "position": {
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "enum": [
+                  "message_mentioned"
+                ],
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            },
+            "required": [
+              "workspace_id",
+              "channel_id",
+              "message_id",
+              "position",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "deleted": {
+                "type": "boolean"
+              },
+              "message_id": {
+                "$ref": "#/components/schemas/MessageId"
+              },
+              "place": {
+                "$ref": "#/components/schemas/MessagePlace"
+              },
+              "position": {
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "enum": [
+                  "message_changed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "place",
+              "message_id",
+              "position",
+              "deleted",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "place": {
+                "$ref": "#/components/schemas/MessagePlace"
+              },
+              "position": {
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "enum": [
+                  "message_read"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "place",
+              "position",
+              "type"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -3570,6 +3861,62 @@
           "presenter_left"
         ],
         "type": "string"
+      },
+      "MessageId": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "MessagePlace": {
+        "oneOf": [
+          {
+            "properties": {
+              "channel_id": {
+                "$ref": "#/components/schemas/ChannelId"
+              },
+              "kind": {
+                "enum": [
+                  "channel"
+                ],
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            },
+            "required": [
+              "workspace_id",
+              "channel_id",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "conversation_id": {
+                "$ref": "#/components/schemas/ConversationId"
+              },
+              "high_account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "kind": {
+                "enum": [
+                  "direct"
+                ],
+                "type": "string"
+              },
+              "low_account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              }
+            },
+            "required": [
+              "conversation_id",
+              "low_account_id",
+              "high_account_id",
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "MicrophoneBlock": {
         "description": "A block of a person's microphone. The server enforces it: the person cannot send audio.",

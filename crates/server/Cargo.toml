@@ -29,6 +29,7 @@ junto-protocol = { workspace = true, features = ["sqlx", "openapi"] }
 axum = { workspace = true }
 base64 = { workspace = true }
 ed25519-dalek = { workspace = true }
+emojis = "0.8"
 futures-util = { workspace = true }
 getrandom = { workspace = true }
 hyper = { workspace = true }

@@ -21,6 +21,7 @@ use crate::rate_limit::{client_address, limiter_key};
 use crate::state::AppState;
 
 pub mod account;
+pub mod attachments;
 pub mod audit_log;
 pub mod auth;
 pub mod calls;
@@ -29,6 +30,7 @@ pub mod glossary;
 pub mod health;
 pub mod internal;
 pub mod invites;
+pub mod messages;
 pub mod moderation;
 pub mod recordings;
 pub mod server_info;
@@ -91,6 +93,39 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::with_openapi(ApiDocument::openapi())
         .routes(routes!(server_info::get_server_info))
         .routes(routes!(health::get_health))
+        .routes(routes!(attachments::start_upload))
+        .routes(routes!(attachments::get_limits, attachments::set_limits))
+        .routes(routes!(attachments::get_upload, attachments::cancel_upload))
+        .routes(routes!(attachments::put_chunk))
+        .routes(routes!(attachments::complete_upload))
+        .routes(routes!(attachments::download))
+        .routes(routes!(
+            messages::channel_history,
+            messages::send_channel_message
+        ))
+        .routes(routes!(
+            messages::conversation_history,
+            messages::send_conversation_message
+        ))
+        .routes(routes!(
+            messages::read_channel_messages,
+            messages::channel_message_state
+        ))
+        .routes(routes!(
+            messages::read_conversation_messages,
+            messages::conversation_message_state
+        ))
+        .routes(routes!(
+            messages::get_message,
+            messages::edit_message,
+            messages::delete_message
+        ))
+        .routes(routes!(messages::add_reaction))
+        .routes(routes!(messages::remove_reaction))
+        .routes(routes!(
+            messages::open_conversation,
+            messages::list_conversations
+        ))
         .routes(routes!(auth::create_challenge))
         .routes(routes!(auth::log_in))
         .routes(routes!(auth::log_out))

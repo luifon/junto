@@ -529,6 +529,12 @@ async fn the_log_keeps_a_bounded_number_of_positions_and_older_cursors_need_a_sn
 }
 
 pub fn sorted(mut snapshot: Snapshot) -> Snapshot {
+    snapshot.messages.sort_by_key(|m| match m.place {
+        junto_protocol::message::MessagePlace::Channel { channel_id, .. } => channel_id.as_uuid(),
+        junto_protocol::message::MessagePlace::Direct {
+            conversation_id, ..
+        } => conversation_id.as_uuid(),
+    });
     snapshot.workspaces.sort_by_key(|state| state.workspace.id);
     for state in &mut snapshot.workspaces {
         state
@@ -553,7 +559,25 @@ fn upsert<T, K: PartialEq>(items: &mut Vec<T>, item: T, key: impl Fn(&T) -> K) {
 }
 
 /// Applies an event to a snapshot as a client does.
-pub fn apply(snapshot: &mut Snapshot, event: Event) {
+pub async fn apply(server: &TestServer, member: &Member, snapshot: &mut Snapshot, event: Event) {
+    if let Event::MessageChanged { place, .. } | Event::MessageRead { place, .. } = &event {
+        let path = match place {
+            junto_protocol::message::MessagePlace::Channel { channel_id, .. } => {
+                format!("/api/v1/channels/{channel_id}/messages/read")
+            }
+            junto_protocol::message::MessagePlace::Direct {
+                conversation_id, ..
+            } => format!("/api/v1/conversations/{conversation_id}/messages/read"),
+        };
+        let reply = server.get(member, &path).await;
+        if reply.status == StatusCode::NOT_FOUND {
+            snapshot.messages.retain(|m| m.place != *place);
+        } else {
+            let current: junto_protocol::message::MessageState = reply.ok(StatusCode::OK);
+            upsert(&mut snapshot.messages, current, |m| m.place);
+        }
+    }
+
     let state = |snapshot: &mut Snapshot, workspace_id: WorkspaceId| -> Option<usize> {
         snapshot
             .workspaces
@@ -600,6 +624,7 @@ pub fn apply(snapshot: &mut Snapshot, event: Event) {
             workspace_id,
             channel_id,
         } => {
+            snapshot.messages.retain(|m| !matches!(m.place, junto_protocol::message::MessagePlace::Channel {channel_id:id,..} if id==channel_id));
             if let Some(index) = state(snapshot, workspace_id) {
                 snapshot.workspaces[index]
                     .channels
@@ -746,7 +771,7 @@ async fn a_snapshot_and_the_events_after_its_cursor_give_the_live_state() {
         stream.subscribe(Level::Full, Some(snapshot.cursor)).await;
         for (id, event) in server.traffic(&member, &mut stream).await {
             assert!(id > snapshot.cursor.position);
-            apply(&mut snapshot, event);
+            apply(&server, &member, &mut snapshot, event).await;
         }
         snapshot.cursor = live.cursor;
         assert_eq!(sorted(snapshot), live);

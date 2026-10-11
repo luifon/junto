@@ -277,6 +277,7 @@ fn admin_options() -> PgConnectOptions {
 
 pub fn test_config() -> Config {
     Config {
+        attachments_directory: None,
         database_url: String::new(),
         listen_address: SocketAddr::from(([127, 0, 0, 1], 0)),
         public_origins: PublicOrigins::of(vec![origin()]),

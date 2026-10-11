@@ -30,6 +30,12 @@ pub struct Shared {
     pub redemptions_by_address: RateLimiter,
     pub redemptions_by_account: RateLimiter<AccountId>,
     pub outstanding_challenges: Outstanding,
+    pub attachment_writes: RateLimiter<[u8; 32]>,
+    pub attachment_checks: Arc<crate::messages::transfers::Checks>,
+    pub attachment_downloads: Arc<crate::messages::transfers::Downloads>,
+    pub attachment_transfers: Arc<crate::messages::transfers::Uploads>,
+    pub message_history: RateLimiter<AccountId>,
+    pub message_writes: RateLimiter<AccountId>,
     pub stream_opens: RateLimiter<AccountId>,
     pub streams: Arc<Streams>,
     pub calls: Calls,
@@ -54,6 +60,13 @@ impl AppState {
         let redemptions_by_address = RateLimiter::with_capacity(limits.redemptions, entries);
         let redemptions_by_account = RateLimiter::with_capacity(limits.redemptions, entries);
         let outstanding_challenges = Outstanding::new(limits.most_outstanding_challenges);
+        let message_writes = RateLimiter::with_capacity(
+            crate::config::RateLimit {
+                attempts: 120,
+                window: time::Duration::minutes(1),
+            },
+            entries,
+        );
         let stream_opens = RateLimiter::with_capacity(limits.stream.opens, entries);
         let streams = Arc::new(Streams::new(&limits.stream));
         let calls = Calls::new(media, server_id, limits);
@@ -73,6 +86,24 @@ impl AppState {
             redemptions_by_address,
             redemptions_by_account,
             outstanding_challenges,
+            attachment_writes: RateLimiter::with_capacity(
+                crate::config::RateLimit {
+                    attempts: 1200,
+                    window: time::Duration::minutes(1),
+                },
+                entries,
+            ),
+            attachment_checks: Arc::new(crate::messages::transfers::Checks::default()),
+            attachment_downloads: Arc::new(crate::messages::transfers::Downloads::default()),
+            attachment_transfers: Arc::new(crate::messages::transfers::Uploads::default()),
+            message_history: RateLimiter::with_capacity(
+                crate::config::RateLimit {
+                    attempts: 120,
+                    window: time::Duration::minutes(1),
+                },
+                entries,
+            ),
+            message_writes,
             stream_opens,
             streams,
             calls,
@@ -111,6 +142,11 @@ impl AppState {
     /// on the connections of the requests. The commit gate of the tests does not hold them.
     pub fn background(&self) -> Background<'_> {
         Background(self)
+    }
+
+    /// The free-space reserve shared by recordings and attachments (ADR 0006).
+    pub fn storage_reserve_bytes(&self) -> u64 {
+        self.config.limits.recordings.reserve_bytes
     }
 
     /// The current time, cut to the microsecond that PostgreSQL stores.

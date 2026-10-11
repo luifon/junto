@@ -99,6 +99,7 @@ async fn a_connection_that_makes_no_progress_is_closed_and_can_resume() {
 
     let mut resumed = server.stream(&world.insider).await;
     resumed.subscribe(Level::Full, Some(start)).await;
+    assert_eq!(resumed.event().await.1.name(), "message_changed");
     assert_eq!(resumed.event().await.1.name(), "channel_updated");
 }
 
