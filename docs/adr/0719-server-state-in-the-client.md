@@ -32,7 +32,7 @@ Calls in the state:
 - The request of the account itself to enter is in no event and in no snapshot. The caller has it from the answer to its request and waits for the notice `call_entry_answered`.
 - `call_access_ended` names nothing, and the client cannot decide the contact rule of ADR 0307 by itself. The state is reloaded (ADR 0718).
 - A snapshot carries no speaking marks. They are empty until the next `call_speaking`.
-- The details of a call hold its recording while the recording is `starting` or `recording` (ADR 0601, ADR 0604). The snapshot and the two views of a call carry it. `recording_started` and `recording_updated` change it only for a call that the state holds with the same identifier: the people in a call start a recording, so the events of the call came first, and a replay can deliver the recording of an earlier call of the channel. A recording in another state leaves the details; its later changes are notices.
+- The details of a call hold its recording while the recording is `starting` or `recording` (ADR 0601, ADR 0604). The snapshot and the two views of a call carry it. `recording_started` and `recording_updated` change it only for a call that the state holds with the same identifier: the people in a call start a recording, so the events of the call came first, and a replay can deliver the recording of an earlier call of the channel. A recording in another state leaves the details; its later changes are notices. `recording_removed` removes the recording from the call that shows it. The events of transcripts and of the glossary are notices: the state holds no transcript and no glossary.
 
 Parts read on demand (ADR 0207):
 

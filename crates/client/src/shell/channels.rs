@@ -10,7 +10,8 @@ use junto_client_core::protocol::structure::ChannelKind;
 use super::Shell;
 use crate::assets::Icon;
 use crate::state::view::{
-    Content, Microphone, Occupant, SectionTitle, ServerStatus, ShellView, VoiceState, WorkspaceView,
+    Content, Microphone, MicrophoneButton, Occupant, Presence, SectionTitle, ServerStatus,
+    ShellView, VoiceState, WorkspaceView,
 };
 use crate::text;
 use crate::theme::{Theme, theme, u};
@@ -19,8 +20,8 @@ use crate::ui::{
     MosaicKind, OccupantMark, OccupantRow, ScrollArea, StyleExt, icon, tooltip,
 };
 
-/// The lit segments of the meter of a person who speaks. The server tells who speaks and
-/// no level (ADR 0513); the media engine will give the level.
+/// The lit segments of the meter of a person who speaks in a call that this device is not
+/// in. The server tells who speaks there and no level (ADR 0513).
 const SPEAKING_SEGMENTS: usize = 3;
 
 /// The states that the row of a voice channel shows at its right.
@@ -64,13 +65,20 @@ pub(crate) fn occupant_marks(occupant: &Occupant) -> Vec<OccupantMark> {
     if occupant.sound_off {
         marks.push(OccupantMark::SoundOff(text::SOUND_OFF.into()));
     }
-    marks.push(match occupant.microphone {
-        Microphone::Held(reason) => {
+    marks.push(match (occupant.presence, occupant.microphone) {
+        (Presence::Connecting, _) => OccupantMark::Status(text::STATUS_CONNECTING.into()),
+        (Presence::Reconnecting, _) => OccupantMark::Status(text::STATUS_RECONNECTING.into()),
+        (Presence::Here, Microphone::Held(reason)) => {
             OccupantMark::MicrophoneHeld(text::microphone_held(reason).into())
         }
-        Microphone::Closed => OccupantMark::MicrophoneOff(text::MICROPHONE_CLOSED.into()),
-        Microphone::Open { speaking } => OccupantMark::Level {
-            lit: if speaking { SPEAKING_SEGMENTS } else { 0 },
+        (Presence::Here, Microphone::Closed) => {
+            OccupantMark::MicrophoneOff(text::MICROPHONE_CLOSED.into())
+        }
+        (Presence::Here, Microphone::Open { speaking }) => OccupantMark::Level {
+            // In the call of this device the media engine measures the level.
+            lit: occupant
+                .level
+                .unwrap_or(if speaking { SPEAKING_SEGMENTS } else { 0 }),
             label: if speaking {
                 text::SPEAKING.into()
             } else {
@@ -211,6 +219,12 @@ impl Shell {
                         .child(icon(Icon::Retry, 14.0, colors.ink))
                         .child(text::STATUS_RECONNECTING),
                 )
+            })
+            .when_some(view.call.as_ref(), |column, strip| {
+                column.child(self.render_call_strip(strip, &theme, cx))
+            })
+            .when_some(view.controls.warning.as_ref(), |column, warning| {
+                column.child(self.render_sound_warning(warning, &theme, cx))
             })
             .child(self.render_profile_strip(view, &theme, cx))
     }
@@ -360,18 +374,41 @@ impl Shell {
                     .flex_none()
                     .gap(u(4.0))
                     .child(
-                        Button::new("microphone")
-                            .kind(ButtonKind::Square)
-                            .icon(Icon::Microphone)
-                            .disabled(true)
-                            .tooltip(text::MICROPHONE_NOT_AVAILABLE),
+                        match view.controls.microphone {
+                            MicrophoneButton::Open => Button::new("microphone")
+                                .kind(ButtonKind::Square)
+                                .icon(Icon::Microphone)
+                                .tooltip(text::CLOSE_MICROPHONE),
+                            MicrophoneButton::Muted => Button::new("microphone")
+                                .kind(ButtonKind::SquareOff)
+                                .icon(Icon::MicrophoneOff)
+                                .tooltip(text::OPEN_MICROPHONE),
+                            MicrophoneButton::Held => Button::new("microphone")
+                                .kind(ButtonKind::SquareHeld)
+                                .icon(Icon::MicrophoneHeld)
+                                .tooltip(text::MICROPHONE_HELD),
+                        }
+                        .selector("microphone")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.state.update(cx, |state, _| state.toggle_microphone());
+                        })),
                     )
                     .child(
-                        Button::new("sound-output")
-                            .kind(ButtonKind::Square)
-                            .icon(Icon::Phones)
-                            .disabled(true)
-                            .tooltip(text::SOUND_NOT_AVAILABLE),
+                        if view.controls.sound_off {
+                            Button::new("sound-output")
+                                .kind(ButtonKind::SquareOff)
+                                .icon(Icon::PhonesOff)
+                                .tooltip(text::SOUND_OUTPUT_OFF)
+                        } else {
+                            Button::new("sound-output")
+                                .kind(ButtonKind::Square)
+                                .icon(Icon::Phones)
+                                .tooltip(text::SOUND_OUTPUT_ON)
+                        }
+                        .selector("sound-output")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.state.update(cx, |state, _| state.toggle_sound());
+                        })),
                     )
                     .child(
                         Button::new("app-settings")

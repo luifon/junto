@@ -88,12 +88,18 @@ impl Part {
                 match event {
                     Event::CallEntryRequested { request } => request.call_id == own.call_id,
                     Event::CallEntryResolved { call_id, .. } => *call_id == own.call_id,
+                    Event::RecordingRemoved { channel_id, .. } => {
+                        own.place.channel_id() == Some(*channel_id)
+                    }
                     _ => call_of(event).is_some_and(|(call_id, _)| call_id == own.call_id),
                 }
             }
-            Self::ChannelCall(channel_id) => {
-                call_of(event).is_some_and(|(_, place)| place.channel_id() == Some(*channel_id))
-            }
+            Self::ChannelCall(channel_id) => match event {
+                Event::RecordingRemoved { channel_id: of, .. } => of == channel_id,
+                _ => {
+                    call_of(event).is_some_and(|(_, place)| place.channel_id() == Some(*channel_id))
+                }
+            },
         }
     }
 }
@@ -393,6 +399,27 @@ impl ServerModel {
             Event::RecordingStarted { recording } | Event::RecordingUpdated { recording } => {
                 self.put_recording(recording);
             }
+            Event::RecordingRemoved {
+                recording_id,
+                workspace_id,
+                channel_id,
+            } => {
+                let place = CallPlace::Channel {
+                    workspace_id: *workspace_id,
+                    channel_id: *channel_id,
+                };
+                let shown = self.call_at(&place).is_some_and(|call| {
+                    call.recording
+                        .as_ref()
+                        .is_some_and(|held| held.id == *recording_id)
+                });
+                if shown
+                    && let Some(channel) = self.channel_mut(&place)
+                    && let Some(call) = channel.call.as_mut()
+                {
+                    call.recording = None;
+                }
+            }
             Event::CallEntryRequested { request } => {
                 let own = self.own_call.as_ref().map(|own| own.call_id);
                 if own == Some(request.call_id) {
@@ -465,7 +492,10 @@ impl ServerModel {
             | Event::JoinRequestCreated { .. }
             | Event::JoinRequestDecided { .. }
             | Event::ChannelOverrideSet { .. }
-            | Event::CallEntryAnswered { .. } => {}
+            | Event::CallEntryAnswered { .. }
+            | Event::TranscriptLineCorrected { .. }
+            | Event::TranscriptSpeakerRenamed { .. }
+            | Event::GlossaryReplaced { .. } => {}
         }
         Follow::default()
     }

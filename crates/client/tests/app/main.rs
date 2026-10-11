@@ -16,6 +16,7 @@
 #[path = "../../../client-core/tests/e2e/support.rs"]
 mod support;
 
+mod calls;
 mod flows;
 mod harness;
 mod live;

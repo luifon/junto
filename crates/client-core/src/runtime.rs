@@ -59,6 +59,12 @@ impl Runtime {
         }
     }
 
+    /// The handle of the runtime, for a part of the client that keeps tasks of its own on
+    /// it, such as the media engine.
+    pub fn handle(&self) -> &tokio::runtime::Handle {
+        &self.handle
+    }
+
     pub(crate) fn run<F>(
         &self,
         work: F,

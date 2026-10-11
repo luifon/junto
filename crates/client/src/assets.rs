@@ -49,6 +49,8 @@ macro_rules! icons {
 }
 
 icons! {
+    Camera => "cam",
+    Chat => "thread",
     Check => "check",
     ChevronDown => "chev",
     ChevronRight => "chevr",

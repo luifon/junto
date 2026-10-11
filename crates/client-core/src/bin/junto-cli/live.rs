@@ -492,10 +492,11 @@ fn meeting_line(meeting: Option<&Meeting>, indent: &str) -> String {
 fn recording_line(recording: Option<&Recording>, indent: &str) -> String {
     match recording {
         Some(recording) => format!(
-            "{indent}recording: {}  state: {}  started by {}",
+            "{indent}recording: {}  state: {}  started by {}  transcript: {}",
             recording.id,
             word(&recording.state),
-            recording.started_by
+            recording.started_by,
+            word(&recording.transcript)
         ),
         None => format!("{indent}recording: none"),
     }
@@ -811,6 +812,30 @@ fn event_details(event: &Event) -> String {
             recording.channel_id,
             word(&recording.state)
         ),
+        Event::RecordingRemoved {
+            recording_id,
+            channel_id,
+            ..
+        } => format!("recording={recording_id} channel={channel_id}"),
+        Event::TranscriptLineCorrected {
+            recording_id,
+            channel_id,
+            line,
+            corrected_by,
+            ..
+        } => format!(
+            "recording={recording_id} channel={channel_id} line={line} account={corrected_by}"
+        ),
+        Event::TranscriptSpeakerRenamed {
+            recording_id,
+            channel_id,
+            speaker,
+            ..
+        } => format!(
+            "recording={recording_id} channel={channel_id} speaker={} account={}",
+            speaker.number, speaker.account_id
+        ),
+        Event::GlossaryReplaced { workspace_id } => format!("workspace={workspace_id}"),
         Event::CallEntryRequested { request } => format!(
             "request={} {} account={}",
             request.id,

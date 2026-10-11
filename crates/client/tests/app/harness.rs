@@ -14,6 +14,9 @@ use junto_client_core::protocol::invite::CreateInvite;
 use junto_client_core::protocol::secret::InviteCode;
 use junto_client_core::version::SupportedVersions;
 use junto_client_core::{Client, ServerHandle};
+use junto_media::audio::synthetic::SyntheticHost;
+use junto_media::calls::{CallTiming, MediaOptions};
+use junto_media::permission::FixedPermission;
 
 use crate::support::{Device, TestServer, claim, logged_in};
 
@@ -56,20 +59,63 @@ impl World {
             let handle = device.add(&server.address()).await;
             handle.dispatch(claim(server, "Ada")).await.unwrap();
             logged_in(&handle);
-            Admin {
-                _device: device,
-                handle,
-            }
+            Admin { device, handle }
         })
     }
 }
 
+/// The frequency of the tone that the microphone of the administrator gives.
+pub const ADMIN_TONE_HZ: f32 = 440.0;
+
 /// The client of the administrator of one server.
 pub struct Admin {
     /// The data directory of the administrator lives as long as the client.
-    _device: Device,
+    pub device: Device,
     pub handle: ServerHandle,
 }
+
+/// The administrator in calls: a tone as the microphone and a sink that measures.
+pub struct Caller {
+    pub calls: junto_media::Calls,
+    pub sound: SyntheticHost,
+}
+
+impl Admin {
+    /// The calls of the administrator. The event stream of the device starts, so that its
+    /// calls follow the state of the server.
+    pub fn caller(&self, world: &World) -> Caller {
+        world.run(async {
+            self.device.client.start_event_streams().unwrap();
+            self.device.client.select(Some(self.handle.id()));
+            let sound = SyntheticHost::with_tone(ADMIN_TONE_HZ);
+            let calls = junto_media::Calls::new(
+                self.device.client.clone(),
+                MediaOptions {
+                    host: std::sync::Arc::new(sound.clone()),
+                    permission: std::sync::Arc::new(FixedPermission::allowed()),
+                    timing: CallTiming::default(),
+                },
+            );
+            // A steady tone passes unchanged only without the processing of a voice.
+            calls.set_voice(junto_media::engine::VoiceConfig {
+                processing: junto_media::audio::Processing::OFF,
+                ..junto_media::engine::VoiceConfig::default()
+            });
+            Caller { calls, sound }
+        })
+    }
+}
+
+/// The level of a tone in the last half second of what a sink was given.
+pub fn heard(sound: &SyntheticHost, hz: f32) -> f32 {
+    let (played, rate) = sound.played(Duration::from_millis(500));
+    junto_media::audio::synthetic::tone_level(&played, rate, hz)
+}
+
+/// A tone that arrives has about the level at which it was sent: -12 dBFS.
+pub const HEARD_DBFS: f32 = -20.0;
+/// A tone that does not arrive is below this.
+pub const ABSENT_DBFS: f32 = -55.0;
 
 impl Admin {
     pub fn invite(&self, world: &World, uses: u32) -> InviteCode {
@@ -88,7 +134,13 @@ pub struct Window {
     pub cx: VisualTestContext,
     pub shell: Entity<Shell>,
     pub state: Entity<AppState>,
+    /// The sound devices of the application: a tone as the microphone and a sink that
+    /// measures. No test opens a real device.
+    pub sound: SyntheticHost,
 }
+
+/// The frequency of the tone that the microphone of a window gives.
+pub const WINDOW_TONE_HZ: f32 = 660.0;
 
 /// The times of the application in a test: a waiting request is checked often, so that a
 /// test does not wait for the 5 seconds of the product.
@@ -115,12 +167,18 @@ pub fn open_with(cx: &mut TestAppContext, data_dir: &Path, scale: Option<u32>) -
         activate: false,
         timing: timing(),
     };
+    let sound = SyntheticHost::with_tone(WINDOW_TONE_HZ);
+    let media = MediaOptions {
+        host: std::sync::Arc::new(sound.clone()),
+        permission: std::sync::Arc::new(FixedPermission::allowed()),
+        timing: CallTiming::default(),
+    };
     let state = cx.update(|cx| {
         if !cx.has_global::<Initialized>() {
             app::init(cx).unwrap();
             cx.set_global(Initialized);
         }
-        app::state(client, start, cx)
+        app::state_with_media(client, start, media, cx)
     });
     let built: std::rc::Rc<std::cell::RefCell<Option<Entity<Shell>>>> = std::rc::Rc::default();
     let (slot, shown) = (built.clone(), state.clone());
@@ -134,6 +192,7 @@ pub fn open_with(cx: &mut TestAppContext, data_dir: &Path, scale: Option<u32>) -
         cx: VisualTestContext::from_window(window.into(), cx),
         shell,
         state,
+        sound,
     };
     window.cx.run_until_parked();
     window
@@ -156,6 +215,7 @@ impl Window {
             cx,
             shell,
             state: held,
+            ..
         } = self;
         drop((shell, held));
         // The entities of a removed window are released when the application has handled

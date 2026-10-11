@@ -25,6 +25,20 @@ pub enum ButtonKind {
     Square,
     /// An icon without a frame, such as the close button of a panel.
     Ghost,
+    /// The action that enters a call: a raised button with cypress text.
+    Green,
+    /// A square button of the profile strip whose function the person turned off: the
+    /// closed microphone, the sound that is off.
+    SquareOff,
+    /// A square button of the profile strip that another person holds closed. It takes no
+    /// click.
+    SquareHeld,
+    /// A button of the strip of the person's call, on cypress.
+    Call,
+    /// A button of the call strip whose function is on.
+    CallOn,
+    /// The button that leaves the call.
+    CallLeave,
 }
 
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
@@ -208,6 +222,86 @@ fn look(kind: ButtonKind, disabled: bool, theme: &Theme) -> Look {
             pressed: c.limestone_lo,
             ring: c.terracotta_deep,
         },
+        (ButtonKind::Green, false) => Look {
+            background: c.travertine_hi,
+            border: Some(c.rule),
+            text: c.cypress,
+            icon: c.cypress,
+            ledge: Some(c.rule),
+            hover: c.travertine,
+            pressed: c.limestone_lo,
+            ring: c.terracotta_deep,
+        },
+        (ButtonKind::Green, true) => Look {
+            background: c.plaster,
+            border: Some(c.rule),
+            text: c.ink_3,
+            icon: c.ink_3,
+            ledge: None,
+            hover: c.plaster,
+            pressed: c.plaster,
+            ring: c.terracotta_deep,
+        },
+        (ButtonKind::SquareOff, _) => Look {
+            background: c.terracotta_wash,
+            border: Some(c.terracotta_wash_rule),
+            text: c.terracotta_deep,
+            icon: c.terracotta_deep,
+            ledge: Some(c.rule),
+            hover: c.terracotta_wash,
+            pressed: c.limestone_lo,
+            ring: c.terracotta_deep,
+        },
+        (ButtonKind::SquareHeld, _) => Look {
+            background: c.limestone_lo,
+            border: Some(c.rule),
+            text: c.ink_2,
+            icon: c.ink_2,
+            ledge: None,
+            hover: c.limestone_lo,
+            pressed: c.limestone_lo,
+            ring: c.terracotta_deep,
+        },
+        (ButtonKind::Call, false) => Look {
+            background: c.call_button,
+            border: Some(c.call_button_rule),
+            text: c.call_text,
+            icon: c.call_text,
+            ledge: None,
+            hover: c.cypress,
+            pressed: c.call_button,
+            ring: c.ochre,
+        },
+        (ButtonKind::Call | ButtonKind::CallOn, true) => Look {
+            background: c.call_button,
+            border: Some(c.call_disabled_rule),
+            text: c.call_disabled_text,
+            icon: c.call_disabled_text,
+            ledge: None,
+            hover: c.call_button,
+            pressed: c.call_button,
+            ring: c.ochre,
+        },
+        (ButtonKind::CallOn, false) => Look {
+            background: c.call_on,
+            border: Some(c.call_on),
+            text: c.call_on_text,
+            icon: c.call_on_text,
+            ledge: None,
+            hover: c.call_text_hi,
+            pressed: c.call_on,
+            ring: c.ochre,
+        },
+        (ButtonKind::CallLeave, _) => Look {
+            background: c.cinnabar,
+            border: Some(c.cinnabar_deep),
+            text: c.on_cinnabar,
+            icon: c.on_cinnabar,
+            ledge: None,
+            hover: c.cinnabar_deep,
+            pressed: c.cinnabar_deep,
+            ring: c.ochre,
+        },
         (ButtonKind::Ghost, _) => Look {
             background: gpui::Rgba::default(),
             border: None,
@@ -225,18 +319,30 @@ impl RenderOnce for Button {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = theme(cx);
         let metrics = theme.metrics;
-        let look = look(self.kind, self.disabled, &theme);
+        let disabled = self.disabled || self.kind == ButtonKind::SquareHeld;
+        let look = look(self.kind, disabled, &theme);
         let label = self
             .accessible_label
             .clone()
             .or_else(|| self.label.clone())
             .or_else(|| self.tooltip.clone());
         let icon_size = match self.kind {
-            ButtonKind::Ghost | ButtonKind::RailAccent | ButtonKind::Square => 16.0,
-            ButtonKind::Default | ButtonKind::Primary | ButtonKind::Rail => 14.0,
+            ButtonKind::Ghost
+            | ButtonKind::RailAccent
+            | ButtonKind::Square
+            | ButtonKind::SquareOff
+            | ButtonKind::SquareHeld
+            | ButtonKind::Call
+            | ButtonKind::CallOn
+            | ButtonKind::CallLeave => 16.0,
+            ButtonKind::Default | ButtonKind::Primary | ButtonKind::Rail | ButtonKind::Green => {
+                14.0
+            }
         };
         let type_style = match self.kind {
-            ButtonKind::Primary => theme.types.control_strong,
+            ButtonKind::Primary | ButtonKind::Call | ButtonKind::CallOn | ButtonKind::CallLeave => {
+                theme.types.control_strong
+            }
             _ => theme.types.control,
         };
 
@@ -254,12 +360,19 @@ impl RenderOnce for Button {
             .ink(look.text)
             .whitespace_nowrap();
         frame = match self.kind {
-            ButtonKind::Default | ButtonKind::Primary => {
+            ButtonKind::Default | ButtonKind::Primary | ButtonKind::Green => {
                 frame.h(u(metrics.button_height)).px(u(9.0))
             }
             ButtonKind::Rail => frame.w(u(26.0)).h(u(24.0)),
             ButtonKind::RailAccent => frame.w(u(30.0)).h(u(30.0)),
-            ButtonKind::Square => frame.w(u(30.0)).h(u(28.0)),
+            ButtonKind::Square | ButtonKind::SquareOff | ButtonKind::SquareHeld => {
+                frame.w(u(30.0)).h(u(28.0))
+            }
+            ButtonKind::Call | ButtonKind::CallOn | ButtonKind::CallLeave => frame
+                .h(u(30.0))
+                .min_w(u(38.0))
+                .px(u(9.0))
+                .text_size(u(13.5)),
             ButtonKind::Ghost => frame.w(u(26.0)).h(u(26.0)),
         };
         if let Some(border) = look.border {
@@ -277,8 +390,8 @@ impl RenderOnce for Button {
                 frame.debug_selector(|| selector.to_owned())
             })
             .when_some(self.tooltip, |frame, text| frame.tooltip(tooltip(text)))
-            .when(self.disabled, |frame| frame.cursor_not_allowed())
-            .when(!self.disabled, |frame| {
+            .when(disabled, |frame| frame.cursor_not_allowed())
+            .when(!disabled, |frame| {
                 let (hover, pressed) = (look.hover, look.pressed);
                 frame
                     .cursor_pointer()

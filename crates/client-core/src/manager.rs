@@ -48,6 +48,7 @@ use crate::stream::{
     Desired, Environment, Host, ReqwestStreamTransport, StreamPolicy, StreamTransport, Streams,
 };
 use crate::version::{ApiVersion, Incompatibility, SupportedVersions};
+use crate::voice::VoiceStore;
 
 /// How a client is opened. Every part except the data directory has a default.
 pub struct ClientOptions {
@@ -217,6 +218,11 @@ impl Client {
         SettingsStore::new(self.inner.core.data_dir.clone())
     }
 
+    /// The sound settings of this installation (ADR 0710).
+    pub fn voice(&self) -> VoiceStore {
+        VoiceStore::new(self.inner.core.data_dir.clone())
+    }
+
     /// The saved servers in the order of the server book.
     pub fn servers(&self) -> Vec<ServerHandle> {
         lock(&self.inner.servers)
@@ -259,7 +265,8 @@ impl Client {
         ApproveDevicesFlow::new(self.clone())
     }
 
-    pub(crate) fn runtime(&self) -> &Runtime {
+    /// The runtime that carries the network work of this client.
+    pub fn runtime(&self) -> &Runtime {
         &self.inner.core.runtime
     }
 

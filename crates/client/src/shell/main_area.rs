@@ -3,23 +3,24 @@
 //! side panel with the members of the workspace.
 
 use gpui::{
-    AnyElement, BoxShadow, Context, Hsla, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, Role, SharedString, StatefulInteractiveElement, Styled, Window, div,
-    prelude::FluentBuilder, px,
+    AnyElement, BoxShadow, Context, Hsla, InteractiveElement, IntoElement, ParentElement, Role,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
 };
 use junto_client_core::protocol::structure::ChannelKind;
 
 use super::{Layer, Shell};
 use crate::assets::Icon;
+use junto_media::calls::Phase;
+
 use crate::state::view::{
-    ChannelRow, Content, Members, SelectedServer, ServerStatus, ShellView, VoiceState,
-    WorkspaceView,
+    CallPanel, ChannelRow, Content, Members, Relation, SelectedServer, ServerStatus, ShellView,
+    VoiceState, WorkspaceView,
 };
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
     Button, ButtonKind, Mosaic, MosaicKind, Notice, ScrollArea, SectionLabel, SideHeader,
-    StatePanel, StyleExt, float_shadow, icon,
+    StatePanel, StyleExt, icon,
 };
 
 /// The time of a recovery as the notice shows it: the date and the time in UTC.
@@ -40,37 +41,54 @@ impl Shell {
         &mut self,
         view: &ShellView,
         narrow: bool,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = theme(cx);
         let workspace = view.workspace();
         let channel = workspace.and_then(|workspace| workspace.channel.as_ref());
-        let members_open = self.members_open && workspace.is_some();
+        // The call of this device, when its voice channel is the selected one.
+        let call = workspace
+            .zip(channel)
+            .and_then(|(workspace, channel)| Some((channel, workspace.call.as_ref()?)));
+        let members_open = self.members_open && workspace.is_some() && call.is_none();
 
-        let body: AnyElement = match (&view.selected, workspace) {
-            (None, _) => StatePanel::new(text::NO_SERVER_TITLE, text::NO_SERVER)
-                .selector("no-server")
-                .into_any_element(),
-            (Some(_), Some(_)) => match channel {
-                Some(channel) => self.render_channel_body(channel, &theme).into_any_element(),
-                None => StatePanel::new(text::NO_CHANNEL_TITLE, text::NO_CHANNELS)
-                    .selector("no-channel")
+        let (body, side): (AnyElement, Option<AnyElement>) = match (&view.selected, workspace) {
+            (None, _) => (
+                StatePanel::new(text::NO_SERVER_TITLE, text::NO_SERVER)
+                    .selector("no-server")
                     .into_any_element(),
-            },
-            (Some(server), None) => match server.content {
-                Content::NoWorkspace => {
-                    StatePanel::new(text::NO_CHANNEL_TITLE, text::NO_WORKSPACES)
-                        .selector("no-workspace")
-                        .into_any_element()
+                None,
+            ),
+            (Some(_), Some(shown)) => match (call, channel) {
+                (Some((channel, panel)), _) => {
+                    self.render_call(view, channel, panel, narrow, window, cx)
                 }
-                _ => self.render_server_state(server, cx).into_any_element(),
+                (None, Some(channel)) => (
+                    self.render_channel_body(channel).into_any_element(),
+                    members_open.then(|| self.render_members(shown, &theme, cx)),
+                ),
+                (None, None) => (
+                    StatePanel::new(text::NO_CHANNEL_TITLE, text::NO_CHANNELS)
+                        .selector("no-channel")
+                        .into_any_element(),
+                    members_open.then(|| self.render_members(shown, &theme, cx)),
+                ),
             },
+            (Some(server), None) => (
+                match server.content {
+                    Content::NoWorkspace => {
+                        StatePanel::new(text::NO_CHANNEL_TITLE, text::NO_WORKSPACES)
+                            .selector("no-workspace")
+                            .into_any_element()
+                    }
+                    _ => self.render_server_state(server, cx).into_any_element(),
+                },
+                None,
+            ),
         };
 
-        let side = workspace
-            .filter(|_| members_open)
-            .map(|workspace| self.render_members(workspace, &theme, cx));
+        let in_call = call.is_some();
         let split = div()
             .relative()
             .flex()
@@ -82,39 +100,21 @@ impl Shell {
                     .flex_col()
                     .flex_1()
                     .min_w_0()
-                    .children(self.render_recoveries(view, &theme, cx))
+                    .children(self.render_notices(view, &theme, cx))
                     .child(body),
             )
             .when_some(side, |split, side| {
                 if narrow {
                     // The panel lies over the content, with a flat cover behind it.
                     split
-                        .child(
-                            div()
-                                .id("side-cover")
-                                .absolute()
-                                .inset_0()
-                                .occlude()
-                                .bg(Hsla::from(theme.colors.scrim_soft))
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _, _, cx| {
-                                        this.members_open = false;
-                                        cx.notify();
-                                    }),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .absolute()
-                                .top_0()
-                                .bottom_0()
-                                .right_0()
-                                .flex()
-                                .occlude()
-                                .shadow(float_shadow(theme.colors.shadow_deep, 0.0, 26.0))
-                                .child(side),
-                        )
+                        .child(Self::side_cover(&theme, cx, move |this, _| {
+                            if in_call {
+                                this.call_panel_open = false;
+                            } else {
+                                this.members_open = false;
+                            }
+                        }))
+                        .child(Self::side_overlay(&theme, side))
                 } else {
                     split.child(side)
                 }
@@ -128,7 +128,14 @@ impl Shell {
             .flex_1()
             .min_w_0()
             .h_full()
-            .child(self.render_main_header(view, channel, members_open, &theme, cx))
+            .child(self.render_main_header(
+                view,
+                channel,
+                call.map(|(_, panel)| panel),
+                narrow,
+                &theme,
+                cx,
+            ))
             .child(split)
     }
 
@@ -136,11 +143,13 @@ impl Shell {
         &mut self,
         view: &ShellView,
         channel: Option<&ChannelRow>,
-        members_open: bool,
+        call: Option<&CallPanel>,
+        narrow: bool,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let colors = theme.colors;
+        let members_open = self.members_open && call.is_none();
         let title: Option<(Icon, SharedString)> = channel.map(|channel| {
             (
                 match channel.kind {
@@ -151,6 +160,36 @@ impl Shell {
             )
         });
         let voice = channel.and_then(|channel| channel.voice.as_ref());
+        // What follows the title: for a voice channel that this device is not in, the
+        // line about its chat and the action that enters the call; for the call of this
+        // device, its state.
+        let mut after: Vec<AnyElement> = Vec::new();
+        let outside = voice.filter(|voice| voice.relation != Relation::Inside);
+        if let (Some(channel), Some(voice)) = (channel, outside) {
+            // The divider and the line about the chat, the states of the call, and the
+            // action that enters it.
+            let mut entry = self
+                .render_voice_entry(view, channel, voice, theme, cx)
+                .into_iter();
+            after.extend(entry.by_ref().take(2));
+            after.extend(voice_header_states(voice, theme));
+            after.extend(entry);
+        } else if let Some(panel) = call {
+            if panel.phase == Phase::Reconnecting {
+                after.extend(Self::render_call_interruption(theme));
+                after.push(div().flex_1().into_any_element());
+            } else {
+                after.push(div().flex_1().into_any_element());
+                if let Some(voice) = voice {
+                    after.extend(voice_header_states(voice, theme));
+                }
+            }
+            if narrow {
+                after.extend(self.render_call_panel_buttons(cx));
+            }
+        } else {
+            after.push(div().flex_1().into_any_element());
+        }
         div()
             .id("main-header")
             .relative()
@@ -188,11 +227,8 @@ impl Shell {
                         .child(div().min_w_0().truncate().child(name)),
                 )
             })
-            .child(div().flex_1())
-            .when_some(voice, |header, voice| {
-                header.children(voice_header_states(voice, theme))
-            })
-            .when(view.workspace().is_some(), |header| {
+            .children(after)
+            .when(view.workspace().is_some() && call.is_none(), |header| {
                 header.child(
                     Button::new("members")
                         .icon(Icon::People)
@@ -215,92 +251,101 @@ impl Shell {
             })
     }
 
-    fn render_channel_body(&self, channel: &ChannelRow, theme: &Theme) -> impl IntoElement + use<> {
+    /// The body of a channel that has no content in this version: a text channel, and the
+    /// chat of a voice channel that this device is not in.
+    fn render_channel_body(&self, channel: &ChannelRow) -> impl IntoElement + use<> {
         match &channel.voice {
             None => StatePanel::new(
                 text::MESSAGES_NOT_AVAILABLE_TITLE,
                 text::MESSAGES_NOT_AVAILABLE,
             )
-            .selector("messages-not-available")
-            .into_any_element(),
-            Some(voice) => {
-                let inside: SharedString = if voice.hidden {
-                    text::OCCUPANTS_HIDDEN.into()
-                } else if voice.occupants.is_empty() {
-                    text::NOBODY_INSIDE.into()
-                } else {
-                    text::people_inside(voice.occupants.len()).into()
-                };
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_h_0()
-                    .child(
-                        StatePanel::new(
-                            text::CALLS_NOT_AVAILABLE_TITLE,
-                            format!("{} {inside}", text::CALLS_NOT_AVAILABLE),
-                        )
-                        .selector("calls-not-available"),
-                    )
-                    .typeface(theme.types.body, theme)
-                    .into_any_element()
-            }
+            .selector("messages-not-available"),
+            Some(_) => StatePanel::new(
+                text::MESSAGES_NOT_AVAILABLE_TITLE,
+                text::VOICE_CHAT_NOT_AVAILABLE,
+            )
+            .selector("voice-chat-not-available"),
         }
     }
 
-    /// The notices of recoveries that this device has not acknowledged (ADR 0118). A
-    /// notice goes only when the person presses its button.
-    fn render_recoveries(
+    /// The notices above the content: how the last call ended, and the recoveries that
+    /// this device has not acknowledged (ADR 0118). A recovery notice goes only when the
+    /// person presses its button.
+    fn render_notices(
         &mut self,
         view: &ShellView,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
+        // How the last join or call ended. The notice concerns the one call of this
+        // client, so it is shown whatever server is selected.
+        let call_notice = view.call_notice.as_ref().map(|notice| {
+            div()
+                .flex_none()
+                .px(u(16.0))
+                .pt(u(10.0))
+                .child(
+                    Notice::new(text::call_notice(notice))
+                        .icon(Icon::Warning)
+                        .selector("call-notice")
+                        .action(
+                            Button::new("dismiss-call-notice")
+                                .label(text::DISMISS)
+                                .selector("dismiss-call-notice")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.state
+                                        .update(cx, |state, _| state.dismiss_call_notice());
+                                })),
+                        ),
+                )
+                .into_any_element()
+        });
         let Some(server) = &view.selected else {
-            return Vec::new();
+            return call_notice.into_iter().collect();
         };
         let server_id = server.id;
         let pending = self.state.read(cx).pending().clone();
-        let mut notices: Vec<AnyElement> = server
-            .recoveries
-            .iter()
-            .enumerate()
-            .map(|(index, recovery)| {
-                let recovery_id = recovery.id;
-                let sending = pending.acknowledging.contains(&recovery_id);
-                div()
-                    .flex_none()
-                    .px(u(16.0))
-                    .pt(u(10.0))
-                    .child(
-                        Notice::new(text::recovery(
-                            &server.name,
-                            &recovery_time(recovery),
-                            recovery.performed_by.is_none(),
-                        ))
-                        .icon(Icon::Warning)
-                        .selector("recovery-notice")
-                        .action(
-                            Button::new(("recovery-seen", index))
-                                .kind(ButtonKind::Primary)
-                                .label(if sending {
-                                    text::RECOVERY_SENDING
-                                } else {
-                                    text::RECOVERY_SEEN
-                                })
-                                .disabled(sending)
-                                .selector("recovery-seen")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.state.update(cx, |state, cx| {
-                                        state.acknowledge_recovery(server_id, recovery_id, cx);
-                                    });
-                                })),
-                        ),
-                    )
-                    .into_any_element()
-            })
-            .collect();
+        let mut notices: Vec<AnyElement> = call_notice.into_iter().collect();
+        notices.extend(
+            server
+                .recoveries
+                .iter()
+                .enumerate()
+                .map(|(index, recovery)| {
+                    let recovery_id = recovery.id;
+                    let sending = pending.acknowledging.contains(&recovery_id);
+                    div()
+                        .flex_none()
+                        .px(u(16.0))
+                        .pt(u(10.0))
+                        .child(
+                            Notice::new(text::recovery(
+                                &server.name,
+                                &recovery_time(recovery),
+                                recovery.performed_by.is_none(),
+                            ))
+                            .icon(Icon::Warning)
+                            .selector("recovery-notice")
+                            .action(
+                                Button::new(("recovery-seen", index))
+                                    .kind(ButtonKind::Primary)
+                                    .label(if sending {
+                                        text::RECOVERY_SENDING
+                                    } else {
+                                        text::RECOVERY_SEEN
+                                    })
+                                    .disabled(sending)
+                                    .selector("recovery-seen")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.state.update(cx, |state, cx| {
+                                            state.acknowledge_recovery(server_id, recovery_id, cx);
+                                        });
+                                    })),
+                            ),
+                        )
+                        .into_any_element()
+                }),
+        );
         if let Some(error) = pending
             .remove_failed
             .get(&server_id)

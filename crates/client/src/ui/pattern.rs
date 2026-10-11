@@ -14,6 +14,8 @@ pub enum BandKind {
     Tessera,
     /// One dim colour, between two servers of the server book.
     Rail,
+    /// Terracotta and ochre, at the top of the open tab of a panel.
+    Tab,
 }
 
 /// A line of tiles, 4 design pixels high, that fills the width of its place.
@@ -38,6 +40,7 @@ impl RenderOnce for Band {
         let tiles: Vec<Rgba> = match self.kind {
             BandKind::Tessera => vec![colors.terracotta, colors.ochre, colors.cypress],
             BandKind::Rail => vec![colors.basalt_rule],
+            BandKind::Tab => vec![colors.terracotta, colors.ochre],
         };
         canvas(
             |_, _, _| (),
@@ -104,19 +107,49 @@ pub fn selection_mark(cx: &App) -> impl IntoElement + use<> {
         )
 }
 
-/// A level meter of five segments.
+/// The form of a level meter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MeterKind {
+    /// Five segments on stone, beside a person.
+    Person,
+    /// Five small segments on the dark plate of a tile.
+    Plate,
+    /// Twenty wide segments: the input level of the sound settings.
+    Wide,
+}
+
+/// A level meter.
 #[derive(IntoElement)]
 pub struct Meter {
     lit: usize,
+    kind: MeterKind,
 }
 
 impl Meter {
     pub const SEGMENTS: usize = 5;
+    pub const WIDE_SEGMENTS: usize = 20;
 
     /// A meter with `lit` of its five segments lit.
     pub fn new(lit: usize) -> Self {
         Self {
             lit: lit.min(Self::SEGMENTS),
+            kind: MeterKind::Person,
+        }
+    }
+
+    /// The meter on the plate of a tile.
+    pub fn plate(lit: usize) -> Self {
+        Self {
+            lit: lit.min(Self::SEGMENTS),
+            kind: MeterKind::Plate,
+        }
+    }
+
+    /// The input meter with `lit` of its twenty segments lit.
+    pub fn wide(lit: usize) -> Self {
+        Self {
+            lit: lit.min(Self::WIDE_SEGMENTS),
+            kind: MeterKind::Wide,
         }
     }
 }
@@ -124,19 +157,32 @@ impl Meter {
 impl RenderOnce for Meter {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let colors = theme(cx).colors;
+        let (segments, width, height, on, off) = match self.kind {
+            MeterKind::Person => (Self::SEGMENTS, 4.0, 11.0, colors.olive, colors.meter_off),
+            MeterKind::Plate => (
+                Self::SEGMENTS,
+                3.0,
+                9.0,
+                colors.olive_bright,
+                colors.basalt_rule,
+            ),
+            MeterKind::Wide => (
+                Self::WIDE_SEGMENTS,
+                9.0,
+                8.0,
+                colors.olive,
+                colors.meter_off,
+            ),
+        };
         div()
             .flex()
             .flex_none()
             .gap(u(2.0))
-            .children((0..Self::SEGMENTS).map(|segment| {
-                let colour = if segment < self.lit {
-                    colors.olive
-                } else {
-                    colors.meter_off
-                };
+            .children((0..segments).map(|segment| {
+                let colour = if segment < self.lit { on } else { off };
                 div()
-                    .w(u(4.0))
-                    .h(u(11.0))
+                    .w(u(width))
+                    .h(u(height))
                     .rounded(u(1.0))
                     .bg(Hsla::from(colour))
             }))

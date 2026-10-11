@@ -6,6 +6,7 @@ use gpui::{
 };
 use gpui_base::Root;
 use junto_client_core::Client;
+use junto_media::calls::MediaOptions;
 
 use crate::shell::Shell;
 use crate::state::{AppState, Timing};
@@ -59,12 +60,34 @@ pub fn init(cx: &mut App) -> gpui::Result<()> {
     Ok(())
 }
 
-/// The state of the application over an opened client.
+/// The state of the application over an opened client, with the sound devices of the
+/// machine.
 pub fn state(client: Client, start: WindowStart, cx: &mut App) -> Entity<AppState> {
-    let state = cx.new(|cx| AppState::new(client, start.timing, cx));
+    state_with_media(client, start, MediaOptions::system(), cx)
+}
+
+/// The state of the application with these sound devices. A test gives devices that exist
+/// only in the program.
+pub fn state_with_media(
+    client: Client,
+    start: WindowStart,
+    media: MediaOptions,
+    cx: &mut App,
+) -> Entity<AppState> {
+    let state = cx.new(|cx| AppState::new(client, start.timing, media, cx));
     if let Some(scale) = start.scale_percent {
         state.update(cx, |state, cx| state.use_scale_for_this_start(scale, cx));
     }
+    // The server of a call is told that the call was left before the application ends.
+    let held = state.downgrade();
+    cx.on_app_quit(move |cx| {
+        if let Some(state) = held.upgrade() {
+            let calls = state.read(cx).calls().clone();
+            crate::state::leave_call_at_quit(&calls, cx);
+        }
+        async {}
+    })
+    .detach();
     state
 }
 

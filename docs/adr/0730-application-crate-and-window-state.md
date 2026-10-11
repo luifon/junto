@@ -12,15 +12,15 @@ The client core holds storage, keys, the flows, the event stream and the state o
 
 Crate:
 
-- The crate `junto-client` holds the desktop application. Its binary is `junto`. It depends on `junto-client-core` and on the gpui set of ADR 0701, and holds no rule of joining, of login or of the event stream.
-- Of the component library it uses the unstyled layer `gpui-base`: the root view with the Tab order and the focus trap, the scroll bar, and the text input. The styled layer is added when a screen needs the Markdown view or the message list.
+- The crate `junto-client` holds the desktop application. Its binary is `junto`. It depends on `junto-client-core`, on `junto-media` and on the gpui set of ADR 0701, and holds no rule of joining, of login, of the event stream or of a call.
+- Of the component library it uses the unstyled layer `gpui-base`: the root view with the Tab order and the focus trap, the scroll bar, the text input and the slider. The styled layer is added when a screen needs the Markdown view or the message list.
 - The arguments of `junto` are `--data-dir`, `--scale` and `--no-activate`. The data directory is the argument, then `JUNTO_DATA_DIR`, then the directory of the user (ADR 0710). A data directory that cannot be opened ends the start with the reason on standard error; nothing in it is changed.
 
 State:
 
 - One entity, the application state, owns the client. It holds what the person selected (a server, a workspace per server, a channel per workspace), the settings of the interface, and the tasks that keep the window current.
 - It wakes on `Client::changes` and on the `watch` of each saved server (ADR 0719), and then tells the window to draw. It never asks at an interval for a state.
-- A function without side effects derives what the window shows from a copy of what the client core holds of each server, the selection, and the names that were read. The drawing code takes that data and holds no rule about a server. The function is tested without a window and without a server.
+- A function without side effects derives what the window shows from a copy of what the client core holds of each server, the selection, the names that were read, and what the calls of the client hold (ADR 0734): the call of the device, the levels as lit segments of the meters, the sound settings and the devices. The drawing code takes that data and holds no rule about a server. The function is tested without a window and without a server.
 - A selection that the state no longer holds is replaced when the view is derived: the first server, the default workspace, the first text channel.
 - The server that is shown is the selected server of the client core (ADR 0107). The members of the shown workspace are loaded and released as ADR 0719 states.
 - A person in a voice channel is named from the members of the workspace. An account that the list does not hold is read from its profile route. A read that gets no answer is repeated with a later change of the state, at most three times for one account; a refusal is final.
@@ -38,8 +38,10 @@ Window:
 
 - The main window is one view. It holds what belongs to the window: the layer that is open (a dialog or a menu), the text of its fields, and where the keyboard focus returns to.
 - A channel list groups the channels without a category by kind, under "Text channels" and "Voice channels", and then lists each category that holds a visible channel, in the order of the server.
-- A text channel shows a statement that text messages are not in this version, and a voice channel shows the state of its call and a statement that calls are not in this version. The window draws no control of a function that the build does not have, with two exceptions: the microphone and the sound button of the profile strip are drawn disabled, so that the strip has its final form.
-- Until the media engine gives a level, the level meter of a person shows three of five segments while the server reports the person as speaking (ADR 0513), and none otherwise.
+- A text channel shows a statement that text messages are not in this version. A voice channel shows the state of its call, the action that enters it, and the call when the device is in it (ADR 0735). The window draws no control of a function that the build does not have, with one exception: the camera, share and hand buttons of the strip of the call are drawn disabled, so that the strip has its final form.
+- In the call of the device the level meter of a person shows the level that the media engine measures. In another voice channel it shows three of five segments while the server reports the person as speaking (ADR 0513), and none otherwise.
+- The window follows the levels of a call only as far as they change a meter: a level is turned into lit segments before it is compared with what is drawn.
+- The call of the device ends with the application: the server is told when the application quits, with a wait of at most 2 seconds.
 - The interface text is in one module, with one sentence for every failure of a flow and for the error codes of joining. A test fails when the client core adds a failure without a sentence.
 - A device name that the application sends is the name of the product and of the operating system. It holds nothing of the machine or of the person.
 
@@ -49,7 +51,8 @@ Tests:
 - An element has a fixed name for the tests. The row of a channel and the row of a member are named by the identifier of the channel and of the account, because a server can hold two channels or two members with one name.
 - A test that needs a request to be on its way at a known moment holds it at the proxy of the test and releases it. It does not rely on a wait of a fixed length.
 - The client core answers from its own threads at real times. A test allows that in gpui's scheduler and waits for a state with a bound of 60 seconds per step.
-- The application state can be given fixed data of servers in place of the client core. Only the build with the feature `test-support` has this. The tool of ADR 0731 uses it.
+- The application state can be given fixed data of servers in place of the client core, and a fixed state of the calls. Only the build with the feature `test-support` has this. The tool of ADR 0731 uses it.
+- A test gives the application sound devices that exist only in the program: a tone as the microphone and a sink that measures (ADR 0733). The test with a call needs a media server and is ignored in the plain run.
 
 ## Consequences
 
@@ -59,5 +62,5 @@ Tests:
 - At the background level the workspaces of a server that is not selected are as old as its last snapshot (ADR 0107). The server book lists them from that state.
 - The name of an account that is in a voice channel and is not a member of the workspace costs one request, and at most three when the server does not answer.
 - A test that starts the application a second time on one data directory closes the first window before, and checks that the state of the application ended with it.
-- The tests of the window need the server binary and PostgreSQL, as the tests of the client core do. The test with people in a voice channel needs a media server and is ignored in the plain run.
+- The tests of the window need the server binary and PostgreSQL, as the tests of the client core do.
 - The crate has code for one system in two places: the height of the strip for the window controls of macOS, and the options of the title bar. Windows-specific code is not written; nothing in the crate prevents a Windows build of the same code.

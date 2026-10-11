@@ -21,6 +21,7 @@ use junto_client_core::protocol::snapshot::{Snapshot, WorkspaceState};
 use junto_client_core::protocol::structure::{
     Category, Channel, ChannelKind, Workspace, WorkspaceMember,
 };
+use junto_client_core::protocol::transcript::TranscriptState;
 use junto_client_core::version::{Incompatibility, SupportedVersions};
 use time::OffsetDateTime;
 
@@ -459,6 +460,10 @@ fn a_voice_channel_shows_its_people_with_their_marks_and_the_state_of_its_call()
         language: "auto".to_owned(),
         segments: 0,
         failed_segments: 0,
+        bytes: None,
+        timeline_started_at: None,
+        transcript: TranscriptState::None,
+        transcript_lines: 0,
     });
     scene.studio_mut().calls.push(ChannelCall {
         workspace_id: studio,
@@ -574,6 +579,10 @@ fn a_lock_and_a_recording_show_only_for_a_channel_in_use() {
         language: "auto".to_owned(),
         segments: 1,
         failed_segments: 0,
+        bytes: None,
+        timeline_started_at: None,
+        transcript: TranscriptState::None,
+        transcript_lines: 0,
     });
     call.started_at = None;
     scene.studio_mut().calls[0].in_use = false;
@@ -907,5 +916,510 @@ fn the_state_of_another_account_is_not_shown_as_the_state_of_the_account_of_the_
         assert_eq!(view.person.account_id, None);
         assert_eq!(view.person.name, "Preset");
         assert!(!view.selected.as_ref().unwrap().account_changed);
+    }
+}
+
+mod calls {
+    use std::time::Duration;
+
+    use junto_client_core::protocol::call::LeaveReason;
+    use junto_client_core::protocol::error::ErrorCode;
+    use junto_client_core::voice::VoiceSettings;
+    use junto_media::audio::{AudioError, DeviceId, DeviceInfo, Devices};
+    use junto_media::calls::{ActiveCall, CallTarget, CallsView, EndReason, Outcome, Phase};
+    use junto_media::engine::{MicrophoneState, OutputState};
+    use junto_media::permission::MicrophoneAccess;
+
+    use super::*;
+
+    fn target(server: &ServerSnapshot, scene: &Scene, channel_id: ChannelId) -> CallTarget {
+        CallTarget {
+            server_id: server.id,
+            place: CallPlace::Channel {
+                workspace_id: scene.studio,
+                channel_id,
+            },
+        }
+    }
+
+    fn active(target: CallTarget) -> ActiveCall {
+        ActiveCall {
+            target,
+            identity: "seat".to_owned(),
+            phase: Phase::Connected,
+            interrupted_at: None,
+            microphone: MicrophoneState::Running,
+            access: MicrophoneAccess::Allowed,
+            input_device: None,
+            output: OutputState::Running,
+            output_device: None,
+            microphone_block: None,
+            sound_block: None,
+        }
+    }
+
+    fn in_call(call: ActiveCall) -> Known {
+        Known {
+            media: MediaSnapshot {
+                calls: CallsView {
+                    call: Some(call),
+                    ..CallsView::default()
+                },
+                ..MediaSnapshot::default()
+            },
+            ..Known::default()
+        }
+    }
+
+    fn selected(scene: &Scene, channel_id: ChannelId) -> Selection {
+        Selection {
+            channels: [(scene.studio, channel_id)].into_iter().collect(),
+            ..Selection::default()
+        }
+    }
+
+    fn occupant(view: &ShellView, name: &str, account_id: AccountId) -> Occupant {
+        voice(view.workspace().unwrap(), name)
+            .occupants
+            .iter()
+            .find(|occupant| occupant.account_id == account_id)
+            .cloned()
+            .unwrap()
+    }
+
+    #[test]
+    fn the_call_of_this_device_shows_measured_levels_and_the_panel_of_the_call() {
+        let mut scene = scene();
+        let (ana, ben) = (AccountId::generate(), AccountId::generate());
+        let (own, daily, general) = (scene.own, scene.daily, scene.general);
+        scene.call(
+            daily,
+            vec![participant(ana), participant(ben), participant(own)],
+        );
+        let mut model = scene.model();
+        // The server marks Ben as speaking. In the call of this device the sound decides.
+        let place = CallPlace::Channel {
+            workspace_id: scene.studio,
+            channel_id: daily,
+        };
+        let mut speaking = model.call_at(&place).unwrap().clone();
+        speaking.speaking = vec![ben];
+        let workspace = Arc::make_mut(&mut model.workspaces[1]);
+        workspace
+            .channels
+            .iter_mut()
+            .find(|channel| channel.channel.id == daily)
+            .unwrap()
+            .call = Some(speaking);
+        let server = server("Acme Studio", Some(model), logged_in(own, Vec::new()));
+        let servers = std::slice::from_ref(&server);
+
+        // Outside the call: the marks of the server, and no measured level.
+        let outside = derive(servers, &selected(&scene, daily), &Known::default());
+        let row = voice(outside.workspace().unwrap(), "Daily");
+        assert_eq!(row.relation, Relation::Outside);
+        let shown = occupant(&outside, "Daily", ben);
+        assert_eq!(shown.microphone, Microphone::Open { speaking: true });
+        assert_eq!((shown.level, shown.volume), (None, 100));
+        assert!(outside.workspace().unwrap().call.is_none());
+        assert_eq!(
+            (outside.call.clone(), outside.call_notice.clone()),
+            (None, None)
+        );
+        assert_eq!(outside.controls, Controls::default());
+
+        // In the call: the levels of the media engine.
+        let mut known = in_call(active(target(&server, &scene, daily)));
+        known.media.levels = ShownLevels {
+            input: 7,
+            own: (2, true),
+            people: [(ana, (4, true))].into_iter().collect(),
+        };
+        known.media.voice.set_volume(server.id, ana, 140);
+        known.media.now = Some(time() + time::Duration::seconds(125));
+        let inside = derive(servers, &selected(&scene, daily), &known);
+        assert_eq!(
+            voice(inside.workspace().unwrap(), "Daily").relation,
+            Relation::Inside
+        );
+        let shown = occupant(&inside, "Daily", ana);
+        assert_eq!(shown.microphone, Microphone::Open { speaking: true });
+        assert_eq!((shown.level, shown.volume), (Some(4), 140));
+        let shown = occupant(&inside, "Daily", ben);
+        assert_eq!(shown.microphone, Microphone::Open { speaking: false });
+        assert_eq!((shown.level, shown.presence), (Some(0), Presence::Here));
+        let shown = occupant(&inside, "Daily", own);
+        assert!(shown.is_self);
+        assert_eq!(shown.microphone, Microphone::Open { speaking: true });
+        assert_eq!(shown.level, Some(2));
+        let panel = inside.workspace().unwrap().call.clone().unwrap();
+        assert_eq!(
+            (panel.phase, panel.audio.input_level),
+            (Phase::Connected, 7)
+        );
+        assert_eq!(panel.audio.microphone, MicrophoneLine::Running);
+        let strip = inside.call.clone().unwrap();
+        assert_eq!(strip.name.as_deref(), Some("Daily"));
+        assert_eq!(strip.elapsed, Some(Duration::from_secs(125)));
+        assert_eq!((strip.channel_id, strip.shown), (Some(daily), true));
+
+        // Another channel is shown: the strip stays, and the main area has no call.
+        let elsewhere = derive(servers, &selected(&scene, general), &known);
+        assert!(elsewhere.workspace().unwrap().call.is_none());
+        let strip = elsewhere.call.unwrap();
+        assert_eq!((strip.name.as_deref(), strip.shown), (Some("Daily"), false));
+        // A clock of this machine that is behind the server shows no negative time.
+        known.media.now = Some(time() - time::Duration::seconds(5));
+        let early = derive(servers, &selected(&scene, daily), &known);
+        assert_eq!(early.call.unwrap().elapsed, Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn the_person_is_listed_in_the_call_from_the_moment_the_device_has_its_place() {
+        let mut scene = scene();
+        let (ana, own, daily) = (AccountId::generate(), scene.own, scene.daily);
+        scene.call(daily, vec![participant(ana)]);
+        let server = scene.server();
+        let servers = std::slice::from_ref(&server);
+        let mut call = active(target(&server, &scene, daily));
+        call.phase = Phase::Connecting;
+        let view = derive(servers, &selected(&scene, daily), &in_call(call.clone()));
+        let people = &voice(view.workspace().unwrap(), "Daily").occupants;
+        assert_eq!(people.len(), 2);
+        let shown = occupant(&view, "Daily", own);
+        assert!(shown.is_self);
+        assert_eq!(shown.name.as_deref(), Some("Luca"));
+        assert_eq!(shown.presence, Presence::Connecting);
+        assert_eq!(occupant(&view, "Daily", ana).presence, Presence::Here);
+        assert_eq!(
+            view.workspace().unwrap().call.as_ref().unwrap().phase,
+            Phase::Connecting
+        );
+
+        // The first person of a call: the server holds no details of the call yet.
+        let empty = self::scene();
+        let server = empty.server();
+        let call = active(target(&server, &empty, empty.daily));
+        let view = derive(
+            std::slice::from_ref(&server),
+            &selected(&empty, empty.daily),
+            &in_call(call),
+        );
+        let people = &voice(view.workspace().unwrap(), "Daily").occupants;
+        assert_eq!(people.len(), 1);
+        assert!(people[0].is_self);
+
+        // While the call is restored, the person is marked and the others are not.
+        scene.call(scene.hidden, Vec::new());
+        let mut call = active(target(&scene.server(), &scene, daily));
+        call.phase = Phase::Reconnecting;
+        call.interrupted_at = Some(time());
+        let server = ServerSnapshot {
+            id: call.target.server_id,
+            ..scene.server()
+        };
+        let view = derive(
+            std::slice::from_ref(&server),
+            &selected(&scene, daily),
+            &in_call(call),
+        );
+        assert_eq!(
+            occupant(&view, "Daily", own).presence,
+            Presence::Reconnecting
+        );
+        let panel = view.workspace().unwrap().call.clone().unwrap();
+        assert_eq!(
+            (panel.phase, panel.interrupted_at),
+            (Phase::Reconnecting, Some(time()))
+        );
+        assert_eq!(view.call.unwrap().phase, Phase::Reconnecting);
+    }
+
+    #[test]
+    fn the_controls_show_the_own_settings_a_block_and_a_microphone_that_cannot_be_used() {
+        let mut scene = scene();
+        let (ana, own, daily) = (AccountId::generate(), scene.own, scene.daily);
+        scene.studio_mut().calls.clear();
+        let mut held = participant(own);
+        let block = MicrophoneBlock {
+            by: ana,
+            reason: BlockReason::Moderator,
+        };
+        held.microphone_block = Some(block.clone());
+        scene.call(daily, vec![participant(ana), held]);
+        let mut model = scene.model();
+        Arc::make_mut(&mut model.workspaces[1]).members = Loadable::Loaded(vec![WorkspaceMember {
+            account_id: ana,
+            name: "Ana".to_owned(),
+            role_ids: Vec::new(),
+        }]);
+        let server = server("Acme Studio", Some(model), logged_in(own, Vec::new()));
+        let servers = std::slice::from_ref(&server);
+        let at = |change: &dyn Fn(&mut Known)| {
+            let mut known = in_call(active(target(&server, &scene, daily)));
+            change(&mut known);
+            derive(servers, &selected(&scene, daily), &known).controls
+        };
+        fn call(known: &mut Known) -> &mut ActiveCall {
+            known.media.calls.call.as_mut().unwrap()
+        }
+
+        // The person's own settings hold in a call and outside one.
+        let mut outside = Known::default();
+        outside.media.calls.muted = true;
+        outside.media.calls.deafened = true;
+        let controls = derive(servers, &Selection::default(), &outside).controls;
+        assert_eq!(controls.microphone, MicrophoneButton::Muted);
+        assert!(controls.sound_off && controls.warning.is_none());
+        assert_eq!(at(&|_| {}).microphone, MicrophoneButton::Open);
+
+        // A block of the server is shown apart from the own setting, with who set it.
+        let blocked = at(&|known| {
+            known.media.calls.muted = true;
+            call(known).microphone_block = Some(block.clone());
+        });
+        assert_eq!(blocked.microphone, MicrophoneButton::Held);
+        assert_eq!(
+            blocked.warning,
+            Some(SoundWarning::MicrophoneHeld {
+                reason: BlockReason::Moderator,
+                by: Some("Ana".to_owned()),
+            })
+        );
+        let view = derive(
+            servers,
+            &selected(&scene, daily),
+            &in_call(active(target(&server, &scene, daily))),
+        );
+        let shown = occupant(&view, "Daily", own);
+        assert_eq!(shown.microphone, Microphone::Held(BlockReason::Moderator));
+        assert_eq!(shown.held_by.as_deref(), Some("Ana"));
+
+        for (change, expected) in [
+            (
+                MicrophoneState::NoPermission,
+                SoundWarning::NoMicrophoneAccess,
+            ),
+            (
+                MicrophoneState::Failed(AudioError::NoDevice),
+                SoundWarning::MicrophoneFailed,
+            ),
+        ] {
+            let controls = at(&|known| call(known).microphone = change.clone());
+            assert_eq!(controls.warning, Some(expected));
+            assert_eq!(controls.microphone, MicrophoneButton::Open);
+        }
+        let sound = at(&|known| {
+            call(known).sound_block = Some(SoundBlock { by: ana });
+            call(known).output = OutputState::Failed(AudioError::NoDevice);
+        });
+        assert_eq!(
+            sound.warning,
+            Some(SoundWarning::SoundHeld {
+                by: Some("Ana".to_owned())
+            })
+        );
+        let output = at(&|known| call(known).output = OutputState::Failed(AudioError::NoDevice));
+        assert_eq!(output.warning, Some(SoundWarning::OutputFailed));
+    }
+
+    #[test]
+    fn a_join_that_is_asked_for_and_how_a_join_or_a_call_ended_are_shown() {
+        let scene = scene();
+        let server = scene.server();
+        let servers = std::slice::from_ref(&server);
+        let daily = target(&server, &scene, scene.daily);
+        let with = |change: &dyn Fn(&mut CallsView)| {
+            let mut known = Known::default();
+            change(&mut known.media.calls);
+            derive(servers, &selected(&scene, scene.daily), &known)
+        };
+
+        let joining = with(&|calls| calls.joining = Some(daily));
+        assert_eq!(
+            voice(joining.workspace().unwrap(), "Daily").relation,
+            Relation::Joining
+        );
+        assert_eq!(
+            voice(joining.workspace().unwrap(), "HR").relation,
+            Relation::Outside
+        );
+        assert!(joining.call.is_none() && joining.workspace().unwrap().call.is_none());
+
+        let locked = FlowError::refused(ErrorCode::CallLocked);
+        let refused = with(&|calls| {
+            calls.outcome = Some(Outcome::JoinFailed {
+                target: daily,
+                error: locked.clone(),
+            });
+        });
+        assert_eq!(
+            refused.call_notice,
+            Some(CallNotice::JoinFailed {
+                channel: Some("Daily".to_owned()),
+                error: locked.clone(),
+            })
+        );
+        let ended = |reason: EndReason| {
+            with(&|calls| {
+                calls.outcome = Some(Outcome::Ended {
+                    target: daily,
+                    reason: reason.clone(),
+                });
+            })
+            .call_notice
+        };
+        let removed = EndReason::Server(Some(LeaveReason::Disconnected));
+        assert_eq!(
+            ended(removed.clone()),
+            Some(CallNotice::Ended {
+                channel: Some("Daily".to_owned()),
+                reason: removed,
+            })
+        );
+        assert!(ended(EndReason::Elsewhere).is_some());
+        // An end that the person caused is told by nothing.
+        assert_eq!(ended(EndReason::Server(Some(LeaveReason::Left))), None);
+        assert_eq!(ended(EndReason::Server(Some(LeaveReason::Switched))), None);
+
+        // A call on a server whose state is not shown has no channel name.
+        let mut unknown = daily;
+        unknown.server_id = ServerId::generate();
+        let notice = with(&|calls| {
+            calls.outcome = Some(Outcome::Ended {
+                target: unknown,
+                reason: EndReason::Elsewhere,
+            });
+        })
+        .call_notice;
+        assert_eq!(
+            notice,
+            Some(CallNotice::Ended {
+                channel: None,
+                reason: EndReason::Elsewhere,
+            })
+        );
+    }
+
+    #[test]
+    fn the_sound_settings_list_the_default_each_device_and_a_chosen_device_that_is_gone() {
+        let mut scene = scene();
+        let daily = scene.daily;
+        scene.call(daily, Vec::new());
+        let server = scene.server();
+        let device = |id: &str, name: &str, is_default| DeviceInfo {
+            id: DeviceId(id.to_owned()),
+            name: name.to_owned(),
+            is_default,
+        };
+        let mut call = active(target(&server, &scene, daily));
+        call.microphone = MicrophoneState::NoPermission;
+        call.access = MicrophoneAccess::Refused;
+        call.output = OutputState::Failed(AudioError::NoDevice);
+        let mut known = in_call(call);
+        known.media.devices = Devices {
+            inputs: vec![
+                device("built-in", "Built-in microphone", true),
+                device("desk", "Desk microphone", false),
+            ],
+            outputs: vec![device("speakers", "Speakers", true)],
+        };
+        known.media.voice = VoiceSettings {
+            input_device: Some("desk".to_owned()),
+            output_device: Some("headset".to_owned()),
+            ..VoiceSettings::default()
+        };
+        let view = derive(
+            std::slice::from_ref(&server),
+            &selected(&scene, daily),
+            &known,
+        );
+        let audio = view.workspace().unwrap().call.clone().unwrap().audio;
+        let listed = |choices: &[DeviceChoice]| -> Vec<(Option<String>, String, bool)> {
+            choices
+                .iter()
+                .map(|choice| (choice.id.clone(), choice.name.clone(), choice.selected))
+                .collect()
+        };
+        assert_eq!(
+            listed(&audio.inputs),
+            [
+                (None, "Built-in microphone".to_owned(), false),
+                (
+                    Some("built-in".to_owned()),
+                    "Built-in microphone".to_owned(),
+                    false
+                ),
+                (Some("desk".to_owned()), "Desk microphone".to_owned(), true),
+            ]
+        );
+        // The chosen output is not connected: it is listed without a name, as the choice.
+        assert_eq!(
+            listed(&audio.outputs),
+            [
+                (None, "Speakers".to_owned(), false),
+                (Some("speakers".to_owned()), "Speakers".to_owned(), false),
+                (Some("headset".to_owned()), String::new(), true),
+            ]
+        );
+        assert_eq!(audio.microphone, MicrophoneLine::NoPermission);
+        assert_eq!(audio.access, MicrophoneAccess::Refused);
+        assert!(audio.output_failed);
+
+        // Without a choice the default of the system is the choice.
+        known.media.voice = VoiceSettings::default();
+        let view = derive(
+            std::slice::from_ref(&server),
+            &selected(&scene, daily),
+            &known,
+        );
+        let audio = view.workspace().unwrap().call.clone().unwrap().audio;
+        assert!(audio.inputs[0].selected && audio.outputs[0].selected);
+        assert_eq!(
+            audio.inputs.iter().filter(|choice| choice.selected).count(),
+            1
+        );
+    }
+
+    #[test]
+    fn the_members_outside_the_call_are_listed_with_the_voice_channel_that_they_are_in() {
+        let mut scene = scene();
+        let (ana, ben, cal) = (
+            AccountId::generate(),
+            AccountId::generate(),
+            AccountId::generate(),
+        );
+        let (own, daily) = (scene.own, scene.daily);
+        let studio = scene.studio;
+        let focus = channel(studio, ChannelKind::Voice, "Focus room", 5);
+        let focus_id = focus.id;
+        scene.studio_mut().channels.push(focus);
+        scene.call(daily, vec![participant(ana), participant(own)]);
+        scene.call(focus_id, vec![participant(ben)]);
+        let mut model = scene.model();
+        let member = |account_id, name: &str| WorkspaceMember {
+            account_id,
+            name: name.to_owned(),
+            role_ids: Vec::new(),
+        };
+        Arc::make_mut(&mut model.workspaces[1]).members = Loadable::Loaded(vec![
+            member(own, "Luca"),
+            member(cal, "Cal"),
+            member(ben, "Ben"),
+            member(ana, "Ana"),
+        ]);
+        let server = server("Acme Studio", Some(model), logged_in(own, Vec::new()));
+        let known = in_call(active(target(&server, &scene, daily)));
+        let view = derive(
+            std::slice::from_ref(&server),
+            &selected(&scene, daily),
+            &known,
+        );
+        let outside = view.workspace().unwrap().call.clone().unwrap().outside;
+        let shown: Vec<(&str, Option<&str>)> = outside
+            .iter()
+            .map(|member| (member.name.as_str(), member.place.as_deref()))
+            .collect();
+        assert_eq!(shown, [("Ben", Some("Focus room")), ("Cal", None)]);
     }
 }

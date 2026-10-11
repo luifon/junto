@@ -93,9 +93,11 @@ fn the_first_start_asks_for_a_name_and_the_owner_code_opens_the_server(cx: &mut 
     ));
     assert!(world.run(handle.api().own_account()).unwrap().is_owner);
 
-    // A voice channel shows that calls are not in this version.
+    // A click on a voice channel shows it with the action that enters its call, and
+    // joins nothing (ADR 0735).
     window.click_channel("voice");
-    assert!(window.shows("calls-not-available"));
+    assert!(window.shows("join-call") && window.shows("voice-chat-not-available"));
+    assert!(!window.shows("call-strip") && window.view().call.is_none());
     assert_eq!(
         window
             .view()

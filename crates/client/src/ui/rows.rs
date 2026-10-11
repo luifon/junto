@@ -353,6 +353,8 @@ pub enum OccupantMark {
         lit: usize,
         label: SharedString,
     },
+    /// A state in words, such as "reconnecting…".
+    Status(SharedString),
 }
 
 impl OccupantMark {
@@ -363,6 +365,7 @@ impl OccupantMark {
             | Self::Sharing(label)
             | Self::HandRaised(label)
             | Self::SoundOff(label)
+            | Self::Status(label)
             | Self::Level { label, .. } => label,
         }
     }
@@ -428,6 +431,12 @@ impl RenderOnce for OccupantRow {
                     icon(Icon::PhonesOff, 14.0, colors.terracotta_deep).into_any_element()
                 }
                 OccupantMark::Level { lit, .. } => Meter::new(lit).into_any_element(),
+                OccupantMark::Status(text) => div()
+                    .typeface(theme.types.small, &theme)
+                    .ink(colors.ink_2)
+                    .whitespace_nowrap()
+                    .child(text)
+                    .into_any_element(),
             };
             div()
                 .id(("mark", index))

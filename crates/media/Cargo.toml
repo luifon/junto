@@ -1,0 +1,59 @@
+[package]
+name = "junto-media"
+description = "The media engine of the Junto client: sound devices, the media connection of a call, and the one call of a client over all its servers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[test]]
+name = "calls"
+path = "tests/calls/main.rs"
+required-features = ["test-support"]
+
+[features]
+# The synthetic sound devices and the tone analysis, for the tests of this crate and of the
+# desktop client.
+test-support = []
+
+[dependencies]
+junto-client-core = { path = "../client-core" }
+# The call implementation on all systems (ADR 0701). The audio processing module, the
+# resampler and the audio sources and sinks of its WebRTC library carry the sound.
+livekit = { version = "=0.9.4", default-features = false, features = ["native", "rustls-tls-native-roots"] }
+# The sound devices (ADR 0733).
+cpal = "0.18.2"
+futures-util = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Call sound is played through a PipeWire connection of the client itself (ADR 0502).
+cpal = { version = "0.18.2", features = ["pipewire"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The state of the microphone permission and the request for it.
+block2 = "0.6"
+objc2 = "0.6"
+objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "AVCaptureDevice", "AVMediaFormat", "block2"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
+
+[dev-dependencies]
+junto-media = { path = ".", features = ["test-support"] }
+sqlx = { workspace = true }
+tempfile = "3"
+tokio = { workspace = true, features = ["io-util", "test-util"] }
+url = "2"
+uuid = { workspace = true }
+
+# The workspace forbids unsafe code. This crate denies it and allows it in the one module
+# that asks macOS for the state of the microphone permission.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"

@@ -3,6 +3,7 @@
 //! [`AppState::view`] gives and holds only what belongs to the window itself: which layer
 //! is open, the text of its fields, and where the keyboard focus returns to.
 
+pub mod call;
 mod channels;
 mod join;
 mod main_area;
@@ -10,16 +11,20 @@ mod rail;
 mod server_menu;
 mod settings;
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use gpui::{
-    App, Context, Entity, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement,
-    ParentElement, Render, ScrollHandle, Styled, Subscription, Task, WeakFocusHandle, Window, div,
-    prelude::FluentBuilder,
+    App, Context, Entity, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, Modifiers,
+    ModifiersChangedEvent, ParentElement, Render, ScrollHandle, Styled, Subscription, Task,
+    WeakFocusHandle, Window, div, prelude::FluentBuilder,
 };
 use gpui_base::input::InputState;
 use junto_client_core::flow::add_server::AddServerFlow;
-use junto_client_core::protocol::ids::ServerId;
+use junto_client_core::protocol::ids::{AccountId, ServerId};
+use junto_client_core::voice::{InputMode, TalkKey};
+
+use call::{CallTab, DeviceKind, VolumeControl};
 
 use crate::state::AppState;
 use crate::state::view::ShellView;
@@ -37,6 +42,8 @@ pub(crate) enum Layer {
     ServerMenu,
     ConfirmRemove(ServerId),
     ConfirmForget(ServerId),
+    /// The list of the input or of the output devices, in the sound settings of a call.
+    DeviceMenu(DeviceKind),
 }
 
 /// A part of the window that can be opened without a click.
@@ -47,6 +54,10 @@ pub enum Open {
     Members,
     /// The menu of the first server of the collapsed server book.
     ServerHoverMenu,
+    /// A pane of the panel of the call.
+    CallTab(CallTab),
+    /// The list of the input devices, in the sound settings of the call.
+    InputDevices,
 }
 
 /// How long the menu of a collapsed server stays after the pointer has left it, so that
@@ -83,10 +94,20 @@ pub struct Shell {
     // The side panel.
     pub(crate) members_open: bool,
 
+    // The call.
+    pub(crate) call_tab: CallTab,
+    /// The panel of the call lies over the content of a narrow window.
+    pub(crate) call_panel_open: bool,
+    pub(crate) volumes: HashMap<(ServerId, AccountId), VolumeControl>,
+    /// The press of the pointer that closed a list of devices was on the box of that
+    /// list: the click that follows does not open the list again.
+    pub(crate) device_menu_closed_by_press: bool,
     // The positions of the lists that scroll.
     pub(crate) servers_scroll: ScrollHandle,
     pub(crate) channels_scroll: ScrollHandle,
     pub(crate) members_scroll: ScrollHandle,
+    pub(crate) call_members_scroll: ScrollHandle,
+    pub(crate) call_settings_scroll: ScrollHandle,
 
     // The fields of the layers.
     pub(crate) name: Entity<InputState>,
@@ -111,6 +132,13 @@ impl Shell {
         let name = Field::state(text::NAME_FIELD, window, cx);
         let code = Field::state("", window, cx);
         let subscriptions = vec![
+            // A key that is held when the window loses the focus is not seen when it is
+            // released: push-to-talk ends with the focus (ADR 0507).
+            cx.observe_window_activation(window, |this, window, cx| {
+                if !window.is_window_active() {
+                    this.set_talking(false, cx);
+                }
+            }),
             cx.observe_in(&state, window, |this, state, window, cx| {
                 if let Some((submitted, result)) =
                     state.update(cx, |state, _| state.take_name_result())
@@ -173,9 +201,15 @@ impl Shell {
             expanded_while_narrow: false,
             rail_width: 0.0,
             members_open: false,
+            call_tab: CallTab::default(),
+            call_panel_open: false,
+            volumes: HashMap::new(),
+            device_menu_closed_by_press: false,
             servers_scroll: ScrollHandle::new(),
             channels_scroll: ScrollHandle::new(),
             members_scroll: ScrollHandle::new(),
+            call_members_scroll: ScrollHandle::new(),
+            call_settings_scroll: ScrollHandle::new(),
             name,
             name_error: None,
             name_saved: false,
@@ -189,8 +223,37 @@ impl Shell {
         if shell.state.read(cx).preset_name().is_empty() {
             shell.open_layer(Layer::Welcome, window, cx);
             shell.focus_field(&shell.name.clone(), window, cx);
+        } else {
+            // The window holds the keyboard focus from its start, so that the key of
+            // push-to-talk reaches it before the first click.
+            shell.focus.focus(window, cx);
         }
         shell
+    }
+
+    /// The pane of the panel of the call that is shown.
+    pub fn call_tab(&self) -> CallTab {
+        self.call_tab
+    }
+
+    /// The modifier keys changed. With push-to-talk, the chosen key sends the microphone
+    /// while it is held.
+    fn modifiers_changed(&mut self, modifiers: Modifiers, cx: &mut Context<Self>) {
+        let held = {
+            let voice = self.state.read(cx).voice();
+            voice.input_mode == InputMode::PushToTalk
+                && match voice.talk_key {
+                    TalkKey::Alt => modifiers.alt,
+                    TalkKey::Control => modifiers.control,
+                }
+        };
+        self.set_talking(held, cx);
+    }
+
+    /// The calls keep the state of the key and act on a change only, so the window tells
+    /// them what holds and keeps no copy that could differ.
+    fn set_talking(&mut self, talking: bool, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, _| state.set_talking(talking));
     }
 
     pub fn state(&self) -> &Entity<AppState> {
@@ -310,6 +373,15 @@ impl Shell {
                     self.open_hover_menu(server_id, true, window, cx);
                 }
             }
+            Open::CallTab(tab) => {
+                self.call_panel_open = true;
+                self.show_call_tab(tab, cx);
+            }
+            Open::InputDevices => {
+                self.call_panel_open = true;
+                self.show_call_tab(CallTab::Settings, cx);
+                self.open_device_menu(DeviceKind::Input, window, cx);
+            }
         }
     }
 
@@ -340,6 +412,15 @@ impl Shell {
     fn keep_focus_in_layer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !matches!(self.layer, Layer::None) && !self.layer_focus.contains_focused(window, cx) {
             self.layer_focus.focus(window, cx);
+        }
+    }
+
+    /// A control that holds the keyboard focus can leave the window: the button that
+    /// joins a call is gone when the call begins. The focus then returns to the window, so
+    /// that Tab and the key of push-to-talk still reach it.
+    fn keep_focus_in_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.layer, Layer::None) && !self.focus.contains_focused(window, cx) {
+            self.focus.focus(window, cx);
         }
     }
 
@@ -505,6 +586,10 @@ impl Render for Shell {
             cx.defer_in(window, |this, window, cx| {
                 this.keep_focus_in_layer(window, cx)
             });
+        } else if !self.focus.contains_focused(window, cx) {
+            cx.defer_in(window, |this, window, cx| {
+                this.keep_focus_in_window(window, cx)
+            });
         }
         self.rail_width = if collapsed {
             theme.metrics.rail_collapsed_width
@@ -526,8 +611,14 @@ impl Render for Shell {
             // After every click: a press that closed the menu of the server is over.
             .on_mouse_up(
                 gpui::MouseButton::Left,
-                cx.listener(|this, _, _, _| this.server_menu_closed_by_press = false),
+                cx.listener(|this, _, _, _| {
+                    this.server_menu_closed_by_press = false;
+                    this.device_menu_closed_by_press = false;
+                }),
             )
+            .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _, cx| {
+                this.modifiers_changed(event.modifiers, cx);
+            }))
             .child(self.render_rail(&view, collapsed, narrow, window, cx))
             .child(self.render_channel_column(&view, window, cx))
             .child(self.render_main(&view, narrow, window, cx))
@@ -544,6 +635,13 @@ impl Shell {
             Layer::ConfirmRemove(server_id) | Layer::ConfirmForget(server_id) => gone(server_id),
             Layer::ServerMenu => view.selected.is_none(),
             Layer::Join(join) => join.is_stale(view),
+            // The list of devices belongs to the sound settings of the call.
+            Layer::DeviceMenu(_) => {
+                self.call_tab != CallTab::Settings
+                    || view
+                        .workspace()
+                        .is_none_or(|workspace| workspace.call.is_none())
+            }
             Layer::None | Layer::Welcome | Layer::Settings => false,
         };
         if stale {
@@ -558,7 +656,8 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         match &self.layer {
-            Layer::None => div().into_any_element(),
+            // The list of devices is drawn at its box, in the panel of the call.
+            Layer::None | Layer::DeviceMenu(_) => div().into_any_element(),
             Layer::Welcome => self.render_welcome(window, cx).into_any_element(),
             Layer::Settings => self.render_settings(window, cx).into_any_element(),
             Layer::Join(_) => self.render_join(view, window, cx).into_any_element(),

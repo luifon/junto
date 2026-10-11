@@ -16,13 +16,21 @@ use junto_client_core::api::ApiError;
 use junto_client_core::book::ConnectionMode;
 use junto_client_core::flow::FlowError;
 use junto_client_core::flow::access::{AccessAction, AccessState};
+use junto_client_core::protocol::call::CallPlace;
 use junto_client_core::protocol::ids::{AccountId, ChannelId, RecoveryId, ServerId, WorkspaceId};
 use junto_client_core::settings::InterfaceSettings;
+use junto_client_core::voice::{InputMode, TalkKey, VoiceSettings};
 use junto_client_core::{Client, ServerHandle};
+use junto_media::audio::{DeviceId, Processing, level};
+use junto_media::calls::{CallTarget, Calls, MediaOptions};
+use junto_media::engine::{Levels, VoiceConfig};
 
 use crate::text;
 use crate::theme;
-use view::{Known, Selection, ServerSnapshot, ShellView, Shown};
+use view::{
+    INPUT_SEGMENTS, Known, LEVEL_SEGMENTS, MediaSnapshot, Selection, ServerSnapshot, ShellView,
+    Shown, ShownLevels,
+};
 
 /// The times of the work that the application does by itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +88,69 @@ enum Setting {
     ServerBook,
 }
 
+/// A part of the processing of the microphone (ADR 0701).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessingPart {
+    EchoCancellation,
+    NoiseSuppression,
+    AutomaticGain,
+}
+
+/// How long the application waits at its end for the server to be told that the call was
+/// left.
+const LEAVE_WAIT: Duration = Duration::from_secs(2);
+
+/// The sound settings as the media engine takes them.
+fn voice_config(voice: &VoiceSettings) -> VoiceConfig {
+    VoiceConfig {
+        input_device: voice.input_device.clone().map(DeviceId),
+        output_device: voice.output_device.clone().map(DeviceId),
+        processing: Processing {
+            echo_cancellation: voice.echo_cancellation,
+            noise_suppression: voice.noise_suppression,
+            automatic_gain: voice.automatic_gain,
+        },
+        push_to_talk: voice.input_mode == InputMode::PushToTalk,
+    }
+}
+
+/// The levels as the meters show them. A meter has few segments, so most changes of a
+/// level change nothing that is drawn.
+fn shown_levels(levels: &Levels) -> ShownLevels {
+    ShownLevels {
+        input: level::segments(levels.input, INPUT_SEGMENTS),
+        own: (
+            level::segments(levels.own.level, LEVEL_SEGMENTS),
+            levels.own.speaking,
+        ),
+        people: levels
+            .people
+            .iter()
+            .map(|(account_id, person)| {
+                (
+                    *account_id,
+                    (
+                        level::segments(person.level, LEVEL_SEGMENTS),
+                        person.speaking,
+                    ),
+                )
+            })
+            .collect(),
+    }
+}
+
+/// Leaves the call of this device, ends a join that waits for its server, and waits a short
+/// time for the server to be told. The application calls this when it quits, on the
+/// interface thread.
+pub fn leave_call_at_quit(calls: &Calls, cx: &mut gpui::App) {
+    // Also without a call in the view: a join that the person ended can still wait for
+    // its server, and gives up the place that it is given.
+    let leaving = calls.leave();
+    let _ = cx
+        .foreground_executor()
+        .block_with_timeout(LEAVE_WAIT, leaving);
+}
+
 /// How often the name of one account is asked for when no answer arrives.
 const NAME_TRIES: u8 = 3;
 
@@ -114,6 +185,12 @@ pub struct Pending {
 
 pub struct AppState {
     client: Client,
+    calls: Calls,
+    /// Why the sound settings are not in their file.
+    voice_failed: Option<String>,
+    /// The media snapshot that the view is derived from in place of the calls.
+    #[cfg(feature = "test-support")]
+    media_fixture: Option<MediaSnapshot>,
     timing: Timing,
     settings: InterfaceSettings,
     /// The interface scale of this start, from a start argument. It is not stored.
@@ -141,11 +218,25 @@ pub struct AppState {
     fixture: Option<Vec<ServerSnapshot>>,
     _changes: Task<()>,
     _retry: Task<()>,
+    _media: [Task<()>; 3],
+}
+
+impl Drop for AppState {
+    fn drop(&mut self) {
+        // The call does not outlive the application. The leave runs to its end on the
+        // runtime of the client.
+        drop(self.calls.leave());
+    }
 }
 
 impl AppState {
     /// Starts the event streams, contacts every saved server and follows their changes.
-    pub fn new(client: Client, timing: Timing, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        client: Client,
+        timing: Timing,
+        media: MediaOptions,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let settings = match client.settings().load() {
             Ok(settings) => settings,
             Err(error) => {
@@ -153,6 +244,57 @@ impl AppState {
                 InterfaceSettings::default()
             }
         };
+        let voice = match client.voice().load() {
+            Ok(voice) => voice,
+            Err(error) => {
+                tracing::warn!(%error, "the sound settings were not read");
+                VoiceSettings::default()
+            }
+        };
+        let calls = Calls::new(client.clone(), media);
+        calls.set_voice(voice_config(&voice));
+        for (server_id, accounts) in &voice.volumes {
+            for (account_id, percent) in accounts {
+                calls.set_volume(*server_id, *account_id, f32::from(*percent) / 100.0);
+            }
+        }
+        let mut calls_watch = calls.watch();
+        let follow_calls = cx.spawn(async move |this, cx| {
+            while calls_watch.changed().await.is_ok() {
+                if this.update(cx, |this, cx| this.calls_changed(cx)).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut levels = calls.levels();
+        let follow_levels = cx.spawn(async move |this, cx| {
+            while levels.changed().await.is_ok() {
+                let shown = shown_levels(&levels.borrow_and_update());
+                let told = this.update(cx, |this, cx| {
+                    if this.known.media.levels != shown {
+                        this.known.media.levels = shown;
+                        cx.notify();
+                    }
+                });
+                if told.is_err() {
+                    break;
+                }
+            }
+        });
+        let clock = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let told = this.update(cx, |this, cx| {
+                    if this.known.media.calls.call.is_some() {
+                        this.known.media.now = Some(time::OffsetDateTime::now_utc());
+                        cx.notify();
+                    }
+                });
+                if told.is_err() {
+                    break;
+                }
+            }
+        });
         if let Err(error) = client.start_event_streams() {
             tracing::error!(%error, "the event streams did not start");
         }
@@ -188,10 +330,19 @@ impl AppState {
                 .load()
                 .map(|preset| preset.name)
                 .unwrap_or_default(),
+            media: MediaSnapshot {
+                calls: calls.view(),
+                voice,
+                ..MediaSnapshot::default()
+            },
             ..Known::default()
         };
         let mut state = Self {
             client,
+            calls,
+            voice_failed: None,
+            #[cfg(feature = "test-support")]
+            media_fixture: None,
             timing,
             settings,
             scale_of_this_start: None,
@@ -209,9 +360,225 @@ impl AppState {
             fixture: None,
             _changes: follow,
             _retry: retry,
+            _media: [follow_calls, follow_levels, clock],
         };
         state.changed(cx);
         state
+    }
+
+    pub fn calls(&self) -> &Calls {
+        &self.calls
+    }
+
+    /// The sound settings as the window uses them.
+    pub fn voice(&self) -> &VoiceSettings {
+        #[cfg(feature = "test-support")]
+        if let Some(media) = &self.media_fixture {
+            return &media.voice;
+        }
+        &self.known.media.voice
+    }
+
+    /// Why the sound settings that the window shows are not in their file.
+    pub fn voice_error(&self) -> Option<&str> {
+        self.voice_failed.as_deref()
+    }
+
+    /// Runs after each change of the calls: the view follows, and a call that begins reads
+    /// the devices and the permission that its settings show.
+    fn calls_changed(&mut self, cx: &mut Context<Self>) {
+        let view = self.calls.view();
+        let begins = view.call.is_some() && self.known.media.calls.call.is_none();
+        self.known.media.now = view.call.as_ref().map(|_| time::OffsetDateTime::now_utc());
+        self.known.media.calls = view;
+        if begins {
+            self.refresh_devices(cx);
+        }
+        self.changed(cx);
+    }
+
+    /// Reads the sound devices and the microphone permission again, on a background
+    /// thread: the list of a system can take a moment.
+    pub fn refresh_devices(&mut self, cx: &mut Context<Self>) {
+        let calls = self.calls.clone();
+        let reading = cx
+            .background_executor()
+            .spawn(async move { (calls.devices(), calls.microphone_access()) });
+        cx.spawn(async move |this, cx| {
+            let (devices, access) = reading.await;
+            let _ = this.update(cx, |this, cx| {
+                match devices {
+                    Ok(devices) => this.known.media.devices = devices,
+                    Err(error) => tracing::warn!(%error, "the sound devices were not read"),
+                }
+                this.known.media.access = Some(access);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Asks the server of a voice channel for a place in its call. The result is in the
+    /// view: the call, or the notice of a refusal.
+    pub fn join_call(
+        &mut self,
+        server_id: ServerId,
+        workspace_id: WorkspaceId,
+        channel_id: ChannelId,
+        cx: &mut Context<Self>,
+    ) {
+        let joining = self.calls.join(CallTarget {
+            server_id,
+            place: CallPlace::Channel {
+                workspace_id,
+                channel_id,
+            },
+        });
+        cx.spawn(async move |_, _| {
+            let _ = joining.await;
+        })
+        .detach();
+    }
+
+    pub fn leave_call(&mut self, cx: &mut Context<Self>) {
+        let leaving = self.calls.leave();
+        cx.spawn(async move |_, _| leaving.await).detach();
+    }
+
+    /// Closes the microphone of the person, or opens it. The setting holds outside a call
+    /// too, for the next one.
+    pub fn toggle_microphone(&mut self) {
+        self.calls.set_muted(!self.calls.view().muted);
+    }
+
+    pub fn toggle_sound(&mut self) {
+        self.calls.set_deafened(!self.calls.view().deafened);
+    }
+
+    /// The push-to-talk key is held or released.
+    pub fn set_talking(&mut self, talking: bool) {
+        self.calls.set_talking(talking);
+    }
+
+    pub fn retry_microphone(&mut self, cx: &mut Context<Self>) {
+        self.calls.retry_microphone();
+        self.refresh_devices(cx);
+    }
+
+    pub fn dismiss_call_notice(&mut self) {
+        self.calls.dismiss_outcome();
+    }
+
+    /// Shows the voice channel of the call of this device.
+    pub fn show_call(&mut self, cx: &mut Context<Self>) {
+        let Some(call) = self.known.media.calls.call.as_ref() else {
+            return;
+        };
+        let target = call.target;
+        self.selection.server = Some(target.server_id);
+        if let CallPlace::Channel {
+            workspace_id,
+            channel_id,
+        } = target.place
+        {
+            self.selection
+                .workspaces
+                .insert(target.server_id, workspace_id);
+            self.selection.channels.insert(workspace_id, channel_id);
+        }
+        self.changed(cx);
+    }
+
+    /// Uses a volume for a person at once, while the person of this device moves the
+    /// control. [`AppState::store_volume`] writes it.
+    pub fn set_volume(
+        &mut self,
+        server_id: ServerId,
+        account_id: AccountId,
+        percent: u16,
+        cx: &mut Context<Self>,
+    ) {
+        self.known
+            .media
+            .voice
+            .set_volume(server_id, account_id, percent);
+        let percent = self.known.media.voice.volume(server_id, account_id);
+        self.calls
+            .set_volume(server_id, account_id, f32::from(percent) / 100.0);
+        cx.notify();
+    }
+
+    /// Writes the volume of a person as it is now.
+    pub fn store_volume(
+        &mut self,
+        server_id: ServerId,
+        account_id: AccountId,
+        cx: &mut Context<Self>,
+    ) {
+        let percent = self.known.media.voice.volume(server_id, account_id);
+        self.write_voice(cx, move |voice| {
+            voice.set_volume(server_id, account_id, percent);
+        });
+    }
+
+    /// Chooses the input device. `None` is the default of the system.
+    pub fn choose_input(&mut self, device: Option<String>, cx: &mut Context<Self>) {
+        self.change_voice(cx, move |voice| voice.input_device.clone_from(&device));
+    }
+
+    pub fn choose_output(&mut self, device: Option<String>, cx: &mut Context<Self>) {
+        self.change_voice(cx, move |voice| voice.output_device.clone_from(&device));
+    }
+
+    pub fn set_processing(&mut self, part: ProcessingPart, on: bool, cx: &mut Context<Self>) {
+        self.change_voice(cx, move |voice| match part {
+            ProcessingPart::EchoCancellation => voice.echo_cancellation = on,
+            ProcessingPart::NoiseSuppression => voice.noise_suppression = on,
+            ProcessingPart::AutomaticGain => voice.automatic_gain = on,
+        });
+    }
+
+    pub fn set_input_mode(&mut self, mode: InputMode, cx: &mut Context<Self>) {
+        if mode != InputMode::PushToTalk {
+            self.calls.set_talking(false);
+        }
+        self.change_voice(cx, move |voice| voice.input_mode = mode);
+    }
+
+    pub fn set_talk_key(&mut self, key: TalkKey, cx: &mut Context<Self>) {
+        self.calls.set_talking(false);
+        self.change_voice(cx, move |voice| voice.talk_key = key);
+    }
+
+    /// Changes a sound setting: the engine uses it at once, and the file is written on a
+    /// background thread.
+    fn change_voice(
+        &mut self,
+        cx: &mut Context<Self>,
+        change: impl Fn(&mut VoiceSettings) + Send + 'static,
+    ) {
+        change(&mut self.known.media.voice);
+        self.calls.set_voice(voice_config(&self.known.media.voice));
+        self.write_voice(cx, change);
+    }
+
+    fn write_voice(
+        &mut self,
+        cx: &mut Context<Self>,
+        change: impl Fn(&mut VoiceSettings) + Send + 'static,
+    ) {
+        let store = self.client.voice();
+        Self::queue_write(
+            cx,
+            move || store.update(|stored| change(stored)),
+            |this, written, cx| {
+                this.voice_failed = written
+                    .err()
+                    .map(|error| text::flow_error(&FlowError::Storage(error.to_string())));
+                cx.notify();
+            },
+        );
+        cx.notify();
     }
 
     pub fn client(&self) -> &Client {
@@ -283,7 +650,23 @@ impl AppState {
 
     /// What the window shows now.
     pub fn view(&self) -> ShellView {
+        #[cfg(feature = "test-support")]
+        if let Some(media) = &self.media_fixture {
+            let known = Known {
+                media: media.clone(),
+                ..self.known.clone()
+            };
+            return view::derive(&self.snapshots(), &self.selection, &known);
+        }
         view::derive(&self.snapshots(), &self.selection, &self.known)
+    }
+
+    /// Draws this state of the calls in place of the calls of the client. The screen tool
+    /// uses it to draw a call without a media server.
+    #[cfg(feature = "test-support")]
+    pub fn show_media_fixture(&mut self, media: MediaSnapshot, cx: &mut Context<Self>) {
+        self.media_fixture = Some(media);
+        self.changed(cx);
     }
 
     fn snapshots(&self) -> Vec<ServerSnapshot> {

@@ -164,6 +164,7 @@ impl DataDir {
 pub(crate) const BOOK_FILE: &str = "servers.json";
 pub(crate) const PROFILE_FILE: &str = "profile.json";
 pub(crate) const SETTINGS_FILE: &str = "settings.json";
+pub(crate) const VOICE_FILE: &str = "voice.json";
 
 pub(crate) fn key_file_name(server_id: ServerId) -> String {
     format!("{server_id}.key")

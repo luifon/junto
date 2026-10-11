@@ -33,7 +33,8 @@ Dependencies:
 
 Libraries:
 
-- The LiveKit Rust SDK provides audio devices, echo cancellation, noise suppression, gain control and screen capture. Screen capture covers a screen or a window, including Wayland through the system portal.
+- The LiveKit Rust SDK provides echo cancellation, noise suppression, gain control and screen capture. Screen capture covers a screen or a window, including Wayland through the system portal.
+- The sound devices are opened with `cpal`. The device module of the SDK plays every remote track through one mix without a volume per person, and a test cannot give it a device (ADR 0733).
 - Capture of system sound and of application sound is the project's own code, with one implementation per operating system (ADR 0502).
 - A separate crate provides camera capture.
 - The component library provides the text input, the Markdown view and the message list. The Markdown view comes from the unstyled layer `gpui-base`, because only that layer accepts a resolver for image addresses.

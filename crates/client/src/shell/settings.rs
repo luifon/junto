@@ -5,10 +5,15 @@ use gpui::{
     Context, IntoElement, ParentElement, SharedString, Styled, Window, div, prelude::FluentBuilder,
 };
 
+use junto_client_core::voice::{InputMode, TalkKey};
+
 use super::{Layer, Shell};
+use crate::state::ProcessingPart;
 use crate::text;
 use crate::theme::{self, Theme, theme, u};
-use crate::ui::{Button, ButtonKind, Dialog, Field, Notice, Segmented, StyleExt, dialog_footer};
+use crate::ui::{
+    Button, ButtonKind, Dialog, Field, Notice, Segmented, StyleExt, Toggle, dialog_footer,
+};
 
 fn group_label(label: &'static str, theme: &Theme) -> impl IntoElement + use<> {
     div()
@@ -213,6 +218,8 @@ impl Shell {
                         .child(Notice::error(error).selector("settings-error")),
                 )
             })
+            .child(div().mt(u(16.0)).child(group_label(text::VOICE, &theme)))
+            .children(self.render_voice_settings(&theme, cx))
             .child(
                 div()
                     .mt(u(16.0))
@@ -227,5 +234,156 @@ impl Shell {
                     .child(data_dir),
             )
             .child(help(text::DATA_DIRECTORY_HELP, &theme))
+    }
+
+    /// The sound settings that hold for every call: when the microphone is sent, and the
+    /// processing of the microphone (ADR 0507, ADR 0701).
+    fn render_voice_settings(
+        &mut self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Vec<gpui::AnyElement> {
+        let (voice, error) = {
+            let state = self.state.read(cx);
+            (
+                state.voice().clone(),
+                state.voice_error().map(str::to_owned),
+            )
+        };
+        let colors = theme.colors;
+        let row_label = |label: &'static str| {
+            div()
+                .flex_none()
+                .w(u(84.0))
+                .typeface(theme.types.control, theme)
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .ink(colors.ink)
+                .child(label)
+        };
+        let modes = [InputMode::VoiceActivation, InputMode::PushToTalk];
+        let keys = [TalkKey::Alt, TalkKey::Control];
+        let mut rows = vec![
+            div()
+                .flex()
+                .items_center()
+                .gap(u(10.0))
+                .child(row_label(text::INPUT_MODE))
+                .child(
+                    Segmented::new(
+                        "input-mode",
+                        text::INPUT_MODE,
+                        [text::VOICE_ACTIVATION.into(), text::PUSH_TO_TALK.into()],
+                    )
+                    .selected(modes.iter().position(|mode| *mode == voice.input_mode))
+                    .selector("input-mode")
+                    .on_select({
+                        let select = cx.listener(move |this, index: &usize, _, cx| {
+                            if let Some(mode) = modes.get(*index).copied() {
+                                this.state
+                                    .update(cx, |state, cx| state.set_input_mode(mode, cx));
+                            }
+                        });
+                        move |index, window, cx| select(&index, window, cx)
+                    }),
+                )
+                .into_any_element(),
+        ];
+        if voice.input_mode == InputMode::PushToTalk {
+            rows.push(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(u(10.0))
+                    .mt(u(6.0))
+                    .child(row_label(text::TALK_KEY))
+                    .child(
+                        Segmented::new(
+                            "talk-key",
+                            text::TALK_KEY,
+                            keys.map(|key| SharedString::from(text::talk_key(key))),
+                        )
+                        .selected(keys.iter().position(|key| *key == voice.talk_key))
+                        .selector("talk-key")
+                        .on_select({
+                            let select = cx.listener(move |this, index: &usize, _, cx| {
+                                if let Some(key) = keys.get(*index).copied() {
+                                    this.state
+                                        .update(cx, |state, cx| state.set_talk_key(key, cx));
+                                }
+                            });
+                            move |index, window, cx| select(&index, window, cx)
+                        }),
+                    )
+                    .into_any_element(),
+            );
+        }
+        rows.push(help(text::INPUT_MODE_HELP, theme).into_any_element());
+        for (part, on, title, sentence, selector) in [
+            (
+                ProcessingPart::EchoCancellation,
+                voice.echo_cancellation,
+                text::ECHO_CANCELLATION,
+                text::ECHO_CANCELLATION_HELP,
+                "echo-cancellation",
+            ),
+            (
+                ProcessingPart::NoiseSuppression,
+                voice.noise_suppression,
+                text::NOISE_SUPPRESSION,
+                text::NOISE_SUPPRESSION_HELP,
+                "noise-suppression",
+            ),
+            (
+                ProcessingPart::AutomaticGain,
+                voice.automatic_gain,
+                text::AUTOMATIC_GAIN,
+                text::AUTOMATIC_GAIN_HELP,
+                "automatic-gain",
+            ),
+        ] {
+            rows.push(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(u(10.0))
+                    .mt(u(8.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .typeface(theme.types.control, theme)
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .ink(colors.ink)
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .typeface(theme.types.small, theme)
+                                    .ink(colors.ink_2)
+                                    .child(sentence),
+                            ),
+                    )
+                    .child(
+                        Toggle::new(selector, title, on, (text::ON, text::OFF))
+                            .selector(selector)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.state
+                                    .update(cx, |state, cx| state.set_processing(part, !on, cx));
+                            })),
+                    )
+                    .into_any_element(),
+            );
+        }
+        if let Some(error) = error {
+            rows.push(
+                div()
+                    .mt(u(8.0))
+                    .child(Notice::error(error).selector("voice-settings-error"))
+                    .into_any_element(),
+            );
+        }
+        rows
     }
 }

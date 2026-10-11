@@ -1,0 +1,345 @@
+//! The sound devices of the machine, through `cpal`: CoreAudio on macOS, WASAPI on Windows,
+//! and PipeWire on Linux (ADR 0733). On Linux the client plays the sound of a call through
+//! its own PipeWire connection, so that a capture of system sound can leave it out
+//! (ADR 0502).
+
+use std::time::Duration;
+
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{FromSample, Sample, SampleFormat, SizedSample};
+
+use super::host::{
+    AudioError, AudioHost, Deliver, DeviceId, DeviceInfo, Devices, Failed, Fill, Format, OpenStream,
+};
+use super::rate;
+
+/// How long the system has to start a stream.
+const OPEN_TIMEOUT: Duration = Duration::from_secs(5);
+
+pub struct CpalHost {
+    host: cpal::Host,
+}
+
+impl Default for CpalHost {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CpalHost {
+    pub fn new() -> Self {
+        Self { host: host() }
+    }
+
+    fn device(&self, chosen: Option<&DeviceId>, input: bool) -> Result<cpal::Device, AudioError> {
+        let device = match chosen {
+            Some(id) => {
+                let id: cpal::DeviceId = id.0.parse().map_err(|_| AudioError::NoDevice)?;
+                self.host.device_by_id(&id)
+            }
+            None if input => self.host.default_input_device(),
+            None => self.host.default_output_device(),
+        };
+        device.ok_or(AudioError::NoDevice)
+    }
+
+    fn info(&self, device: &cpal::Device, input: bool) -> Result<DeviceInfo, AudioError> {
+        let id = device.id().map_err(error_of)?;
+        let default = if input {
+            self.host.default_input_device()
+        } else {
+            self.host.default_output_device()
+        };
+        Ok(DeviceInfo {
+            name: device.description().map_or_else(
+                |_| device.to_string(),
+                |description| description.name().to_owned(),
+            ),
+            is_default: default.and_then(|default| default.id().ok()).as_ref() == Some(&id),
+            id: DeviceId(id.to_string()),
+        })
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn host() -> cpal::Host {
+    cpal::host_from_id(cpal::HostId::PipeWire).unwrap_or_else(|error| {
+        tracing::warn!(%error, "PipeWire is not available; the default sound host is used");
+        cpal::default_host()
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn host() -> cpal::Host {
+    cpal::default_host()
+}
+
+fn error_of(error: cpal::Error) -> AudioError {
+    match error.kind() {
+        cpal::ErrorKind::DeviceNotAvailable => AudioError::NoDevice,
+        cpal::ErrorKind::PermissionDenied => AudioError::Refused,
+        cpal::ErrorKind::UnsupportedConfig => AudioError::Unsupported(error.to_string()),
+        _ => AudioError::Failed(error.to_string()),
+    }
+}
+
+/// A fault that does not end a stream: the sound had a gap, or the system did not give
+/// the thread of the stream its priority.
+fn passes(error: &cpal::Error) -> bool {
+    matches!(
+        error.kind(),
+        cpal::ErrorKind::Xrun | cpal::ErrorKind::RealtimeDenied
+    )
+}
+
+fn report(mut failed: Failed) -> impl FnMut(cpal::Error) + Send + 'static {
+    move |error| {
+        if passes(&error) {
+            tracing::debug!(%error, "a sound stream had a fault that passes");
+        } else {
+            failed(error_of(error));
+        }
+    }
+}
+
+/// The format that a stream of a device is opened with: the default of the device, or
+/// another one that the device offers when the pipeline does not convert the default rate.
+/// The channels and the sample type of the default are kept where the device offers them
+/// at the new rate.
+fn usable_config(
+    default: cpal::SupportedStreamConfig,
+    offered: &[cpal::SupportedStreamConfigRange],
+) -> Result<cpal::SupportedStreamConfig, AudioError> {
+    if rate::converts(default.sample_rate()) {
+        return Ok(default);
+    }
+    rate::PREFERRED_RATES
+        .iter()
+        .find_map(|rate| {
+            offered
+                .iter()
+                .filter(|range| (range.min_sample_rate()..=range.max_sample_rate()).contains(rate))
+                .max_by_key(|range| {
+                    (
+                        range.channels() == default.channels(),
+                        range.sample_format() == default.sample_format(),
+                    )
+                })
+                .and_then(|range| (*range).try_with_sample_rate(*rate))
+        })
+        .ok_or_else(|| AudioError::Unsupported(format!("{} Hz", default.sample_rate())))
+}
+
+fn input_stream<T>(
+    device: &cpal::Device,
+    config: cpal::StreamConfig,
+    mut deliver: Deliver,
+    failed: Failed,
+) -> Result<cpal::Stream, cpal::Error>
+where
+    T: SizedSample,
+    f32: FromSample<T>,
+{
+    let format = Format {
+        sample_rate: config.sample_rate,
+        channels: config.channels,
+    };
+    let mut converted: Vec<f32> = Vec::new();
+    device.build_input_stream(
+        config,
+        move |samples: &[T], _: &cpal::InputCallbackInfo| {
+            converted.clear();
+            converted.extend(samples.iter().map(|sample| f32::from_sample(*sample)));
+            deliver(&converted, format);
+        },
+        report(failed),
+        Some(OPEN_TIMEOUT),
+    )
+}
+
+fn output_stream<T>(
+    device: &cpal::Device,
+    config: cpal::StreamConfig,
+    mut fill: Fill,
+    failed: Failed,
+) -> Result<cpal::Stream, cpal::Error>
+where
+    T: SizedSample + FromSample<f32>,
+{
+    let format = Format {
+        sample_rate: config.sample_rate,
+        channels: config.channels,
+    };
+    let mut filled: Vec<f32> = Vec::new();
+    device.build_output_stream(
+        config,
+        move |samples: &mut [T], _: &cpal::OutputCallbackInfo| {
+            filled.clear();
+            filled.resize(samples.len(), 0.0);
+            fill(&mut filled, format);
+            for (sample, value) in samples.iter_mut().zip(&filled) {
+                *sample = T::from_sample(*value);
+            }
+        },
+        report(failed),
+        Some(OPEN_TIMEOUT),
+    )
+}
+
+impl AudioHost for CpalHost {
+    fn devices(&self) -> Result<Devices, AudioError> {
+        let list = |input: bool| -> Result<Vec<DeviceInfo>, AudioError> {
+            let devices: Vec<cpal::Device> = if input {
+                self.host.input_devices().map_err(error_of)?.collect()
+            } else {
+                self.host.output_devices().map_err(error_of)?.collect()
+            };
+            Ok(devices
+                .iter()
+                .filter_map(|device| self.info(device, input).ok())
+                .collect())
+        };
+        Ok(Devices {
+            inputs: list(true)?,
+            outputs: list(false)?,
+        })
+    }
+
+    fn open_input(
+        &self,
+        device: Option<&DeviceId>,
+        deliver: Deliver,
+        failed: Failed,
+    ) -> Result<OpenStream, AudioError> {
+        let device = self.device(device, true)?;
+        let info = self.info(&device, true)?;
+        let default = device.default_input_config().map_err(error_of)?;
+        let offered: Vec<_> = if rate::converts(default.sample_rate()) {
+            Vec::new()
+        } else {
+            device
+                .supported_input_configs()
+                .map_err(error_of)?
+                .collect()
+        };
+        let supported = usable_config(default, &offered)?;
+        let config = supported.config();
+        let stream = match supported.sample_format() {
+            SampleFormat::F32 => input_stream::<f32>(&device, config, deliver, failed),
+            SampleFormat::I16 => input_stream::<i16>(&device, config, deliver, failed),
+            SampleFormat::U16 => input_stream::<u16>(&device, config, deliver, failed),
+            SampleFormat::I32 => input_stream::<i32>(&device, config, deliver, failed),
+            SampleFormat::I8 => input_stream::<i8>(&device, config, deliver, failed),
+            SampleFormat::U8 => input_stream::<u8>(&device, config, deliver, failed),
+            other => return Err(AudioError::Unsupported(other.to_string())),
+        }
+        .map_err(error_of)?;
+        stream.play().map_err(error_of)?;
+        Ok(OpenStream::new(info, stream))
+    }
+
+    fn open_output(
+        &self,
+        device: Option<&DeviceId>,
+        fill: Fill,
+        failed: Failed,
+    ) -> Result<OpenStream, AudioError> {
+        let device = self.device(device, false)?;
+        let info = self.info(&device, false)?;
+        let default = device.default_output_config().map_err(error_of)?;
+        let offered: Vec<_> = if rate::converts(default.sample_rate()) {
+            Vec::new()
+        } else {
+            device
+                .supported_output_configs()
+                .map_err(error_of)?
+                .collect()
+        };
+        let supported = usable_config(default, &offered)?;
+        let config = supported.config();
+        let stream = match supported.sample_format() {
+            SampleFormat::F32 => output_stream::<f32>(&device, config, fill, failed),
+            SampleFormat::I16 => output_stream::<i16>(&device, config, fill, failed),
+            SampleFormat::U16 => output_stream::<u16>(&device, config, fill, failed),
+            SampleFormat::I32 => output_stream::<i32>(&device, config, fill, failed),
+            SampleFormat::I8 => output_stream::<i8>(&device, config, fill, failed),
+            SampleFormat::U8 => output_stream::<u8>(&device, config, fill, failed),
+            other => return Err(AudioError::Unsupported(other.to_string())),
+        }
+        .map_err(error_of)?;
+        stream.play().map_err(error_of)?;
+        Ok(OpenStream::new(info, stream))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Reads the device lists of the machine. No device is opened: the test uses no
+    /// microphone and plays no sound, and passes on a machine without sound devices.
+    #[test]
+    fn the_devices_of_the_machine_are_listed_with_at_most_one_default_of_each_kind() {
+        let host = CpalHost::new();
+        let devices = match host.devices() {
+            Ok(devices) => devices,
+            // A machine without a sound system.
+            Err(AudioError::Failed(_) | AudioError::NoDevice) => return,
+            Err(other) => panic!("{other}"),
+        };
+        for list in [&devices.inputs, &devices.outputs] {
+            assert!(list.iter().filter(|device| device.is_default).count() <= 1);
+            for device in list {
+                assert!(!device.id.0.is_empty());
+                // The identifier is the one that opens the device again.
+                assert!(
+                    device.id.0.parse::<cpal::DeviceId>().is_ok(),
+                    "{}",
+                    device.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_device_is_opened_at_a_rate_that_the_pipeline_converts() {
+        use cpal::{SupportedBufferSize, SupportedStreamConfig, SupportedStreamConfigRange};
+        let size = SupportedBufferSize::Unknown;
+        let default = |rate| SupportedStreamConfig::new(2, rate, size, SampleFormat::F32);
+        let range = |channels, low, high, format| {
+            SupportedStreamConfigRange::new(channels, low, high, size, format)
+        };
+        // The default of the device is kept when the pipeline converts it.
+        let kept = usable_config(default(44_100), &[]).unwrap();
+        assert_eq!((kept.sample_rate(), kept.channels()), (44_100, 2));
+        let kept = usable_config(default(22_050), &[]).unwrap();
+        assert_eq!(kept.sample_rate(), 22_050);
+
+        // A default of 384 kHz: the best other rate that the device offers, with the
+        // channels and the sample type of the default where they are offered.
+        let offered = [
+            range(1, 8_000, 96_000, SampleFormat::I16),
+            range(2, 44_100, 44_100, SampleFormat::F32),
+            range(2, 48_000, 48_000, SampleFormat::I16),
+            range(2, 48_000, 384_000, SampleFormat::F32),
+        ];
+        let chosen = usable_config(default(384_000), &offered).unwrap();
+        assert_eq!(
+            (
+                chosen.sample_rate(),
+                chosen.channels(),
+                chosen.sample_format()
+            ),
+            (48_000, 2, SampleFormat::F32)
+        );
+        let chosen = usable_config(default(384_000), &offered[..2]).unwrap();
+        assert_eq!((chosen.sample_rate(), chosen.channels()), (48_000, 1));
+
+        // A device that offers no such rate is not opened.
+        let only = [range(2, 352_800, 384_000, SampleFormat::F32)];
+        assert_eq!(
+            usable_config(default(384_000), &only).unwrap_err(),
+            AudioError::Unsupported("384000 Hz".to_owned())
+        );
+    }
+}

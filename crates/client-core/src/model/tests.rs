@@ -15,6 +15,7 @@ use junto_protocol::recording::{Recording, RecordingState, RecordingStop, Record
 use junto_protocol::roles::WorkspaceRole;
 use junto_protocol::snapshot::{Snapshot, WorkspaceState};
 use junto_protocol::structure::{Category, Channel, ChannelKind, Workspace, WorkspaceMember};
+use junto_protocol::transcript::{TranscriptSpeaker, TranscriptState};
 use junto_protocol::{ServerPermission, WorkspacePermission};
 use time::OffsetDateTime;
 
@@ -1259,6 +1260,10 @@ fn recording(scene: &Scene, channel_id: ChannelId, call_id: CallId) -> Recording
         language: "auto".to_owned(),
         segments: 0,
         failed_segments: 0,
+        bytes: None,
+        timeline_started_at: None,
+        transcript: TranscriptState::None,
+        transcript_lines: 0,
     }
 }
 
@@ -1457,4 +1462,86 @@ fn the_views_of_a_call_carry_its_recording_and_a_read_keeps_the_events_of_it() {
     model.set_channel_call(shown(Some(record)));
     model.replay(Part::ChannelCall(scene.daily), &during);
     assert_eq!(model.call_at(&place).unwrap().recording, None);
+}
+
+#[test]
+fn a_removed_recording_leaves_the_call_that_shows_it() {
+    let scene = scene();
+    let mut model = scene.model();
+    let (call_id, place) = (CallId::generate(), scene.place(scene.daily));
+    model.apply(&started(call_id, place));
+    let record = recording(&scene, scene.daily, call_id);
+    model.apply(&updated(&record));
+    let removed = |recording_id: RecordingId, channel_id: ChannelId| Event::RecordingRemoved {
+        recording_id,
+        workspace_id: scene.workspace_id,
+        channel_id,
+    };
+
+    // Another recording of the channel, and the same recording in another channel.
+    let before = model.clone();
+    model.apply(&removed(RecordingId::generate(), scene.daily));
+    model.apply(&removed(record.id, scene.hidden));
+    assert_eq!(model, before);
+
+    let event = removed(record.id, scene.daily);
+    assert!(Part::ChannelCall(scene.daily).concerns(&event, &model));
+    assert!(!Part::ChannelCall(scene.hidden).concerns(&event, &model));
+    assert!(!Part::OwnCall.concerns(&event, &model));
+    assert_eq!(model.apply(&event), Follow::default());
+    let call = model.call_at(&place).unwrap();
+    assert_eq!((call.id, &call.recording), (call_id, &None));
+    let once = model.clone();
+    model.apply(&event);
+    assert_eq!(model, once);
+
+    // The account in the call keeps the event while its call is read.
+    model.apply(&Event::OwnCallChanged {
+        call: Some(scene.own_call(call_id, scene.daily)),
+        left: None,
+    });
+    assert!(Part::OwnCall.concerns(&event, &model));
+}
+
+#[test]
+fn the_events_of_transcripts_and_of_the_glossary_change_nothing() {
+    let scene = scene();
+    let mut model = scene.model();
+    let (call_id, place) = (CallId::generate(), scene.place(scene.daily));
+    model.apply(&started(call_id, place));
+    let record = recording(&scene, scene.daily, call_id);
+    model.apply(&updated(&record));
+    let before = model.clone();
+    let events = [
+        Event::TranscriptLineCorrected {
+            recording_id: record.id,
+            workspace_id: scene.workspace_id,
+            channel_id: scene.daily,
+            line: 3,
+            text: "corrected".to_owned(),
+            corrected_by: scene.account_id,
+            corrected_at: time(),
+        },
+        Event::TranscriptSpeakerRenamed {
+            recording_id: record.id,
+            workspace_id: scene.workspace_id,
+            channel_id: scene.daily,
+            speaker: TranscriptSpeaker {
+                number: 1,
+                account_id: scene.account_id,
+                name: Some("Guest".to_owned()),
+                renamed_by: Some(scene.account_id),
+                renamed_at: Some(time()),
+            },
+        },
+        Event::GlossaryReplaced {
+            workspace_id: scene.workspace_id,
+        },
+    ];
+    for event in &events {
+        assert_eq!(model.apply(event), Follow::default(), "{}", event.name());
+        assert!(!Part::ChannelCall(scene.daily).concerns(event, &model));
+        assert!(!Part::Members(scene.workspace_id).concerns(event, &model));
+    }
+    assert_eq!(model, before);
 }

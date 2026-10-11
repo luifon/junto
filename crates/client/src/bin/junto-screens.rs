@@ -20,9 +20,10 @@ use gpui_base::Root;
 use gpui_base::input::InputState;
 use junto_client::app::{self, WindowStart};
 use junto_client::assets::Assets;
+use junto_client::shell::call::CallTab;
 use junto_client::shell::{Open, Shell};
 use junto_client::state::AppState;
-use junto_client::state::view::ServerSnapshot;
+use junto_client::state::view::{MediaSnapshot, ServerSnapshot, ShownLevels};
 use junto_client::theme;
 use junto_client_core::api::{
     HttpRequest, HttpResponse, Transport, TransportError, TransportErrorKind, TransportFuture,
@@ -33,8 +34,8 @@ use junto_client_core::live::{StreamFault, StreamStatus};
 use junto_client_core::model::{Loadable, ServerModel};
 use junto_client_core::protocol::account::{OwnAccount, RecoveryNotice};
 use junto_client_core::protocol::call::{
-    BlockReason, Call, CallLock, CallParticipant, CallPlace, ChannelCall, Meeting, MicrophoneBlock,
-    ScreenShare, ShareAudio,
+    BlockReason, Call, CallLock, CallParticipant, CallPlace, ChannelCall, LeaveReason, Meeting,
+    MicrophoneBlock, ScreenShare, ShareAudio,
 };
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::protocol::events::Cursor;
@@ -46,9 +47,18 @@ use junto_client_core::protocol::snapshot::{Snapshot, WorkspaceState};
 use junto_client_core::protocol::structure::{
     Category, Channel, ChannelKind, Workspace, WorkspaceMember,
 };
+use junto_client_core::protocol::transcript::TranscriptState;
 use junto_client_core::secret::SecretBytes;
 use junto_client_core::version::{Incompatibility, SupportedVersions};
+use junto_client_core::voice::{InputMode, VoiceSettings};
 use junto_client_core::{Client, ClientOptions, Reach};
+use junto_media::audio::synthetic::SyntheticHost;
+use junto_media::audio::{AudioError, DeviceId, DeviceInfo, Devices};
+use junto_media::calls::{
+    ActiveCall, CallTarget, CallTiming, CallsView, EndReason, MediaOptions, Outcome, Phase,
+};
+use junto_media::engine::{MicrophoneState, OutputState};
+use junto_media::permission::{FixedPermission, MicrophoneAccess};
 use time::OffsetDateTime;
 
 /// The window of the design: 1440 by 900 pixels at 100 %.
@@ -201,6 +211,10 @@ fn studio() -> WorkspaceState {
                     language: "auto".to_owned(),
                     segments: 5,
                     failed_segments: 0,
+                    bytes: None,
+                    timeline_started_at: None,
+                    transcript: TranscriptState::None,
+                    transcript_lines: 0,
                 }),
             }),
         },
@@ -390,10 +404,11 @@ struct Studio {
     drawn: usize,
 }
 
-/// One screen: the servers it shows and the interface scale.
+/// One screen: the servers it shows, the state of the calls and the interface scale.
 struct Screen {
     name: &'static str,
     servers: Vec<ServerSnapshot>,
+    media: Option<MediaSnapshot>,
     scale: u32,
     /// The name of the profile preset. Empty: the first start.
     preset: &'static str,
@@ -404,13 +419,33 @@ impl Screen {
         Self {
             name,
             servers,
+            media: None,
             scale: 100,
             preset: "Luca",
         }
     }
 
+    /// The screen of a call: "Acme Studio" with Luca in Daily, and this state of the
+    /// calls.
+    fn call(name: &'static str, media: MediaSnapshot) -> Self {
+        Self {
+            media: Some(media),
+            ..Self::new(name, vec![acme_with_luca(|_| {}), harbor()])
+        }
+    }
+
+    fn servers(mut self, servers: Vec<ServerSnapshot>) -> Self {
+        self.servers = servers;
+        self
+    }
+
     fn scale(mut self, scale: u32) -> Self {
         self.scale = scale;
+        self
+    }
+
+    fn media(mut self, media: MediaSnapshot) -> Self {
+        self.media = Some(media);
         self
     }
 
@@ -472,11 +507,21 @@ impl Studio {
             activate: false,
             ..WindowStart::default()
         };
-        let servers = screen.servers;
+        let (servers, media) = (screen.servers, screen.media);
+        // The devices of a screen exist only in the program: the tool opens no microphone
+        // and plays no sound.
+        let devices = MediaOptions {
+            host: Arc::new(SyntheticHost::with_tone(440.0)),
+            permission: Arc::new(FixedPermission::allowed()),
+            timing: CallTiming::default(),
+        };
         let state: Entity<AppState> = self.cx.update(|cx| {
-            let state = app::state(client, start, cx);
+            let state = app::state_with_media(client, start, devices, cx);
             if !servers.is_empty() {
                 state.update(cx, |state, cx| state.show_fixture(servers, cx));
+            }
+            if let Some(media) = media {
+                state.update(cx, |state, cx| state.show_media_fixture(media, cx));
             }
             state
         });
@@ -538,6 +583,317 @@ impl Studio {
 
 fn two_servers() -> Vec<ServerSnapshot> {
     vec![acme(), harbor()]
+}
+
+/// The call of Daily on "Acme Studio" as the place of the call of this device.
+fn daily() -> CallTarget {
+    CallTarget {
+        server_id: id(1),
+        place: CallPlace::Channel {
+            workspace_id: id(10),
+            channel_id: id(34),
+        },
+    }
+}
+
+/// "Acme Studio" with Luca in the call of Daily. `change` changes that call.
+fn acme_with_luca(change: impl Fn(&mut Call)) -> ServerSnapshot {
+    let mut server = acme();
+    server.model = Some(acme_model(|studio| {
+        for shown in &mut studio.calls {
+            if let Some(call) = &mut shown.call
+                && shown.channel_id == id::<ChannelId>(34)
+            {
+                // The design shows no share in a call without a share view.
+                for participant in &mut call.participants {
+                    participant.screen_share = None;
+                }
+                call.participants.insert(3, participant("Luca"));
+                call.recording = None;
+                change(call);
+            }
+        }
+    }));
+    server
+}
+
+fn device(id: &str, name: &str, is_default: bool) -> DeviceInfo {
+    DeviceInfo {
+        id: DeviceId(id.to_owned()),
+        name: name.to_owned(),
+        is_default,
+    }
+}
+
+/// The state of the calls while this device is in the call of Daily.
+fn in_call(phase: Phase) -> MediaSnapshot {
+    let mut voice = VoiceSettings::default();
+    voice.set_volume(id(1), person("Bruno"), 140);
+    voice.set_volume(id(1), person("Marta"), 60);
+    MediaSnapshot {
+        calls: CallsView {
+            muted: false,
+            deafened: false,
+            joining: None,
+            call: Some(ActiveCall {
+                target: daily(),
+                identity: "seat-Luca".to_owned(),
+                phase,
+                interrupted_at: (phase == Phase::Reconnecting)
+                    .then(|| at() + time::Duration::minutes(37)),
+                microphone: if phase == Phase::Connected {
+                    MicrophoneState::Running
+                } else {
+                    MicrophoneState::Closed
+                },
+                access: MicrophoneAccess::Allowed,
+                input_device: Some(device("desk", "Desk microphone", false)),
+                output: OutputState::Running,
+                output_device: Some(device("phones", "Headphones", false)),
+                microphone_block: None,
+                sound_block: None,
+            }),
+            outcome: None,
+        },
+        levels: ShownLevels {
+            input: 5,
+            own: (0, false),
+            people: [(person("Ana"), (4, true)), (person("Carla"), (1, false))]
+                .into_iter()
+                .collect(),
+        },
+        voice: VoiceSettings {
+            input_device: Some("desk".to_owned()),
+            output_device: Some("phones".to_owned()),
+            ..voice
+        },
+        devices: Devices {
+            inputs: vec![
+                device("built-in", "Built-in microphone", true),
+                device("desk", "Desk microphone", false),
+            ],
+            outputs: vec![
+                device("speakers", "Built-in speakers", true),
+                device("phones", "Headphones", false),
+            ],
+        },
+        access: Some(MicrophoneAccess::Allowed),
+        now: Some(at() + time::Duration::seconds(42 * 60 + 17)),
+    }
+}
+
+/// The state of the calls of a person who is in no call.
+fn no_call() -> MediaSnapshot {
+    MediaSnapshot {
+        access: Some(MicrophoneAccess::Allowed),
+        ..MediaSnapshot::default()
+    }
+}
+
+fn with_call(mut media: MediaSnapshot, change: impl FnOnce(&mut ActiveCall)) -> MediaSnapshot {
+    if let Some(call) = &mut media.calls.call {
+        change(call);
+    }
+    media
+}
+
+fn show_daily(shell: &mut Shell, _: &mut gpui::Window, cx: &mut gpui::Context<Shell>) {
+    select_channel(shell, "Daily", cx);
+}
+
+fn show_daily_tab(
+    tab: CallTab,
+) -> impl FnOnce(&mut Shell, &mut gpui::Window, &mut gpui::Context<Shell>) {
+    move |shell, window, cx| {
+        select_channel(shell, "Daily", cx);
+        shell.open(Open::CallTab(tab), window, cx);
+    }
+}
+
+/// The views and the states of a voice call (ADR 0735).
+fn draw_calls(studio: &mut Studio) -> Result<(), String> {
+    studio.draw(Screen::call("call", in_call(Phase::Connected)), show_daily)?;
+    studio.draw(
+        Screen::call("call-members", in_call(Phase::Connected)),
+        show_daily_tab(CallTab::Members),
+    )?;
+    studio.draw(
+        Screen::call("call-settings", in_call(Phase::Connected)),
+        show_daily_tab(CallTab::Settings),
+    )?;
+    studio.draw(
+        Screen::call("call-settings-input-devices", in_call(Phase::Connected)),
+        |shell, window, cx| {
+            select_channel(shell, "Daily", cx);
+            shell.open(Open::InputDevices, window, cx);
+        },
+    )?;
+    let mut muted = in_call(Phase::Connected);
+    muted.calls.muted = true;
+    muted.calls.deafened = true;
+    studio.draw(
+        Screen::call("call-own-microphone-and-sound-off", muted),
+        show_daily_tab(CallTab::Members),
+    )?;
+    studio.draw(
+        Screen::call("call-reconnecting", in_call(Phase::Reconnecting)),
+        show_daily,
+    )?;
+    studio.draw(
+        Screen::call("call-connecting", in_call(Phase::Connecting)),
+        show_daily,
+    )?;
+    let held = |reason: BlockReason, by: &'static str| {
+        let block = MicrophoneBlock {
+            by: person(by),
+            reason,
+        };
+        let shown = block.clone();
+        let media = with_call(in_call(Phase::Connected), |call| {
+            call.microphone_block = Some(block);
+            call.microphone = MicrophoneState::Closed;
+        });
+        let servers = vec![
+            acme_with_luca(move |call| {
+                for participant in &mut call.participants {
+                    if participant.account_id == person("Luca") {
+                        participant.microphone_block = Some(shown.clone());
+                    }
+                }
+            }),
+            harbor(),
+        ];
+        (media, servers)
+    };
+    let (media, servers) = held(BlockReason::Moderator, "Ana");
+    studio.draw(
+        Screen::call("call-microphone-closed-by-a-moderator", media).servers(servers),
+        show_daily_tab(CallTab::Members),
+    )?;
+    let (media, servers) = held(BlockReason::Meeting, "Carla");
+    studio.draw(
+        Screen::call("call-microphone-closed-by-meeting-mode", media).servers(servers),
+        show_daily,
+    )?;
+    let refused = with_call(in_call(Phase::Connected), |call| {
+        call.microphone = MicrophoneState::NoPermission;
+        call.access = MicrophoneAccess::Refused;
+        call.input_device = None;
+    });
+    studio.draw(
+        Screen::call("call-no-microphone-access", refused),
+        show_daily_tab(CallTab::Settings),
+    )?;
+    let asking = with_call(in_call(Phase::Connected), |call| {
+        call.microphone = MicrophoneState::Asking;
+        call.access = MicrophoneAccess::NotAsked;
+        call.input_device = None;
+    });
+    studio.draw(
+        Screen::call("call-microphone-access-not-asked", asking),
+        show_daily_tab(CallTab::Settings),
+    )?;
+    let failed = with_call(in_call(Phase::Connected), |call| {
+        call.microphone = MicrophoneState::Failed(AudioError::NoDevice);
+        call.input_device = None;
+    });
+    studio.draw(Screen::call("call-microphone-failed", failed), show_daily)?;
+    // The person is the first in the call.
+    let mut alone = acme_with_luca(|call| {
+        call.participants
+            .retain(|participant| participant.account_id == person("Luca"));
+    });
+    alone.error = None;
+    let mut quiet = in_call(Phase::Connected);
+    quiet.levels.people.clear();
+    studio.draw(
+        Screen::call("call-alone", quiet).servers(vec![alone, harbor()]),
+        show_daily,
+    )?;
+    // The call goes on while the window shows another channel, and another server.
+    studio.draw(
+        Screen::call(
+            "call-while-a-text-channel-is-shown",
+            in_call(Phase::Connected),
+        ),
+        |_, _, _| {},
+    )?;
+    studio.draw(
+        Screen::call(
+            "call-while-another-server-is-shown",
+            in_call(Phase::Connected),
+        ),
+        select_harbor,
+    )?;
+    // A narrow window: the panel of the call starts closed and lies over the stage.
+    studio.draw(
+        Screen::call("call-scale-150", in_call(Phase::Connected)).scale(150),
+        show_daily,
+    )?;
+    studio.draw(
+        Screen::call("call-scale-150-members", in_call(Phase::Connected)).scale(150),
+        show_daily_tab(CallTab::Members),
+    )?;
+
+    // A voice channel that this device is not in.
+    let mut joining = no_call();
+    joining.calls.joining = Some(daily());
+    studio.draw(
+        Screen::new("voice-channel-joining", two_servers()).media(joining),
+        show_daily,
+    )?;
+    let refused = |error: FlowError| {
+        let mut media = no_call();
+        media.calls.outcome = Some(Outcome::JoinFailed {
+            target: CallTarget {
+                server_id: id(1),
+                place: CallPlace::Channel {
+                    workspace_id: id(10),
+                    channel_id: id(35),
+                },
+            },
+            error,
+        });
+        media
+    };
+    studio.draw(
+        Screen::new("voice-channel-locked-join-refused", two_servers())
+            .media(refused(FlowError::refused(ErrorCode::CallLocked))),
+        |shell, _, cx| select_channel(shell, "Focus room", cx),
+    )?;
+    studio.draw(
+        Screen::new("voice-channel-no-media-server", two_servers())
+            .media(refused(FlowError::refused(ErrorCode::MediaUnavailable))),
+        |shell, _, cx| select_channel(shell, "Focus room", cx),
+    )?;
+    let ended = |reason: EndReason| {
+        let mut media = no_call();
+        media.calls.outcome = Some(Outcome::Ended {
+            target: daily(),
+            reason,
+        });
+        media
+    };
+    studio.draw(
+        Screen::new("call-ended-removed-by-a-moderator", two_servers())
+            .media(ended(EndReason::Server(Some(LeaveReason::Disconnected)))),
+        show_daily,
+    )?;
+    studio.draw(
+        Screen::new("call-ended-on-another-device", two_servers())
+            .media(ended(EndReason::Elsewhere)),
+        |_, _, _| {},
+    )?;
+
+    // The sound settings of the application, with push-to-talk.
+    let mut talk = no_call();
+    talk.voice.input_mode = InputMode::PushToTalk;
+    talk.voice.noise_suppression = false;
+    studio.draw(
+        Screen::new("settings-push-to-talk", two_servers()).media(talk),
+        |shell, window, cx| shell.open(Open::Settings, window, cx),
+    )?;
+    Ok(())
 }
 
 fn recovery() -> RecoveryNotice {
@@ -881,8 +1237,9 @@ impl gpui::Render for Components {
         use junto_client::theme::u;
         use junto_client::ui::{
             Badge, Band, BandKind, Button, ButtonKind, Chip, Field, FieldKind, Flag, FlagKind,
-            Menu, MenuItem, Meter, Mosaic, MosaicKind, Notice, RecordingMark, SectionLabel,
-            Segmented, StyleExt, WaitBox, menu_separator, unread_dot,
+            Menu, MenuItem, Meter, Mosaic, MosaicKind, Notice, PersonTile, RecordingMark,
+            SectionLabel, Segmented, SelectBox, StyleExt, Tab, TileMark, Toggle, WaitBox,
+            menu_separator, unread_dot,
         };
         let theme = theme::theme(cx);
         let colors = theme.colors;
@@ -933,7 +1290,54 @@ impl gpui::Render for Components {
             .child(icon_buttons(ButtonKind::Rail, "Rail button"))
             .child(icon_buttons(ButtonKind::RailAccent, "Rail accent"))
             .child(Field::new(&self.field, "Address").kind(FieldKind::RailAddress))
-            .child(Band::new(BandKind::Rail));
+            .child(Band::new(BandKind::Rail))
+            .child(
+                div()
+                    .flex()
+                    .gap(u(8.0))
+                    .child(
+                        PersonTile::new("tile-speaking", "Ana", 7919, "Ana, speaking")
+                            .speaking(true)
+                            .marks(vec![TileMark::Level(4)]),
+                    )
+                    .child(
+                        PersonTile::new("tile-held", "Luca (you)", 15_838, "Luca").marks(vec![
+                            TileMark::HandRaised,
+                            TileMark::SoundOff,
+                            TileMark::MicrophoneHeld,
+                        ]),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(u(5.0))
+                    .p(u(10.0))
+                    .bg(Hsla::from(colors.cypress))
+                    .child(
+                        Button::new("call-0")
+                            .kind(ButtonKind::Call)
+                            .icon(Icon::Screen),
+                    )
+                    .child(
+                        Button::new("call-1")
+                            .kind(ButtonKind::CallOn)
+                            .icon(Icon::Camera),
+                    )
+                    .child(
+                        Button::new("call-2")
+                            .kind(ButtonKind::Call)
+                            .icon(Icon::Hand)
+                            .disabled(true),
+                    )
+                    .child(
+                        Button::new("call-3")
+                            .kind(ButtonKind::CallLeave)
+                            .icon(Icon::Leave)
+                            .label("Leave"),
+                    ),
+            );
         div()
             .size_full()
             .flex()
@@ -951,6 +1355,55 @@ impl gpui::Render for Components {
                     .child(buttons(ButtonKind::Default, "Button"))
                     .child(buttons(ButtonKind::Primary, "Primary button"))
                     .child(icon_buttons(ButtonKind::Square, "Square button"))
+                    .child(
+                        row()
+                            .child(label("Square, off and held"))
+                            .child(
+                                Button::new("square-off")
+                                    .kind(ButtonKind::SquareOff)
+                                    .icon(Icon::MicrophoneOff),
+                            )
+                            .child(
+                                Button::new("square-held")
+                                    .kind(ButtonKind::SquareHeld)
+                                    .icon(Icon::MicrophoneHeld),
+                            )
+                            .child(
+                                Button::new("green")
+                                    .kind(ButtonKind::Green)
+                                    .icon(Icon::Speaker)
+                                    .label("Join call"),
+                            ),
+                    )
+                    .child(
+                        row()
+                            .child(label("Switch and choice"))
+                            .child(Toggle::new("switch-on", "Switch", true, ("On", "Off")))
+                            .child(Toggle::new("switch-off", "Switch", false, ("On", "Off")))
+                            .child(div().w(u(220.0)).child(SelectBox::new(
+                                "choice",
+                                "Input device",
+                                "Desk microphone",
+                            ))),
+                    )
+                    .child(
+                        row().child(label("Tabs")).child(
+                            div()
+                                .flex()
+                                .h(u(42.0))
+                                .px(u(8.0))
+                                .bg(Hsla::from(colors.limestone))
+                                .child(Tab::new("tab-0", Icon::Chat, "Chat"))
+                                .child(Tab::new("tab-1", Icon::People, "Members").on(true))
+                                .child(Tab::new("tab-2", Icon::Gear, "Settings")),
+                        ),
+                    )
+                    .child(
+                        row()
+                            .child(label("Input meter"))
+                            .child(Meter::wide(5))
+                            .child(Meter::plate(3)),
+                    )
                     .child(icon_buttons(ButtonKind::Ghost, "Icon button"))
                     .child(
                         row()
@@ -1069,7 +1522,9 @@ fn draw_components(studio: &mut Studio) -> Result<(), String> {
 
 fn run(out: &Path) -> Result<(), String> {
     let mut studio = Studio::new(out.to_owned())?;
-    let drawn = draw_all(&mut studio).and_then(|()| draw_components(&mut studio));
+    let drawn = draw_all(&mut studio)
+        .and_then(|()| draw_calls(&mut studio))
+        .and_then(|()| draw_components(&mut studio));
     let scratch = studio.scratch.clone();
     drop(studio);
     // The data directories of the screens hold no server and no key of a real server.

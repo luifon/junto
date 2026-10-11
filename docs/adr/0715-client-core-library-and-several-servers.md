@@ -12,7 +12,7 @@ The desktop client is built with gpui (ADR 0701), which has its own executor and
 
 Crate:
 
-- The crate `junto-client-core` holds everything of the client that is not interface: the data directory, the device keys, the API client, the flows and the manager of servers. It has no dependency on gpui.
+- The crate `junto-client-core` holds everything of the client that is not interface and not media: the data directory, the device keys, the API client, the flows and the manager of servers. It has no dependency on gpui. The media engine is the crate `junto-media`, which builds on it (ADR 0733).
 - The binary `junto-cli` is in the same crate and uses only the public interface of the library. Its commands are: `servers`, `add`, `remove`, `status`, `claim`, `join`, `request`, `login`, `link`, `approve-link`, `link-offer`, `link-all`, `approve-all`, `devices`, `recoveries`, `acknowledge-recovery`, `account`, `invite`, `requests`, `approve-request`, `profile`, `state`, `watch` and `call` (ADR 0720).
 - Each command of `junto-cli` is one process. A command that logs in ends its session before it exits. `watch` is the one command that runs until it is stopped.
 - An owner code, an invite code, a link code and a link request are never accepted as arguments, because an argument is visible to other programs of the user and stays in the history of the shell. The tool reads them from standard input: one line when standard input is not a terminal, and a prompt with the echo off when it is. An option that names a code is refused.
@@ -26,7 +26,7 @@ Crate:
 
 Runtime:
 
-- The client holds a tokio runtime with two worker threads, or uses the runtime of the caller when the caller has one.
+- The client holds a tokio runtime with two worker threads, or uses the runtime of the caller when the caller has one. The media engine runs its tasks on the same runtime.
 - Every public operation that uses the network starts a task on that runtime and returns a future that only waits for the task. Any executor can poll that future.
 - A started action of a flow runs to its end when its future is dropped (ADR 0712).
 

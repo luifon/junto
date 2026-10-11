@@ -5,6 +5,7 @@
 //! tree (ADR 0702).
 
 mod button;
+mod controls;
 mod dialog;
 mod field;
 mod marks;
@@ -15,6 +16,7 @@ mod pattern;
 mod rows;
 mod scroll;
 mod segmented;
+mod tile;
 mod tooltip;
 
 use std::sync::Arc;
@@ -22,6 +24,7 @@ use std::sync::Arc;
 use gpui::{App, BoxShadow, FocusHandle, FontFeatures, Hsla, Rgba, Styled, Svg, Window, px, svg};
 
 pub use button::{Button, ButtonKind};
+pub use controls::{SelectBox, Tab, Toggle, VolumeSlider};
 pub use dialog::{Dialog, dialog_footer};
 pub use field::{Field, FieldEvent, FieldKind};
 pub use marks::{Badge, Chip, Flag, FlagKind, RecordingMark, StatusLine, unread_dot};
@@ -32,6 +35,7 @@ pub use pattern::{Band, BandKind, Meter, selection_mark};
 pub use rows::{CategoryHeader, ChannelRow, ChannelState, OccupantMark, OccupantRow, WorkspaceRow};
 pub use scroll::ScrollArea;
 pub use segmented::Segmented;
+pub use tile::{PersonTile, TileMark};
 pub use tooltip::tooltip;
 
 use crate::assets::Icon;

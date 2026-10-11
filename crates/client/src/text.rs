@@ -8,9 +8,14 @@
 use junto_client_core::api::{TransportErrorKind, code_name};
 use junto_client_core::flow::FlowError;
 use junto_client_core::flow::access::Notice;
-use junto_client_core::protocol::call::BlockReason;
+use junto_client_core::protocol::call::{BlockReason, LeaveReason};
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::version::Incompatibility;
+use junto_client_core::voice::TalkKey;
+use junto_media::calls::EndReason;
+use junto_media::permission::MicrophoneAccess;
+
+use crate::state::view::{CallNotice, SoundWarning};
 
 pub const APP_NAME: &str = "Junto";
 pub const QUIT: &str = "Quit Junto";
@@ -86,10 +91,276 @@ pub fn occupancy(inside: usize, limit: u32, full: bool) -> String {
 }
 
 // The profile strip.
-pub const MICROPHONE_NOT_AVAILABLE: &str = "Microphone. Calls are not in this version.";
-pub const SOUND_NOT_AVAILABLE: &str = "Sound output. Calls are not in this version.";
+pub const CLOSE_MICROPHONE: &str = "Microphone. It is open: close it.";
+pub const OPEN_MICROPHONE: &str = "Your microphone is closed. Open it.";
+pub const MICROPHONE_HELD: &str = "Your microphone was closed by someone else. You cannot open it.";
+pub const SOUND_OUTPUT_ON: &str = "Sound output. It is on: turn the sound of calls off.";
+pub const SOUND_OUTPUT_OFF: &str = "The sound of calls is off. Turn it on.";
 pub const APP_SETTINGS: &str = "App settings";
 pub const NO_NAME_YET: &str = "No name yet";
+
+/// The line above the profile strip about the sound of this device: what holds, in strong
+/// type, and what follows from it.
+pub fn sound_warning(warning: &SoundWarning) -> (String, String) {
+    let named = |by: &Option<String>| by.as_ref().map(|name| format!(" ({name})"));
+    match warning {
+        SoundWarning::MicrophoneHeld {
+            reason: BlockReason::Moderator,
+            by,
+        } => (
+            "Microphone closed by a moderator".to_owned(),
+            format!(
+                "{}. Only a moderator can open it.",
+                named(by).unwrap_or_default()
+            ),
+        ),
+        SoundWarning::MicrophoneHeld {
+            reason: BlockReason::Meeting,
+            by,
+        } => (
+            "Microphone closed by meeting mode".to_owned(),
+            match by {
+                Some(name) => format!(". {name} runs it and can open your microphone."),
+                None => ". The person who runs it can open your microphone.".to_owned(),
+            },
+        ),
+        SoundWarning::NoMicrophoneAccess => (
+            "Junto may not use the microphone.".to_owned(),
+            " Allow it in the settings of the system, then try again. You hear the call, and \
+             the others do not hear you."
+                .to_owned(),
+        ),
+        SoundWarning::MicrophoneFailed => (
+            "The microphone does not work.".to_owned(),
+            " Choose another input device in the Settings tab of the call, or connect one \
+             and try again."
+                .to_owned(),
+        ),
+        SoundWarning::SoundHeld { by } => (
+            "Sound closed by a moderator".to_owned(),
+            format!(
+                "{}. You do not hear the call until a moderator opens it.",
+                named(by).unwrap_or_default()
+            ),
+        ),
+        SoundWarning::OutputFailed => (
+            "The sound output does not work.".to_owned(),
+            " Choose another output device in the Settings tab of the call.".to_owned(),
+        ),
+    }
+}
+
+// The strip of the person's call.
+pub const IN_CALL: &str = "In call";
+pub const CALL_RECONNECTING: &str = "Reconnecting…";
+pub const CALL_CONNECTING: &str = "Connecting…";
+pub const MICROPHONE_PAUSED: &str = "Your microphone is paused.";
+pub const LEAVE: &str = "Leave";
+pub const LEAVE_CALL: &str = "Leave call";
+pub const SHOW_CALL: &str = "Show the call";
+pub const CALL_TIME: &str = "Call time";
+pub const CAMERA_NOT_AVAILABLE: &str = "Camera. Cameras are not in this version.";
+pub const SHARE_NOT_AVAILABLE: &str = "Share screen. Screen sharing is not in this version.";
+pub const HAND_NOT_AVAILABLE: &str = "Raise hand. Meeting mode is not in this version.";
+pub const A_VOICE_CHANNEL: &str = "a voice channel";
+
+/// The time of a call as hours, minutes and seconds: "00:42:17".
+pub fn call_time(elapsed: std::time::Duration) -> String {
+    let seconds = elapsed.as_secs();
+    format!(
+        "{:02}:{:02}:{:02}",
+        seconds / 3600,
+        seconds / 60 % 60,
+        seconds % 60
+    )
+}
+
+// A voice channel in the main area.
+pub const JOIN_CALL: &str = "Join call";
+pub const JOINING_CALL: &str = "Joining…";
+pub const ENTER_VOICE_CHANNEL: &str = "Enter the voice channel";
+pub const ROOM_CONTROLS_RETURN: &str = "Room controls return when the call is back.";
+pub const CONNECTING_TO_CALL: &str = "Connecting to the call…";
+pub const CONNECTING_TO_CALL_HELP: &str =
+    "Junto connects to the media server. The others hear you when the connection is made.";
+pub const ALONE_IN_CALL: &str = "You are the only person in this call.";
+pub const SOUND_RETURNS: &str = "The sound of the other people returns when the call is back.";
+pub const DISMISS: &str = "Close";
+
+/// The line beside the title of a voice channel that this device is not in.
+pub fn voice_channel_topic(inside: usize, hidden: bool) -> String {
+    let state = if hidden {
+        "It is in use and shows who is inside only to the people inside.".to_owned()
+    } else {
+        match inside {
+            0 => "Nobody is in the call now.".to_owned(),
+            1 => "1 person is in the call.".to_owned(),
+            inside => format!("{inside} people are in the call."),
+        }
+    };
+    format!("Chat of this voice channel. {state}")
+}
+
+/// What the stage tells while the media connection of the call is restored.
+pub fn connection_dropped(at: Option<time::OffsetDateTime>, channel: &str) -> String {
+    let when = match at {
+        Some(at) => {
+            let at = at.to_offset(time::UtcOffset::UTC);
+            format!(" at {:02}:{:02} UTC", at.hour(), at.minute())
+        }
+        None => String::new(),
+    };
+    format!(
+        "The connection to the call dropped{when}. Junto tries again every few seconds. You \
+         stay in {channel}. Your microphone is paused until the call is back."
+    )
+}
+
+// The panel of a call.
+pub const CHAT: &str = "Chat";
+pub const VOICE_CHANNEL_CHAT: &str = "voice channel chat";
+pub const CLOSE_PANEL: &str = "Close the panel";
+pub const IN_THE_CALL: &str = "In the call";
+pub const NOT_IN_THE_CALL: &str = "Not in the call";
+pub const VOLUME: &str = "Volume";
+pub const MICROPHONE_ON: &str = "Microphone on";
+pub const MUTED: &str = "Muted";
+pub const SOUND_IS_OFF: &str = "Sound off";
+
+pub fn volume_for(name: &str) -> String {
+    format!("Your volume for {name}")
+}
+
+pub fn in_channel(name: &str) -> String {
+    format!("In {name}")
+}
+
+/// The state of a microphone that a moderator or meeting mode closed.
+pub fn closed_by(reason: BlockReason, by: Option<&str>) -> String {
+    match (reason, by) {
+        (BlockReason::Moderator, Some(name)) => format!("Closed by a moderator ({name})"),
+        (BlockReason::Moderator, None) => "Closed by a moderator".to_owned(),
+        (BlockReason::Meeting, _) => "Closed by meeting mode".to_owned(),
+    }
+}
+
+// The sound settings of a call.
+pub const YOUR_AUDIO: &str = "Your audio";
+pub const INPUT_DEVICE: &str = "Input device";
+pub const OUTPUT_DEVICE: &str = "Output device";
+pub const INPUT_LEVEL: &str = "Input level";
+pub const SYSTEM_DEFAULT: &str = "System default";
+pub const DEVICE_NOT_CONNECTED: &str = "A device that is not connected";
+pub const MORE_SOUND_SETTINGS: &str =
+    "Echo cancellation, noise suppression, gain and push to talk are in the app settings.";
+
+/// The default device of the system in a list of devices.
+pub fn system_default(name: &str) -> String {
+    if name.is_empty() {
+        SYSTEM_DEFAULT.to_owned()
+    } else {
+        format!("{SYSTEM_DEFAULT} ({name})")
+    }
+}
+
+/// The state of the permission of the system to use the microphone.
+pub fn microphone_access(access: MicrophoneAccess) -> &'static str {
+    match access {
+        MicrophoneAccess::Allowed => "Microphone access: allowed.",
+        MicrophoneAccess::NotAsked => {
+            "Microphone access: not asked yet. The system asks at the first use."
+        }
+        MicrophoneAccess::Refused => {
+            "Microphone access: refused. Allow Junto in the privacy settings of the system."
+        }
+    }
+}
+
+// The sound settings of the application.
+pub const VOICE: &str = "Voice";
+pub const INPUT_MODE: &str = "Input mode";
+pub const VOICE_ACTIVATION: &str = "Voice activation";
+pub const PUSH_TO_TALK: &str = "Push to talk";
+pub const TALK_KEY: &str = "Key";
+pub const INPUT_MODE_HELP: &str = "Voice activation sends your open microphone. Push to talk \
+     sends it only while you hold the key, and only while Junto is the focused application.";
+pub const ECHO_CANCELLATION: &str = "Echo cancellation";
+pub const ECHO_CANCELLATION_HELP: &str =
+    "Removes the sound of the call that your microphone picks up from your loudspeakers.";
+pub const NOISE_SUPPRESSION: &str = "Noise suppression";
+pub const NOISE_SUPPRESSION_HELP: &str = "Removes steady background noise.";
+pub const AUTOMATIC_GAIN: &str = "Automatic gain";
+pub const AUTOMATIC_GAIN_HELP: &str = "Keeps your voice at an even level.";
+
+pub fn talk_key(key: TalkKey) -> &'static str {
+    match key {
+        TalkKey::Alt if cfg!(target_os = "macos") => "Option",
+        TalkKey::Alt => "Alt",
+        TalkKey::Control => "Control",
+    }
+}
+
+/// How the last join or call ended, when the person did not end it.
+pub fn call_notice(notice: &CallNotice) -> String {
+    let named = |channel: &Option<String>| {
+        channel
+            .clone()
+            .unwrap_or_else(|| A_VOICE_CHANNEL.to_owned())
+    };
+    match notice {
+        CallNotice::JoinFailed { channel, error } => {
+            let channel = named(channel);
+            match error {
+                FlowError::Refused {
+                    code: ErrorCode::CallLocked,
+                    ..
+                } => format!(
+                    "{channel} is locked. Only people who are invited or moved in can enter."
+                ),
+                FlowError::Refused {
+                    code: ErrorCode::CallFull,
+                    ..
+                } => {
+                    format!("{channel} is full. You can enter when a person leaves or invites you.")
+                }
+                other => format!("{channel} was not joined. {}", flow_error(other)),
+            }
+        }
+        CallNotice::Ended { channel, reason } => {
+            let channel = named(channel);
+            match reason {
+                EndReason::Server(Some(LeaveReason::Disconnected)) => {
+                    format!("A moderator removed you from the call in {channel}.")
+                }
+                EndReason::Server(Some(LeaveReason::AccessEnded)) => format!(
+                    "The call in {channel} ended for you: your account lost its access to the \
+                     voice channel."
+                ),
+                EndReason::Server(Some(
+                    LeaveReason::ConnectionLost | LeaveReason::NeverConnected,
+                )) => format!(
+                    "You are no longer in the call in {channel}: the media connection of \
+                     this device was lost for too long."
+                ),
+                EndReason::Server(Some(LeaveReason::Moved)) => {
+                    format!("You were moved out of {channel}.")
+                }
+                EndReason::Server(_) => {
+                    format!("The call in {channel} ended for this device.")
+                }
+                EndReason::Elsewhere => format!(
+                    "This device left the call in {channel}: your account is in a call with \
+                     another device."
+                ),
+                EndReason::Refused(error) => format!(
+                    "The connection to the call in {channel} was lost, and the server gave \
+                     no new place. {}",
+                    flow_error(error)
+                ),
+            }
+        }
+    }
+}
 
 // The main area.
 pub const MEMBERS: &str = "Members";
@@ -102,12 +373,8 @@ pub const MESSAGES_NOT_AVAILABLE_TITLE: &str = "Text messages are not in this ve
 pub const MESSAGES_NOT_AVAILABLE: &str = "This version of Junto shows your servers, their \
      workspaces and channels, and the people in voice channels. Messages come with a later \
      version.";
-pub const CALLS_NOT_AVAILABLE_TITLE: &str = "Calls are not in this version";
-pub const CALLS_NOT_AVAILABLE: &str = "This version of Junto shows who is in a voice channel \
-     and the state of its call. Joining a call comes with a later version.";
-pub const NOBODY_INSIDE: &str = "Nobody is in this voice channel.";
-pub const OCCUPANTS_HIDDEN: &str =
-    "This voice channel is in use. It shows who is inside only to the people inside.";
+pub const VOICE_CHAT_NOT_AVAILABLE: &str = "This version of Junto has calls and no text \
+     messages yet. The chat of this voice channel comes with a later version.";
 pub const MEETING_MODE: &str = "Meeting mode";
 pub const RECORDING_VISIBLE: &str = "visible to everyone";
 pub const NO_SERVER_TITLE: &str = "No server yet";
@@ -117,13 +384,6 @@ pub const NO_SERVER: &str = "Type the address of a server in the server book. Th
 pub const NO_CHANNEL_TITLE: &str = "No channel";
 pub const STATE_STALE: &str =
     "The connection to this server is interrupted. The lists show the last known state.";
-
-pub fn people_inside(count: usize) -> String {
-    match count {
-        1 => "1 person is inside.".to_owned(),
-        count => format!("{count} people are inside."),
-    }
-}
 
 // The states of a server in the main area.
 pub const LOGGED_OUT_TITLE: &str = "This device is not logged in";
@@ -469,6 +729,9 @@ pub fn refusal(code: ErrorCode) -> String {
         ErrorCode::CallLocked => "The voice channel is locked.",
         ErrorCode::CallFull => "The voice channel is full.",
         ErrorCode::NotInCall => "This account is not in that call.",
+        ErrorCode::MediaUnavailable => {
+            "The media server of this server cannot be reached now. Try again in a moment."
+        }
         ErrorCode::ChallengeInvalid | ErrorCode::ChallengeExpired | ErrorCode::InvalidSignature => {
             "The server did not accept the proof of the device key. Try again."
         }
@@ -646,11 +909,132 @@ mod tests {
     }
 
     #[test]
+    fn every_end_of_a_call_and_every_refused_join_has_a_sentence_that_names_the_channel() {
+        use junto_client_core::protocol::call::LeaveReason as L;
+        let daily = Some("Daily".to_owned());
+        let refused = |code: ErrorCode| FlowError::Refused {
+            code,
+            category: category(code, code.http_status()),
+        };
+        let mut notices = vec![
+            CallNotice::JoinFailed {
+                channel: daily.clone(),
+                error: refused(ErrorCode::CallLocked),
+            },
+            CallNotice::JoinFailed {
+                channel: daily.clone(),
+                error: refused(ErrorCode::CallFull),
+            },
+            CallNotice::JoinFailed {
+                channel: daily.clone(),
+                error: refused(ErrorCode::MediaUnavailable),
+            },
+            CallNotice::JoinFailed {
+                channel: daily.clone(),
+                error: FlowError::Unavailable,
+            },
+            CallNotice::Ended {
+                channel: daily.clone(),
+                reason: EndReason::Server(None),
+            },
+            CallNotice::Ended {
+                channel: daily.clone(),
+                reason: EndReason::Elsewhere,
+            },
+            CallNotice::Ended {
+                channel: daily.clone(),
+                reason: EndReason::Refused(refused(ErrorCode::CallLocked)),
+            },
+        ];
+        for reason in [
+            L::Left,
+            L::Disconnected,
+            L::Moved,
+            L::Switched,
+            L::ConnectionLost,
+            L::NeverConnected,
+            L::AccessEnded,
+        ] {
+            notices.push(CallNotice::Ended {
+                channel: daily.clone(),
+                reason: EndReason::Server(Some(reason)),
+            });
+        }
+        for notice in &notices {
+            let text = call_notice(notice);
+            assert!(text.contains("Daily"), "{notice:?}: {text}");
+            assert!(text.ends_with('.'), "{notice:?}: {text}");
+        }
+        assert!(call_notice(&notices[0]).contains("invited or moved in"));
+        assert!(call_notice(&notices[2]).contains("media server"));
+        // A channel that the state no longer holds is not named.
+        let unnamed = call_notice(&CallNotice::Ended {
+            channel: None,
+            reason: EndReason::Elsewhere,
+        });
+        assert!(unnamed.contains(A_VOICE_CHANNEL));
+    }
+
+    #[test]
+    fn the_line_about_the_sound_of_this_device_names_who_closed_it() {
+        let ana = Some("Ana".to_owned());
+        let (strong, rest) = sound_warning(&SoundWarning::MicrophoneHeld {
+            reason: BlockReason::Moderator,
+            by: ana.clone(),
+        });
+        assert_eq!(strong, "Microphone closed by a moderator");
+        assert_eq!(rest, " (Ana). Only a moderator can open it.");
+        let (_, rest) = sound_warning(&SoundWarning::MicrophoneHeld {
+            reason: BlockReason::Moderator,
+            by: None,
+        });
+        assert_eq!(rest, ". Only a moderator can open it.");
+        let (strong, rest) = sound_warning(&SoundWarning::MicrophoneHeld {
+            reason: BlockReason::Meeting,
+            by: ana.clone(),
+        });
+        assert!(strong.ends_with("meeting mode") && rest.contains("Ana runs it"));
+        for warning in [
+            SoundWarning::NoMicrophoneAccess,
+            SoundWarning::MicrophoneFailed,
+            SoundWarning::SoundHeld { by: ana },
+            SoundWarning::OutputFailed,
+        ] {
+            let (strong, rest) = sound_warning(&warning);
+            assert!(!strong.is_empty() && rest.ends_with('.'), "{warning:?}");
+        }
+        assert_eq!(
+            closed_by(BlockReason::Moderator, Some("Ana")),
+            "Closed by a moderator (Ana)"
+        );
+        assert_eq!(
+            closed_by(BlockReason::Meeting, Some("Ana")),
+            "Closed by meeting mode"
+        );
+        for access in [
+            MicrophoneAccess::Allowed,
+            MicrophoneAccess::NotAsked,
+            MicrophoneAccess::Refused,
+        ] {
+            assert!(microphone_access(access).starts_with("Microphone access: "));
+        }
+    }
+
+    #[test]
     fn the_texts_of_states_and_counts() {
         assert_eq!(occupancy(8, 8, true), "8 / 8 · full");
         assert_eq!(occupancy(5, 8, false), "5 / 8");
-        assert_eq!(people_inside(1), "1 person is inside.");
-        assert_eq!(people_inside(3), "3 people are inside.");
+        assert_eq!(
+            voice_channel_topic(0, false),
+            "Chat of this voice channel. Nobody is in the call now."
+        );
+        assert!(voice_channel_topic(1, false).ends_with("1 person is in the call."));
+        assert!(voice_channel_topic(3, false).ends_with("3 people are in the call."));
+        assert!(voice_channel_topic(3, true).contains("only to the people inside"));
+        assert_eq!(call_time(Duration::from_secs(42 * 60 + 17)), "00:42:17");
+        assert_eq!(call_time(Duration::from_secs(26 * 3600 + 5)), "26:00:05");
+        assert_eq!(system_default(""), "System default");
+        assert_eq!(system_default("Headphones"), "System default (Headphones)");
         assert_eq!(scale_percent(125), "125 %");
         assert_eq!(no_account_status(None), STATUS_NOT_JOINED);
         assert_eq!(no_account(Some(Notice::Removed)).0, REMOVED_TITLE);

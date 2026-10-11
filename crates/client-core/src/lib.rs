@@ -21,6 +21,7 @@ pub mod settings;
 pub mod storage;
 pub mod stream;
 pub mod version;
+pub mod voice;
 
 pub use junto_protocol as protocol;
 pub use manager::{Client, ClientOptions, OpenError, Reach, ServerHandle};

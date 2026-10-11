@@ -19,7 +19,7 @@ Routes:
 
 One call per client (ADR 0107):
 
-- The server enforces one call per account on one server (ADR 0510). The rule over several servers is applied by the part that holds the media connection, when it joins a call. The client core gives it the call of the account per server in the state and the function that leaves a call.
+- The server enforces one call per account on one server (ADR 0510). The rule over several servers is applied by the part that holds the media connection, when it joins a call. The client core gives it the call of the account per server in the state and the function that leaves a call. ADR 0734 fixes the rule.
 
 Connection of a server in a call:
 
@@ -38,6 +38,7 @@ Commands of `junto-cli`:
 ## Consequences
 
 - The media engine and the desktop client use the same functions as the tool.
+- The state follows the recordings of the server as far as a call shows them: `recording_removed` removes a recording from the call that shows it, and the events of transcripts and of the glossary change nothing, because their collections are read from routes (ADR 0719).
 - A person tests a call by hand with one `watch` process per account: the process holds the place, and its standard input takes the actions of that place.
 - A server in the mode "connect only when selected" that is not selected has no connection, so the client learns of a call of this device there only from a join that it made while the server was selected. A join through the API without a connection is not followed by the rule; the desktop client joins on the selected server.
 - The live tier of the client tests runs the routes against a real media server with a real participant (ADR 0902). The plain tier covers the routes that need no media server and the refusal `media_unavailable`.
