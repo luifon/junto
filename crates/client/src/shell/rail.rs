@@ -330,6 +330,7 @@ impl Shell {
                     workspace.id.as_uuid().as_u128(),
                 )
                 .selected(workspace.selected)
+                .unread(super::channels::unread_sign(workspace.unread))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.state.update(cx, |state, cx| {
                         state.select_workspace(server_id, workspace_id, cx);
@@ -501,6 +502,22 @@ impl Shell {
                     .shadow(ring)
                     .child(Mosaic::new(MosaicKind::Large, seed(row), 36.0).radius(4.0)),
             )
+            .when(row.unread.any() && status_line(row).is_none(), |icon| {
+                // The server holds messages that the person has not read: the terracotta
+                // sign of the channel list, at the corner of the avatar.
+                icon.child(
+                    div()
+                        .absolute()
+                        .right(u(10.0))
+                        .top(u(2.0))
+                        .size(u(8.0))
+                        .rounded_full()
+                        .border_1()
+                        .border_color(Hsla::from(colors.basalt))
+                        .bg(Hsla::from(colors.terracotta))
+                        .debug_selector(move || format!("server-unread-{index}")),
+                )
+            })
             .when(status_line(row).is_some(), |icon| {
                 // A dot at the corner of the avatar tells that the server needs a look.
                 icon.child(
@@ -589,6 +606,7 @@ impl Shell {
                     workspace.id.as_uuid().as_u128(),
                 )
                 .selected(workspace.selected)
+                .unread(super::channels::unread_sign(workspace.unread))
                 .in_menu()
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.state.update(cx, |state, cx| {

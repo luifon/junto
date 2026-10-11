@@ -74,6 +74,9 @@ use junto_media::share::{
 use time::OffsetDateTime;
 
 /// The window of the design: 1440 by 900 pixels at 100 %.
+#[path = "junto-screens/messages.rs"]
+mod messages;
+
 const WINDOW: (f32, f32) = (1440.0, 900.0);
 
 /// An identifier that is the same in every run, so that a generated avatar is the same.
@@ -287,6 +290,7 @@ fn snapshot(account: &str, workspaces: Vec<WorkspaceState>) -> Snapshot {
         direct_calls: Vec::new(),
         call_invitations: Vec::new(),
         direct_mutes: Vec::new(),
+        messages: Vec::new(),
     }
 }
 
@@ -2657,10 +2661,12 @@ fn run(out: &Path) -> Result<(), String> {
         // The screens of one unit, while its screens are worked on.
         Some("shares") => draw_shares(&mut studio),
         Some("rules") => draw_rules(&mut studio),
+        Some("messages") => messages::draw(&mut studio),
         _ => draw_all(&mut studio)
             .and_then(|()| draw_calls(&mut studio))
             .and_then(|()| draw_shares(&mut studio))
             .and_then(|()| draw_rules(&mut studio))
+            .and_then(|()| messages::draw(&mut studio))
             .and_then(|()| draw_components(&mut studio)),
     };
     let scratch = studio.scratch.clone();

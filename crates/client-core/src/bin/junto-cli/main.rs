@@ -2,6 +2,7 @@
 //! else.
 
 mod live;
+mod messages;
 mod secret_input;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -80,6 +81,8 @@ commands:
                                the line `quit` on standard input or an interrupt
                                [--seconds <n>]
   call <action> [arguments]    send one request of the call routes
+  messages <action> [arguments]
+                               send one request of the message routes
 
 actions of call:
   show [<channel>]             the call of a voice channel, or the call of this account
@@ -105,6 +108,27 @@ actions of call:
   direct <account>             ask for a place in the direct-message call with an account
   refuse-direct <account>
   mute-direct <account> [--hours <n>], unmute-direct <account>
+
+actions of messages:
+  list <place> [--before <position> | --after <position>] [--limit <n>]
+                               one page of the history, the latest page without a position
+  show <message>
+  send <place> [--text <text>] [--reply <message>] [--file <path>]...
+                               an empty line in the text starts a new paragraph
+  edit <message> --text <text>
+  delete <message>
+  react <message> <emoji>, unreact <message> <emoji>
+  read <place> <position>      move the read position of the account forward
+  unread <place>               the read position and the unread counts
+  conversations                the direct conversations of the account
+  open <account>               the direct conversation with an account
+  limits                       the limits of the server for the files of a message
+  set-limits --bytes <n> --files <n>
+  upload <place> <file>        upload a file and print its attachment
+  download <message> <attachment> --to <directory>
+                               save a file of a message under a name that no file has
+
+A place is channel:<id>, direct:<conversation id>, or the identifier of a channel.
 
 An action that joins a call prints the token for the media server only with --show-token.
 A place in a call belongs to the session that asked for it, and every command ends its
@@ -137,6 +161,14 @@ const VALUE_OPTIONS: &[&str] = &[
     "limit",
     "hide",
     "hours",
+    "text",
+    "reply",
+    "file",
+    "before",
+    "after",
+    "bytes",
+    "files",
+    "to",
 ];
 const FLAGS: &[&str] = &[
     "when-selected",
@@ -456,6 +488,7 @@ async fn run(arguments: Arguments) -> Result<(), Failure> {
         "state" => live::state(&client, &arguments).await,
         "watch" => live::watch(&client, &arguments).await,
         "call" => live::call(&client, &arguments).await,
+        "messages" => messages::messages(&client, &arguments).await,
         other => Err(usage(format!("unknown command {other}"))),
     }
 }

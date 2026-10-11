@@ -96,6 +96,14 @@ pub struct Colors {
     pub terracotta_deep: Rgba,
     pub terracotta_wash: Rgba,
     pub terracotta_wash_rule: Rgba,
+    /// The ground of inline code in a message.
+    pub code_wash: Rgba,
+    /// The text of a code block, on basalt.
+    pub code_text: Rgba,
+    /// The ground of a message that mentions the person.
+    pub mention_wash: Rgba,
+    /// The ground of a message under the pointer.
+    pub row_hover: Rgba,
     /// Text and icons on terracotta.
     pub on_terracotta: Rgba,
     pub cypress: Rgba,
@@ -338,6 +346,10 @@ impl Theme {
                 terracotta_deep: hex(0x8E3D20),
                 terracotta_wash: hex(0xEBCDB7),
                 terracotta_wash_rule: hex(0xC98A6B),
+                code_wash: hex(0xE5D9C1),
+                code_text: hex(0xEADFCB),
+                mention_wash: hex_alpha(0xB4532F, 0.09),
+                row_hover: hex_alpha(0x2A221B, 0.04),
                 on_terracotta: hex(0xFFF4E4),
                 cypress: hex(0x2F4B3C),
                 cypress_wash: hex(0xD2DAC2),

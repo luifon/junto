@@ -18,6 +18,10 @@ pub const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Longer than the 30 seconds after which the server ends a request (ADR 0008).
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(40);
+/// The time for a request that carries one part of a file: 1 MiB on a slow connection.
+const PART_TIMEOUT: Duration = Duration::from_secs(600);
+/// A download ends when no byte of it arrives for this long.
+const READ_TIMEOUT: Duration = Duration::from_secs(40);
 const LONGEST_RETRY_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -38,8 +42,11 @@ pub struct RequestBody {
 }
 
 const JSON: &str = "application/json";
+const BYTES: &str = "application/octet-stream";
 /// What the client reads: JSON, and the image of an avatar.
 const ACCEPTED: &str = "application/json, image/png, image/jpeg, image/webp";
+/// What the client reads of a download: the file, or the error of the API.
+const ACCEPTED_FILE: &str = "application/octet-stream, application/json";
 
 impl RequestBody {
     pub fn json(bytes: SecretBytes) -> Self {
@@ -52,6 +59,14 @@ impl RequestBody {
     pub fn image(kind: ImageType, bytes: SecretBytes) -> Self {
         Self {
             media_type: kind.media_type(),
+            bytes: Arc::new(bytes),
+        }
+    }
+
+    /// A part of a file (ADR 0408).
+    pub fn bytes(bytes: SecretBytes) -> Self {
+        Self {
+            media_type: BYTES,
             bytes: Arc::new(bytes),
         }
     }
@@ -146,8 +161,44 @@ impl TransportError {
 pub type TransportFuture =
     Pin<Box<dyn Future<Output = Result<HttpResponse, TransportError>> + Send + 'static>>;
 
+/// The body of a response in the parts in which it arrives.
+pub type BodyStream =
+    Pin<Box<dyn futures_util::Stream<Item = Result<bytes::Bytes, TransportError>> + Send>>;
+
+/// A response whose body is read in parts: a file of any size.
+pub struct OpenedResponse {
+    pub status: u16,
+    pub retry_after: Option<Duration>,
+    pub body: BodyStream,
+}
+
+pub type OpenFuture =
+    Pin<Box<dyn Future<Output = Result<OpenedResponse, TransportError>> + Send + 'static>>;
+
 pub trait Transport: Send + Sync + 'static {
     fn send(&self, request: HttpRequest) -> TransportFuture;
+
+    /// Sends a request whose body is one part of a file. The time limit allows a slow
+    /// connection.
+    fn send_part(&self, request: HttpRequest) -> TransportFuture {
+        self.send(request)
+    }
+
+    /// Asks for a file from the byte `from` on, and returns the body as it arrives. The
+    /// status 206 states that the body starts at `from`; with 200 it is the whole file.
+    fn open(&self, request: HttpRequest, from: u64) -> OpenFuture {
+        let _ = from;
+        let sent = self.send(request);
+        Box::pin(async move {
+            let response = sent.await?;
+            let body = bytes::Bytes::copy_from_slice(response.body.as_slice());
+            Ok(OpenedResponse {
+                status: response.status,
+                retry_after: response.retry_after,
+                body: Box::pin(futures_util::stream::once(async move { Ok(body) })),
+            })
+        })
+    }
 }
 
 /// The transport of the product: reqwest with rustls and the certificates that the
@@ -156,58 +207,113 @@ pub trait Transport: Send + Sync + 'static {
 #[derive(Debug, Clone)]
 pub struct ReqwestTransport {
     client: reqwest::Client,
+    /// The client for the parts of files: the same settings, without a time limit for a
+    /// whole request, and with one for each read (ADR 0721).
+    files: reqwest::Client,
 }
 
 impl ReqwestTransport {
     pub fn new() -> Result<Self, TransportError> {
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(REQUEST_TIMEOUT)
-            .user_agent(concat!("junto-client/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .map_err(|error| {
+        let builder = || {
+            reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(CONNECT_TIMEOUT)
+                .user_agent(concat!("junto-client/", env!("CARGO_PKG_VERSION")))
+        };
+        let built = |client: reqwest::Result<reqwest::Client>| {
+            client.map_err(|error| {
                 TransportError::new(TransportErrorKind::Connect, error.without_url().to_string())
-            })?;
-        Ok(Self { client })
+            })
+        };
+        Ok(Self {
+            client: built(builder().timeout(REQUEST_TIMEOUT).build())?,
+            files: built(builder().read_timeout(READ_TIMEOUT).build())?,
+        })
     }
+}
+
+fn build(
+    client: &reqwest::Client,
+    request: HttpRequest,
+    accepted: &str,
+) -> reqwest::RequestBuilder {
+    let method = match request.method {
+        Method::Get => reqwest::Method::GET,
+        Method::Post => reqwest::Method::POST,
+        Method::Put => reqwest::Method::PUT,
+        Method::Patch => reqwest::Method::PATCH,
+        Method::Delete => reqwest::Method::DELETE,
+    };
+    let mut builder = client
+        .request(method, request.url)
+        .header(reqwest::header::ACCEPT, accepted);
+    if let Some(token) = &request.bearer {
+        builder = builder.bearer_auth(token.expose());
+    }
+    if let Some(body) = &request.body {
+        builder = builder
+            .header(reqwest::header::CONTENT_TYPE, body.media_type)
+            .body(shared_body(&body.bytes));
+    }
+    builder
 }
 
 impl Transport for ReqwestTransport {
     fn send(&self, request: HttpRequest) -> TransportFuture {
         let client = self.client.clone();
         Box::pin(async move {
-            let method = match request.method {
-                Method::Get => reqwest::Method::GET,
-                Method::Post => reqwest::Method::POST,
-                Method::Put => reqwest::Method::PUT,
-                Method::Patch => reqwest::Method::PATCH,
-                Method::Delete => reqwest::Method::DELETE,
-            };
-            let mut builder = client
-                .request(method, request.url)
-                .header(reqwest::header::ACCEPT, ACCEPTED);
-            if let Some(token) = &request.bearer {
-                builder = builder.bearer_auth(token.expose());
-            }
-            if let Some(body) = &request.body {
-                builder = builder
-                    .header(reqwest::header::CONTENT_TYPE, body.media_type)
-                    .body(shared_body(&body.bytes));
-            }
+            let builder = build(&client, request, ACCEPTED);
             read(builder.send().await.map_err(failure)?).await
         })
     }
+
+    fn send_part(&self, request: HttpRequest) -> TransportFuture {
+        let client = self.files.clone();
+        Box::pin(async move {
+            let builder = build(&client, request, ACCEPTED).timeout(PART_TIMEOUT);
+            read(builder.send().await.map_err(failure)?).await
+        })
+    }
+
+    fn open(&self, request: HttpRequest, from: u64) -> OpenFuture {
+        let client = self.files.clone();
+        Box::pin(async move {
+            let mut builder = build(&client, request, ACCEPTED_FILE);
+            if from > 0 {
+                builder = builder.header(reqwest::header::RANGE, format!("bytes={from}-"));
+            }
+            let response = builder.send().await.map_err(failure)?;
+            let status = response.status().as_u16();
+            let retry_after = retry_after_of(&response);
+            let body = futures_util::stream::unfold(Some(response), |response| async move {
+                let mut response = response?;
+                match response.chunk().await {
+                    Ok(Some(chunk)) => Some((Ok(chunk), Some(response))),
+                    Ok(None) => None,
+                    Err(error) => Some((Err(failure(error)), None)),
+                }
+            });
+            Ok(OpenedResponse {
+                status,
+                retry_after,
+                body: Box::pin(body),
+            })
+        })
+    }
+}
+
+fn retry_after_of(response: &reqwest::Response) -> Option<Duration> {
+    response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_retry_after)
 }
 
 /// Reads a response up to the largest body that the client accepts.
 pub(crate) async fn read(mut response: reqwest::Response) -> Result<HttpResponse, TransportError> {
     let status = response.status().as_u16();
-    let retry_after = response
-        .headers()
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(parse_retry_after);
+    let retry_after = retry_after_of(&response);
     let too_large = || {
         TransportError::new(
             TransportErrorKind::TooLarge,

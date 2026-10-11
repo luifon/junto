@@ -1,8 +1,8 @@
 #!/bin/sh
 # Starts a Junto server for development on this machine and prints what a person needs to
 # join it: the address, and the one-time owner code that the server prints at its start.
-# The database is a temporary PostgreSQL in Docker; it is removed with the server when the
-# script ends (Control-C).
+# The database is a temporary PostgreSQL in Docker, and the files of messages go to a
+# temporary directory; both are removed with the server when the script ends (Control-C).
 #
 # usage: tools/dev-server.sh [--port <port>] [--name <name>] [--media]
 #
@@ -58,6 +58,12 @@ export JUNTO_LISTEN_ADDRESS="127.0.0.1:${port}"
 export JUNTO_SERVER_NAME="$name"
 export JUNTO_LOG_FORMAT="${JUNTO_LOG_FORMAT:-text}"
 export JUNTO_LOG_LEVEL="${JUNTO_LOG_LEVEL:-warn}"
+# The files of messages: a directory of this run (ADR 0408).
+attachments=$(mktemp -d "${TMPDIR:-/tmp}/junto-dev-attachments.XXXXXX")
+attachments=$(cd "$attachments" && pwd -P)
+trap 'rm -rf "$attachments"' EXIT
+trap 'exit 130' INT TERM
+export JUNTO_ATTACHMENTS_DIR="$attachments"
 if [ "$media" -eq 1 ]; then
     export JUNTO_LIVEKIT_API_URL="$JUNTO_TEST_LIVEKIT_API_URL"
     export JUNTO_LIVEKIT_URL="$JUNTO_TEST_LIVEKIT_URL"
@@ -73,7 +79,8 @@ Junto server "${name}"
     Owner code:  printed below by the server
 
 Type the address into "Add server" of the application, then the owner code into
-"I have a code". The database is temporary. Control-C ends the server and removes it.
+"I have a code". The database and the files of messages are temporary. Control-C ends the
+server and removes them.
 
 TEXT
 

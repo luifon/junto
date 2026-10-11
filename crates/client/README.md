@@ -1,8 +1,8 @@
 # junto-client
 
-The Junto desktop application: a gpui window on `junto-client-core` and `junto-media`. The binary is `junto`. The design decisions are in [`docs/adr/`](../../docs/adr/README.md): ADR 0730 describes this crate, ADR 0731 its theme and components, ADR 0732 joining a server in the window, ADR 0733 the media engine, ADR 0734 the call of a client, ADR 0735 the screens of a voice call, ADR 0736 the screen capture, ADR 0737 shares in the media engine and ADR 0738 the screens of a share and of a recording.
+The Junto desktop application: a gpui window on `junto-client-core` and `junto-media`. The binary is `junto`. The design decisions are in [`docs/adr/`](../../docs/adr/README.md): ADR 0730 describes this crate, ADR 0731 its theme and components, ADR 0732 joining a server in the window, ADR 0733 the media engine, ADR 0734 the call of a client, ADR 0735 the screens of a voice call, ADR 0736 the screen capture, ADR 0737 shares in the media engine, ADR 0738 the screens of a share and of a recording, ADR 0739 the rules of a call, and ADR 0740 the message list and the composer.
 
-This version shows the servers of the server book, their workspaces and channels, the people in voice channels, and the state of each server. It joins a server with a code or a request for access, and it holds a voice call in a voice channel: microphone, sound, mute, a volume per person, levels, push-to-talk and the choice of the sound devices. In a call a person shares a screen or a window with its sound, watches the shares of the others, starts and stops a recording, and uses the rules of the room: meeting mode with raised hands, the lock, the user limit, requests to enter, invitations, the menu of a person with blocks, removal and move. It has no text messages, no camera and no direct-message calls. It is built and tested on macOS and builds for Linux, where the screen capture is not built yet; Windows is not supported yet.
+This version shows the servers of the server book, their workspaces and channels, the people in voice channels, and the state of each server. It joins a server with a code or a request for access, and it holds a voice call in a voice channel: microphone, sound, mute, a volume per person, levels, push-to-talk and the choice of the sound devices. In a call a person shares a screen or a window with its sound, watches the shares of the others, starts and stops a recording, and uses the rules of the room: meeting mode with raised hands, the lock, the user limit, requests to enter, invitations, the menu of a person with blocks, removal and move. A person reads and writes messages in a text channel and in the chat of a voice channel: formatted text, replies, mentions, reactions, files, edits and deletions, with unread signs in the channel list. It has no direct conversations in the window, no threads, no search, no camera and no direct-message calls. It is built and tested on macOS and builds for Linux, where the screen capture is not built yet; Windows is not supported yet.
 
 ## Run it locally
 
@@ -43,6 +43,29 @@ JUNTO_DATA_DIR=/tmp/junto-first cargo run -p junto-client-core --bin junto-cli -
 ```
 
 With more than one saved server, `junto-cli` names the server with `--server <identifier, address or name>`; `junto-cli` without arguments prints its commands.
+
+## Messages between two instances
+
+Start two instances as above and select the same text channel in both. The development server stores the files of messages in a temporary directory.
+
+- **Write.** Enter sends, and Shift with Enter adds a line. The text takes marks: `**bold**`, `*italic*`, `~~struck~~`, `` `code` ``, three backticks around a code block, `> ` for a quote, `- ` and `1. ` for lists, `- [ ] ` for a check box, and `[text](address)` for a link. The toolbar puts the marks around the selection.
+- **Mention.** Type `@` and the start of a name; the arrow keys choose, and Enter or Tab takes the entry. The other instance shows the message with a tinted ground and the sign "@ 1" on its channel when it shows another channel.
+- **Reply, edit, delete, react.** The bar at a message under the pointer has the four actions; a right click on a message, or Shift and F10 while it has the focus, opens the same actions as a menu. The arrow up in an empty composer edits the last own message.
+- **Files.** The paper clip opens the file dialog; a file can also be dropped on the composer, and a picture can be pasted. The upload starts at once and continues after a cut connection. A picture up to 1,024 pixels per side is shown in the list; every other file is a row. The download control saves a file to the download directory under a name that no file has.
+- **Unread.** While one instance shows another channel, a message of the other instance makes the name of the channel bold with a dot. Selecting the channel shows the line "New" before the first unread message. "Mark as read" in the header appears while the channel has unread messages.
+- **Without a connection.** Stop the server and send a message: it stays in the list as "Not sent" with "Send again" and "Discard".
+
+The same routes from a terminal, on the data directory of an instance:
+
+```sh
+JUNTO_DATA_DIR=/tmp/junto-first cargo run -p junto-client-core --bin junto-cli -- state
+JUNTO_DATA_DIR=/tmp/junto-first cargo run -p junto-client-core --bin junto-cli -- \
+    messages send <channel id> --text "Hello from the terminal" --file notes.txt
+JUNTO_DATA_DIR=/tmp/junto-first cargo run -p junto-client-core --bin junto-cli -- \
+    messages list <channel id>
+```
+
+`state` prints the identifiers of the channels and the unread counts. `junto-cli` without arguments lists the other actions of `messages`.
 
 ## A call on one machine
 
@@ -121,7 +144,7 @@ The variable `JUNTO_LOG_LEVEL` sets the level of the log on standard error (`war
 tools/with-test-postgres.sh tools/serial.sh cargo test -p junto-client
 ```
 
-The tests in `tests/app` open the window code on gpui's test platform, with a client on a data directory of its own, against the server binary of this checkout. They click what is drawn and read what the window shows. A second client without a window is the administrator of the server.
+The tests in `tests/app` open the window code on gpui's test platform, with a client on a data directory of its own, against the server binary of this checkout. They click what is drawn and read what the window shows. A second client without a window is the administrator of the server. `tests/app/messages.rs` writes, answers, edits and deletes messages, reacts, sends and saves a file, follows the unread signs, follows a quoted message that changes, and checks that the text of one account is not shown to the next account of the server.
 
 No test opens a microphone, plays a sound or captures a screen: the microphone of each client is a tone, its output is a sink that measures what would be played, and its screen capture is a picture of two colours with a tone on each channel. No test causes a permission question of the system. The tests of a call need a LiveKit server and are ignored in the plain run:
 
@@ -132,7 +155,7 @@ tools/with-test-postgres.sh tools/with-test-livekit.sh tools/serial.sh \
     cargo test -p junto-media --test calls -- --ignored
 ```
 
-The first command runs the window against a real server and a real media server: a call, a share, the request for a recording, and the rules of a room (a locked, full and hidden room with the request to enter, meeting mode as participant and as presenter, invitations, and the menu of a person with the blocks, a move and a removal). The second command runs the tests of the media engine: two clients that hear each other, mute, a microphone block, the devices, the microphone permission, one call over two servers, a leave while a join or a new token is on its way, the return of a call after the media server was restarted, and the shares: a share with its picture and its sound, two shares and the choice of the viewer, the layer that the media server sends for a drawn size, a share that ends by itself, the blocks of the server, a move between voice channels, and a person whom the presenter of meeting mode allows to speak.
+The first command runs the window against a real server and a real media server: a call, a share, the request for a recording, the read position of the chat of a call, and the rules of a room (a locked, full and hidden room with the request to enter, meeting mode as participant and as presenter, invitations, and the menu of a person with the blocks, a move and a removal). The second command runs the tests of the media engine: two clients that hear each other, mute, a microphone block, the devices, the microphone permission, one call over two servers, a leave while a join or a new token is on its way, the return of a call after the media server was restarted, and the shares: a share with its picture and its sound, two shares and the choice of the viewer, the layer that the media server sends for a drawn size, a share that ends by itself, the blocks of the server, a move between voice channels, and a person whom the presenter of meeting mode allows to speak.
 
 The calls to ScreenCaptureKit are not run by a test. The parts of the macOS capture that decide something (which application is Junto, which windows are listed, how a sound buffer is read) are functions with tests; the first real share is a test by a person.
 
@@ -153,5 +176,7 @@ cargo run -p junto-client --features test-support --bin junto-screens -- <direct
 | `src/assets.rs`, `assets/` | The fonts and the icons, carried in the binary. The fonts are under the SIL Open Font License; the licence texts are beside the files. |
 | `src/ui/` | The components. |
 | `src/state/` | The state of the application over the client core, and the derivation of what the window shows. |
-| `src/shell/` | The main window. `call.rs` draws the call, `share.rs` the dialog and the stage of a share, and `room.rs` the rules of the room of a call. |
-| `src/bin/junto-screens.rs` | The tool that draws the screens. |
+| `src/compose.rs` | The marks of the composer and the document of a message, in both directions, and the limits of a document. |
+| `src/state/feed.rs` | The derivation of the rows of a message list. |
+| `src/shell/` | The main window. `call.rs` draws the call, `share.rs` the dialog and the stage of a share, `room.rs` the rules of the room of a call, `feed.rs` the message list, and `composer.rs` the composer with its pickers. |
+| `src/bin/junto-screens.rs`, `src/bin/junto-screens/` | The tool that draws the screens. |

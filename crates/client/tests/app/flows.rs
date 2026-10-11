@@ -79,7 +79,7 @@ fn the_first_start_asks_for_a_name_and_the_owner_code_opens_the_server(cx: &mut 
         workspace.channel.as_ref().map(|channel| channel.kind),
         Some(ChannelKind::Text)
     );
-    assert!(window.shows("messages-not-available"));
+    assert!(window.shows("feed") && window.shows("composer"));
     assert!(window.shows("channel-title") && window.shows("workspace-title"));
 
     // The account is the owner, and the server book on the disk names it.
@@ -96,7 +96,7 @@ fn the_first_start_asks_for_a_name_and_the_owner_code_opens_the_server(cx: &mut 
     // A click on a voice channel shows it with the action that enters its call, and
     // joins nothing (ADR 0735).
     window.click_channel("voice");
-    assert!(window.shows("join-call") && window.shows("voice-chat-not-available"));
+    assert!(window.shows("join-call") && window.shows("feed") && window.shows("composer"));
     assert!(!window.shows("call-strip") && window.view().call.is_none());
     assert_eq!(
         window

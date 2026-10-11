@@ -69,6 +69,8 @@ pub struct TestServer {
     proxy_port: u16,
     /// The server uses the LiveKit server of `tools/with-test-livekit.sh`.
     media: bool,
+    /// Where the server stores the files of messages.
+    attachments: tempfile::TempDir,
     pub database_url: String,
 }
 
@@ -109,6 +111,7 @@ impl TestServer {
             proxy: Mutex::new(Some(proxy)),
             proxy_port,
             media,
+            attachments: tempfile::tempdir().unwrap(),
             database_url: database_url.into(),
         };
         server.run(true).await;
@@ -200,6 +203,10 @@ impl TestServer {
                     "http://127.0.0.1:{},http://127.0.0.1:{}",
                     self.port, self.proxy_port
                 ),
+            )
+            .env(
+                "JUNTO_ATTACHMENTS_DIR",
+                self.attachments.path().canonicalize().unwrap(),
             )
             .env("JUNTO_LOG_FORMAT", "text")
             .env("JUNTO_LOG_LEVEL", "warn")
@@ -315,6 +322,7 @@ impl Device {
             first_delay: Duration::from_millis(200),
             longest_delay: Duration::from_secs(2),
             connections_per_minute: 120,
+            send_again_after: Duration::from_secs(2),
             ..StreamPolicy::default()
         };
         Client::open(options).unwrap()
@@ -378,6 +386,8 @@ pub enum Fault {
     Busy,
     /// Passes the request on, waits for the answer of the server and drops it.
     LoseAnswer,
+    /// Ends the connection without passing the request on.
+    Cut,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -393,11 +403,15 @@ pub struct Seen {
 #[derive(Default)]
 struct ProxyState {
     faults: Vec<(String, Vec<Fault>)>,
+    /// Faults for the requests whose path ends with a text.
+    faults_ending: Vec<(String, Vec<Fault>)>,
     seen: Vec<Seen>,
     /// An upgrade request is not passed on: its connection is closed.
     streams_blocked: bool,
     /// A request to one of these paths waits at the proxy until the test releases it.
     held: Vec<String>,
+    /// A request whose path ends with one of these texts waits too.
+    held_ending: Vec<String>,
 }
 
 /// An HTTP proxy in front of one server. It passes every request on unless a fault is
@@ -478,9 +492,19 @@ impl FaultProxy {
         self.state.lock().unwrap().held.push(path.to_owned());
     }
 
+    /// As [`FaultProxy::hold`], for every request whose path ends with `end`: a path with
+    /// an identifier that the test does not know yet.
+    pub fn hold_ending(&self, end: &str) {
+        self.state.lock().unwrap().held_ending.push(end.to_owned());
+    }
+
     /// Passes on every request that waits, and holds no further one.
     pub fn release(&self) {
-        self.state.lock().unwrap().held.clear();
+        {
+            let mut state = self.state.lock().unwrap();
+            state.held.clear();
+            state.held_ending.clear();
+        }
         self.released.send_modify(|releases| *releases += 1);
     }
 
@@ -502,6 +526,17 @@ impl FaultProxy {
             .unwrap()
             .faults
             .push((path.to_owned(), faults));
+    }
+
+    /// The next requests whose path ends with `end` fail in the given ways, in order.
+    pub fn fail_ending(&self, end: &str, faults: impl IntoIterator<Item = Fault>) {
+        let mut faults: Vec<Fault> = faults.into_iter().collect();
+        faults.reverse();
+        self.state
+            .lock()
+            .unwrap()
+            .faults_ending
+            .push((end.to_owned(), faults));
     }
 
     /// Every request in the order of its arrival.
@@ -600,10 +635,17 @@ async fn serve(
             answer: None,
         });
         let index = state.seen.len() - 1;
+        let state = &mut *state;
         let fault = state
             .faults
             .iter_mut()
             .find(|(planned, faults)| *planned == path && !faults.is_empty())
+            .or_else(|| {
+                state
+                    .faults_ending
+                    .iter_mut()
+                    .find(|(end, faults)| path.ends_with(end.as_str()) && !faults.is_empty())
+            })
             .and_then(|(_, faults)| faults.pop());
         (index, fault)
     };
@@ -611,10 +653,16 @@ async fn serve(
         state.lock().unwrap().seen[index].answer = Some((status, body.to_vec()));
     };
     released.borrow_and_update();
-    while state.lock().unwrap().held.contains(&path) {
+    let held = |state: &ProxyState| {
+        state.held.contains(&path) || state.held_ending.iter().any(|end| path.ends_with(end))
+    };
+    while held(&state.lock().unwrap()) {
         if released.changed().await.is_err() {
             return Ok(());
         }
+    }
+    if fault == Some(Fault::Cut) {
+        return Ok(());
     }
     if fault == Some(Fault::Busy) {
         let body = br#"{"error":{"code":"busy","message":"the proxy of the test answered"}}"#;

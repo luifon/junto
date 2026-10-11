@@ -10,13 +10,14 @@ use std::sync::{Arc, Mutex};
 use junto_protocol::account::RecoveryNotice;
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::{Cursor, EndReason, Event, Level};
-use junto_protocol::ids::WorkspaceId;
+use junto_protocol::ids::{AttachmentId, MessageId, WorkspaceId};
+use junto_protocol::message::{Document, Message};
 use time::OffsetDateTime;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use crate::api::{ApiError, TransportErrorKind};
 use crate::flow::machine::lock;
-use crate::model::ServerModel;
+use crate::model::{PendingFile, PendingMessage, PlaceId, Reach, ServerModel};
 
 /// How many notices wait for a reader that is slower than the stream. A reader that falls
 /// further behind is told so and reads the state.
@@ -98,7 +99,7 @@ pub struct Missed(pub u64);
 pub enum LoadError {
     #[error("the server has no event stream now")]
     Off,
-    #[error("the state holds no such workspace")]
+    #[error("the state holds no such workspace or place")]
     NotInState,
     /// The request for the part failed. Every reader that waited gets the same error.
     #[error(transparent)]
@@ -111,6 +112,36 @@ pub(crate) enum Command {
         reply: oneshot::Sender<Result<(), LoadError>>,
     },
     ReleaseMembers(WorkspaceId),
+    OpenMessages {
+        place: PlaceId,
+        reply: oneshot::Sender<Result<(), LoadError>>,
+    },
+    ReleaseMessages(PlaceId),
+    ReadMessages {
+        place: PlaceId,
+        reach: Reach,
+    },
+    /// The position that the reader shows: absent while the reader follows the end.
+    MessageAnchor {
+        place: PlaceId,
+        position: Option<u64>,
+    },
+    /// A message that a request of this client returned.
+    PutMessage(Box<Message>),
+    MarkRead {
+        place: PlaceId,
+        position: u64,
+    },
+    Enqueue(Box<PendingMessage>),
+    /// The uploads of a waiting message are complete: the upload of this client and the
+    /// attachment that the server holds for it.
+    FilesReady {
+        id: u64,
+        files: Vec<(u64, AttachmentId)>,
+    },
+    FilesFailed(u64),
+    SendAgain(u64),
+    Discard(u64),
 }
 
 /// What the stream client of one server and its readers share.
@@ -118,6 +149,8 @@ pub(crate) struct Shared {
     view: watch::Sender<LiveView>,
     notices: broadcast::Sender<Notice>,
     commands: Mutex<Option<mpsc::UnboundedSender<Command>>>,
+    /// The numbers that this client gives to its waiting messages and to its uploads.
+    numbers: std::sync::atomic::AtomicU64,
 }
 
 impl Shared {
@@ -126,7 +159,13 @@ impl Shared {
             view: watch::Sender::new(LiveView::default()),
             notices: broadcast::Sender::new(WAITING_NOTICES),
             commands: Mutex::new(None),
+            numbers: std::sync::atomic::AtomicU64::new(1),
         })
+    }
+
+    pub(crate) fn next_number(&self) -> u64 {
+        self.numbers
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 
     pub(crate) fn attach(&self, commands: mpsc::UnboundedSender<Command>) {
@@ -151,7 +190,7 @@ impl Shared {
         let _ = self.notices.send(notice);
     }
 
-    fn send(&self, command: Command) -> bool {
+    pub(crate) fn send(&self, command: Command) -> bool {
         lock(&self.commands)
             .as_ref()
             .is_some_and(|commands| commands.send(command).is_ok())
@@ -209,6 +248,109 @@ impl LiveServer {
     /// them and does not read them again.
     pub fn release_members(&self, workspace_id: WorkspaceId) {
         self.shared.send(Command::ReleaseMembers(workspace_id));
+    }
+
+    /// Asks for the messages of a place (ADR 0721). The first page is read, appears in
+    /// the state as a timeline, and follows the events from then on. A place with unread
+    /// messages opens at the read position of the account, and every other place at its
+    /// end. After a reload of the state the client reads the page again by itself. The
+    /// future ends when the page is in the state or the read failed. Each call needs one
+    /// [`LiveServer::release_messages`].
+    pub fn open_messages(
+        &self,
+        place: PlaceId,
+    ) -> impl Future<Output = Result<(), LoadError>> + Send + 'static + use<> {
+        let (reply, answer) = oneshot::channel();
+        let sent = self.shared.send(Command::OpenMessages { place, reply });
+        async move {
+            if !sent {
+                return Err(LoadError::Off);
+            }
+            answer.await.unwrap_or(Err(LoadError::Off))
+        }
+    }
+
+    /// States that a reader needs the messages of a place no longer. When no reader is
+    /// left, the state drops them.
+    pub fn release_messages(&self, place: PlaceId) {
+        self.shared.send(Command::ReleaseMessages(place));
+    }
+
+    /// Reads the page before the first loaded message of an open place.
+    pub fn read_older_messages(&self, place: PlaceId) {
+        let reach = Reach::Older;
+        self.shared.send(Command::ReadMessages { place, reach });
+    }
+
+    /// Reads the page after the last loaded message of an open place.
+    pub fn read_newer_messages(&self, place: PlaceId) {
+        let reach = Reach::Newer;
+        self.shared.send(Command::ReadMessages { place, reach });
+    }
+
+    /// Replaces the loaded messages of an open place by its latest page.
+    pub fn read_latest_messages(&self, place: PlaceId) {
+        let reach = Reach::End;
+        self.shared.send(Command::ReadMessages { place, reach });
+    }
+
+    /// Tells where the reader of an open place is: at the position of a message, or at the
+    /// end (`None`). After a reload of the state the client reads the page from there.
+    pub fn set_message_anchor(&self, place: PlaceId, position: Option<u64>) {
+        self.shared.send(Command::MessageAnchor { place, position });
+    }
+
+    /// Gives the state a message that a request returned, such as the answer to an edit,
+    /// so that a reader sees it before the event of the change has been followed.
+    pub fn put_message(&self, message: Message) {
+        self.shared.send(Command::PutMessage(Box::new(message)));
+    }
+
+    /// Moves the read position of the account in a place forward. The client sends one
+    /// request for a place at a time, at most one in a second, with the newest position.
+    pub fn mark_read(&self, place: PlaceId, position: u64) {
+        self.shared.send(Command::MarkRead { place, position });
+    }
+
+    /// Puts a message into the state as one that waits to be sent, and sends it when all
+    /// its files are uploaded. Returns the number of the message on this client. `None`
+    /// when the server has no event stream now.
+    pub(crate) fn enqueue_message(
+        &self,
+        place: PlaceId,
+        document: Document,
+        reply_to: Option<MessageId>,
+        files: Vec<PendingFile>,
+    ) -> Option<u64> {
+        let id = self.shared.next_number();
+        let created_at = OffsetDateTime::now_utc();
+        let pending = PendingMessage::new(id, place, document, reply_to, files, created_at);
+        self.shared
+            .send(Command::Enqueue(Box::new(pending)))
+            .then_some(id)
+    }
+
+    /// Sends a message without files.
+    pub fn send_message(
+        &self,
+        place: PlaceId,
+        document: Document,
+        reply_to: Option<MessageId>,
+    ) -> Option<u64> {
+        self.enqueue_message(place, document, reply_to, Vec::new())
+    }
+
+    /// Sends a waiting message again: one that failed, or one whose answer was lost. The
+    /// second kind is sent only after the history shows that the server does not hold it
+    /// (ADR 0721).
+    pub fn send_again(&self, id: u64) {
+        self.shared.send(Command::SendAgain(id));
+    }
+
+    /// Takes a waiting message out of the state. A request that is on its way is ended;
+    /// the server may hold the message all the same.
+    pub fn discard_message(&self, id: u64) {
+        self.shared.send(Command::Discard(id));
     }
 }
 

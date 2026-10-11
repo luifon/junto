@@ -20,6 +20,7 @@ pub mod secret;
 pub mod settings;
 pub mod storage;
 pub mod stream;
+pub mod transfers;
 pub mod version;
 pub mod voice;
 

@@ -36,23 +36,32 @@ use serde::de::DeserializeOwned;
 use super::client::{ApiClient, encode, read_json};
 use super::error::ApiError;
 use super::retry::Repeat;
-use super::transport::{HttpResponse, Method, RequestBody};
+use super::transport::{HttpResponse, Method, OpenedResponse, RequestBody};
 use crate::profile::{self, InvalidAvatar};
 use crate::secret::{SecretBytes, SecretToken};
 
 /// A request of a session without its token and without the version prefix.
+#[derive(Clone)]
 pub(crate) struct Outline {
     pub(crate) method: Method,
     pub(crate) path: String,
     pub(crate) query: Vec<(&'static str, String)>,
     pub(crate) body: Option<RequestBody>,
+    /// The body is one part of a file: the request gets the time of a slow connection.
+    pub(crate) part: bool,
 }
 
 pub(crate) type AuthorityFuture =
     Pin<Box<dyn Future<Output = Result<HttpResponse, ApiError>> + Send + 'static>>;
 
+pub(crate) type OpenAuthorityFuture =
+    Pin<Box<dyn Future<Output = Result<OpenedResponse, ApiError>> + Send + 'static>>;
+
 pub(crate) trait Authority: Send + Sync + 'static {
     fn send(&self, outline: Outline) -> AuthorityFuture;
+
+    /// Asks for a file from the byte `from` on. The answer has a status below 400.
+    fn open(&self, outline: Outline, from: u64) -> OpenAuthorityFuture;
 }
 
 pub(crate) struct TokenAuthority {
@@ -71,6 +80,11 @@ impl Authority for TokenAuthority {
         let (api, token) = (self.api.clone(), self.token.clone());
         Box::pin(async move { send_with_token(&api, &token, outline).await })
     }
+
+    fn open(&self, outline: Outline, from: u64) -> OpenAuthorityFuture {
+        let (api, token) = (self.api.clone(), self.token.clone());
+        Box::pin(async move { open_with_token(&api, &token, outline, from).await })
+    }
 }
 
 pub(crate) async fn send_with_token(
@@ -78,15 +92,29 @@ pub(crate) async fn send_with_token(
     token: &SecretToken,
     outline: Outline,
 ) -> Result<HttpResponse, ApiError> {
+    let repeat = if outline.part {
+        Repeat::Part
+    } else {
+        Repeat::WhenUnchanged
+    };
     api.send(
         outline.method,
         &outline.path,
         &outline.query,
         Some(token),
         outline.body,
-        Repeat::WhenUnchanged,
+        repeat,
     )
     .await
+}
+
+pub(crate) async fn open_with_token(
+    api: &ApiClient,
+    token: &SecretToken,
+    outline: Outline,
+    from: u64,
+) -> Result<OpenedResponse, ApiError> {
+    api.open(&outline.path, &outline.query, token, from).await
 }
 
 impl ApiClient {
@@ -142,8 +170,37 @@ impl ServerApi {
                 path,
                 query,
                 body,
+                part: false,
             })
             .await
+    }
+
+    /// Sends one part of a file.
+    pub(super) async fn call_part(
+        &self,
+        path: String,
+        body: RequestBody,
+    ) -> Result<HttpResponse, ApiError> {
+        self.authority
+            .send(Outline {
+                method: Method::Put,
+                path,
+                query: Vec::new(),
+                body: Some(body),
+                part: true,
+            })
+            .await
+    }
+
+    pub(super) async fn open(&self, path: String, from: u64) -> Result<OpenedResponse, ApiError> {
+        let outline = Outline {
+            method: Method::Get,
+            path,
+            query: Vec::new(),
+            body: None,
+            part: false,
+        };
+        self.authority.open(outline, from).await
     }
 
     pub(super) async fn get<R: DeserializeOwned>(&self, path: String) -> Result<R, ApiError> {

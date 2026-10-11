@@ -52,6 +52,9 @@ pub(crate) enum Repeat {
     WhenUnchanged,
     /// A request that carries a signed challenge: also sent again after a lost answer.
     Signed,
+    /// One part of a file. It is sent again after `busy` and `timeout` only, and it has
+    /// the time limit of a slow connection.
+    Part,
 }
 
 /// Sends `request` and returns the first response that is not an error. The request is
@@ -66,7 +69,12 @@ pub(crate) async fn send(
     let mut lost_answers = 0u32;
     loop {
         sent += 1;
-        let response = match transport.send(request.clone()).await {
+        let exchange = if repeat == Repeat::Part {
+            transport.send_part(request.clone())
+        } else {
+            transport.send(request.clone())
+        };
+        let response = match exchange.await {
             Ok(response) => response,
             Err(error) => {
                 let may_have_arrived = error.request_may_have_arrived();

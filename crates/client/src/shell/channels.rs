@@ -274,6 +274,7 @@ impl Shell {
                     channel.name.clone(),
                 )
                 .selected(channel.selected)
+                .unread(unread_sign(channel.unread))
                 .states(
                     channel
                         .voice
@@ -467,5 +468,13 @@ impl Shell {
 fn name_seed(name: &str) -> u128 {
     name.bytes().fold(0x6a75_6e74_6f00_u128, |seed, byte| {
         seed.rotate_left(8) ^ u128::from(byte)
+    })
+}
+
+/// The sign of a channel, a workspace or a server that holds what the person has not read.
+pub(crate) fn unread_sign(unread: crate::state::view::Unread) -> Option<crate::ui::UnreadSign> {
+    unread.any().then(|| crate::ui::UnreadSign {
+        mentions: (unread.mentions > 0).then(|| text::mention_badge(unread.mentions).into()),
+        label: text::unread_tooltip(unread.messages, unread.mentions).into(),
     })
 }

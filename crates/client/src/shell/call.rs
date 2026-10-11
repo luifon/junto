@@ -551,7 +551,7 @@ impl Shell {
                 )
             });
         let pane = match self.call_tab {
-            CallTab::Chat => Self::render_call_chat(channel, theme),
+            CallTab::Chat => self.render_call_chat(view, channel, theme, window, cx),
             CallTab::Members => self.render_call_members(view, channel, panel, theme, window, cx),
             CallTab::Settings => self.render_call_settings(panel, theme, window, cx),
         };
@@ -573,8 +573,21 @@ impl Shell {
             .into_any_element()
     }
 
-    fn render_call_chat(channel: &ChannelRow, theme: &Theme) -> AnyElement {
+    /// The chat of the voice channel of the call: the messages of the channel and the
+    /// composer, in the panel of the call.
+    fn render_call_chat(
+        &mut self,
+        view: &ShellView,
+        channel: &ChannelRow,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = theme.colors;
+        let feed = match view.workspace() {
+            Some(workspace) => self.render_feed(workspace, true, window, cx),
+            None => div().flex_1().into_any_element(),
+        };
         div()
             .id("call-chat")
             .debug_selector(|| "call-chat".to_owned())
@@ -607,28 +620,7 @@ impl Shell {
                     )
                     .child(text::VOICE_CHANNEL_CHAT),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .justify_end()
-                    .px(u(14.0))
-                    .pb(u(14.0))
-                    .child(
-                        div()
-                            .typeface(theme.types.heading, theme)
-                            .ink(colors.ink)
-                            .child(text::MESSAGES_NOT_AVAILABLE_TITLE),
-                    )
-                    .child(
-                        div()
-                            .mt(u(3.0))
-                            .typeface(theme.types.small, theme)
-                            .ink(colors.ink_2)
-                            .child(text::VOICE_CHAT_NOT_AVAILABLE),
-                    ),
-            )
+            .child(feed)
             .into_any_element()
     }
 

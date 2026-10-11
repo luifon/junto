@@ -49,7 +49,16 @@ gpui-base = "=0.7.1"
 futures-channel = "0.3"
 # The picture of a share is given to gpui as an image of this crate, in the version that
 # gpui uses.
-image = { version = "0.25", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+# The time zone of the system, for the times of messages. gpui uses the same crate.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# The download directory of the person.
+dirs = "5"
+# The table of the standard emoji, in the version of the server: a reaction that the
+# picker offers is one that the server accepts (ADR 0408).
+emojis = "0.8"
+# The address of a link is checked as the server checks it.
+url = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -65,5 +74,4 @@ junto-client = { path = ".", features = ["test-support"] }
 sqlx = { workspace = true }
 tempfile = "3"
 tokio = { workspace = true, features = ["io-util"] }
-url = "2"
 uuid = { workspace = true }

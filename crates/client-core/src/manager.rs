@@ -16,10 +16,12 @@ use time::OffsetDateTime;
 use tokio::sync::watch;
 
 use crate::address::ServerAddress;
-use crate::api::session::{Authority, AuthorityFuture, Outline, send_with_token};
+use crate::api::session::{
+    Authority, AuthorityFuture, OpenAuthorityFuture, Outline, open_with_token, send_with_token,
+};
 use crate::api::{
-    AccessLoss, ApiClient, ApiError, ErrorCategory, ExpectedAccount, HttpResponse,
-    ReqwestTransport, RetryPolicy, ServerApi, Transport, TransportError, server_info,
+    AccessLoss, ApiClient, ApiError, ErrorCategory, ExpectedAccount, ReqwestTransport, RetryPolicy,
+    ServerApi, Transport, TransportError, server_info,
 };
 use crate::book::{
     BookError, ConnectionMode, EntryKey, Membership, ProfileSync, ServerBook, ServerEntry,
@@ -725,6 +727,16 @@ impl ServerHandle {
         }
     }
 
+    /// The files of the messages of this server: uploads, downloads, and the sending of
+    /// a message with files (ADR 0721).
+    pub fn transfers(&self) -> crate::transfers::Transfers {
+        crate::transfers::Transfers {
+            api: self.api(),
+            live: self.live(),
+            runtime: self.server.core.runtime.clone(),
+        }
+    }
+
     /// The level that the event stream of this server should have now.
     pub fn connection_level(&self) -> ConnectionLevel {
         self.server.level().0
@@ -760,11 +772,23 @@ struct Managed {
 impl Authority for Managed {
     fn send(&self, outline: Outline) -> AuthorityFuture {
         let (server, account) = (self.server.clone(), self.account);
-        let work = self
-            .server
-            .core
-            .runtime
-            .run(async move { server.authorized(outline, account).await });
+        let work = self.server.core.runtime.run(async move {
+            let exchange = |api: ApiClient, token: SecretToken, outline: Outline| async move {
+                send_with_token(&api, &token, outline).await
+            };
+            server.authorized(outline, account, exchange).await
+        });
+        Box::pin(async move { work.await.unwrap_or(Err(ApiError::Stopped)) })
+    }
+
+    fn open(&self, outline: Outline, from: u64) -> OpenAuthorityFuture {
+        let (server, account) = (self.server.clone(), self.account);
+        let work = self.server.core.runtime.run(async move {
+            let exchange = move |api: ApiClient, token: SecretToken, outline: Outline| async move {
+                open_with_token(&api, &token, outline, from).await
+            };
+            server.authorized(outline, account, exchange).await
+        });
         Box::pin(async move { work.await.unwrap_or(Err(ApiError::Stopped)) })
     }
 }
@@ -1516,11 +1540,16 @@ impl Server {
 
     /// Sends one request of the account that the device has now. The request belongs to
     /// that account: after a renewal into another account it is not sent again.
-    async fn authorized(
+    async fn authorized<T, F, Sent>(
         self: Arc<Self>,
         outline: Outline,
         only_for: Option<AccountId>,
-    ) -> Result<HttpResponse, ApiError> {
+        exchange: F,
+    ) -> Result<T, ApiError>
+    where
+        F: Fn(ApiClient, SecretToken, Outline) -> Sent,
+        Sent: Future<Output = Result<T, ApiError>>,
+    {
         let (api, held) = self.session()?;
         let started_for = only_for.unwrap_or(held.account_id);
         if held.account_id != started_for {
@@ -1529,13 +1558,8 @@ impl Server {
                 now: held.account_id,
             });
         }
-        let repeat = Outline {
-            method: outline.method,
-            path: outline.path.clone(),
-            query: outline.query.clone(),
-            body: outline.body.clone(),
-        };
-        let result = match send_with_token(&api, &held.token, outline).await {
+        let repeat = outline.clone();
+        let result = match exchange(api, held.token.clone(), outline).await {
             Err(error) if error.category() == Some(ErrorCategory::SessionEnded) => {
                 let (api, renewed) = self.renew(&held.token).await?;
                 if renewed.account_id != started_for {
@@ -1544,7 +1568,7 @@ impl Server {
                         now: renewed.account_id,
                     });
                 }
-                send_with_token(&api, &renewed.token, repeat).await
+                exchange(api, renewed.token, repeat).await
             }
             other => other,
         };

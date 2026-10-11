@@ -133,6 +133,7 @@ fn scene() -> Scene {
         direct_calls: Vec::new(),
         call_invitations: Vec::new(),
         direct_mutes: Vec::new(),
+        messages: Vec::new(),
     };
     Scene {
         own,
@@ -2033,6 +2034,8 @@ mod calls {
         assert_eq!(
             shown.allowed,
             Allowed {
+                manage_messages: true,
+                mention_everyone: true,
                 lock: true,
                 run_meeting: true,
                 manage: true,

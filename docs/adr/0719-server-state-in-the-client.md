@@ -55,7 +55,7 @@ Copies for readers:
 
 Later parts:
 
-- The messages of a channel become a new field of the channel, new cases of the function that applies events, and a new part with the rule for parts read on demand. No existing field or case changes.
+- The messages are in the state as ADR 0721 states: the unread summary of each place, the timelines of the places that a reader has open, and the messages that wait to be sent, with new cases of the function that applies events and new parts. A timeline belongs to the state of the server and not to its channel, because a direct conversation has no channel. No field or case of before changed.
 
 ## Consequences
 

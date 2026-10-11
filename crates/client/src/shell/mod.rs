@@ -5,6 +5,8 @@
 
 pub mod call;
 mod channels;
+mod composer;
+mod feed;
 mod join;
 mod main_area;
 mod rail;
@@ -50,6 +52,12 @@ pub(crate) enum Layer {
     SharePicker(share::SharePicker),
     /// The menu of a person in a voice channel, at the row of the person.
     PersonMenu(room::PersonMenuOpen),
+    /// The menu of a message, at the message.
+    MessageMenu(feed::MessageMenuOpen),
+    /// The question before a message is deleted.
+    ConfirmDelete(junto_client_core::protocol::ids::MessageId),
+    /// The emoji picker: for a reaction to this message, or for the text of the composer.
+    Emoji(Option<junto_client_core::protocol::ids::MessageId>),
 }
 
 /// A part of the window that can be opened without a click.
@@ -154,6 +162,11 @@ pub struct Shell {
     pub(crate) joins_opened: u64,
     /// The number of results of join actions that this window has received.
     pub(crate) join_results: u64,
+    // The messages.
+    /// The list of the messages of the shown channel.
+    pub(crate) feed: feed::FeedList,
+    pub(crate) message_pictures: feed::MessagePictures,
+    pub(crate) composer: composer::Composer,
     /// What the window drew last. A test reads the data of the window from it, and not
     /// from the client core, which can be ahead of the window.
     #[cfg(feature = "test-support")]
@@ -168,12 +181,31 @@ impl Shell {
         let name = Field::state(text::NAME_FIELD, window, cx);
         let code = Field::state("", window, cx);
         let invite_find = Field::state(text::FIND_A_MEMBER, window, cx);
+        let composer = composer::Composer::new(window, cx);
+        let feed = feed::FeedList::new();
+        feed.list
+            .set_scroll_handler(cx.listener(|this, event, window, cx| {
+                this.feed_scrolled(event, window, cx);
+            }));
         let subscriptions = vec![
+            Self::observe_composer(&composer.input, window, cx),
+            // The emoji of the picker follow the text that they are searched for.
+            Field::observe(
+                &composer.emoji_find,
+                window,
+                cx,
+                |_: &mut Self, _, _, cx| {
+                    cx.notify();
+                },
+            ),
             // A key that is held when the window loses the focus is not seen when it is
             // released: push-to-talk ends with the focus (ADR 0507).
             cx.observe_window_activation(window, |this, window, cx| {
                 if !window.is_window_active() {
                     this.set_talking(false, cx);
+                } else if let Some(view) = this.view.clone() {
+                    // The person looks at the window again: what it shows is seen.
+                    this.feed_changed(&view, window, cx);
                 }
             }),
             cx.observe_in(&state, window, |this, state, window, cx| {
@@ -193,7 +225,8 @@ impl Shell {
                 {
                     this.invite_open = false;
                 }
-                this.view = Some(view);
+                this.view = Some(view.clone());
+                this.feed_changed(&view, window, cx);
                 cx.notify();
             }),
             Field::observe(
@@ -276,6 +309,9 @@ impl Shell {
             code,
             joins_opened: 0,
             join_results: 0,
+            feed,
+            message_pictures: feed::MessagePictures::default(),
+            composer,
             #[cfg(feature = "test-support")]
             drawn: None,
             _subscriptions: subscriptions,
@@ -655,6 +691,8 @@ impl Render for Shell {
             self.drawn = Some(view.clone());
         }
         window.set_rem_size(theme::rem_size(settings.scale_percent));
+        // The frame sets this again when it draws the list of messages.
+        self.feed.drawn = false;
         let theme = theme(cx);
         let narrow = logical_width(window) < theme.metrics.narrow_below;
         if !narrow {
@@ -748,6 +786,19 @@ impl Shell {
             Layer::SharePicker(_) => view.call.is_none(),
             // The person left the voice channel, or the channel is no longer shown.
             Layer::PersonMenu(open) => view.person_menu(open.channel_id, open.account_id).is_none(),
+            // The message is no longer among the shown ones.
+            Layer::MessageMenu(feed::MessageMenuOpen { message_id })
+            | Layer::ConfirmDelete(message_id)
+            | Layer::Emoji(Some(message_id)) => !view
+                .workspace()
+                .and_then(|workspace| workspace.feed.as_ref())
+                .is_some_and(|feed| {
+                    feed.rows.iter().any(|row| {
+                        matches!(row, crate::state::feed::FeedRow::Message(row)
+                            if row.message.id == *message_id)
+                    })
+                }),
+            Layer::Emoji(None) => view.workspace().is_none(),
             Layer::None | Layer::Welcome | Layer::Settings => false,
         };
         if stale {
@@ -764,7 +815,11 @@ impl Shell {
         match &self.layer {
             // The list of devices is drawn at its box, in the panel of the call, and the
             // menu of a person at the row of the person.
-            Layer::None | Layer::DeviceMenu(_) | Layer::PersonMenu(_) => div().into_any_element(),
+            Layer::None | Layer::DeviceMenu(_) | Layer::PersonMenu(_) | Layer::MessageMenu(_) => {
+                div().into_any_element()
+            }
+            Layer::ConfirmDelete(message_id) => self.render_confirm_delete(*message_id, window, cx),
+            Layer::Emoji(_) => self.render_emoji_picker(window, cx),
             Layer::Welcome => self.render_welcome(window, cx).into_any_element(),
             Layer::Settings => self.render_settings(window, cx).into_any_element(),
             Layer::Join(_) => self.render_join(view, window, cx).into_any_element(),

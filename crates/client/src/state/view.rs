@@ -11,18 +11,20 @@ use std::time::Duration;
 use junto_client_core::flow::FlowError;
 use junto_client_core::flow::access::{AccessState, ActionKind, Notice};
 use junto_client_core::live::{StreamFault, StreamStatus};
-use junto_client_core::model::{ChannelModel, Loadable, ServerModel, WorkspaceModel};
+use junto_client_core::model::{ChannelModel, Loadable, PlaceId, ServerModel, WorkspaceModel};
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::account::RecoveryNotice;
 use junto_client_core::protocol::call::{BlockReason, CallPlace, LeaveReason, ShareAudio};
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::protocol::ids::{
-    AccountId, CallId, CallInvitationId, ChannelId, EntryRequestId, ServerId, WorkspaceId,
+    AccountId, AttachmentId, CallId, CallInvitationId, ChannelId, EntryRequestId, MessageId,
+    ServerId, WorkspaceId, WorkspaceRoleId,
 };
 use junto_client_core::protocol::recording::{
     Recording, RecordingFailure, RecordingState, RecordingStopReason,
 };
 use junto_client_core::protocol::structure::ChannelKind;
+use junto_client_core::transfers::{DownloadProgress, UploadProgress};
 use junto_client_core::version::Incompatibility;
 use junto_client_core::voice::{ShareResolution, VOLUME_DEFAULT_PERCENT, VoiceSettings};
 use junto_client_core::{Reach, ServerHandle};
@@ -32,6 +34,8 @@ use junto_media::engine::{MicrophoneState, OutputState, ShareId, ShareState};
 use junto_media::permission::MicrophoneAccess;
 use junto_media::share::{CaptureError, ShareKind};
 use time::OffsetDateTime;
+
+use super::feed::{self, Feed, Names, Quoted, Zone};
 
 /// What the client core holds of one saved server at one moment.
 #[derive(Debug, Clone)]
@@ -138,6 +142,56 @@ pub struct Known {
     pub recording_busy: bool,
     /// The request of the person to enter a locked or full voice channel.
     pub entry: Option<OwnEntry>,
+    /// The messages that replies name and that the loaded messages do not hold.
+    pub quoted: HashMap<(ServerId, MessageId), Quoted>,
+    /// The time zone of the times of messages.
+    pub zone: Zone,
+    /// The files that the person attached to the next message of a place.
+    pub drafts: HashMap<(ServerId, PlaceId), Vec<DraftFile>>,
+    /// The files of messages that the person saves, and those that were saved.
+    pub downloads: HashMap<(ServerId, AttachmentId), DownloadProgress>,
+    /// The uploads of the messages that wait to be sent, by the number of the upload.
+    pub uploads: HashMap<u64, UploadProgress>,
+    /// The date of this moment in the time zone of the messages.
+    pub today: Option<time::Date>,
+}
+
+/// A file that the person attached to a message that is not sent yet, or that waits to be
+/// sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DraftFile {
+    /// The number of the upload on this client.
+    pub upload: u64,
+    pub name: String,
+    pub progress: UploadProgress,
+}
+
+/// What a place holds that the person has not read (ADR 0408). A count of 100 means 100
+/// or more.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Unread {
+    pub messages: u64,
+    pub mentions: u64,
+}
+
+impl Unread {
+    pub const fn any(self) -> bool {
+        self.messages > 0 || self.mentions > 0
+    }
+
+    fn add(&mut self, other: Self) {
+        self.messages = (self.messages + other.messages).min(100);
+        self.mentions = (self.mentions + other.mentions).min(100);
+    }
+
+    fn of(model: &ServerModel, place: PlaceId) -> Self {
+        model
+            .message_state(place)
+            .map_or(Self::default(), |state| Self {
+                messages: state.unread,
+                mentions: state.mentions,
+            })
+    }
 }
 
 /// Where the request of the person to enter a voice channel stands (ADR 0514).
@@ -250,6 +304,8 @@ pub struct WorkspaceRow {
     pub id: WorkspaceId,
     pub name: String,
     pub selected: bool,
+    /// What the channels of the workspace hold that the person has not read.
+    pub unread: Unread,
 }
 
 /// One server of the server book.
@@ -262,6 +318,8 @@ pub struct ServerRow {
     pub selected: bool,
     /// The device has a recovery notice of this server that the person has not seen.
     pub has_recovery: bool,
+    /// What the places of the server hold that the person has not read.
+    pub unread: Unread,
     pub workspaces: Vec<WorkspaceRow>,
 }
 
@@ -365,6 +423,7 @@ pub struct ChannelRow {
     pub selected: bool,
     /// Present for a voice channel.
     pub voice: Option<VoiceState>,
+    pub unread: Unread,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -431,6 +490,9 @@ pub struct MeetingView {
 /// request: an override of the channel can differ (ADR 0719).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Allowed {
+    /// Delete the messages of other people.
+    pub manage_messages: bool,
+    pub mention_everyone: bool,
     pub lock: bool,
     pub run_meeting: bool,
     pub manage: bool,
@@ -636,6 +698,14 @@ pub struct WorkspaceView {
     pub call: Option<CallPanel>,
     /// What the roles of the person allow in the calls of this workspace.
     pub allowed: Allowed,
+    /// The messages of the selected channel. Absent until the client holds its timeline.
+    pub feed: Option<Feed>,
+    /// The files that the person attached to the next message of the selected channel.
+    pub draft: Vec<DraftFile>,
+    /// The roles of the workspace that a message can mention, without the "everyone" role.
+    pub roles: Vec<(WorkspaceRoleId, String)>,
+    /// The uploads of the messages that wait to be sent, by the number of the upload.
+    pub uploads: Arc<HashMap<u64, UploadProgress>>,
 }
 
 /// The menu of a person in a voice channel (ADR 0739): what the person of this device can
@@ -846,6 +916,8 @@ pub struct ShellView {
     pub invitations: Vec<Invited>,
     /// The people outside who ask to enter the call of this device.
     pub entry_prompts: Vec<EntryPrompt>,
+    /// The files of messages that the person saves, and those that were saved.
+    pub downloads: Arc<HashMap<(ServerId, AttachmentId), DownloadProgress>>,
 }
 
 impl ShellView {
@@ -1117,6 +1189,7 @@ fn channel_row(
         selected: false,
         voice: (channel.channel.kind == ChannelKind::Voice)
             .then(|| voice_state(server_id, channel, workspace, model, known)),
+        unread: Unread::of(model, PlaceId::Channel(channel.channel.id)),
     }
 }
 
@@ -1250,6 +1323,22 @@ fn workspace_view(
         })
         .zip(known.media.calls.call.as_ref())
         .map(|(row, active)| call_panel(server_id, row, active, workspace, model, known));
+    let allowed = allowed(workspace, model);
+    let place = channel.as_ref().map(|row| PlaceId::Channel(row.id));
+    let feed = place.and_then(|place| {
+        let timeline = model.timeline(place)?;
+        Some(feed::derive(&feed::Source {
+            server_id,
+            model,
+            timeline,
+            names: Arc::new(names(server_id, workspace, model, known)),
+            own_roles: &workspace.own_role_ids,
+            may_manage: allowed.manage_messages,
+            quoted: &known.quoted,
+            zone: known.zone,
+            today: known.today,
+        }))
+    });
     WorkspaceView {
         id: workspace.workspace.id,
         name: workspace.workspace.name.clone(),
@@ -1257,8 +1346,73 @@ fn workspace_view(
         channel,
         members: members(server_id, workspace, model, known),
         call,
-        allowed: allowed(workspace, model),
+        allowed,
+        feed,
+        draft: place
+            .and_then(|place| known.drafts.get(&(server_id, place)))
+            .cloned()
+            .unwrap_or_default(),
+        roles: workspace
+            .roles
+            .iter()
+            .filter(|role| !role.is_everyone)
+            .map(|role| (role.id, role.name.clone()))
+            .collect(),
+        uploads: Arc::new(known.uploads.clone()),
     }
+}
+
+/// The names that the messages of a workspace can mention: its members, the accounts
+/// whose names were read, the account itself, and its roles.
+fn names(
+    server_id: ServerId,
+    workspace: &WorkspaceModel,
+    model: &ServerModel,
+    known: &Known,
+) -> Names {
+    let mut accounts: HashMap<AccountId, String> = known
+        .names
+        .iter()
+        .filter(|((server, _), _)| *server == server_id)
+        .map(|((_, account_id), name)| (*account_id, name.clone()))
+        .collect();
+    if let Some(members) = workspace.members.loaded() {
+        accounts.extend(
+            members
+                .iter()
+                .map(|member| (member.account_id, member.name.clone())),
+        );
+    }
+    accounts.insert(model.account.id, model.account.name.clone());
+    Names {
+        accounts,
+        roles: workspace
+            .roles
+            .iter()
+            .map(|role| (role.id, role.name.clone()))
+            .collect(),
+    }
+}
+
+/// What the channels of a workspace hold that the person has not read.
+fn workspace_unread(workspace: &WorkspaceModel, model: &ServerModel) -> Unread {
+    let mut unread = Unread::default();
+    for channel in &workspace.channels {
+        unread.add(Unread::of(model, PlaceId::Channel(channel.channel.id)));
+    }
+    unread
+}
+
+/// What the places of a server hold that the person has not read.
+fn server_unread(model: &ServerModel) -> Unread {
+    let mut unread = Unread::default();
+    for state in &model.message_states {
+        unread.add(Unread {
+            messages: state.unread,
+            mentions: state.mentions,
+        });
+    }
+    unread
 }
 
 /// The devices of one kind as the sound settings list them: the default of the system
@@ -1519,6 +1673,8 @@ fn allowed(workspace: &WorkspaceModel, model: &ServerModel) -> Allowed {
     let held = workspace.role_permissions();
     let may = |permission| model.is_administrator() || held.contains(&permission);
     Allowed {
+        manage_messages: may(WorkspacePermission::ManageMessages),
+        mention_everyone: may(WorkspacePermission::MentionEveryone),
         lock: may(WorkspacePermission::LockRoom),
         run_meeting: may(WorkspacePermission::RunMeetingMode),
         manage: may(WorkspacePermission::ManageChannel),
@@ -1809,6 +1965,10 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
                     &server.access,
                     AccessState::LoggedIn { recoveries, .. } if !recoveries.is_empty()
                 ),
+                unread: shown_model(server)
+                    .filter(|_| status.shows_content())
+                    .map(server_unread)
+                    .unwrap_or_default(),
                 workspaces: shown_model(server)
                     .filter(|_| status.shows_content())
                     .map(|model| {
@@ -1816,6 +1976,7 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
                             .workspaces
                             .iter()
                             .map(|workspace| WorkspaceRow {
+                                unread: workspace_unread(workspace, model),
                                 id: workspace.workspace.id,
                                 name: workspace.workspace.name.clone(),
                                 selected: selected
@@ -1882,6 +2043,7 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
         call_notice: call_notice(servers, known),
         invitations: invitations(servers, known),
         entry_prompts: entry_prompts(servers, known),
+        downloads: Arc::new(known.downloads.clone()),
         share_notice: known
             .media
             .calls

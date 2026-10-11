@@ -14,7 +14,7 @@ Theme:
 
 - One value, the theme, holds every colour, the three font families, the text styles, the radii and the fixed measures of the layout. Drawing code names no colour and no font.
 - A measure is given in the pixels of the design at 100% and becomes rems. The size of one rem is 16 pixels times the interface scale. A border is one pixel at every scale.
-- The fonts of the design are carried in the binary: Atkinson Hyperlegible Next for text and controls, Atkinson Hyperlegible Mono for addresses and codes, Marcellus for titles of 18 pixels and more. Each is under the SIL Open Font License, and its licence text is beside its files.
+- The fonts of the design are carried in the binary: Atkinson Hyperlegible Next for text and controls, with its italic faces for the italic text of a message (ADR 0740), Atkinson Hyperlegible Mono for addresses and codes, Marcellus for titles of 18 pixels and more. Each is under the SIL Open Font License, and its licence text is beside its files.
 - The icons are the drawings of the design as SVG files in the binary. An icon is drawn in one colour that the caller gives.
 - No interface text is smaller than 12 pixels, and running text has at least 14 (ADR 0703). A test holds both.
 

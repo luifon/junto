@@ -279,6 +279,73 @@ fn a_person_joins_a_call_in_the_window_speaks_hears_mutes_and_leaves(cx: &mut Te
 
 #[gpui::test]
 #[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn the_chat_of_a_call_is_read_when_its_tab_is_shown(cx: &mut TestAppContext) {
+    use junto_client_core::model::PlaceId;
+    use junto_client_core::protocol::message::{Block, Document, Inline, SendMessage};
+
+    let world = World::new();
+    let server = world.server_with_media("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, ROOM);
+    turn_processing_off(&mut window);
+    window.click_channel(ROOM);
+    window.click("join-call");
+    window.until("the call is connected", |window| {
+        window
+            .view()
+            .call
+            .is_some_and(|call| call.phase == Phase::Connected)
+    });
+    // The person looks at the window: what it shows at the end of a list is read.
+    window.cx.update(|window, _| window.activate_window());
+    window.until("the chat is drawn and read", |window| {
+        window.shows("feed") && !room(window).unread.any()
+    });
+
+    // The panel shows the members. A message that arrives now is not shown.
+    window.click("call-tab-members");
+    assert!(!window.shows("feed"));
+    let message = SendMessage {
+        document: Document {
+            blocks: vec![Block::Paragraph {
+                content: vec![Inline::Text {
+                    text: "during the call".to_owned(),
+                    marks: Vec::new(),
+                }],
+            }],
+        },
+        reply_to: None,
+        attachments: Vec::new(),
+    };
+    let place = PlaceId::Channel(room(&mut window).id);
+    world
+        .run(admin.handle.api().send_message(place, &message))
+        .unwrap();
+    window.until("the message is counted", |window| {
+        room(window).unread.messages == 1
+    });
+    // A list that is shown sends its read position within a second. This one is not
+    // shown, and the message stays unread.
+    let later = std::time::Instant::now() + Duration::from_secs(3);
+    while std::time::Instant::now() < later {
+        assert_eq!(
+            room(&mut window).unread.messages,
+            1,
+            "a message that was not shown was read"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    // The chat tab shows the message: it is read.
+    window.click("call-tab-chat");
+    window.until("the message is read", |window| {
+        window.shows("feed") && !room(window).unread.any()
+    });
+}
+
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
 fn push_to_talk_and_a_block_of_a_moderator_in_the_window(cx: &mut TestAppContext) {
     let world = World::new();
     let server = world.server_with_media("Acme Studio");

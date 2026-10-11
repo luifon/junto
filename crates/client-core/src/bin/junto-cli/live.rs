@@ -18,6 +18,7 @@ use junto_client_core::protocol::events::{Cursor, Event};
 use junto_client_core::protocol::ids::{
     AccountId, CallId, CallInvitationId, CallMoveId, ChannelId, EntryRequestId,
 };
+use junto_client_core::protocol::message::MessagePlace;
 use junto_client_core::protocol::recording::Recording;
 use junto_client_core::protocol::structure::{Channel, ChannelKind};
 use junto_client_core::{Client, ServerHandle};
@@ -657,6 +658,13 @@ fn state_lines(model: &ServerModel) -> Vec<String> {
             mute_end(mute.until)
         )
     }));
+    lines.extend(
+        model
+            .conversations
+            .iter()
+            .map(crate::messages::conversation_line),
+    );
+    lines.extend(model.message_states.iter().map(crate::messages::state_line));
     lines.push(format!("cursor: {}", model.cursor.position));
     lines
 }
@@ -888,6 +896,41 @@ fn event_details(event: &Event) -> String {
         Event::CallAccessEnded {} => String::new(),
         Event::DirectMuteSet { mute } => format!("account={}", mute.account_id),
         Event::DirectMuteRemoved { account_id } => format!("account={account_id}"),
+        Event::ConversationOpened { conversation } => format!(
+            "conversation={} accounts={},{}",
+            conversation.id, conversation.low_account_id, conversation.high_account_id
+        ),
+        Event::AttachmentLimitsChanged { limits } => format!(
+            "bytes_per_file={} files_per_message={}",
+            limits.bytes_per_file, limits.files_per_message
+        ),
+        Event::MessageMentioned {
+            channel_id,
+            message_id,
+            position,
+            ..
+        } => format!("channel={channel_id} message={message_id} position={position}"),
+        Event::MessageChanged {
+            place,
+            message_id,
+            position,
+            deleted,
+        } => format!(
+            "{} message={message_id} position={position} deleted={deleted}",
+            message_place(place)
+        ),
+        Event::MessageRead { place, position } => {
+            format!("{} position={position}", message_place(place))
+        }
+    }
+}
+
+fn message_place(place: &MessagePlace) -> String {
+    match place {
+        MessagePlace::Channel { channel_id, .. } => format!("channel={channel_id}"),
+        MessagePlace::Direct {
+            conversation_id, ..
+        } => format!("conversation={conversation_id}"),
     }
 }
 
@@ -913,7 +956,7 @@ fn notice_line(notice: &Notice) -> String {
 }
 
 /// Prints one line and gives it to the reader at once, also through a pipe.
-fn say(line: &str) {
+pub(crate) fn say(line: &str) {
     let mut output = std::io::stdout().lock();
     let _ = writeln!(output, "{line}");
     let _ = output.flush();

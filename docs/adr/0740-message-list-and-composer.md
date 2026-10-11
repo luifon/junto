@@ -1,0 +1,75 @@
+# 0740. The message list and the composer in the window
+
+## Status
+
+Accepted
+
+## Context
+
+The approved design draws a text channel with its messages (view A), the chat of a voice channel (view G) and the chat tab of a call (view B). ADR 0401 and ADR 0408 define what a message holds: a typed document, replies, reactions, files, system lines. ADR 0721 gives the window a timeline per open place, the waiting messages and the unread summaries. gpui has a list element that measures a row when it is drawn, and the component library has a text area with inline tokens. The design draws no state for a message that waits, no control for the actions of a message, and no direct conversations.
+
+## Decision
+
+Derivation:
+
+- A function without side effects (ADR 0730) derives the rows of a list from a timeline: day separators, the line of the first unread message, messages, system lines, the waiting messages, and a row at each end that states whether the history goes on.
+- Messages of one author on one day form a group while each follows the one before within 5 minutes. A reply, a system line and a deleted message end a group. A message of a group is drawn without the avatar and the name.
+- Times and days are shown in the time zone of the system.
+- The line of the first unread message stands before the first message after the read position that another person wrote. It stays where it was when the place was opened, until the person leaves the place. No line is drawn when every loaded message is unread.
+- A reply shows the author and the start of the message that it answers. A message that the list does not hold is read from the server, at most 8 at one time. It is read again when an event names it and when the state was reloaded, so the reply shows an edit and a deletion. The window keeps the quoted messages that the replies of the shown place name, and no others.
+
+List:
+
+- The list is the `list` element of gpui, aligned to its end. Rows are compared with the rows before by the copy of the message that the state holds; the rows that changed are spliced, so the other rows keep their measured heights and the list keeps its position when a page is added before or after.
+- Within 4 rows of an end the next page is read. The window tells the client core where the list stands, for a reload (ADR 0721).
+- The list follows new messages while it shows its end. A button leads to the end when the list is elsewhere.
+- Formatted text is one text layout per block with runs: bold, italic, struck, inline code in the fixed-width face on its ground, links, and mentions on the terracotta ground. The italic faces of the text font are carried in the binary. A link opens in the application of the system for its address. The window draws a link only for an address that the composer accepts: HTTP, HTTPS or mailto, without a user name. A server is not trusted with what this device opens (ADR 0714), so the check of the server (ADR 0408) is not relied on, and another address is drawn as text.
+- A code block is drawn on basalt with its language, without syntax colours.
+- A check box of an own message takes a click and sends an edit (ADR 0401).
+- A file that the server marked as a picture (PNG, JPEG or WebP up to 1,024 pixels per side) is drawn inline at the size that its message states, so the row has its height before the picture has arrived. The picture is decoded away from the window with limits of 1,024 pixels per side. The window holds 48 decoded pictures. Every other file is a row with its name, its size and the state of its download.
+- A download goes to the download directory of the person under a name that no file has, and the row then offers "Show in folder". No file is opened by the application.
+
+Actions of a message:
+
+- React, reply, edit and delete are a bar at the message under the pointer. The same actions are a menu of the message: a right click, and from the keyboard the Menu key, Shift and F10, Enter or Space while the message holds the focus (ADR 0702).
+- Edit is offered for an own message, and delete for an own message and with "manage messages". The roles are a prediction; the server decides (ADR 0739).
+- A deletion asks first. A reaction, an edit and a deletion change nothing on screen before the server tells the change. A refusal is told above the composer.
+- The emoji of the picker are the table that the server uses, by group and by a search of their names.
+
+Waiting messages:
+
+- A message that the person sent is drawn at the end of the list at once, with its state: sending, uploading its files, no answer, or not sent with the reason. "Send again" and "Discard" are offered for the states that ADR 0721 names.
+
+Composer:
+
+- The composer is a text area that grows to 10 rows. Enter sends, and Shift with Enter adds a line.
+- The text is typed with marks, and the sent message shows formatted text: `**bold**`, `*italic*`, `~~struck~~`, `` `code` ``, a block between lines of three backticks with an optional language, `> ` for a quote, `- ` and `1. ` for lists, `- [ ] ` for a check box, `[text](address)` and bare addresses for links, and a backslash before a mark for plain text. The toolbar of the design puts the marks around the selection.
+- The work to read a text for its marks grows with its length and not with its square: the runs of backticks of a text are listed once, a kind of mark that has no closing run is not searched for again, the search for the end of a link stops at the longest address, and marks inside marks are read 8 levels deep. A test counts the steps. A text above 64 KiB is not read for marks and is refused for its length.
+- A mention is a token of the text area and no mark: `@` opens a list of the members and roles of the workspace, and of "everyone" with its permission; the chosen entry is one unit of the text with the identifier of its account or role.
+- An edit puts the text of the message into the composer with its marks. The arrow up in an empty composer edits the last own message. Escape ends an edit or a reply.
+- The text of the composer cannot state every document that the server accepts: a line break in a list item, white space at the ends of a paragraph, an address in plain text that is no link. So an edit changes only what the person changed. A block at the start or at the end of the text that stands as the composer showed it is sent as the document had it, and so is an unchanged item of a changed list. A check box that the person changes in the text keeps the text of its item. The text between is read as the text of a new message.
+- Files are attached with the file dialog, by a drop on the composer, and by pasting a picture. An upload starts when the file is attached. The composer shows each file with its progress and a control that removes it.
+- Before a send the document is checked against the limits of ADR 0408, and a file against the limits of the server. What would be refused is not sent, and the composer states the reason.
+- The text, the reply and the edit of a place stay with that place and with the account that wrote them while the window shows another one. When a server has another account, the texts of the account before are discarded and the uploads of its files are ended.
+
+Unread signs:
+
+- A channel with unread messages has a bold name and a dot, and with mentions the sign "@ n" (view A). A workspace of the server book and the icon of a collapsed server carry the same signs for their channels. 100 or more is shown as "99+".
+- The read position moves to the last loaded message when the window is active, draws the list, and the list shows its end. The chat of a call is not drawn while the panel shows the members or the settings, and its messages stay unread until the chat tab is shown. "Mark as read" in the header moves the position to the latest one of the channel.
+
+Places:
+
+- A text channel and the chat of a voice channel are the same list and composer. The chat tab of a call (ADR 0735) shows the chat of its voice channel in the panel.
+- The window holds one place open in the client core: the selected channel.
+
+## Consequences
+
+- The composer shows marks while the person types, not formatted text.
+- Code blocks have no syntax colours until a highlighter is added.
+- A picture above the bounds of the server for pictures is a file row.
+- The name of a channel in a text is plain text: the document of the server has no channel reference.
+- The derivation of 10,000 loaded messages takes about 10 milliseconds in a debug build; the list draws the rows in view and a margin of 800 pixels.
+- A system line of an action that this build does not know is drawn as a line without detail.
+- A finished recording is a system line in the chat of its voice channel. Its card with the video, the downloads and the transcript (view G) is not built yet.
+- Direct conversations have no place in the window yet.
+- New direct dependencies of the desktop client: `chrono` for the time zone of the system, `dirs` for the download directory, `emojis` in the version of the server, and `url` for the check of a link. All four were in the lock file already.

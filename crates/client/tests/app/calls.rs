@@ -50,7 +50,7 @@ fn a_join_that_the_server_refuses_is_told_and_leaves_the_person_outside(cx: &mut
 
     // A click on a voice channel shows it and joins nothing.
     window.click_channel("Daily");
-    assert!(window.shows("join-call") && window.shows("voice-chat-not-available"));
+    assert!(window.shows("join-call") && window.shows("feed") && window.shows("composer"));
     assert_eq!(relation(&mut window, "Daily"), Relation::Outside);
     assert!(!window.shows("call-strip") && !window.shows("call-stage"));
 

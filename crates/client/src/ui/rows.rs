@@ -8,8 +8,8 @@ use gpui::{
 };
 
 use super::{
-    Meter, Mosaic, MosaicKind, RecordingMark, StyleExt, focus_ring_inside, icon, selection_mark,
-    tooltip,
+    Badge, Meter, Mosaic, MosaicKind, RecordingMark, StyleExt, focus_ring_inside, icon,
+    selection_mark, tooltip, unread_dot,
 };
 use crate::assets::Icon;
 use crate::theme::{theme, u};
@@ -24,8 +24,32 @@ pub struct WorkspaceRow {
     seed: u128,
     selected: bool,
     in_menu: bool,
+    unread: Option<UnreadSign>,
     selector: Option<&'static str>,
     on_click: Option<ClickHandler>,
+}
+
+/// The sign of what a place holds that the person has not read: a count of mentions, or
+/// a dot for messages without a mention.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnreadSign {
+    /// The count of mentions as the sign shows it. Absent: the dot.
+    pub mentions: Option<SharedString>,
+    /// What the sign states, for the tooltip and the accessibility tree.
+    pub label: SharedString,
+}
+
+impl UnreadSign {
+    fn element(&self, cx: &App) -> AnyElement {
+        match &self.mentions {
+            Some(count) => Badge::new(count.clone()).into_any_element(),
+            None => div()
+                .flex_none()
+                .mr(u(2.0))
+                .child(unread_dot(cx))
+                .into_any_element(),
+        }
+    }
 }
 
 impl WorkspaceRow {
@@ -36,6 +60,7 @@ impl WorkspaceRow {
             seed,
             selected: false,
             in_menu: false,
+            unread: None,
             selector: None,
             on_click: None,
         }
@@ -49,6 +74,11 @@ impl WorkspaceRow {
     /// The row of the menu of a collapsed server: without the tree line.
     pub fn in_menu(mut self) -> Self {
         self.in_menu = true;
+        self
+    }
+
+    pub fn unread(mut self, sign: Option<UnreadSign>) -> Self {
+        self.unread = sign;
         self
     }
 
@@ -71,15 +101,20 @@ impl RenderOnce for WorkspaceRow {
         let theme = theme(cx);
         let colors = theme.colors;
         let ring = focus_ring_inside(colors.ochre, theme.metrics.focus_ring);
-        let style = if self.selected {
+        let style = if self.selected || self.unread.is_some() {
             theme.types.control_strong
         } else {
             theme.types.control
         };
+        let label: SharedString = match &self.unread {
+            Some(sign) => format!("{}, {}", self.name, sign.label).into(),
+            None => self.name.clone(),
+        };
+        let sign = self.unread.as_ref().map(|sign| sign.element(cx));
         div()
             .id(self.id)
             .role(Role::ListItem)
-            .aria_label(self.name.clone())
+            .aria_label(label)
             .aria_selected(self.selected)
             .when_some(self.selector, |row, selector| {
                 row.debug_selector(|| selector.to_owned())
@@ -93,7 +128,7 @@ impl RenderOnce for WorkspaceRow {
             .pl(u(if self.in_menu { 12.0 } else { 38.0 }))
             .pr(u(10.0))
             .typeface(style, &theme)
-            .ink(if self.selected {
+            .ink(if self.selected || self.unread.is_some() {
                 colors.bone_hi
             } else {
                 colors.bone_2
@@ -123,7 +158,8 @@ impl RenderOnce for WorkspaceRow {
                 row.on_click(move |event, window, cx| handler(event, window, cx))
             })
             .child(Mosaic::new(MosaicKind::Small, self.seed, 15.0).radius(2.0))
-            .child(div().min_w_0().truncate().child(self.name))
+            .child(div().flex_1().min_w_0().truncate().child(self.name))
+            .children(sign)
     }
 }
 
@@ -200,6 +236,7 @@ pub struct ChannelRow {
     name: SharedString,
     selected: bool,
     states: Vec<ChannelState>,
+    unread: Option<UnreadSign>,
     selector: Option<&'static str>,
     on_click: Option<ClickHandler>,
 }
@@ -212,6 +249,7 @@ impl ChannelRow {
             name: name.into(),
             selected: false,
             states: Vec::new(),
+            unread: None,
             selector: None,
             on_click: None,
         }
@@ -224,6 +262,13 @@ impl ChannelRow {
 
     pub fn states(mut self, states: Vec<ChannelState>) -> Self {
         self.states = states;
+        self
+    }
+
+    /// The channel holds messages that the person has not read: its name is bold, and the
+    /// sign stands at its end (view A of the design).
+    pub fn unread(mut self, sign: Option<UnreadSign>) -> Self {
+        self.unread = sign;
         self
     }
 
@@ -251,6 +296,21 @@ impl RenderOnce for ChannelRow {
         } else {
             theme.types.row
         };
+        let unread = self.unread.is_some();
+        let label: SharedString = match &self.unread {
+            Some(sign) => format!("{}, {}", self.name, sign.label).into(),
+            None => self.name.clone(),
+        };
+        let sign = self.unread.as_ref().map(|sign| {
+            let label = sign.label.clone();
+            div()
+                .id("unread-sign")
+                .flex()
+                .flex_none()
+                .items_center()
+                .tooltip(tooltip(label.clone()))
+                .child(sign.element(cx))
+        });
         let states: Vec<AnyElement> = self
             .states
             .into_iter()
@@ -282,7 +342,7 @@ impl RenderOnce for ChannelRow {
         div()
             .id(self.id)
             .role(Role::ListItem)
-            .aria_label(self.name.clone())
+            .aria_label(label)
             .aria_selected(self.selected)
             .when_some(self.selector, |row, selector| {
                 row.debug_selector(|| selector.to_owned())
@@ -296,7 +356,8 @@ impl RenderOnce for ChannelRow {
             .pl(u(14.0))
             .pr(u(10.0))
             .typeface(style, &theme)
-            .ink(if self.selected {
+            .when(unread, |row| row.font_weight(gpui::FontWeight::BOLD))
+            .ink(if self.selected || unread {
                 colors.ink
             } else {
                 colors.ink_2
@@ -320,11 +381,14 @@ impl RenderOnce for ChannelRow {
                 15.0,
                 if self.selected {
                     colors.terracotta_deep
+                } else if unread {
+                    colors.ink
                 } else {
                     colors.ink_3
                 },
             ))
             .child(div().flex_1().min_w_0().truncate().child(self.name))
+            .children(sign)
             .when(!states.is_empty(), |row| {
                 row.child(
                     div()

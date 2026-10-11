@@ -5,8 +5,12 @@
 //! event stream of each server, and tells the window to draw again. The window reads plain
 //! data through [`AppState::view`] and calls the methods here for what a person does.
 
+pub mod feed;
+mod messages;
 pub mod recording;
 pub mod view;
+
+pub use messages::AttachRefusal;
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -18,13 +22,16 @@ use junto_client_core::book::ConnectionMode;
 use junto_client_core::flow::FlowError;
 use junto_client_core::flow::access::{AccessAction, AccessState};
 use junto_client_core::live::Notice;
+use junto_client_core::model::PlaceId;
 use junto_client_core::protocol::call::CallPlace;
 use junto_client_core::protocol::call::{EntryOutcome, InvitationOutcome, UpdateCallSettings};
 use junto_client_core::protocol::events::Event;
 use junto_client_core::protocol::ids::{
-    AccountId, CallInvitationId, ChannelId, EntryRequestId, RecoveryId, ServerId, WorkspaceId,
+    AccountId, AttachmentId, CallInvitationId, ChannelId, EntryRequestId, MessageId, RecoveryId,
+    ServerId, WorkspaceId,
 };
 use junto_client_core::settings::InterfaceSettings;
+use junto_client_core::transfers::{Download, Upload};
 use junto_client_core::voice::{InputMode, ShareResolution, TalkKey, VoiceSettings};
 use junto_client_core::{Client, ServerHandle};
 use junto_media::audio::{DeviceId, Processing, level};
@@ -226,6 +233,8 @@ pub struct Pending {
     /// person: the microphone that is open again after meeting mode, an invitation that
     /// was declined.
     pub call_told: Option<String>,
+    /// Why the server did not do what the person asked for with a message or a file.
+    pub message_refused: Option<String>,
 }
 
 pub struct AppState {
@@ -273,6 +282,28 @@ pub struct AppState {
     /// The invitations into a call that the person made on this device and that can
     /// still wait.
     made_invitations: HashSet<(ServerId, CallInvitationId)>,
+    /// The places whose messages the window shows, with the task that opens each in the
+    /// client core.
+    open_places: HashMap<(ServerId, PlaceId), Task<()>>,
+    /// The messages of replies that were asked for from the server.
+    /// The quoted messages that were asked for, with the number of the read.
+    asked_quotes: HashMap<(ServerId, MessageId), u64>,
+    quote_asks: u64,
+    /// The account that uploaded the files that wait for a message, by server.
+    upload_owners: HashMap<ServerId, AccountId>,
+    /// The uploads of the files that the person attached to the next message of a place.
+    uploads: HashMap<(ServerId, PlaceId), Vec<Upload>>,
+    /// The uploads of the messages that wait to be sent, by the number of the message.
+    sent_uploads: HashMap<(ServerId, u64), Vec<Upload>>,
+    downloads: HashMap<(ServerId, AttachmentId), Download>,
+    /// Where files are saved in place of the download directory of the person.
+    download_directory: Option<std::path::PathBuf>,
+    /// The number of requests about messages that the person made.
+    message_asks: u64,
+    /// The position of the list of each open place, as the client core was told it.
+    anchors: HashMap<(ServerId, PlaceId), Option<u64>>,
+    /// The read position of each place that the client core was asked to set.
+    marked: HashMap<(ServerId, PlaceId), u64>,
     /// The servers that the view is derived from in place of the client core.
     #[cfg(feature = "test-support")]
     fixture: Option<Vec<ServerSnapshot>>,
@@ -424,6 +455,17 @@ impl AppState {
             early_entry_answers: Vec::new(),
             call_asks: 0,
             made_invitations: HashSet::new(),
+            open_places: HashMap::new(),
+            asked_quotes: HashMap::new(),
+            quote_asks: 0,
+            upload_owners: HashMap::new(),
+            uploads: HashMap::new(),
+            sent_uploads: HashMap::new(),
+            downloads: HashMap::new(),
+            download_directory: None,
+            message_asks: 0,
+            anchors: HashMap::new(),
+            marked: HashMap::new(),
             #[cfg(feature = "test-support")]
             fixture: None,
             _changes: follow,
@@ -1013,9 +1055,18 @@ impl AppState {
     /// One change of the state of a server, told by itself. The state of a server holds
     /// a recording only while it runs; how it ended is told here (ADR 0719).
     fn noticed(&mut self, server_id: ServerId, notice: &Notice, cx: &mut Context<Self>) {
-        let Notice::Event { event, .. } = notice else {
-            return;
+        let event = match notice {
+            Notice::Event { event, .. } => event,
+            // The state was replaced: every message can have changed meanwhile.
+            Notice::Reloaded { .. } => {
+                self.forget_quotes(server_id, None, cx);
+                return;
+            }
+            Notice::Ended { .. } => return,
         };
+        if let Event::MessageChanged { message_id, .. } = event.as_ref() {
+            self.forget_quotes(server_id, Some(*message_id), cx);
+        }
         let own_call = self
             .known
             .media
@@ -1424,11 +1475,12 @@ impl AppState {
                 cx.spawn(async move |this, cx| {
                     while let Some(notice) = notices.next().await {
                         // A reader that fell behind missed single changes; the state
-                        // holds their effect.
-                        let Ok(notice) = notice else {
-                            continue;
-                        };
-                        let told = this.update(cx, |this, cx| this.noticed(id, &notice, cx));
+                        // holds their effect. A quoted message is not in the state: every
+                        // one of them can have changed.
+                        let told = this.update(cx, |this, cx| match &notice {
+                            Ok(notice) => this.noticed(id, notice, cx),
+                            Err(_) => this.forget_quotes(id, None, cx),
+                        });
                         if told.is_err() {
                             break;
                         }
@@ -1456,6 +1508,12 @@ impl AppState {
             }
         }
 
+        self.known.today = Some(
+            self.known
+                .zone
+                .local(time::OffsetDateTime::now_utc())
+                .date(),
+        );
         let view = self.view();
         let shown = view.shown();
         if shown.server != self.shown.server {
@@ -1474,6 +1532,10 @@ impl AppState {
         }
         self.shown = shown;
         self.ask_missing_names(&view, cx);
+        self.follow_places(shown, cx);
+        self.ask_missing_quotes(shown, cx);
+        self.end_uploads_of_other_accounts();
+        self.drop_sent_uploads();
         cx.notify();
     }
 

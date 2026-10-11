@@ -105,6 +105,7 @@ pub(crate) fn scene() -> Scene {
         direct_calls: Vec::new(),
         call_invitations: Vec::new(),
         direct_mutes: Vec::new(),
+        messages: Vec::new(),
     };
     Scene {
         account_id,

@@ -3786,6 +3786,9 @@ dependencies = [
 name = "junto-client"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "dirs",
+ "emojis",
  "futures-channel",
  "gpui-base",
  "gpui-pre",

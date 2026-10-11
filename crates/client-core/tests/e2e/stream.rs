@@ -134,6 +134,41 @@ pub async fn arrived(notices: &mut Notices) -> Vec<Notice> {
     found
 }
 
+/// Reads the notices of a server until `done` holds for what was read. The stream gives a
+/// state first and its notices after it, so a test that needs a notice waits for the
+/// notice itself and not for a time after the state.
+pub async fn told_until(
+    notices: &mut Notices,
+    what: &str,
+    mut done: impl FnMut(&[Notice]) -> bool,
+) -> Vec<Notice> {
+    let mut found = Vec::new();
+    let reading = async {
+        while !done(&found) {
+            match notices.next().await {
+                Some(notice) => found.push(notice.expect("the test read too slowly")),
+                None => break,
+            }
+        }
+    };
+    let ended = tokio::time::timeout(PATIENCE, reading).await.is_ok();
+    assert!(
+        ended && done(&found),
+        "after {PATIENCE:?} the notices did not tell: {what}; told: {found:?}"
+    );
+    found
+}
+
+fn created_channels(notices: &[Notice]) -> Vec<(u64, ChannelId)> {
+    events(notices)
+        .into_iter()
+        .filter_map(|(id, event)| match event {
+            Event::ChannelCreated { channel } => Some((id, channel.id)),
+            _ => None,
+        })
+        .collect()
+}
+
 pub fn events(notices: &[Notice]) -> Vec<(u64, &Event)> {
     notices
         .iter()
@@ -288,14 +323,17 @@ async fn a_cut_connection_is_continued_from_the_cursor_without_a_snapshot() {
     live(&scene.second, member).await;
     assert_eq!(proxy.seen("/api/v1/snapshot").len(), 1);
     assert_eq!(proxy.seen("/api/v1/events").len(), 1);
-    let before = text_channel(owner, workspace_id, "before").await;
-    let position = model_when(member, "the channel", |model| {
-        model.channel(before.id).is_some()
-    })
-    .await
-    .cursor
-    .position;
+    // The reader of the notices exists before the first change, and the notice of that
+    // change is read before the cut: no notice of the time before the cut is counted as
+    // one of the replay.
     let mut told = member.live().notices();
+    let before = text_channel(owner, workspace_id, "before").await;
+    told_until(&mut told, "the channel", |told| {
+        created_channels(told)
+            .iter()
+            .any(|(_, id)| *id == before.id)
+    })
+    .await;
 
     proxy.block_streams(true);
     proxy.cut_streams();
@@ -307,6 +345,10 @@ async fn a_cut_connection_is_continued_from_the_cursor_without_a_snapshot() {
         view.status,
         StreamStatus::Interrupted(StreamFault::Unreachable(_) | StreamFault::Closed(_))
     ));
+    // Without a connection nothing moves the cursor: its position at the loss is the one
+    // that the replay continues from. A position that was read before the cut can be
+    // older: a further event of the same change can arrive between the read and the cut.
+    let position = view.model.as_ref().unwrap().cursor.position;
     let mut missed = Vec::new();
     for name in ["one", "two", "three"] {
         missed.push(text_channel(owner, workspace_id, name).await.id);
@@ -334,20 +376,28 @@ async fn a_cut_connection_is_continued_from_the_cursor_without_a_snapshot() {
         "the events were replayed and no snapshot was loaded"
     );
     assert!(proxy.seen("/api/v1/events").len() >= 2);
-    let told = arrived(&mut told).await;
+    // A change after the replay ends what the test reads: an event that the replay told
+    // a second time would stand before the notice of this change.
+    let after = text_channel(owner, workspace_id, "after").await;
+    let told = told_until(&mut told, "the replay and the channel after it", |told| {
+        created_channels(told).iter().any(|(_, id)| *id == after.id)
+    })
+    .await;
     assert_eq!(reloads(&told), 0);
-    let created: Vec<(u64, ChannelId)> = events(&told)
-        .into_iter()
-        .filter_map(|(id, event)| match event {
-            Event::ChannelCreated { channel } => Some((id, channel.id)),
-            _ => None,
-        })
-        .collect();
+    let mut expected = missed.clone();
+    expected.push(after.id);
     assert_eq!(
-        created.iter().map(|(_, id)| *id).collect::<Vec<_>>(),
-        missed
+        created_channels(&told)
+            .iter()
+            .map(|(_, id)| *id)
+            .collect::<Vec<_>>(),
+        expected
     );
-    assert!(created.windows(2).all(|pair| pair[0].0 < pair[1].0));
+    let ids: Vec<u64> = events(&told).iter().map(|(id, _)| *id).collect();
+    assert!(
+        ids.windows(2).all(|pair| pair[0] < pair[1]),
+        "an event was told twice or out of order: {ids:?}"
+    );
     agrees_with_a_snapshot(member).await;
 }
 

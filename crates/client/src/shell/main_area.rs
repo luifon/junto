@@ -65,8 +65,8 @@ impl Shell {
                 (Some((channel, panel)), _) => {
                     self.render_call(view, channel, panel, narrow, window, cx)
                 }
-                (None, Some(channel)) => (
-                    self.render_channel_body(channel).into_any_element(),
+                (None, Some(_)) => (
+                    self.render_feed(shown, false, window, cx),
                     members_open.then(|| self.render_members(shown, &theme, cx)),
                 ),
                 (None, None) => (
@@ -243,6 +243,19 @@ impl Shell {
                 )
             })
             .children(after)
+            .when(
+                call.is_none() && channel.is_some_and(|channel| channel.unread.any()),
+                |header| {
+                    header.child(
+                        Button::new("mark-as-read")
+                            .icon(Icon::Check)
+                            .label(text::MARK_AS_READ)
+                            .tooltip(text::MARK_AS_READ_HELP)
+                            .selector("mark-as-read")
+                            .on_click(cx.listener(|this, _, _, cx| this.mark_shown_as_read(cx))),
+                    )
+                },
+            )
             .when(view.workspace().is_some() && call.is_none(), |header| {
                 header.child(
                     Button::new("members")
@@ -431,23 +444,6 @@ impl Shell {
                 }
                 shown
             }
-        }
-    }
-
-    /// The body of a channel that has no content in this version: a text channel, and the
-    /// chat of a voice channel that this device is not in.
-    fn render_channel_body(&self, channel: &ChannelRow) -> impl IntoElement + use<> {
-        match &channel.voice {
-            None => StatePanel::new(
-                text::MESSAGES_NOT_AVAILABLE_TITLE,
-                text::MESSAGES_NOT_AVAILABLE,
-            )
-            .selector("messages-not-available"),
-            Some(_) => StatePanel::new(
-                text::MESSAGES_NOT_AVAILABLE_TITLE,
-                text::VOICE_CHAT_NOT_AVAILABLE,
-            )
-            .selector("voice-chat-not-available"),
         }
     }
 

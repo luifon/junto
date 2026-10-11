@@ -8,11 +8,12 @@ use std::sync::Arc;
 
 use junto_protocol::call::{BlockReason, CallParticipant, CallPlace, MicrophoneBlock};
 use junto_protocol::events::Event;
-use junto_protocol::ids::{CallId, ChannelId, WorkspaceId};
+use junto_protocol::ids::{CallId, ChannelId, MessageId, WorkspaceId};
+use junto_protocol::message::MessagePlace;
 use junto_protocol::recording::Recording;
 use junto_protocol::structure::Channel;
 
-use super::{CallModel, ChannelModel, Loadable, ServerModel, WorkspaceModel};
+use super::{CallModel, ChannelModel, Loadable, PlaceId, Reach, ServerModel, WorkspaceModel};
 
 /// A part of the state that is read from a route of its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -22,6 +23,25 @@ pub(crate) enum Part {
     OwnCall,
     /// The call of one voice channel.
     ChannelCall(ChannelId),
+    /// The unread summary of one place.
+    MessageState(PlaceId),
+    /// One message of a place that a reader has open.
+    Message(PlaceId, MessageId),
+    /// A page of the messages of a place that a reader has open.
+    Messages(PlaceId, Reach),
+    /// The limits of the server for the files of a message.
+    AttachmentLimits,
+}
+
+impl Part {
+    /// True for a part whose content no event carries (ADR 0408): an event that arrives
+    /// while the part is read is not applied to the answer; it starts the read again.
+    pub(crate) const fn is_read_again(&self) -> bool {
+        matches!(
+            self,
+            Self::MessageState(_) | Self::Message(..) | Self::Messages(..) | Self::AttachmentLimits
+        )
+    }
 }
 
 /// What the event stream client does after an event.
@@ -45,6 +65,13 @@ impl Follow {
         Self {
             reload: false,
             load: vec![part],
+        }
+    }
+
+    fn loads(load: Vec<Part>) -> Self {
+        Self {
+            reload: false,
+            load,
         }
     }
 }
@@ -100,6 +127,22 @@ impl Part {
                     call_of(event).is_some_and(|(_, place)| place.channel_id() == Some(*channel_id))
                 }
             },
+            Self::MessageState(place) => match event {
+                Event::MessageChanged { place: of, .. } | Event::MessageRead { place: of, .. } => {
+                    PlaceId::of(of) == *place
+                }
+                Event::MessageMentioned { channel_id, .. } => {
+                    PlaceId::Channel(*channel_id) == *place
+                }
+                _ => false,
+            },
+            Self::Message(_, message_id) => {
+                matches!(event, Event::MessageChanged { message_id: of, .. } if of == message_id)
+            }
+            Self::Messages(place, _) => {
+                matches!(event, Event::MessageChanged { place: of, .. } if PlaceId::of(of) == *place)
+            }
+            Self::AttachmentLimits => matches!(event, Event::AttachmentLimitsChanged { .. }),
         }
     }
 }
@@ -286,6 +329,7 @@ impl ServerModel {
                         .channels
                         .retain(|channel| channel.channel.id != *channel_id);
                 }
+                self.forget_place(PlaceId::Channel(*channel_id));
                 let gone = |place: &CallPlace| place.channel_id() == Some(*channel_id);
                 self.invitations.retain(|held| !gone(&held.place));
                 self.entry_requests.retain(|held| !gone(&held.place));
@@ -471,6 +515,43 @@ impl ServerModel {
                 self.direct_mutes
                     .retain(|held| held.account_id != *account_id);
             }
+            Event::ConversationOpened { conversation } => {
+                self.put_conversation(conversation);
+            }
+            Event::AttachmentLimitsChanged { limits } => {
+                self.attachment_limits = Some(limits.clone());
+            }
+            Event::MessageMentioned { channel_id, .. } => {
+                if self.channel(*channel_id).is_some() {
+                    return Follow::load(Part::MessageState(PlaceId::Channel(*channel_id)));
+                }
+            }
+            Event::MessageChanged {
+                place,
+                message_id,
+                position,
+                ..
+            } => {
+                if !self.holds_place(place) {
+                    return Follow::default();
+                }
+                let id = PlaceId::of(place);
+                let mut load = vec![Part::MessageState(id)];
+                // The event carries no content (ADR 0408). The message is read when a
+                // reader has its place open and the change lies in what is loaded.
+                if self
+                    .timeline(id)
+                    .is_some_and(|timeline| timeline.wants(*message_id, *position))
+                {
+                    load.push(Part::Message(id, *message_id));
+                }
+                return Follow::loads(load);
+            }
+            Event::MessageRead { place, position } => {
+                if self.holds_place(place) && !self.move_read_position(*place, *position) {
+                    return Follow::load(Part::MessageState(PlaceId::of(place)));
+                }
+            }
             // The collections of these events are read from their routes when a reader
             // needs them (ADR 0207). The state holds none of them.
             Event::DeviceAdded { .. }
@@ -505,6 +586,59 @@ impl ServerModel {
         for event in events {
             if part.concerns(event, self) {
                 self.apply(event);
+            }
+        }
+    }
+
+    /// For a part whose content no event carries: applies again the events that arrived
+    /// while the part was read, and returns the reads that they ask for now. The answer
+    /// can be older than those events.
+    pub(crate) fn replay_reads<'a>(
+        &mut self,
+        part: Part,
+        events: impl IntoIterator<Item = &'a Event>,
+    ) -> Vec<Part> {
+        let mut reads = Vec::new();
+        for event in events {
+            if !part.concerns(event, self) {
+                continue;
+            }
+            for read in self.apply(event).load {
+                // A read of a page is followed by the reads of single messages, and each
+                // other part by its own read.
+                let follows = match part {
+                    Part::Messages(..) => matches!(read, Part::Message(..)),
+                    _ => read == part,
+                };
+                if follows && !reads.contains(&read) {
+                    reads.push(read);
+                }
+            }
+        }
+        reads
+    }
+
+    /// True when the state holds the place of a message: a channel that the account can
+    /// see, or a direct conversation. An event of a direct conversation that the state
+    /// does not hold yet adds the conversation.
+    fn holds_place(&mut self, place: &MessagePlace) -> bool {
+        match place {
+            MessagePlace::Channel { channel_id, .. } => self.channel(*channel_id).is_some(),
+            MessagePlace::Direct {
+                conversation_id,
+                low_account_id,
+                high_account_id,
+            } => {
+                let own = self.account.id;
+                if *low_account_id != own && *high_account_id != own {
+                    return false;
+                }
+                self.put_conversation(&junto_protocol::message::Conversation {
+                    id: *conversation_id,
+                    low_account_id: *low_account_id,
+                    high_account_id: *high_account_id,
+                });
+                true
             }
         }
     }

@@ -32,7 +32,9 @@ pub use menu::{Menu, MenuItem, menu_label, menu_separator};
 pub use mosaic::{Mosaic, MosaicKind};
 pub use panel::{Notice, NoticeKind, SectionLabel, SideHeader, StatePanel, WaitBox};
 pub use pattern::{Band, BandKind, Meter, selection_mark};
-pub use rows::{CategoryHeader, ChannelRow, ChannelState, OccupantMark, OccupantRow, WorkspaceRow};
+pub use rows::{
+    CategoryHeader, ChannelRow, ChannelState, OccupantMark, OccupantRow, UnreadSign, WorkspaceRow,
+};
 pub use scroll::ScrollArea;
 pub use segmented::Segmented;
 pub use tile::{PersonTile, TileMark};

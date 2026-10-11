@@ -4,6 +4,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod calls_live;
+mod messages;
 mod stream;
 mod support;
 mod tool_live;

@@ -20,7 +20,7 @@ The call in the main area:
 - The header has the title and the state of the call. While the call is restored, it shows "Reconnecting…" and the statement that the room controls return (view F).
 - The stage shows the people as tiles: the generated avatar, and a plate with the name and the level meter or the mark of the microphone. The tile of a person who speaks has the bright edge. A tile is one and a half times the tile of the strip of the design.
 - While the first media connection is made, and while the call is restored, the stage shows that statement in place of the tiles.
-- The panel has the tabs Chat, Members and Settings. Chat states that messages are not in this version. Members lists the people in the call with their state and the volume control of each other person, and the members of the workspace outside the call with the voice channel that they are in. Settings has the input device with the input level, the output device, and the state of the microphone permission.
+- The panel has the tabs Chat, Members and Settings. Chat shows the chat of the voice channel with its composer (ADR 0740). Members lists the people in the call with their state and the volume control of each other person, and the members of the workspace outside the call with the voice channel that they are in. Settings has the input device with the input level, the output device, and the state of the microphone permission.
 - In a narrow window the panel starts closed, three buttons of the header open its tabs, and it lies over the stage (ADR 0731).
 
 Outside the main area:

@@ -32,6 +32,8 @@ use crate::model::tests::{Scene, channel, member, participant, scene, time};
 use crate::model::{Loadable, ServerModel};
 use crate::version::SupportedVersions;
 
+mod messages;
+
 const PATIENCE: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Waits on the clock of the test. A wait that never ends fails the test.
@@ -156,8 +158,13 @@ struct Routes {
     seen: Vec<(String, String)>,
     /// The next requests whose path ends with the text fail with the status and code.
     failures: Vec<(&'static str, u16, &'static str)>,
-    /// Requests whose path ends with the text wait for a permit.
+    /// Requests whose path ends with the text wait for a permit. A text that ends with
+    /// `/` holds every path that contains it. A text that starts with `PUT ` holds only
+    /// the requests of that method.
     held: Option<(&'static str, Arc<Semaphore>)>,
+    /// The messages of the one place that the tests of messages use, as the server holds
+    /// them, and what the stream client did with them.
+    chat: messages::Chat,
 }
 
 /// The routes that the stream client reads.
@@ -201,9 +208,13 @@ impl crate::api::Transport for Http {
             routes
                 .held
                 .as_ref()
-                .filter(|(end, _)| path.ends_with(end))
+                .filter(|(end, _)| match end.strip_prefix("PUT ") {
+                    Some(end) => request.method == crate::api::Method::Put && path.ends_with(end),
+                    None => path.ends_with(end) || (end.ends_with('/') && path.contains(end)),
+                })
                 .map(|(_, gate)| gate.clone())
         };
+        let request = request.clone();
         let routes = self.routes.clone();
         Box::pin(async move {
             let _active = Active::start(&routes);
@@ -224,6 +235,9 @@ impl crate::api::Transport for Http {
                     retry_after: None,
                     body: body.into_bytes().into(),
                 });
+            }
+            if let Some(answer) = routes.chat.answer(&request) {
+                return answer;
             }
             let body = if path.ends_with("/snapshot") {
                 serde_json::to_vec(routes.snapshot.as_ref().unwrap())

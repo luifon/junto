@@ -1,0 +1,727 @@
+//! What the application does for the messages of the window (ADR 0740): it holds the place
+//! that the window shows open in the client core, sends what the person writes, follows
+//! the files that go up and down, and reads the messages that replies name.
+
+use std::path::PathBuf;
+
+use gpui::Context;
+use junto_client_core::ServerHandle;
+use junto_client_core::api::{ApiError, ErrorCategory, ServerApi};
+use junto_client_core::flow::FlowError;
+use junto_client_core::flow::access::AccessState;
+use junto_client_core::live::LoadError;
+use junto_client_core::model::PlaceId;
+use junto_client_core::protocol::ids::{AccountId, AttachmentId, MessageId, ServerId};
+use junto_client_core::protocol::message::{Attachment, Block, Document, Message};
+use junto_client_core::transfers::{Upload, UploadSource, UploadStage};
+
+use super::AppState;
+use super::feed::{self, Quoted};
+use super::view::{DraftFile, Shown};
+use crate::text;
+
+/// How many reads of quoted messages are on their way at one time.
+const QUOTE_READS: usize = 8;
+
+/// Why a file was not attached to a message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttachRefusal {
+    /// The file is larger than the server stores.
+    TooLarge {
+        name: String,
+        limit: u64,
+    },
+    /// The message has as many files as the server takes.
+    TooMany {
+        limit: u32,
+    },
+    Unreadable {
+        name: String,
+    },
+}
+
+impl AppState {
+    /// The place whose messages the window shows is held open in the client core, and
+    /// every other place is released (ADR 0721).
+    pub(super) fn follow_places(&mut self, shown: Shown, cx: &mut Context<Self>) {
+        let wanted = shown
+            .server
+            .zip(shown.channel)
+            .map(|(server_id, channel_id)| (server_id, PlaceId::Channel(channel_id)));
+        let gone: Vec<(ServerId, PlaceId)> = self
+            .open_places
+            .keys()
+            .filter(|key| Some(**key) != wanted)
+            .copied()
+            .collect();
+        for key in gone {
+            self.open_places.remove(&key);
+            self.anchors.remove(&key);
+            if let Some(server) = self.client.server(key.0) {
+                server.live().release_messages(key.1);
+            }
+        }
+        let Some(key) = wanted else {
+            return;
+        };
+        if self.open_places.contains_key(&key) {
+            return;
+        }
+        let Some(server) = self.client.server(key.0) else {
+            return;
+        };
+        let opening = server.live().open_messages(key.1);
+        let task = cx.spawn(async move |this, cx| {
+            let result = opening.await;
+            let _ = this.update(cx, |this, cx| {
+                // The client core did not take the place: the next change of the state
+                // asks again. A read that failed leaves the place open with its failure.
+                if matches!(result, Err(LoadError::Off | LoadError::NotInState)) {
+                    this.open_places.remove(&key);
+                }
+                cx.notify();
+            });
+        });
+        self.open_places.insert(key, task);
+    }
+
+    /// Reads each message that a reply of the shown place names and that the loaded
+    /// messages do not hold. The window shows one place: what the replies of that place
+    /// do not name any more is put away, and at most [`QUOTE_READS`] reads are on their
+    /// way.
+    pub(super) fn ask_missing_quotes(&mut self, shown: Shown, cx: &mut Context<Self>) {
+        let place = shown.server.zip(shown.channel);
+        let server = place.and_then(|(server_id, _)| self.client.server(server_id));
+        let model = server
+            .as_ref()
+            .and_then(|server| server.live().view().model);
+        let timeline = place
+            .zip(model.as_ref())
+            .and_then(|((_, channel_id), model)| model.timeline(PlaceId::Channel(channel_id)));
+        let (Some((server_id, _)), Some(server), Some(timeline)) = (place, server, timeline) else {
+            self.known.quoted.clear();
+            self.asked_quotes.clear();
+            return;
+        };
+        let named = feed::named_quotes(timeline);
+        let wanted = |(of, message_id): &(ServerId, MessageId)| {
+            *of == server_id && named.contains(message_id)
+        };
+        self.known.quoted.retain(|key, _| wanted(key));
+        self.asked_quotes.retain(|key, _| wanted(key));
+        let on_their_way = self
+            .asked_quotes
+            .keys()
+            .filter(|key| !self.known.quoted.contains_key(key))
+            .count();
+        let mut missing: Vec<MessageId> = named
+            .into_iter()
+            .filter(|message_id| !self.asked_quotes.contains_key(&(server_id, *message_id)))
+            .collect();
+        missing.sort_unstable();
+        missing.truncate(QUOTE_READS.saturating_sub(on_their_way));
+        for message_id in missing {
+            let key = (server_id, message_id);
+            self.quote_asks += 1;
+            let number = self.quote_asks;
+            self.asked_quotes.insert(key, number);
+            let api = server.api();
+            cx.spawn(async move |this, cx| {
+                let read = api.message(message_id).await;
+                let _ = this.update(cx, |this, cx| {
+                    // The message changed, or the window shows another place: this answer
+                    // is not the one that was asked for last.
+                    if this.asked_quotes.get(&key) != Some(&number) {
+                        return;
+                    }
+                    match read {
+                        Ok(message) => {
+                            this.known
+                                .quoted
+                                .insert(key, Quoted::Read(std::sync::Arc::new(message)));
+                        }
+                        Err(error) if error.category() == Some(ErrorCategory::NotFound) => {
+                            this.known.quoted.insert(key, Quoted::Gone);
+                        }
+                        // No answer: the message is asked for again with a later change.
+                        Err(_) => {
+                            this.asked_quotes.remove(&key);
+                            return;
+                        }
+                    }
+                    this.changed(cx);
+                });
+            })
+            .detach();
+        }
+    }
+
+    /// A quoted message changed, or with `None` every message of a server can have
+    /// changed: what the window read of it is put away, and it is read again when a reply
+    /// still names it.
+    pub(super) fn forget_quotes(
+        &mut self,
+        server_id: ServerId,
+        message_id: Option<MessageId>,
+        cx: &mut Context<Self>,
+    ) {
+        let hit = |(of, held): &(ServerId, MessageId)| {
+            *of == server_id && message_id.is_none_or(|message_id| message_id == *held)
+        };
+        let before = self.known.quoted.len() + self.asked_quotes.len();
+        self.known.quoted.retain(|key, _| !hit(key));
+        self.asked_quotes.retain(|key, _| !hit(key));
+        if self.known.quoted.len() + self.asked_quotes.len() != before {
+            self.changed(cx);
+        }
+    }
+
+    /// The account that this device has on a server.
+    fn account_of(&self, server_id: ServerId) -> Option<AccountId> {
+        match self.client.server(server_id)?.access().state {
+            AccessState::LoggedIn { account_id, .. } => Some(account_id),
+            _ => None,
+        }
+    }
+
+    /// The files that wait for a message belong to the account that uploaded them. When
+    /// a server has another account, or none, their uploads are ended.
+    pub(super) fn end_uploads_of_other_accounts(&mut self) {
+        let owners = std::mem::take(&mut self.upload_owners);
+        let mut ended = false;
+        for (server_id, owner) in owners {
+            if self.account_of(server_id) == Some(owner) {
+                self.upload_owners.insert(server_id, owner);
+                continue;
+            }
+            let drafts: Vec<(ServerId, PlaceId)> = self
+                .uploads
+                .keys()
+                .filter(|key| key.0 == server_id)
+                .copied()
+                .collect();
+            let sent: Vec<(ServerId, u64)> = self
+                .sent_uploads
+                .keys()
+                .filter(|key| key.0 == server_id)
+                .copied()
+                .collect();
+            let uploads = drafts
+                .iter()
+                .filter_map(|key| self.uploads.remove(key))
+                .chain(sent.iter().filter_map(|key| self.sent_uploads.remove(key)))
+                .flatten();
+            for upload in uploads {
+                upload.cancel();
+            }
+            ended = true;
+        }
+        if ended {
+            self.show_uploads();
+        }
+    }
+
+    /// Asks a server for a change of a message. A refusal is told in
+    /// [`super::Pending::message_refused`]; the result of a change arrives with the state.
+    fn ask_messages<F, R>(
+        &mut self,
+        server_id: ServerId,
+        cx: &mut Context<Self>,
+        ask: impl FnOnce(ServerApi) -> F,
+        done: impl FnOnce(&ServerHandle, R) + 'static,
+    ) where
+        F: Future<Output = Result<R, ApiError>> + 'static,
+        R: 'static,
+    {
+        let Some(server) = self.client.server(server_id) else {
+            return;
+        };
+        let asking = ask(server.api());
+        self.message_asks += 1;
+        let number = self.message_asks;
+        self.pending.message_refused = None;
+        cx.spawn(async move |this, cx| {
+            let result = asking.await;
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(answer) => done(&server, answer),
+                Err(error) => {
+                    // A late refusal of an earlier request does not replace what the
+                    // person did afterwards.
+                    if this.message_asks == number {
+                        this.pending.message_refused =
+                            Some(text::flow_error(&FlowError::from(&error)));
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    pub fn dismiss_message_refusal(&mut self, cx: &mut Context<Self>) {
+        self.pending.message_refused = None;
+        cx.notify();
+    }
+
+    /// Sends a message with the files that the person attached in this place. False when
+    /// the server has no state now: the text stays with the person.
+    pub fn send_message(
+        &mut self,
+        server_id: ServerId,
+        place: PlaceId,
+        document: Document,
+        reply_to: Option<MessageId>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(server) = self.client.server(server_id) else {
+            return false;
+        };
+        let key = (server_id, place);
+        let uploads = self.uploads.remove(&key).unwrap_or_default();
+        match server.transfers().send(place, document, reply_to, &uploads) {
+            Some(id) => {
+                if !uploads.is_empty() {
+                    self.sent_uploads.insert((server_id, id), uploads);
+                }
+                self.pending.message_refused = None;
+                self.show_uploads();
+                cx.notify();
+                true
+            }
+            None => {
+                if !uploads.is_empty() {
+                    self.uploads.insert(key, uploads);
+                }
+                false
+            }
+        }
+    }
+
+    /// Sends again a message that failed or that got no answer.
+    pub fn send_again(&mut self, server_id: ServerId, id: u64) {
+        if let Some(server) = self.client.server(server_id) {
+            server.live().send_again(id);
+        }
+    }
+
+    /// Gives up a message that waits. Its uploads are ended.
+    pub fn discard_message(&mut self, server_id: ServerId, id: u64, cx: &mut Context<Self>) {
+        for upload in self
+            .sent_uploads
+            .remove(&(server_id, id))
+            .unwrap_or_default()
+        {
+            upload.cancel();
+        }
+        if let Some(server) = self.client.server(server_id) {
+            server.live().discard_message(id);
+        }
+        self.show_uploads();
+        cx.notify();
+    }
+
+    pub fn edit_message(
+        &mut self,
+        server_id: ServerId,
+        message_id: MessageId,
+        document: Document,
+        cx: &mut Context<Self>,
+    ) {
+        self.ask_messages(
+            server_id,
+            cx,
+            move |api| async move { api.edit_message(message_id, document).await },
+            // The answer is the message as the server holds it now.
+            |server, message: Message| server.live().put_message(message),
+        );
+    }
+
+    pub fn delete_message(
+        &mut self,
+        server_id: ServerId,
+        message_id: MessageId,
+        cx: &mut Context<Self>,
+    ) {
+        self.ask_messages(
+            server_id,
+            cx,
+            move |api| async move { api.delete_message(message_id).await },
+            |_, ()| {},
+        );
+    }
+
+    /// Adds the reaction of the person to a message, or takes it away.
+    pub fn react(
+        &mut self,
+        server_id: ServerId,
+        message_id: MessageId,
+        emoji: String,
+        add: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.ask_messages(
+            server_id,
+            cx,
+            move |api| async move {
+                if add {
+                    api.add_reaction(message_id, &emoji).await
+                } else {
+                    api.remove_reaction(message_id, &emoji).await
+                }
+            },
+            |_, ()| {},
+        );
+    }
+
+    /// Ticks a check box of a message of the person, or clears it. This is an edit of the
+    /// message (ADR 0401).
+    pub fn set_check(
+        &mut self,
+        server_id: ServerId,
+        message: &Message,
+        block: usize,
+        item: usize,
+        checked: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(mut document) = message.document.clone() else {
+            return;
+        };
+        let Some(Block::Checklist { items }) = document.blocks.get_mut(block) else {
+            return;
+        };
+        let Some(held) = items.get_mut(item) else {
+            return;
+        };
+        if held.checked == checked {
+            return;
+        }
+        held.checked = checked;
+        self.edit_message(server_id, message.id, document, cx);
+    }
+
+    /// Reads the page before the first loaded message of a place.
+    pub fn read_older(&mut self, server_id: ServerId, place: PlaceId) {
+        if let Some(server) = self.client.server(server_id) {
+            server.live().read_older_messages(place);
+        }
+    }
+
+    pub fn read_newer(&mut self, server_id: ServerId, place: PlaceId) {
+        if let Some(server) = self.client.server(server_id) {
+            server.live().read_newer_messages(place);
+        }
+    }
+
+    /// Replaces the loaded messages of a place by the end of its history.
+    pub fn read_latest(&mut self, server_id: ServerId, place: PlaceId) {
+        if let Some(server) = self.client.server(server_id) {
+            server.live().read_latest_messages(place);
+        }
+    }
+
+    /// Tells the client core where the list of a place stands: at a position of the
+    /// history, or at its end.
+    pub fn set_anchor(&mut self, server_id: ServerId, place: PlaceId, position: Option<u64>) {
+        let key = (server_id, place);
+        if self.anchors.get(&key).copied().flatten() == position && self.anchors.contains_key(&key)
+        {
+            return;
+        }
+        self.anchors.insert(key, position);
+        if let Some(server) = self.client.server(server_id) {
+            server.live().set_message_anchor(place, position);
+        }
+    }
+
+    /// The person has seen the messages of a place up to a position.
+    pub fn mark_read(&mut self, server_id: ServerId, place: PlaceId, position: u64) {
+        let key = (server_id, place);
+        if self
+            .marked
+            .get(&key)
+            .is_some_and(|marked| *marked >= position)
+        {
+            return;
+        }
+        self.marked.insert(key, position);
+        if let Some(server) = self.client.server(server_id) {
+            server.live().mark_read(place, position);
+        }
+    }
+
+    /// Moves the read position of a place to its latest message.
+    pub fn mark_place_as_read(&mut self, server_id: ServerId, place: PlaceId) {
+        let latest = self
+            .client
+            .server(server_id)
+            .and_then(|server| server.live().view().model)
+            .and_then(|model| model.message_state(place).map(|state| state.latest));
+        if let Some(latest) = latest {
+            self.mark_read(server_id, place, latest);
+        }
+    }
+
+    /// Attaches files to the next message of a place and starts their uploads. Returns
+    /// why a file was not attached.
+    pub fn attach(
+        &mut self,
+        server_id: ServerId,
+        place: PlaceId,
+        sources: Vec<UploadSource>,
+        cx: &mut Context<Self>,
+    ) -> Vec<AttachRefusal> {
+        let Some(server) = self.client.server(server_id) else {
+            return Vec::new();
+        };
+        let limits = server
+            .live()
+            .view()
+            .model
+            .and_then(|model| model.attachment_limits.clone());
+        let transfers = server.transfers();
+        let key = (server_id, place);
+        let mut refused = Vec::new();
+        for source in sources {
+            let name = source.name();
+            let held = self.uploads.get(&key).map_or(0, Vec::len);
+            if let Some(limits) = &limits
+                && held >= limits.files_per_message as usize
+            {
+                refused.push(AttachRefusal::TooMany {
+                    limit: limits.files_per_message,
+                });
+                break;
+            }
+            let bytes = match &source {
+                UploadSource::File(path) => match std::fs::metadata(path) {
+                    Ok(metadata) if metadata.is_file() => metadata.len(),
+                    _ => {
+                        refused.push(AttachRefusal::Unreadable { name });
+                        continue;
+                    }
+                },
+                UploadSource::Bytes { bytes, .. } => bytes.len() as u64,
+            };
+            if let Some(limits) = &limits
+                && bytes > limits.bytes_per_file
+            {
+                refused.push(AttachRefusal::TooLarge {
+                    name,
+                    limit: limits.bytes_per_file,
+                });
+                continue;
+            }
+            let Some(owner) = self.account_of(server_id) else {
+                refused.push(AttachRefusal::Unreadable { name });
+                continue;
+            };
+            let upload = transfers.upload(place, source);
+            self.watch_upload(&upload, cx);
+            self.upload_owners.insert(server_id, owner);
+            self.uploads.entry(key).or_default().push(upload);
+        }
+        self.show_uploads();
+        cx.notify();
+        refused
+    }
+
+    /// Takes a file out of the next message of a place and ends its upload.
+    pub fn remove_attachment(
+        &mut self,
+        server_id: ServerId,
+        place: PlaceId,
+        upload: u64,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(uploads) = self.uploads.get_mut(&(server_id, place)) {
+            uploads.retain(|held| {
+                if held.id == upload {
+                    held.cancel();
+                }
+                held.id != upload
+            });
+        }
+        self.show_uploads();
+        cx.notify();
+    }
+
+    fn watch_upload(&mut self, upload: &Upload, cx: &mut Context<Self>) {
+        let mut watch = upload.watch();
+        cx.spawn(async move |this, cx| {
+            loop {
+                let ended = watch.changed().await.is_err()
+                    || matches!(
+                        watch.borrow().stage,
+                        UploadStage::Complete(_) | UploadStage::Failed(_) | UploadStage::Cancelled
+                    );
+                let told = this.update(cx, |this, cx| {
+                    this.show_uploads();
+                    cx.notify();
+                });
+                if ended || told.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Puts the progress of every upload that the window can show into what the view is
+    /// derived from.
+    pub(super) fn show_uploads(&mut self) {
+        self.known.drafts = self
+            .uploads
+            .iter()
+            .filter(|(_, uploads)| !uploads.is_empty())
+            .map(|(key, uploads)| {
+                let files = uploads
+                    .iter()
+                    .map(|upload| DraftFile {
+                        upload: upload.id,
+                        name: upload.name.clone(),
+                        progress: upload.progress(),
+                    })
+                    .collect();
+                (*key, files)
+            })
+            .collect();
+        self.known.uploads = self
+            .sent_uploads
+            .values()
+            .flatten()
+            .map(|upload| (upload.id, upload.progress()))
+            .collect();
+    }
+
+    /// The uploads of a waiting message are held until the message is sent or given up.
+    pub(super) fn drop_sent_uploads(&mut self) {
+        let servers = self.client.servers();
+        let waits = |server_id: ServerId, id: u64| {
+            servers
+                .iter()
+                .find(|server| server.id() == server_id)
+                .and_then(|server| server.live().view().model)
+                .is_some_and(|model| model.outbox.iter().any(|pending| pending.id == id))
+        };
+        let before = self.sent_uploads.len();
+        self.sent_uploads
+            .retain(|(server_id, id), _| waits(*server_id, *id));
+        if self.sent_uploads.len() != before {
+            self.show_uploads();
+        }
+    }
+
+    /// Where the files of messages are saved.
+    pub fn download_directory(&self) -> Option<PathBuf> {
+        self.download_directory.clone().or_else(dirs::download_dir)
+    }
+
+    /// Saves a file of a message to the download directory, under a name that no file has.
+    pub fn download(
+        &mut self,
+        server_id: ServerId,
+        attachment: &Attachment,
+        cx: &mut Context<Self>,
+    ) {
+        let key = (server_id, attachment.id);
+        if self.downloads.contains_key(&key) {
+            return;
+        }
+        let (Some(server), Some(directory)) =
+            (self.client.server(server_id), self.download_directory())
+        else {
+            self.pending.message_refused = Some(text::NO_DOWNLOAD_DIRECTORY.to_owned());
+            cx.notify();
+            return;
+        };
+        let download = server.transfers().download(attachment, directory);
+        let mut watch = download.watch();
+        self.known.downloads.insert(key, download.progress());
+        self.downloads.insert(key, download);
+        cx.spawn(async move |this, cx| {
+            loop {
+                let closed = watch.changed().await.is_err();
+                let progress = watch.borrow().clone();
+                let told = this.update(cx, |this, cx| {
+                    if this.downloads.contains_key(&key) {
+                        this.known.downloads.insert(key, progress);
+                        this.changed(cx);
+                    }
+                });
+                if closed || told.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+        self.changed(cx);
+    }
+
+    /// Ends a download, or puts away what the window shows of one that ended.
+    pub fn forget_download(
+        &mut self,
+        server_id: ServerId,
+        attachment_id: AttachmentId,
+        cx: &mut Context<Self>,
+    ) {
+        let key = (server_id, attachment_id);
+        if let Some(download) = self.downloads.remove(&key) {
+            download.cancel();
+        }
+        self.known.downloads.remove(&key);
+        self.changed(cx);
+    }
+
+    /// Draws these files and this statement in place of what the transfers of the client
+    /// tell, with the times of messages in one time zone. The screen tool uses it.
+    #[cfg(feature = "test-support")]
+    pub fn show_messages_fixture(
+        &mut self,
+        zone: super::feed::Zone,
+        drafts: std::collections::HashMap<(ServerId, PlaceId), Vec<DraftFile>>,
+        uploads: std::collections::HashMap<u64, junto_client_core::transfers::UploadProgress>,
+        downloads: std::collections::HashMap<
+            (ServerId, AttachmentId),
+            junto_client_core::transfers::DownloadProgress,
+        >,
+        refused: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.known.zone = zone;
+        self.known.drafts = drafts;
+        self.known.uploads = uploads;
+        self.known.downloads = downloads;
+        self.pending.message_refused = refused;
+        self.changed(cx);
+    }
+
+    /// The times of messages are shown in this time zone. A test uses it.
+    #[cfg(feature = "test-support")]
+    pub fn set_zone(&mut self, zone: super::feed::Zone, cx: &mut Context<Self>) {
+        self.known.zone = zone;
+        self.changed(cx);
+    }
+
+    /// The files of messages are saved here in place of the download directory of the
+    /// person. A test uses it.
+    #[cfg(feature = "test-support")]
+    pub fn set_download_directory(&mut self, directory: PathBuf) {
+        self.download_directory = Some(directory);
+    }
+
+    /// Reads a picture of a message into memory, for the window to draw it.
+    pub fn picture(
+        &self,
+        server_id: ServerId,
+        attachment: &Attachment,
+    ) -> Option<impl Future<Output = Option<Vec<u8>>> + 'static + use<>> {
+        let reading = self
+            .client
+            .server(server_id)?
+            .transfers()
+            .picture(attachment);
+        Some(async move { reading.await.ok() })
+    }
+}

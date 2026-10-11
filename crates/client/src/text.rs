@@ -853,12 +853,6 @@ pub const CLOSE_MEMBERS: &str = "Close the member list";
 pub const MEMBERS_LOADING: &str = "Reading the members…";
 pub const MEMBERS_FAILED: &str = "The members could not be read.";
 pub const TRY_AGAIN: &str = "Try again";
-pub const MESSAGES_NOT_AVAILABLE_TITLE: &str = "Text messages are not in this version";
-pub const MESSAGES_NOT_AVAILABLE: &str = "This version of Junto shows your servers, their \
-     workspaces and channels, and the people in voice channels. Messages come with a later \
-     version.";
-pub const VOICE_CHAT_NOT_AVAILABLE: &str = "This version of Junto has calls and no text \
-     messages yet. The chat of this voice channel comes with a later version.";
 pub const MEETING_MODE: &str = "Meeting mode";
 pub const RECORDING_VISIBLE: &str = "visible to everyone";
 pub const NO_SERVER_TITLE: &str = "No server yet";
@@ -1226,6 +1220,329 @@ pub fn refusal(code: ErrorCode) -> String {
         format!("The server refused the request ({}).", code_name(code))
     } else {
         known.to_owned()
+    }
+}
+
+// Messages (ADR 0740).
+pub const MESSAGES: &str = "Messages";
+pub const MESSAGES_LOADING: &str = "Reading the messages…";
+pub const MESSAGES_FAILED_TITLE: &str = "The messages could not be read";
+pub const MESSAGES_FAILED: &str = "The server did not answer, or it refused the request.";
+pub const MESSAGES_GONE: &str = "The server does not give this place to your account.";
+pub const MESSAGES_STALE: &str = "These messages may miss recent changes.";
+pub const READ_AGAIN: &str = "Read again";
+pub const NO_MESSAGES_TITLE: &str = "No messages yet";
+pub const NO_MESSAGES: &str = "Write the first message of this place.";
+pub const HISTORY_START: &str = "This is the start of the history.";
+pub const EARLIER_MESSAGES: &str = "Earlier messages";
+pub const READING_EARLIER: &str = "Reading earlier messages…";
+pub const LATER_MESSAGES: &str = "Later messages";
+pub const READING_LATER: &str = "Reading later messages…";
+pub const GO_TO_END: &str = "Go to the newest messages";
+pub const NEW_MESSAGES: &str = "New";
+pub const MARK_AS_READ: &str = "Mark as read";
+pub const MARK_AS_READ_HELP: &str = "Mark every message of this channel as read";
+pub const EDITED: &str = "edited";
+pub const DELETED_MESSAGE: &str = "This message was deleted.";
+pub const QUOTE_DELETED: &str = "Deleted message";
+pub const QUOTE_UNKNOWN: &str = "A message that is not loaded";
+pub const UNKNOWN_ROLE: &str = "unknown role";
+pub const MENTION_EVERYONE: &str = "@everyone";
+pub const EVERYONE: &str = "everyone";
+pub const EVERYONE_HELP: &str = "Everyone who can read this channel";
+pub const SOMEBODY: &str = "somebody";
+pub const REPLY: &str = "Reply";
+pub const EDIT: &str = "Edit";
+pub const DELETE: &str = "Delete";
+pub const REACT: &str = "Add a reaction";
+pub const MESSAGE_ACTIONS: &str = "Actions of this message";
+pub const DELETE_MESSAGE_TITLE: &str = "Delete this message?";
+pub const DELETE_MESSAGE_CONFIRM: &str =
+    "The message and its files are removed for everyone. This cannot be undone.";
+pub const SENDING: &str = "sending…";
+pub const WAITING_FOR_FILES: &str = "uploading its files…";
+pub const NOT_CONFIRMED: &str = "No answer from the server. The message may have arrived.";
+pub const NOT_SENT: &str = "Not sent: no connection to the server.";
+pub const FILE_NOT_SENT: &str = "Not sent: a file was not uploaded.";
+pub const SEND_AGAIN: &str = "Send again";
+pub const DISCARD: &str = "Discard";
+pub const SEND: &str = "Send";
+pub const SEND_HINT: &str = "Enter sends · Shift + Enter adds a line";
+pub const SAVE_EDIT: &str = "Save";
+pub const EDITING_MESSAGE: &str = "Editing your message";
+pub const BOLD: &str = "Bold";
+pub const ITALIC: &str = "Italic";
+pub const STRIKETHROUGH: &str = "Strikethrough";
+pub const INLINE_CODE: &str = "Inline code";
+pub const CODE_BLOCK: &str = "Code block";
+pub const LINK: &str = "Link";
+pub const LIST: &str = "List";
+pub const QUOTE: &str = "Quote";
+pub const ATTACH_FILE: &str = "Attach a file";
+pub const EMOJI: &str = "Emoji";
+pub const FIND_EMOJI: &str = "Find an emoji";
+pub const NO_EMOJI_FOUND: &str = "No emoji has this name.";
+pub const MENTION_SOMEONE: &str = "Mention a person or a role";
+pub const NO_MENTION_FOUND: &str = "No member or role has this name.";
+pub const REMOVE_FILE: &str = "Remove this file";
+pub const REMOVE_FAILED_FILE: &str = "A file was not uploaded. Remove it, or attach it again.";
+pub const MEMBER: &str = "member";
+pub const ROLE: &str = "role";
+pub const DROP_FILES: &str = "Drop files to attach them";
+pub const PASTED_PICTURE: &str = "pasted-picture.png";
+pub const DOWNLOAD: &str = "Download";
+pub const DOWNLOADING: &str = "Downloading…";
+pub const DOWNLOAD_CHECKING: &str = "Checking the file…";
+pub const DOWNLOAD_SAVED: &str = "Saved";
+pub const SHOW_IN_FOLDER: &str = "Show in folder";
+pub const CANCEL_DOWNLOAD: &str = "Cancel the download";
+pub const DOWNLOAD_INTERRUPTED: &str = "The connection was cut. The download continues by itself.";
+pub const UPLOAD_INTERRUPTED: &str = "The connection was cut. The upload continues by itself.";
+pub const UPLOAD_READING: &str = "reading the file…";
+pub const UPLOAD_CHECKING: &str = "the server checks the file…";
+pub const UPLOAD_COMPLETE: &str = "uploaded";
+pub const NO_DOWNLOAD_DIRECTORY: &str =
+    "This system names no download directory. The file was not saved.";
+pub const PICTURE_LOADING: &str = "The picture arrives…";
+pub const PICTURE_FAILED: &str = "The picture could not be shown. You can download the file.";
+pub const OPENS_IN_BROWSER: &str = "Opens in your browser";
+
+/// The text of the field in which a person writes a message of a channel.
+pub fn message_placeholder(name: &str, voice: bool) -> String {
+    if voice {
+        format!("Message {name}")
+    } else {
+        format!("Message #{name}")
+    }
+}
+
+pub fn replying_to(name: &str) -> String {
+    format!("Replying to {name}")
+}
+
+/// A date as a day separator shows it: `Thursday, 8 October`, with the year when it is
+/// not the year of `today`.
+pub fn day(date: time::Date, today: Option<time::Date>) -> String {
+    let named = format!("{}, {} {}", date.weekday(), date.day(), date.month());
+    if today.is_some_and(|today| today.year() == date.year()) {
+        named
+    } else {
+        format!("{named} {}", date.year())
+    }
+}
+
+/// The size of a file with one unit: `1.2 MB`, `284 KB`, `12 bytes`.
+pub fn file_size(bytes: u64) -> String {
+    const KB: u64 = 1000;
+    const MB: u64 = KB * 1000;
+    const GB: u64 = MB * 1000;
+    let tenths = |unit: u64| {
+        let value = bytes as f64 / unit as f64;
+        if value >= 10.0 {
+            format!("{value:.0}")
+        } else {
+            format!("{value:.1}")
+        }
+    };
+    if bytes >= GB {
+        format!("{} GB", tenths(GB))
+    } else if bytes >= MB {
+        format!("{} MB", tenths(MB))
+    } else if bytes >= KB {
+        format!("{} KB", bytes / KB)
+    } else if bytes == 1 {
+        "1 byte".to_owned()
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
+/// A count of unread messages or mentions. The server counts up to 99 and tells 100 for
+/// more (ADR 0408).
+pub fn unread_count(count: u64) -> String {
+    if count >= 100 {
+        "99+".to_owned()
+    } else {
+        count.to_string()
+    }
+}
+
+/// The sign of a channel that mentions the person.
+pub fn mention_badge(mentions: u64) -> String {
+    format!("@ {}", unread_count(mentions))
+}
+
+pub fn unread_tooltip(messages: u64, mentions: u64) -> String {
+    let plural = |count: u64, one: &str, many: &str| {
+        if count == 1 {
+            format!("1 {one}")
+        } else {
+            format!("{} {many}", unread_count(count))
+        }
+    };
+    if mentions > 0 {
+        plural(mentions, "mention", "mentions")
+    } else {
+        plural(messages, "new message", "new messages")
+    }
+}
+
+pub fn reaction_label(emoji: &str, count: u32, own: bool) -> String {
+    if own {
+        format!("{emoji} {count}, with yours. Press to take yours away.")
+    } else {
+        format!("{emoji} {count}. Press to add yours.")
+    }
+}
+
+pub fn transfer_progress(done: u64, total: u64) -> String {
+    format!("{} of {}", file_size(done), file_size(total))
+}
+
+/// What a system line of a channel states, and the mark at its start. `{actor}` and
+/// `{subject}` stand for the names of the accounts of the line.
+pub fn system_line(action: &str) -> (crate::state::feed::SystemKind, &'static str) {
+    use crate::state::feed::SystemKind::{Plain, Recording, Start};
+    match action {
+        "call_started" => (Start, "Call started by {actor}"),
+        "call_ended" => (Plain, "Call ended"),
+        "screen_share_started" => (Start, "{actor} started sharing"),
+        "entry_requested" => (Plain, "{actor} asked to enter"),
+        "joined_by_invitation" => (Plain, "{actor} joined by invitation"),
+        "meeting_started" => (Start, "{actor} turned meeting mode on"),
+        "meeting_ended" => (Plain, "Meeting mode ended"),
+        "recording_started" => (Recording, "Recording started by {actor}"),
+        "recording_stopped" => (Recording, "Recording stopped"),
+        "recording_failed" => (Recording, "Recording failed"),
+        "recording_ready" => (Recording, "The recording of the call is ready"),
+        "recording_removed" => (Recording, "{actor} removed a recording"),
+        "transcript_requested" => (Plain, "{actor} asked for a transcript"),
+        "channel_created" => (Plain, "{actor} created this channel"),
+        "channel_updated" => (Plain, "{actor} changed this channel"),
+        "channel_override_set" => (Plain, "{actor} changed the permissions of this channel"),
+        "channel_call_settings_updated" => (Plain, "{actor} changed the settings of the room"),
+        "call_microphone_blocked" => (Plain, "{actor} closed the microphone of {subject}"),
+        "call_microphone_unblocked" => (Plain, "{actor} removed the microphone block of {subject}"),
+        "call_sound_blocked" => (Plain, "{actor} turned the sound of {subject} off"),
+        "call_sound_unblocked" => (Plain, "{actor} removed the sound block of {subject}"),
+        "call_member_disconnected" => (Plain, "{actor} removed {subject} from the call"),
+        "call_member_moved_out" => (Plain, "{actor} moved {subject} to another voice channel"),
+        "call_member_moved_in" => (Plain, "{actor} moved {subject} into this voice channel"),
+        "permanent_message_deleted" => (Plain, "{actor} deleted a permanent message"),
+        _ => (Plain, "An event that this version of Junto does not know"),
+    }
+}
+
+/// Why a document is not sent as it is.
+pub fn compose_problem(problem: crate::compose::Problem) -> String {
+    use crate::compose::Problem;
+    match problem {
+        Problem::Empty => "Write a text or attach a file.".to_owned(),
+        Problem::TooLong { bytes } => format!(
+            "The message is too long: {} of {} that a message can have with its formatting.",
+            file_size(bytes as u64),
+            file_size(crate::compose::MOST_BYTES as u64)
+        ),
+        Problem::TooManyBlocks { blocks } => format!(
+            "The message has {blocks} paragraphs, lists and blocks. A message can have {}.",
+            crate::compose::MOST_BLOCKS
+        ),
+        Problem::TooManyNodes { nodes } => format!(
+            "The message has {nodes} formatted parts. A message can have {}.",
+            crate::compose::MOST_NODES
+        ),
+        Problem::TooManyMentions { mentions } => format!(
+            "The message mentions {mentions} people and roles. A message can mention {}.",
+            crate::compose::MOST_MENTIONS
+        ),
+    }
+}
+
+/// Why a file was not attached to a message.
+pub fn attach_refusal(refusal: &crate::state::AttachRefusal) -> String {
+    use crate::state::AttachRefusal;
+    match refusal {
+        AttachRefusal::TooLarge { name, limit } => format!(
+            "{name} is larger than {}, the most that this server takes for a file.",
+            file_size(*limit)
+        ),
+        AttachRefusal::TooMany { limit } => {
+            format!("A message on this server has at most {limit} files.")
+        }
+        AttachRefusal::Unreadable { name } => format!("{name} could not be read."),
+    }
+}
+
+/// Why a message that waits was not sent.
+pub fn send_failure(failure: junto_client_core::model::SendFailure) -> String {
+    use junto_client_core::model::SendFailure;
+    match failure {
+        SendFailure::NotSent => NOT_SENT.to_owned(),
+        SendFailure::File => FILE_NOT_SENT.to_owned(),
+        SendFailure::Refused { code, status } => format!(
+            "Not sent. {}",
+            match code {
+                ErrorCode::RateLimited => {
+                    "The server limits how many messages an account sends in a minute. Send \
+                     it again in a moment."
+                        .to_owned()
+                }
+                ErrorCode::Forbidden => {
+                    "Your account may not write here, or may not mention everyone.".to_owned()
+                }
+                ErrorCode::NotFound => {
+                    "The server does not give this place to your account, or the message \
+                     that you answer is gone."
+                        .to_owned()
+                }
+                ErrorCode::InvalidRequest => {
+                    "The server did not accept the message: its text, a mention or a file \
+                     is not one that it takes."
+                        .to_owned()
+                }
+                ErrorCode::Unknown => format!(
+                    "The server refused with an error that this version of Junto does not \
+                     know (status {status})."
+                ),
+                code => refusal(code),
+            }
+        ),
+    }
+}
+
+/// Why a file did not go up or down.
+pub fn transfer_failure(failure: junto_client_core::transfers::TransferFailure) -> String {
+    use junto_client_core::transfers::TransferFailure;
+    match failure {
+        TransferFailure::File(_) => "The file could not be read or written.".to_owned(),
+        TransferFailure::Empty => "The file is empty. A server stores no empty file.".to_owned(),
+        TransferFailure::Changed => {
+            "The file changed while it was read. Attach it again.".to_owned()
+        }
+        TransferFailure::Corrupt => {
+            "The bytes that arrived are not the file of the message. Nothing was saved.".to_owned()
+        }
+        TransferFailure::Refused { code, .. } => match code {
+            ErrorCode::StorageLow => {
+                "The server has too little free disk space for this file.".to_owned()
+            }
+            ErrorCode::LimitReached => {
+                "Your account has 20 uploads that no message uses. They expire after a day."
+                    .to_owned()
+            }
+            ErrorCode::InvalidRequest => {
+                "The server did not accept the file: its name or its size is not one that \
+                 it takes."
+                    .to_owned()
+            }
+            ErrorCode::Unavailable => {
+                "This server stores no files: its administrator has not set a directory \
+                 for them."
+                    .to_owned()
+            }
+            code => refusal(code),
+        },
+        TransferFailure::Stopped => "The transfer was stopped.".to_owned(),
     }
 }
 

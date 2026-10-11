@@ -8,7 +8,10 @@
 //! that keeps an old copy costs the memory of the changed workspaces only.
 
 mod apply;
+mod messages;
 
+#[cfg(test)]
+pub(crate) mod message_tests;
 #[cfg(test)]
 pub(crate) mod tests;
 
@@ -21,6 +24,7 @@ use junto_protocol::call::{
 };
 use junto_protocol::events::Cursor;
 use junto_protocol::ids::{AccountId, CallId, ChannelId, DeviceId, WorkspaceId, WorkspaceRoleId};
+use junto_protocol::message::{AttachmentLimits, Conversation, MessagePlace, MessageState};
 use junto_protocol::recording::Recording;
 use junto_protocol::roles::WorkspaceRole;
 use junto_protocol::snapshot::{Snapshot, WorkspaceState};
@@ -29,6 +33,11 @@ use junto_protocol::{ServerPermission, WorkspacePermission};
 use time::OffsetDateTime;
 
 pub(crate) use apply::{Follow, Part};
+pub(crate) use messages::Reach;
+pub use messages::{
+    MOST_LOADED, PendingFile, PendingMessage, PlaceId, ReadFailure, Reading, SendFailure,
+    SendState, Timeline,
+};
 
 /// A part of the state that the snapshot does not carry. The client loads it from its
 /// route when a reader asks for it and keeps it current from then on (ADR 0207).
@@ -225,10 +234,41 @@ pub struct ServerModel {
     pub moves: Vec<CallMove>,
     /// The direct-message conversations that the account has muted.
     pub direct_mutes: Vec<DirectMute>,
+    /// The unread summary of each place that the account can read and that holds a
+    /// message (ADR 0408).
+    pub message_states: Vec<MessageState>,
+    /// The direct conversations of the account that the contact rule allows now.
+    pub conversations: Vec<Conversation>,
+    /// The limits of the server for the files of a message. They are read when a reader
+    /// opens the messages of a place.
+    pub attachment_limits: Option<AttachmentLimits>,
+    /// The messages of the places that a reader has open.
+    pub timelines: Vec<Arc<Timeline>>,
+    /// The messages that the person sent and that the server has not confirmed.
+    pub outbox: Vec<Arc<PendingMessage>>,
+    /// The newest messages that the server returned as answers to sends of this client.
+    pub(crate) sent_ids: Vec<junto_protocol::ids::MessageId>,
 }
 
 impl ServerModel {
     pub fn from_snapshot(snapshot: Snapshot) -> Self {
+        let mut conversations: Vec<Conversation> = snapshot
+            .messages
+            .iter()
+            .filter_map(|state| match state.place {
+                MessagePlace::Direct {
+                    conversation_id,
+                    low_account_id,
+                    high_account_id,
+                } => Some(Conversation {
+                    id: conversation_id,
+                    low_account_id,
+                    high_account_id,
+                }),
+                MessagePlace::Channel { .. } => None,
+            })
+            .collect();
+        conversations.sort_by_key(|held| held.id);
         Self {
             cursor: snapshot.cursor,
             account: snapshot.account,
@@ -247,6 +287,12 @@ impl ServerModel {
             entry_requests: Vec::new(),
             moves: Vec::new(),
             direct_mutes: snapshot.direct_mutes,
+            message_states: snapshot.messages,
+            conversations,
+            attachment_limits: None,
+            timelines: Vec::new(),
+            outbox: Vec::new(),
+            sent_ids: Vec::new(),
         }
     }
 

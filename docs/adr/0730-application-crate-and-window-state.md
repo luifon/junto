@@ -13,7 +13,7 @@ The client core holds storage, keys, the flows, the event stream and the state o
 Crate:
 
 - The crate `junto-client` holds the desktop application. Its binary is `junto`. It depends on `junto-client-core`, on `junto-media` and on the gpui set of ADR 0701, and holds no rule of joining, of login, of the event stream or of a call.
-- Of the component library it uses the unstyled layer `gpui-base`: the root view with the Tab order and the focus trap, the scroll bar, the text input and the slider. The styled layer is added when a screen needs the Markdown view or the message list.
+- Of the component library it uses the unstyled layer `gpui-base`: the root view with the Tab order and the focus trap, the scroll bar, the text input and the slider. The message list is the list element of gpui, and the composer is the text area of the same layer (ADR 0740); the styled layer is not used.
 - The arguments of `junto` are `--data-dir`, `--scale` and `--no-activate`. The data directory is the argument, then `JUNTO_DATA_DIR`, then the directory of the user (ADR 0710). A data directory that cannot be opened ends the start with the reason on standard error; nothing in it is changed.
 
 State:
@@ -38,7 +38,7 @@ Window:
 
 - The main window is one view. It holds what belongs to the window: the layer that is open (a dialog or a menu), the text of its fields, and where the keyboard focus returns to.
 - A channel list groups the channels without a category by kind, under "Text channels" and "Voice channels", and then lists each category that holds a visible channel, in the order of the server.
-- A text channel shows a statement that text messages are not in this version. A voice channel shows the state of its call, the action that enters it, and the call when the device is in it (ADR 0735). The window draws no control of a function that the build does not have, with one exception: the camera button of the strip of the call is drawn disabled, so that the strip has its final form.
+- A text channel shows its messages and the composer (ADR 0740). A voice channel shows the chat of the channel, the state of its call, the action that enters it, and the call when the device is in it (ADR 0735). The window draws no control of a function that the build does not have, with one exception: the camera button of the strip of the call is drawn disabled, so that the strip has its final form.
 - In the call of the device the level meter of a person shows the level that the media engine measures. In another voice channel it shows three of five segments while the server reports the person as speaking (ADR 0513), and none otherwise.
 - The window follows the levels of a call only as far as they change a meter: a level is turned into lit segments before it is compared with what is drawn.
 - The call of the device ends with the application: the server is told when the application quits, with a wait of at most 2 seconds.

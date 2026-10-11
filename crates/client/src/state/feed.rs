@@ -1,0 +1,1178 @@
+//! The rows of a message list, derived from the messages of one place (ADR 0740).
+//!
+//! [`derive`] is a function without side effects, as the derivation of the window is
+//! (ADR 0730). It takes the timeline of a place, the messages that wait to be sent, the
+//! names that the client holds and a time zone, and returns rows: day separators, the line
+//! of the first unread message, messages with what belongs to them, system lines, and the
+//! messages that wait. The drawing code holds no rule about a message.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use junto_client_core::model::{
+    PendingMessage, PlaceId, ReadFailure, Reading, SendState, ServerModel, Timeline,
+};
+use junto_client_core::protocol::ids::{AccountId, MessageId, ServerId, WorkspaceRoleId};
+use junto_client_core::protocol::message::{
+    AttachmentLimits, Block, Document, Inline, Message, SystemMessage,
+};
+use time::{Date, OffsetDateTime, UtcOffset};
+
+/// The time zone in which times of messages are shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Zone {
+    /// The time zone of the system, with its rule for each date.
+    #[default]
+    System,
+    /// One offset for every date. The tests and the screen tool use it.
+    Fixed(UtcOffset),
+}
+
+impl Zone {
+    /// A moment as the clock of the zone shows it.
+    pub fn local(self, at: OffsetDateTime) -> OffsetDateTime {
+        match self {
+            Self::Fixed(offset) => at.to_offset(offset),
+            Self::System => {
+                use chrono::{Offset as _, TimeZone as _};
+                let seconds = chrono::Local
+                    .timestamp_opt(at.unix_timestamp(), 0)
+                    .single()
+                    .map_or(0, |local| local.offset().fix().local_minus_utc());
+                at.to_offset(UtcOffset::from_whole_seconds(seconds).unwrap_or(UtcOffset::UTC))
+            }
+        }
+    }
+}
+
+/// Messages of one author within this time form one group under one name.
+const GROUP_SECONDS: i64 = 5 * 60;
+/// The characters of a quoted message that a reply shows.
+const EXCERPT_CHARACTERS: usize = 120;
+
+/// A message that a reply names and that the loaded messages do not hold.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Quoted {
+    /// The message was read from the server.
+    Read(Arc<Message>),
+    /// The server holds no such message for the account.
+    Gone,
+}
+
+/// What a reply shows of the message that it answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuoteText {
+    Text(String),
+    /// The message has no text: the name of its first file.
+    File(String),
+    Deleted,
+    /// The message is not loaded yet, or the server does not give it to the account.
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Quote {
+    pub message_id: MessageId,
+    pub author_id: Option<AccountId>,
+    pub author: Option<String>,
+    pub text: QuoteText,
+}
+
+/// How a system line is marked at its start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemKind {
+    /// Something began or was allowed: the green square.
+    Start,
+    /// A recording: the red dot.
+    Recording,
+    Plain,
+}
+
+/// One part of the text of a system line. A name is drawn bold.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Part {
+    pub text: String,
+    pub strong: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct MessageRow {
+    pub message: Arc<Message>,
+    pub author: String,
+    /// The time of day in the zone of the list, as `09:02`.
+    pub time: String,
+    /// The message follows a message of the same author within a short time: it is drawn
+    /// without the avatar and the name.
+    pub grouped: bool,
+    pub own: bool,
+    /// The message mentions the account, one of its roles, or everyone.
+    pub mentions_own: bool,
+    pub reply: Option<Quote>,
+    /// The roles of the person allow the change. The server decides each request.
+    pub can_edit: bool,
+    pub can_delete: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct SystemRow {
+    pub message: Arc<Message>,
+    pub time: String,
+    pub kind: SystemKind,
+    pub parts: Vec<Part>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WaitingRow {
+    pub pending: Arc<PendingMessage>,
+    pub author: String,
+    pub time: String,
+    pub grouped: bool,
+    pub reply: Option<Quote>,
+}
+
+#[derive(Debug, Clone)]
+pub enum FeedRow {
+    /// The history has no message before the first loaded one.
+    Start,
+    /// The history has messages before the first loaded one.
+    Earlier {
+        reading: bool,
+    },
+    Day(Date),
+    /// The line before the first unread message.
+    Unread,
+    Message(MessageRow),
+    System(SystemRow),
+    Waiting(WaitingRow),
+    /// The history has messages after the last loaded one.
+    Later {
+        reading: bool,
+    },
+}
+
+impl PartialEq for FeedRow {
+    /// Two rows are the same when they draw the same. A message is compared by the copy
+    /// that the state holds, which is replaced when the message changes.
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Start, Self::Start) | (Self::Unread, Self::Unread) => true,
+            (Self::Earlier { reading: one }, Self::Earlier { reading: other })
+            | (Self::Later { reading: one }, Self::Later { reading: other }) => one == other,
+            (Self::Day(one), Self::Day(other)) => one == other,
+            (Self::Message(one), Self::Message(other)) => {
+                Arc::ptr_eq(&one.message, &other.message)
+                    && one.grouped == other.grouped
+                    && one.author == other.author
+                    && one.time == other.time
+                    && one.reply == other.reply
+                    && one.can_edit == other.can_edit
+                    && one.can_delete == other.can_delete
+            }
+            (Self::System(one), Self::System(other)) => {
+                Arc::ptr_eq(&one.message, &other.message)
+                    && one.parts == other.parts
+                    && one.time == other.time
+            }
+            (Self::Waiting(one), Self::Waiting(other)) => {
+                Arc::ptr_eq(&one.pending, &other.pending)
+                    && one.grouped == other.grouped
+                    && one.reply == other.reply
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for FeedRow {}
+
+impl FeedRow {
+    /// The position of the message of the row in the history of its place.
+    pub fn position(&self) -> Option<u64> {
+        match self {
+            Self::Message(row) => Some(row.message.position),
+            Self::System(row) => Some(row.message.position),
+            _ => None,
+        }
+    }
+}
+
+/// The message list of one place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Feed {
+    pub server_id: ServerId,
+    pub place: PlaceId,
+    pub rows: Arc<Vec<FeedRow>>,
+    /// A first page has arrived.
+    pub loaded: bool,
+    pub failed: Option<ReadFailure>,
+    /// The messages can miss changes: the state was replaced, and their page is on its
+    /// way, or a read of a change failed.
+    pub stale: bool,
+    pub reading: Reading,
+    pub more_before: bool,
+    pub more_after: bool,
+    /// The position of the last loaded message, when the list reaches the end of the
+    /// history. The read position moves to it when the person has seen the end.
+    pub end_position: Option<u64>,
+    /// The unread messages of the place, as the server counts them. 100 means 100 or more.
+    pub unread: u64,
+    pub limits: Option<AttachmentLimits>,
+    /// The names for the mentions of the messages.
+    pub names: Arc<Names>,
+    /// The date of the derivation in the zone of the list. A day separator of another
+    /// year names its year.
+    pub today: Option<Date>,
+}
+
+/// The names that the messages of a place mention.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Names {
+    pub accounts: HashMap<AccountId, String>,
+    pub roles: HashMap<WorkspaceRoleId, String>,
+}
+
+/// What the derivation of one list reads.
+pub struct Source<'a> {
+    pub server_id: ServerId,
+    pub model: &'a ServerModel,
+    pub timeline: &'a Timeline,
+    pub names: Arc<Names>,
+    /// The roles of the account in the workspace of the channel. Empty for a direct
+    /// conversation.
+    pub own_roles: &'a [WorkspaceRoleId],
+    /// The roles of the person allow the deletion of messages of other people.
+    pub may_manage: bool,
+    pub quoted: &'a HashMap<(ServerId, MessageId), Quoted>,
+    pub zone: Zone,
+    pub today: Option<Date>,
+}
+
+fn clock(at: OffsetDateTime) -> String {
+    format!("{:02}:{:02}", at.hour(), at.minute())
+}
+
+/// The text of a document on one line, without its formatting, up to a bound.
+pub fn plain_text(document: &Document, names: &Names, most: usize) -> String {
+    fn inline(content: &[Inline], names: &Names, out: &mut String) {
+        for node in content {
+            match node {
+                Inline::Text { text, .. } | Inline::Code { text } | Inline::Link { text, .. } => {
+                    out.push_str(text);
+                }
+                Inline::Account { account_id } => {
+                    out.push('@');
+                    out.push_str(
+                        names
+                            .accounts
+                            .get(account_id)
+                            .map_or(crate::text::UNKNOWN_PERSON, String::as_str),
+                    );
+                }
+                Inline::Role { role_id } => {
+                    out.push('@');
+                    out.push_str(
+                        names
+                            .roles
+                            .get(role_id)
+                            .map_or(crate::text::UNKNOWN_ROLE, String::as_str),
+                    );
+                }
+                Inline::Everyone => out.push_str(crate::text::MENTION_EVERYONE),
+            }
+        }
+    }
+    let mut text = String::new();
+    for block in &document.blocks {
+        if !text.is_empty() {
+            text.push(' ');
+        }
+        match block {
+            Block::Paragraph { content } | Block::Quote { content } => {
+                inline(content, names, &mut text);
+            }
+            Block::Code { text: code, .. } => text.push_str(code),
+            Block::List { items, .. } => {
+                for item in items {
+                    inline(item, names, &mut text);
+                    text.push(' ');
+                }
+            }
+            Block::Checklist { items } => {
+                for item in items {
+                    inline(&item.content, names, &mut text);
+                    text.push(' ');
+                }
+            }
+        }
+        if text.chars().count() > most {
+            break;
+        }
+    }
+    let line: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.chars().count() > most {
+        let cut: String = line.chars().take(most).collect();
+        format!("{}…", cut.trim_end())
+    } else {
+        line
+    }
+}
+
+fn mentions(document: &Document, own: AccountId, own_roles: &[WorkspaceRoleId]) -> bool {
+    let named = |node: &Inline| match node {
+        Inline::Account { account_id } => *account_id == own,
+        Inline::Role { role_id } => own_roles.contains(role_id),
+        Inline::Everyone => true,
+        _ => false,
+    };
+    document.blocks.iter().any(|block| match block {
+        Block::Paragraph { content } | Block::Quote { content } => content.iter().any(named),
+        Block::Code { .. } => false,
+        Block::List { items, .. } => items.iter().flatten().any(named),
+        Block::Checklist { items } => items.iter().flat_map(|item| &item.content).any(named),
+    })
+}
+
+fn author_name(message: &Message, names: &Names) -> String {
+    message
+        .author_name
+        .clone()
+        .or_else(|| {
+            message
+                .author_id
+                .and_then(|id| names.accounts.get(&id).cloned())
+        })
+        .unwrap_or_else(|| crate::text::UNKNOWN_PERSON.to_owned())
+}
+
+fn quote_of(message: &Message, names: &Names) -> Quote {
+    let text = if message.deleted {
+        QuoteText::Deleted
+    } else {
+        match &message.document {
+            Some(document) => {
+                let text = plain_text(document, names, EXCERPT_CHARACTERS);
+                match (text.is_empty(), message.attachments.first()) {
+                    (true, Some(file)) => QuoteText::File(file.name.clone()),
+                    _ => QuoteText::Text(text),
+                }
+            }
+            None => match &message.system {
+                Some(system) => QuoteText::Text(
+                    system_parts(system, names)
+                        .1
+                        .iter()
+                        .map(|part| part.text.as_str())
+                        .collect(),
+                ),
+                None => QuoteText::Unknown,
+            },
+        }
+    };
+    Quote {
+        message_id: message.id,
+        author_id: message.author_id,
+        author: message
+            .author_id
+            .is_some()
+            .then(|| author_name(message, names)),
+        text,
+    }
+}
+
+/// The loaded messages of a timeline by their identifiers. It is built for the first
+/// reply of a derivation: a list without a reply does not pay for it.
+#[derive(Default)]
+struct Loaded<'a>(Option<HashMap<MessageId, &'a Arc<Message>>>);
+
+impl<'a> Loaded<'a> {
+    fn get(&mut self, timeline: &'a Timeline, message_id: MessageId) -> Option<&'a Arc<Message>> {
+        self.0
+            .get_or_insert_with(|| {
+                timeline
+                    .messages
+                    .iter()
+                    .map(|message| (message.id, message))
+                    .collect()
+            })
+            .get(&message_id)
+            .copied()
+    }
+}
+
+fn quote<'a>(source: &Source<'a>, loaded: &mut Loaded<'a>, message_id: MessageId) -> Quote {
+    let unknown = |text| Quote {
+        message_id,
+        author_id: None,
+        author: None,
+        text,
+    };
+    if let Some(held) = loaded.get(source.timeline, message_id) {
+        return quote_of(held, &source.names);
+    }
+    match source.quoted.get(&(source.server_id, message_id)) {
+        Some(Quoted::Read(message)) => quote_of(message, &source.names),
+        Some(Quoted::Gone) => unknown(QuoteText::Deleted),
+        None => unknown(QuoteText::Unknown),
+    }
+}
+
+/// The text of a system line and the mark at its start. A line of an action that this
+/// build does not know states that something happened.
+pub fn system_parts(system: &SystemMessage, names: &Names) -> (SystemKind, Vec<Part>) {
+    let name = |account_id: Option<AccountId>| {
+        account_id.map(|id| {
+            names
+                .accounts
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| crate::text::UNKNOWN_PERSON.to_owned())
+        })
+    };
+    let actor = name(system.actor_id);
+    let subject = name(system.subject_id);
+    let (kind, sentence) = crate::text::system_line(&system.action);
+    let mut parts = Vec::new();
+    let mut push = |text: &str, strong: bool| {
+        if !text.is_empty() {
+            parts.push(Part {
+                text: text.to_owned(),
+                strong,
+            });
+        }
+    };
+    // The sentence names the actor as `{actor}` and the subject as `{subject}`.
+    let mut rest = sentence;
+    while let Some(at) = rest.find('{') {
+        push(&rest[..at], false);
+        let end = rest[at..].find('}').map_or(rest.len(), |end| at + end + 1);
+        match &rest[at..end] {
+            "{actor}" => push(
+                actor.as_deref().unwrap_or(crate::text::SOMEBODY),
+                actor.is_some(),
+            ),
+            "{subject}" => push(
+                subject.as_deref().unwrap_or(crate::text::SOMEBODY),
+                subject.is_some(),
+            ),
+            other => push(other, false),
+        }
+        rest = &rest[end..];
+    }
+    push(rest, false);
+    (kind, parts)
+}
+
+/// The rows of the messages of one place.
+pub fn derive(source: &Source<'_>) -> Feed {
+    let timeline = source.timeline;
+    let own = source.model.account.id;
+    let names = &source.names;
+    let mut rows = Vec::with_capacity(timeline.messages.len() + 8);
+    if timeline.loaded {
+        rows.push(if timeline.more_before {
+            FeedRow::Earlier {
+                reading: timeline.reading.older,
+            }
+        } else {
+            FeedRow::Start
+        });
+    }
+    let mut loaded = Loaded::default();
+    let mut day: Option<Date> = None;
+    // The author and the time of the message row before, while a group can go on.
+    let mut group: Option<(AccountId, OffsetDateTime)> = None;
+    // The line needs a loaded message before it that the person has read. When every
+    // loaded message lies after the read position, no line is drawn above them all.
+    let mut unread_drawn = timeline.unread_after.is_none_or(|read| {
+        timeline
+            .messages
+            .first()
+            .is_some_and(|first| first.position > read)
+    });
+    for message in &timeline.messages {
+        let local = source.zone.local(message.created_at);
+        if day != Some(local.date()) {
+            day = Some(local.date());
+            rows.push(FeedRow::Day(local.date()));
+            group = None;
+        }
+        let unread = !unread_drawn
+            && timeline
+                .unread_after
+                .is_some_and(|read| message.position > read)
+            && message.author_id.is_some_and(|author| author != own)
+            && !message.deleted;
+        if unread {
+            unread_drawn = true;
+            rows.push(FeedRow::Unread);
+            group = None;
+        }
+        if let (None, Some(system)) = (message.author_id, &message.system) {
+            let (kind, parts) = system_parts(system, names);
+            rows.push(FeedRow::System(SystemRow {
+                message: message.clone(),
+                time: clock(local),
+                kind,
+                parts,
+            }));
+            group = None;
+            continue;
+        }
+        let is_own = message.author_id == Some(own);
+        let grouped = !message.deleted
+            && message.reply_to.is_none()
+            && message.author_id.is_some_and(|author| {
+                group.is_some_and(|(before, at)| {
+                    before == author
+                        && (message.created_at - at).whole_seconds() <= GROUP_SECONDS
+                        && message.created_at >= at
+                })
+            });
+        group = match (message.author_id, message.deleted) {
+            (Some(author), false) => Some((author, message.created_at)),
+            _ => None,
+        };
+        let changeable = !message.deleted && message.system.is_none();
+        rows.push(FeedRow::Message(MessageRow {
+            author: author_name(message, names),
+            time: clock(local),
+            grouped,
+            own: is_own,
+            mentions_own: message
+                .document
+                .as_ref()
+                .is_some_and(|document| mentions(document, own, source.own_roles)),
+            reply: message.reply_to.map(|id| quote(source, &mut loaded, id)),
+            can_edit: changeable && is_own && !message.permanent,
+            can_delete: changeable && !message.permanent && (is_own || source.may_manage),
+            message: message.clone(),
+        }));
+    }
+    if timeline.more_after {
+        rows.push(FeedRow::Later {
+            reading: timeline.reading.newer,
+        });
+    } else if timeline.loaded {
+        // The messages that wait are drawn after the end of the history.
+        for pending in source.model.shown_waiting(timeline.place) {
+            let local = source.zone.local(pending.created_at);
+            if day != Some(local.date()) {
+                day = Some(local.date());
+                rows.push(FeedRow::Day(local.date()));
+                group = None;
+            }
+            let grouped = pending.reply_to.is_none()
+                && group.is_some_and(|(before, at)| {
+                    before == own && (pending.created_at - at).whole_seconds() <= GROUP_SECONDS
+                });
+            group = Some((own, pending.created_at));
+            rows.push(FeedRow::Waiting(WaitingRow {
+                pending: pending.clone(),
+                author: source.model.account.name.clone(),
+                time: clock(local),
+                grouped,
+                reply: pending.reply_to.map(|id| quote(source, &mut loaded, id)),
+            }));
+        }
+    }
+    let state = source.model.message_state(timeline.place);
+    Feed {
+        server_id: source.server_id,
+        place: timeline.place,
+        rows: Arc::new(rows),
+        loaded: timeline.loaded,
+        failed: timeline.failed,
+        stale: timeline.stale,
+        reading: timeline.reading,
+        more_before: timeline.more_before,
+        more_after: timeline.more_after,
+        end_position: (!timeline.more_after)
+            .then(|| timeline.messages.last().map(|last| last.position))
+            .flatten(),
+        unread: state.map_or(0, |state| state.unread),
+        limits: source.model.attachment_limits.clone(),
+        names: source.names.clone(),
+        today: source.today,
+    }
+}
+
+/// The messages that the replies of a timeline name and that the timeline does not hold.
+pub fn named_quotes(timeline: &Timeline) -> std::collections::HashSet<MessageId> {
+    let mut loaded = Loaded::default();
+    timeline
+        .messages
+        .iter()
+        .filter_map(|message| message.reply_to)
+        .filter(|id| loaded.get(timeline, *id).is_none())
+        .collect()
+}
+
+/// The replies of a timeline whose message is not loaded: the window reads them once.
+pub fn missing_quotes(
+    server_id: ServerId,
+    timeline: &Timeline,
+    quoted: &HashMap<(ServerId, MessageId), Quoted>,
+) -> Vec<MessageId> {
+    let mut loaded = Loaded::default();
+    let mut missing: Vec<MessageId> = timeline
+        .messages
+        .iter()
+        .filter_map(|message| message.reply_to)
+        .filter(|id| loaded.get(timeline, *id).is_none() && !quoted.contains_key(&(server_id, *id)))
+        .collect();
+    missing.sort_unstable();
+    missing.dedup();
+    missing
+}
+
+/// True when a waiting message is drawn as one that the person can send again.
+pub fn can_send_again(state: SendState) -> bool {
+    matches!(
+        state,
+        SendState::Unconfirmed
+            | SendState::Failed(
+                junto_client_core::model::SendFailure::NotSent
+                    | junto_client_core::model::SendFailure::Refused { .. }
+            )
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use junto_client_core::model::{PendingMessage, SendFailure};
+    use junto_client_core::protocol::account::OwnAccount;
+    use junto_client_core::protocol::events::Cursor;
+    use junto_client_core::protocol::ids::{ChannelId, StreamEpoch, WorkspaceId};
+    use junto_client_core::protocol::message::{Attachment, MessagePlace, MessageState};
+    use junto_client_core::protocol::snapshot::{Snapshot, WorkspaceState};
+    use junto_client_core::protocol::structure::{Channel, ChannelKind, Workspace};
+    use time::Duration;
+
+    use super::*;
+    use crate::compose;
+
+    struct Scene {
+        model: ServerModel,
+        own: AccountId,
+        ana: AccountId,
+        place: MessagePlace,
+        names: Arc<Names>,
+        quoted: HashMap<(ServerId, MessageId), Quoted>,
+        server_id: ServerId,
+        role: WorkspaceRoleId,
+    }
+
+    /// Thursday, 8 October 2026 at 09:00 UTC.
+    fn morning() -> OffsetDateTime {
+        OffsetDateTime::from_unix_timestamp(1_791_450_000).unwrap()
+    }
+
+    fn scene() -> Scene {
+        let (own, ana) = (AccountId::generate(), AccountId::generate());
+        let workspace_id = WorkspaceId::generate();
+        let channel_id = ChannelId::generate();
+        let role = WorkspaceRoleId::generate();
+        let snapshot = Snapshot {
+            cursor: Cursor {
+                epoch: StreamEpoch::generate(),
+                position: 1,
+            },
+            account: OwnAccount {
+                id: own,
+                name: "Luca".to_owned(),
+                avatar: None,
+                is_owner: false,
+                server_role_ids: Vec::new(),
+                server_permissions: Vec::new(),
+                workspace_ids: vec![workspace_id],
+            },
+            workspaces: vec![WorkspaceState {
+                workspace: Workspace {
+                    id: workspace_id,
+                    name: "Studio".to_owned(),
+                    is_default: true,
+                },
+                own_role_ids: vec![role],
+                roles: Vec::new(),
+                categories: Vec::new(),
+                channels: vec![Channel {
+                    id: channel_id,
+                    workspace_id,
+                    category_id: None,
+                    kind: ChannelKind::Text,
+                    name: "general".to_owned(),
+                    position: 0,
+                    permanent_messages: false,
+                    user_limit: None,
+                    hides_occupants: false,
+                }],
+                calls: Vec::new(),
+            }],
+            own_call: None,
+            direct_calls: Vec::new(),
+            call_invitations: Vec::new(),
+            direct_mutes: Vec::new(),
+            messages: Vec::new(),
+        };
+        let names = Names {
+            accounts: HashMap::from([(own, "Luca".to_owned()), (ana, "Ana".to_owned())]),
+            roles: HashMap::from([(role, "Leads".to_owned())]),
+        };
+        Scene {
+            model: ServerModel::from_snapshot(snapshot),
+            own,
+            ana,
+            place: MessagePlace::Channel {
+                workspace_id,
+                channel_id,
+            },
+            names: Arc::new(names),
+            quoted: HashMap::new(),
+            server_id: ServerId::generate(),
+            role,
+        }
+    }
+
+    impl Scene {
+        fn message(&self, position: u64, author: AccountId, minutes: i64, text: &str) -> Message {
+            Message {
+                id: MessageId::generate(),
+                place: self.place,
+                position,
+                author_id: Some(author),
+                author_name: self.names.accounts.get(&author).cloned(),
+                created_at: morning() + Duration::minutes(minutes),
+                edited_at: None,
+                document: Some(compose::parse(text, &[])),
+                system: None,
+                reply_to: None,
+                permanent: false,
+                deleted: false,
+                attachments: Vec::new(),
+                reactions: Vec::new(),
+            }
+        }
+
+        fn timeline(&self, messages: Vec<Message>) -> Timeline {
+            Timeline {
+                place: PlaceId::of(&self.place),
+                messages: messages.into_iter().map(Arc::new).collect(),
+                more_before: false,
+                more_after: false,
+                reading: Reading::default(),
+                loaded: true,
+                failed: None,
+                stale: false,
+                unread_after: None,
+            }
+        }
+
+        fn feed(&self, timeline: &Timeline, may_manage: bool) -> Feed {
+            derive(&Source {
+                server_id: self.server_id,
+                model: &self.model,
+                timeline,
+                names: self.names.clone(),
+                own_roles: &[self.role],
+                may_manage,
+                quoted: &self.quoted,
+                zone: Zone::Fixed(UtcOffset::UTC),
+                today: Some(morning().date()),
+            })
+        }
+    }
+
+    /// One letter for each row: the kind of the row, and for a message whether it is
+    /// grouped.
+    fn shape(feed: &Feed) -> String {
+        feed.rows
+            .iter()
+            .map(|row| match row {
+                FeedRow::Start => 'S',
+                FeedRow::Earlier { .. } => 'E',
+                FeedRow::Later { .. } => 'L',
+                FeedRow::Day(_) => 'D',
+                FeedRow::Unread => 'U',
+                FeedRow::Message(row) if row.grouped => 'g',
+                FeedRow::Message(_) => 'M',
+                FeedRow::System(_) => 's',
+                FeedRow::Waiting(row) if row.grouped => 'w',
+                FeedRow::Waiting(_) => 'W',
+            })
+            .collect()
+    }
+
+    #[test]
+    fn messages_are_grouped_by_author_and_time_under_day_separators() {
+        let scene = scene();
+        let mut reply = scene.message(6, scene.ana, 12, "a reply");
+        let first = scene.message(1, scene.ana, 0, "one");
+        reply.reply_to = Some(first.id);
+        let timeline = scene.timeline(vec![
+            first,
+            scene.message(2, scene.ana, 4, "two, within five minutes"),
+            scene.message(3, scene.ana, 10, "three, six minutes later"),
+            scene.message(4, scene.own, 11, "another author"),
+            scene.message(5, scene.ana, 11, "back"),
+            reply,
+            // The next day in the zone of the list.
+            scene.message(7, scene.ana, 16 * 60, "tomorrow"),
+            scene.message(8, scene.ana, 16 * 60 + 1, "tomorrow, grouped"),
+        ]);
+        let feed = scene.feed(&timeline, false);
+        assert_eq!(shape(&feed), "SDMgMMMMDMg");
+        let FeedRow::Day(day) = &feed.rows[1] else {
+            panic!("no day");
+        };
+        assert_eq!(crate::text::day(*day, feed.today), "Thursday, 8 October");
+        let FeedRow::Message(row) = &feed.rows[2] else {
+            panic!("no message");
+        };
+        assert_eq!((row.author.as_str(), row.time.as_str()), ("Ana", "09:00"));
+        assert!(!row.own && !row.can_edit && !row.can_delete);
+        let FeedRow::Message(own) = &feed.rows[5] else {
+            panic!("no message");
+        };
+        assert!(own.own && own.can_edit && own.can_delete);
+        assert_eq!(feed.end_position, Some(8));
+
+        // The zone decides the day: nine hours east, the last two messages of the first
+        // day are on the next one.
+        let east = derive(&Source {
+            server_id: scene.server_id,
+            model: &scene.model,
+            timeline: &timeline,
+            names: scene.names.clone(),
+            own_roles: &[],
+            may_manage: true,
+            quoted: &scene.quoted,
+            zone: Zone::Fixed(UtcOffset::from_hms(14, 55, 0).unwrap()),
+            today: None,
+        });
+        assert_eq!(shape(&east), "SDMgDMMMMMg");
+        let FeedRow::Message(row) = &east.rows[2] else {
+            panic!("no message");
+        };
+        assert_eq!(row.time, "23:55");
+        // With "manage messages" a message of another person can be deleted, not edited.
+        assert!(row.can_delete && !row.can_edit);
+        assert_eq!(
+            crate::text::day(
+                morning().date(),
+                Some(morning().date().replace_year(2027).unwrap())
+            ),
+            "Thursday, 8 October 2026"
+        );
+    }
+
+    #[test]
+    fn the_unread_line_stands_before_the_first_unread_message_of_another_person() {
+        let scene = scene();
+        let messages = vec![
+            scene.message(1, scene.ana, 0, "read"),
+            scene.message(2, scene.ana, 1, "read too"),
+            scene.message(3, scene.own, 2, "own, after the read position"),
+            scene.message(4, scene.ana, 3, "unread"),
+            scene.message(5, scene.ana, 4, "unread too"),
+        ];
+        let mut timeline = scene.timeline(messages);
+        timeline.unread_after = Some(2);
+        assert_eq!(shape(&scene.feed(&timeline, false)), "SDMgMUMg");
+        // Without a read position there is no line.
+        timeline.unread_after = None;
+        assert_eq!(shape(&scene.feed(&timeline, false)), "SDMgMMg");
+        // When every loaded message is unread and the history has more before, no line
+        // is drawn above them all.
+        timeline.unread_after = Some(0);
+        timeline.more_before = true;
+        assert_eq!(shape(&scene.feed(&timeline, false)), "EDMgMMg");
+        // The history has more after the loaded messages: the list does not reach its end.
+        timeline.more_after = true;
+        timeline.reading.newer = true;
+        let feed = scene.feed(&timeline, false);
+        assert_eq!(shape(&feed), "EDMgMMgL");
+        assert_eq!(feed.end_position, None);
+        assert_eq!(feed.rows.last(), Some(&FeedRow::Later { reading: true }));
+    }
+
+    #[test]
+    fn replies_system_lines_deleted_messages_and_mentions_are_derived() {
+        let mut scene = scene();
+        let first = scene.message(1, scene.ana, 0, "The **export** worker ran out of memory.");
+        let mut with_file = scene.message(2, scene.ana, 1, "");
+        with_file.attachments = vec![Attachment {
+            id: junto_client_core::protocol::ids::AttachmentId::generate(),
+            name: "notes.pdf".to_owned(),
+            bytes: 10,
+            sha256: String::new(),
+            media_type: "application/octet-stream".to_owned(),
+            width: None,
+            height: None,
+        }];
+        let mut marker = scene.message(3, scene.ana, 2, "");
+        marker.deleted = true;
+        marker.document = None;
+        marker.author_id = None;
+        marker.author_name = None;
+        let reply = |position, to: &Message| {
+            let mut reply = scene.message(position, scene.own, 3, "answer");
+            reply.reply_to = Some(to.id);
+            reply
+        };
+        let (to_first, to_file, to_marker) =
+            (reply(4, &first), reply(5, &with_file), reply(6, &marker));
+        let outside = MessageId::generate();
+        let gone = MessageId::generate();
+        let read = MessageId::generate();
+        let mut to_outside = scene.message(7, scene.own, 3, "answer");
+        to_outside.reply_to = Some(outside);
+        let mut to_gone = scene.message(8, scene.own, 3, "answer");
+        to_gone.reply_to = Some(gone);
+        let mut to_read = scene.message(9, scene.own, 3, "answer");
+        to_read.reply_to = Some(read);
+        let mut system = scene.message(10, scene.ana, 4, "");
+        system.author_id = None;
+        system.author_name = None;
+        system.document = None;
+        system.system = Some(SystemMessage {
+            action: "call_microphone_blocked".to_owned(),
+            subject_id: Some(scene.own),
+            actor_id: Some(scene.ana),
+            recording_id: None,
+        });
+        let mut unknown = system.clone();
+        unknown.id = MessageId::generate();
+        unknown.system = Some(SystemMessage {
+            action: "made_up_later".to_owned(),
+            subject_id: None,
+            actor_id: None,
+            recording_id: None,
+        });
+        let mention = |position, text: &str, target| {
+            let at = text.find('@').unwrap();
+            let mut message = scene.message(position, scene.ana, 5, "");
+            message.document = Some(compose::parse(
+                text,
+                &[compose::Mention {
+                    range: at..at + 2,
+                    target,
+                }],
+            ));
+            message
+        };
+        let timeline = scene.timeline(vec![
+            first.clone(),
+            with_file,
+            marker,
+            to_first,
+            to_file,
+            to_marker,
+            to_outside,
+            to_gone,
+            to_read,
+            system,
+            unknown,
+            mention(11, "hello @x", compose::MentionTarget::Account(scene.own)),
+            mention(12, "hello @x", compose::MentionTarget::Account(scene.ana)),
+            mention(13, "hello @x", compose::MentionTarget::Role(scene.role)),
+            mention(14, "hello @x", compose::MentionTarget::Everyone),
+        ]);
+        assert_eq!(
+            missing_quotes(scene.server_id, &timeline, &scene.quoted).len(),
+            3
+        );
+        scene.quoted.insert((scene.server_id, gone), Quoted::Gone);
+        let mut earlier = first.clone();
+        earlier.id = read;
+        earlier.document = Some(compose::parse("an earlier message", &[]));
+        scene
+            .quoted
+            .insert((scene.server_id, read), Quoted::Read(Arc::new(earlier)));
+        assert_eq!(
+            missing_quotes(scene.server_id, &timeline, &scene.quoted),
+            [outside]
+        );
+        let feed = scene.feed(&timeline, false);
+        let quotes: Vec<QuoteText> = feed
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                FeedRow::Message(row) => row.reply.as_ref().map(|quote| quote.text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            quotes,
+            [
+                QuoteText::Text("The export worker ran out of memory.".to_owned()),
+                QuoteText::File("notes.pdf".to_owned()),
+                QuoteText::Deleted,
+                QuoteText::Unknown,
+                QuoteText::Deleted,
+                QuoteText::Text("an earlier message".to_owned()),
+            ]
+        );
+        let systems: Vec<(SystemKind, String)> = feed
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                FeedRow::System(row) => Some((
+                    row.kind,
+                    row.parts
+                        .iter()
+                        .map(|part| {
+                            if part.strong {
+                                format!("[{}]", part.text)
+                            } else {
+                                part.text.clone()
+                            }
+                        })
+                        .collect(),
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            systems,
+            [
+                (
+                    SystemKind::Plain,
+                    "[Ana] closed the microphone of [Luca]".to_owned()
+                ),
+                (
+                    SystemKind::Plain,
+                    "An event that this version of Junto does not know".to_owned()
+                ),
+            ]
+        );
+        let mentioned: Vec<bool> = feed
+            .rows
+            .iter()
+            .rev()
+            .take(4)
+            .rev()
+            .filter_map(|row| match row {
+                FeedRow::Message(row) => Some(row.mentions_own),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(mentioned, [true, false, true, true]);
+        // A deleted message can be neither edited nor deleted, and ends a group.
+        let FeedRow::Message(marker) = &feed.rows[4] else {
+            panic!("no marker");
+        };
+        assert!(marker.message.deleted && !marker.can_delete && !marker.grouped);
+    }
+
+    #[test]
+    fn waiting_messages_follow_the_end_of_the_history() {
+        let mut scene = scene();
+        let waiting = |id, text: &str, state| {
+            let mut pending = PendingMessage::new(
+                id,
+                PlaceId::of(&scene.place),
+                compose::parse(text, &[]),
+                None,
+                Vec::new(),
+                morning() + Duration::minutes(3),
+            );
+            pending.state = state;
+            Arc::new(pending)
+        };
+        scene.model.outbox = vec![
+            waiting(1, "on its way", SendState::Sending),
+            waiting(2, "failed", SendState::Failed(SendFailure::NotSent)),
+        ];
+        scene.model.message_states = vec![MessageState {
+            place: scene.place,
+            last_read: 1,
+            latest: 2,
+            unread: 1,
+            mentions: 0,
+        }];
+        let mut timeline = scene.timeline(vec![
+            scene.message(1, scene.ana, 0, "one"),
+            scene.message(2, scene.own, 1, "two"),
+        ]);
+        let feed = scene.feed(&timeline, false);
+        assert_eq!(shape(&feed), "SDMMww");
+        assert_eq!(feed.unread, 1);
+        assert!(can_send_again(SendState::Unconfirmed));
+        assert!(can_send_again(SendState::Failed(SendFailure::NotSent)));
+        assert!(!can_send_again(SendState::Failed(SendFailure::File)));
+        assert!(!can_send_again(SendState::Sending));
+        // The list does not reach the end: the waiting messages are not drawn in it.
+        timeline.more_after = true;
+        assert_eq!(shape(&scene.feed(&timeline, false)), "SDMML");
+        // A list whose first page has not arrived has no rows.
+        let mut unloaded = scene.timeline(Vec::new());
+        unloaded.loaded = false;
+        assert_eq!(shape(&scene.feed(&unloaded, false)), "");
+    }
+
+    #[test]
+    fn rows_that_did_not_change_are_the_same_rows() {
+        let scene = scene();
+        let mut timeline = scene.timeline(vec![
+            scene.message(1, scene.ana, 0, "one"),
+            scene.message(2, scene.own, 1, "two"),
+        ]);
+        let before = scene.feed(&timeline, false);
+        assert_eq!(before.rows, scene.feed(&timeline, false).rows);
+        // A message that changed is another row; the rows around it are the same.
+        let mut edited = timeline.messages[1].as_ref().clone();
+        edited.edited_at = Some(morning());
+        timeline.messages[1] = Arc::new(edited);
+        let after = scene.feed(&timeline, false);
+        let same: Vec<bool> = before
+            .rows
+            .iter()
+            .zip(after.rows.iter())
+            .map(|(one, other)| one == other)
+            .collect();
+        assert_eq!(same, [true, true, true, false]);
+    }
+
+    /// The derivation of a list with 10,000 loaded messages. The bound is generous: the
+    /// test fails when the derivation stops being linear, not when a machine is slow.
+    #[test]
+    fn ten_thousand_messages_are_derived_in_a_few_milliseconds() {
+        let scene = scene();
+        let messages: Vec<Message> = (0..10_000u64)
+            .map(|number| {
+                let author = if number % 3 == 0 {
+                    scene.own
+                } else {
+                    scene.ana
+                };
+                let mut message = scene.message(
+                    number + 1,
+                    author,
+                    number as i64,
+                    "A message with **some** formatting and `code` in it.",
+                );
+                if number % 7 == 0 && number > 0 {
+                    message.reply_to = Some(MessageId::generate());
+                }
+                message
+            })
+            .collect();
+        let mut timeline = scene.timeline(messages);
+        let first = timeline.messages[0].id;
+        for index in (1..10_000).step_by(11) {
+            let mut reply = timeline.messages[index].as_ref().clone();
+            reply.reply_to = Some(first);
+            timeline.messages[index] = Arc::new(reply);
+        }
+        let started = std::time::Instant::now();
+        let rounds = 5;
+        let mut rows = 0;
+        for _ in 0..rounds {
+            rows = scene.feed(&timeline, false).rows.len();
+        }
+        let each = started.elapsed() / rounds;
+        println!("derivation of 10,000 messages: {each:?} for {rows} rows");
+        assert!(rows > 10_000);
+        assert!(each < std::time::Duration::from_millis(500), "{each:?}");
+    }
+}

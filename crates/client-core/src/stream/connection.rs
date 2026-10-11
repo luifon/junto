@@ -5,6 +5,8 @@
 //! Requests to the server run as tasks of their own and report back, and the task goes on
 //! reading the connection while they run.
 
+mod messages;
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,6 +17,7 @@ use junto_protocol::events::{
     ClientMessage, CloseCode, Cursor, EndReason, Event, Level, Received, ServerMessage, decode,
 };
 use junto_protocol::ids::WorkspaceId;
+use junto_protocol::message::{AttachmentLimits, Message, MessageState};
 use junto_protocol::snapshot::Snapshot;
 use junto_protocol::structure::WorkspaceMember;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -51,6 +54,10 @@ enum Payload {
     Members(Vec<WorkspaceMember>),
     OwnCall(OwnCallView),
     ChannelCall(ChannelCall),
+    MessageState(MessageState),
+    Message(Box<Message>),
+    Pages(messages::Pages),
+    Limits(AttachmentLimits),
 }
 
 struct Loaded {
@@ -238,6 +245,9 @@ struct Client {
     untold: Vec<Notice>,
     /// The bytes of the messages whose events were applied since the last snapshot.
     applied_bytes: usize,
+    /// What the client does for the messages (ADR 0721).
+    messages: messages::Work,
+    done: mpsc::UnboundedSender<messages::Done>,
 }
 
 /// Runs the stream client of one server until `desired` is closed.
@@ -249,6 +259,7 @@ pub(crate) async fn run(
     mut commands: mpsc::UnboundedReceiver<Command>,
 ) {
     let (loaded, mut loads) = mpsc::unbounded_channel();
+    let (done, mut dones) = mpsc::unbounded_channel();
     let policy = environment.policy;
     let mut client = Client {
         shared,
@@ -281,6 +292,8 @@ pub(crate) async fn run(
         in_call: false,
         untold: Vec::new(),
         applied_bytes: 0,
+        messages: messages::Work::default(),
+        done,
     };
     let first = desired.borrow_and_update().clone();
     client.retarget(first);
@@ -297,6 +310,7 @@ pub(crate) async fn run(
                 client.retarget(now);
             }
             Some(loaded) = loads.recv() => client.loaded(loaded),
+            Some(done) = dones.recv() => client.done(done),
             Some(command) = commands.recv() => client.command(command),
             result = opened(&mut client.opening) => {
                 client.opening = None;
@@ -354,6 +368,7 @@ impl Client {
             // before would fail, so they start again with this one.
             self.disconnect();
             self.park();
+            self.park_messages();
         }
         if !same_session {
             // The wait that an ended session set stays: a server that ends every
@@ -398,8 +413,11 @@ impl Client {
                 }
                 Part::OwnCall => model.own_call.is_some(),
                 Part::ChannelCall(channel_id) => model.channel(channel_id).is_some(),
+                part => self.message_read_needed(part, model),
             });
-            if needed {
+            if needed && part.is_read_again() {
+                self.read(part);
+            } else if needed {
                 self.start(Load::Part(part));
             }
         }
@@ -417,6 +435,7 @@ impl Client {
         self.resume.clear();
         self.wanted_members.clear();
         self.waiting_for_members.clear();
+        self.forget_messages();
         self.halted = false;
         self.fault = None;
         self.snapshot_retry_at = None;
@@ -491,6 +510,9 @@ impl Client {
             && let Some(cursor) = self.model.as_ref().map(|model| model.cursor)
         {
             self.subscribe(cursor, now);
+        }
+        if !needs_snapshot {
+            self.advance_messages();
         }
     }
 
@@ -796,9 +818,15 @@ impl Client {
         let follow = model.apply(&event);
         model.cursor.position = id;
         self.model_changed = true;
+        self.messages.overtake_marks(&event, model);
         let mut again = Vec::new();
         for pending in &mut self.pending {
             if let Load::Part(part) = pending.load {
+                // A read whose content no event carries keeps only the events that start
+                // it again.
+                if part.is_read_again() && !part.concerns(&event, model) {
+                    continue;
+                }
                 pending.events.push(event.clone());
                 pending.bytes += bytes;
                 if pending.events.len() > MOST_KEPT_EVENTS || pending.bytes > MOST_KEPT_BYTES {
@@ -822,20 +850,37 @@ impl Client {
             self.reload();
         }
         for part in follow.load {
-            self.start(Load::Part(part));
+            if part.is_read_again() {
+                self.read(part);
+            } else {
+                self.start(Load::Part(part));
+            }
         }
     }
 
     /// Sends a read to the server. A read of the same thing that is on its way is dropped.
     fn start(&mut self, load: Load) {
-        let Some(target) = &self.target else {
+        if self.target.is_none() {
             return;
-        };
+        }
         self.pending.retain(|pending| pending.load != load);
         if let (Load::Part(Part::Members(workspace_id)), Some(model)) = (load, &mut self.model) {
             model.set_members(workspace_id, Loadable::Loading);
             self.model_changed = true;
         }
+        let page = match load {
+            Load::Part(Part::Messages(place, reach)) => {
+                let Some(ask) = self.page_ask(place, reach) else {
+                    return;
+                };
+                self.mark_reading(place, reach, true);
+                Some(ask)
+            }
+            _ => None,
+        };
+        let Some(target) = &self.target else {
+            return;
+        };
         if self.halted || self.not_before.is_some() {
             // Nothing is sent with a session that ended. The part is read with the next.
             if let Load::Part(part) = load {
@@ -868,6 +913,22 @@ impl Client {
                 Load::Part(Part::ChannelCall(channel_id)) => {
                     api.channel_call(channel_id).await.map(Payload::ChannelCall)
                 }
+                Load::Part(Part::MessageState(place)) => {
+                    api.message_state(place).await.map(Payload::MessageState)
+                }
+                Load::Part(Part::Message(_, message_id)) => api
+                    .message(message_id)
+                    .await
+                    .map(|message| Payload::Message(Box::new(message))),
+                Load::Part(Part::Messages(place, _)) => match page {
+                    Some(ask) => messages::read_pages(&api, place, ask)
+                        .await
+                        .map(Payload::Pages),
+                    None => Err(ApiError::Stopped),
+                },
+                Load::Part(Part::AttachmentLimits) => {
+                    api.attachment_limits().await.map(Payload::Limits)
+                }
             };
             let _ = loaded.send(Loaded { ticket, result });
         });
@@ -895,6 +956,17 @@ impl Client {
         if ended && let Load::Part(part) = pending.load {
             // The read is sent again with the next session.
             self.keep(part);
+        }
+        if let Load::Part(part) = pending.load
+            && part.is_read_again()
+        {
+            if ended {
+                self.ended(None);
+            } else {
+                self.read_answered(part, loaded.result, &kept);
+            }
+            self.pump_message_reads();
+            return;
         }
         match (pending.load, loaded.result) {
             (Load::Snapshot, Ok(Payload::Snapshot(snapshot))) => self.install(*snapshot),
@@ -962,6 +1034,7 @@ impl Client {
         let model = ServerModel::from_snapshot(snapshot);
         let cursor = model.cursor;
         let in_call = model.own_call.is_some();
+        let before = self.model.take();
         let unseen: Vec<WorkspaceId> = self
             .wanted_members
             .iter()
@@ -989,6 +1062,7 @@ impl Client {
         if in_call {
             self.start(Load::Part(Part::OwnCall));
         }
+        self.carry_messages(before.as_ref());
         self.untold.push(Notice::Reloaded { cursor });
     }
 
@@ -1040,6 +1114,7 @@ impl Client {
                     self.model_changed = true;
                 }
             }
+            command => self.message_command(command),
         }
     }
 
@@ -1084,6 +1159,8 @@ impl Client {
         }
         if self.model.is_none() || self.stale {
             times.extend(self.snapshot_retry_at);
+        } else {
+            times.extend(self.messages.next_due());
         }
         times.into_iter().min()
     }

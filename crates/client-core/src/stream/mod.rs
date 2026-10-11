@@ -48,6 +48,10 @@ pub struct StreamPolicy {
     /// How many connection attempts the client makes for one server in one minute at
     /// most. The server accepts 30 upgrade requests of an account in one minute.
     pub connections_per_minute: usize,
+    /// A message whose answer was lost is not sent again before this time after the
+    /// request: the server ends a request after 30 seconds (ADR 0008), and until then the
+    /// first request can still take effect (ADR 0721).
+    pub send_again_after: Duration,
 }
 
 impl Default for StreamPolicy {
@@ -62,6 +66,7 @@ impl Default for StreamPolicy {
             silence_grace: Duration::from_secs(10),
             messages_per_minute: 20,
             connections_per_minute: 20,
+            send_again_after: Duration::from_secs(30),
         }
     }
 }
