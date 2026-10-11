@@ -1,0 +1,149 @@
+use crate::messages_support::*;
+use crate::support::TestServer;
+use junto_protocol::events::{Event, Level};
+use junto_server::events::{
+    delivery::{Batch, Subscription, next_batch},
+    log,
+};
+
+#[test]
+fn general_stream_authorization_window_matches_production() {
+    assert_eq!(
+        crate::support::test_config()
+            .limits
+            .stream
+            .authorization_validity,
+        time::Duration::seconds(1)
+    );
+}
+
+#[tokio::test]
+async fn delivery_batch_statement_bound() {
+    let server = TestServer::start_with(|config| {
+        config.limits.stream.batch = 100;
+        config.limits.stream.poll_interval = time::Duration::hours(1);
+    })
+    .await;
+    let owner = server.owner().await;
+    let reader = server.join(&owner, "Reader").await;
+    let channel = channel(&server, &owner, "text").await;
+    let root = send(&server, &owner, &channel, "root").await;
+    sqlx::query("create extension pg_stat_statements")
+        .execute(&server.db)
+        .await
+        .unwrap();
+    for mixed in [false, true] {
+        let start = server.snapshot(&reader).await.cursor;
+        let mut tx = server.db.begin().await.unwrap();
+        if mixed {
+            sqlx::query("insert into notifications(id,account_id,message_id,kind,created_at) values($1,$2,$3,'thread',$4)")
+                .bind(uuid::Uuid::new_v4()).bind(reader.account_id).bind(root.id).bind(server.state.now())
+                .execute(&mut *tx).await.unwrap();
+        }
+        for n in 0..100 {
+            if mixed && n % 3 == 1 {
+                junto_server::messages::notifications::publish(
+                    &mut tx,
+                    server.state.now(),
+                    root.id,
+                    &[(reader.account_id, true)],
+                    true,
+                )
+                .await
+                .unwrap();
+            } else if mixed && n % 3 == 2 {
+                log::tell_account(
+                    &mut tx,
+                    server.state.now(),
+                    reader.account_id,
+                    &Event::ThreadRead {
+                        root_id: root.id,
+                        position: root.position,
+                    },
+                )
+                .await
+                .unwrap();
+            } else {
+                log::publish(
+                    &mut tx,
+                    server.state.now(),
+                    &Event::MessageChanged {
+                        place: root.place,
+                        message_id: root.id,
+                        position: root.position,
+                        deleted: false,
+                    },
+                )
+                .await
+                .unwrap();
+            }
+        }
+        tx.commit().await.unwrap();
+        let subscription = Subscription {
+            level: Level::Full,
+            position: start.position as i64,
+            epoch: start.epoch,
+        };
+        let who = crate::stream_review::opened(&reader);
+        for _ in 0..3 {
+            next_batch(&server.state, &who, subscription, 100)
+                .await
+                .unwrap();
+        }
+        let mut observer = server.db.acquire().await.unwrap();
+        let role: i64 =
+            sqlx::query_scalar("select oid::bigint from pg_roles where rolname=current_user")
+                .fetch_one(&mut *observer)
+                .await
+                .unwrap();
+        let jit_before: i64 = sqlx::query_scalar("select coalesce(sum(jit_functions),0)::bigint from pg_stat_statements where dbid=(select oid from pg_database where datname=current_database()) and query like 'with channels_selected%'")
+            .fetch_one(&mut *observer).await.unwrap();
+        let before = crate::messages_queries::statements(&mut observer, role).await;
+        let mut times = Vec::new();
+        for _ in 0..20 {
+            let started = std::time::Instant::now();
+            let batch = next_batch(&server.state, &who, subscription, 100)
+                .await
+                .unwrap();
+            times.push(started.elapsed().as_secs_f64() * 1000.0);
+            let Batch::Events {
+                deliveries,
+                skipped,
+                ..
+            } = batch
+            else {
+                panic!("expected events")
+            };
+            assert!(!skipped);
+            assert_eq!(deliveries.len(), 100);
+        }
+        let counts = crate::messages_queries::since(
+            crate::messages_queries::statements(&mut observer, role).await,
+            before,
+        );
+        let jit_after: i64 = sqlx::query_scalar("select coalesce(sum(jit_functions),0)::bigint from pg_stat_statements where dbid=(select oid from pg_database where datname=current_database()) and query like 'with channels_selected%'")
+            .fetch_one(&mut *observer).await.unwrap();
+        assert_eq!(
+            jit_after, jit_before,
+            "bounded standing reads must not compile a large JIT plan per batch"
+        );
+        let statements: i64 = counts
+            .iter()
+            .filter(|(sql, _)| !sql.contains("pg_stat_statements"))
+            .map(|(_, calls)| calls)
+            .sum();
+        let bound = if mixed { 19 } else { 14 };
+        assert!(
+            statements <= bound * 20,
+            "batch statement bound: {counts:#?}"
+        );
+        times.sort_by(f64::total_cmp);
+        eprintln!(
+            "DELIVERY mixed={mixed} median_ms={:.3} min_ms={:.3} max_ms={:.3} statements_per_batch={}",
+            times[10],
+            times[0],
+            times[19],
+            statements / 20
+        );
+    }
+}

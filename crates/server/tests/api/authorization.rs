@@ -208,7 +208,7 @@ async fn world() -> World {
     let new_key = || json!({ "public_key": DeviceKey::generate().public() });
     let (ws, closed_id, target_id) = (workspace.id, closed.id, target.account_id);
 
-    let operations = vec![
+    let mut operations = vec![
         operation(
             Method::GET,
             "/api/v1/attachment-limits",
@@ -1039,6 +1039,161 @@ async fn world() -> World {
         operation(Method::GET, "/api/v1/events", &[], none.clone(), &own),
     ];
 
+    operations.extend([
+        operation(
+            Method::GET,
+            "/api/v1/messages/{message_id}/thread/read",
+            &[&absent],
+            none.clone(),
+            &unknown,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/messages/{message_id}/thread/read",
+            &[&absent],
+            json!({"position":0}),
+            &unknown,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/workspaces/{workspace_id}/recording-retention",
+            &[&ws],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/workspaces/{workspace_id}/recording-retention",
+            &[&ws],
+            json!({"days":30}),
+            &forbidden,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/messages/{message_id}/thread",
+            &[&absent],
+            none.clone(),
+            &unknown,
+        ),
+        operation(
+            Method::POST,
+            "/api/v1/messages/{message_id}/thread",
+            &[&absent],
+            crate::messages_support::text("reply"),
+            &unknown,
+        ),
+        operation(
+            Method::POST,
+            "/api/v1/messages/{message_id}/fork",
+            &[&absent],
+            json!({"name":"fork","kind":"text"}),
+            &unknown,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/channels/{channel_id}/pins",
+            &[&absent],
+            none.clone(),
+            &unknown,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/messages/{message_id}/pin",
+            &[&absent],
+            none.clone(),
+            &unknown,
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/messages/{message_id}/pin",
+            &[&absent],
+            none.clone(),
+            &unknown,
+        ),
+        operation(Method::GET, "/api/v1/search", &[], none.clone(), &own),
+        operation(
+            Method::GET,
+            "/api/v1/threads/unread",
+            &[],
+            none.clone(),
+            &own,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/notifications",
+            &[],
+            none.clone(),
+            &own,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/notifications/{notification_id}/read",
+            &[&absent],
+            none.clone(),
+            &unknown,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/notification-settings/{scope_id}",
+            &[&uuid::Uuid::nil()],
+            none.clone(),
+            &own,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/notification-settings/{scope_id}",
+            &[&uuid::Uuid::nil()],
+            json!({}),
+            &own,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/workspaces/{workspace_id}/notification-default",
+            &[&closed_id],
+            none.clone(),
+            &[(Plain, NotFound)],
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/workspaces/{workspace_id}/notification-default",
+            &[&ws],
+            json!({"level":"all"}),
+            &forbidden,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/workspaces/{workspace_id}/file-retention",
+            &[&ws],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/workspaces/{workspace_id}/file-retention",
+            &[&ws],
+            json!({"days":30}),
+            &forbidden,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/direct-message-retention",
+            &[],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/direct-message-retention",
+            &[],
+            json!({"days":30}),
+            &forbidden,
+        ),
+    ]);
+    for operation in &mut operations {
+        if operation.template == "/api/v1/search" {
+            operation.path.push_str("?q=sample");
+        }
+    }
     World {
         server,
         plain,

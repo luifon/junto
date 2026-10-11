@@ -344,7 +344,10 @@ async fn ring(
     .bind(other)
     .fetch_one(&mut *connection)
     .await?;
-    if reached || store::has_muted(&mut *connection, now, other, caller).await? {
+    if reached
+        || store::has_muted(&mut *connection, now, other, caller).await?
+        || crate::messages::notifications::quiet(connection, other, now).await?
+    {
         return Ok(());
     }
     let limits = &app.config.limits.calls;

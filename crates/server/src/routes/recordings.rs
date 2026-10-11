@@ -344,7 +344,7 @@ pub async fn remove_recording(
                 "the recording runs or its files are processed; it can be removed afterwards",
             ));
         }
-        store::remove(connection, now, &recording, access.account_id).await
+        store::remove(connection, now, &recording, Some(access.account_id)).await
     })?;
     app.recordings.process_now();
     Ok(StatusCode::NO_CONTENT)

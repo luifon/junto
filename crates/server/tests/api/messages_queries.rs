@@ -6,7 +6,7 @@ use reqwest::StatusCode;
 
 type Counts = std::collections::BTreeMap<String, i64>;
 
-async fn statements(connection: &mut sqlx::PgConnection, role: i64) -> Counts {
+pub(crate) async fn statements(connection: &mut sqlx::PgConnection, role: i64) -> Counts {
     sqlx::query_as::<_, (String, i64)>(
         "select query, sum(calls)::bigint from pg_stat_statements
          where dbid=(select oid from pg_database where datname=current_database())
@@ -20,7 +20,7 @@ async fn statements(connection: &mut sqlx::PgConnection, role: i64) -> Counts {
     .collect()
 }
 
-fn since(after: Counts, before: Counts) -> Counts {
+pub(crate) fn since(after: Counts, before: Counts) -> Counts {
     after
         .into_iter()
         .filter_map(|(query, count)| {
@@ -118,7 +118,7 @@ async fn unread_count_is_exact_below_one_hundred_and_capped_above_it() {
     assert_eq!(state.unread, 99);
 }
 
-async fn measure_requests(
+pub(crate) async fn measure_requests(
     server: &TestServer,
 ) -> (Vec<sqlx::pool::PoolConnection<sqlx::Postgres>>, i64) {
     // Keep one warmed connection for HTTP requests; driver type lookups are not route work.
@@ -278,7 +278,7 @@ async fn maintenance_does_not_scan_live_attachments() {
     let files = Files::open().await;
     let root = send(&files.server, &files.owner, &files.channel, "content").await;
     let pending = files.start(b"content").await;
-    sqlx::query("insert into attachments(id,place_id,owner_id,message_id,name,bytes,received,sha256,complete,expires_at,touched_at,attached,staging_cleaned) select gen_random_uuid(),place_id,owner_id,$2,name,bytes,bytes,sha256,true,expires_at,touched_at,true,true from attachments cross join generate_series(1,20000) n where id=$1")
+    sqlx::query("insert into attachments(id,storage_id,place_id,owner_id,message_id,name,bytes,received,sha256,complete,expires_at,touched_at,attached,staging_cleaned) select gen_random_uuid(),storage_id,place_id,owner_id,$2,name,bytes,bytes,sha256,true,expires_at,touched_at,true,true from attachments cross join generate_series(1,20000) n where id=$1")
         .bind(pending.id).bind(root.id).execute(&files.server.db).await.unwrap();
     sqlx::query("analyze attachments")
         .execute(&files.server.db)
@@ -409,5 +409,57 @@ async fn unread_query_does_not_read_every_mention_of_other_accounts_after_the_re
     assert!(
         rows < 1000,
         "the mention count read {rows} rows for 20,000 mentions of another account: {plan}"
+    );
+}
+
+#[tokio::test]
+async fn round2_read_mentions_do_not_scan_the_read_history() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let reader = server.join(&owner, "Reader").await;
+    let channel = channel(&server, &owner, "text").await;
+    let root = crate::discovery_support::mention(&server, &owner, &channel, &reader).await;
+    sqlx::query("with copied as (insert into messages(id,place_id,position,author_id,created_at,document) select gen_random_uuid(),place_id,position+n,author_id,created_at,document from messages cross join generate_series(1,5000) n where id=$1 returning *) insert into message_mention_accounts(place_id,account_id,position,message_id) select place_id,$2,position,id from copied").bind(root.id).bind(reader.account_id).execute(&server.db).await.unwrap();
+    sqlx::query("insert into message_reads(place_id,account_id,position) values($1,$2,99999)")
+        .bind(channel.id)
+        .bind(reader.account_id)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    sqlx::query("with copied as (insert into messages(id,place_id,position,author_id,created_at,document,thread_root) select gen_random_uuid(),place_id,position+n+5000,author_id,created_at,document,id from messages cross join generate_series(1,1001) n where id=$1 returning *) insert into message_mention_accounts(place_id,account_id,position,message_id,thread_root,unread) select place_id,$2,position,id,thread_root,false from copied")
+        .bind(root.id).bind(reader.account_id).execute(&server.db).await.unwrap();
+    sqlx::query("analyze message_mention_accounts")
+        .execute(&server.db)
+        .await
+        .unwrap();
+    let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "explain(analyze,format json) {}",
+        junto_server::messages::state_query()
+    )))
+    .bind(vec![channel.id.as_uuid()])
+    .bind(reader.account_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert!(
+        visited_rows(&plan[0]["Plan"]) < 1000,
+        "read mentions must not be scanned: {plan}"
+    );
+    let (_held, _) = measure_requests(&server).await;
+    server.snapshot(&reader).await;
+    let mut connection = server.db.acquire().await.unwrap();
+    let actual: String = sqlx::query_scalar("select statement from pg_prepared_statements where statement like 'select p.id,policy.level%' limit 1").fetch_one(&mut *connection).await.unwrap();
+    let plan: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "explain(analyze,format json) {actual}"
+    )))
+    .bind(vec![channel.id.as_uuid()])
+    .bind(reader.account_id)
+    .bind(server.state.now())
+    .fetch_one(&mut *connection)
+    .await
+    .unwrap();
+    assert!(
+        visited_rows(&plan[0]["Plan"]) < 1000,
+        "policy mention counts must not scan read history: {plan}"
     );
 }

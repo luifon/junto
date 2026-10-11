@@ -29,21 +29,26 @@ pub fn root(app: &AppState) -> ApiResult<&Path> {
         )
     })
 }
+
 pub fn directory(id: AttachmentId) -> files::Place {
     files::Place::attachment(id)
 }
+
 pub fn chunk(id: AttachmentId, offset: u64) -> files::Place {
     directory(id).with(&offset.to_string())
 }
+
 pub fn hash(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
 }
+
 pub fn io(e: std::io::Error) -> ApiError {
     ApiError::internal(&e)
 }
+
 pub async fn free(app: &AppState) -> Option<u64> {
     use storage::Disk;
     let directory = root(app).ok()?.to_path_buf();
@@ -59,21 +64,14 @@ pub async fn owned(
     id: AttachmentId,
     now: OffsetDateTime,
 ) -> ApiResult<(Place, Upload)> {
-    let row = sqlx::query(
-        "select *
-             from attachments
-             where id=$1
-             and owner_id=$2
-             and not attached
-             and removed_at is null
-             and expires_at>$3",
-    )
-    .bind(id)
-    .bind(access.account_id)
-    .bind(now)
-    .fetch_optional(&mut *connection)
-    .await?
-    .ok_or_else(ApiError::not_found)?;
+    let row = sqlx::query("select * from attachments where id=$1 and owner_id=$2 and not attached and removed_at is null and
+             expires_at>$3")
+        .bind(id)
+        .bind(access.account_id)
+        .bind(now)
+        .fetch_optional(&mut *connection)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     let place = Place::load(connection, access, row.try_get("place_id")?).await?;
     Ok((
         place,
@@ -86,21 +84,15 @@ pub async fn owned(
         },
     ))
 }
+
 pub async fn of_messages(
     connection: &mut PgConnection,
     ids: &[MessageId],
 ) -> ApiResult<std::collections::HashMap<MessageId, Vec<Attachment>>> {
-    let rows = sqlx::query(
-        "select *
-             from attachments
-             where message_id=any($1)
-             and complete
-             and removed_at is null
-             order by id",
-    )
-    .bind(ids)
-    .fetch_all(connection)
-    .await?;
+    let rows = sqlx::query("select * from attachments where message_id=any($1) and complete and removed_at is null order by id")
+        .bind(ids)
+        .fetch_all(connection)
+        .await?;
     let mut result: std::collections::HashMap<MessageId, Vec<Attachment>> =
         std::collections::HashMap::new();
     for row in rows {
@@ -123,6 +115,7 @@ pub async fn of_messages(
     }
     Ok(result)
 }
+
 pub async fn attach(
     connection: &mut PgConnection,
     app: &AppState,
@@ -144,7 +137,8 @@ pub async fn attach(
                 "attachment is incomplete or belongs to another place",
             ));
         }
-        sqlx::query("update attachments set message_id=$2,attached=true where id=$1")
+        sqlx::query("update attachments set message_id=$2,attached=true,retention_at=(select created_at from messages where
+             id=$2 and not permanent) where id=$1")
             .bind(id)
             .bind(message)
             .execute(&mut *connection)
@@ -152,6 +146,7 @@ pub async fn attach(
     }
     Ok(())
 }
+
 pub async fn remove_message(
     connection: &mut PgConnection,
     now: OffsetDateTime,
@@ -164,21 +159,18 @@ pub async fn remove_message(
         .await?;
     Ok(())
 }
+
 pub async fn chunks(
     connection: &mut PgConnection,
     id: AttachmentId,
 ) -> ApiResult<Vec<(i64, i32, String)>> {
-    Ok(sqlx::query_as(
-        "select offset_bytes,bytes,sha256
-             from attachment_chunks
-             where attachment_id=$1
-             and stored
-             order by offset_bytes",
-    )
-    .bind(id)
-    .fetch_all(connection)
-    .await?)
+    Ok(sqlx::query_as("select offset_bytes,bytes,sha256 from attachment_chunks where attachment_id=$1 and stored order by
+             offset_bytes")
+        .bind(id)
+        .fetch_all(connection)
+        .await?)
 }
+
 pub fn check(
     root: PathBuf,
     id: AttachmentId,
@@ -227,34 +219,31 @@ pub async fn cleanup(app: &AppState) -> ApiResult<()> {
         return Ok(());
     };
     let now = app.now();
-    let ids: Vec<AttachmentId> = transact!(app, |connection| {
+    let ids: Vec<(AttachmentId, AttachmentId)> = transact!(app, |connection| {
         sqlx::query(EXPIRE_QUERY)
             .bind(now)
             .bind(i64::from(app.config.limits.maintenance_batch))
             .execute(&mut *connection)
             .await?;
-        let ids: Vec<AttachmentId> = sqlx::query_scalar(
-            "select id
-                 from attachments
-                 where removed_at is not null
-                 and touched_at<$1
-                 order by touched_at,id limit $2",
-        )
-        .bind(now - time::Duration::minutes(1))
-        .bind(i64::from(app.config.limits.maintenance_batch))
-        .fetch_all(&mut *connection)
-        .await?;
+        let ids: Vec<(AttachmentId, AttachmentId)> = sqlx::query_as("select id,storage_id from attachments a where removed_at is not null and not exists(select 1 from
+             attachments live where live.storage_id=a.storage_id and live.removed_at is null) and touched_at<$1 order
+             by touched_at,id limit $2")
+            .bind(now - time::Duration::minutes(1))
+            .bind(i64::from(app.config.limits.maintenance_batch))
+            .fetch_all(&mut *connection)
+            .await?;
         Ok(ids)
     })?;
-    for id in ids {
+    for (id, storage_id) in ids {
         if app.attachment_checks.contains(id) {
             continue;
         }
         let directory_root = root.clone();
-        let removed =
-            tokio::task::spawn_blocking(move || files::remove(&directory_root, &directory(id)))
-                .await
-                .map_err(|error| ApiError::internal(&error))?;
+        let removed = tokio::task::spawn_blocking(move || {
+            files::remove(&directory_root, &directory(storage_id))
+        })
+        .await
+        .map_err(|error| ApiError::internal(&error))?;
         if let Err(error) = removed
             && !files::is_absent(&error)
         {
@@ -279,19 +268,12 @@ pub async fn cleanup(app: &AppState) -> ApiResult<()> {
         })?;
     }
     let complete: Vec<AttachmentId> = crate::read!(app, |connection| {
-        Ok(sqlx::query_scalar(
-            "select id
-                 from attachments
-                 where complete
-                 and not staging_cleaned
-                 and removed_at is null
-                 and touched_at<$1
-                 order by touched_at,id limit $2",
-        )
-        .bind(now - time::Duration::minutes(1))
-        .bind(i64::from(app.config.limits.maintenance_batch))
-        .fetch_all(connection)
-        .await?)
+        Ok(sqlx::query_scalar("select id from attachments where complete and not staging_cleaned and removed_at is null and touched_at<$1
+             order by touched_at,id limit $2")
+            .bind(now - time::Duration::minutes(1))
+            .bind(i64::from(app.config.limits.maintenance_batch))
+            .fetch_all(connection)
+            .await?)
     })?;
     for id in complete {
         if app.attachment_checks.contains(id) {
@@ -350,7 +332,63 @@ pub async fn limits(
     ))
 }
 
-pub const EXPIRE_QUERY: &str = "update attachments set removed_at=$1
-    where id in(select id from attachments
-        where removed_at is null and not attached and expires_at<=$1
-        order by expires_at,id limit $2)";
+pub const EXPIRE_QUERY: &str = "update attachments set removed_at=$1 where id in(select id from attachments where removed_at is null and
+             not attached and expires_at<=$1 order by expires_at,id limit $2)";
+
+/// Copies metadata while immutable chunks remain shared until the last reference is removed.
+pub async fn copy_attachments(
+    connection: &mut PgConnection,
+    now: time::OffsetDateTime,
+    channel: junto_protocol::ids::ChannelId,
+    originals: &[MessageId],
+    copies: &[MessageId],
+) -> ApiResult<()> {
+    let mut cursor = uuid::Uuid::nil();
+    loop {
+        let rows: Vec<(AttachmentId, MessageId)> = sqlx::query_as("select id,message_id from attachments where message_id=any($1) and removed_at is null and id>$2 order by
+             id limit 200")
+            .bind(originals)
+            .bind(cursor)
+            .fetch_all(&mut *connection)
+            .await?;
+        if rows.is_empty() {
+            break;
+        }
+        if let Some(row) = rows.last() {
+            cursor = row.0.as_uuid();
+        }
+        let old_ids: Vec<_> = rows.iter().map(|(id, _)| *id).collect();
+        let new_ids: Vec<_> = rows.iter().map(|_| AttachmentId::generate()).collect();
+        let message_ids: Vec<_> = rows
+            .iter()
+            .map(|(_, message)| {
+                originals
+                    .iter()
+                    .position(|id| id == message)
+                    .map(|index| copies[index])
+                    .ok_or_else(ApiError::not_found)
+            })
+            .collect::<ApiResult<_>>()?;
+        sqlx::query("insert into
+             attachments(id,place_id,owner_id,message_id,name,bytes,received,sha256,complete,media_type,width,height,expires_at,touched_at,attached,staging_cleaned,storage_id,retention_at)
+             select
+             mapping.new_id,$1,a.owner_id,mapping.message_id,a.name,a.bytes,a.received,a.sha256,true,a.media_type,a.width,a.height,a.expires_at,$2,true,true,a.storage_id,a.retention_at
+             from unnest($3::uuid[],$4::uuid[],$5::uuid[]) mapping(old_id,new_id,message_id) join attachments a on
+             a.id=mapping.old_id")
+            .bind(channel)
+            .bind(now)
+            .bind(&old_ids)
+            .bind(&new_ids)
+            .bind(&message_ids)
+            .execute(&mut *connection)
+            .await?;
+        sqlx::query("insert into attachment_chunks(attachment_id,offset_bytes,bytes,sha256,stored) select
+             mapping.new_id,c.offset_bytes,c.bytes,c.sha256,c.stored from unnest($1::uuid[],$2::uuid[])
+             mapping(old_id,new_id) join attachment_chunks c on c.attachment_id=mapping.old_id")
+            .bind(&old_ids)
+            .bind(&new_ids)
+            .execute(&mut *connection)
+            .await?;
+    }
+    Ok(())
+}

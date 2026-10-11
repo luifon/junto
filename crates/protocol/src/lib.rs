@@ -12,6 +12,7 @@ pub mod account;
 pub mod audit;
 pub mod auth;
 pub mod call;
+pub mod discovery;
 pub mod error;
 pub mod events;
 pub mod ids;

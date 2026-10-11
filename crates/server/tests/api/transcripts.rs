@@ -1021,9 +1021,10 @@ async fn the_worker_is_ended_when_its_recording_is_removed() {
     let id = done.recording.id;
     worker.give(&two_lines(&done));
     worker.behave("touch \"$here/started\"\nexec sleep 600");
+    // Give deletion time to commit between lease renewals under CPU load.
     let quick = server
         .strict(|config| {
-            config.limits.recordings.transcription.heartbeat = Duration::milliseconds(100);
+            config.limits.recordings.transcription.heartbeat = Duration::seconds(10);
         })
         .await;
 

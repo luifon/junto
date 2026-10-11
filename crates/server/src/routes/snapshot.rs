@@ -120,7 +120,16 @@ pub async fn get_snapshot(
             }
         }
         let direct_mutes = calls::direct_mutes(connection, now, access.account_id).await?;
-        let messages = crate::messages::snapshot(connection, &access, &workspaces).await?;
+        let messages = crate::messages::snapshot(connection, &access, &workspaces, now).await?;
+        let allowed = crate::access::visibility::places(connection, &access).await?;
+        let threads = crate::messages::threads::unread(
+            connection,
+            access.account_id,
+            &allowed.channels,
+            None,
+            200,
+        )
+        .await?;
         Ok(Snapshot {
             cursor: log.cursor(log.head)?,
             account,
@@ -130,6 +139,17 @@ pub async fn get_snapshot(
             call_invitations,
             direct_mutes,
             messages,
+            threads: threads.threads,
+            threads_more: threads.more,
+            threads_next: threads.next,
+            notifications: crate::messages::notifications::visible_in(
+                connection, &access, now, None, None, 50, &allowed,
+            )
+            .await?,
+            notification_settings: crate::messages::notifications::settings(
+                connection, &access, &allowed,
+            )
+            .await?,
         })
     })
     .map(Json)

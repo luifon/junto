@@ -223,6 +223,15 @@ pub enum AuditEvent {
     PermanentMessageDeleted {
         message_id: crate::ids::MessageId,
     },
+    NotificationDefaultChanged {
+        level: crate::discovery::NotificationLevel,
+    },
+    RecordingRetentionChanged {
+        days: Option<u32>,
+    },
+    RetentionChanged {
+        days: Option<u32>,
+    },
     /// An action that this build does not know. It is read and never written.
     #[serde(other, skip_serializing)]
     Unknown,
@@ -278,6 +287,9 @@ impl AuditEvent {
             Self::GlossaryReplaced { .. } => "glossary_replaced",
             Self::PermanentMessageDeleted { .. } => "permanent_message_deleted",
             Self::AttachmentLimitsChanged { .. } => "attachment_limits_changed",
+            Self::NotificationDefaultChanged { .. } => "notification_default_changed",
+            Self::RecordingRetentionChanged { .. } => "recording_retention_changed",
+            Self::RetentionChanged { .. } => "retention_changed",
             Self::Unknown => "unknown",
         }
     }

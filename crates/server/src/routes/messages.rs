@@ -11,20 +11,27 @@ use crate::{
 };
 use axum::{Json, extract::State, http::StatusCode};
 use junto_authz::{Request, ServerPermission, WorkspacePermission};
-use junto_protocol::{error::ErrorCode, events::Event, ids::*, message::*};
+use junto_protocol::{
+    error::ErrorCode,
+    events::Event,
+    ids::{ChannelId, ConversationId, MessageId},
+    message::*,
+};
 use serde::Deserialize;
 use sqlx::types::Json as SqlJson;
 
 #[derive(Clone, Copy)]
-enum Target {
+pub(super) enum Target {
     Channel(ChannelId),
     Direct(ConversationId),
+    Thread(MessageId),
 }
 impl Target {
     async fn open(self, connection: &mut sqlx::PgConnection, access: &Access) -> ApiResult<Place> {
         match self {
             Self::Channel(id) => Place::channel(connection, access, id).await,
             Self::Direct(id) => Place::direct(connection, access, id).await,
+            Self::Thread(id) => Ok(super::threads::root(connection, access, id).await?.0),
         }
     }
 }
@@ -37,7 +44,7 @@ pub struct Page {
     pub after_message: Option<MessageId>,
 }
 impl Page {
-    fn validate(&self) -> ApiResult<i64> {
+    pub(super) fn validate(&self) -> ApiResult<i64> {
         let limit = self.limit.unwrap_or(50);
         if !(1..=200).contains(&limit)
             || [
@@ -63,7 +70,7 @@ impl Page {
         Ok(i64::from(limit))
     }
 }
-fn rate(app: &AppState, access: &Access, counted: &mut bool) -> ApiResult<()> {
+pub(super) fn rate(app: &AppState, access: &Access, counted: &mut bool) -> ApiResult<()> {
     if !*counted {
         app.message_writes
             .attempt_of(access.account_id, app.now())
@@ -139,7 +146,7 @@ async fn history(
         Ok(MessagePage { messages, has_more })
     })
 }
-async fn send(
+pub(super) async fn send(
     app: &AppState,
     bearer: &Bearer,
     target: Target,
@@ -164,6 +171,16 @@ async fn send(
                 ));
             }
         }
+        let thread_root = match target {
+            Target::Thread(id) => Some(id),
+            _ => None,
+        };
+        if let (Some(root), Some(reply)) = (thread_root, body.reply_to) {
+            let (_, replied) = messages::get(connection, &access, reply).await?;
+            if reply != root && replied.thread_root != Some(root) {
+                return Err(ApiError::invalid("a thread reply stays in its thread"));
+            }
+        }
         let position = place.next(connection).await?;
         let permanent: bool = match place.value {
             MessagePlace::Channel { channel_id, .. } => {
@@ -174,8 +191,8 @@ async fn send(
             }
             _ => false,
         };
-        sqlx::query("insert into messages(id,place_id,position,author_id,created_at,document,reply_to,permanent)
-             values($1,$2,$3,$4,$5,$6,$7,$8)")
+        sqlx::query("insert into messages(id,place_id,position,author_id,created_at,document,reply_to,permanent,thread_root)
+             values($1,$2,$3,$4,$5,$6,$7,$8,$9)")
 
                         .bind(id)
                         .bind(place.id)
@@ -185,6 +202,7 @@ async fn send(
                         .bind(SqlJson(&body.document))
                         .bind(body.reply_to)
                         .bind(permanent)
+                        .bind(thread_root)
                         .execute(&mut *connection)
                         .await?;
         if permanent {
@@ -198,8 +216,23 @@ async fn send(
         }
         messages::mentions(connection, &access, &place, id, &body.document, now).await?;
         messages::uploads::attach(connection, app, &access, &place, id, &body.attachments).await?;
+        messages::notifications::create(connection, now, id, None).await?;
         messages::changed(connection, now, place.value, id, position as u64, false).await?;
-        advance_read(connection, now, &access, &place, position).await?;
+        if let Some(root) = thread_root {
+            messages::threads::advance(connection, now, &access, root, position).await?;
+            let (_, root_message) = messages::get(connection, &access, root).await?;
+            messages::changed(
+                connection,
+                now,
+                place.value,
+                root,
+                root_message.position,
+                false,
+            )
+            .await?;
+        } else {
+            advance_read(connection, now, &access, &place, position).await?;
+        }
         Ok(messages::get(connection, &access, id).await?.1)
     })
 }
@@ -240,13 +273,15 @@ pub async fn edit_message(
         if message.document.as_ref() == Some(&body.document) {
             return Ok(message);
         }
-        messages::mentions(connection, &access, &place, id, &body.document, now).await?;
+        let recipients =
+            messages::mentions(connection, &access, &place, id, &body.document, now).await?;
         sqlx::query("update messages set document=$2,edited_at=$3 where id=$1")
             .bind(id)
             .bind(SqlJson(&body.document))
             .bind(now)
             .execute(&mut *connection)
             .await?;
+        messages::notifications::create(connection, now, id, Some(&recipients)).await?;
         messages::changed(connection, now, place.value, id, message.position, false).await?;
         Ok(messages::get(connection, &access, id).await?.1)
     })
@@ -286,7 +321,7 @@ pub async fn delete_message(
                 return Err(ApiError::conflict("recording is still processing"));
             }
             rate(&app, &access, &mut counted)?;
-            crate::recordings::store::remove(connection, now, &recording, access.account_id)
+            crate::recordings::store::remove(connection, now, &recording, Some(access.account_id))
                 .await?;
             return Ok(());
         }
@@ -496,6 +531,8 @@ async fn advance_read(
     .await?
     .rows_affected();
     if changed > 0 {
+        sqlx::query("update notifications n set read_at=$1 from messages m where n.message_id=m.id and n.account_id=$2 and m.place_id=$3 and m.thread_root is null and m.position<=$4 and n.read_at is null")
+            .bind(now).bind(access.account_id).bind(place.id).bind(position).execute(&mut *connection).await?;
         events::tell_account(
             connection,
             now,
@@ -524,12 +561,14 @@ async fn mark(
         let place = target.open(connection, &access).await?;
         rate(app, &access, &mut counted)?;
         place.ensure(connection).await?;
-        let head = messages::state(connection, &access, &place).await?.latest as i64;
+        let head = messages::state(connection, &access, &place, app.now())
+            .await?
+            .latest as i64;
         if position > head {
             return Err(ApiError::invalid("read position is beyond the history"));
         }
         advance_read(connection, app.now(), &access, &place, position).await?;
-        messages::state(connection, &access, &place).await
+        messages::state(connection, &access, &place, app.now()).await
     })
 }
 
@@ -612,7 +651,7 @@ pub async fn channel_message_state(
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, app.now()).await?;
         let place = Target::Channel(id).open(connection, &access).await?;
-        messages::state(connection, &access, &place).await
+        messages::state(connection, &access, &place, app.now()).await
     })
     .map(Json)
 }
@@ -626,7 +665,7 @@ pub async fn conversation_message_state(
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, app.now()).await?;
         let place = Target::Direct(id).open(connection, &access).await?;
-        messages::state(connection, &access, &place).await
+        messages::state(connection, &access, &place, app.now()).await
     })
     .map(Json)
 }

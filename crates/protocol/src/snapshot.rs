@@ -32,6 +32,19 @@ pub struct Snapshot {
     pub direct_mutes: Vec<DirectMute>,
     #[serde(default)]
     pub messages: Vec<crate::message::MessageState>,
+    /// The newest 200 readable threads with unread replies or mentions.
+    #[serde(default)]
+    pub threads: Vec<crate::message::ThreadState>,
+    /// Whether additional unread threads can be requested.
+    #[serde(default)]
+    pub threads_more: bool,
+    /// Continuation for GET /api/v1/threads/unread.
+    #[serde(default)]
+    pub threads_next: Option<String>,
+    #[serde(default)]
+    pub notifications: Vec<crate::discovery::Notification>,
+    #[serde(default)]
+    pub notification_settings: Vec<crate::discovery::ScopedNotificationSettings>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

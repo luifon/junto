@@ -220,3 +220,37 @@ client can read the effective values with GET.
 Start an upload at `POST /api/v1/attachments`, send 1 MiB chunks to its `chunks/{offset}`
 route, then complete it after all bytes have arrived. Upload status permits resumption.
 The generated API describes the request types. Back up this directory with the database.
+
+Threads use `GET` and `POST /api/v1/messages/{id}/thread`; fork a thread with
+`POST /api/v1/messages/{id}/fork`. Each thread has one fork, copied in bounded batches.
+Deleting its destination permits another fork; an archived destination keeps the marker.
+Occupant hiding is inherited only by voice forks. Authors and named recipients follow
+threads; role/everyone mentions count as unread without following. Participants and mention
+recipients read or advance their position at `/api/v1/messages/{id}/thread/read`.
+The snapshot contains at most 200 unread threads, plus `threads_more` and `threads_next`.
+Continue with `GET /api/v1/threads/unread?before=...&limit=...` (maximum 200); unread mentions
+of unfollowed threads appear with zero unread replies.
+Pin or unpin an authored channel message at
+`/api/v1/messages/{id}/pin`, and read pins at `/api/v1/channels/{id}/pins`.
+`GET /api/v1/search?q=...` searches current authorized messages and transcript lines.
+
+Read notifications at `/api/v1/notifications` and mark one read with
+`PUT /api/v1/notifications/{id}/read`. Personal settings use
+`/api/v1/notification-settings/{scope_id}`: the nil UUID names account/server defaults,
+and a workspace or channel UUID names its override. Workspace administrator defaults
+use `/api/v1/workspaces/{id}/notification-default`. Clients apply synchronized do-not-disturb
+settings to OS notifications; the server also suppresses notification delivery and direct-call
+invitations during quiet periods, including replay. Equal daily quiet endpoints are invalid.
+Unread state continues to update. Reading a place marks its
+notices read, and maintenance keeps the newest 500 notices per account for at most 90 days.
+Cap maintenance visits only recipients of new notices. Edits adding mentions can upgrade
+ordinary or thread notices and reset their read state.
+
+Administrators set workspace file retention at `/api/v1/workspaces/{id}/file-retention`
+recording retention at `/api/v1/workspaces/{id}/recording-retention`, and direct-message
+retention at `/api/v1/direct-message-retention`. A null `days` value
+means never, the default. Retention visits places in identifier order, committing bounded
+batches for one place at a time. Final recordings include ready, partly_failed and failed.
+Message retention and attachment cleanup run in maintenance.
+Messages retain a flag when file retention removes their attachments.
+The full rules and pagination contracts are in ADR 0409.

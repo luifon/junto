@@ -89,6 +89,7 @@ Status values:
 | [0406](0406-archive-export-and-retention.md) | Archive, export and retention | Accepted | Manual archive with deletion after a set time, ZIP export with an expiring link, retention per workspace. |
 | [0407](0407-deleted-channels-and-permanent-message-count.md) | Deleted channels keep a marker row, and a channel counts its permanent messages | Accepted | A deleted channel stays as a row for the audit log; the count of permanent messages decides the owner-only deletion. |
 | [0408](0408-text-message-storage-api-and-uploads.md) | Message documents, history positions and resumable attachments | Accepted | Typed documents, authorized history and unread state, private system lines and resumable files. |
+| [0409](0409-threads-pins-notifications-search-and-retention.md) | Threads, pins, notifications, search and message retention | Accepted | Thread copies, pin limits, notification policy, authorized search and bounded message retention. |
 
 ## 0501–0599 Calls
 

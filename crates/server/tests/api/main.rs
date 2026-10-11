@@ -52,3 +52,15 @@ mod messages_rates;
 mod messages_storage;
 mod messages_support;
 mod messages_system;
+
+mod discovery_access;
+mod discovery_support;
+mod notifications;
+mod pins;
+mod retention;
+mod search;
+mod threads;
+
+mod delivery_cost;
+
+mod review_round3;

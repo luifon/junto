@@ -93,8 +93,8 @@ pub async fn start_upload(
         place.ensure(connection).await?;
         let expires = now + Duration::hours(24);
         sqlx::query(
-            "insert into attachments(id,place_id,owner_id,name,bytes,sha256,expires_at,touched_at)
-             values($1,$2,$3,$4,$5,$6,$7,$8)",
+            "insert into attachments(id,storage_id,place_id,owner_id,name,bytes,sha256,expires_at,touched_at)
+             values($1,$1,$2,$3,$4,$5,$6,$7,$8)",
         )
         .bind(id)
         .bind(place.id)
@@ -382,10 +382,10 @@ pub async fn download(
     bearer: Bearer,
     ApiPath(id): ApiPath<AttachmentId>,
 ) -> ApiResult<Response> {
-    let (parts, size, media, hash, account_id) = read!(app, |connection| {
+    let (parts, size, media, hash, account_id, storage_id) = read!(app, |connection| {
         let access = Access::open(connection, &bearer, app.now()).await?;
         let row = sqlx::query(
-            "select message_id,bytes,media_type,sha256
+            "select message_id,bytes,media_type,sha256,storage_id
                  from attachments
                  where id=$1
                  and attached
@@ -409,6 +409,7 @@ pub async fn download(
             row.try_get::<String, _>("media_type")?,
             row.try_get::<String, _>("sha256")?,
             access.account_id,
+            row.try_get::<AttachmentId, _>("storage_id")?,
         ))
     })?;
     let permit = app
@@ -438,9 +439,12 @@ pub async fn download(
             let bytes = tokio::task::spawn_blocking(move || {
                 use std::io::Read;
                 let mut bytes = Vec::new();
-                crate::recordings::files::open(&directory, &files::chunk(id, offset as u64))?
-                    .take(files::CHUNK as u64 + 1)
-                    .read_to_end(&mut bytes)?;
+                crate::recordings::files::open(
+                    &directory,
+                    &files::chunk(storage_id, offset as u64),
+                )?
+                .take(files::CHUNK as u64 + 1)
+                .read_to_end(&mut bytes)?;
                 if bytes.len() != length as usize || files::hash(&bytes) != expected {
                     return Err(std::io::Error::other("attachment integrity check failed"));
                 }
