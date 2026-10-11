@@ -19,6 +19,10 @@
 #
 # A loop that is not root runs the job as its own user, for a use outside the container.
 # It then ends the process group of the job only.
+#
+# JUNTO_TRANSCRIBE_BATCH_SIZE, when it is set and not empty, is given to each job as
+# `--batch-size`: the number of speech clips that the speech model reads at one time, from
+# 1 to 64. A smaller number needs less memory.
 set -u
 
 spool=${JUNTO_WORKER_SPOOL:-/var/lib/junto/spool}
@@ -28,7 +32,17 @@ poll_seconds=${JUNTO_WORKER_POLL_SECONDS:-1}
 end_seconds=${JUNTO_WORKER_END_SECONDS:-8}
 job_user=${JUNTO_WORKER_JOB_USER:-}
 job_groups=${JUNTO_WORKER_JOB_GROUPS:-}
+batch_size=${JUNTO_TRANSCRIBE_BATCH_SIZE:-}
 result_limit=4096
+
+case "$batch_size" in
+    "") ;;
+    [1-9] | [1-5][0-9] | 6[0-4]) ;;
+    *)
+        echo "worker-loop: JUNTO_TRANSCRIBE_BATCH_SIZE is not a whole number from 1 to 64" >&2
+        exit 1
+        ;;
+esac
 
 as_root=""
 if [ "$(id -u)" -eq 0 ]; then
@@ -126,6 +140,7 @@ run_request() {
     fi
     report "$base" "taken" || return
     start_job "$job" --out "$transcript" --audio-root "$audio_root" \
+        ${batch_size:+--batch-size "$batch_size"} \
         < /dev/null > /dev/null 2>> "$base.log" &
     pid=$!
     while kill -0 "$pid" 2>/dev/null; do

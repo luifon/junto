@@ -47,8 +47,10 @@ ROOT = {
     # The loop of the worker container; a job runs as the user 10001 (ADR 0016).
     "worker": {"SETUID", "SETGID", "KILL"},
 }
-# The recorder keeps the default capabilities of Docker and adds one (ADR 0015).
-KEEPS_DEFAULT_CAPABILITIES = {"recorder": {"SYS_ADMIN"}}
+# The server image names its user itself, and that user is not root (ADR 0014).
+USER_OF_IMAGE = {"server"}
+# The browser and the sound server of the recorder write below its root (ADR 0020).
+WRITABLE_ROOT = {"recorder"}
 NO_HEALTH_CHECK = {"init", "worker"}
 DATABASE_NETWORK = {"postgres", "server"}
 
@@ -92,25 +94,21 @@ def check(form: str, project: dict) -> list[str]:
         if service.get("privileged"):
             problem("is privileged")
         added = set(service.get("cap_add", []))
-        if name in KEEPS_DEFAULT_CAPABILITIES:
-            if added != KEEPS_DEFAULT_CAPABILITIES[name]:
-                problem(f"adds the capabilities {sorted(added)}")
-        else:
-            if service.get("cap_drop") != ["ALL"]:
-                problem("does not drop every capability")
-            if "no-new-privileges:true" not in service.get("security_opt", []):
-                problem("may gain new privileges")
-            if added != ROOT.get(name, set()):
-                problem(f"adds the capabilities {sorted(added)}")
-            user = str(service.get("user", ""))
-            is_root = user in ("", "root") or user.split(":")[0] == "0"
-            # The server image names its user itself.
-            if name == "server" and user == "":
-                is_root = False
-            if is_root != (name in ROOT):
-                problem(f"user is {user!r}")
-            if not service.get("read_only"):
-                problem("file system is not read-only")
+        if service.get("cap_drop") != ["ALL"]:
+            problem("does not drop every capability")
+        if "no-new-privileges:true" not in service.get("security_opt", []):
+            problem("may gain new privileges")
+        if added != ROOT.get(name, set()):
+            problem(f"adds the capabilities {sorted(added)}")
+        user = str(service.get("user", ""))
+        named = user.split(":")[0].strip()
+        is_root = named in ("", "root") or named.lstrip("+-").strip("0") == "" and named.lstrip("+-") != ""
+        if name in USER_OF_IMAGE and user == "":
+            is_root = False
+        if is_root != (name in ROOT):
+            problem(f"user is {user!r}")
+        if bool(service.get("read_only")) == (name in WRITABLE_ROOT):
+            problem("wrong use of a read-only file system")
 
         networks = set(service.get("networks", {}) or {})
         if ("database" in networks) != (name in DATABASE_NETWORK and "postgres" in services):

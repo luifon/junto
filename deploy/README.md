@@ -32,6 +32,8 @@ deploy/tests/smoke.sh                                 # the local form starts an
 deploy/tests/backup-restore.sh                        # backup, a failed restore, a restore into an empty deployment
 deploy/tests/one-host.sh                              # the one-host form on one machine
 deploy/tests/two-hosts.sh                             # the two-host form on one machine, as two projects
+(cd spikes/test-participant && cargo build --release)
+deploy/tests/recording.sh                             # a recorded call with the real recorder, and three failures
 ```
 
 The last four build the images that do not exist yet, give their containers memory limits under 3 GB together, and remove everything at the end. `one-host.sh` and `two-hosts.sh` need the ports 80, 443, 3478, 5349, 7880, 7881 and 7882 of the machine, because the media server and the entry use the network of the host; run one of them at a time.

@@ -78,6 +78,16 @@ services:
           udp_port: ${JUNTO_LOCAL_LIVEKIT_UDP_PORT:-7882}
           use_external_ip: false
           enable_loopback_candidate: true
+          # Without a STUN server of its own, the media server names public STUN servers of
+          # a third party to its clients and to the recorder (ADR 0007). On one machine no
+          # client needs one, so this names the media port on the loopback address.
+          stun_servers:
+            - 127.0.0.1:${JUNTO_LOCAL_LIVEKIT_UDP_PORT:-7882}
+        room:
+          # The media server keeps the room of a call for 60 seconds after its last person
+          # left. The server ends a call 20 seconds after its last person was seen absent
+          # and then ends the jobs of the recorder, before the room closes (ADR 0020).
+          departure_timeout: 60
         webhook:
           api_key: ${JUNTO_LIVEKIT_API_KEY:?set JUNTO_LIVEKIT_API_KEY in deploy/.env}
           urls:

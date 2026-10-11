@@ -25,6 +25,7 @@ A request:
 - When no loop wrote `taken` within 60 seconds, the hand-over writes the cancel file and ends with the code 75. The server counts a failed run (ADR 0607).
 - A loop that finds a request with `taken` and without an exit code was ended during that job. It writes the exit code 70 and does not run the job again; the server starts another run.
 - The variables `JUNTO_TRANSCRIBE_*` of the worker are settings of the worker container, not of the server.
+- `JUNTO_TRANSCRIBE_BATCH_SIZE` is a setting of the loop. When it is set, the loop gives it to each job as the option `--batch-size` of the worker; a value that is no whole number from 1 to 64 stops the loop at its start. The worker reads its limits from the environment and has no variable for the batch size.
 
 Stop:
 
@@ -53,5 +54,6 @@ Permissions:
 - Requests of a time in which no worker container ran stay in the spool, three small files each, until a loop states their end and a later hand-over removes them.
 - On a host with a GPU the job gets the group of the device nodes through `JUNTO_WORKER_JOB_GROUPS` (`worker-gpu.yaml`). This was not run.
 - A second server process on the same volumes would cancel the job of the first. A deployment runs one server process (ADR 0008).
-- The two scripts are tested with two users and a stand-in worker in the server image (`deploy/tests/transcribe-handover.sh`). The hand-over from the server container to the real worker image was run by hand in the local form without models: the worker refused the start with its code 3, and the hand-over passed the code and the log line on. A job that the server itself started, and a transcript of the real worker in this deployment, were not run.
-- A deployment that runs the worker on the same machine without a container sets `JUNTO_TRANSCRIBE_COMMAND` to the worker and needs none of this.
+- The two scripts are tested with two users and a stand-in worker in the server image (`deploy/tests/transcribe-handover.sh`). The recording test of the deployment (ADR 0910) runs the hand-over with jobs that the server started for recordings of the recorder: without model files the worker refuses the start with its code 3 and the transcript fails with `worker_not_ready`; with the model files the worker writes a transcript that the server stores.
+- A deployment that runs the worker on the same machine without a container sets `JUNTO_TRANSCRIBE_COMMAND` to the worker and needs none of this. It names a batch size in that command.
+- The batch size decides the memory of a job. Whisper `small` on a CPU needed 2.1 GB with the batch size 8 of the model and 1.1 GB with 1, for 96 seconds of speech in three files, in 140 and 125 seconds. With a memory limit of 1.7 GB and the batch size 8 the job was ended by the limit, and so was the worker container; the server counted three failed runs (ADR 0607).

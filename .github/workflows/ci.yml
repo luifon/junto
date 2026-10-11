@@ -204,7 +204,7 @@ jobs:
           deploy/images/recorder/start.sh deploy/images/link/entrypoint.sh
           deploy/tests/compose-config.sh deploy/tests/smoke.sh deploy/tests/entry.sh
           deploy/tests/one-host.sh deploy/tests/two-hosts.sh deploy/tests/backup-restore.sh
-          deploy/tests/recorder-start.sh
+          deploy/tests/recorder-start.sh deploy/tests/recording.sh deploy/tests/recording-prepare.sh
           deploy/tests/transcribe-handover.sh deploy/tests/transcribe-handover-inside.sh
       - name: Compose files of every form
         run: deploy/tests/compose-config.sh

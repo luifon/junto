@@ -32,6 +32,7 @@ cat > $work/stand-in <<'STANDIN'
 job=$2
 transcript=$4
 behaviour=$(cat "$(dirname "$job")/behaviour" 2>/dev/null)
+echo "$*" > "$(dirname "$job")/arguments"
 echo "segment 1 of 1: status=ok" >&2
 case "$behaviour" in
     exit-3) echo "model_file_missing: whisper" >&2; exit 3 ;;
@@ -137,6 +138,7 @@ check "the worker cannot create a file beside the audio files" '! $worker_user t
 check "the worker cannot create a file in the spool" '! $worker_user touch $spool/new.request 2>/dev/null'
 check "the worker cannot list the spool" '! $worker_user ls $spool > /dev/null 2>&1'
 check "the worker reads an audio file" '$worker_user cat $recordings/rec-a/segment.ogg > /dev/null'
+check "the worker gets the three paths and no other option" '[ "$(cat "$run/arguments")" = "run $run/job.json --out $run/transcript.json --audio-root $recordings/rec-a" ]'
 
 echo "# a job that the worker refuses"
 run=$(new_run rec-b exit-3)
@@ -238,6 +240,18 @@ check "the request stays in the spool with a cancel file" '[ -n "$(ls "$spool"/*
 start_loop
 check "a loop that starts later does not run the job" 'wait_for "grep -q \"^exit 143\" $spool/*.result" && [ ! -e "$run/transcript.json" ]'
 stop_loop
+
+echo "# the batch size of the setting"
+prepare; JUNTO_TRANSCRIBE_BATCH_SIZE=2 start_loop
+run=$(new_run rec-g ok)
+hand_over "$run" 2> $work/log; code=$?
+check "the worker gets the batch size as its last option" '[ "$code" -eq 0 ] && grep -q -- " --batch-size 2\$" "$run/arguments"'
+stop_loop
+for wrong in many 0 08 65 "2 --device cuda"; do
+    JUNTO_TRANSCRIBE_BATCH_SIZE=$wrong JUNTO_WORKER_SPOOL=$spool JUNTO_WORKER_JOB_USER=10001:10001 \
+        timeout 10 $loop_user bash "$loop" 2> $work/log; code=$?
+    check "a loop with the batch size \"$wrong\" does not start" '[ "$code" -eq 1 ] && grep -q JUNTO_TRANSCRIBE_BATCH_SIZE $work/log'
+done
 
 echo "# a path outside the recordings"
 prepare; start_loop

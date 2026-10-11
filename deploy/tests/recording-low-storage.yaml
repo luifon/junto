@@ -1,0 +1,14 @@
+# Addition to local.yaml for deploy/tests/recording.sh: the volume of the recordings is a
+# memory file system of 64 MB, so its free space is below the reserve of the storage guard
+# (ADR 0605) and the server refuses to start a recording.
+#
+# The owner is a mount option, because the mount is made again when the first container of
+# a start has ended.
+
+volumes:
+  recordings:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=64m,uid=1001,gid=10001,mode=0750

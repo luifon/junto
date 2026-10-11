@@ -9,6 +9,7 @@ use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 use serde_json::json;
 use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, sleep_until, Instant};
 
@@ -16,7 +17,7 @@ use crate::cli::PublishArgs;
 use crate::events::emit;
 use crate::pattern::{self, Pattern, PatternKind};
 use crate::session::{self, source_name};
-use crate::tone::{self, Marker, ToneSpec};
+use crate::tone::{self, FileAudio, Marker, ToneSpec};
 
 const SHARE_AUDIO_BITRATE: u64 = 128_000;
 
@@ -49,8 +50,43 @@ struct Session {
     screen: Vec<Published>,
 }
 
+/// The files that replace the tones, and the signal that starts them.
+struct Files {
+    mic: Option<FileAudio>,
+    screen_audio: Option<FileAudio>,
+}
+
+impl Files {
+    fn load(args: &PublishArgs) -> Result<Self> {
+        if args.screen_audio_file.is_some() && !args.screen {
+            return Err(anyhow!("--screen-audio-file needs --screen"));
+        }
+        let (start, play) = watch::channel(!args.play_on_stdin);
+        if args.play_on_stdin {
+            std::thread::spawn(move || {
+                for line in std::io::stdin().lines() {
+                    match line {
+                        Ok(line) if line.trim() == "play" => {
+                            let _ = start.send(true);
+                        }
+                        Ok(_) => {}
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
+        let file = |path: &Option<std::path::PathBuf>| -> Result<Option<FileAudio>> {
+            path.as_deref()
+                .map(|path| Ok(FileAudio { samples: tone::read_wav(path)?, play: play.clone() }))
+                .transpose()
+        };
+        Ok(Self { mic: file(&args.mic_file)?, screen_audio: file(&args.screen_audio_file)? })
+    }
+}
+
 pub async fn run(args: PublishArgs) -> Result<()> {
     let started = Instant::now();
+    let files = Files::load(&args)?;
     let mut timeline: Vec<(f64, Action)> = Vec::new();
     if args.screen && args.screen_after > 0.0 {
         timeline.push((args.screen_after, Action::StartScreen));
@@ -67,7 +103,7 @@ pub async fn run(args: PublishArgs) -> Result<()> {
 
     let mut sharing = args.screen && args.screen_after <= 0.0;
     let mut muted = false;
-    let mut session = join(&args, sharing, muted).await?;
+    let mut session = join(&args, &files, sharing, muted).await?;
 
     for (at, action) in timeline {
         if !wait_until(started + Duration::from_secs_f64(at), &mut session).await {
@@ -77,7 +113,7 @@ pub async fn run(args: PublishArgs) -> Result<()> {
         match action {
             Action::StartScreen => {
                 sharing = true;
-                session.screen = publish_screen(&session.room, &args).await?;
+                session.screen = publish_screen(&session.room, &args, &files).await?;
             }
             Action::StopScreen => {
                 sharing = false;
@@ -98,7 +134,7 @@ pub async fn run(args: PublishArgs) -> Result<()> {
             Action::Reconnect => {
                 leave(session).await?;
                 sleep(Duration::from_secs_f64(args.reconnect_gap)).await;
-                session = join(&args, sharing, muted).await?;
+                session = join(&args, &files, sharing, muted).await?;
             }
             Action::Leave => return leave(session).await,
         }
@@ -136,7 +172,7 @@ async fn leave(session: Session) -> Result<()> {
     Ok(())
 }
 
-async fn join(args: &PublishArgs, sharing: bool, muted: bool) -> Result<Session> {
+async fn join(args: &PublishArgs, files: &Files, sharing: bool, muted: bool) -> Result<Session> {
     let (room, events) = session::connect(&args.connect, false).await?;
     let local = room.local_participant();
     emit(
@@ -153,7 +189,7 @@ async fn join(args: &PublishArgs, sharing: bool, muted: bool) -> Result<Session>
     } else {
         let spec = ToneSpec { hz: args.mic_hz, level: args.level, marker: marker(args) };
         let options = TrackPublishOptions { source: TrackSource::Microphone, ..Default::default() };
-        Some(publish_tone(&room, "microphone", spec, options).await?)
+        Some(publish_tone(&room, "microphone", spec, files.mic.clone(), options).await?)
     };
     if muted {
         if let Some(mic) = &mic {
@@ -171,18 +207,19 @@ async fn join(args: &PublishArgs, sharing: bool, muted: bool) -> Result<Session>
         None
     };
 
-    let screen = if sharing { publish_screen(&room, args).await? } else { Vec::new() };
+    let screen = if sharing { publish_screen(&room, args, files).await? } else { Vec::new() };
     Ok(Session { room, events, mic, _camera: camera, screen })
 }
 
-async fn publish_screen(room: &Room, args: &PublishArgs) -> Result<Vec<Published>> {
+async fn publish_screen(room: &Room, args: &PublishArgs, files: &Files) -> Result<Vec<Published>> {
     let (width, height) = pattern::parse_size(&args.screen_size)?;
     let pattern =
         Pattern::new(PatternKind::Screen, (width, height), &label(args), color(args)?, marker(args));
     let options = video_options(TrackSource::Screenshare, args.simulcast);
     let mut tracks =
         vec![publish_pattern(room, "screen", pattern, (width, height), args.screen_fps, options).await?];
-    if let Some(hz) = args.screen_audio_hz {
+    if args.screen_audio_hz.is_some() || files.screen_audio.is_some() {
+        let hz = args.screen_audio_hz.unwrap_or(0.0);
         let options = TrackPublishOptions {
             source: TrackSource::ScreenshareAudio,
             dtx: false,
@@ -191,7 +228,7 @@ async fn publish_screen(room: &Room, args: &PublishArgs) -> Result<Vec<Published
             ..Default::default()
         };
         let spec = ToneSpec { hz, level: args.level, marker: None };
-        tracks.push(publish_tone(room, "screen-audio", spec, options).await?);
+        tracks.push(publish_tone(room, "screen-audio", spec, files.screen_audio.clone(), options).await?);
     }
     Ok(tracks)
 }
@@ -219,6 +256,7 @@ async fn publish_tone(
     room: &Room,
     name: &str,
     spec: ToneSpec,
+    file: Option<FileAudio>,
     options: TrackPublishOptions,
 ) -> Result<Published> {
     let processing =
@@ -226,8 +264,9 @@ async fn publish_tone(
     let source = NativeAudioSource::new(processing, tone::SAMPLE_RATE, 1, 0);
     let track = LocalAudioTrack::create_audio_track(name, RtcAudioSource::Native(source.clone()));
     let publication = room.local_participant().publish_track(LocalTrack::Audio(track), options).await?;
-    announce(&publication, json!({ "tone_hz": spec.hz }));
-    Ok(Published { publication, generator: tokio::spawn(tone::run_tone(source, spec)) })
+    announce(&publication, json!({ "tone_hz": spec.hz, "file": file.is_some() }));
+    let generator = tokio::spawn(tone::run_tone(source, name.to_owned(), spec, file));
+    Ok(Published { publication, generator })
 }
 
 async fn publish_pattern(

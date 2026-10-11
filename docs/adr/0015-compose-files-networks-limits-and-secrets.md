@@ -4,7 +4,7 @@
 
 Accepted
 
-Open: `one-host.yaml` and the two files of the two-host form were started on one machine with certificates that the entry signed itself, and not on a host with a public address. The address that the server sees for the entry, a call, and a recording through the recorder were not observed in this deployment.
+Open: `one-host.yaml` and the two files of the two-host form were started on one machine with certificates that the entry signed itself, and not on a host with a public address. The address that the server sees for the entry, a call, and a recording through the recorder were not observed in these forms. In the local form a call was recorded with the recorder and transcribed by the worker container (ADR 0910).
 
 ## Context
 
@@ -34,7 +34,7 @@ Users and capabilities:
 - `init` runs as root with `CHOWN` and `FOWNER` and without a network. It sets owner and mode of the volume directories at each start and exits. It changes the named directories only.
 - `entry` runs as root with `NET_BIND_SERVICE`, for the ports 80 and 443 on the network of the host.
 - `link` runs as root with `NET_ADMIN`, `SETUID` and `SETGID` in its own network namespace: it creates the tunnel interface, and its forwarders run as the user `nobody`.
-- `recorder` keeps what step 0 ran it with: the user of its image, the default capabilities of Docker and `SYS_ADMIN`, and a writable root file system.
+- `recorder` runs as the user of its image without a capability, and has a writable root file system (ADR 0020).
 - The first process of `worker` runs as root with `SETUID`, `SETGID` and `KILL` and without a network. It is the loop that takes the transcription jobs, and it runs each job as a user without root rights and without capabilities (ADR 0016).
 - PostgreSQL, Redis, the media server and the server run as users without root rights from their first process.
 - No container mounts the Docker socket.
@@ -71,6 +71,7 @@ Media server:
 - TURN is on: UDP port 3478, and TLS through the entry.
 - `rtc.stun_servers` names the TURN port of the deployment, so that the media server gives its clients no public STUN server of a third party (ADR 0007).
 - The metrics port is not configured and does not listen.
+- A room stays for 60 seconds after its last person left (ADR 0020).
 
 Recorder:
 
@@ -103,6 +104,7 @@ Tests:
 - `deploy/tests/recorder-start.sh` runs the start script of the recorder with a stand-in for the start script of the image.
 - `deploy/tests/one-host.sh` starts the one-host form on one machine, with certificates that the entry signs itself, and sends requests through the entry to the server and to the media server.
 - `deploy/tests/two-hosts.sh` starts the two files of the two-host form on one machine as two projects with separate networks, and checks the handshake of the link, a request from the entry to the server through the link, the server's path to the API of the media server through the link, and the recorder's path to Redis.
+- `deploy/tests/recording.sh` records a call through the local form with the recorder, the layout page, the worker and test participants (ADR 0910).
 
 ## Consequences
 
@@ -113,7 +115,7 @@ Tests:
 - The port for TURN without TLS (5349) and the relay ports of TURN listen on every address of the host. The install document tells the administrator to keep them closed in the firewall.
 - The public address also needs port 80, for the certificate requests (ADR 0004).
 - In the two-host form every connection of a client to the server passes two `socat` processes. Each connection is one process of each link container; the limit of processes of the link is 2048.
-- The recorder container has more rights than the other containers. Reducing them needs a recording as the test.
+- The recorder container has a writable root file system, and its browser runs without its sandbox (ADR 0020).
 - The backup stops the server for the time of the copy. An upgrade stops it from the check for a recording until the new version has started.
 - A restore needs free space for a second copy of the files.
 - A recorder whose partial files cannot be copied, for example on a full disk, does not start until the cause is removed. Its health check fails during that time.

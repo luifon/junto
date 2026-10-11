@@ -145,6 +145,9 @@ fn job(info: EgressInfo) -> Job {
     }
 }
 
+/// Without `disable_manifest` the recorder writes a file `<job>.json` with the names of the
+/// room and of the track beside each output. The server knows every file of a recording
+/// (ADR 0606) and reads no manifest.
 fn composite_body(request: &StartComposite) -> Value {
     json!({
         "room_name": request.room,
@@ -156,6 +159,7 @@ fn composite_body(request: &StartComposite) -> Value {
             "playlist_name": COMPOSITE_PLAYLIST,
             "live_playlist_name": COMPOSITE_LIVE_PLAYLIST,
             "segment_duration": COMPOSITE_PIECE_SECONDS,
+            "disable_manifest": true,
         }],
     })
 }
@@ -164,7 +168,7 @@ fn track_body(request: &StartTrack) -> Value {
     json!({
         "room_name": request.room,
         "track_id": request.track_id,
-        "file": { "filepath": request.path },
+        "file": { "filepath": request.path, "disable_manifest": true },
     })
 }
 
@@ -295,6 +299,7 @@ mod tests {
                     "playlist_name": "playlist.m3u8",
                     "live_playlist_name": "live.m3u8",
                     "segment_duration": 2,
+                    "disable_manifest": true,
                 }],
             })
         );
@@ -314,7 +319,7 @@ mod tests {
             json!({
                 "room_name": "jr-a-b",
                 "track_id": "TR_microphone",
-                "file": { "filepath": "/out/recording/segment" },
+                "file": { "filepath": "/out/recording/segment", "disable_manifest": true },
             })
         );
     }

@@ -187,11 +187,13 @@ services:
     pids_limit: 512
 
   # The recorder, LiveKit Egress. Its configuration is the variable EGRESS_CONFIG_BODY of
-  # each form. It keeps the capabilities that step 0 ran it with; see ADR 0015.
+  # each form. It runs as the user of its image (1001, with the groups of that user in the
+  # image) without a capability and with a writable root file system, which its browser
+  # and its sound server need (ADR 0020).
   recorder:
-    <<: *restart-and-log
+    <<: *service
     image: livekit/egress:v1.15.0@sha256:ac244a40268ce1dd1510fbff6eb529609ec68aceff1602343f79be8ca08c355b
-    cap_add: [SYS_ADMIN]
+    user: "1001"
     entrypoint: ["/tini", "--", "/usr/local/bin/junto-recorder-start"]
     environment:
       JUNTO_RECORDER_DIR: /var/lib/junto/recordings
@@ -241,6 +243,9 @@ services:
       JUNTO_WORKER_JOB_USER: "10001:10001"
       JUNTO_TRANSCRIBE_WHISPER_MODEL: ${JUNTO_TRANSCRIBE_WHISPER_MODEL:-large-v3-turbo}
       JUNTO_TRANSCRIBE_DEVICE: ${JUNTO_TRANSCRIBE_DEVICE:-auto}
+      # The batch size of the speech model. It reaches the loop only when it is set in
+      # deploy/.env; the loop gives it to each job.
+      JUNTO_TRANSCRIBE_BATCH_SIZE:
       # The limits of a job (workers/transcription/README.md). Each reaches the worker only
       # when it is set in deploy/.env.
       JUNTO_TRANSCRIBE_MAX_JOB_BYTES:

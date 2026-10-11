@@ -1,6 +1,6 @@
 # Installing a Junto server
 
-This document describes how a person with a Linux host and Docker installs a complete Junto server from this repository, and how to back it up, upgrade it and remove it. The decisions behind it are in ADR 0003 (the two forms), ADR 0004 (names and network paths), ADR 0005 (backups and upgrades), ADR 0014 (images), ADR 0015 (the Compose files) and ADR 0016 (the hand-over to the transcription worker).
+This document describes how a person with a Linux host and Docker installs a complete Junto server from this repository, and how to back it up, upgrade it and remove it. The decisions behind it are in ADR 0003 (the two forms), ADR 0004 (names and network paths), ADR 0005 (backups and upgrades), ADR 0014 (images), ADR 0015 (the Compose files), ADR 0016 (the hand-over to the transcription worker) and ADR 0020 (the recorder container).
 
 The project publishes no built image. Every image is built on the host from this repository, or pulled from its publisher by a digest that the repository states.
 
@@ -163,7 +163,17 @@ docker compose -f local.yaml logs --no-log-prefix server | grep -A 3 "no owner"
 junto-cli add http://127.0.0.1:8080
 ```
 
-A client on another machine cannot log in to this form: the server accepts `http` origins for a loopback address only. `deploy/tests/smoke.sh` starts this form with new secrets, checks it and removes it.
+A client on another machine cannot log in to this form: the server accepts `http` origins for a loopback address only. `deploy/tests/smoke.sh` starts this form with new secrets, checks it and removes it. `deploy/tests/recording.sh` records a call in this form with test participants and checks the video, the audio files, the transcript and the downloads (ADR 0910).
+
+## Recordings
+
+The recorder loads the layout page of a recording from the server, at `http://server:8080/recording-layout/` on the container network. The page is built into the server image, and the image sets `JUNTO_RECORDER_LAYOUT_DIR` to its directory (ADR 0014, ADR 0615). The entry does not forward that path. Nothing is to be installed for it.
+
+- The recorder container holds the key and the secret of the media server and the password of Redis. It runs without a capability, and it is not on the network of the database (ADR 0020).
+- A recording starts only with 13 GiB of free space on the volume of the recordings: 8 GiB for the recording above a reserve of 5 GiB (ADR 0605). A start with less is answered with `storage_low`. The health route states `storage_low` only at 5 GiB or less.
+- The files of a recording are below the volume `recordings`: `<recording>/<segment>.mp4` for the video and `<recording>/<segment>.ogg` for each audio track. A removal of the recording through the API deletes its directory.
+- When the recorder container ends during a recording, its restart rule starts it again, its start script saves the partial audio files, and the server continues the recording in new files. The recording then has the state `partly_failed`, with a video after the loss and, when the recorder had written a piece of the video before the loss, a video before it (ADR 0601).
+- When the recorder stayed stopped until a recording that it had lost was removed, its next start saves the partial audio of that recording to `rescued/<job>/` on the volume of the recordings, and nothing deletes it (ADR 0606). After such a case, and when no recording runs and every recording has a final state, delete the directories below `rescued/`: `docker compose -f <form file> exec server find /var/lib/junto/recordings/rescued -mindepth 1 -delete`.
 
 ## Logs and health
 
@@ -251,5 +261,6 @@ Then remove the model directory, `/etc/sysctl.d/90-junto.conf`, the firewall rul
 - `one-host.yaml` and the two files of the two-host form were started on one machine, with certificates that the entry signed itself (`deploy/tests/one-host.sh`, `deploy/tests/two-hosts.sh`). They were not started on a host with a public address, and no call ran through them.
 - `worker-gpu.yaml` was checked as a rendered configuration only.
 - The address that the server sees for a request of the entry was not observed on a Linux host. `JUNTO_TRUSTED_PROXIES` names the address of the host in the container network.
-- A recording through the recorder of this deployment was not made. The recorder container keeps the capabilities that step 0 ran it with. The route `/recording-layout/` of the server, which the recorder loads the layout page from, is the subject of ADR 0615.
-- Whether `rtc.stun_servers` stops the recorder's requests to public STUN servers of third parties was not observed (ADR 0007).
+- A recording through the recorder was made in the local form only (`deploy/tests/recording.sh`, ADR 0910), on one machine with Docker Desktop on arm64. In the one-host form and in the two-host form the recorder reaches the media server on its public name, and no recording was made there.
+- The recorder ran without a capability in the local form. It was not run on a Linux host with another seccomp or AppArmor profile (ADR 0020).
+- In the local form, `rtc.stun_servers` stopped the recorder's requests to public STUN servers of third parties. The one-host form names its TURN port in the same setting; it was not observed there (ADR 0007).

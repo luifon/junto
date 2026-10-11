@@ -34,6 +34,7 @@ Jobs:
 
 - An error that exists only with PostgreSQL on macOS or Windows is not found by CI. ADR 0904 names a PostgreSQL for those runners as open.
 - The tier of the call tests against a real LiveKit server, the tier with the real worker and its models, and the mutation tests of the layout page do not run in CI. They need a build of the test participant, the model files, and more time than a commit check has.
+- The recording test of the deployment (`deploy/tests/recording.sh`, ADR 0910) does not run in CI. The storage guard starts a recording only with 13 GiB of free disk space (ADR 0605), and a hosted runner states 14 GB of disk, of which the images of the deployment take 5.3 GB without the cache of their builds. The recorder needs up to 3 CPU cores for the composite while the media server, the server and three test participants run, and a hosted runner has 4; a recorder that is short of CPU writes a file with holes (ADR 0602), so the test would fail without a defect. CI lints the scripts of the test.
 - The licences of the Python packages and of the packages of the layout page are not checked by a tool in CI. The build of the layout page fails when a bundled package has no licence file, and `THIRD-PARTY.md` of the worker is kept by hand (ADR 0610).
 - The packaged desktop client and its three systems (ADR 0704, ADR 0705) are not built by this workflow. A job for them is added with the client crate, and the Linux job then needs the system libraries of gpui.
 - A new version of an action is a change of its commit hash in the workflow file.

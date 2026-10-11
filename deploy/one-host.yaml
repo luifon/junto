@@ -96,6 +96,11 @@ services:
           tls_port: 5349
           external_tls: true
           udp_port: 3478
+        room:
+          # The media server keeps the room of a call for 60 seconds after its last person
+          # left. The server ends a call 20 seconds after its last person was seen absent
+          # and then ends the jobs of the recorder, before the room closes (ADR 0020).
+          departure_timeout: 60
         webhook:
           api_key: ${JUNTO_LIVEKIT_API_KEY:?set JUNTO_LIVEKIT_API_KEY in deploy/.env}
           urls:

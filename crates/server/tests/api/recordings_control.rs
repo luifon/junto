@@ -370,6 +370,95 @@ async fn a_job_that_was_declared_lost_and_reports_a_file_is_not_failed() {
     assert_eq!(done.segments[3].duration_ms, Some(9_000));
 }
 
+/// A recording through the real recorder showed this: the media server closed the room of a
+/// call whose last person had lost the connection, in the second in which the server ended
+/// the call. The jobs then have no participant while their recorder lives. They are declared
+/// lost and get their stop, and the recording does not end before the recorder was asked
+/// about them after that stop: their file results replace the declarations (ADR 0604).
+#[tokio::test]
+async fn a_job_without_a_participant_at_the_end_of_its_call_is_asked_about_after_its_stop() {
+    let studio = Studio::open().await;
+    let scene = &studio.scene;
+    let (server, owner, ann, ben) = (&scene.server, &scene.owner, &scene.ann, &scene.ben);
+    let started = studio.record().await;
+    server.clock.advance(Duration::seconds(12));
+
+    server.leave_call(ann).await;
+    server.leave_call(ben).await;
+    for job in server.recorder().jobs() {
+        server.fake().leave(&studio.ann_seat.room, &job.id);
+    }
+    server.tend().await;
+    assert_eq!(server.recorder().stops().len(), 3);
+    let done = server.recording(owner, started.id).await;
+    assert_eq!(done.recording.state, RecordingState::Processing);
+    assert_eq!(states(&done), [ENDED; 3]);
+    assert_eq!(done.recording.failed_segments, 0);
+    assert_eq!(done.segments[0].duration_ms, Some(12_000));
+}
+
+/// The recorder took the stop of a job that was declared lost and still reports the job as
+/// running. The job has the 20 seconds of a stopped job to report its end (ADR 0604).
+#[tokio::test]
+async fn a_job_that_was_declared_lost_and_took_its_stop_has_the_time_of_a_stopped_job() {
+    let studio = Studio::open().await;
+    let scene = &studio.scene;
+    let (server, owner, ann, ben) = (&scene.server, &scene.owner, &scene.ann, &scene.ben);
+    let started = studio.record().await;
+    server.clock.advance(Duration::seconds(12));
+
+    server.recorder().hold_ends(true);
+    server.leave_call(ann).await;
+    server.leave_call(ben).await;
+    for job in server.recorder().jobs() {
+        server.fake().leave(&studio.ann_seat.room, &job.id);
+    }
+    server.tend().await;
+    server.clock.advance(Duration::seconds(19));
+    server.tend().await;
+    let detail = server.recording(owner, started.id).await;
+    assert_eq!(detail.recording.state, RecordingState::Recording);
+    assert_eq!(states(&detail), [LOST; 3]);
+
+    server.recorder().report_ends();
+    server.tend().await;
+    let done = server.recording(owner, started.id).await;
+    assert_eq!(done.recording.state, RecordingState::Processing);
+    assert_eq!(states(&done), [ENDED; 3]);
+}
+
+/// When such a job reports no end in that time, the recording ends with the failed segment.
+/// A report that the recorder does not give in that time does not end the recording early.
+#[tokio::test]
+async fn a_job_that_was_declared_lost_and_reports_no_end_in_time_stays_failed() {
+    let studio = Studio::open().await;
+    let scene = &studio.scene;
+    let (server, owner, ann, ben) = (&scene.server, &scene.owner, &scene.ann, &scene.ben);
+    let started = studio.record().await;
+    server.clock.advance(Duration::seconds(12));
+
+    server.recorder().hold_ends(true);
+    server.leave_call(ann).await;
+    server.leave_call(ben).await;
+    for job in server.recorder().jobs() {
+        server.fake().leave(&studio.ann_seat.room, &job.id);
+    }
+    server.tend().await;
+    server.clock.advance(Duration::seconds(10));
+    server.recorder().fail_reports(true);
+    server.tend().await;
+    let detail = server.recording(owner, started.id).await;
+    assert_eq!(detail.recording.state, RecordingState::Recording);
+    assert_eq!(states(&detail), [LOST; 3]);
+
+    server.recorder().fail_reports(false);
+    server.clock.advance(Duration::seconds(11));
+    server.tend().await;
+    let done = server.recording(owner, started.id).await;
+    assert_eq!(done.recording.state, RecordingState::Processing);
+    assert_eq!(states(&done), [LOST; 3]);
+}
+
 #[tokio::test]
 async fn a_job_that_the_recorder_ends_with_an_error_fails_its_segment_and_a_new_job_starts() {
     let studio = Studio::open().await;
