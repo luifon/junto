@@ -133,6 +133,61 @@ pub struct RecorderSettings {
     pub recorder_directory: String,
     /// The address at which the recorder loads the layout page (ADR 0602).
     pub layout_url: String,
+    /// The programs that read and join the files of a recording (ADR 0606).
+    pub ffmpeg: PathBuf,
+    pub ffprobe: PathBuf,
+    /// Absent: the server has no transcription worker and builds no transcript.
+    pub transcriber: Option<TranscriberSettings>,
+}
+
+/// How the server runs the transcription worker (ADR 0607).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranscriberSettings {
+    /// The program of the worker and its first arguments. The server adds the arguments of
+    /// one job.
+    pub command: Vec<String>,
+    /// The variables that the worker process gets, besides `PATH`.
+    pub environment: Vec<(String, String)>,
+    /// Whether the voices in shared sound get speaker labels (ADR 0614).
+    pub separate_speakers: bool,
+}
+
+/// The numbers of the transcription jobs (ADR 0607).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranscriptionLimits {
+    /// The interval at which the server looks for a job that waits.
+    pub check_interval: Duration,
+    /// The time that one run of the worker may take. The worker has its own limit of 12
+    /// hours after its models are loaded (ADR 0610).
+    pub time_limit: Duration,
+    /// The time that the worker has to end after the server asked it to, before the server
+    /// ends it.
+    pub end_grace: Duration,
+    /// The runs of the worker for one job.
+    pub attempts: u32,
+    /// The wait before the next run, for each run that failed.
+    pub retry_wait: Duration,
+    /// The interval at which the server process that runs a job states that it still does.
+    pub heartbeat: Duration,
+    /// A job whose server process did not state this for so long is taken by another.
+    pub lease: Duration,
+    /// The largest transcript file that the server reads.
+    pub most_transcript_bytes: u64,
+}
+
+impl Default for TranscriptionLimits {
+    fn default() -> Self {
+        Self {
+            check_interval: Duration::seconds(5),
+            time_limit: Duration::hours(13),
+            end_grace: Duration::seconds(10),
+            attempts: 3,
+            retry_wait: Duration::minutes(1),
+            heartbeat: Duration::seconds(15),
+            lease: Duration::seconds(90),
+            most_transcript_bytes: 64 * 1024 * 1024,
+        }
+    }
 }
 
 /// The numbers of recordings and of the storage guard (ADR 0604, ADR 0605).
@@ -162,6 +217,31 @@ pub struct RecordingLimits {
     pub reserve_bytes: u64,
     /// The disk space that one recording reserves when it starts.
     pub reservation_bytes: u64,
+    /// The interval at which the server looks for recordings whose files wait for their
+    /// processing, and for directories that wait for their deletion.
+    pub process_interval: Duration,
+    /// The time that one run of `ffprobe` or `ffmpeg` may take.
+    pub tool_time_limit: Duration,
+    /// The attempts to process the files of one recording.
+    pub processing_attempts: u32,
+    /// The wait before the next attempt.
+    pub processing_retry: Duration,
+    /// The interval at which the server process that runs an attempt states that it still
+    /// does.
+    pub processing_heartbeat: Duration,
+    /// An attempt whose server process did not state this for so long has lost its process.
+    pub processing_lease: Duration,
+    /// The wait before a directory that could not be deleted is tried again.
+    pub removal_retry: Duration,
+    pub transcription: TranscriptionLimits,
+    /// The downloads of files that the server sends at one time.
+    pub most_downloads: u32,
+    /// A download whose client takes no bytes for this long is ended.
+    pub download_stall: Duration,
+    /// The terms of the glossary of one workspace (ADR 0603).
+    pub most_glossary_terms: u32,
+    /// The corrections that the server keeps for one line of a transcript.
+    pub most_corrections: u32,
 }
 
 impl Default for RecordingLimits {
@@ -179,6 +259,18 @@ impl Default for RecordingLimits {
             most_concurrent: 2,
             reserve_bytes: 5 * GIB,
             reservation_bytes: 8 * GIB,
+            process_interval: Duration::seconds(2),
+            tool_time_limit: Duration::hours(1),
+            processing_attempts: 3,
+            processing_retry: Duration::seconds(30),
+            processing_heartbeat: Duration::seconds(15),
+            processing_lease: Duration::seconds(90),
+            removal_retry: Duration::minutes(5),
+            transcription: TranscriptionLimits::default(),
+            most_downloads: 32,
+            download_stall: Duration::seconds(60),
+            most_glossary_terms: 200,
+            most_corrections: 100,
         }
     }
 }
@@ -495,6 +587,24 @@ impl Config {
     pub const RECORDINGS_DIR: &'static str = "JUNTO_RECORDINGS_DIR";
     pub const RECORDER_DIR: &'static str = "JUNTO_RECORDER_DIR";
     pub const RECORDER_LAYOUT_URL: &'static str = "JUNTO_RECORDER_LAYOUT_URL";
+    pub const FFMPEG: &'static str = "JUNTO_FFMPEG";
+    pub const FFPROBE: &'static str = "JUNTO_FFPROBE";
+    pub const TRANSCRIBE_COMMAND: &'static str = "JUNTO_TRANSCRIBE_COMMAND";
+    pub const TRANSCRIBE_SPEAKERS: &'static str = "JUNTO_TRANSCRIBE_SEPARATE_SPEAKERS";
+    /// The variables of the transcription worker that the server passes to it
+    /// (`workers/transcription/README.md`).
+    pub const WORKER_VARIABLES: [&'static str; 10] = [
+        "JUNTO_TRANSCRIBE_MODELS",
+        "JUNTO_TRANSCRIBE_WHISPER_MODEL",
+        "JUNTO_TRANSCRIBE_DEVICE",
+        "JUNTO_TRANSCRIBE_MAX_JOB_BYTES",
+        "JUNTO_TRANSCRIBE_MAX_SEGMENTS",
+        "JUNTO_TRANSCRIBE_MAX_SEGMENT_SECONDS",
+        "JUNTO_TRANSCRIBE_MAX_JOB_SECONDS",
+        "JUNTO_TRANSCRIBE_MAX_PROCESSING_SECONDS",
+        "JUNTO_TRANSCRIBE_MAX_GAP_SECONDS",
+        "JUNTO_TRANSCRIBE_MAX_SPEAKER_WINDOWS",
+    ];
 
     pub fn from_env() -> Result<Self, ConfigError> {
         Self::from_lookup(|name| std::env::var(name).ok())
@@ -624,16 +734,46 @@ impl Config {
         };
 
         let trimmed = |name| value(name).map(|text| text.trim().to_owned());
+        let transcriber = match trimmed(Self::TRANSCRIBE_COMMAND) {
+            Some(command) => {
+                let separate_speakers = match trimmed(Self::TRANSCRIBE_SPEAKERS).as_deref() {
+                    None | Some("true") => true,
+                    Some("false") => false,
+                    Some(_) => {
+                        return Err(invalid(
+                            Self::TRANSCRIBE_SPEAKERS,
+                            "expected \"true\" or \"false\"".to_owned(),
+                        ));
+                    }
+                };
+                Some(TranscriberSettings {
+                    command: command.split_whitespace().map(str::to_owned).collect(),
+                    environment: Self::WORKER_VARIABLES
+                        .into_iter()
+                        .filter_map(|name| Some((name.to_owned(), value(name)?)))
+                        .collect(),
+                    separate_speakers,
+                })
+            }
+            None => None,
+        };
         let recorder = match (
             trimmed(Self::RECORDINGS_DIR),
             trimmed(Self::RECORDER_LAYOUT_URL),
         ) {
             (None, None) => {
-                if value(Self::RECORDER_DIR).is_some() {
-                    return Err(invalid(
-                        Self::RECORDER_DIR,
-                        format!("it is given together with {}", Self::RECORDINGS_DIR),
-                    ));
+                for name in [
+                    Self::RECORDER_DIR,
+                    Self::FFMPEG,
+                    Self::FFPROBE,
+                    Self::TRANSCRIBE_COMMAND,
+                ] {
+                    if value(name).is_some() {
+                        return Err(invalid(
+                            name,
+                            format!("it is given together with {}", Self::RECORDINGS_DIR),
+                        ));
+                    }
                 }
                 None
             }
@@ -662,10 +802,16 @@ impl Config {
                         "the address starts with http:// or https://".to_owned(),
                     ));
                 }
+                let program = |name, default: &str| {
+                    PathBuf::from(trimmed(name).unwrap_or_else(|| default.to_owned()))
+                };
                 Some(RecorderSettings {
                     directory: PathBuf::from(directory),
                     recorder_directory: recorder_directory.trim_end_matches('/').to_owned(),
                     layout_url,
+                    ffmpeg: program(Self::FFMPEG, "ffmpeg"),
+                    ffprobe: program(Self::FFPROBE, "ffprobe"),
+                    transcriber,
                 })
             }
             (directory, _) => {
@@ -933,6 +1079,43 @@ mod tests {
         assert_eq!(recorder.directory, PathBuf::from("/srv/junto/recordings"));
         assert_eq!(recorder.recorder_directory, "/srv/junto/recordings");
         assert_eq!(recorder.layout_url, "http://server:8080/layout/");
+        assert_eq!(recorder.ffmpeg, PathBuf::from("ffmpeg"));
+        assert_eq!(recorder.ffprobe, PathBuf::from("ffprobe"));
+        assert_eq!(recorder.transcriber, None);
+
+        let config = with(&[
+            ("JUNTO_RECORDINGS_DIR", "/srv/junto/recordings"),
+            ("JUNTO_RECORDER_LAYOUT_URL", "http://server:8080/layout/"),
+            ("JUNTO_FFMPEG", "/opt/ffmpeg/bin/ffmpeg"),
+            ("JUNTO_FFPROBE", " /opt/ffmpeg/bin/ffprobe "),
+            (
+                "JUNTO_TRANSCRIBE_COMMAND",
+                " /opt/junto/bin/junto-transcribe  --threads 4 ",
+            ),
+            ("JUNTO_TRANSCRIBE_MODELS", "/srv/junto/models"),
+            ("JUNTO_TRANSCRIBE_DEVICE", "cpu"),
+            ("JUNTO_TRANSCRIBE_SEPARATE_SPEAKERS", "false"),
+        ])
+        .unwrap();
+        let recorder = config.recorder.unwrap();
+        assert_eq!(recorder.ffmpeg, PathBuf::from("/opt/ffmpeg/bin/ffmpeg"));
+        assert_eq!(recorder.ffprobe, PathBuf::from("/opt/ffmpeg/bin/ffprobe"));
+        let transcriber = recorder.transcriber.unwrap();
+        assert_eq!(
+            transcriber.command,
+            ["/opt/junto/bin/junto-transcribe", "--threads", "4"]
+        );
+        assert_eq!(
+            transcriber.environment,
+            [
+                (
+                    "JUNTO_TRANSCRIBE_MODELS".to_owned(),
+                    "/srv/junto/models".to_owned()
+                ),
+                ("JUNTO_TRANSCRIBE_DEVICE".to_owned(), "cpu".to_owned()),
+            ]
+        );
+        assert!(!transcriber.separate_speakers);
 
         let config = with(&[
             ("JUNTO_RECORDINGS_DIR", "/srv/junto/recordings"),
@@ -942,10 +1125,19 @@ mod tests {
         .unwrap();
         assert_eq!(config.recorder.unwrap().recorder_directory, "/out");
 
-        let refused: [&'static [(&str, &str)]; 5] = [
+        let refused: [&'static [(&str, &str)]; 9] = [
             &[("JUNTO_RECORDINGS_DIR", "/srv/junto/recordings")],
             &[("JUNTO_RECORDER_LAYOUT_URL", "http://server:8080/layout/")],
             &[("JUNTO_RECORDER_DIR", "/out")],
+            &[("JUNTO_FFMPEG", "/opt/ffmpeg/bin/ffmpeg")],
+            &[("JUNTO_FFPROBE", "/opt/ffmpeg/bin/ffprobe")],
+            &[("JUNTO_TRANSCRIBE_COMMAND", "junto-transcribe")],
+            &[
+                ("JUNTO_RECORDINGS_DIR", "/srv/junto/recordings"),
+                ("JUNTO_RECORDER_LAYOUT_URL", "http://server:8080/layout/"),
+                ("JUNTO_TRANSCRIBE_COMMAND", "junto-transcribe"),
+                ("JUNTO_TRANSCRIBE_SEPARATE_SPEAKERS", "yes"),
+            ],
             &[
                 ("JUNTO_RECORDINGS_DIR", "recordings"),
                 ("JUNTO_RECORDER_LAYOUT_URL", "http://server:8080/layout/"),

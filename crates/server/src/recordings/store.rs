@@ -7,9 +7,10 @@ use junto_protocol::ids::{
     AccountId, CallId, ChannelId, RecordingId, RecordingSegmentId, WorkspaceId,
 };
 use junto_protocol::recording::{
-    Recording, RecordingFailure, RecordingSegment, RecordingState, RecordingStop,
-    RecordingStopReason, SegmentFailure, SegmentSource, SegmentState,
+    FileCheck, FileProblem, Recording, RecordingFailure, RecordingSegment, RecordingState,
+    RecordingStop, RecordingStopReason, SegmentFailure, SegmentFile, SegmentSource, SegmentState,
 };
+use junto_protocol::transcript::TranscriptState;
 use sqlx::{AssertSqlSafe, PgConnection};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -62,6 +63,27 @@ stored!(RecordingStopReason {
 stored!(RecordingFailure {
     RecorderUnavailable => "recorder_unavailable",
     NothingRecorded => "nothing_recorded",
+    FilesMissing => "files_missing",
+});
+
+stored!(FileProblem {
+    Unreadable => "unreadable",
+    StreamMissing => "stream_missing",
+    StreamShort => "stream_short",
+    TimestampHole => "timestamp_hole",
+    SoundMissing => "sound_missing",
+    PictureBlank => "picture_blank",
+    LengthMismatch => "length_mismatch",
+    NotChecked => "not_checked",
+});
+
+stored!(TranscriptState {
+    None => "none",
+    Waiting => "waiting",
+    Running => "running",
+    Ready => "ready",
+    Partial => "partial",
+    Failed => "failed",
 });
 
 stored!(SegmentSource {
@@ -100,6 +122,9 @@ pub struct RecordingRow {
     pub stop: Option<RecordingStop>,
     pub ended_at: Option<OffsetDateTime>,
     pub failure: Option<RecordingFailure>,
+    /// When the files were processed. Absent before.
+    pub processed_at: Option<OffsetDateTime>,
+    pub timeline_started_at: Option<OffsetDateTime>,
 }
 
 impl RecordingRow {
@@ -125,11 +150,13 @@ struct RecordingRecord {
     stop_requested_at: Option<OffsetDateTime>,
     ended_at: Option<OffsetDateTime>,
     failure: Option<String>,
+    processed_at: Option<OffsetDateTime>,
+    timeline_started_at: Option<OffsetDateTime>,
 }
 
 const COLUMNS: &str = "id, workspace_id, channel_id, call_id, room_name, state, started_by, \
      language, requested_at, recording_since, stop_reason, stopped_by, stop_requested_at, \
-     ended_at, failure";
+     ended_at, failure, processed_at, timeline_started_at";
 
 fn row(record: RecordingRecord) -> ApiResult<RecordingRow> {
     let stop = match (record.stop_reason, record.stop_requested_at) {
@@ -158,6 +185,8 @@ fn row(record: RecordingRecord) -> ApiResult<RecordingRow> {
             .as_deref()
             .map(RecordingFailure::read)
             .transpose()?,
+        processed_at: record.processed_at,
+        timeline_started_at: record.timeline_started_at,
     })
 }
 
@@ -244,13 +273,23 @@ pub async fn summary(
     connection: &mut PgConnection,
     recording: &RecordingRow,
 ) -> ApiResult<Recording> {
-    let (segments, failed): (i64, i64) = sqlx::query_as(
-        "select count(*), count(*) filter (where state = 'failed')
+    let (segments, failed, bytes): (i64, i64, i64) = sqlx::query_as(
+        "select count(*), count(*) filter (where state = 'failed'),
+                coalesce(sum(file_bytes), 0)::bigint
          from recording_segments where recording_id = $1",
     )
     .bind(recording.id)
-    .fetch_one(connection)
+    .fetch_one(&mut *connection)
     .await?;
+    let transcript: Option<(String, i32)> =
+        sqlx::query_as("select state, lines from transcripts where recording_id = $1")
+            .bind(recording.id)
+            .fetch_optional(connection)
+            .await?;
+    let (transcript, transcript_lines) = match transcript {
+        Some((state, lines)) => (TranscriptState::read(&state)?, db::count(lines)?),
+        None => (TranscriptState::None, 0),
+    };
     let number = |count: i64| u32::try_from(count).map_err(|error| ApiError::internal(&error));
     Ok(Recording {
         id: recording.id,
@@ -267,6 +306,12 @@ pub async fn summary(
         language: recording.language.clone(),
         segments: number(segments)?,
         failed_segments: number(failed)?,
+        bytes: recording
+            .processed_at
+            .map(|_| u64::try_from(bytes).unwrap_or(0)),
+        timeline_started_at: recording.timeline_started_at,
+        transcript,
+        transcript_lines,
     })
 }
 
@@ -413,6 +458,8 @@ pub async fn start(
         stop: None,
         ended_at: None,
         failure: None,
+        processed_at: None,
+        timeline_started_at: None,
     };
     let entry = AuditEvent::RecordingStarted {
         recording_id: new.id,
@@ -605,6 +652,46 @@ pub struct SegmentRow {
     pub started_at: Option<OffsetDateTime>,
     pub ended_at: Option<OffsetDateTime>,
     pub duration_ms: Option<i64>,
+    /// What the processing found of the file. Absent before, and without a file.
+    pub file: Option<FileRow>,
+}
+
+/// The file of a segment as the processing found and checked it (ADR 0606).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileRow {
+    pub bytes: u64,
+    pub media_ms: i64,
+    /// The first sample of the file on the timeline.
+    pub starts_at: Option<OffsetDateTime>,
+    pub size: Option<(u32, u32)>,
+    pub problems: Vec<FileProblem>,
+    pub silent: bool,
+    pub recovered: bool,
+}
+
+impl FileRow {
+    fn view(&self, source: SegmentSource) -> SegmentFile {
+        let media_type = match source {
+            SegmentSource::Composite => "video/mp4",
+            _ => "audio/ogg",
+        };
+        SegmentFile {
+            media_type: media_type.to_owned(),
+            bytes: self.bytes,
+            duration_ms: u64::try_from(self.media_ms).unwrap_or(0),
+            starts_at: self.starts_at,
+            width: self.size.map(|(width, _)| width),
+            height: self.size.map(|(_, height)| height),
+            check: if self.problems.is_empty() {
+                FileCheck::Passed
+            } else {
+                FileCheck::Failed
+            },
+            problems: self.problems.clone(),
+            silent: self.silent,
+            recovered: self.recovered,
+        }
+    }
 }
 
 impl SegmentRow {
@@ -621,7 +708,13 @@ impl SegmentRow {
             duration_ms: self
                 .duration_ms
                 .and_then(|length| u64::try_from(length).ok()),
+            file: self.file.as_ref().map(|file| file.view(self.source)),
         }
+    }
+
+    /// True for the audio track of a person, false for the composite.
+    pub fn is_track(&self) -> bool {
+        self.source != SegmentSource::Composite
     }
 }
 
@@ -641,6 +734,34 @@ struct SegmentRecord {
     started_at: Option<OffsetDateTime>,
     ended_at: Option<OffsetDateTime>,
     duration_ms: Option<i64>,
+    file_bytes: Option<i64>,
+    media_ms: Option<i64>,
+    file_starts_at: Option<OffsetDateTime>,
+    width: Option<i32>,
+    height: Option<i32>,
+    file_problems: Vec<String>,
+    file_silent: bool,
+    file_recovered: bool,
+}
+
+fn file_row(record: &SegmentRecord) -> ApiResult<Option<FileRow>> {
+    let (Some(bytes), Some(media_ms)) = (record.file_bytes, record.media_ms) else {
+        return Ok(None);
+    };
+    let side = |side: Option<i32>| side.and_then(|side| u32::try_from(side).ok());
+    Ok(Some(FileRow {
+        bytes: u64::try_from(bytes).unwrap_or(0),
+        media_ms,
+        starts_at: record.file_starts_at,
+        size: side(record.width).zip(side(record.height)),
+        problems: record
+            .file_problems
+            .iter()
+            .map(|problem| FileProblem::read(problem))
+            .collect::<ApiResult<_>>()?,
+        silent: record.file_silent,
+        recovered: record.file_recovered,
+    }))
 }
 
 /// The segments of a recording, in the order in which they were asked for.
@@ -650,7 +771,9 @@ pub async fn segments(
 ) -> ApiResult<Vec<SegmentRow>> {
     let records: Vec<SegmentRecord> = sqlx::query_as(
         "select id, source, account_id, track_id, state, failure, job_id, requested_path,
-                requested_at, job_started_at, stop_delivered_at, started_at, ended_at, duration_ms
+                requested_at, job_started_at, stop_delivered_at, started_at, ended_at, duration_ms,
+                file_bytes, media_ms, file_starts_at, width, height, file_problems, file_silent,
+                file_recovered
          from recording_segments where recording_id = $1 order by id",
     )
     .bind(recording_id)
@@ -660,6 +783,7 @@ pub async fn segments(
         .into_iter()
         .map(|record| {
             Ok(SegmentRow {
+                file: file_row(&record)?,
                 id: record.id,
                 source: SegmentSource::read(&record.source)?,
                 account_id: record.account_id,
@@ -825,4 +949,345 @@ pub async fn running(connection: &mut PgConnection) -> ApiResult<u32> {
     .fetch_one(connection)
     .await?;
     db::count(i32::try_from(count).unwrap_or(i32::MAX))
+}
+
+/// The server process that asks for an attempt, and the time after which an attempt of
+/// another process without a heartbeat is over.
+#[derive(Debug, Clone, Copy)]
+pub struct Worker {
+    pub instance: Uuid,
+    pub lease: time::Duration,
+}
+
+/// The recordings whose files wait for their processing, oldest first, without those that
+/// wait for a new attempt and those whose attempt another server process holds.
+pub async fn processing(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    worker: Worker,
+) -> ApiResult<Vec<RecordingId>> {
+    Ok(sqlx::query_scalar(
+        "select id from recordings
+         where state = 'processing'
+           and (processing_retry_at is null or processing_retry_at <= $1)
+           and (processing_by is null or processing_by = $2 or processing_heartbeat_at <= $3)
+         order by id",
+    )
+    .bind(now)
+    .bind(worker.instance)
+    .bind(now - worker.lease)
+    .fetch_all(connection)
+    .await?)
+}
+
+/// A recording whose processing starts an attempt.
+pub struct Begun {
+    pub recording: RecordingRow,
+    pub segments: Vec<SegmentRow>,
+    /// The number of this attempt, from 1.
+    pub attempt: u32,
+}
+
+/// Takes one attempt to process the files of a recording for a server process. The attempt
+/// counts when it starts, so that a server that stops during every attempt does not try
+/// without end. One process holds an attempt: `None` while another process holds one whose
+/// heartbeat is young, and for a recording that does not wait for its processing.
+pub async fn begin_processing(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    id: RecordingId,
+    worker: Worker,
+) -> ApiResult<Option<Begun>> {
+    let Some(recording) = recording(&mut *connection, Of::Id(id), true).await? else {
+        return Ok(None);
+    };
+    if recording.state != RecordingState::Processing {
+        return Ok(None);
+    }
+    let attempts: Option<i32> = sqlx::query_scalar(
+        "update recordings
+         set processing_attempts = processing_attempts + 1, processing_by = $2,
+             processing_heartbeat_at = $3
+         where id = $1
+           and (processing_by is null or processing_by = $2 or processing_heartbeat_at <= $4)
+         returning processing_attempts",
+    )
+    .bind(id)
+    .bind(worker.instance)
+    .bind(now)
+    .bind(now - worker.lease)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let Some(attempts) = attempts else {
+        return Ok(None);
+    };
+    let segments = segments(connection, id).await?;
+    Ok(Some(Begun {
+        recording,
+        segments,
+        attempt: db::count(attempts)?,
+    }))
+}
+
+/// States that the server process `instance` still runs the attempt. False when the attempt
+/// is no longer its attempt.
+pub async fn renew_processing(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    id: RecordingId,
+    instance: Uuid,
+) -> ApiResult<bool> {
+    let renewed = sqlx::query(
+        "update recordings set processing_heartbeat_at = $3
+         where id = $1 and state = 'processing' and processing_by = $2",
+    )
+    .bind(id)
+    .bind(instance)
+    .bind(now)
+    .execute(connection)
+    .await?;
+    Ok(renewed.rows_affected() == 1)
+}
+
+/// True when the server process `instance` holds the attempt of a recording that waits for
+/// its processing. The row of the recording is locked by its caller.
+pub async fn holds_processing(
+    connection: &mut PgConnection,
+    id: RecordingId,
+    instance: Uuid,
+) -> ApiResult<bool> {
+    Ok(sqlx::query_scalar(
+        "select exists (
+             select 1 from recordings
+             where id = $1 and state = 'processing' and processing_by = $2)",
+    )
+    .bind(id)
+    .bind(instance)
+    .fetch_one(connection)
+    .await?)
+}
+
+/// The attempt of `instance` did not end; the next one starts at `at`.
+pub async fn retry_processing(
+    connection: &mut PgConnection,
+    id: RecordingId,
+    instance: Uuid,
+    at: OffsetDateTime,
+) -> ApiResult<()> {
+    sqlx::query(
+        "update recordings
+         set processing_retry_at = $3, processing_by = null, processing_heartbeat_at = null
+         where id = $1 and state = 'processing' and processing_by = $2",
+    )
+    .bind(id)
+    .bind(instance)
+    .bind(at)
+    .execute(connection)
+    .await?;
+    Ok(())
+}
+
+/// Stores what the processing found of the file of a segment.
+pub async fn store_file(
+    connection: &mut PgConnection,
+    segment_id: RecordingSegmentId,
+    file: Option<&FileRow>,
+) -> ApiResult<()> {
+    let side = |side: u32| i32::try_from(side).ok();
+    let problems: Option<Vec<&'static str>> = file.map(|file| {
+        file.problems
+            .iter()
+            .map(|problem| problem.stored())
+            .collect()
+    });
+    let check = problems.as_ref().map(|problems| {
+        if problems.is_empty() {
+            "passed"
+        } else {
+            "failed"
+        }
+    });
+    sqlx::query(
+        "update recording_segments
+         set file_bytes = $2, media_ms = $3, file_starts_at = $4, width = $5, height = $6,
+             file_check = $7, file_problems = $8, file_silent = $9, file_recovered = $10
+         where id = $1",
+    )
+    .bind(segment_id)
+    .bind(file.map(|file| i64::try_from(file.bytes).unwrap_or(i64::MAX)))
+    .bind(file.map(|file| file.media_ms))
+    .bind(file.and_then(|file| file.starts_at))
+    .bind(
+        file.and_then(|file| file.size)
+            .and_then(|(width, _)| side(width)),
+    )
+    .bind(
+        file.and_then(|file| file.size)
+            .and_then(|(_, height)| side(height)),
+    )
+    .bind(check)
+    .bind(problems.unwrap_or_default())
+    .bind(file.is_some_and(|file| file.silent))
+    .bind(file.is_some_and(|file| file.recovered))
+    .execute(connection)
+    .await?;
+    Ok(())
+}
+
+/// Puts a file or a directory below the directory of the recordings into the queue of
+/// removals. The server deletes it after the transaction has committed (ADR 0608).
+pub async fn queue_removal(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    place: &crate::recordings::files::Place,
+) -> ApiResult<()> {
+    sqlx::query("insert into file_removals (id, path, requested_at) values ($1, $2, $3)")
+        .bind(Uuid::now_v7())
+        .bind(place.stored())
+        .bind(now)
+        .execute(connection)
+        .await?;
+    Ok(())
+}
+
+/// The oldest removals that wait, at most `most`, without those whose deletion failed and
+/// is tried again later.
+pub async fn removals(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    most: i64,
+) -> ApiResult<Vec<(Uuid, String)>> {
+    Ok(sqlx::query_as(
+        "select id, path from file_removals
+         where retry_at is null or retry_at <= $1
+         order by id limit $2",
+    )
+    .bind(now)
+    .bind(most)
+    .fetch_all(connection)
+    .await?)
+}
+
+/// A deletion failed; it is tried again at `at`.
+pub async fn retry_removal(
+    connection: &mut PgConnection,
+    id: Uuid,
+    at: OffsetDateTime,
+) -> ApiResult<()> {
+    sqlx::query("update file_removals set retry_at = $2 where id = $1")
+        .bind(id)
+        .bind(at)
+        .execute(connection)
+        .await?;
+    Ok(())
+}
+
+pub async fn removal_done(connection: &mut PgConnection, id: Uuid) -> ApiResult<()> {
+    sqlx::query("delete from file_removals where id = $1")
+        .bind(id)
+        .execute(connection)
+        .await?;
+    Ok(())
+}
+
+/// The processing of the files of a recording has ended: the recording gets its final
+/// state, and its reservation of disk space ends (ADR 0605). A recording with a file gets
+/// the note for its post in the text chat (ADR 0602); one that is not whole gets the note
+/// of a failure. The directories of the files that were saved of its lost jobs are deleted.
+pub async fn processed(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    recording: &mut RecordingRow,
+    state: RecordingState,
+    timeline_started_at: Option<OffsetDateTime>,
+) -> ApiResult<()> {
+    let failure = (state == RecordingState::Failed).then_some(RecordingFailure::FilesMissing);
+    sqlx::query(
+        "update recordings
+         set state = $2, failure = $3, processed_at = $4, timeline_started_at = $5,
+             processing_retry_at = null, processing_by = null, processing_heartbeat_at = null
+         where id = $1",
+    )
+    .bind(recording.id)
+    .bind(state.stored())
+    .bind(failure.map(StoredText::stored))
+    .bind(now)
+    .bind(timeline_started_at)
+    .execute(&mut *connection)
+    .await?;
+    recording.state = state;
+    recording.failure = failure;
+    recording.processed_at = Some(now);
+    recording.timeline_started_at = timeline_started_at;
+    storage::release(&mut *connection, recording.id.as_uuid()).await?;
+    if state != RecordingState::Ready {
+        note_failure(&mut *connection, now, recording).await?;
+    }
+    if state != RecordingState::Failed {
+        note(&mut *connection, now, recording, "recording_ready", None).await?;
+    }
+    // The directory of a lost job is deleted when the server has what it held: the audio
+    // file of the segment. The directory of a composite holds nothing that the server uses.
+    let lost_jobs: Vec<String> = sqlx::query_scalar(
+        "select job_id from recording_segments
+         where recording_id = $1 and failure = 'recorder_lost' and job_id is not null
+           and (source = 'composite' or file_bytes is not null)",
+    )
+    .bind(recording.id)
+    .fetch_all(&mut *connection)
+    .await?;
+    for job_id in lost_jobs {
+        if let Some(rescued) = crate::recordings::files::Place::rescued(&job_id) {
+            queue_removal(&mut *connection, now, &rescued).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Removes a recording with its segments and its transcript, and puts its directory into
+/// the queue of removals. The notes of its start and its stop stay without the recording;
+/// the note of its post goes with it. The caller has checked that the recording is in a
+/// final state.
+pub async fn remove(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    recording: &RecordingRow,
+    by: AccountId,
+) -> ApiResult<()> {
+    let call_runs = call_runs(&mut *connection, recording.call_id).await?;
+    let event = Event::RecordingRemoved {
+        recording_id: recording.id,
+        workspace_id: recording.workspace_id,
+        channel_id: recording.channel_id,
+    };
+    events::tell_of_recording(&mut *connection, now, call_runs, &event).await?;
+    sqlx::query("delete from call_notes where recording_id = $1 and kind = 'recording_ready'")
+        .bind(recording.id)
+        .execute(&mut *connection)
+        .await?;
+    // Saved audio of a lost job that the server could not take is still in the directory of
+    // that job. It goes with the recording.
+    let lost_jobs: Vec<String> = sqlx::query_scalar(
+        "select job_id from recording_segments
+         where recording_id = $1 and failure = 'recorder_lost' and job_id is not null",
+    )
+    .bind(recording.id)
+    .fetch_all(&mut *connection)
+    .await?;
+    for job_id in lost_jobs {
+        if let Some(rescued) = crate::recordings::files::Place::rescued(&job_id) {
+            queue_removal(&mut *connection, now, &rescued).await?;
+        }
+    }
+    sqlx::query("delete from recordings where id = $1")
+        .bind(recording.id)
+        .execute(&mut *connection)
+        .await?;
+    storage::release(&mut *connection, recording.id.as_uuid()).await?;
+    let place = crate::recordings::files::Place::recording(recording.id);
+    queue_removal(&mut *connection, now, &place).await?;
+    let entry = AuditEvent::RecordingRemoved {
+        recording_id: recording.id,
+    };
+    audit::record(connection, now, Some(by), recording.about(), &entry).await
 }

@@ -24,6 +24,7 @@ pub mod secret;
 pub mod server;
 pub mod snapshot;
 pub mod structure;
+pub mod transcript;
 
 pub use junto_authz::{ServerPermission, WorkspacePermission};
 

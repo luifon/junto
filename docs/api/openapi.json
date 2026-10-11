@@ -3352,6 +3352,464 @@
             "session": []
           }
         ]
+      },
+      "delete": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "Removes a recording with its files and its transcript. The caller holds\n`manage_recordings` in its voice channel. A recording that is starting, runs or is\nprocessed is not removed: its stop is asked for first.",
+        "operationId": "remove_recording",
+        "parameters": [
+          {
+            "name": "recording_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/RecordingId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/recordings/{recording_id}/segments/{segment_id}/file": {
+      "get": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "The file of one segment of a recording: the video of a composite as MP4, or an audio\ntrack as Ogg with Opus. The caller may read the recording. A request with the header\n`Range: bytes=<first>-<last>` gets that part of the file with the status 206; a range\noutside the file gets `range_not_satisfiable`.",
+        "operationId": "get_segment_file",
+        "parameters": [
+          {
+            "name": "recording_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/RecordingId"
+            }
+          },
+          {
+            "name": "segment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/RecordingSegmentId"
+            }
+          },
+          {
+            "name": "Range",
+            "in": "header",
+            "description": "One range of bytes",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The whole file.",
+            "content": {
+              "video/mp4": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/ogg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "206": {
+            "description": "The range of the file that `Content-Range` states.",
+            "content": {
+              "video/mp4": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/ogg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/recordings/{recording_id}/transcript": {
+      "get": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "The transcript of a recording without its lines: its state, its speaker labels with\ntheir names, the glossary terms that the speech model used, and the result for each\naudio segment. The caller may read the recording.",
+        "operationId": "get_transcript",
+        "parameters": [
+          {
+            "name": "recording_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/RecordingId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Transcript"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "Asks for the transcript of a recording again. The caller holds `manage_recordings` in\nthe voice channel. The recording has files, and it has no transcript or its transcript\nfailed; otherwise the request gets `conflict`.",
+        "operationId": "request_transcript",
+        "parameters": [
+          {
+            "name": "recording_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/RecordingId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Recording"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/recordings/{recording_id}/transcript/lines": {
+      "get": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "The lines of the transcript of a recording in the order of the timeline, in pages. Each\nline carries its newest correction and, when it was corrected, the text of the worker.\nThe caller may read the recording.",
+        "operationId": "list_transcript_lines",
+        "parameters": [
+          {
+            "name": "recording_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/RecordingId"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Return the lines after this position.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "The largest number of lines to return, from 1 to 500. Absent: 200.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptLinePage"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/recordings/{recording_id}/transcript/lines/{line}": {
+      "put": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "Corrects one line of the transcript of a recording. Every person who may read the\nrecording corrects a line. The correction names its author, and the text that the\nworker wrote stays readable (ADR 0603).",
+        "operationId": "correct_transcript_line",
+        "parameters": [
+          {
+            "name": "recording_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/RecordingId"
+            }
+          },
+          {
+            "name": "line",
+            "in": "path",
+            "description": "The position of the line",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CorrectLine"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptLine"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/recordings/{recording_id}/transcript/speakers/{number}": {
+      "put": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "Gives a name to one voice in the shared sound of a recording. The name replaces the\nlabel `Speaker N` in this recording only. Every person who may read the recording\nrenames a voice, and the rename names its author (ADR 0603).",
+        "operationId": "rename_transcript_speaker",
+        "parameters": [
+          {
+            "name": "recording_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/RecordingId"
+            }
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "description": "N of the label `Speaker N`",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameSpeaker"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptSpeaker"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/recordings/{recording_id}/transcript/text": {
+      "get": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "The transcript of a recording as plain text: one line of text for each line of the\ntranscript, with its time, its speaker and its newest correction. The caller may read\nthe recording.",
+        "operationId": "get_transcript_text",
+        "parameters": [
+          {
+            "name": "recording_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/RecordingId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The transcript.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
       }
     },
     "/api/v1/server-roles": {
@@ -3920,6 +4378,104 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Channel"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/glossary": {
+      "get": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "The glossary of a workspace, most important term first. Every member of the workspace\nreads it.",
+        "operationId": "get_glossary",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Glossary"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "recordings"
+        ],
+        "summary": "Replaces the glossary of a workspace. The caller holds `manage_glossary`. The speech\nmodel reads the first terms that fit in its limit; a transcript states which terms it\nused (ADR 0613).",
+        "operationId": "set_glossary",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetGlossary"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Glossary"
                 }
               }
             }
@@ -5523,6 +6079,65 @@
                 "$ref": "#/components/schemas/RecordingId"
               }
             }
+          },
+          {
+            "type": "object",
+            "description": "A person removed a recording of the channel with its files and its transcript.",
+            "required": [
+              "recording_id",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "recording_removed"
+                ]
+              },
+              "recording_id": {
+                "$ref": "#/components/schemas/RecordingId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A person asked for the transcript of a recording of the channel again.",
+            "required": [
+              "recording_id",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "transcript_requested"
+                ]
+              },
+              "recording_id": {
+                "$ref": "#/components/schemas/RecordingId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A person replaced the glossary of the workspace. The entry states the number of\nterms, not the terms.",
+            "required": [
+              "terms",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "glossary_replaced"
+                ]
+              },
+              "terms": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              }
+            }
           }
         ],
         "description": "What was done. New actions are added; the fields of an existing action do not change.\n\nAn action that this build does not know is read as [`AuditEvent::Unknown`], so that a\nclient can show the entry with its time and its actor (ADR 0209). `Unknown` is never\nwritten."
@@ -6171,6 +6786,18 @@
           }
         }
       },
+      "CorrectLine": {
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "The corrected text: 1 to 2000 characters without control characters."
+          }
+        }
+      },
       "CreateCategory": {
         "type": "object",
         "required": [
@@ -6517,6 +7144,7 @@
           "recorder_unavailable",
           "storage_low",
           "recordings_full",
+          "range_not_satisfiable",
           "method_not_allowed",
           "timeout",
           "busy",
@@ -6537,6 +7165,69 @@
           "message": {
             "type": "string",
             "description": "A sentence for a person who reads a log. Its text is not stable."
+          }
+        }
+      },
+      "FileCheck": {
+        "type": "string",
+        "description": "Whether the file of a segment passed the check of the server (ADR 0606).",
+        "enum": [
+          "passed",
+          "failed"
+        ]
+      },
+      "FileProblem": {
+        "type": "string",
+        "description": "What the check found wrong with a file. Read with an unknown value as\n[`RecordingStopReason`] is.",
+        "enum": [
+          "unreadable",
+          "stream_missing",
+          "stream_short",
+          "timestamp_hole",
+          "sound_missing",
+          "picture_blank",
+          "length_mismatch",
+          "not_checked"
+        ]
+      },
+      "Glossary": {
+        "type": "object",
+        "description": "The glossary of a workspace: names and terms that the speech model receives before it\ntranscribes, most important first (ADR 0603).",
+        "required": [
+          "workspace_id",
+          "terms"
+        ],
+        "properties": {
+          "terms": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "workspace_id": {
+            "$ref": "#/components/schemas/WorkspaceId"
+          }
+        }
+      },
+      "GlossaryUse": {
+        "type": "object",
+        "description": "The terms of the glossary that the worker gave to the speech model, and those that did\nnot fit in its limit (ADR 0613).",
+        "required": [
+          "used",
+          "cut"
+        ],
+        "properties": {
+          "cut": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "used": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
@@ -6774,6 +7465,13 @@
             "$ref": "#/components/schemas/Proof"
           }
         }
+      },
+      "LineSource": {
+        "type": "string",
+        "enum": [
+          "microphone",
+          "shared"
+        ]
       },
       "LinkCode": {
         "type": "string"
@@ -7047,9 +7745,20 @@
           "requested_at",
           "language",
           "segments",
-          "failed_segments"
+          "failed_segments",
+          "transcript",
+          "transcript_lines"
         ],
         "properties": {
+          "bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The bytes of the files of the recording. Absent until the files are processed.",
+            "minimum": 0
+          },
           "call_id": {
             "$ref": "#/components/schemas/CallId"
           },
@@ -7124,6 +7833,23 @@
               }
             ]
           },
+          "timeline_started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The first sample of the earliest file of the recording. The times of the transcript\ncount from it. Absent until the files are processed, and without a file."
+          },
+          "transcript": {
+            "$ref": "#/components/schemas/TranscriptState"
+          },
+          "transcript_lines": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The number of lines of the transcript.",
+            "minimum": 0
+          },
           "workspace_id": {
             "$ref": "#/components/schemas/WorkspaceId"
           }
@@ -7153,7 +7879,8 @@
         "description": "Why nothing of a recording was saved. Read with an unknown value as\n[`RecordingStopReason`] is.",
         "enum": [
           "recorder_unavailable",
-          "nothing_recorded"
+          "nothing_recorded",
+          "files_missing"
         ]
       },
       "RecordingId": {
@@ -7228,6 +7955,17 @@
               {
                 "$ref": "#/components/schemas/SegmentFailure",
                 "description": "Present with the state `failed`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "file": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SegmentFile",
+                "description": "The file, after the recording was processed. Absent before, and when no file was\nfound. `GET /api/v1/recordings/{recording_id}/segments/{segment_id}/file` returns\nits bytes."
               },
               {
                 "type": "null"
@@ -7406,6 +8144,18 @@
           }
         }
       },
+      "RenameSpeaker": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The name of the voice: 1 to 64 characters."
+          }
+        }
+      },
       "ReportCallState": {
         "type": "object",
         "description": "The device's report of the person's own microphone and sound settings.",
@@ -7502,6 +8252,99 @@
           "recorder_error"
         ]
       },
+      "SegmentFile": {
+        "type": "object",
+        "description": "The file of a segment as the server found and checked it.",
+        "required": [
+          "media_type",
+          "bytes",
+          "duration_ms",
+          "check",
+          "problems",
+          "silent",
+          "recovered"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "check": {
+            "$ref": "#/components/schemas/FileCheck"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The length of the media in milliseconds.",
+            "minimum": 0
+          },
+          "height": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "media_type": {
+            "type": "string",
+            "description": "`video/mp4` for the composite and `audio/ogg` for an audio track."
+          },
+          "problems": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FileProblem"
+            },
+            "description": "Present with the check `failed`."
+          },
+          "recovered": {
+            "type": "boolean",
+            "description": "The recorder did not end the file in order: the server took it from what a lost\nrecorder left."
+          },
+          "silent": {
+            "type": "boolean",
+            "description": "The sound of the whole file is digital silence. A microphone that was muted for the\nwhole recording gives such a file."
+          },
+          "starts_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The first sample of the file on the timeline of the recording. Absent when the\nrecorder reported no time for the file."
+          },
+          "width": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The size of the picture of the composite.",
+            "minimum": 0
+          }
+        }
+      },
+      "SegmentReason": {
+        "type": "string",
+        "description": "Why a segment is damaged, failed or not transcribed. Read with an unknown value as\n[`TranscriptFailure`] is.",
+        "enum": [
+          "file_missing",
+          "not_a_regular_file",
+          "decode_failed",
+          "not_one_audio_stream",
+          "decode_incomplete",
+          "timestamp_gap",
+          "timestamp_backward",
+          "segment_duration_limit",
+          "job_duration_limit",
+          "time_limit",
+          "processing_failed",
+          "shorter_than_file",
+          "no_file",
+          "no_start_time"
+        ]
+      },
       "SegmentSource": {
         "type": "string",
         "description": "What a segment records.",
@@ -7518,6 +8361,17 @@
           "recording",
           "ended",
           "failed"
+        ]
+      },
+      "SegmentTranscription": {
+        "type": "string",
+        "description": "How much of one audio file the transcript covers (ADR 0611).",
+        "enum": [
+          "ok",
+          "empty",
+          "damaged",
+          "failed",
+          "not_transcribed"
         ]
       },
       "ServerId": {
@@ -7648,6 +8502,21 @@
           }
         }
       },
+      "SetGlossary": {
+        "type": "object",
+        "required": [
+          "terms"
+        ],
+        "properties": {
+          "terms": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "At most 200 terms of 1 to 200 characters each, most important first, without\nduplicates."
+          }
+        }
+      },
       "ShareAudio": {
         "type": "string",
         "description": "The sound that a screen share sends (ADR 0502).",
@@ -7734,6 +8603,29 @@
           }
         }
       },
+      "SpeakerSeparation": {
+        "type": "string",
+        "description": "Whether the lines of a segment of shared sound have speaker labels (ADR 0614).",
+        "enum": [
+          "not_applicable",
+          "not_requested",
+          "separated",
+          "unassigned",
+          "failed"
+        ]
+      },
+      "SpeakersReason": {
+        "type": "string",
+        "description": "Why labels are missing. Read with an unknown value as [`TranscriptFailure`] is.",
+        "enum": [
+          "segment_failed",
+          "embedding_failed",
+          "clustering_failed",
+          "no_voice_window",
+          "speaker_window_limit",
+          "time_limit"
+        ]
+      },
       "StartRecording": {
         "type": "object",
         "properties": {
@@ -7750,6 +8642,307 @@
         "type": "string",
         "format": "uuid",
         "description": "Identifies one history of event positions. It changes when positions start again."
+      },
+      "Transcript": {
+        "type": "object",
+        "description": "The transcript of a recording without its lines.",
+        "required": [
+          "recording_id",
+          "state",
+          "language",
+          "lines",
+          "speakers",
+          "glossary",
+          "segments"
+        ],
+        "properties": {
+          "failure": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TranscriptFailure",
+                "description": "Present with the state `failed`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "glossary": {
+            "$ref": "#/components/schemas/GlossaryUse"
+          },
+          "language": {
+            "type": "string",
+            "description": "`auto`, or the language that the person who started the recording set."
+          },
+          "lines": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "recording_id": {
+            "$ref": "#/components/schemas/RecordingId"
+          },
+          "segments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TranscriptSegment"
+            },
+            "description": "One result for each audio segment of the recording. Empty until the transcript is\nbuilt."
+          },
+          "speakers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TranscriptSpeaker"
+            }
+          },
+          "state": {
+            "$ref": "#/components/schemas/TranscriptState"
+          }
+        }
+      },
+      "TranscriptFailure": {
+        "type": "string",
+        "description": "Why no transcript was built. A server can add reasons within one API version; a reason\nthat this build does not know is read as [`TranscriptFailure::Unknown`], which is never\nwritten (ADR 0209).",
+        "enum": [
+          "worker_failed",
+          "job_refused",
+          "worker_not_ready",
+          "time_limit",
+          "transcript_invalid",
+          "interrupted"
+        ]
+      },
+      "TranscriptLine": {
+        "type": "object",
+        "description": "One line of a transcript: one speech clip.",
+        "required": [
+          "line",
+          "start_ms",
+          "end_ms",
+          "segment_id",
+          "source",
+          "account_id",
+          "text",
+          "language"
+        ],
+        "properties": {
+          "account_id": {
+            "$ref": "#/components/schemas/AccountId",
+            "description": "The person of the microphone, or the person whose screen share holds the sound."
+          },
+          "corrected_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "corrected_by": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AccountId",
+                "description": "The person who made the newest correction."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "end_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "language": {
+            "type": "string",
+            "description": "The language that the speech model used for the line."
+          },
+          "line": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The position of the line in the transcript, from 0.",
+            "minimum": 0
+          },
+          "original_text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The text of the worker. Present when the line was corrected."
+          },
+          "segment_id": {
+            "$ref": "#/components/schemas/RecordingSegmentId"
+          },
+          "source": {
+            "$ref": "#/components/schemas/LineSource"
+          },
+          "speaker": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The number of the voice in shared sound. Absent for a microphone and for a line\nwithout a label.",
+            "minimum": 0
+          },
+          "start_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Milliseconds from the start of the timeline of the recording.",
+            "minimum": 0
+          },
+          "text": {
+            "type": "string",
+            "description": "The newest correction, or the text of the worker."
+          }
+        }
+      },
+      "TranscriptLinePage": {
+        "type": "object",
+        "required": [
+          "lines"
+        ],
+        "properties": {
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TranscriptLine"
+            },
+            "description": "In the order of the timeline."
+          },
+          "next_after": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Pass as `after` to read the next page. Absent on the last page.",
+            "minimum": 0
+          }
+        }
+      },
+      "TranscriptSegment": {
+        "type": "object",
+        "description": "The result of the transcript for one audio segment of the recording.",
+        "required": [
+          "segment_id",
+          "status",
+          "lines",
+          "speakers"
+        ],
+        "properties": {
+          "audio_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The length of the audio that the worker decoded, in milliseconds.",
+            "minimum": 0
+          },
+          "lines": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "processed_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The lines cover the audio from the start of the file to this point.",
+            "minimum": 0
+          },
+          "reason": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SegmentReason",
+                "description": "Present with the status `damaged`, `failed` or `not_transcribed`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "segment_id": {
+            "$ref": "#/components/schemas/RecordingSegmentId"
+          },
+          "speakers": {
+            "$ref": "#/components/schemas/SpeakerSeparation"
+          },
+          "speakers_reason": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SpeakersReason",
+                "description": "Present when labels are missing."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/SegmentTranscription"
+          }
+        }
+      },
+      "TranscriptSpeaker": {
+        "type": "object",
+        "description": "One voice in the shared sound of one person. The worker numbers the voices of a\nrecording; a person can give a voice a name.",
+        "required": [
+          "number",
+          "account_id"
+        ],
+        "properties": {
+          "account_id": {
+            "$ref": "#/components/schemas/AccountId",
+            "description": "The person whose shared sound holds the voice."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name that a person gave to the voice. Absent: the label `Speaker N` is shown."
+          },
+          "number": {
+            "type": "integer",
+            "format": "int32",
+            "description": "N of the label `Speaker N`.",
+            "minimum": 0
+          },
+          "renamed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "renamed_by": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AccountId",
+                "description": "The person who gave the name."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "TranscriptState": {
+        "type": "string",
+        "description": "The state of the transcript of a recording.",
+        "enum": [
+          "none",
+          "waiting",
+          "running",
+          "ready",
+          "partial",
+          "failed"
+        ]
       },
       "UpdateCallSettings": {
         "type": "object",
@@ -8089,7 +9282,7 @@
     },
     {
       "name": "recordings",
-      "description": "Recordings of calls in voice channels"
+      "description": "Recordings of calls in voice channels, their files, their transcripts and the glossary"
     },
     {
       "name": "audit",

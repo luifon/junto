@@ -31,8 +31,8 @@ How the composite is written:
 
 - The recorder writes the composite as segments of 2 seconds with a playlist, not as one MP4 file.
 - After the stop, the server joins the segments into one MP4 file without encoding again, and deletes the segments after the MP4 passed the check below.
-- After a crash of the recorder, the server adds the end marker to the playlist, which the recorder did not write, and joins the segments that are on disk. Without the end marker the join does not end.
-- When the recorder was lost during a recording, the recording continues in a new composite (ADR 0601). Whether the parts become one file is not fixed by this record.
+- After a crash of the recorder, the playlist has no end marker, and a join that reads such a playlist does not end. The server joins the segments that are on disk without reading the playlist (ADR 0606).
+- When the recorder was lost during a recording, the recording continues in a new composite (ADR 0601). Each part becomes its own MP4 file (ADR 0606).
 
 Audio files:
 
@@ -41,7 +41,7 @@ Audio files:
 - A participant who reconnects gets a new track, so one microphone can have several files. The file of the old track ends complete, and the server starts a new file for the new track (ADR 0601).
 - A mute is silence inside the same file. The file has no gap in its timestamps.
 - Each file is a segment. A segment belongs to one recording and one track and stores its start time.
-- The temporary directory of the recorder is a directory on a mounted volume of the host. A start script of the deployment saves the partial files from it before the start script of the image deletes them. A partial Ogg file plays.
+- The temporary directory of the recorder is a directory on a mounted volume of the host. A start script of the deployment saves the partial files from it, to the directory `rescued/<job>/` below the directory of the recordings (ADR 0606), before the start script of the image deletes them. A partial Ogg file plays.
 
 Timeline:
 
@@ -55,10 +55,10 @@ Check of a finished file:
 
 - The server checks every finished file before the recording becomes ready:
   - every stream exists, covers the length of the file and has no hole in its packet timestamps;
-  - the sound is not digital silence, and the composite is not silent in a range in which an audio file of the same time has sound;
+  - the composite is not silent in a range in which a microphone file of the same time has sound; a file of digital silence is stated and is no defect, because a muted microphone gives one (ADR 0606);
   - the key frames of the picture are not dark and not of one colour;
   - the media length agrees with the wall-clock length of the recording.
-- A file that fails makes the recording partly failed (ADR 0601).
+- A file that fails makes the recording partly failed (ADR 0601). The programs, the thresholds and the final state are in ADR 0606.
 
 Storage and access:
 
@@ -85,7 +85,7 @@ Playing:
 - Cost of the segments, measured: 6.0 to 6.5 % more disk space than the MP4 of the same encoder, no difference in the CPU use of the recorder, and 0.25 to 0.40 seconds to join 130 seconds of 1080p. The segments and the MP4 exist together until the segments are deleted (ADR 0006).
 - CPU and memory of the recorder for one recording, measured on an x86-64 host: a 1080p composite at 30 frames per second with five audio files used 2.5 cores on average and 2.9 at the highest sample, and 1.4 GiB, with no other load on the host. With other work on the host it used 3.9 cores on average. One audio file alone used 0.08 core and 88 MB. On an arm64 machine a 720p composite used 0.65 core on average and 2.5 at its peak.
 - The recorder decides from configured CPU costs whether it accepts a request. With its default costs the second audio file of a recording started about 15 seconds late. The deployment sets lower costs that match the measured use.
-- Cost of the check, measured: 3.3 to 4.0 seconds for a 1080p file of 130 seconds, and 80 seconds for a file of 61 minutes that was made by repeating one recording. The check found 6 of 6 defective files and passed every good file. It treats only digital silence and dark or one-colour key frames as defects, so it does not find sound that is present and wrong.
+- Cost of the check, measured: 3.3 to 4.0 seconds for a 1080p file of 130 seconds, and 80 seconds for a file of 61 minutes that was made by repeating one recording. The check found 6 of 6 defective files and passed every good file. It treats only a composite without the sound of a microphone, and dark or one-colour key frames, as defects of the content, so it does not find sound that is present and wrong.
 - A person who downloads an audio file gets a copy that the recorder encoded again, not the stream that was sent.
 - A person who loses access to the voice channel loses access to its recordings.
 - The client has no built-in player in the first version. A built-in recording player that jumps to a transcript line is in the later list of `docs/scope.md`.

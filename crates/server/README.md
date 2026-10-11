@@ -1,6 +1,6 @@
 # junto-server
 
-The Junto server: accounts, device keys, profiles, invites, roles, channels, the audit log, the event stream, the server side of calls and of their recordings, and the public API. The design is in [`docs/adr/`](../../docs/adr/README.md); ADR 0008 describes this crate.
+The Junto server: accounts, device keys, profiles, invites, roles, channels, the audit log, the event stream, the server side of calls, their recordings with files and transcripts, and the public API. The design is in [`docs/adr/`](../../docs/adr/README.md); ADR 0008 describes this crate.
 
 ## Run it locally
 
@@ -70,21 +70,51 @@ A person in the call of a voice channel who holds `record_calls` records it (ADR
 3. The events `recording_started` and `recording_updated` carry the recording without its segments. While the call of the recording runs they go to the accounts that may see who is inside; when the call has ended, to the accounts that see the voice channel. `GET /api/v1/recordings/{recording_id}` returns the segments, and `GET /api/v1/workspaces/{workspace_id}/recordings` lists the recordings.
 4. A recording ends when a person stops it, when its call ends, when the free disk space reaches the reserve, and at 2000 segments.
 
-After its jobs have ended a recording has the state `processing`. The check of the files, the join of the composite and the transcript are not built yet, so no recording becomes `ready`.
+After its jobs have ended a recording has the state `processing` (ADR 0606). One task then takes each recording in turn:
+
+1. It finds the file of each segment below `JUNTO_RECORDINGS_DIR`. The audio file of a lost job is taken from `rescued/<job>/<segment>.ogg`, where the start script of the recorder saves it.
+2. It joins the pieces of each composite into `<recording>/<segment>.mp4` with `ffmpeg`, without encoding again.
+3. It checks each file with `ffprobe` and `ffmpeg`, which read the file from the server and get no path of it: the streams, their timestamps, the length against the length that the recorder reported, the key frames of the picture, and the sound of the composite against the microphone files.
+4. The recording becomes `ready`, `partly_failed` or, without any file, `failed`. Its reservation of disk space ends, and `recording_updated` is recorded. Each segment then states its file and the problems that the check found.
+
+A server with a recorder needs `ffmpeg` and `ffprobe` on its path, or `JUNTO_FFMPEG` and `JUNTO_FFPROBE`, and does not start without them.
+
+`GET /api/v1/recordings/{recording_id}/segments/{segment_id}/file` returns the video or an audio file, whole or as one byte range (`Range: bytes=...`). `DELETE /api/v1/recordings/{recording_id}` removes a recording with its files and its transcript; it needs `manage_recordings` (ADR 0608).
+
+## Transcripts
+
+With `JUNTO_TRANSCRIBE_COMMAND`, the server hands each processed recording to the transcription worker of [`workers/transcription`](../../workers/transcription/README.md) (ADR 0607, ADR 0611).
+
+1. The server writes the job file into a new directory `<recording>/transcription/<run>/` and runs `<command> run <job file> --out <transcript file> --audio-root <directory of the recording>` as a child process in a process group of its own. The process gets `PATH` and the `JUNTO_TRANSCRIBE_*` variables of the worker, and nothing else of the environment of the server.
+2. One job runs at a time for all server processes, and none starts while a call is recorded. A run has a time limit of 13 hours. A run that fails is repeated twice, with a wait.
+3. The server accepts a transcript only when it agrees with its job, and stores its lines. The transcript of a recording is `waiting`, `running`, `ready`, `partial` or `failed`; the recording carries that state, and each change is a `recording_updated` event.
+4. `GET /api/v1/recordings/{recording_id}/transcript` returns the state and the result of each audio segment, `.../transcript/lines` the lines in pages, and `.../transcript/text` the transcript as plain text. `PUT .../transcript/lines/{line}` corrects a line and `PUT .../transcript/speakers/{number}` names a voice of shared sound; every person who reads the recording does both, each change names its author, and the text of the worker stays. `POST .../transcript` asks for a failed transcript again and needs `manage_recordings`.
+5. `GET` and `PUT /api/v1/workspaces/{workspace_id}/glossary` read and replace the glossary of a workspace: at most 200 names and terms, most important first, which the speech model receives. `PUT` needs `manage_glossary`.
+
+The settings for a worker that is installed beside the server:
+
+```sh
+JUNTO_TRANSCRIBE_COMMAND=/usr/local/bin/junto-transcribe JUNTO_TRANSCRIBE_MODELS=/srv/junto/models
+```
+
+The worker reads the audio files of a recording and writes only into the directory of its run. Give its user no write access to the audio files.
 
 The storage guard (ADR 0605) keeps 5 GiB free, reserves 8 GiB for each recording and records 2 calls at one time. A start without that space gets `storage_low`, and a third recording gets `recordings_full`. The health route states `storage_low`.
 
-The recorder writes below `JUNTO_RECORDINGS_DIR`: the file of an audio track to `<recording>/<segment>.ogg` and the composite as pieces with a playlist to `<recording>/<segment>/`. The recorder loads the layout page from `JUNTO_RECORDER_LAYOUT_URL`; the server does not serve that page yet.
+The recorder writes below `JUNTO_RECORDINGS_DIR`: the file of an audio track to `<recording>/<segment>.ogg` and the composite as pieces with a playlist to `<recording>/<segment>/`. The server writes the videos and the transcripts into the same directories, so the user of the server needs write access to what the recorder creates. The recorder loads the layout page from `JUNTO_RECORDER_LAYOUT_URL`; the server does not serve that page yet.
 
 ## Host commands
 
-Three commands change the database directly and are not part of the API (ADR 0114, ADR 0010). Each reads `JUNTO_DATABASE_URL` and can run while the server runs.
+Four commands work on the database directly and are not part of the API (ADR 0114, ADR 0010). Each reads `JUNTO_DATABASE_URL` and can run while the server runs.
 
 ```sh
 junto-server assign-owner <account-id>   # make an active account the server owner
 junto-server issue-owner-code            # print a one-time code that returns the owner to their account
 junto-server new-event-epoch             # make every client load a snapshot
+junto-server check-upgrade               # tell whether a recording runs; exit code 3 while one does
 ```
+
+Run `check-upgrade` before an upgrade of the server or of the recorder. A server whose new version changes the database does not start while a recording is starting or runs (ADR 0005, ADR 0608).
 
 Run `new-event-epoch` after the restore of a backup, before the server accepts clients. The clients hold cursors of events that the restored database does not have; the new epoch makes the server refuse those cursors.
 
@@ -106,8 +136,13 @@ Run `new-event-epoch` after the restore of a backup, before the server accepts c
 | `JUNTO_RECORDINGS_DIR` | none | Directory of the recordings as the server sees it, an absolute path (ADR 0604) |
 | `JUNTO_RECORDER_DIR` | the value of `JUNTO_RECORDINGS_DIR` | The same directory as the recorder sees it |
 | `JUNTO_RECORDER_LAYOUT_URL` | none | Address at which the recorder loads the layout page, with `http://` or `https://` |
+| `JUNTO_FFMPEG` | `ffmpeg` | The program that joins and reads the files of a recording (ADR 0606) |
+| `JUNTO_FFPROBE` | `ffprobe` | The program that reads the packets of a file |
+| `JUNTO_TRANSCRIBE_COMMAND` | none | The program of the transcription worker and its first arguments, separated by spaces. Without it the server builds no transcript (ADR 0607) |
+| `JUNTO_TRANSCRIBE_SEPARATE_SPEAKERS` | `true` | Whether the voices in shared sound get speaker labels (ADR 0614) |
+| `JUNTO_TRANSCRIBE_MODELS`, `JUNTO_TRANSCRIBE_WHISPER_MODEL`, `JUNTO_TRANSCRIBE_DEVICE`, `JUNTO_TRANSCRIBE_MAX_*` | none | Settings of the worker, which the server passes to its process |
 
-The four LiveKit settings are given together or not at all. The directory of the recordings and the address of the layout page are given together and need the LiveKit settings; without them a request to record gets `recorder_unavailable`.
+The four LiveKit settings are given together or not at all. The directory of the recordings and the address of the layout page are given together and need the LiveKit settings; without them a request to record gets `recorder_unavailable`. The settings of ffmpeg and of the transcription worker need the directory of the recordings.
 
 ## Tests
 
@@ -134,7 +169,14 @@ tools/with-test-postgres.sh tools/with-test-livekit.sh tools/serial.sh \
     cargo test -p junto-server --test api live:: -- --ignored
 ```
 
-The tests of recordings use a recorder in memory that behaves as step 0 measured LiveKit Egress, and each test runs the passes of the controller itself. No test runs against a real recorder yet.
+The tests of recordings use a recorder in memory that behaves as step 0 measured LiveKit Egress, and each test runs the passes of the controller, the processing and the transcription itself. The recorder in memory writes files that `ffmpeg` generates, so these tests, and `cargo test -p junto-server --lib`, need `ffmpeg` and `ffprobe` with the encoders `libopus` and `libx264` on the path. No test runs against a real recorder yet.
+
+The tests of the hand-over to the transcription worker run a stand-in script that follows the contract of ADR 0611. One more tier runs the real worker with its development model on generated speech. It is ignored in the plain run and needs the virtual environment, the models and the test speech of `workers/transcription`:
+
+```sh
+tools/with-test-postgres.sh tools/serial.sh \
+    cargo test -p junto-server --test api transcriber_real:: -- --ignored
+```
 
 `tools/with-test-livekit.sh` starts LiveKit 1.13.9 in development mode as the container `junto-dev-livekit` on the local ports 17880 to 17882 and removes it afterwards. LiveKit sends its notifications to `127.0.0.1:17890` on the machine of the tests, where one test listens; on Linux, set `JUNTO_TEST_WEBHOOK_ADDRESS` to an address of the machine that the container reaches.
 

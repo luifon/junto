@@ -77,6 +77,8 @@ struct Plan {
     /// The job of the composite that runs, and whether its participant is in the room.
     composite: Option<(String, bool)>,
     main_share: Option<String>,
+    /// The recording left the active states with files to process.
+    ended: bool,
 }
 
 #[derive(Default)]
@@ -243,6 +245,7 @@ fn new_segment(
         started_at: None,
         ended_at: None,
         duration_ms: None,
+        file: None,
     }
 }
 
@@ -558,6 +561,7 @@ async fn decide(
             (false, _) => Some(RecordingFailure::NothingRecorded),
         };
         store::finish(&mut *connection, now, &mut recording, failure).await?;
+        plan.ended = failure.is_none();
         changed = true;
     }
     if failed {
@@ -762,6 +766,9 @@ pub async fn tend(app: &AppState, id: RecordingId) -> ApiResult<()> {
     let plan = transact!(app.background(), |connection| {
         decide(connection, app, backend, id, &sight).await
     })?;
+    if plan.ended {
+        app.recordings.process_now();
+    }
     let answers = act(app, backend, id, plan).await;
     let now = app.now();
     let gave_up = transact!(app.background(), |connection| {
@@ -846,6 +853,8 @@ mod tests {
             stop: None,
             ended_at: None,
             failure: None,
+            processed_at: None,
+            timeline_started_at: None,
         };
         let source = match track_id {
             Some(_) => SegmentSource::Microphone,

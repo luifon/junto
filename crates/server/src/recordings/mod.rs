@@ -1,8 +1,16 @@
-//! Recordings of calls: the server's record of each recording and its segments, and the
-//! controller that makes the recorder agree with it (ADR 0601, ADR 0604).
+//! Recordings of calls: the server's record of each recording and its segments, the
+//! controller that makes the recorder agree with it (ADR 0601, ADR 0604), the processing of
+//! the files of a finished recording (ADR 0606), and its transcript (ADR 0607).
 
+pub mod check;
+pub mod contract;
 pub mod control;
+pub mod files;
+pub mod process;
 pub mod store;
+pub mod tools;
+pub mod transcribe;
+pub mod transcripts;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,20 +18,44 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use junto_protocol::error::ErrorCode;
 use junto_protocol::ids::RecordingId;
-use tokio::sync::Notify;
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
+use uuid::Uuid;
 
-use crate::config::RecorderSettings;
+use crate::config::{RecorderSettings, RecordingLimits};
 use crate::error::{ApiError, ApiResult};
 use crate::recorder::Recorder;
+use crate::recordings::tools::Tools;
 use crate::storage::{self, Disk};
 
-/// What a server with a recorder has: the recorder, the disk that it writes to, and where it
-/// writes.
+/// What a server with a recorder has: the recorder, the disk that it writes to, where it
+/// writes, and the programs that read its files.
 #[derive(Clone)]
 pub struct Backend {
     pub recorder: Arc<dyn Recorder>,
     pub disk: Arc<dyn Disk>,
     pub settings: RecorderSettings,
+    pub tools: Tools,
+}
+
+impl Backend {
+    pub fn new(
+        recorder: Arc<dyn Recorder>,
+        disk: Arc<dyn Disk>,
+        settings: RecorderSettings,
+        limits: &RecordingLimits,
+    ) -> Self {
+        let tools = Tools::new(
+            settings.ffmpeg.clone(),
+            settings.ffprobe.clone(),
+            limits.tool_time_limit,
+        );
+        Self {
+            recorder,
+            disk,
+            settings,
+            tools,
+        }
+    }
 }
 
 /// The main share that the composite of a recording was told last.
@@ -43,6 +75,11 @@ pub struct Recordings {
     tending: Mutex<HashMap<RecordingId, bool>>,
     layouts: Mutex<HashMap<RecordingId, ToldLayout>>,
     low: AtomicBool,
+    /// Names this server process in the lease of a transcription job (ADR 0607).
+    instance: Uuid,
+    files_wait: Notify,
+    jobs_wait: Notify,
+    downloads: Arc<Semaphore>,
 }
 
 /// One pass of the controller over one recording. A recording has at most one at a time.
@@ -61,14 +98,47 @@ impl Drop for Pass<'_> {
 }
 
 impl Recordings {
-    pub fn new(backend: Option<Backend>) -> Self {
+    pub fn new(backend: Option<Backend>, limits: &RecordingLimits) -> Self {
+        let downloads = usize::try_from(limits.most_downloads).unwrap_or(usize::MAX);
         Self {
             backend,
             wake: Notify::new(),
             tending: Mutex::new(HashMap::new()),
             layouts: Mutex::new(HashMap::new()),
             low: AtomicBool::new(false),
+            instance: Uuid::new_v4(),
+            files_wait: Notify::new(),
+            jobs_wait: Notify::new(),
+            downloads: Arc::new(Semaphore::new(downloads)),
         }
+    }
+
+    pub fn instance(&self) -> Uuid {
+        self.instance
+    }
+
+    /// Makes the processing look for recordings and for directories to delete now.
+    pub fn process_now(&self) {
+        self.files_wait.notify_one();
+    }
+
+    pub(crate) async fn asked_to_process(&self) {
+        self.files_wait.notified().await;
+    }
+
+    /// Makes the server look for a transcription job now.
+    pub fn transcribe_now(&self) {
+        self.jobs_wait.notify_one();
+    }
+
+    pub(crate) async fn asked_to_transcribe(&self) {
+        self.jobs_wait.notified().await;
+    }
+
+    /// A place among the downloads that the server sends at one time. `None` when every
+    /// place is taken.
+    pub fn download(&self) -> Option<OwnedSemaphorePermit> {
+        self.downloads.clone().try_acquire_owned().ok()
     }
 
     pub fn backend(&self) -> Option<&Backend> {
@@ -173,7 +243,7 @@ mod tests {
 
     #[test]
     fn a_recording_has_one_pass_at_a_time() {
-        let recordings = Recordings::new(None);
+        let recordings = Recordings::new(None, &RecordingLimits::default());
         let (first, second) = (RecordingId::generate(), RecordingId::generate());
         let pass = recordings.pass(first);
         assert!(pass.is_some());
@@ -187,7 +257,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_pass_that_was_asked_for_during_another_wakes_the_controller_afterwards() {
-        let recordings = Recordings::new(None);
+        let recordings = Recordings::new(None, &RecordingLimits::default());
         let id = RecordingId::generate();
         let woken =
             || tokio::time::timeout(std::time::Duration::from_millis(10), recordings.poked());

@@ -842,6 +842,25 @@
       ],
       "type": "object"
     },
+    "glossary_replaced": {
+      "description": "The glossary of a workspace was replaced. The terms are read from its route.",
+      "properties": {
+        "type": {
+          "enum": [
+            "glossary_replaced"
+          ],
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/components/schemas/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "type"
+      ],
+      "type": "object"
+    },
     "invite_created": {
       "properties": {
         "invite": {
@@ -1069,6 +1088,33 @@
       ],
       "type": "object"
     },
+    "recording_removed": {
+      "description": "A recording was removed with its files and its transcript.",
+      "properties": {
+        "channel_id": {
+          "$ref": "#/components/schemas/ChannelId"
+        },
+        "recording_id": {
+          "$ref": "#/components/schemas/RecordingId"
+        },
+        "type": {
+          "enum": [
+            "recording_removed"
+          ],
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/components/schemas/WorkspaceId"
+        }
+      },
+      "required": [
+        "recording_id",
+        "workspace_id",
+        "channel_id",
+        "type"
+      ],
+      "type": "object"
+    },
     "recording_started": {
       "description": "A recording of the call of a voice channel was asked for. The event carries the\nrecording without its segments.",
       "properties": {
@@ -1139,6 +1185,83 @@
       },
       "required": [
         "role",
+        "type"
+      ],
+      "type": "object"
+    },
+    "transcript_line_corrected": {
+      "description": "A person corrected a line of the transcript of a recording. The text that the\nworker wrote is read from the route of the lines.",
+      "properties": {
+        "channel_id": {
+          "$ref": "#/components/schemas/ChannelId"
+        },
+        "corrected_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "corrected_by": {
+          "$ref": "#/components/schemas/AccountId"
+        },
+        "line": {
+          "format": "int32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "recording_id": {
+          "$ref": "#/components/schemas/RecordingId"
+        },
+        "text": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "transcript_line_corrected"
+          ],
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/components/schemas/WorkspaceId"
+        }
+      },
+      "required": [
+        "recording_id",
+        "workspace_id",
+        "channel_id",
+        "line",
+        "text",
+        "corrected_by",
+        "corrected_at",
+        "type"
+      ],
+      "type": "object"
+    },
+    "transcript_speaker_renamed": {
+      "description": "A person gave a name to a voice in the shared sound of a recording.",
+      "properties": {
+        "channel_id": {
+          "$ref": "#/components/schemas/ChannelId"
+        },
+        "recording_id": {
+          "$ref": "#/components/schemas/RecordingId"
+        },
+        "speaker": {
+          "$ref": "#/components/schemas/TranscriptSpeaker"
+        },
+        "type": {
+          "enum": [
+            "transcript_speaker_renamed"
+          ],
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/components/schemas/WorkspaceId"
+        }
+      },
+      "required": [
+        "recording_id",
+        "workspace_id",
+        "channel_id",
+        "speaker",
         "type"
       ],
       "type": "object"
@@ -3155,6 +3278,129 @@
               "type"
             ],
             "type": "object"
+          },
+          {
+            "description": "A recording was removed with its files and its transcript.",
+            "properties": {
+              "channel_id": {
+                "$ref": "#/components/schemas/ChannelId"
+              },
+              "recording_id": {
+                "$ref": "#/components/schemas/RecordingId"
+              },
+              "type": {
+                "enum": [
+                  "recording_removed"
+                ],
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            },
+            "required": [
+              "recording_id",
+              "workspace_id",
+              "channel_id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A person corrected a line of the transcript of a recording. The text that the\nworker wrote is read from the route of the lines.",
+            "properties": {
+              "channel_id": {
+                "$ref": "#/components/schemas/ChannelId"
+              },
+              "corrected_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "corrected_by": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "line": {
+                "format": "int32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "recording_id": {
+                "$ref": "#/components/schemas/RecordingId"
+              },
+              "text": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "transcript_line_corrected"
+                ],
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            },
+            "required": [
+              "recording_id",
+              "workspace_id",
+              "channel_id",
+              "line",
+              "text",
+              "corrected_by",
+              "corrected_at",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A person gave a name to a voice in the shared sound of a recording.",
+            "properties": {
+              "channel_id": {
+                "$ref": "#/components/schemas/ChannelId"
+              },
+              "recording_id": {
+                "$ref": "#/components/schemas/RecordingId"
+              },
+              "speaker": {
+                "$ref": "#/components/schemas/TranscriptSpeaker"
+              },
+              "type": {
+                "enum": [
+                  "transcript_speaker_renamed"
+                ],
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            },
+            "required": [
+              "recording_id",
+              "workspace_id",
+              "channel_id",
+              "speaker",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The glossary of a workspace was replaced. The terms are read from its route.",
+            "properties": {
+              "type": {
+                "enum": [
+                  "glossary_replaced"
+                ],
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            },
+            "required": [
+              "workspace_id",
+              "type"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -3384,6 +3630,15 @@
       "Recording": {
         "description": "A recording without its segments. Events and lists carry this form.",
         "properties": {
+          "bytes": {
+            "description": "The bytes of the files of the recording. Absent until the files are processed.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "call_id": {
             "$ref": "#/components/schemas/CallId"
           },
@@ -3458,6 +3713,23 @@
               }
             ]
           },
+          "timeline_started_at": {
+            "description": "The first sample of the earliest file of the recording. The times of the transcript\ncount from it. Absent until the files are processed, and without a file.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "transcript": {
+            "$ref": "#/components/schemas/TranscriptState"
+          },
+          "transcript_lines": {
+            "description": "The number of lines of the transcript.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "workspace_id": {
             "$ref": "#/components/schemas/WorkspaceId"
           }
@@ -3472,7 +3744,9 @@
           "requested_at",
           "language",
           "segments",
-          "failed_segments"
+          "failed_segments",
+          "transcript",
+          "transcript_lines"
         ],
         "type": "object"
       },
@@ -3480,7 +3754,8 @@
         "description": "Why nothing of a recording was saved. Read with an unknown value as\n[`RecordingStopReason`] is.",
         "enum": [
           "recorder_unavailable",
-          "nothing_recorded"
+          "nothing_recorded",
+          "files_missing"
         ],
         "type": "string"
       },
@@ -3837,6 +4112,63 @@
       "StreamEpoch": {
         "description": "Identifies one history of event positions. It changes when positions start again.",
         "format": "uuid",
+        "type": "string"
+      },
+      "TranscriptSpeaker": {
+        "description": "One voice in the shared sound of one person. The worker numbers the voices of a\nrecording; a person can give a voice a name.",
+        "properties": {
+          "account_id": {
+            "$ref": "#/components/schemas/AccountId",
+            "description": "The person whose shared sound holds the voice."
+          },
+          "name": {
+            "description": "The name that a person gave to the voice. Absent: the label `Speaker N` is shown.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "number": {
+            "description": "N of the label `Speaker N`.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "renamed_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "renamed_by": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AccountId",
+                "description": "The person who gave the name."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "number",
+          "account_id"
+        ],
+        "type": "object"
+      },
+      "TranscriptState": {
+        "description": "The state of the transcript of a recording.",
+        "enum": [
+          "none",
+          "waiting",
+          "running",
+          "ready",
+          "partial",
+          "failed"
+        ],
         "type": "string"
       },
       "Workspace": {

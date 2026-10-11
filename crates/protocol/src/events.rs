@@ -15,13 +15,14 @@ use crate::call::{
 };
 use crate::ids::{
     AccountId, CallId, CallInvitationId, CallMoveId, ChannelId, DeviceId, EntryRequestId, InviteId,
-    JoinRequestId, ServerRoleId, StreamEpoch, WorkspaceId, WorkspaceRoleId,
+    JoinRequestId, RecordingId, ServerRoleId, StreamEpoch, WorkspaceId, WorkspaceRoleId,
 };
 use crate::invite::{Invite, InviteRevocation, JoinRequest, JoinRequestState};
 use crate::keys::PublicKey;
 use crate::recording::Recording;
 use crate::roles::{ServerRole, WorkspaceRole};
 use crate::structure::{Category, Channel, Workspace, WorkspaceMember};
+use crate::transcript::TranscriptSpeaker;
 
 /// The path of the event stream. A device opens it with its session token in the
 /// `Authorization` header of the upgrade request.
@@ -481,6 +482,35 @@ pub enum Event {
     RecordingUpdated {
         recording: Box<Recording>,
     },
+    /// A recording was removed with its files and its transcript.
+    RecordingRemoved {
+        recording_id: RecordingId,
+        workspace_id: WorkspaceId,
+        channel_id: ChannelId,
+    },
+    /// A person corrected a line of the transcript of a recording. The text that the
+    /// worker wrote is read from the route of the lines.
+    TranscriptLineCorrected {
+        recording_id: RecordingId,
+        workspace_id: WorkspaceId,
+        channel_id: ChannelId,
+        line: u32,
+        text: String,
+        corrected_by: AccountId,
+        #[serde(with = "time::serde::rfc3339")]
+        corrected_at: OffsetDateTime,
+    },
+    /// A person gave a name to a voice in the shared sound of a recording.
+    TranscriptSpeakerRenamed {
+        recording_id: RecordingId,
+        workspace_id: WorkspaceId,
+        channel_id: ChannelId,
+        speaker: TranscriptSpeaker,
+    },
+    /// The glossary of a workspace was replaced. The terms are read from its route.
+    GlossaryReplaced {
+        workspace_id: WorkspaceId,
+    },
 }
 
 impl Event {
@@ -540,6 +570,10 @@ impl Event {
         "direct_mute_removed",
         "recording_started",
         "recording_updated",
+        "recording_removed",
+        "transcript_line_corrected",
+        "transcript_speaker_renamed",
+        "glossary_replaced",
     ];
 
     pub const fn name(&self) -> &'static str {
@@ -599,6 +633,10 @@ impl Event {
             Self::DirectMuteRemoved { .. } => "direct_mute_removed",
             Self::RecordingStarted { .. } => "recording_started",
             Self::RecordingUpdated { .. } => "recording_updated",
+            Self::RecordingRemoved { .. } => "recording_removed",
+            Self::TranscriptLineCorrected { .. } => "transcript_line_corrected",
+            Self::TranscriptSpeakerRenamed { .. } => "transcript_speaker_renamed",
+            Self::GlossaryReplaced { .. } => "glossary_replaced",
         }
     }
 }
@@ -736,7 +774,12 @@ mod tests {
             language: "auto".to_owned(),
             segments: 3,
             failed_segments: 1,
+            bytes: Some(1 << 30),
+            timeline_started_at: Some(time()),
+            transcript: crate::transcript::TranscriptState::Waiting,
+            transcript_lines: 0,
         };
+        let recording_id = recording.id;
         vec![
             Event::DeviceAdded {
                 device_id,
@@ -1003,6 +1046,33 @@ mod tests {
             Event::RecordingUpdated {
                 recording: Box::new(recording),
             },
+            Event::RecordingRemoved {
+                recording_id,
+                workspace_id,
+                channel_id,
+            },
+            Event::TranscriptLineCorrected {
+                recording_id,
+                workspace_id,
+                channel_id,
+                line: 4,
+                text: "The export takes eleven seconds.".to_owned(),
+                corrected_by: account_id,
+                corrected_at: time(),
+            },
+            Event::TranscriptSpeakerRenamed {
+                recording_id,
+                workspace_id,
+                channel_id,
+                speaker: TranscriptSpeaker {
+                    number: 1,
+                    account_id,
+                    name: Some("Noor".to_owned()),
+                    renamed_by: Some(other_account_id),
+                    renamed_at: Some(time()),
+                },
+            },
+            Event::GlossaryReplaced { workspace_id },
         ]
     }
 

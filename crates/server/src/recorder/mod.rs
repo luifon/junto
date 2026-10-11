@@ -5,6 +5,7 @@
 
 pub mod fake;
 pub mod livekit;
+pub mod samples;
 
 use std::fmt;
 

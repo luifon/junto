@@ -69,10 +69,10 @@ Licences:
 ## Consequences
 
 - A second toolchain exists in the repository. CI needs a Python job next to the Rust jobs, and the licence check of ADR 0801 needs a separate step for the Python packages.
-- The worker cannot report progress while it runs, and the server cannot cancel a job except by stopping the container. The unit that connects the server to the worker decides how jobs are handed over; this record fixes only the files.
+- The worker cannot report progress while it runs, and the server cannot cancel a job except by stopping the container. ADR 0607 decides how jobs are handed over; this record fixes only the files.
 - One GPU serves one job at a time per worker process. Several workers on one GPU are possible only when the video memory allows it.
 - The memory of a job is bounded by the limits and does not depend on the length of one file. It does grow with the amount of speech in shared audio, up to the limit of voice windows, and with the number of lines, because the transcript is built in memory.
-- One Whisper call for at most 64 clips, or one clustering of at most 4000 voice windows, can run past the time limit, because the worker cannot stop a library call. The server still needs its own time limit for the container.
+- One Whisper call for at most 64 clips, or one clustering of at most 4000 voice windows, can run past the time limit, because the worker cannot stop a library call. The server has its own time limit for the worker process (ADR 0607).
 - A transcript that reached the time limit depends on the speed of the machine, so it is not the same on every run.
 - An operator who reads the logs sees which field of a job was refused and why, and does not see the value. Finding the value needs the job file.
 - An operator who reads the logs of a model that cannot be loaded sees the type of the error and not the library's text. Finding the cause can need a run of the library by hand.

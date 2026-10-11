@@ -26,7 +26,7 @@ States:
 - The states of ADR 0601 follow each other in one order: starting, recording, processing, and then one of ready, partly failed or failed.
 - A recording is `starting` until the first job of the recorder has started, and `recording` until every job has ended. A stop that is asked for is a field of the recording; the state stays `recording` until the recorder has ended every job.
 - A recording that runs with a failed segment stays `recording`. The recording states the number of its segments and of its failed segments, and the segments state what was saved.
-- `failed` means that the record knows of no job that ran: with the reason `recorder_unavailable` when the requests to start failed, and with `nothing_recorded` when the recording was stopped before a job started. A segment whose start was interrupted counts as a job that can have run. `ready` and `partly failed` are set after the check of the files (ADR 0602).
+- `failed` means that the record knows of no job that ran: with the reason `recorder_unavailable` when the requests to start failed, and with `nothing_recorded` when the recording was stopped before a job started. A segment whose start was interrupted counts as a job that can have run. `ready` and `partly failed` are set after the check of the files (ADR 0602, ADR 0606). A recording whose jobs ran and of which no file is found fails with the reason `files_missing` (ADR 0606).
 
 The recorder client:
 
@@ -103,7 +103,7 @@ Events:
 Audit and notes:
 
 - The start and the stop of a recording are audit entries about the channel (ADR 0305). The entry of a stop by the server has no acting account and states the reason.
-- The server keeps a note for the start, the stop and the first failure of a recording, with the identifier of the recording, for the system lines of the text chat (ADR 0501, ADR 0510).
+- The server keeps a note for the start, the stop and the first failure of a recording, and for its post when its files are processed (ADR 0606), with the identifier of the recording, for the system lines of the text chat (ADR 0501, ADR 0510).
 
 Settings:
 
@@ -122,9 +122,9 @@ Settings:
 - A recording whose call has ended, and whose jobs the recorder never reports as ended, ends when the participants of the recorder have left the room.
 - A recording does not leave the active states while the server cannot read the participants of its room, or while a participant of the recorder stays in the room. It counts among the recordings at one time until then, and its stop is sent again at every pass.
 - A request to start a job that had no answer within 25 seconds and started a job later, for a recording that fails, can leave a file of some seconds in the directory of that recording. The record does not know that file.
-- A file result that the recorder reports after its recording has left the active states is not read. A job that ended complete, and whose report came later than 20 seconds after its stop, stays a failed segment in the record; the recovery of the files on disk (ADR 0602) finds its file.
+- A file result that the recorder reports after its recording has left the active states is not read. A job that ended complete, and whose report came later than 20 seconds after its stop, stays a failed segment in the record; the recovery of the files on disk (ADR 0602, ADR 0606) finds its file.
 - A job of a lost recorder stays in the room for about 20 seconds (ADR 0601). In that time the server sends it a stop at every pass or check, and each has no answer.
-- A recording ends in `processing` until the check of the files, the join of the composite and the transcript are built. Its reservation of disk space stays for that time.
+- A recording stays `processing` until its files are checked and its composite is joined (ADR 0606). Its reservation of disk space stays for that time. The transcript has its own state and does not hold the recording back (ADR 0607).
 - The route that serves the layout page (ADR 0602) is not part of this record. The server gets the address of the page as a setting.
-- The rule that no migration runs while a recording runs (ADR 0005) is not enforced by this record.
+- The rule that no migration runs while a recording runs (ADR 0005) is enforced at the start of the server (ADR 0608).
 - The requests to the Egress service were tested with their bodies and with the answers that step 0 stored. They were not run against a recorder by the server code.
