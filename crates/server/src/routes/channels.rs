@@ -470,6 +470,23 @@ pub async fn delete_channel(
         if deleted.rows_affected() == 0 {
             return Err(ApiError::conflict("the channel changed during the request"));
         }
+        sqlx::query("update attachments set removed_at=$2 where place_id=$1")
+            .bind(channel_id)
+            .bind(now)
+            .execute(&mut *connection)
+            .await?;
+        sqlx::query("delete from messages where place_id=$1")
+            .bind(channel_id)
+            .execute(&mut *connection)
+            .await?;
+        sqlx::query("delete from call_notes where channel_id=$1")
+            .bind(channel_id)
+            .execute(&mut *connection)
+            .await?;
+        sqlx::query("update channels set permanent_message_count=0 where id=$1")
+            .bind(channel_id)
+            .execute(&mut *connection)
+            .await?;
         let workspace_id = record.channel.workspace_id;
         crate::calls::store::mark_channel(connection, &app.calls, channel_id).await?;
         events::channel_deleted(connection, now, workspace_id, channel_id).await?;

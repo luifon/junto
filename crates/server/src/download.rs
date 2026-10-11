@@ -1,7 +1,5 @@
 //! The download of a file as the body of a response, whole or as one byte range (ADR 0608).
 
-use std::io::SeekFrom;
-
 use axum::body::{Body, Bytes};
 use axum::http::header::{
     ACCEPT_RANGES, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE,
@@ -100,50 +98,115 @@ pub async fn send(
     place: OwnedSemaphorePermit,
     stall: std::time::Duration,
 ) -> Result<Response, ApiError> {
+    let mut file = tokio::fs::File::from_std(file);
     let length = file
         .metadata()
+        .await
         .map_err(|error| ApiError::internal(&error))?
         .len();
+    let first = match asked(headers, length) {
+        Asked::Range { first, .. } => first,
+        _ => 0,
+    };
+    file.seek(std::io::SeekFrom::Start(first))
+        .await
+        .map_err(|error| ApiError::internal(&error))?;
+    let stream = futures_util::stream::try_unfold(file, |mut file| async move {
+        let mut bytes = vec![0; CHUNK];
+        let count = file.read(&mut bytes).await?;
+        bytes.truncate(count);
+        Ok::<_, std::io::Error>((count > 0).then(|| (Bytes::from(bytes), file)))
+    });
+    let mut response = streamed(
+        stream,
+        length,
+        first,
+        headers,
+        described.media_type,
+        place,
+        stall,
+    )?;
+    response.headers_mut().insert(
+        CONTENT_DISPOSITION,
+        HeaderValue::from_str(&format!("attachment; filename=\"{}\"", described.file_name))
+            .map_err(|error| ApiError::internal(&error))?,
+    );
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("private, no-cache"));
+    Ok(response)
+}
+
+/// A bounded producer shared by recording and attachment downloads. The producer owns the
+/// capacity guard even when the HTTP body is no longer polled.
+pub fn streamed<S, G>(
+    stream: S,
+    length: u64,
+    source_offset: u64,
+    headers: &HeaderMap,
+    media_type: &str,
+    guard: G,
+    stall: std::time::Duration,
+) -> Result<Response, ApiError>
+where
+    S: futures_util::Stream<Item = std::io::Result<Bytes>> + Send + 'static,
+    G: Send + 'static,
+{
+    use futures_util::StreamExt;
     let (status, first, last) = match asked(headers, length) {
         Asked::Whole => (StatusCode::OK, 0, length.saturating_sub(1)),
         Asked::Range { first, last } => (StatusCode::PARTIAL_CONTENT, first, last),
         Asked::Outside => {
-            let refusal = ApiError::new(
+            let mut response = ApiError::new(
                 ErrorCode::RangeNotSatisfiable,
                 "the range lies outside the file",
+            )
+            .into_response();
+            response.headers_mut().insert(
+                CONTENT_RANGE,
+                HeaderValue::from_str(&format!("bytes */{length}"))
+                    .map_err(|error| ApiError::internal(&error))?,
             );
-            let mut response = refusal.into_response();
-            let range = format!("bytes */{length}");
-            if let Ok(range) = HeaderValue::from_str(&range) {
-                response.headers_mut().insert(CONTENT_RANGE, range);
-            }
             return Ok(response);
         }
     };
     let count = if length == 0 { 0 } else { last - first + 1 };
-    let (sender, receiver) = tokio::sync::mpsc::channel::<std::io::Result<Bytes>>(2);
+    let (sender, receiver) = tokio::sync::mpsc::channel(2);
     tokio::spawn(async move {
-        let _place = place;
-        let mut file = tokio::fs::File::from_std(file);
-        if let Err(error) = file.seek(SeekFrom::Start(first)).await {
-            let _ = sender.send(Err(error)).await;
-            return;
-        }
+        let _guard = guard;
+        futures_util::pin_mut!(stream);
+        let mut skipped = first.saturating_sub(source_offset);
         let mut left = count;
-        let mut buffer = vec![0u8; CHUNK];
         while left > 0 {
-            let want = usize::try_from(left).map_or(CHUNK, |left| left.min(CHUNK));
-            let chunk = match file.read(&mut buffer[..want]).await {
-                Ok(0) => Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)),
-                Ok(read) => {
-                    left -= read as u64;
-                    Ok(Bytes::copy_from_slice(&buffer[..read]))
+            let next = tokio::time::timeout(stall, stream.next()).await;
+            let chunk = match next {
+                Ok(Some(Ok(bytes))) => bytes,
+                Ok(Some(Err(error))) => {
+                    let _ = tokio::time::timeout(stall, sender.send(Err(error))).await;
+                    return;
                 }
-                Err(error) => Err(error),
+                Ok(None) => {
+                    let _ = tokio::time::timeout(
+                        stall,
+                        sender.send(Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof))),
+                    )
+                    .await;
+                    return;
+                }
+                Err(_) => return,
             };
-            let failed = chunk.is_err();
-            let sent = tokio::time::timeout(stall, sender.send(chunk)).await;
-            if failed || !matches!(sent, Ok(Ok(()))) {
+            if skipped >= chunk.len() as u64 {
+                skipped -= chunk.len() as u64;
+                continue;
+            }
+            let start = skipped as usize;
+            skipped = 0;
+            let end = start + (left.min((chunk.len() - start) as u64) as usize);
+            left -= (end - start) as u64;
+            if !matches!(
+                tokio::time::timeout(stall, sender.send(Ok(chunk.slice(start..end)))).await,
+                Ok(Ok(()))
+            ) {
                 return;
             }
         }
@@ -152,21 +215,18 @@ pub async fn send(
         receiver,
         |mut receiver| async move { receiver.recv().await.map(|chunk| (chunk, receiver)) },
     ));
+    let mut response = (status, body).into_response();
+    let values = response.headers_mut();
     let header =
         |text: &str| HeaderValue::from_str(text).map_err(|error| ApiError::internal(&error));
-    let mut response = (status, body).into_response();
-    let stated = response.headers_mut();
-    stated.insert(CONTENT_TYPE, HeaderValue::from_static(described.media_type));
-    stated.insert(CONTENT_LENGTH, header(&count.to_string())?);
-    stated.insert(ACCEPT_RANGES, HeaderValue::from_static("bytes"));
-    stated.insert(
-        CONTENT_DISPOSITION,
-        header(&format!("attachment; filename=\"{}\"", described.file_name))?,
-    );
-    stated.insert(CACHE_CONTROL, HeaderValue::from_static("private, no-cache"));
-    stated.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    values.insert(CONTENT_TYPE, header(media_type)?);
+    values.insert(CONTENT_LENGTH, header(&count.to_string())?);
+    values.insert(ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    values.insert(CONTENT_DISPOSITION, HeaderValue::from_static("attachment"));
+    values.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    values.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     if status == StatusCode::PARTIAL_CONTENT {
-        stated.insert(
+        values.insert(
             CONTENT_RANGE,
             header(&format!("bytes {first}-{last}/{length}"))?,
         );
@@ -182,6 +242,32 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(RANGE, HeaderValue::from_str(range).unwrap());
         headers
+    }
+
+    #[tokio::test]
+    async fn an_error_behind_a_stalled_body_releases_download_capacity() {
+        let capacity = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = capacity.clone().acquire_owned().await.unwrap();
+        let stall = std::time::Duration::from_millis(20);
+        let stream = futures_util::stream::iter([
+            Ok(Bytes::from_static(b"a")),
+            Ok(Bytes::from_static(b"b")),
+            Err(std::io::Error::other("failed disk read")),
+        ]);
+        let _response = streamed(
+            stream,
+            3,
+            0,
+            &HeaderMap::new(),
+            "application/octet-stream",
+            permit,
+            stall,
+        )
+        .unwrap();
+        let _returned = tokio::time::timeout(stall * 100, capacity.acquire())
+            .await
+            .expect("an error must not hold a stalled download forever")
+            .unwrap();
     }
 
     #[test]

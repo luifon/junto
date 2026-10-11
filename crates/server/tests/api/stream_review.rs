@@ -702,7 +702,7 @@ async fn a_workspace_that_another_account_creates_reaches_an_administrator_whole
         .ok::<WorkspaceRole>(StatusCode::CREATED);
 
     for (_, event) in server.traffic(&administrator, &mut stream).await {
-        apply(&mut snapshot, event);
+        apply(&server, &administrator, &mut snapshot, event).await;
     }
     let live = sorted(server.snapshot(&administrator).await);
     snapshot.cursor = live.cursor;

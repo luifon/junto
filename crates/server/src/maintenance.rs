@@ -71,6 +71,7 @@ pub async fn run_once(app: &AppState) -> ApiResult<()> {
     let rings_from = now - counted - calls.invitation_lifetime;
     in_batches(app, RINGS_THAT_NO_LIMIT_COUNTS, rings_from).await?;
     events::log::trim(app).await?;
+    crate::messages::uploads::cleanup(app).await?;
     Ok(())
 }
 

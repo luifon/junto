@@ -36,7 +36,7 @@ A logged-in device receives the changes of the server over one WebSocket connect
 
 1. `GET /api/v1/snapshot` returns the account, its workspaces, and the roles, categories and channels that it may see, with a cursor.
 2. The device opens `GET /api/v1/events` as a WebSocket with its session token in the `Authorization` header. The server sends `hello`.
-3. The device sends `{"type": "subscribe", "level": "full", "cursor": <cursor of the snapshot>}`. The level `background` delivers control events only until direct messages, mentions and call invites exist.
+3. The device sends `{"type": "subscribe", "level": "full", "cursor": <cursor of the snapshot>}`. The level `background` delivers control events, direct messages, mentions and call invites, with access checked at delivery.
 4. The server sends each event that the account may receive as `{"type": "event", "id": <position>, "at": <time>, "event": {...}}`, in the order of the positions. The device keeps the `id` of the last event that it applied; an event with an `id` at or below it is a repeat.
 5. After a disconnection the device subscribes with its cursor. The server replays up to 1000 events that the account may receive. When more wait, or the cursor is not of this log, the server answers `resync`. The device then discards everything that it holds of this server, also what the snapshot does not carry, such as invites and members, and starts again at step 1 (ADR 0207).
 
@@ -197,3 +197,26 @@ cargo run -p junto-server --bin junto-openapi
 ```
 
 The test `openapi` fails while a committed file differs from the code.
+
+## Text messages
+
+The test database starts with `pg_stat_statements` preloaded. The message read-cost test
+uses it to check that history and snapshot query counts remain bounded. Its entry limit
+keeps statistics for the whole suite without eviction. A temporary database role identifies
+request statements separately from the event watcher.
+
+Channels (including voice-channel chat) use `GET` and `POST /api/v1/channels/{id}/messages`.
+Two-account conversations are opened with `POST /api/v1/conversations` and use
+`/api/v1/conversations/{id}/messages`. A message is fetched, edited and deleted at
+`/api/v1/messages/{id}`. Documents are typed JSON; history positions, replies, reactions,
+read positions and system messages follow ADR 0408. The snapshot includes unread summaries,
+with 100 meaning 100 or more. Use `before_message` or `after_message` to page through private
+system lines that share a public position. Each line keeps the audience it had when written.
+
+Set `JUNTO_ATTACHMENTS_DIR` to a dedicated existing absolute directory for attachments.
+`JUNTO_ATTACHMENT_BYTES` defaults to 100,000,000 and `JUNTO_ATTACHMENTS_PER_MESSAGE` to 10.
+Administrators can persist overrides with `PUT /api/v1/attachment-limits`; every authenticated
+client can read the effective values with GET.
+Start an upload at `POST /api/v1/attachments`, send 1 MiB chunks to its `chunks/{offset}`
+route, then complete it after all bytes have arrived. Upload status permits resumption.
+The generated API describes the request types. Back up this directory with the database.

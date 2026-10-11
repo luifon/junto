@@ -66,8 +66,16 @@ impl Class {
             | Event::OwnCallChanged { .. }
             | Event::CallAccessEnded {}
             | Event::DirectMuteSet { .. }
-            | Event::DirectMuteRemoved { .. } => Self::Control,
+            | Event::DirectMuteRemoved { .. }
+            | Event::MessageRead { .. }
+            | Event::AttachmentLimitsChanged { .. } => Self::Control,
+            Event::ConversationOpened { .. } => Self::DirectMessage,
+            Event::MessageMentioned { .. } => Self::Mention,
             Event::CallInvited { .. } | Event::CallInvitationResolved { .. } => Self::CallInvite,
+            Event::MessageChanged { place, .. } => match place {
+                junto_protocol::message::MessagePlace::Direct { .. } => Self::DirectMessage,
+                _ => Self::General,
+            },
             Event::AccountAdded { .. }
             | Event::AccountProfileUpdated { .. }
             | Event::AccountStatusChanged { .. }
@@ -218,6 +226,22 @@ pub enum Audience {
         low_account_id: AccountId,
         high_account_id: AccountId,
     },
+    ActiveAccounts,
+    SystemMessage {
+        workspace_id: WorkspaceId,
+        channel_id: ChannelId,
+        call_id: junto_protocol::ids::CallId,
+        readers: Option<Vec<AccountId>>,
+    },
+    Mention {
+        workspace_id: WorkspaceId,
+        channel_id: ChannelId,
+        message_id: junto_protocol::ids::MessageId,
+        #[serde(default)]
+        account_id: Option<AccountId>,
+        #[serde(default)]
+        notice_id: Option<uuid::Uuid>,
+    },
 }
 
 /// The audience of an event about a call at `place`.
@@ -300,9 +324,12 @@ pub fn of_recording(workspace_id: WorkspaceId, channel_id: ChannelId, call_runs:
 impl Audience {
     pub const fn account_id(&self) -> Option<AccountId> {
         match self {
-            Self::Account { account_id } | Self::AccountSeeing { account_id, .. } => {
-                Some(*account_id)
+            Self::Mention {
+                account_id: Some(account_id),
+                ..
             }
+            | Self::Account { account_id }
+            | Self::AccountSeeing { account_id, .. } => Some(*account_id),
             _ => None,
         }
     }
@@ -311,6 +338,7 @@ impl Audience {
     /// may be at the places that the event names.
     pub fn addressed(account_id: AccountId, event: &Event) -> Self {
         let named: Vec<CallPlace> = match event {
+            Event::MessageRead { place, .. } => vec![message_call_place(*place)],
             Event::CallInvited { invitation } => vec![invitation.place],
             Event::CallMoveRequested { call_move } => vec![call_move.from, call_move.to],
             Event::OwnCallChanged {
@@ -397,12 +425,15 @@ impl Audience {
 
     pub const fn workspace_id(&self) -> Option<WorkspaceId> {
         match self {
-            Self::Workspace { workspace_id }
+            Self::SystemMessage { workspace_id, .. }
+            | Self::Mention { workspace_id, .. }
+            | Self::Workspace { workspace_id }
             | Self::WorkspaceRoleHolders { workspace_id, .. }
             | Self::Channel { workspace_id, .. }
             | Self::DeletedChannel { workspace_id, .. }
             | Self::Call { workspace_id, .. } => Some(*workspace_id),
-            Self::Account { .. }
+            Self::ActiveAccounts
+            | Self::Account { .. }
             | Self::AccountSeeing { .. }
             | Self::AccountViewers { .. }
             | Self::ServerPermission { .. }
@@ -421,7 +452,9 @@ impl Audience {
 
     pub const fn channel_id(&self) -> Option<ChannelId> {
         match self {
-            Self::Channel { channel_id, .. }
+            Self::SystemMessage { channel_id, .. }
+            | Self::Mention { channel_id, .. }
+            | Self::Channel { channel_id, .. }
             | Self::DeletedChannel { channel_id, .. }
             | Self::Call { channel_id, .. } => Some(*channel_id),
             _ => None,
@@ -432,9 +465,9 @@ impl Audience {
     /// receives every event of that call (ADR 0107).
     pub const fn call_key(&self) -> Option<CallKey> {
         match self {
-            Self::Channel { channel_id, .. } | Self::Call { channel_id, .. } => {
-                Some(CallKey::Channel(*channel_id))
-            }
+            Self::SystemMessage { channel_id, .. }
+            | Self::Channel { channel_id, .. }
+            | Self::Call { channel_id, .. } => Some(CallKey::Channel(*channel_id)),
             Self::Direct {
                 low_account_id,
                 high_account_id,
@@ -449,6 +482,25 @@ impl Audience {
         let permission = |permission| Some(Self::ServerPermission { permission });
         let workspace = |workspace_id| Some(Self::Workspace { workspace_id });
         match event {
+            Event::ConversationOpened { conversation } => Some(Self::Direct {
+                low_account_id: conversation.low_account_id,
+                high_account_id: conversation.high_account_id,
+            }),
+            Event::AttachmentLimitsChanged { .. } => Some(Self::ActiveAccounts),
+            Event::MessageMentioned {
+                workspace_id,
+                channel_id,
+                message_id,
+                ..
+            } => Some(Self::Mention {
+                workspace_id: *workspace_id,
+                channel_id: *channel_id,
+                message_id: *message_id,
+                account_id: None,
+                notice_id: None,
+            }),
+            Event::MessageChanged { place, .. } => Some(of_call(&message_call_place(*place), None)),
+            Event::MessageRead { .. } => None,
             Event::DeviceAdded { .. }
             | Event::DeviceRenamed { .. }
             | Event::DeviceRemoved { .. }
@@ -535,6 +587,35 @@ impl Audience {
     pub fn fits(&self, event: &Event) -> bool {
         match (event, self) {
             (
+                Event::MessageMentioned {
+                    workspace_id,
+                    channel_id,
+                    message_id,
+                    ..
+                },
+                Self::Mention {
+                    workspace_id: workspace,
+                    channel_id: channel,
+                    message_id: message,
+                    ..
+                },
+            ) => workspace_id == workspace && channel_id == channel && message_id == message,
+            (
+                Event::MessageChanged {
+                    place:
+                        junto_protocol::message::MessagePlace::Channel {
+                            workspace_id,
+                            channel_id,
+                        },
+                    ..
+                },
+                Self::SystemMessage {
+                    workspace_id: w,
+                    channel_id: ch,
+                    ..
+                },
+            ) => workspace_id == w && channel_id == ch,
+            (
                 Event::DeviceAdded { .. }
                 | Event::DeviceRenamed { .. }
                 | Event::DeviceRemoved { .. }
@@ -551,7 +632,8 @@ impl Audience {
                 Self::Account { .. },
             ) => true,
             (
-                Event::CallInvited { .. }
+                Event::MessageRead { .. }
+                | Event::CallInvited { .. }
                 | Event::CallMoveRequested { .. }
                 | Event::OwnCallChanged { call: Some(_), .. },
                 _,
@@ -736,6 +818,7 @@ pub fn receives<'a>(
     };
     let workspace = audience.workspace_id().and_then(standing);
     match audience {
+        Audience::ActiveAccounts => allows(Request::OwnAccount),
         Audience::Account { account_id } => {
             *account_id == recipient.account_id && allows(Request::OwnAccount)
         }
@@ -785,6 +868,17 @@ pub fn receives<'a>(
                         permission: *permission,
                     })
             }),
+        Audience::SystemMessage { channel_id, .. } | Audience::Mention { channel_id, .. } => {
+            workspace
+                .and_then(|standing| standing.channels.get(channel_id))
+                .is_some_and(|channel| {
+                    !channel.deleted
+                        && allows(Request::Channel {
+                            scope: &channel.scope,
+                            permission: WorkspacePermission::ViewChannel,
+                        })
+                })
+        }
         Audience::DeletedChannel { overrides, .. } => workspace
             .and_then(|standing| standing.kept_scope(overrides))
             .is_some_and(|scope| {
@@ -820,6 +914,26 @@ pub fn receives<'a>(
             };
             allows(Request::DirectMessage(Participation::Participant)) && reaches(other)
         }
+    }
+}
+
+fn message_call_place(place: junto_protocol::message::MessagePlace) -> CallPlace {
+    match place {
+        junto_protocol::message::MessagePlace::Channel {
+            workspace_id,
+            channel_id,
+        } => CallPlace::Channel {
+            workspace_id,
+            channel_id,
+        },
+        junto_protocol::message::MessagePlace::Direct {
+            low_account_id,
+            high_account_id,
+            ..
+        } => CallPlace::Direct {
+            low_account_id,
+            high_account_id,
+        },
     }
 }
 

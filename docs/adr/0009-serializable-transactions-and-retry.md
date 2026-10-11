@@ -15,6 +15,7 @@ Isolation:
 - Every transaction of the server runs at the isolation level SERIALIZABLE. The server opens its connections with this level as the default and names it again when it starts a transaction.
 - All database work of one request is one transaction: the check of the session and of the active state of its account, the roles and overrides that the permission function needs, the reads, the writes and the audit entry.
 - A request that carries a signed challenge marks the challenge as used in the same transaction (ADR 0108). A transaction that does not commit leaves the challenge unused.
+- Attachment chunk uploads use the durable-intent exception of ADR 0408: one transaction authorizes an intent, immutable file I/O follows, and a second transaction checks the session and permissions again before accepting the bytes. File I/O never runs inside a retried transaction.
 - A route that only reads uses a read-only transaction. All of its statements see one snapshot.
 - The server code reaches the database only through two macros, one for a transaction that writes and one for a read-only transaction.
 

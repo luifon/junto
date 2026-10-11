@@ -319,14 +319,39 @@ async fn a_person_with_the_permission_removes_a_recording_with_its_files_and_its
         .into_iter()
         .map(|(_, event)| event)
         .collect();
+    let [
+        removed,
+        Event::MessageChanged {
+            message_id: post,
+            deleted: true,
+            ..
+        },
+        Event::MessageChanged {
+            message_id: line,
+            deleted: false,
+            ..
+        },
+    ] = &events[..]
+    else {
+        panic!("{events:?}");
+    };
     assert_eq!(
-        events,
-        [Event::RecordingRemoved {
+        *removed,
+        Event::RecordingRemoved {
             recording_id: id,
             workspace_id: scene.workspace_id,
-            channel_id: scene.voice.id,
-        }]
+            channel_id: scene.voice.id
+        }
     );
+    server
+        .get(ben, &format!("/api/v1/messages/{post}"))
+        .await
+        .error(ErrorCode::NotFound);
+    let system: junto_protocol::message::Message = server
+        .get(ben, &format!("/api/v1/messages/{line}"))
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(system.system.unwrap().action, "recording_removed");
     let entries = server.audit_actions(owner, scene.workspace_id).await;
     let last = entries.last().unwrap();
     assert_eq!(

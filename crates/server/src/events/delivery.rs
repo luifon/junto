@@ -235,6 +235,26 @@ fn decide(
         contacts: &standing.contacts,
     };
     let in_workspace = |workspace_id| standing.workspaces.get(&workspace_id);
+    if let Audience::SystemMessage {
+        readers: Some(readers),
+        ..
+    } = audience
+        && !readers.contains(&access.account_id)
+    {
+        return Ok(Decision::Hidden);
+    }
+    if let Audience::Mention {
+        message_id,
+        account_id,
+        notice_id,
+        ..
+    } = audience
+        && (account_id.is_some_and(|id| id != access.account_id)
+            || notice_id.is_some_and(|id| !standing.mention_notices.contains(&id))
+            || !standing.mentioned.contains(message_id))
+    {
+        return Ok(Decision::Hidden);
+    }
     if !(wanted && receives(recipient, audience, &in_workspace)) {
         return Ok(Decision::Hidden);
     }
@@ -461,6 +481,8 @@ struct Standing {
     workspaces: HashMap<WorkspaceId, WorkspaceStanding>,
     fellows: HashSet<AccountId>,
     contacts: HashMap<AccountId, junto_authz::Contact>,
+    mentioned: HashSet<junto_protocol::ids::MessageId>,
+    mention_notices: HashSet<Uuid>,
 }
 
 impl Standing {
@@ -469,6 +491,28 @@ impl Standing {
         access: &Access,
         candidates: &[Candidate],
     ) -> ApiResult<Self> {
+        let notice_ids: Vec<_> = candidates
+            .iter()
+            .filter_map(|candidate| match &candidate.audience {
+                Some(Audience::Mention { notice_id, .. }) => *notice_id,
+                _ => None,
+            })
+            .collect();
+        let mention_notices = sqlx::query_scalar("select event_id from message_mention_receivers where event_id=any($1) and account_id=$2")
+            .bind(notice_ids).bind(access.account_id).fetch_all(&mut *connection).await?.into_iter().collect();
+        let ids: Vec<junto_protocol::ids::MessageId> = candidates
+            .iter()
+            .filter_map(|c| match c.audience.as_ref() {
+                Some(Audience::Mention { message_id, .. }) => Some(*message_id),
+                _ => None,
+            })
+            .collect();
+        let mut mentioned = HashSet::new();
+        for id in ids {
+            if crate::messages::is_mentioned(connection, access.account_id, id).await? {
+                mentioned.insert(id);
+            }
+        }
         let mut named: Vec<(WorkspaceId, Vec<ChannelId>)> = Vec::new();
         let places = candidates
             .iter()
@@ -563,6 +607,8 @@ impl Standing {
             workspaces,
             fellows,
             contacts,
+            mentioned,
+            mention_notices,
         })
     }
 }

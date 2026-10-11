@@ -16,6 +16,7 @@ pub mod extract;
 pub mod image;
 pub mod maintenance;
 pub mod media;
+pub mod messages;
 pub mod owner;
 pub mod proof;
 pub mod rate_limit;

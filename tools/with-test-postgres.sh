@@ -25,7 +25,8 @@ trap 'exit 130' INT TERM
 docker run -d --name "$name" \
     -e POSTGRES_HOST_AUTH_METHOD=trust \
     -p 127.0.0.1::5432 \
-    "$image" -c max_connections=400 -c fsync=off >/dev/null
+    "$image" -c max_connections=400 -c fsync=off -c shared_preload_libraries=pg_stat_statements \
+    -c pg_stat_statements.max=100000 >/dev/null
 
 port=$(docker port "$name" 5432/tcp | head -n 1 | sed 's/.*://')
 

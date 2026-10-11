@@ -98,19 +98,34 @@ pub async fn note(
     else {
         return Ok(());
     };
+    let message_id = junto_protocol::ids::MessageId::generate();
     sqlx::query(
         "insert into call_notes
              (id, occurred_at, workspace_id, channel_id, call_id, kind, account_id)
          values ($1, $2, $3, $4, $5, $6, $7)",
     )
-    .bind(Uuid::now_v7())
+    .bind(message_id)
     .bind(now)
     .bind(workspace_id)
     .bind(channel_id)
     .bind(call.id)
     .bind(kind.stored())
     .bind(account_id)
-    .execute(connection)
+    .execute(&mut *connection)
+    .await?;
+    crate::messages::system(
+        connection,
+        now,
+        channel_id,
+        message_id,
+        &junto_protocol::message::SystemMessage {
+            action: kind.stored().to_owned(),
+            actor_id: account_id,
+            recording_id: None,
+            subject_id: None,
+        },
+        Some(call.id),
+    )
     .await?;
     Ok(())
 }

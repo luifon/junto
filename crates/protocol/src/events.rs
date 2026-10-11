@@ -511,6 +511,28 @@ pub enum Event {
     GlossaryReplaced {
         workspace_id: WorkspaceId,
     },
+    ConversationOpened {
+        conversation: crate::message::Conversation,
+    },
+    AttachmentLimitsChanged {
+        limits: crate::message::AttachmentLimits,
+    },
+    MessageMentioned {
+        workspace_id: WorkspaceId,
+        channel_id: ChannelId,
+        message_id: crate::ids::MessageId,
+        position: u64,
+    },
+    MessageChanged {
+        place: crate::message::MessagePlace,
+        message_id: crate::ids::MessageId,
+        position: u64,
+        deleted: bool,
+    },
+    MessageRead {
+        place: crate::message::MessagePlace,
+        position: u64,
+    },
 }
 
 impl Event {
@@ -574,6 +596,11 @@ impl Event {
         "transcript_line_corrected",
         "transcript_speaker_renamed",
         "glossary_replaced",
+        "message_changed",
+        "message_read",
+        "message_mentioned",
+        "conversation_opened",
+        "attachment_limits_changed",
     ];
 
     pub const fn name(&self) -> &'static str {
@@ -637,6 +664,11 @@ impl Event {
             Self::TranscriptLineCorrected { .. } => "transcript_line_corrected",
             Self::TranscriptSpeakerRenamed { .. } => "transcript_speaker_renamed",
             Self::GlossaryReplaced { .. } => "glossary_replaced",
+            Self::MessageChanged { .. } => "message_changed",
+            Self::MessageRead { .. } => "message_read",
+            Self::MessageMentioned { .. } => "message_mentioned",
+            Self::ConversationOpened { .. } => "conversation_opened",
+            Self::AttachmentLimitsChanged { .. } => "attachment_limits_changed",
         }
     }
 }
@@ -1073,6 +1105,41 @@ mod tests {
                 },
             },
             Event::GlossaryReplaced { workspace_id },
+            Event::MessageChanged {
+                place: crate::message::MessagePlace::Channel {
+                    workspace_id,
+                    channel_id,
+                },
+                message_id: crate::ids::MessageId::generate(),
+                position: 1,
+                deleted: false,
+            },
+            Event::MessageRead {
+                place: crate::message::MessagePlace::Channel {
+                    workspace_id,
+                    channel_id,
+                },
+                position: 1,
+            },
+            Event::MessageMentioned {
+                workspace_id,
+                channel_id,
+                message_id: crate::ids::MessageId::generate(),
+                position: 1,
+            },
+            Event::ConversationOpened {
+                conversation: crate::message::Conversation {
+                    id: crate::ids::ConversationId::generate(),
+                    low_account_id: account_id,
+                    high_account_id: other_account_id,
+                },
+            },
+            Event::AttachmentLimitsChanged {
+                limits: crate::message::AttachmentLimits {
+                    bytes_per_file: 100_000_000,
+                    files_per_message: 10,
+                },
+            },
         ]
     }
 

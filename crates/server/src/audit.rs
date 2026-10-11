@@ -38,8 +38,59 @@ pub async fn record(
     .bind(channel_id)
     .bind(event.action())
     .bind(Json(event))
-    .execute(connection)
+    .execute(&mut *connection)
     .await?;
+    if let Some(channel_id) = channel_id
+        && !matches!(
+            event,
+            AuditEvent::RecordingStarted { .. } | AuditEvent::RecordingStopped { .. }
+        )
+    {
+        let recording_id = match event {
+            AuditEvent::RecordingRemoved { recording_id }
+            | AuditEvent::TranscriptRequested { recording_id } => Some(*recording_id),
+            _ => None,
+        };
+        let call_id = if let Some(recording_id) = recording_id {
+            sqlx::query_scalar("select call_id from recordings where id=$1")
+                .bind(recording_id)
+                .fetch_optional(&mut *connection)
+                .await?
+        } else if event.action().starts_with("call_")
+            || event.action().starts_with("recording_")
+            || event.action().starts_with("transcript_")
+        {
+            sqlx::query_scalar("select id from calls where channel_id=$1")
+                .bind(channel_id)
+                .fetch_optional(&mut *connection)
+                .await?
+        } else {
+            None
+        };
+        crate::messages::system(
+            connection,
+            now,
+            channel_id,
+            junto_protocol::ids::MessageId::generate(),
+            &junto_protocol::message::SystemMessage {
+                action: event.action().to_owned(),
+                actor_id: actor,
+                recording_id: None,
+                subject_id: match event {
+                    AuditEvent::CallMicrophoneBlocked { account_id }
+                    | AuditEvent::CallMicrophoneUnblocked { account_id }
+                    | AuditEvent::CallSoundBlocked { account_id }
+                    | AuditEvent::CallSoundUnblocked { account_id }
+                    | AuditEvent::CallMemberDisconnected { account_id }
+                    | AuditEvent::CallMemberMovedOut { account_id }
+                    | AuditEvent::CallMemberMovedIn { account_id } => Some(*account_id),
+                    _ => None,
+                },
+            },
+            call_id,
+        )
+        .await?;
+    }
     Ok(())
 }
 

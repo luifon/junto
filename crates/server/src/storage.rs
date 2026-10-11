@@ -82,12 +82,14 @@ impl Disk for FakeDisk {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Recording,
+    Attachment,
 }
 
 impl Kind {
     const fn stored(self) -> &'static str {
         match self {
             Self::Recording => "recording",
+            Self::Attachment => "attachment",
         }
     }
 }
@@ -101,7 +103,7 @@ pub const fn at_reserve(free: u64, reserve: u64) -> bool {
 fn low() -> ApiError {
     ApiError::new(
         ErrorCode::StorageLow,
-        "the server has too little free disk space for a new recording",
+        "the server has too little free disk space for a new file operation",
     )
 }
 

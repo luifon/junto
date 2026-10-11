@@ -42,6 +42,11 @@ impl Place {
         Self(parts.iter().map(ToString::to_string).collect())
     }
 
+    /// The directory of one attachment, using its server-generated identifier.
+    pub fn attachment(attachment: junto_protocol::ids::AttachmentId) -> Self {
+        Self::of(&[&attachment])
+    }
+
     /// The directory of a recording.
     pub fn recording(recording: RecordingId) -> Self {
         Self::of(&[&recording])
@@ -304,7 +309,9 @@ mod system {
             linked => linked,
         };
         unlinkat(&from_directory, from_name, AtFlags::empty())?;
-        Ok(linked?)
+        linked?;
+        rustix::fs::fsync(&to_directory)?;
+        Ok(rustix::fs::fsync(&from_directory)?)
     }
 
     pub fn create_directory(root: &Path, place: &Place) -> io::Result<()> {

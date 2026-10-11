@@ -216,6 +216,13 @@ pub enum AuditEvent {
     GlossaryReplaced {
         terms: u32,
     },
+    AttachmentLimitsChanged {
+        bytes_per_file: u64,
+        files_per_message: u32,
+    },
+    PermanentMessageDeleted {
+        message_id: crate::ids::MessageId,
+    },
     /// An action that this build does not know. It is read and never written.
     #[serde(other, skip_serializing)]
     Unknown,
@@ -269,6 +276,8 @@ impl AuditEvent {
             Self::RecordingRemoved { .. } => "recording_removed",
             Self::TranscriptRequested { .. } => "transcript_requested",
             Self::GlossaryReplaced { .. } => "glossary_replaced",
+            Self::PermanentMessageDeleted { .. } => "permanent_message_deleted",
+            Self::AttachmentLimitsChanged { .. } => "attachment_limits_changed",
             Self::Unknown => "unknown",
         }
     }

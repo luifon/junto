@@ -40,4 +40,4 @@ What it does not decide:
 - A moderator with "ban members" and without the administrator permission sees a profile and cannot call the account.
 - When the last common workspace of two accounts ends, or the administrator permission of one of them is removed, their direct-message call ends at the next admission check, and neither account receives a further event that names the other. Each gets `call_access_ended` (ADR 0510).
 - A delivery of an event of a direct-message call reads the state, the memberships and the server roles of the other account in the transaction of its batch.
-- Whether an account can still read an old direct message after the rule stopped holding is decided with the text unit.
+- ADR 0408 makes earlier direct-message history unavailable while this rule fails, and available again when it holds.
