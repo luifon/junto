@@ -5,6 +5,7 @@
 //! event stream of each server, and tells the window to draw again. The window reads plain
 //! data through [`AppState::view`] and calls the methods here for what a person does.
 
+pub mod recording;
 pub mod view;
 
 use std::collections::{HashMap, HashSet};
@@ -16,14 +17,21 @@ use junto_client_core::api::ApiError;
 use junto_client_core::book::ConnectionMode;
 use junto_client_core::flow::FlowError;
 use junto_client_core::flow::access::{AccessAction, AccessState};
+use junto_client_core::live::Notice;
 use junto_client_core::protocol::call::CallPlace;
-use junto_client_core::protocol::ids::{AccountId, ChannelId, RecoveryId, ServerId, WorkspaceId};
+use junto_client_core::protocol::call::{EntryOutcome, InvitationOutcome, UpdateCallSettings};
+use junto_client_core::protocol::events::Event;
+use junto_client_core::protocol::ids::{
+    AccountId, CallInvitationId, ChannelId, EntryRequestId, RecoveryId, ServerId, WorkspaceId,
+};
 use junto_client_core::settings::InterfaceSettings;
-use junto_client_core::voice::{InputMode, TalkKey, VoiceSettings};
+use junto_client_core::voice::{InputMode, ShareResolution, TalkKey, VoiceSettings};
 use junto_client_core::{Client, ServerHandle};
 use junto_media::audio::{DeviceId, Processing, level};
 use junto_media::calls::{CallTarget, Calls, MediaOptions};
-use junto_media::engine::{Levels, VoiceConfig};
+use junto_media::engine::{Levels, MicrophoneState, ShareId, VoiceConfig};
+use junto_media::permission::MicrophoneAccess;
+use junto_media::share::{CaptureRequest, PictureSource, Resolution, ShareQuality, SoundChoice};
 
 use crate::text;
 use crate::theme;
@@ -139,6 +147,18 @@ fn shown_levels(levels: &Levels) -> ShownLevels {
     }
 }
 
+/// The quality of a share as the media engine takes it.
+fn share_quality(voice: &VoiceSettings) -> ShareQuality {
+    ShareQuality {
+        resolution: match voice.share_resolution {
+            ShareResolution::P720 => Resolution::P720,
+            ShareResolution::P1080 => Resolution::P1080,
+            ShareResolution::Source => Resolution::Source,
+        },
+        frame_rate: voice.share_frame_rate,
+    }
+}
+
 /// Leaves the call of this device, ends a join that waits for its server, and waits a short
 /// time for the server to be told. The application calls this when it quits, on the
 /// interface thread.
@@ -149,6 +169,22 @@ pub fn leave_call_at_quit(calls: &Calls, cx: &mut gpui::App) {
     let _ = cx
         .foreground_executor()
         .block_with_timeout(LEAVE_WAIT, leaving);
+}
+
+/// How long a request to enter waits on the server (ADR 0514), when the answer of the
+/// server does not tell it.
+const ENTRY_REQUEST_LASTS: Duration = Duration::from_secs(60);
+/// How long an invitation into a call waits on the server (ADR 0514), when the answer of
+/// the server does not tell it.
+const INVITATION_LASTS: Duration = Duration::from_secs(60);
+/// How long after the end of a request to enter or of an invitation its outcome can still
+/// arrive.
+const ANSWER_MARGIN: Duration = Duration::from_secs(5);
+
+/// One request about a call: its number, and the call that the device was in.
+struct Asked {
+    number: u64,
+    identity: Option<String>,
 }
 
 /// How often the name of one account is asked for when no answer arrives.
@@ -181,6 +217,15 @@ pub struct Pending {
     pub cancelling: HashSet<ServerId>,
     /// The name of the profile preset is being written.
     pub saving_name: bool,
+    /// Why the last request that started or stopped a recording failed.
+    pub recording_failed: Option<String>,
+    /// Why the server did not do what the person asked for in a call: a rule of the call,
+    /// a missing permission, or no answer.
+    pub call_refused: Option<String>,
+    /// What the application tells the person about the call without a request of the
+    /// person: the microphone that is open again after meeting mode, an invitation that
+    /// was declined.
+    pub call_told: Option<String>,
 }
 
 pub struct AppState {
@@ -188,6 +233,8 @@ pub struct AppState {
     calls: Calls,
     /// Why the sound settings are not in their file.
     voice_failed: Option<String>,
+    /// What is told about the recording of the call of this device.
+    recording: recording::RecordingTold,
     /// The media snapshot that the view is derived from in place of the calls.
     #[cfg(feature = "test-support")]
     media_fixture: Option<MediaSnapshot>,
@@ -213,6 +260,19 @@ pub struct AppState {
     watchers: HashMap<ServerId, Task<()>>,
     /// One task per server that waits for a decision of another person.
     waiting: HashMap<ServerId, Task<()>>,
+    /// One task per saved server that reads each change of its state by itself.
+    notice_readers: HashMap<ServerId, Task<()>>,
+    /// The number of requests to enter that the person made. An answer of the server
+    /// belongs to the request with its number.
+    entry_asks: u64,
+    /// The answers to requests to enter that arrived while the request of the person had
+    /// no identifier yet.
+    early_entry_answers: Vec<(EntryRequestId, EntryOutcome)>,
+    /// The number of requests about a call that the person made.
+    call_asks: u64,
+    /// The invitations into a call that the person made on this device and that can
+    /// still wait.
+    made_invitations: HashSet<(ServerId, CallInvitationId)>,
     /// The servers that the view is derived from in place of the client core.
     #[cfg(feature = "test-support")]
     fixture: Option<Vec<ServerSnapshot>>,
@@ -253,6 +313,7 @@ impl AppState {
         };
         let calls = Calls::new(client.clone(), media);
         calls.set_voice(voice_config(&voice));
+        calls.set_share_volume(f32::from(voice.share_volume) / 100.0);
         for (server_id, accounts) in &voice.volumes {
             for (account_id, percent) in accounts {
                 calls.set_volume(*server_id, *account_id, f32::from(*percent) / 100.0);
@@ -333,6 +394,7 @@ impl AppState {
             media: MediaSnapshot {
                 calls: calls.view(),
                 voice,
+                can_share: calls.can_share(),
                 ..MediaSnapshot::default()
             },
             ..Known::default()
@@ -341,6 +403,7 @@ impl AppState {
             client,
             calls,
             voice_failed: None,
+            recording: recording::RecordingTold::default(),
             #[cfg(feature = "test-support")]
             media_fixture: None,
             timing,
@@ -356,6 +419,11 @@ impl AppState {
             members: None,
             watchers: HashMap::new(),
             waiting: HashMap::new(),
+            notice_readers: HashMap::new(),
+            entry_asks: 0,
+            early_entry_answers: Vec::new(),
+            call_asks: 0,
+            made_invitations: HashSet::new(),
             #[cfg(feature = "test-support")]
             fixture: None,
             _changes: follow,
@@ -388,13 +456,620 @@ impl AppState {
     /// the devices and the permission that its settings show.
     fn calls_changed(&mut self, cx: &mut Context<Self>) {
         let view = self.calls.view();
-        let begins = view.call.is_some() && self.known.media.calls.call.is_none();
+        // A call is known by the identity that the server gave the device for it. The
+        // view can pass from one call to the next without a moment in no call.
+        let before = self.call_identity();
+        let now = view.call.as_ref().map(|call| call.identity.clone());
+        let (ended, entered) = (
+            before.is_some() && before != now,
+            now.is_some() && before != now,
+        );
         self.known.media.now = view.call.as_ref().map(|_| time::OffsetDateTime::now_utc());
+        self.recording.in_call(now.as_deref());
+        self.show_recording();
+        if ended {
+            // What was told about a call ends with it.
+            self.pending.call_refused = None;
+            self.pending.call_told = None;
+        } else if let (Some(held), Some(call)) = (&self.known.media.calls.call, &view.call)
+            && held.microphone_block.is_some()
+            && call.microphone_block.is_none()
+            && !view.muted
+            // With push-to-talk the microphone sends only while the person holds the key.
+            && self.known.media.voice.input_mode != InputMode::PushToTalk
+            // A microphone that the device cannot use sends nothing.
+            && call.access != MicrophoneAccess::Refused
+            && !matches!(
+                call.microphone,
+                MicrophoneState::NoPermission | MicrophoneState::Failed(_)
+            )
+        {
+            // A block of the microphone ended, by the end of meeting mode or by a
+            // moderator, and the person's own setting is "open": the people in the call
+            // hear the person again without an action of the person, who is told so
+            // (ADR 0505). While another person runs meeting mode, the calls close the
+            // own setting in the step before (ADR 0739), so nothing is told then.
+            self.pending.call_told = Some(text::MICROPHONE_OPEN_AGAIN.to_owned());
+        }
         self.known.media.calls = view;
-        if begins {
+        if entered {
+            // The person is in a call: a request to enter another one is withdrawn, so
+            // that its acceptance does not replace this call.
+            self.withdraw_entry(cx);
             self.refresh_devices(cx);
         }
         self.changed(cx);
+    }
+
+    /// The identity that the server gave this device for its call.
+    fn call_identity(&self) -> Option<String> {
+        self.known
+            .media
+            .calls
+            .call
+            .as_ref()
+            .map(|call| call.identity.clone())
+    }
+
+    /// Starts the share of this device in its call, with the stored resolution and frame
+    /// rate. The result is in the view.
+    pub fn start_share(&mut self, picture: PictureSource, sound: SoundChoice) {
+        self.calls.start_share(CaptureRequest {
+            picture,
+            sound,
+            quality: share_quality(&self.known.media.voice),
+        });
+    }
+
+    /// Ends the share of this device, and puts away the statement that a share ended.
+    pub fn stop_share(&mut self) {
+        self.calls.stop_share();
+    }
+
+    pub fn watch_share(&mut self, share: ShareId) {
+        self.calls.watch_share(share);
+    }
+
+    /// Uses a volume for the sound of the watched share at once, while the person moves
+    /// the control. [`AppState::store_share_volume`] writes it.
+    pub fn set_share_volume(&mut self, percent: u16, cx: &mut Context<Self>) {
+        let percent = percent.min(junto_client_core::voice::VOLUME_MAX_PERCENT);
+        self.known.media.voice.share_volume = percent;
+        self.calls.set_share_volume(f32::from(percent) / 100.0);
+        cx.notify();
+    }
+
+    pub fn store_share_volume(&mut self, cx: &mut Context<Self>) {
+        let percent = self.known.media.voice.share_volume;
+        self.write_voice(cx, move |voice| voice.share_volume = percent);
+    }
+
+    /// The largest picture of the next share of this device.
+    pub fn set_share_resolution(&mut self, resolution: ShareResolution, cx: &mut Context<Self>) {
+        self.change_voice(cx, move |voice| voice.share_resolution = resolution);
+    }
+
+    pub fn set_share_frame_rate(&mut self, frame_rate: u32, cx: &mut Context<Self>) {
+        self.change_voice(cx, move |voice| voice.share_frame_rate = frame_rate);
+    }
+
+    pub fn set_hide_without_video(&mut self, hide: bool, cx: &mut Context<Self>) {
+        self.change_voice(cx, move |voice| voice.hide_people_without_video = hide);
+    }
+
+    /// The server and the voice channel of the call of this device.
+    fn call_channel(&self) -> Option<(ServerHandle, ChannelId)> {
+        let target = self.known.media.calls.call.as_ref()?.target;
+        let channel_id = target.place.channel_id()?;
+        Some((self.client.server(target.server_id)?, channel_id))
+    }
+
+    /// Starts a recording of the call of this device. The server answers at once and
+    /// tells by an event whether the recorder took it (ADR 0604).
+    pub fn start_recording(&mut self, cx: &mut Context<Self>) {
+        self.request_recording(true, cx);
+    }
+
+    /// Asks for the end of the recording of the call of this device.
+    pub fn stop_recording(&mut self, cx: &mut Context<Self>) {
+        self.request_recording(false, cx);
+    }
+
+    /// Gives the view what is told about the recording now.
+    fn show_recording(&mut self) {
+        self.known.recording_problem = self.recording.problem().cloned();
+        self.known.recording_busy = self.recording.busy();
+        self.pending.recording_failed = self.recording.request_failed().map(str::to_owned);
+    }
+
+    fn request_recording(&mut self, start: bool, cx: &mut Context<Self>) {
+        let Some((server, channel_id)) = self.call_channel() else {
+            return;
+        };
+        let Some(request) = self.recording.request(start) else {
+            return;
+        };
+        self.show_recording();
+        let api = server.api();
+        cx.spawn(async move |this, cx| {
+            let result = if start {
+                api.start_recording(channel_id, None).await.map(|_| ())
+            } else {
+                api.stop_recording(channel_id).await
+            };
+            let result = result.map_err(|error| text::flow_error(&FlowError::from(&error)));
+            let _ = this.update(cx, |this, cx| {
+                this.recording.answered(request, result);
+                this.show_recording();
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    pub fn dismiss_recording_error(&mut self, cx: &mut Context<Self>) {
+        self.recording.dismiss_request_failure();
+        self.show_recording();
+        cx.notify();
+    }
+
+    /// Marks the start of a request about a call. What was told about the request before
+    /// is put away.
+    fn begin_ask(&mut self) -> Asked {
+        self.call_asks += 1;
+        self.pending.call_refused = None;
+        Asked {
+            number: self.call_asks,
+            identity: self.call_identity(),
+        }
+    }
+
+    /// Tells a refusal, when its request is still the last one and the device is still in
+    /// the call in which the request was made. A late refusal of an earlier request does
+    /// not replace what the person did afterwards.
+    fn refused(&mut self, asked: &Asked, error: &ApiError, cx: &mut Context<Self>) {
+        if self.call_asks == asked.number && self.call_identity() == asked.identity {
+            self.pending.call_refused = Some(text::flow_error(&FlowError::from(error)));
+            cx.notify();
+        }
+    }
+
+    /// Asks a server for a change of a call. A refusal is told in
+    /// [`Pending::call_refused`]; the result of a change arrives with the state.
+    fn ask<F>(
+        &mut self,
+        server_id: ServerId,
+        cx: &mut Context<Self>,
+        ask: impl FnOnce(junto_client_core::api::ServerApi) -> F,
+    ) where
+        F: Future<Output = Result<(), ApiError>> + 'static,
+    {
+        let Some(server) = self.client.server(server_id) else {
+            return;
+        };
+        let asking = ask(server.api());
+        let asked = self.begin_ask();
+        cx.spawn(async move |this, cx| {
+            if let Err(error) = asking.await {
+                let _ = this.update(cx, |this, cx| this.refused(&asked, &error, cx));
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// As [`AppState::ask`], for the voice channel of the call of this device.
+    fn ask_own_call<F>(
+        &mut self,
+        cx: &mut Context<Self>,
+        ask: impl FnOnce(junto_client_core::api::ServerApi, ChannelId) -> F,
+    ) where
+        F: Future<Output = Result<(), ApiError>> + 'static,
+    {
+        let Some((server, channel_id)) = self.call_channel() else {
+            return;
+        };
+        self.ask(server.id(), cx, move |api| ask(api, channel_id));
+    }
+
+    pub fn dismiss_call_refusal(&mut self, cx: &mut Context<Self>) {
+        self.pending.call_refused = None;
+        cx.notify();
+    }
+
+    pub fn dismiss_call_told(&mut self, cx: &mut Context<Self>) {
+        self.pending.call_told = None;
+        cx.notify();
+    }
+
+    /// Raises the hand of the person in the call, or lowers it (ADR 0512).
+    pub fn set_hand(&mut self, raised: bool, cx: &mut Context<Self>) {
+        self.ask_own_call(cx, move |api, _| async move {
+            if raised {
+                api.raise_hand().await
+            } else {
+                api.lower_hand().await
+            }
+        });
+    }
+
+    /// Opens the microphone of the person. The person does this after the presenter of
+    /// meeting mode removed the block: the application never opens it by itself.
+    pub fn open_microphone(&mut self) {
+        self.calls.set_muted(false);
+    }
+
+    /// Turns meeting mode on in the call of this device, or off (ADR 0505).
+    pub fn set_meeting(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.ask_own_call(cx, move |api, channel_id| async move {
+            if on {
+                api.start_meeting(channel_id).await
+            } else {
+                api.end_meeting(channel_id).await
+            }
+        });
+    }
+
+    /// Locks the voice channel of the call of this device, or unlocks it (ADR 0504).
+    pub fn set_locked(&mut self, locked: bool, cx: &mut Context<Self>) {
+        self.ask_own_call(cx, move |api, channel_id| async move {
+            if locked {
+                api.lock_call(channel_id).await
+            } else {
+                api.unlock_call(channel_id).await
+            }
+        });
+    }
+
+    /// Changes the user limit or the setting that hides who is inside (ADR 0514).
+    pub fn update_room(&mut self, change: UpdateCallSettings, cx: &mut Context<Self>) {
+        self.ask_own_call(cx, move |api, channel_id| async move {
+            api.update_call_settings(channel_id, &change)
+                .await
+                .map(|_| ())
+        });
+    }
+
+    /// Blocks the microphone of a person in a voice channel, or removes the block: a
+    /// moderator, and the presenter of meeting mode who lets a person speak (ADR 0503,
+    /// ADR 0512).
+    pub fn set_microphone_block(
+        &mut self,
+        room: (ServerId, ChannelId),
+        account_id: AccountId,
+        block: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let (server_id, channel_id) = room;
+        self.ask(server_id, cx, move |api| async move {
+            if block {
+                api.block_microphone(channel_id, account_id).await
+            } else {
+                api.unblock_microphone(channel_id, account_id).await
+            }
+        });
+    }
+
+    /// The presenter of meeting mode lets a person of the call of this device speak.
+    pub fn allow_to_speak(&mut self, account_id: AccountId, cx: &mut Context<Self>) {
+        self.ask_own_call(cx, move |api, channel_id| async move {
+            api.unblock_microphone(channel_id, account_id).await
+        });
+    }
+
+    pub fn set_sound_block(
+        &mut self,
+        room: (ServerId, ChannelId),
+        account_id: AccountId,
+        block: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let (server_id, channel_id) = room;
+        self.ask(server_id, cx, move |api| async move {
+            if block {
+                api.block_sound(channel_id, account_id).await
+            } else {
+                api.unblock_sound(channel_id, account_id).await
+            }
+        });
+    }
+
+    /// Removes a person from the call of a voice channel (ADR 0503).
+    pub fn disconnect(
+        &mut self,
+        room: (ServerId, ChannelId),
+        account_id: AccountId,
+        cx: &mut Context<Self>,
+    ) {
+        let (server_id, channel_id) = room;
+        self.ask(server_id, cx, move |api| async move {
+            api.disconnect_participant(channel_id, account_id).await
+        });
+    }
+
+    /// Moves a person from one voice channel into another (ADR 0511).
+    pub fn move_person(
+        &mut self,
+        room: (ServerId, ChannelId),
+        account_id: AccountId,
+        to: ChannelId,
+        cx: &mut Context<Self>,
+    ) {
+        let (server_id, channel_id) = room;
+        self.ask(server_id, cx, move |api| async move {
+            api.move_participant(channel_id, account_id, to)
+                .await
+                .map(|_| ())
+        });
+    }
+
+    /// Invites a member into the call of this device (ADR 0514). The invitation is
+    /// remembered while it can wait: the state of the server holds an invitation only
+    /// while it waits, and how it ended is told by an event that names the invitation and
+    /// nothing else.
+    pub fn invite(&mut self, account_id: AccountId, cx: &mut Context<Self>) {
+        let Some((server, channel_id)) = self.call_channel() else {
+            return;
+        };
+        let (server_id, api) = (server.id(), server.api());
+        let asked = self.begin_ask();
+        cx.spawn(async move |this, cx| {
+            let invitation = match api.invite_to_call(channel_id, account_id).await {
+                Ok(invitation) => invitation,
+                Err(error) => {
+                    let _ = this.update(cx, |this, cx| this.refused(&asked, &error, cx));
+                    return;
+                }
+            };
+            let made = (server_id, invitation.id);
+            let kept = this.update(cx, |this, _| {
+                this.made_invitations.insert(made);
+            });
+            if kept.is_err() {
+                return;
+            }
+            let lasts = Duration::try_from(invitation.expires_at - invitation.created_at)
+                .unwrap_or(INVITATION_LASTS)
+                + ANSWER_MARGIN;
+            cx.background_executor().timer(lasts).await;
+            let _ = this.update(cx, |this, _| {
+                this.made_invitations.remove(&made);
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    pub fn withdraw_invitation(&mut self, invitation_id: CallInvitationId, cx: &mut Context<Self>) {
+        self.ask_own_call(cx, move |api, _| async move {
+            api.cancel_call_invitation(invitation_id).await
+        });
+    }
+
+    /// Answers the request of a person outside to enter the call of this device.
+    pub fn answer_entry(
+        &mut self,
+        request_id: EntryRequestId,
+        accept: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.ask_own_call(cx, move |api, _| async move {
+            api.answer_entry_request(request_id, accept).await
+        });
+    }
+
+    /// Accepts an invitation and enters its call. A refusal is told as a join that failed.
+    pub fn accept_invitation(&mut self, invited: &view::Invited, cx: &mut Context<Self>) {
+        let joining = self.calls.join_invited(invited.target, invited.id);
+        cx.spawn(async move |_, _| {
+            let _ = joining.await;
+        })
+        .detach();
+    }
+
+    pub fn decline_invitation(&mut self, invited: &view::Invited, cx: &mut Context<Self>) {
+        let invitation_id = invited.id;
+        self.ask(invited.target.server_id, cx, move |api| async move {
+            api.refuse_call_invitation(invitation_id).await
+        });
+    }
+
+    /// Asks the people inside a locked or full voice channel to let the person in
+    /// (ADR 0514). The answer arrives as an event; an acceptance enters the call. A
+    /// person has one request at a time: an earlier one is withdrawn.
+    pub fn ask_to_enter(
+        &mut self,
+        server_id: ServerId,
+        channel_id: ChannelId,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(server) = self.client.server(server_id) else {
+            return;
+        };
+        self.withdraw_entry(cx);
+        self.entry_asks += 1;
+        self.early_entry_answers.clear();
+        let ask = self.entry_asks;
+        self.known.entry = Some(view::OwnEntry {
+            server_id,
+            channel_id,
+            request_id: None,
+            state: view::EntryState::Asking,
+        });
+        self.pending.call_refused = None;
+        let api = server.api();
+        cx.spawn(async move |this, cx| {
+            let asked = api.request_entry(channel_id).await;
+            // The request that this answer belongs to is still the one of the person.
+            let held = this.update(cx, |this, cx| {
+                let current = this.known.entry.as_mut().filter(|_| this.entry_asks == ask);
+                let held = match (current, &asked) {
+                    (Some(entry), Ok(request)) => {
+                        entry.request_id = Some(request.id);
+                        entry.state = view::EntryState::Waiting;
+                        // A person inside can answer before this device knows the
+                        // identifier of its request.
+                        let early = std::mem::take(&mut this.early_entry_answers)
+                            .into_iter()
+                            .find(|(answered, _)| *answered == request.id);
+                        if let Some((_, outcome)) = early {
+                            this.entry_answered(outcome, cx);
+                        }
+                        true
+                    }
+                    (Some(_), Err(error)) => {
+                        this.known.entry = None;
+                        this.pending.call_refused = Some(text::flow_error(&FlowError::from(error)));
+                        false
+                    }
+                    (None, _) => false,
+                };
+                this.changed(cx);
+                held
+            });
+            let Ok(request) = asked else {
+                return;
+            };
+            if !held.unwrap_or(false) {
+                // The person withdrew or asked anew before the server answered: this
+                // request is not the one of the person, and is withdrawn.
+                let _ = api.cancel_entry_request(request.id).await;
+                return;
+            }
+            // A request ends on the server after a fixed time, and the event that tells it
+            // can be missed while the event stream is interrupted. The time between the
+            // two times of the server is used, so the clock of this machine does not count.
+            let lasts = Duration::try_from(request.expires_at - request.created_at)
+                .unwrap_or(ENTRY_REQUEST_LASTS)
+                + ANSWER_MARGIN;
+            cx.background_executor().timer(lasts).await;
+            let _ = this.update(cx, |this, cx| {
+                if let Some(entry) = this.known.entry.as_mut().filter(|entry| {
+                    entry.request_id == Some(request.id) && entry.state == view::EntryState::Waiting
+                }) {
+                    entry.state = view::EntryState::Expired;
+                    this.changed(cx);
+                }
+            });
+        })
+        .detach();
+        self.changed(cx);
+    }
+
+    /// Uses the answer to the request of the person to enter a voice channel.
+    fn entry_answered(&mut self, outcome: EntryOutcome, cx: &mut Context<Self>) {
+        let Some(entry) = self.known.entry.as_mut() else {
+            return;
+        };
+        let (server_id, channel_id) = (entry.server_id, entry.channel_id);
+        match outcome {
+            EntryOutcome::Accepted => {
+                self.known.entry = None;
+                let workspace_id = self
+                    .client
+                    .server(server_id)
+                    .and_then(|server| server.live().view().model)
+                    .and_then(|model| {
+                        model
+                            .channel(channel_id)
+                            .map(|channel| channel.channel.workspace_id)
+                    });
+                if let Some(workspace_id) = workspace_id {
+                    self.join_call(server_id, workspace_id, channel_id, cx);
+                }
+            }
+            EntryOutcome::Denied => entry.state = view::EntryState::Denied,
+            EntryOutcome::Expired => entry.state = view::EntryState::Expired,
+            EntryOutcome::Cancelled => self.known.entry = None,
+        }
+        self.changed(cx);
+    }
+
+    /// Withdraws the request to enter, and puts away what was told about it.
+    pub fn withdraw_entry(&mut self, cx: &mut Context<Self>) {
+        let Some(entry) = self.known.entry.take() else {
+            return;
+        };
+        // An answer of the server to a request that is on its way finds no request of
+        // the person, and withdraws what the server made.
+        self.entry_asks += 1;
+        self.early_entry_answers.clear();
+        if let (Some(request_id), view::EntryState::Waiting, Some(server)) = (
+            entry.request_id,
+            entry.state,
+            self.client.server(entry.server_id),
+        ) {
+            let api = server.api();
+            cx.spawn(async move |_, _| {
+                // A request that was answered meanwhile is gone on the server.
+                let _ = api.cancel_entry_request(request_id).await;
+            })
+            .detach();
+        }
+        self.changed(cx);
+    }
+
+    /// One change of the state of a server, told by itself. The state of a server holds
+    /// a recording only while it runs; how it ended is told here (ADR 0719).
+    fn noticed(&mut self, server_id: ServerId, notice: &Notice, cx: &mut Context<Self>) {
+        let Notice::Event { event, .. } = notice else {
+            return;
+        };
+        let own_call = self
+            .known
+            .media
+            .calls
+            .call
+            .as_ref()
+            .filter(|call| call.target.server_id == server_id)
+            .and_then(|_| self.client.server(server_id))
+            .and_then(|server| server.live().view().model)
+            .and_then(|model| model.own_call.as_ref().map(|own| own.call_id));
+        match event.as_ref() {
+            Event::RecordingStarted { .. } | Event::RecordingUpdated { .. } => {
+                self.recording.event(server_id, own_call, event);
+                self.show_recording();
+                cx.notify();
+            }
+            // The answer to the request of the person to enter a voice channel. An
+            // acceptance lets the person in once, within a minute: the device enters.
+            Event::CallEntryAnswered {
+                request_id,
+                outcome,
+            } => {
+                match self
+                    .known
+                    .entry
+                    .as_ref()
+                    .filter(|entry| entry.server_id == server_id)
+                    .map(|entry| entry.request_id)
+                {
+                    Some(Some(held)) if held == *request_id => self.entry_answered(*outcome, cx),
+                    // The server has not told the identifier of the request of the person
+                    // yet: the answer is kept until it has.
+                    Some(None) => self.early_entry_answers.push((*request_id, *outcome)),
+                    _ => {}
+                }
+            }
+            // An invitation that the person made was declined, or nobody answered it.
+            Event::CallInvitationResolved {
+                invitation_id,
+                outcome,
+            } => {
+                let made = self.made_invitations.remove(&(server_id, *invitation_id));
+                let told = match outcome {
+                    InvitationOutcome::Declined => Some(text::INVITATION_DECLINED),
+                    InvitationOutcome::Expired => Some(text::INVITATION_EXPIRED),
+                    InvitationOutcome::Accepted | InvitationOutcome::Cancelled => None,
+                };
+                if let (true, Some(told)) = (made, told) {
+                    self.pending.call_told = Some(told.to_owned());
+                    cx.notify();
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Reads the sound devices and the microphone permission again, on a background
@@ -669,6 +1344,36 @@ impl AppState {
         self.changed(cx);
     }
 
+    /// Draws this state of the recording of the call in place of what the servers told.
+    /// The screen tool uses it.
+    #[cfg(feature = "test-support")]
+    pub fn show_recording_fixture(
+        &mut self,
+        problem: Option<(ServerId, junto_client_core::protocol::recording::Recording)>,
+        request_failed: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.recording.show(problem, request_failed);
+        self.show_recording();
+        self.changed(cx);
+    }
+
+    /// Draws this request to enter and these statements about the call in place of what
+    /// the servers told. The screen tool uses it.
+    #[cfg(feature = "test-support")]
+    pub fn show_call_rules_fixture(
+        &mut self,
+        entry: Option<view::OwnEntry>,
+        told: Option<String>,
+        refused: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.known.entry = entry;
+        self.pending.call_told = told;
+        self.pending.call_refused = refused;
+        self.changed(cx);
+    }
+
     fn snapshots(&self) -> Vec<ServerSnapshot> {
         #[cfg(feature = "test-support")]
         if let Some(fixture) = &self.fixture {
@@ -696,6 +1401,8 @@ impl AppState {
         let ids: HashSet<ServerId> = servers.iter().map(ServerHandle::id).collect();
         self.watchers.retain(|id, _| ids.contains(id));
         self.waiting.retain(|id, _| ids.contains(id));
+        self.notice_readers.retain(|id, _| ids.contains(id));
+        self.made_invitations.retain(|(id, _)| ids.contains(id));
         self.pending
             .acknowledge_failed
             .retain(|id, _| ids.contains(id));
@@ -707,6 +1414,22 @@ impl AppState {
                 cx.spawn(async move |this, cx| {
                     while watch.changed().await.is_some() {
                         if this.update(cx, |this, cx| this.changed(cx)).is_err() {
+                            break;
+                        }
+                    }
+                })
+            });
+            self.notice_readers.entry(id).or_insert_with(|| {
+                let mut notices = server.live().notices();
+                cx.spawn(async move |this, cx| {
+                    while let Some(notice) = notices.next().await {
+                        // A reader that fell behind missed single changes; the state
+                        // holds their effect.
+                        let Ok(notice) = notice else {
+                            continue;
+                        };
+                        let told = this.update(cx, |this, cx| this.noticed(id, &notice, cx));
+                        if told.is_err() {
                             break;
                         }
                     }

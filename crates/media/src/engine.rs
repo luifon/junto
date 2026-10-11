@@ -39,6 +39,15 @@ use crate::audio::{
     Processing, SAMPLE_RATE,
 };
 use crate::permission::{MicrophoneAccess, MicrophonePermission};
+use crate::share::picture::PictureFrame;
+use crate::share::{CaptureError, CaptureRequest, ScreenCapture};
+
+mod share;
+
+pub use share::{
+    DEFAULT_VIEW, MainPicture, SMALL_PICTURE, SeenShare, ShareId, ShareInfo, ShareState, watched,
+};
+use share::{OwnShare, Pictures, RemotePicture, RemoteSound, ShareTrack, View};
 
 /// The frames of the microphone that wait for the media connection: half a second.
 const WAITING_FRAMES: usize = 50;
@@ -143,6 +152,12 @@ pub struct EngineState {
     pub input_device: Option<DeviceInfo>,
     pub output: OutputState,
     pub output_device: Option<DeviceInfo>,
+    /// The share of this device.
+    pub share: ShareState,
+    /// The shares of the other people, in the order in which they were seen.
+    pub shares: Vec<SeenShare>,
+    /// The share whose picture and sound the person gets now.
+    pub watched: Option<ShareId>,
 }
 
 /// The level of one person: the share of a meter from 0 to 1, and whether the person
@@ -163,11 +178,30 @@ pub struct Levels {
     pub people: HashMap<AccountId, PersonLevel>,
 }
 
-/// The devices and the permission that an engine uses.
+/// The devices, the permission and the screen capture that an engine uses.
 #[derive(Clone)]
 pub struct EngineOptions {
     pub host: Arc<dyn AudioHost>,
     pub permission: Arc<dyn MicrophonePermission>,
+    pub capture: Arc<dyn ScreenCapture>,
+}
+
+/// What the person set for the shares of a call.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Watching {
+    /// The share that the person chose to watch. Absent: no choice was made.
+    pub choice: Option<ShareId>,
+    /// The volume of the sound of the watched share: 1.0 is 100 %, and 0.0 is its mute.
+    pub volume: f32,
+}
+
+impl Default for Watching {
+    fn default() -> Self {
+        Self {
+            choice: None,
+            volume: 1.0,
+        }
+    }
 }
 
 enum Command {
@@ -177,6 +211,16 @@ enum Command {
     Config(VoiceConfig),
     Reconnect(MediaJoin),
     RetryMicrophone,
+    StartShare(CaptureRequest),
+    /// Ends the own share, and puts away the statement that a share ended by itself.
+    StopShare,
+    Watch(Option<ShareId>),
+    ShareVolume(f32),
+    ViewSize(u32, u32),
+    /// Makes the call library connect anew and publish its tracks again, as it does by
+    /// itself after some interruptions.
+    #[cfg(feature = "test-support")]
+    SimulateFullReconnect,
     Close(oneshot::Sender<()>),
 }
 
@@ -189,6 +233,16 @@ enum Internal {
     OutputFailed(u64, AudioError),
     Published(u64, Result<LocalTrackPublication, String>),
     PublishRetry(u64),
+    /// The capture of a share has answered. The share holds the answer.
+    ShareStarted(u64),
+    ShareEnded(u64, CaptureError),
+    SharePicturePublished(u64, Result<LocalTrackPublication, String>),
+    ShareSoundPublished((u64, u64), Result<LocalTrackPublication, String>),
+    ShareSoundRetry(u64),
+    ShareTrackDue(u64, u64, ShareTrack),
+    /// The time for the microphone track to return has passed.
+    MicrophoneDue(u64),
+    SharePictureSize(TrackSid, (u32, u32)),
 }
 
 /// The media connection of one call. Dropping it ends the connection.
@@ -196,6 +250,8 @@ pub struct Engine {
     commands: mpsc::UnboundedSender<Command>,
     state: watch::Receiver<EngineState>,
     levels: watch::Receiver<Levels>,
+    main_picture: watch::Receiver<Option<MainPicture>>,
+    small_pictures: watch::Receiver<HashMap<ShareId, Arc<PictureFrame>>>,
 }
 
 impl Engine {
@@ -207,6 +263,7 @@ impl Engine {
         config: VoiceConfig,
         controls: Controls,
         volumes: HashMap<AccountId, f32>,
+        watching: Watching,
     ) -> Self {
         let access = options.permission.state();
         let (state, state_seen) = watch::channel(EngineState {
@@ -217,7 +274,16 @@ impl Engine {
             input_device: None,
             output: OutputState::Closed,
             output_device: None,
+            share: ShareState::Off,
+            shares: Vec::new(),
+            watched: None,
         });
+        let pictures = Pictures {
+            main: Arc::new(watch::Sender::new(None)),
+            small: Arc::new(watch::Sender::new(HashMap::new())),
+        };
+        let (main_picture, small_pictures) =
+            (pictures.main.subscribe(), pictures.small.subscribe());
         let (levels, levels_seen) = watch::channel(Levels::default());
         let (commands, taken) = mpsc::unbounded_channel();
         let (internal, internal_taken) = mpsc::unbounded_channel();
@@ -256,14 +322,71 @@ impl Engine {
             playout_recovered: None,
             publication: Publication::None,
             publish_generation: 0,
+            microphone_returns: None,
             remotes: HashMap::new(),
+            share: None,
+            share_generation: 0,
+            remote_pictures: HashMap::new(),
+            remote_sounds: HashMap::new(),
+            share_order: 0,
+            watch_choice: watching.choice,
+            share_volume: watching.volume.clamp(0.0, MAX_GAIN),
+            view_size: DEFAULT_VIEW,
+            view: watch::Sender::new(View {
+                watched: None,
+                size: DEFAULT_VIEW,
+            }),
+            pictures,
         };
         runtime.spawn(actor.run(join, taken, internal_taken));
         Self {
             commands,
             state: state_seen,
             levels: levels_seen,
+            main_picture,
+            small_pictures,
         }
+    }
+
+    /// The picture of the share that the person watches, at the size of its drawing.
+    pub fn main_picture(&self) -> watch::Receiver<Option<MainPicture>> {
+        self.main_picture.clone()
+    }
+
+    /// A small picture of each share of the call, made again about once a second.
+    pub fn small_pictures(&self) -> watch::Receiver<HashMap<ShareId, Arc<PictureFrame>>> {
+        self.small_pictures.clone()
+    }
+
+    /// Starts the share of this device. The result is in [`EngineState::share`].
+    pub fn start_share(&self, request: CaptureRequest) {
+        let _ = self.commands.send(Command::StartShare(request));
+    }
+
+    /// Ends the share of this device, and puts away the statement that one ended.
+    pub fn stop_share(&self) {
+        let _ = self.commands.send(Command::StopShare);
+    }
+
+    /// The share that the person chose to watch.
+    pub fn watch(&self, choice: Option<ShareId>) {
+        let _ = self.commands.send(Command::Watch(choice));
+    }
+
+    /// The volume of the sound of the watched share: 1.0 is 100 %.
+    pub fn set_share_volume(&self, gain: f32) {
+        let _ = self.commands.send(Command::ShareVolume(gain));
+    }
+
+    /// The size in pixels inside which the interface draws the watched share.
+    pub fn set_view_size(&self, width: u32, height: u32) {
+        let _ = self.commands.send(Command::ViewSize(width, height));
+    }
+
+    /// Makes the call library connect anew and publish its tracks again, for a test.
+    #[cfg(feature = "test-support")]
+    pub fn simulate_full_reconnect(&self) {
+        let _ = self.commands.send(Command::SimulateFullReconnect);
     }
 
     pub fn state(&self) -> watch::Receiver<EngineState> {
@@ -392,7 +515,23 @@ struct Actor {
     playout_recovered: Option<Instant>,
     publication: Publication,
     publish_generation: u64,
+    /// The identifier of the microphone track that the call library withdrew and
+    /// publishes again.
+    microphone_returns: Option<TrackSid>,
     remotes: HashMap<TrackSid, Remote>,
+    /// The share of this device.
+    share: Option<OwnShare>,
+    /// Counts the shares that were started. The result of an earlier one is not used.
+    share_generation: u64,
+    remote_pictures: HashMap<TrackSid, RemotePicture>,
+    remote_sounds: HashMap<TrackSid, RemoteSound>,
+    share_order: u64,
+    watch_choice: Option<ShareId>,
+    share_volume: f32,
+    /// The size in pixels inside which the interface draws the watched share.
+    view_size: (u32, u32),
+    view: watch::Sender<View>,
+    pictures: Pictures,
 }
 
 fn recent(at: Option<Instant>) -> bool {
@@ -531,6 +670,20 @@ impl Actor {
                     self.retry_capture();
                 }
             }
+            Command::StartShare(request) => self.start_share(request),
+            Command::StopShare => self.end_share(None),
+            Command::Watch(choice) => self.set_watch(choice),
+            Command::ShareVolume(gain) => self.set_share_volume(gain),
+            Command::ViewSize(width, height) => self.set_view_size(width, height),
+            #[cfg(feature = "test-support")]
+            Command::SimulateFullReconnect => {
+                if let Some(room) = &self.room {
+                    let scenario = livekit::SimulateScenario::FullReconnect;
+                    if let Err(error) = room.simulate_scenario(scenario).await {
+                        tracing::warn!(%error, "the full reconnect was not started");
+                    }
+                }
+            }
             // The loop takes this command itself.
             Command::Close(_) => {}
         }
@@ -598,6 +751,25 @@ impl Actor {
                     self.sync_publication();
                 }
             }
+            Internal::ShareStarted(generation) => self.share_started(generation),
+            Internal::ShareEnded(generation, error) => self.share_ended(generation, error),
+            Internal::SharePicturePublished(generation, result) => {
+                self.share_picture_published(generation, result);
+            }
+            Internal::ShareSoundPublished(key, result) => self.share_sound_published(key, result),
+            Internal::ShareSoundRetry(generation) => self.share_sound_retry(generation),
+            Internal::ShareTrackDue(generation, wait, track) => {
+                self.share_track_due(generation, wait, track);
+            }
+            Internal::MicrophoneDue(generation) => {
+                if generation == self.publish_generation && self.microphone_returns.is_some() {
+                    // The track did not return: it is published anew while the
+                    // microphone may be sent.
+                    self.forget_publication();
+                    self.sync_publication();
+                }
+            }
+            Internal::SharePictureSize(sid, size) => self.picture_size(&sid, size),
         }
     }
 
@@ -620,6 +792,23 @@ impl Actor {
                 };
                 tracing::info!(?reason, "the media connection of the call ended");
                 self.lost(lost, events).await;
+            }
+            RoomEvent::TrackSubscribed {
+                track: RemoteTrack::Video(track),
+                publication,
+                participant,
+            } => {
+                // A camera is not shown in this version.
+                if publication.source() == TrackSource::Screenshare {
+                    self.remote_picture(&track, publication, participant.identity().as_str());
+                }
+            }
+            RoomEvent::TrackSubscribed {
+                track: RemoteTrack::Audio(track),
+                publication,
+                participant,
+            } if publication.source() == TrackSource::ScreenshareAudio => {
+                self.remote_sound(&track, publication, participant.identity().as_str());
             }
             RoomEvent::TrackSubscribed {
                 track: RemoteTrack::Audio(track),
@@ -656,38 +845,74 @@ impl Actor {
                     },
                 );
             }
-            RoomEvent::TrackUnsubscribed { publication, .. } => {
-                self.remotes.remove(&publication.sid());
-            }
-            RoomEvent::TrackUnpublished { publication, .. } => {
-                self.remotes.remove(&publication.sid());
+            RoomEvent::TrackUnsubscribed { publication, .. }
+            | RoomEvent::TrackUnpublished { publication, .. } => {
+                let sid = publication.sid();
+                if !self.remote_track_ended(&sid) {
+                    self.remotes.remove(&sid);
+                }
             }
             RoomEvent::LocalTrackUnpublished { publication, .. } => {
-                // The media server took the track: the permission to send it is gone.
+                // The track was withdrawn, and this device did not ask for it. The call
+                // library does that when it connects anew, and publishes the same track
+                // again; the media server does it when the permission to send the track
+                // is gone. The microphone waits for its track for a bounded time, with
+                // the audio source that the track is bound to.
+                let sid = publication.sid();
                 if let Publication::Published(held) = &self.publication
-                    && held.sid() == publication.sid()
+                    && held.sid() == sid
                 {
-                    self.forget_publication();
-                    self.retry_publication_later();
+                    self.publish_generation += 1;
+                    self.publication = Publication::Publishing;
+                    self.microphone_returns = Some(sid);
+                    self.change(|state| state.published = false);
+                    let (generation, internal) = (self.publish_generation, self.internal.clone());
+                    self.runtime.spawn(async move {
+                        tokio::time::sleep(PUBLISH_LIMIT).await;
+                        let _ = internal.send(Internal::MicrophoneDue(generation));
+                    });
+                } else {
+                    self.share_track_taken(&sid);
                 }
             }
             RoomEvent::LocalTrackRepublished {
-                publication, track, ..
+                previous_sid,
+                publication,
+                track,
+                ..
             } => {
                 // After a new connection the call library published the track again under
                 // another identifier.
                 if matches!(track, LocalTrack::Audio(_))
                     && publication.source() == TrackSource::Microphone
-                    && matches!(self.publication, Publication::Published(_))
                 {
-                    self.publication = Publication::Published(publication);
-                    self.sync_gate();
+                    let holds = match &self.publication {
+                        Publication::Published(held) => Some(held.sid()),
+                        Publication::None | Publication::Publishing => None,
+                    };
+                    let waits_for = self.microphone_returns.as_ref();
+                    if share::is_return(waits_for, holds.as_ref(), &previous_sid) {
+                        self.microphone_returns = None;
+                        self.publication = Publication::Published(publication);
+                        self.change(|state| state.published = true);
+                        self.sync_gate();
+                        // The microphone can have been closed while the track was away.
+                        self.sync_publication();
+                    } else {
+                        // The microphone was closed, or has a new track.
+                        self.withdraw(publication);
+                    }
+                } else {
+                    self.share_track_republished(&previous_sid, publication);
                 }
             }
             RoomEvent::ParticipantPermissionChanged {
                 participant: Participant::Local(_),
                 ..
-            } => self.sync_microphone(),
+            } => {
+                self.sync_microphone();
+                self.sync_share_sound();
+            }
             _ => {}
         }
     }
@@ -701,6 +926,12 @@ impl Actor {
     /// Leaves the room, if there is one, and closes the devices.
     async fn leave(&mut self, events: &mut Option<Events>) {
         self.attempt += 1;
+        // A share does not outlive the connection that carried it (ADR 0737).
+        if self.share.is_some() {
+            self.end_share(Some(CaptureError::Interrupted));
+        }
+        self.forget_remote_shares();
+        self.tell_shares();
         self.remotes.clear();
         self.forget_publication();
         self.close_capture();
@@ -724,11 +955,11 @@ impl Actor {
             )
     }
 
-    /// The media server lets this participant send a microphone track. A server closes the
-    /// microphone of a person with this permission, in the token of the join and in the
-    /// room (ADR 0510), so it holds from the first moment of a connection, before the
-    /// state of the server has told the block.
-    fn may_send(&self) -> bool {
+    /// The media server lets this participant send a track of a source. A server closes the
+    /// microphone of a person, and the sound of a share with it, with this permission, in
+    /// the token of the join and in the room (ADR 0510), so it holds from the first moment
+    /// of a connection, before the state of the server has told the block.
+    fn may_send(&self, source: i32) -> bool {
         let Some(room) = &self.room else {
             return false;
         };
@@ -737,12 +968,12 @@ impl Actor {
             .is_none_or(|permission| {
                 permission.can_publish
                     && (permission.can_publish_sources.is_empty()
-                        || permission.can_publish_sources.contains(&MICROPHONE_SOURCE))
+                        || permission.can_publish_sources.contains(&source))
             })
     }
 
     fn microphone_wanted(&self) -> bool {
-        self.joined() && !self.controls.microphone_blocked && self.may_send()
+        self.joined() && !self.controls.microphone_blocked && self.may_send(MICROPHONE_SOURCE)
     }
 
     /// The person asks for the microphone again: after a failure, or with another device.
@@ -993,6 +1224,7 @@ impl Actor {
     /// Ends the publication of the microphone, whatever state it is in.
     fn forget_publication(&mut self) {
         self.publish_generation += 1;
+        self.microphone_returns = None;
         *self.source.lock().unwrap_or_else(PoisonError::into_inner) = None;
         if let Publication::Published(publication) =
             std::mem::replace(&mut self.publication, Publication::None)

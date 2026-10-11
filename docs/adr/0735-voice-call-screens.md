@@ -12,7 +12,7 @@ The approved design draws a call with a screen share (view B), its problem state
 
 Entering:
 
-- A click on a voice channel shows the channel and joins nothing. Its header has "Join call" (view G). The same place shows the state of its call: recording, meeting mode, lock, count.
+- A click on a voice channel shows the channel and joins nothing. Its header has "Join call" (view G). The same place shows the state of its call: recording, meeting mode, lock, count. For the call of this device the header has the controls of the room in their place (ADR 0739).
 - A join that the server refuses is told by a notice above the content, with the name of the channel and what the person can do. The notice stays until the person closes it.
 
 The call in the main area:
@@ -26,7 +26,7 @@ The call in the main area:
 Outside the main area:
 
 - The channel list shows, for the call of the device, the measured level of each person (ADR 0507), and "connecting…" or "reconnecting…" beside the person of the device.
-- The strip of the call is above the profile strip while the device is in a call, whatever server and channel are shown. It names the voice channel, leads to it, shows the time since the call started, and has "Leave". Its camera, share and hand buttons are drawn disabled, so that the strip has its final form.
+- The strip of the call is above the profile strip while the device is in a call, whatever server and channel are shown. It names the voice channel, leads to it, shows the time since the call started, and has "Leave". Its share button starts and ends a share (ADR 0738), and its hand button raises and lowers the hand of the person (ADR 0739). Its camera button is drawn disabled, so that the strip has its final form.
 - The microphone and the sound button of the profile strip work in a call and outside one. A microphone that the person closed has the crossed mark on terracotta; a microphone that the server holds closed has the lock mark and takes no click.
 - A line above the profile strip tells who closed the microphone or the sound, and that the microphone cannot be used, with "Try again".
 - The settings of the application have the part "Voice": the input mode, the key of push-to-talk, and the three parts of the processing.
@@ -42,5 +42,5 @@ Structure:
 - The volume control is the unstyled slider of the component library with the look of the design. The arrow keys change the volume by 10 %.
 - The list of devices is drawn at its box and above the panel. It holds the keyboard focus while it is open.
 - When a control that holds the keyboard focus leaves the window, such as "Join call", the focus returns to the window, so that Tab and the key of push-to-talk still reach it.
-- The window draws three disabled buttons of functions that this version lacks, as an exception to ADR 0730.
+- The window draws one disabled button of a function that this version lacks, the camera, as an exception to ADR 0730.
 - The time of a call is computed from the time of the server and the clock of the machine. A machine whose clock is behind shows 00:00:00 at first.

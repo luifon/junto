@@ -77,6 +77,8 @@ pub struct Colors {
     pub basalt_3: Rgba,
     pub basalt_rule: Rgba,
     pub basalt_deep: Rgba,
+    /// The frame of the mark "Watch" on the card of a share.
+    pub basalt_tag_rule: Rgba,
     /// The edge of the server book and of an avatar on it.
     pub basalt_edge: Rgba,
     /// The border of a floating layer on basalt.
@@ -324,6 +326,7 @@ impl Theme {
                 basalt_3: hex(0x3A322B),
                 basalt_rule: hex(0x4A4037),
                 basalt_deep: hex(0x191613),
+                basalt_tag_rule: hex(0x6A5D50),
                 basalt_edge: hex(0x110F0D),
                 basalt_float_rule: hex(0x5B4F43),
                 bone: hex(0xEDE3D0),

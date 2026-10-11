@@ -38,7 +38,7 @@ Window:
 
 - The main window is one view. It holds what belongs to the window: the layer that is open (a dialog or a menu), the text of its fields, and where the keyboard focus returns to.
 - A channel list groups the channels without a category by kind, under "Text channels" and "Voice channels", and then lists each category that holds a visible channel, in the order of the server.
-- A text channel shows a statement that text messages are not in this version. A voice channel shows the state of its call, the action that enters it, and the call when the device is in it (ADR 0735). The window draws no control of a function that the build does not have, with one exception: the camera, share and hand buttons of the strip of the call are drawn disabled, so that the strip has its final form.
+- A text channel shows a statement that text messages are not in this version. A voice channel shows the state of its call, the action that enters it, and the call when the device is in it (ADR 0735). The window draws no control of a function that the build does not have, with one exception: the camera button of the strip of the call is drawn disabled, so that the strip has its final form.
 - In the call of the device the level meter of a person shows the level that the media engine measures. In another voice channel it shows three of five segments while the server reports the person as speaking (ADR 0513), and none otherwise.
 - The window follows the levels of a call only as far as they change a meter: a level is turned into lit segments before it is compared with what is drawn.
 - The call of the device ends with the application: the server is told when the application quits, with a wait of at most 2 seconds.

@@ -7,7 +7,7 @@ use gpui::{
 };
 use junto_client_core::protocol::structure::ChannelKind;
 
-use super::Shell;
+use super::{Layer, Shell};
 use crate::assets::Icon;
 use crate::state::view::{
     Content, Microphone, MicrophoneButton, Occupant, Presence, SectionTitle, ServerStatus,
@@ -101,7 +101,7 @@ impl Shell {
     pub(crate) fn render_channel_column(
         &mut self,
         view: &ShellView,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = theme(cx);
@@ -164,7 +164,7 @@ impl Shell {
 
         let list: AnyElement = match (&view.selected, workspace) {
             (Some(_), Some(workspace)) => self
-                .render_channel_list(workspace, &theme, cx)
+                .render_channel_list(view, workspace, &theme, window, cx)
                 .into_any_element(),
             (Some(server), None) if matches!(server.content, Content::NoWorkspace) => div()
                 .flex_1()
@@ -231,12 +231,22 @@ impl Shell {
 
     fn render_channel_list(
         &mut self,
+        view: &ShellView,
         workspace: &WorkspaceView,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let colors = theme.colors;
         let workspace_id = workspace.id;
+        let server_id = view.selected.as_ref().map(|server| server.id);
+        // The person whose menu is open, and the menu.
+        let open_menu = match &self.layer {
+            Layer::PersonMenu(open) => view
+                .person_menu(open.channel_id, open.account_id)
+                .map(|menu| (menu, open.moving)),
+            _ => None,
+        };
         let mut rows: Vec<AnyElement> = Vec::new();
         let mut channel_index = 0usize;
         for (position, section) in workspace.sections.iter().enumerate() {
@@ -293,15 +303,44 @@ impl Shell {
                     .unwrap_or_default();
                 after_occupants = !occupants.is_empty();
                 for (seat, occupant) in occupants.iter().enumerate() {
+                    let account_id = occupant.account_id;
+                    let menu = open_menu
+                        .as_ref()
+                        .filter(|(menu, _)| {
+                            menu.channel_id == channel_id && menu.account_id == account_id
+                        })
+                        .map(|(menu, moving)| self.render_person_menu(menu, *moving, window, cx));
+                    let row = OccupantRow::new(
+                        ("occupant", index * 1000 + seat),
+                        occupant_name(occupant),
+                        account_id.as_uuid().as_u128(),
+                    )
+                    .marks(occupant_marks(occupant))
+                    .selector(format!("occupant:{account_id}"))
+                    .open(menu.is_some());
+                    // The menu of a person holds what the person of this device can do with
+                    // another person. The own row has none.
+                    let row = if occupant.is_self {
+                        row
+                    } else {
+                        row.on_menu(Self::handler(cx, move |this, window, cx| {
+                            this.open_person_menu(channel_id, account_id, window, cx);
+                        }))
+                    };
                     rows.push(
-                        OccupantRow::new(
-                            ("occupant", index * 1000 + seat),
-                            occupant_name(occupant),
-                            occupant.account_id.as_uuid().as_u128(),
-                        )
-                        .marks(occupant_marks(occupant))
-                        .into_any_element(),
+                        div()
+                            .relative()
+                            .flex_none()
+                            .child(row)
+                            .children(menu)
+                            .into_any_element(),
                     );
+                }
+                if let (Some(server_id), Some(voice)) = (server_id, channel.voice.as_ref())
+                    && let Some(entry) = self.render_entry_box(server_id, channel, voice, theme, cx)
+                {
+                    after_occupants = true;
+                    rows.push(entry);
                 }
             }
         }

@@ -8,7 +8,7 @@ use gpui::{
 };
 use gpui_base::slider::{Slider, SliderIndicator, SliderState, SliderThumb, SliderTrack};
 
-use super::{Band, BandKind, StyleExt, focus_ring, focus_ring_inside, icon, ledge};
+use super::{Band, BandKind, StyleExt, focus_ring, focus_ring_inside, icon, ledge, tooltip};
 use crate::assets::Icon;
 use crate::theme::{theme, u};
 
@@ -21,6 +21,8 @@ pub struct Toggle {
     label: SharedString,
     on: bool,
     words: (SharedString, SharedString),
+    /// Why the person cannot change the switch. A switch with a reason takes no click.
+    held: Option<SharedString>,
     selector: Option<&'static str>,
     on_click: Option<ClickHandler>,
 }
@@ -39,9 +41,16 @@ impl Toggle {
             label: label.into(),
             on,
             words: (words.0.into(), words.1.into()),
+            held: None,
             selector: None,
             on_click: None,
         }
+    }
+
+    /// The switch shows its state and cannot be changed, for the reason that is given.
+    pub fn held(mut self, reason: Option<impl Into<SharedString>>) -> Self {
+        self.held = reason.map(Into::into);
+        self
     }
 
     pub fn selector(mut self, selector: &'static str) -> Self {
@@ -77,12 +86,21 @@ impl RenderOnce for Toggle {
             .gap(u(6.0))
             .mt(u(1.0))
             .rounded(u(9.0))
-            .cursor_pointer()
-            .focusable()
-            .tab_stop(true)
-            .focus_visible(move |style| style.shadow(ring))
-            .when_some(self.on_click, |toggle, handler| {
-                toggle.on_click(move |event, window, cx| handler(event, window, cx))
+            .map(|toggle| match self.held {
+                // The reason is the description of the switch for a screen reader too.
+                Some(reason) => toggle
+                    .aria_description(reason.clone())
+                    .opacity(0.55)
+                    .cursor_not_allowed()
+                    .tooltip(tooltip(reason)),
+                None => toggle
+                    .cursor_pointer()
+                    .focusable()
+                    .tab_stop(true)
+                    .focus_visible(move |style| style.shadow(ring))
+                    .when_some(self.on_click, |toggle, handler| {
+                        toggle.on_click(move |event, window, cx| handler(event, window, cx))
+                    }),
             })
             .child(
                 div()
@@ -113,6 +131,151 @@ impl RenderOnce for Toggle {
                     .ink(colors.ink_2)
                     .child(if self.on { self.words.0 } else { self.words.1 }),
             )
+    }
+}
+
+/// A number with a button that lowers it and a button that raises it.
+#[derive(IntoElement)]
+pub struct Stepper {
+    id: ElementId,
+    label: SharedString,
+    value: SharedString,
+    lower: (SharedString, Option<ClickHandler>),
+    raise: (SharedString, Option<ClickHandler>),
+    /// Why the person cannot change the number.
+    held: Option<SharedString>,
+    selector: Option<&'static str>,
+}
+
+impl Stepper {
+    /// A stepper. `label` names it in the accessibility tree, `value` is what it shows,
+    /// and `lower` and `raise` name its two buttons.
+    pub fn new(
+        id: impl Into<ElementId>,
+        label: impl Into<SharedString>,
+        value: impl Into<SharedString>,
+        lower: &'static str,
+        raise: &'static str,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            value: value.into(),
+            lower: (lower.into(), None),
+            raise: (raise.into(), None),
+            held: None,
+            selector: None,
+        }
+    }
+
+    pub fn selector(mut self, selector: &'static str) -> Self {
+        self.selector = Some(selector);
+        self
+    }
+
+    /// The reason why the person cannot change the number, as the description of the two
+    /// buttons and in their tooltips.
+    pub fn held(mut self, reason: Option<impl Into<SharedString>>) -> Self {
+        self.held = reason.map(Into::into);
+        self
+    }
+
+    /// Without a handler the button is drawn disabled.
+    pub fn on_lower(
+        mut self,
+        handler: Option<impl Fn(&ClickEvent, &mut Window, &mut App) + 'static>,
+    ) -> Self {
+        self.lower.1 = handler.map(|handler| Box::new(handler) as ClickHandler);
+        self
+    }
+
+    pub fn on_raise(
+        mut self,
+        handler: Option<impl Fn(&ClickEvent, &mut Window, &mut App) + 'static>,
+    ) -> Self {
+        self.raise.1 = handler.map(|handler| Box::new(handler) as ClickHandler);
+        self
+    }
+}
+
+impl RenderOnce for Stepper {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = theme(cx);
+        let colors = theme.colors;
+        let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
+        let selector = self.selector;
+        let held = self.held;
+        let step = |name: &'static str,
+                    shown: Icon,
+                    (label, handler): (SharedString, Option<ClickHandler>)| {
+            let ring = ring.clone();
+            let enabled = handler.is_some();
+            div()
+                .id(name)
+                .role(Role::Button)
+                .aria_label(label.clone())
+                .when_some(selector, |button, selector| {
+                    button.debug_selector(move || format!("{selector}-{name}"))
+                })
+                .tooltip(tooltip(match (&held, enabled) {
+                    (Some(reason), false) => reason.clone(),
+                    _ => label,
+                }))
+                .when_some(held.clone().filter(|_| !enabled), |button, reason| {
+                    button.aria_description(reason)
+                })
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .size(u(26.0))
+                .child(icon(
+                    shown,
+                    13.0,
+                    if enabled { colors.ink_2 } else { colors.ink_3 },
+                ))
+                .map(|button| match handler {
+                    Some(handler) => button
+                        .cursor_pointer()
+                        .focusable()
+                        .tab_stop(true)
+                        .hover(move |style| style.bg(Hsla::from(colors.travertine)))
+                        .focus_visible(move |style| style.shadow(ring))
+                        .on_click(move |event, window, cx| handler(event, window, cx)),
+                    None => button.cursor_not_allowed(),
+                })
+        };
+        div()
+            .id(self.id)
+            .role(Role::Group)
+            .aria_label(self.label)
+            .when_some(selector, |stepper, selector| {
+                stepper.debug_selector(|| selector.to_owned())
+            })
+            .flex()
+            .flex_none()
+            .rounded(u(theme.metrics.radius))
+            .border_1()
+            .border_color(Hsla::from(colors.rule))
+            .bg(Hsla::from(colors.travertine_hi))
+            .overflow_hidden()
+            .child(step("lower", Icon::Minus, self.lower))
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .w(u(32.0))
+                    .border_l_1()
+                    .border_r_1()
+                    .border_color(Hsla::from(colors.rule))
+                    .typeface(theme.types.mono_field, &theme)
+                    .text_size(u(13.5))
+                    .ink(colors.ink)
+                    .child(self.value),
+            )
+            .child(step("raise", Icon::Plus, self.raise))
     }
 }
 

@@ -2,6 +2,7 @@
 
 use junto_protocol::call::{
     Call, CallJoin, CallPlace, EntryOutcome, EntryRequest, InvitationOutcome, LeaveReason,
+    MicrophoneBlock, SoundBlock,
 };
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::Event;
@@ -60,6 +61,37 @@ pub struct Entered {
     pub identity: String,
     pub publishing: Publishing,
     pub entry_requests: Vec<EntryRequest>,
+    pub microphone_block: Option<MicrophoneBlock>,
+    pub sound_block: Option<SoundBlock>,
+}
+
+impl Entered {
+    /// What an account that the transaction let into `call` gets with its join token.
+    pub async fn read(
+        connection: &mut PgConnection,
+        now: OffsetDateTime,
+        call: CallRow,
+        account_id: AccountId,
+        identity: String,
+        shows_requests: bool,
+    ) -> ApiResult<Self> {
+        let (microphone_block, sound_block) =
+            store::blocks_of(&mut *connection, &call, account_id).await?;
+        Ok(Self {
+            publishing: store::publishing_of(&mut *connection, &call, account_id).await?,
+            entry_requests: if shows_requests {
+                store::entry_requests(&mut *connection, now, &call).await?
+            } else {
+                Vec::new()
+            },
+            call: store::view(&mut *connection, &call).await?,
+            key: call.key(),
+            room: call.room,
+            identity,
+            microphone_block,
+            sound_block,
+        })
+    }
 }
 
 impl Entered {
@@ -88,6 +120,8 @@ impl Entered {
             token_expires_at: signed.expires_at,
             identity: self.identity,
             entry_requests: self.entry_requests,
+            microphone_block: self.microphone_block,
+            sound_block: self.sound_block,
         })
     }
 }
@@ -248,14 +282,7 @@ pub async fn enter(
         events::tell_account(&mut *connection, now, access.account_id, &own).await?;
     }
 
-    Ok(Entered {
-        publishing: store::publishing_of(&mut *connection, &call, access.account_id).await?,
-        entry_requests: store::entry_requests(&mut *connection, now, &call).await?,
-        call: store::view(&mut *connection, &call).await?,
-        key: call.key(),
-        room: call.room,
-        identity,
-    })
+    Entered::read(connection, now, call, access.account_id, identity, true).await
 }
 
 /// The account is in the call: an invitation of it into this call is accepted, and a
@@ -354,16 +381,22 @@ async fn ring(
     Ok(())
 }
 
-/// Takes an account out of the call that it is in. Returns the call that it left.
+/// Takes an account out of the call that it is in. Returns the call that it left. With
+/// `identity`, the account leaves only the place that it holds with that identity: a place
+/// that another device or session of the account took stays.
 pub async fn leave(
     connection: &mut PgConnection,
     now: OffsetDateTime,
     account_id: AccountId,
+    identity: Option<&str>,
     reason: LeaveReason,
 ) -> ApiResult<Option<CallRow>> {
     let Some(member) = store::member_of(&mut *connection, account_id, true).await? else {
         return Ok(None);
     };
+    if identity.is_some_and(|identity| identity != member.identity) {
+        return Ok(None);
+    }
     let Some(call) = store::call(&mut *connection, By::Id(member.call_id), true).await? else {
         return Ok(None);
     };

@@ -49,6 +49,8 @@ pub struct Button {
     kind: ButtonKind,
     label: Option<SharedString>,
     icon: Option<Icon>,
+    icon_colour: Option<Rgba>,
+    tag: Option<(SharedString, bool)>,
     disabled: bool,
     tooltip: Option<SharedString>,
     accessible_label: Option<SharedString>,
@@ -64,6 +66,8 @@ impl Button {
             kind: ButtonKind::Default,
             label: None,
             icon: None,
+            icon_colour: None,
+            tag: None,
             disabled: false,
             tooltip: None,
             accessible_label: None,
@@ -85,6 +89,19 @@ impl Button {
 
     pub fn icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    /// The colour of the icon of a button that is not disabled, where the design gives the
+    /// icon another colour than the text: the mark of a recording.
+    pub fn icon_colour(mut self, colour: Rgba) -> Self {
+        self.icon_colour = Some(colour);
+        self
+    }
+
+    /// A small word after the label that states what the button switches: "On" or "Off".
+    pub fn tag(mut self, word: impl Into<SharedString>, on: bool) -> Self {
+        self.tag = Some((word.into(), on));
         self
     }
 
@@ -405,8 +422,33 @@ impl RenderOnce for Button {
                     })
             })
             .when_some(self.icon, |frame, shown| {
-                frame.child(icon(shown, icon_size, look.icon))
+                let colour = self.icon_colour.filter(|_| !disabled).unwrap_or(look.icon);
+                frame.child(icon(shown, icon_size, colour))
             })
             .when_some(self.label, |frame, label| frame.child(label))
+            .when_some(self.tag, |frame, (word, on)| {
+                let colors = theme.colors;
+                let (ground, edge, ink) = if on {
+                    (colors.cypress, colors.cypress, colors.call_text_hi)
+                } else {
+                    (colors.plaster, colors.rule_soft, colors.ink_2)
+                };
+                frame.child(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .h(u(18.0))
+                        .px(u(5.0))
+                        .rounded(u(metrics.radius_small))
+                        .border_1()
+                        .border_color(Hsla::from(edge))
+                        .bg(Hsla::from(ground))
+                        .text_size(u(12.0))
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .ink(ink)
+                        .child(word),
+                )
+            })
     }
 }

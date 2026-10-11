@@ -185,6 +185,26 @@ pub struct CallJoin {
     pub identity: String,
     /// The requests to enter that wait for an answer of a person inside.
     pub entry_requests: Vec<EntryRequest>,
+    /// The block of the caller's microphone in this call. The call lists the caller as a
+    /// participant only after the device has connected, so the answer states the block.
+    #[serde(default)]
+    pub microphone_block: Option<MicrophoneBlock>,
+    /// The block of the caller's sound in this call. The client applies it from the first
+    /// moment of its connection (ADR 0503).
+    #[serde(default)]
+    pub sound_block: Option<SoundBlock>,
+}
+
+/// The query of the request that leaves a call.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+#[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
+pub struct LeaveCallQuery {
+    /// The identity of the place that the device leaves. The call of the account ends only
+    /// when the account holds its place with this identity. Absent: the call of the
+    /// account ends, from whichever device it is in the call.
+    #[serde(default)]
+    pub identity: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

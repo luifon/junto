@@ -13,7 +13,7 @@ use super::host::{
 };
 
 /// What the sink keeps of the sound that was played last.
-const KEPT_SECONDS: usize = 2;
+const KEPT_SECONDS: usize = 12;
 
 /// One synthetic microphone: a sine tone.
 #[derive(Debug, Clone, PartialEq)]
@@ -151,6 +151,24 @@ impl SyntheticHost {
     /// The left channel of what was played in the last `duration`, with its rate. Empty
     /// when less than that was played since the last clear.
     pub fn played(&self, duration: Duration) -> (Vec<f32>, u32) {
+        self.played_of(duration, 0)
+    }
+
+    /// The left channel of everything that was played since the last clear, or since the
+    /// output was opened, with its rate. The sink keeps the last seconds only.
+    pub fn played_since_clear(&self) -> (Vec<f32>, u32) {
+        let state = self.lock();
+        let Some(format) = state.played_format else {
+            return (Vec::new(), 0);
+        };
+        let channels = usize::from(format.channels);
+        let samples = state.played.iter().step_by(channels).copied().collect();
+        (samples, format.sample_rate)
+    }
+
+    /// One channel of what was played in the last `duration`, with its rate: 0 is the
+    /// left channel and 1 the right one.
+    pub fn played_of(&self, duration: Duration, channel: usize) -> (Vec<f32>, u32) {
         let state = self.lock();
         let Some(format) = state.played_format else {
             return (Vec::new(), 0);
@@ -163,7 +181,7 @@ impl SyntheticHost {
         let samples = state
             .played
             .iter()
-            .skip(state.played.len() - wanted)
+            .skip(state.played.len() - wanted + channel.min(channels - 1))
             .step_by(channels)
             .copied()
             .collect();

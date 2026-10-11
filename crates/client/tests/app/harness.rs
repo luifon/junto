@@ -17,6 +17,7 @@ use junto_client_core::{Client, ServerHandle};
 use junto_media::audio::synthetic::SyntheticHost;
 use junto_media::calls::{CallTiming, MediaOptions};
 use junto_media::permission::FixedPermission;
+use junto_media::share::synthetic::SyntheticCapture;
 
 use crate::support::{Device, TestServer, claim, logged_in};
 
@@ -93,6 +94,7 @@ impl Admin {
                 MediaOptions {
                     host: std::sync::Arc::new(sound.clone()),
                     permission: std::sync::Arc::new(FixedPermission::allowed()),
+                    capture: std::sync::Arc::new(SyntheticCapture::new()),
                     timing: CallTiming::default(),
                 },
             );
@@ -137,6 +139,9 @@ pub struct Window {
     /// The sound devices of the application: a tone as the microphone and a sink that
     /// measures. No test opens a real device.
     pub sound: SyntheticHost,
+    /// The screen capture of the application: a picture and a tone that the program
+    /// makes. No test captures a screen.
+    pub capture: SyntheticCapture,
 }
 
 /// The frequency of the tone that the microphone of a window gives.
@@ -168,9 +173,11 @@ pub fn open_with(cx: &mut TestAppContext, data_dir: &Path, scale: Option<u32>) -
         timing: timing(),
     };
     let sound = SyntheticHost::with_tone(WINDOW_TONE_HZ);
+    let capture = SyntheticCapture::new();
     let media = MediaOptions {
         host: std::sync::Arc::new(sound.clone()),
         permission: std::sync::Arc::new(FixedPermission::allowed()),
+        capture: std::sync::Arc::new(capture.clone()),
         timing: CallTiming::default(),
     };
     let state = cx.update(|cx| {
@@ -193,6 +200,7 @@ pub fn open_with(cx: &mut TestAppContext, data_dir: &Path, scale: Option<u32>) -
         shell,
         state,
         sound,
+        capture,
     };
     window.cx.run_until_parked();
     window
@@ -275,6 +283,35 @@ impl Window {
             .debug_bounds(selector)
             .unwrap_or_else(|| panic!("{selector} is not drawn"));
         self.cx.simulate_click(bounds.center(), Modifiers::none());
+        self.cx.run_until_parked();
+    }
+
+    /// True when an element with a name that the test builds is drawn now.
+    pub fn shows_named(&mut self, name: String) -> bool {
+        self.shows(selector(name))
+    }
+
+    /// Clicks the element with a name that the test builds, such as the row of one person.
+    #[track_caller]
+    pub fn click_named(&mut self, name: String) {
+        self.click(selector(name));
+    }
+
+    /// Presses the right button of the pointer in the middle of the element with this
+    /// name, and releases it.
+    #[track_caller]
+    pub fn right_click_named(&mut self, name: String) {
+        self.cx.run_until_parked();
+        let name = selector(name);
+        let bounds = self
+            .cx
+            .debug_bounds(name)
+            .unwrap_or_else(|| panic!("{name} is not drawn"));
+        let at = bounds.center();
+        self.cx
+            .simulate_mouse_down(at, gpui::MouseButton::Right, Modifiers::none());
+        self.cx
+            .simulate_mouse_up(at, gpui::MouseButton::Right, Modifiers::none());
         self.cx.run_until_parked();
     }
 

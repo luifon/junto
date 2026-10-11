@@ -12,17 +12,25 @@ use junto_client_core::flow::FlowError;
 use junto_client_core::flow::access::{AccessState, ActionKind, Notice};
 use junto_client_core::live::{StreamFault, StreamStatus};
 use junto_client_core::model::{ChannelModel, Loadable, ServerModel, WorkspaceModel};
+use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::account::RecoveryNotice;
-use junto_client_core::protocol::call::{BlockReason, CallPlace, LeaveReason};
-use junto_client_core::protocol::ids::{AccountId, ChannelId, ServerId, WorkspaceId};
+use junto_client_core::protocol::call::{BlockReason, CallPlace, LeaveReason, ShareAudio};
+use junto_client_core::protocol::error::ErrorCode;
+use junto_client_core::protocol::ids::{
+    AccountId, CallId, CallInvitationId, ChannelId, EntryRequestId, ServerId, WorkspaceId,
+};
+use junto_client_core::protocol::recording::{
+    Recording, RecordingFailure, RecordingState, RecordingStopReason,
+};
 use junto_client_core::protocol::structure::ChannelKind;
 use junto_client_core::version::Incompatibility;
-use junto_client_core::voice::{VOLUME_DEFAULT_PERCENT, VoiceSettings};
+use junto_client_core::voice::{ShareResolution, VOLUME_DEFAULT_PERCENT, VoiceSettings};
 use junto_client_core::{Reach, ServerHandle};
 use junto_media::audio::{DeviceInfo, Devices};
 use junto_media::calls::{ActiveCall, CallTarget, CallsView, EndReason, Outcome, Phase};
-use junto_media::engine::{MicrophoneState, OutputState};
+use junto_media::engine::{MicrophoneState, OutputState, ShareId, ShareState};
 use junto_media::permission::MicrophoneAccess;
+use junto_media::share::{CaptureError, ShareKind};
 use time::OffsetDateTime;
 
 /// What the client core holds of one saved server at one moment.
@@ -109,6 +117,8 @@ pub struct MediaSnapshot {
     pub access: Option<MicrophoneAccess>,
     /// The time of the derivation, for the time of a call. Absent: no time is shown.
     pub now: Option<OffsetDateTime>,
+    /// This build can capture a screen on the system that it runs on.
+    pub can_share: bool,
 }
 
 /// The names of accounts that the members of a workspace do not give, the workspaces whose
@@ -120,6 +130,35 @@ pub struct Known {
     /// The name of the profile preset.
     pub preset_name: String,
     pub media: MediaSnapshot,
+    /// The last recording of the call of this device that failed or that the server
+    /// stopped, with the server of that call. The state of a server holds a recording
+    /// only while it runs (ADR 0719).
+    pub recording_problem: Option<(ServerId, Box<Recording>)>,
+    /// A request that starts or stops a recording is on its way.
+    pub recording_busy: bool,
+    /// The request of the person to enter a locked or full voice channel.
+    pub entry: Option<OwnEntry>,
+}
+
+/// Where the request of the person to enter a voice channel stands (ADR 0514).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryState {
+    /// The request is on its way to the server.
+    Asking,
+    /// The people inside have the request.
+    Waiting,
+    Denied,
+    /// Nobody answered in time.
+    Expired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnEntry {
+    pub server_id: ServerId,
+    pub channel_id: ChannelId,
+    /// The request on the server. Absent until the server has answered.
+    pub request_id: Option<EntryRequestId>,
+    pub state: EntryState,
 }
 
 /// What one saved server is to this device now.
@@ -270,6 +309,8 @@ pub struct Occupant {
     pub hand_raised: bool,
     /// The person turned the sound off, or a moderator blocked it.
     pub sound_off: bool,
+    /// A moderator blocked the sound of the person (ADR 0503).
+    pub sound_blocked: bool,
     /// The lit segments of the level meter, of [`LEVEL_SEGMENTS`]. Present in the call of
     /// this device, where the media engine measures the sound (ADR 0507).
     pub level: Option<usize>,
@@ -288,6 +329,14 @@ pub enum Relation {
     Inside,
 }
 
+/// Why a person outside a voice channel cannot enter it without the help of a person
+/// inside (ADR 0514).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Closed {
+    Locked,
+    Full,
+}
+
 /// What a voice channel shows of its call.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct VoiceState {
@@ -301,6 +350,11 @@ pub struct VoiceState {
     pub user_limit: Option<u32>,
     pub full: bool,
     pub occupants: Vec<Occupant>,
+    /// The request of the person to enter this voice channel.
+    pub entry: Option<EntryState>,
+    /// The person is outside and cannot enter without help: the state of the channel says
+    /// so, or the server refused the last join for that reason.
+    pub closed: Option<Closed>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -343,6 +397,74 @@ pub struct OutsideMember {
     pub name: String,
     /// The name of the voice channel that the member is in.
     pub place: Option<String>,
+    /// The invitation into this call that the person of this device made and that waits.
+    pub invitation: Option<CallInvitationId>,
+}
+
+/// A person outside who asks to enter the call of this device (ADR 0514).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryPrompt {
+    pub id: EntryRequestId,
+    pub account_id: AccountId,
+    pub name: Option<String>,
+    /// The name of the voice channel of the call.
+    pub channel: Option<String>,
+}
+
+/// Meeting mode in the call of this device (ADR 0505).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MeetingView {
+    /// The person of this device runs it.
+    pub by_self: bool,
+    pub presenter: Option<String>,
+    /// The people with a raised hand whose microphone is closed, for the presenter.
+    pub hands: Vec<(AccountId, Option<String>)>,
+    /// The people whose block the presenter removed and whose own microphone setting is
+    /// "closed", for the presenter.
+    pub waiting: Vec<Option<String>>,
+    /// The presenter removed the block of the person, and the person's own microphone
+    /// setting is "closed".
+    pub may_speak: bool,
+}
+
+/// What the roles of the person allow in the workspace of a call. The server decides each
+/// request: an override of the channel can differ (ADR 0719).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Allowed {
+    pub lock: bool,
+    pub run_meeting: bool,
+    pub manage: bool,
+    pub mute: bool,
+    pub deafen: bool,
+    pub disconnect: bool,
+    pub move_members: bool,
+}
+
+/// Whether the person can turn meeting mode on in the call of this device (ADR 0512).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MeetingStart {
+    #[default]
+    Possible,
+    /// The person does not share a screen.
+    NotSharing,
+    NoPermission,
+    /// The microphone of the person is blocked.
+    MicrophoneBlocked,
+}
+
+/// The room of the call of this device: its rules and what the person may change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoomView {
+    /// The name of the voice channel.
+    pub name: String,
+    /// The number of people inside.
+    pub inside: usize,
+    pub meeting: Option<MeetingView>,
+    pub meeting_start: MeetingStart,
+    pub locked: bool,
+    pub user_limit: Option<u32>,
+    pub hides_occupants: bool,
+    pub allowed: Allowed,
 }
 
 /// One device in a list of the sound settings. The first entry is the default of the
@@ -378,6 +500,111 @@ pub struct AudioSettings {
     pub output_failed: bool,
 }
 
+/// One share of the call of this device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShareCard {
+    pub id: ShareId,
+    /// The person who shares.
+    pub account_id: AccountId,
+    /// Absent while the client has not read the name of the account.
+    pub name: Option<String>,
+    /// What is shared. Absent for a share whose track does not state it.
+    pub kind: Option<ShareKind>,
+    /// The sound that the sharer chose. Absent until the server has told it.
+    pub sound: Option<ShareAudio>,
+    /// The share of this device has a sound that the server holds closed (ADR 0510).
+    pub sound_held: bool,
+    /// The size of the picture in pixels. Absent until the first picture.
+    pub size: Option<(u32, u32)>,
+    pub frame_rate: Option<u32>,
+    /// The person of this device gets the picture and the sound of this share.
+    pub watched: bool,
+}
+
+/// The shares of the call of this device. Present while at least one share runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShareStage {
+    /// The shares of the other people in the order in which they arrived, and then the
+    /// share of this device.
+    pub shares: Vec<ShareCard>,
+    /// The volume in percent of the sound of the watched share for this listener. Zero
+    /// keeps the picture without its sound.
+    pub volume: u16,
+}
+
+impl ShareStage {
+    pub fn watched(&self) -> Option<&ShareCard> {
+        self.shares.iter().find(|share| share.watched)
+    }
+}
+
+/// The share of this device, as its button shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OwnShare {
+    #[default]
+    Off,
+    Starting,
+    Running,
+}
+
+/// Why the last recording of the call ended without the person asking for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordingFault {
+    /// The recorder was lost while it recorded.
+    RecorderLost,
+    /// The free disk space of the server reached its reserve.
+    StorageReserve,
+    /// The recording holds as many files as a recording can have.
+    SegmentLimit,
+    /// No recorder took the recording. Nothing was recorded.
+    RecorderUnavailable,
+    /// Nothing of the recording was saved.
+    NothingSaved,
+    /// A part of the recording was saved, and a part was not.
+    PartlySaved,
+    /// The server gave a reason that this build does not know.
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordingProblem {
+    pub fault: RecordingFault,
+    /// When the recorder started. Absent when it never did.
+    pub since: Option<OffsetDateTime>,
+    /// When the recording stopped, or its last job ended.
+    pub until: Option<OffsetDateTime>,
+    /// The files of the recording, and how many of them failed.
+    pub segments: u32,
+    pub failed_segments: u32,
+}
+
+/// The recording of the call of this device, as the header of its voice channel shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecordingShown {
+    /// No recording runs.
+    None,
+    /// The server asks the recorder to start.
+    Starting,
+    Running {
+        /// The time since the recorder started.
+        elapsed: Option<Duration>,
+        /// The end of the recording was asked for, and the recorder has not ended yet.
+        stopping: bool,
+    },
+    /// The last recording of this call failed, or the server stopped it.
+    Failed(RecordingProblem),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordingControl {
+    pub state: RecordingShown,
+    /// The roles of the person in the workspace allow "record calls". The server decides
+    /// each request: an override of the channel can differ (ADR 0719).
+    pub may_record: bool,
+    /// A request of this device that starts or stops a recording is on its way.
+    pub busy: bool,
+}
+
 /// The call of this device, when the main area shows its voice channel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallPanel {
@@ -386,6 +613,14 @@ pub struct CallPanel {
     pub interrupted_at: Option<OffsetDateTime>,
     pub outside: Vec<OutsideMember>,
     pub audio: AudioSettings,
+    /// The shares of the call. Absent while nobody shares.
+    pub stage: Option<ShareStage>,
+    /// The strip of the call shows only the people who send a camera picture.
+    pub hide_without_video: bool,
+    pub share_resolution: ShareResolution,
+    pub share_frame_rate: u32,
+    pub recording: RecordingControl,
+    pub room: RoomView,
 }
 
 /// The selected workspace of the selected server.
@@ -399,6 +634,78 @@ pub struct WorkspaceView {
     pub members: Members,
     /// Present when the selected channel is the voice channel of the call of this device.
     pub call: Option<CallPanel>,
+    /// What the roles of the person allow in the calls of this workspace.
+    pub allowed: Allowed,
+}
+
+/// The menu of a person in a voice channel (ADR 0739): what the person of this device can
+/// do with that person.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersonMenu {
+    pub server_id: ServerId,
+    pub channel_id: ChannelId,
+    pub account_id: AccountId,
+    pub name: Option<String>,
+    /// The name of the voice channel that the person is in.
+    pub place: String,
+    /// The name of the voice channel of the call of this device, when the person can be
+    /// invited into it.
+    pub invite_to: Option<String>,
+    /// The voice channels that the person can be moved to. Empty without "move members".
+    pub destinations: Vec<(ChannelId, String)>,
+    /// The volume in percent that the person of this device set for the person.
+    pub volume: u16,
+    /// With "mute members": whether the microphone of the person is blocked now.
+    pub microphone_blocked: Option<bool>,
+    /// With "deafen members": whether the sound of the person is blocked now.
+    pub sound_blocked: Option<bool>,
+    pub disconnect: bool,
+}
+
+impl ShellView {
+    /// The menu of a person in a voice channel of the workspace that is shown. Absent for
+    /// the person of this device, and for a person who is no longer there.
+    pub fn person_menu(&self, channel_id: ChannelId, account_id: AccountId) -> Option<PersonMenu> {
+        let server_id = self.selected.as_ref()?.id;
+        let workspace = self.workspace()?;
+        let rows = || workspace.sections.iter().flat_map(|section| &section.rows);
+        let row = rows().find(|row| row.id == channel_id)?;
+        let occupant = row
+            .voice
+            .as_ref()?
+            .occupants
+            .iter()
+            .find(|occupant| occupant.account_id == account_id && !occupant.is_self)?;
+        let allowed = workspace.allowed;
+        let own_call = self
+            .call
+            .as_ref()
+            .filter(|call| call.server_id == server_id && call.workspace_id == Some(workspace.id));
+        Some(PersonMenu {
+            server_id,
+            channel_id,
+            account_id,
+            name: occupant.name.clone(),
+            place: row.name.clone(),
+            invite_to: own_call
+                .filter(|call| call.channel_id != Some(channel_id))
+                .and_then(|call| call.name.clone()),
+            destinations: if allowed.move_members {
+                rows()
+                    .filter(|other| other.kind == ChannelKind::Voice && other.id != channel_id)
+                    .map(|other| (other.id, other.name.clone()))
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            volume: occupant.volume,
+            microphone_blocked: allowed
+                .mute
+                .then_some(matches!(occupant.microphone, Microphone::Held(_))),
+            sound_blocked: allowed.deafen.then_some(occupant.sound_blocked),
+            disconnect: allowed.disconnect,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -489,6 +796,25 @@ pub struct CallStrip {
     pub elapsed: Option<Duration>,
     /// The main area shows this call.
     pub shown: bool,
+    pub share: OwnShare,
+    /// This build can capture a screen on the system that it runs on.
+    pub can_share: bool,
+    /// The hand of the person is raised. Absent in a direct-message call, which has no
+    /// meeting mode.
+    pub hand_raised: Option<bool>,
+    /// Meeting mode is on, the presenter removed the block of the person, and the person's
+    /// own microphone setting is "closed".
+    pub may_speak: bool,
+}
+
+/// An invitation into a call that waits for the answer of the person (ADR 0514).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Invited {
+    pub id: CallInvitationId,
+    pub target: CallTarget,
+    pub by: Option<String>,
+    /// The name of the voice channel. Absent for a direct-message call.
+    pub channel: Option<String>,
 }
 
 /// How the last join or call ended, when the person did not end it.
@@ -502,6 +828,8 @@ pub enum CallNotice {
         channel: Option<String>,
         reason: EndReason,
     },
+    /// A person with "move members" moved the person into this voice channel.
+    Moved { channel: Option<String> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -512,6 +840,12 @@ pub struct ShellView {
     pub controls: Controls,
     pub call: Option<CallStrip>,
     pub call_notice: Option<CallNotice>,
+    /// Why the share of this device ended, when the person did not end it.
+    pub share_notice: Option<CaptureError>,
+    /// The invitations that wait for the answer of the person, on every server.
+    pub invitations: Vec<Invited>,
+    /// The people outside who ask to enter the call of this device.
+    pub entry_prompts: Vec<EntryPrompt>,
 }
 
 impl ShellView {
@@ -637,18 +971,40 @@ fn voice_state(
             },
         },
         held_by: held.and_then(|block| name_of(block.by)),
-        sharing: false,
+        sharing: active.is_some_and(|call| matches!(call.share, ShareState::Running(_))),
         hand_raised: false,
         sound_off: media.calls.deafened,
+        sound_blocked: active.is_some_and(|call| call.sound_block.is_some()),
         level: Some(media.levels.own.0),
         presence: own_presence,
         volume: VOLUME_DEFAULT_PERCENT,
     };
+    let entry = known
+        .entry
+        .as_ref()
+        .filter(|entry| entry.server_id == server_id && entry.channel_id == channel.channel.id)
+        .filter(|_| relation == Relation::Outside)
+        .map(|entry| entry.state);
+    // What the server answered to the last join of this voice channel.
+    let refused = match &media.calls.outcome {
+        Some(Outcome::JoinFailed {
+            target: failed,
+            error: FlowError::Refused { code, .. },
+        }) if *failed == target => match code {
+            ErrorCode::CallLocked => Some(Closed::Locked),
+            ErrorCode::CallFull => Some(Closed::Full),
+            _ => None,
+        },
+        _ => None,
+    };
+    let outside = relation == Relation::Outside;
     let Some(call) = &channel.call else {
         return VoiceState {
             relation,
             in_use: channel.in_use,
             hidden: channel.in_use && channel.channel.hides_occupants,
+            entry,
+            closed: refused.filter(|_| outside && channel.in_use),
             user_limit: channel.channel.user_limit,
             occupants: active
                 .map(|active| vec![own_row(active.microphone_block.as_ref())])
@@ -693,9 +1049,14 @@ fn voice_state(
                     .microphone_block
                     .as_ref()
                     .and_then(|block| name_of(block.by)),
-                sharing: participant.screen_share.is_some(),
+                // The share of this device is shown from the moment its track is sent;
+                // the server tells it a moment later.
+                sharing: participant.screen_share.is_some()
+                    || (is_self
+                        && active.is_some_and(|call| matches!(call.share, ShareState::Running(_)))),
                 hand_raised: participant.hand_raised,
                 sound_off: participant.deafened || participant.sound_block.is_some(),
+                sound_blocked: participant.sound_block.is_some(),
                 level: measured.map(|(level, _)| level),
                 presence: if is_self {
                     own_presence
@@ -712,21 +1073,33 @@ fn voice_state(
         occupants.push(own_row(active.microphone_block.as_ref()));
     }
     let in_use = channel.in_use;
+    // A lock can be in the state before the first person of a call is seen (ADR 0719). It
+    // is shown only for a channel in use.
+    let locked = in_use && call.lock.is_some();
+    let full = channel
+        .channel
+        .user_limit
+        .is_some_and(|limit| occupants.len() >= limit as usize && limit > 0);
     VoiceState {
         relation,
         in_use,
         hidden: false,
-        // A lock can be in the state before the first person of a call is seen
-        // (ADR 0719). It is shown only for a channel in use.
-        locked: in_use && call.lock.is_some(),
+        locked,
         meeting: in_use && call.meeting.is_some(),
         recording: in_use && call.recording.is_some(),
         user_limit: channel.channel.user_limit,
-        full: channel
-            .channel
-            .user_limit
-            .is_some_and(|limit| occupants.len() >= limit as usize && limit > 0),
+        full,
+        closed: if !outside || !in_use {
+            None
+        } else if locked {
+            Some(Closed::Locked)
+        } else if full {
+            Some(Closed::Full)
+        } else {
+            refused
+        },
         occupants,
+        entry,
     }
 }
 
@@ -876,7 +1249,7 @@ fn workspace_view(
                 .is_some_and(|voice| voice.relation == Relation::Inside)
         })
         .zip(known.media.calls.call.as_ref())
-        .map(|(row, active)| call_panel(row, active, workspace, known));
+        .map(|(row, active)| call_panel(server_id, row, active, workspace, model, known));
     WorkspaceView {
         id: workspace.workspace.id,
         name: workspace.workspace.name.clone(),
@@ -884,6 +1257,7 @@ fn workspace_view(
         channel,
         members: members(server_id, workspace, model, known),
         call,
+        allowed: allowed(workspace, model),
     }
 }
 
@@ -916,13 +1290,132 @@ fn device_choices(connected: &[DeviceInfo], chosen: Option<&str>) -> Vec<DeviceC
     choices
 }
 
+/// The shares of a call: the ones of the other people as the media connection shows them,
+/// with the sound that the server tells of each, and the one of this device.
+fn share_stage(
+    server_id: ServerId,
+    active: &ActiveCall,
+    workspace: &WorkspaceModel,
+    model: &ServerModel,
+    known: &Known,
+) -> Option<ShareStage> {
+    let call = model.call_at(&active.target.place);
+    let name_of = |account_id: AccountId| name_of(server_id, account_id, workspace, model, known);
+    let mut shares: Vec<ShareCard> = active
+        .shares
+        .iter()
+        .map(|seen| ShareCard {
+            id: ShareId::Of(seen.account_id),
+            account_id: seen.account_id,
+            name: name_of(seen.account_id),
+            kind: seen.kind,
+            sound: call
+                .and_then(|call| call.participant(seen.account_id))
+                .and_then(|participant| participant.screen_share.as_ref())
+                .map(|share| share.audio),
+            sound_held: false,
+            size: seen.size,
+            frame_rate: seen.frame_rate,
+            watched: active.watched == Some(ShareId::Of(seen.account_id)),
+        })
+        .collect();
+    if let ShareState::Running(info) = &active.share {
+        shares.push(ShareCard {
+            id: ShareId::Own,
+            account_id: model.account.id,
+            name: name_of(model.account.id),
+            kind: Some(info.kind),
+            sound: Some(info.sound),
+            sound_held: info.sound_held,
+            size: Some(info.size),
+            frame_rate: Some(info.frame_rate),
+            watched: active.watched == Some(ShareId::Own),
+        });
+    }
+    (!shares.is_empty()).then_some(ShareStage {
+        shares,
+        volume: known.media.voice.share_volume,
+    })
+}
+
+/// What a recording that ended with a problem tells the people of its call.
+fn recording_problem(recording: &Recording) -> Option<RecordingProblem> {
+    let stopped = recording.stop.as_ref().map(|stop| stop.reason);
+    let fault = match (recording.state, stopped, recording.failure) {
+        (RecordingState::Failed, _, Some(RecordingFailure::RecorderUnavailable)) => {
+            RecordingFault::RecorderUnavailable
+        }
+        (RecordingState::Failed, _, _) => RecordingFault::NothingSaved,
+        (_, Some(RecordingStopReason::RecorderLost), _) => RecordingFault::RecorderLost,
+        (_, Some(RecordingStopReason::StorageReserve), _) => RecordingFault::StorageReserve,
+        (_, Some(RecordingStopReason::SegmentLimit), _) => RecordingFault::SegmentLimit,
+        (_, Some(RecordingStopReason::Unknown), _) => RecordingFault::Other,
+        (RecordingState::PartlyFailed, _, _) => RecordingFault::PartlySaved,
+        // A person stopped it, or the call ended, and nothing failed.
+        _ => return None,
+    };
+    Some(RecordingProblem {
+        fault,
+        since: recording.recording_since,
+        until: recording
+            .stop
+            .as_ref()
+            .map(|stop| stop.at)
+            .or(recording.ended_at),
+        segments: recording.segments,
+        failed_segments: recording.failed_segments,
+    })
+}
+
+/// Whether a recording is one that the header of its call tells as a problem.
+pub fn is_recording_problem(recording: &Recording) -> bool {
+    recording_problem(recording).is_some()
+}
+
+fn recording_control(
+    server_id: ServerId,
+    call_id: Option<CallId>,
+    running: Option<&Recording>,
+    workspace: &WorkspaceModel,
+    model: &ServerModel,
+    known: &Known,
+) -> RecordingControl {
+    let state = match running {
+        Some(recording) if recording.state == RecordingState::Starting => RecordingShown::Starting,
+        Some(recording) => RecordingShown::Running {
+            elapsed: recording
+                .recording_since
+                .zip(known.media.now)
+                .map(|(since, now)| Duration::try_from(now - since).unwrap_or_default()),
+            stopping: recording.stop.is_some(),
+        },
+        None => known
+            .recording_problem
+            .as_ref()
+            .filter(|(of, recording)| *of == server_id && Some(recording.call_id) == call_id)
+            .and_then(|(_, recording)| recording_problem(recording))
+            .map_or(RecordingShown::None, RecordingShown::Failed),
+    };
+    RecordingControl {
+        state,
+        may_record: model.is_administrator()
+            || workspace
+                .role_permissions()
+                .contains(&WorkspacePermission::RecordCalls),
+        busy: known.recording_busy,
+    }
+}
+
 fn call_panel(
+    server_id: ServerId,
     row: &ChannelRow,
     active: &ActiveCall,
     workspace: &WorkspaceModel,
+    model: &ServerModel,
     known: &Known,
 ) -> CallPanel {
     let media = &known.media;
+    let call = model.call_at(&active.target.place);
     let inside = |account_id: AccountId| {
         row.voice.as_ref().is_some_and(|voice| {
             voice
@@ -952,6 +1445,15 @@ fn call_panel(
                     account_id: member.account_id,
                     name: member.name.clone(),
                     place: place_of(member.account_id),
+                    invitation: model
+                        .invitations
+                        .iter()
+                        .find(|invitation| {
+                            invitation.account_id == member.account_id
+                                && invitation.invited_by == model.account.id
+                                && invitation.place == active.target.place
+                        })
+                        .map(|invitation| invitation.id),
                 })
                 .collect()
         })
@@ -980,7 +1482,190 @@ fn call_panel(
             access: active.access,
             output_failed: matches!(active.output, OutputState::Failed(_)),
         },
+        stage: share_stage(server_id, active, workspace, model, known),
+        hide_without_video: media.voice.hide_people_without_video,
+        share_resolution: media.voice.share_resolution,
+        share_frame_rate: media.voice.share_frame_rate,
+        recording: recording_control(
+            server_id,
+            call.map(|call| call.id),
+            call.and_then(|call| call.recording.as_ref()),
+            workspace,
+            model,
+            known,
+        ),
+        room: room_view(server_id, row, active, workspace, model, known),
     }
+}
+
+/// Meeting mode is on, another person runs it, the microphone of the person of this device
+/// has no block, and the person's own setting is "closed": the person may speak and opens
+/// the microphone (ADR 0505).
+fn may_speak(
+    active: &ActiveCall,
+    call: Option<&junto_client_core::model::CallModel>,
+    model: Option<&ServerModel>,
+    known: &Known,
+) -> bool {
+    call.and_then(|call| call.meeting.as_ref())
+        .zip(model)
+        .is_some_and(|(meeting, model)| meeting.presenter != model.account.id)
+        && active.microphone_block.is_none()
+        && known.media.calls.muted
+}
+
+/// What the roles of the account allow in a workspace.
+fn allowed(workspace: &WorkspaceModel, model: &ServerModel) -> Allowed {
+    let held = workspace.role_permissions();
+    let may = |permission| model.is_administrator() || held.contains(&permission);
+    Allowed {
+        lock: may(WorkspacePermission::LockRoom),
+        run_meeting: may(WorkspacePermission::RunMeetingMode),
+        manage: may(WorkspacePermission::ManageChannel),
+        mute: may(WorkspacePermission::MuteMembers),
+        deafen: may(WorkspacePermission::DeafenMembers),
+        disconnect: may(WorkspacePermission::DisconnectMembers),
+        move_members: may(WorkspacePermission::MoveMembers),
+    }
+}
+
+fn room_view(
+    server_id: ServerId,
+    row: &ChannelRow,
+    active: &ActiveCall,
+    workspace: &WorkspaceModel,
+    model: &ServerModel,
+    known: &Known,
+) -> RoomView {
+    let call = model.call_at(&active.target.place);
+    let name_of = |account_id: AccountId| name_of(server_id, account_id, workspace, model, known);
+    let own = model.account.id;
+    let meeting = call.and_then(|call| call.meeting.as_ref()).map(|meeting| {
+        let by_self = meeting.presenter == own;
+        MeetingView {
+            by_self,
+            presenter: name_of(meeting.presenter),
+            hands: call
+                .map(|call| call.participants.as_slice())
+                .unwrap_or_default()
+                .iter()
+                .filter(|participant| {
+                    by_self && participant.hand_raised && participant.microphone_block.is_some()
+                })
+                .map(|participant| (participant.account_id, name_of(participant.account_id)))
+                .collect(),
+            waiting: call
+                .map(|call| call.participants.as_slice())
+                .unwrap_or_default()
+                .iter()
+                .filter(|participant| {
+                    by_self
+                        && participant.account_id != own
+                        && participant.microphone_block.is_none()
+                        && participant.muted
+                })
+                .map(|participant| name_of(participant.account_id))
+                .collect(),
+            may_speak: may_speak(active, call, Some(model), known),
+        }
+    });
+    let voice = row.voice.as_ref();
+    let allowed = allowed(workspace, model);
+    RoomView {
+        name: row.name.clone(),
+        inside: voice.map_or(0, |voice| voice.occupants.len()),
+        meeting_start: if !allowed.run_meeting {
+            MeetingStart::NoPermission
+        } else if active.microphone_block.is_some() {
+            MeetingStart::MicrophoneBlocked
+        } else if !matches!(active.share, ShareState::Running(_)) {
+            MeetingStart::NotSharing
+        } else {
+            MeetingStart::Possible
+        },
+        meeting,
+        locked: voice.is_some_and(|voice| voice.locked),
+        user_limit: voice.and_then(|voice| voice.user_limit),
+        hides_occupants: active
+            .target
+            .place
+            .channel_id()
+            .and_then(|channel_id| model.channel(channel_id))
+            .is_some_and(|channel| channel.channel.hides_occupants),
+        allowed,
+    }
+}
+
+/// The invitations that wait for the answer of the person, on every server.
+fn invitations(servers: &[ServerSnapshot], known: &Known) -> Vec<Invited> {
+    let mut waiting = Vec::new();
+    for server in servers {
+        let Some(model) = shown_model(server) else {
+            continue;
+        };
+        for invitation in model.incoming_invitations() {
+            let target = CallTarget {
+                server_id: server.id,
+                place: invitation.place,
+            };
+            let workspace = match invitation.place {
+                CallPlace::Channel { workspace_id, .. } => model.workspace(workspace_id),
+                CallPlace::Direct { .. } => None,
+            };
+            let by = workspace
+                .and_then(|workspace| {
+                    name_of(server.id, invitation.invited_by, workspace, model, known)
+                })
+                .or_else(|| {
+                    known
+                        .names
+                        .get(&(server.id, invitation.invited_by))
+                        .cloned()
+                });
+            waiting.push(Invited {
+                id: invitation.id,
+                target,
+                by,
+                channel: channel_of(servers, &target),
+            });
+        }
+    }
+    waiting
+}
+
+/// The people outside who ask to enter the call of this device (ADR 0514).
+fn entry_prompts(servers: &[ServerSnapshot], known: &Known) -> Vec<EntryPrompt> {
+    let Some(active) = known.media.calls.call.as_ref() else {
+        return Vec::new();
+    };
+    let Some((server, model)) = servers
+        .iter()
+        .find(|server| server.id == active.target.server_id)
+        .and_then(|server| Some((server, shown_model(server)?)))
+    else {
+        return Vec::new();
+    };
+    let workspace = match active.target.place {
+        CallPlace::Channel { workspace_id, .. } => model.workspace(workspace_id),
+        CallPlace::Direct { .. } => None,
+    };
+    model
+        .entry_requests
+        .iter()
+        .filter(|request| {
+            request.place == active.target.place && request.account_id != model.account.id
+        })
+        .map(|request| EntryPrompt {
+            id: request.id,
+            account_id: request.account_id,
+            name: workspace
+                .and_then(|workspace| {
+                    name_of(server.id, request.account_id, workspace, model, known)
+                })
+                .or_else(|| known.names.get(&(server.id, request.account_id)).cloned()),
+            channel: channel_of(servers, &active.target),
+        })
+        .collect()
 }
 
 /// The name of the voice channel of a call, from the state of its server.
@@ -1046,12 +1731,12 @@ fn call_strip(servers: &[ServerSnapshot], known: &Known, shown: Shown) -> Option
         } => (Some(workspace_id), Some(channel_id)),
         CallPlace::Direct { .. } => (None, None),
     };
-    let started_at = servers
+    let model = servers
         .iter()
         .find(|server| server.id == active.target.server_id)
-        .and_then(shown_model)
-        .and_then(|model| model.call_at(&active.target.place))
-        .and_then(|call| call.started_at);
+        .and_then(shown_model);
+    let call = model.and_then(|model| model.call_at(&active.target.place));
+    let started_at = call.and_then(|call| call.started_at);
     Some(CallStrip {
         server_id: active.target.server_id,
         workspace_id,
@@ -1065,6 +1750,17 @@ fn call_strip(servers: &[ServerSnapshot], known: &Known, shown: Shown) -> Option
         shown: shown.server == Some(active.target.server_id)
             && channel_id.is_some()
             && shown.channel == channel_id,
+        share: match active.share {
+            ShareState::Off | ShareState::Ended(_) => OwnShare::Off,
+            ShareState::Starting => OwnShare::Starting,
+            ShareState::Running(_) => OwnShare::Running,
+        },
+        can_share: known.media.can_share,
+        hand_raised: channel_id.zip(model).map(|(_, model)| {
+            call.and_then(|call| call.participant(model.account.id))
+                .is_some_and(|own| own.hand_raised)
+        }),
+        may_speak: may_speak(active, call, model, known),
     })
 }
 
@@ -1083,6 +1779,9 @@ fn call_notice(servers: &[ServerSnapshot], known: &Known) -> Option<CallNotice> 
         Outcome::Ended { target, reason } => Some(CallNotice::Ended {
             channel: channel_of(servers, target),
             reason: reason.clone(),
+        }),
+        Outcome::Moved { target } => Some(CallNotice::Moved {
+            channel: channel_of(servers, target),
         }),
     }
 }
@@ -1181,6 +1880,17 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
         controls: controls(servers, known),
         call: None,
         call_notice: call_notice(servers, known),
+        invitations: invitations(servers, known),
+        entry_prompts: entry_prompts(servers, known),
+        share_notice: known
+            .media
+            .calls
+            .call
+            .as_ref()
+            .and_then(|call| match &call.share {
+                ShareState::Ended(error) => Some(error.clone()),
+                _ => None,
+            }),
     };
     view.call = call_strip(servers, known, view.shown());
     view

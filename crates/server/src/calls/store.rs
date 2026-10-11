@@ -514,6 +514,48 @@ pub async fn publishing_of(
     })
 }
 
+/// The blocks that hold for an account in a call. An account that is not a member yet, on
+/// its way into a call with meeting mode, gets the block of the meeting on its entry, so the
+/// answer states it already.
+pub async fn blocks_of(
+    connection: &mut PgConnection,
+    call: &CallRow,
+    account_id: AccountId,
+) -> ApiResult<(Option<MicrophoneBlock>, Option<SoundBlock>)> {
+    let (microphone_by, reason, sound_by, is_member): (
+        Option<AccountId>,
+        Option<String>,
+        Option<AccountId>,
+        bool,
+    ) = sqlx::query_as(
+        "select mb.blocked_by, mb.reason, sb.blocked_by,
+                exists (select 1 from call_members where call_id = $1 and account_id = $2)
+         from (select 1) one
+         left join call_microphone_blocks mb on mb.call_id = $1 and mb.account_id = $2
+         left join call_sound_blocks sb on sb.call_id = $1 and sb.account_id = $2",
+    )
+    .bind(call.id)
+    .bind(account_id)
+    .fetch_one(connection)
+    .await?;
+    let microphone = match (microphone_by, reason) {
+        (Some(by), Some(reason)) => Some(MicrophoneBlock {
+            by,
+            reason: BlockReason::read(&reason)?,
+        }),
+        _ => call
+            .meeting
+            .as_ref()
+            .filter(|meeting| !is_member && meeting.presenter != account_id)
+            .map(|meeting| MicrophoneBlock {
+                by: meeting.presenter,
+                reason: BlockReason::Meeting,
+            }),
+    };
+    let sound = sound_by;
+    Ok((microphone, sound.map(|by| SoundBlock { by })))
+}
+
 /// One place in a call: the account, the device and the session that asked for it, and the
 /// one identity that is allowed in the room for it.
 #[derive(Debug, Clone, Copy)]

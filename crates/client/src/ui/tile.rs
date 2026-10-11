@@ -25,6 +25,8 @@ pub enum TileMark {
 /// The size of a tile in design pixels: one and a half times the tile of the call strip of
 /// the design, which keeps its proportions.
 pub const TILE_SIZE: (f32, f32) = (222.0, 126.0);
+/// The size of a tile of the strip under a share, as the design draws it.
+pub const STRIP_TILE_SIZE: (f32, f32) = (148.0, 84.0);
 
 #[derive(IntoElement)]
 pub struct PersonTile {
@@ -35,6 +37,7 @@ pub struct PersonTile {
     marks: Vec<TileMark>,
     label: SharedString,
     selector: Option<SharedString>,
+    in_strip: bool,
 }
 
 impl PersonTile {
@@ -53,7 +56,14 @@ impl PersonTile {
             marks: Vec::new(),
             label: label.into(),
             selector: None,
+            in_strip: false,
         }
+    }
+
+    /// The tile of the strip under a share: the size of the design.
+    pub fn in_strip(mut self) -> Self {
+        self.in_strip = true;
+        self
     }
 
     /// The person speaks: the tile has the bright edge.
@@ -77,6 +87,11 @@ impl RenderOnce for PersonTile {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = theme(cx);
         let colors = theme.colors;
+        let (size, avatar) = if self.in_strip {
+            (STRIP_TILE_SIZE, 34.0)
+        } else {
+            (TILE_SIZE, 51.0)
+        };
         let marks = self.marks.into_iter().map(|mark| match mark {
             TileMark::MicrophoneOff => {
                 icon(Icon::MicrophoneOff, 13.0, colors.plate_warning).into_any_element()
@@ -103,8 +118,8 @@ impl RenderOnce for PersonTile {
             .flex_none()
             .items_center()
             .justify_center()
-            .w(u(TILE_SIZE.0))
-            .h(u(TILE_SIZE.1))
+            .w(u(size.0))
+            .h(u(size.1))
             .overflow_hidden()
             .rounded(u(theme.metrics.radius))
             .bg(Hsla::from(colors.basalt_2))
@@ -119,14 +134,14 @@ impl RenderOnce for PersonTile {
             .child(
                 div()
                     .mb(u(16.0))
-                    .child(Mosaic::new(MosaicKind::Large, self.seed, 51.0)),
+                    .child(Mosaic::new(MosaicKind::Large, self.seed, avatar)),
             )
             .child(
                 div()
                     .absolute()
                     .left(u(4.0))
                     .bottom(u(4.0))
-                    .max_w(u(TILE_SIZE.0 - 10.0))
+                    .max_w(u(size.0 - 10.0))
                     .flex()
                     .items_center()
                     .gap(u(6.0))

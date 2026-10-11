@@ -152,7 +152,9 @@ pub struct MenuItem {
     id: ElementId,
     title: SharedString,
     detail: Option<SharedString>,
+    detail_icon: Option<Icon>,
     icon: Option<Icon>,
+    end_icon: Option<Icon>,
     trailing: Option<SharedString>,
     selector: Option<&'static str>,
     on_click: Option<ClickHandler>,
@@ -164,7 +166,9 @@ impl MenuItem {
             id: id.into(),
             title: title.into(),
             detail: None,
+            detail_icon: None,
             icon: None,
+            end_icon: None,
             trailing: None,
             selector: None,
             on_click: None,
@@ -179,6 +183,18 @@ impl MenuItem {
     /// A second line under the title.
     pub fn detail(mut self, detail: impl Into<SharedString>) -> Self {
         self.detail = Some(detail.into());
+        self
+    }
+
+    /// A small icon before the second line, such as the key of a permission.
+    pub fn detail_icon(mut self, icon: Icon) -> Self {
+        self.detail_icon = Some(icon);
+        self
+    }
+
+    /// An icon at the end of the item, such as the mark of an item that opens a list.
+    pub fn end_icon(mut self, icon: Icon) -> Self {
+        self.end_icon = Some(icon);
         self
     }
 
@@ -245,12 +261,26 @@ impl RenderOnce for MenuItem {
                     .when_some(self.detail, |column, detail| {
                         column.child(
                             div()
+                                .flex()
+                                .items_center()
+                                .gap(u(4.0))
                                 .typeface(theme.types.small, &theme)
                                 .ink(colors.ink_2)
+                                .when_some(self.detail_icon, |line, shown| {
+                                    line.child(icon(shown, 12.0, colors.bronze))
+                                })
                                 .child(detail),
                         )
                     }),
             )
+            .when_some(self.end_icon, |item, shown| {
+                item.child(
+                    div()
+                        .flex_none()
+                        .mt(u(2.0))
+                        .child(icon(shown, 15.0, colors.ink_2)),
+                )
+            })
             .when_some(self.trailing, |item, text| {
                 item.child(
                     div()

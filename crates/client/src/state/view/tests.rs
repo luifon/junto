@@ -924,10 +924,13 @@ mod calls {
 
     use junto_client_core::protocol::call::LeaveReason;
     use junto_client_core::protocol::error::ErrorCode;
+    use junto_client_core::protocol::recording::{
+        RecordingFailure, RecordingStop, RecordingStopReason,
+    };
     use junto_client_core::voice::VoiceSettings;
     use junto_media::audio::{AudioError, DeviceId, DeviceInfo, Devices};
     use junto_media::calls::{ActiveCall, CallTarget, CallsView, EndReason, Outcome, Phase};
-    use junto_media::engine::{MicrophoneState, OutputState};
+    use junto_media::engine::{MicrophoneState, OutputState, SeenShare, ShareInfo};
     use junto_media::permission::MicrophoneAccess;
 
     use super::*;
@@ -955,6 +958,9 @@ mod calls {
             output_device: None,
             microphone_block: None,
             sound_block: None,
+            share: ShareState::Off,
+            shares: Vec::new(),
+            watched: None,
         }
     }
 
@@ -1421,5 +1427,932 @@ mod calls {
             .map(|member| (member.name.as_str(), member.place.as_deref()))
             .collect();
         assert_eq!(shown, [("Ben", Some("Focus room")), ("Cal", None)]);
+    }
+
+    fn sharing(account_id: AccountId, audio: ShareAudio) -> CallParticipant {
+        let mut participant = participant(account_id);
+        participant.screen_share = Some(ScreenShare {
+            audio,
+            started_at: time(),
+        });
+        participant
+    }
+
+    fn seen(account_id: AccountId, kind: ShareKind) -> SeenShare {
+        SeenShare {
+            account_id,
+            kind: Some(kind),
+            frame_rate: Some(30),
+            size: Some((1920, 1200)),
+        }
+    }
+
+    fn panel(view: &ShellView) -> CallPanel {
+        view.workspace().unwrap().call.clone().unwrap()
+    }
+
+    #[test]
+    fn the_shares_of_a_call_are_listed_with_their_sound_and_the_watched_one_is_marked() {
+        let mut scene = scene();
+        let (ana, ben) = (AccountId::generate(), AccountId::generate());
+        let (own, daily, general) = (scene.own, scene.daily, scene.general);
+        scene.call(
+            daily,
+            vec![
+                sharing(ana, ShareAudio::System),
+                // The server has not told the share of Ben yet.
+                participant(ben),
+                participant(own),
+            ],
+        );
+        let server = scene.server();
+        let servers = std::slice::from_ref(&server);
+
+        // Nobody shares: the call has no stage of shares, and the button offers a share.
+        let mut call = active(target(&server, &scene, daily));
+        let mut known = in_call(call.clone());
+        known.media.can_share = true;
+        let view = derive(servers, &selected(&scene, daily), &known);
+        assert_eq!(panel(&view).stage, None);
+        let strip = view.call.clone().unwrap();
+        assert_eq!((strip.share, strip.can_share), (OwnShare::Off, true));
+        assert_eq!(view.share_notice, None);
+
+        // Two people share. The engine tells the tracks; the server tells the sound.
+        call.shares = vec![seen(ana, ShareKind::Screen), seen(ben, ShareKind::Window)];
+        call.watched = Some(ShareId::Of(ana));
+        let mut known = in_call(call.clone());
+        known.media.voice.share_volume = 60;
+        let view = derive(servers, &selected(&scene, daily), &known);
+        let stage = panel(&view).stage.unwrap();
+        assert_eq!(stage.volume, 60);
+        assert_eq!(stage.shares.len(), 2);
+        let first = &stage.shares[0];
+        assert_eq!((first.id, first.account_id), (ShareId::Of(ana), ana));
+        assert_eq!(
+            (first.kind, first.sound, first.watched),
+            (Some(ShareKind::Screen), Some(ShareAudio::System), true)
+        );
+        assert_eq!(
+            (first.size, first.frame_rate),
+            (Some((1920, 1200)), Some(30))
+        );
+        let second = &stage.shares[1];
+        assert_eq!(
+            (second.kind, second.sound, second.watched),
+            (Some(ShareKind::Window), None, false)
+        );
+        assert_eq!(
+            stage.watched().map(|share| share.id),
+            Some(ShareId::Of(ana))
+        );
+        assert!(occupant(&view, "Daily", ana).sharing);
+
+        // The share of this device is the last of the list, with what the engine sends.
+        call.share = ShareState::Running(ShareInfo {
+            kind: ShareKind::Window,
+            sound: ShareAudio::Application,
+            sound_held: true,
+            size: (1280, 800),
+            frame_rate: 15,
+        });
+        call.watched = Some(ShareId::Own);
+        let view = derive(servers, &selected(&scene, daily), &in_call(call.clone()));
+        let stage = panel(&view).stage.unwrap();
+        let own_share = stage.shares.last().unwrap();
+        assert_eq!(stage.shares.len(), 3);
+        assert_eq!((own_share.id, own_share.account_id), (ShareId::Own, own));
+        assert_eq!(own_share.name.as_deref(), Some("Luca"));
+        assert_eq!(
+            (own_share.sound, own_share.sound_held, own_share.watched),
+            (Some(ShareAudio::Application), true, true)
+        );
+        assert_eq!(
+            (own_share.size, own_share.frame_rate),
+            (Some((1280, 800)), Some(15))
+        );
+        assert!(!stage.shares[0].watched);
+        assert_eq!(view.call.clone().unwrap().share, OwnShare::Running);
+        assert!(occupant(&view, "Daily", own).sharing);
+        // The strip tells the share while another channel is shown.
+        let elsewhere = derive(servers, &selected(&scene, general), &in_call(call.clone()));
+        assert_eq!(elsewhere.call.unwrap().share, OwnShare::Running);
+
+        // A share that starts, and one that ended by itself.
+        call.shares.clear();
+        call.share = ShareState::Starting;
+        let view = derive(servers, &selected(&scene, daily), &in_call(call.clone()));
+        assert_eq!(view.call.clone().unwrap().share, OwnShare::Starting);
+        assert_eq!(panel(&view).stage, None);
+        call.share = ShareState::Ended(CaptureError::SourceGone);
+        let view = derive(servers, &selected(&scene, general), &in_call(call));
+        assert_eq!(view.call.clone().unwrap().share, OwnShare::Off);
+        assert_eq!(view.share_notice, Some(CaptureError::SourceGone));
+    }
+
+    #[test]
+    fn the_settings_of_a_share_and_of_the_view_are_in_the_panel_of_the_call() {
+        let mut scene = scene();
+        let (own, daily) = (scene.own, scene.daily);
+        scene.call(daily, vec![participant(own)]);
+        let server = scene.server();
+        let servers = std::slice::from_ref(&server);
+        let mut known = in_call(active(target(&server, &scene, daily)));
+        let shown = panel(&derive(servers, &selected(&scene, daily), &known));
+        assert_eq!(
+            (
+                shown.share_resolution,
+                shown.share_frame_rate,
+                shown.hide_without_video
+            ),
+            (ShareResolution::P1080, 30, false)
+        );
+        known.media.voice.share_resolution = ShareResolution::Source;
+        known.media.voice.share_frame_rate = 60;
+        known.media.voice.hide_people_without_video = true;
+        let shown = panel(&derive(servers, &selected(&scene, daily), &known));
+        assert_eq!(
+            (
+                shown.share_resolution,
+                shown.share_frame_rate,
+                shown.hide_without_video
+            ),
+            (ShareResolution::Source, 60, true)
+        );
+    }
+
+    fn recording(scene: &Scene, call_id: CallId) -> Recording {
+        Recording {
+            id: RecordingId::generate(),
+            workspace_id: scene.studio,
+            channel_id: scene.daily,
+            call_id,
+            state: RecordingState::Recording,
+            started_by: scene.own,
+            requested_at: time(),
+            recording_since: Some(time() + time::Duration::seconds(10)),
+            stop: None,
+            ended_at: None,
+            failure: None,
+            language: "auto".to_owned(),
+            segments: 4,
+            failed_segments: 0,
+            bytes: None,
+            timeline_started_at: None,
+            transcript: TranscriptState::None,
+            transcript_lines: 0,
+        }
+    }
+
+    fn stopped(reason: RecordingStopReason) -> Option<RecordingStop> {
+        Some(RecordingStop {
+            reason,
+            by: None,
+            at: time() + time::Duration::minutes(30),
+        })
+    }
+
+    #[test]
+    fn the_recording_of_the_call_is_shown_with_its_time_and_what_the_person_may_do() {
+        let mut scene = scene();
+        let (own, daily) = (scene.own, scene.daily);
+        let call_id = scene.call(daily, vec![participant(own)]).id;
+        let everyone = WorkspaceRole {
+            id: WorkspaceRoleId::generate(),
+            workspace_id: scene.studio,
+            name: "everyone".to_owned(),
+            permissions: Vec::new(),
+            is_everyone: true,
+        };
+        scene.studio_mut().roles = vec![everyone];
+        let shown = |scene: &Scene, known: &Known| {
+            let server = scene.server();
+            let mut known = known.clone();
+            let mut call = known.media.calls.call.clone().unwrap();
+            call.target = target(&server, scene, daily);
+            known.media.calls.call = Some(call);
+            if let Some((server_id, _)) = &mut known.recording_problem {
+                *server_id = server.id;
+            }
+            panel(&derive(
+                std::slice::from_ref(&server),
+                &selected(scene, daily),
+                &known,
+            ))
+            .recording
+        };
+        let first = scene.server();
+        let mut known = in_call(active(target(&first, &scene, daily)));
+        known.media.now = Some(time() + time::Duration::seconds(75));
+
+        // No recording, and the roles of the person do not allow one.
+        let control = shown(&scene, &known);
+        assert_eq!(
+            control,
+            RecordingControl {
+                state: RecordingShown::None,
+                may_record: false,
+                busy: false,
+            }
+        );
+        // The role "everyone" allows it. The owner of the server may record without a role.
+        scene.studio_mut().roles[0].permissions = vec![WorkspacePermission::RecordCalls];
+        assert!(shown(&scene, &known).may_record);
+        scene.studio_mut().roles[0].permissions.clear();
+        scene.snapshot.account.is_owner = true;
+        assert!(shown(&scene, &known).may_record);
+        known.recording_busy = true;
+        assert!(shown(&scene, &known).busy);
+        known.recording_busy = false;
+
+        // The server asks the recorder to start.
+        let mut running = recording(&scene, call_id);
+        running.state = RecordingState::Starting;
+        running.recording_since = None;
+        scene.studio_mut().calls[0].call.as_mut().unwrap().recording = Some(running.clone());
+        assert_eq!(shown(&scene, &known).state, RecordingShown::Starting);
+
+        // The recorder runs: the time since it started.
+        running.state = RecordingState::Recording;
+        running.recording_since = Some(time() + time::Duration::seconds(10));
+        scene.studio_mut().calls[0].call.as_mut().unwrap().recording = Some(running.clone());
+        assert_eq!(
+            shown(&scene, &known).state,
+            RecordingShown::Running {
+                elapsed: Some(Duration::from_secs(65)),
+                stopping: false,
+            }
+        );
+        // Its end was asked for, and the recorder has not ended yet.
+        running.stop = stopped(RecordingStopReason::Stopped);
+        scene.studio_mut().calls[0].call.as_mut().unwrap().recording = Some(running.clone());
+        assert!(matches!(
+            shown(&scene, &known).state,
+            RecordingShown::Running { stopping: true, .. }
+        ));
+
+        // A recording that runs is shown, whatever was told about one before.
+        known.recording_problem = Some((first.id, Box::new(running.clone())));
+        assert!(matches!(
+            shown(&scene, &known).state,
+            RecordingShown::Running { .. }
+        ));
+    }
+
+    #[test]
+    fn a_recording_that_failed_or_that_the_server_stopped_is_told_for_its_call_only() {
+        let mut scene = scene();
+        let (own, daily) = (scene.own, scene.daily);
+        let call_id = scene.call(daily, vec![participant(own)]).id;
+        let server = scene.server();
+        let servers = std::slice::from_ref(&server);
+        let known_with = |recording: Recording, of: ServerId| {
+            let mut known = in_call(active(target(&server, &scene, daily)));
+            known.recording_problem = Some((of, Box::new(recording)));
+            known
+        };
+        let shown = |known: &Known| {
+            panel(&derive(servers, &selected(&scene, daily), known))
+                .recording
+                .state
+        };
+        let fault_of = |change: &dyn Fn(&mut Recording)| {
+            let mut ended = recording(&scene, call_id);
+            ended.state = RecordingState::Processing;
+            change(&mut ended);
+            match shown(&known_with(ended, server.id)) {
+                RecordingShown::Failed(problem) => Some(problem.fault),
+                RecordingShown::None => None,
+                other => panic!("{other:?}"),
+            }
+        };
+
+        // The recorder was lost: what was saved has a start and an end.
+        let mut lost = recording(&scene, call_id);
+        lost.state = RecordingState::Processing;
+        lost.stop = stopped(RecordingStopReason::RecorderLost);
+        assert_eq!(
+            shown(&known_with(lost.clone(), server.id)),
+            RecordingShown::Failed(RecordingProblem {
+                fault: RecordingFault::RecorderLost,
+                since: Some(time() + time::Duration::seconds(10)),
+                until: Some(time() + time::Duration::minutes(30)),
+                segments: 4,
+                failed_segments: 0,
+            })
+        );
+        assert!(is_recording_problem(&lost));
+        // The recording of another call, or of another server, tells nothing here.
+        let mut other = lost.clone();
+        other.call_id = CallId::generate();
+        assert_eq!(shown(&known_with(other, server.id)), RecordingShown::None);
+        assert_eq!(
+            shown(&known_with(lost, ServerId::generate())),
+            RecordingShown::None
+        );
+
+        // Each way in which a recording ends without the person asking for it.
+        assert_eq!(
+            fault_of(&|ended| ended.stop = stopped(RecordingStopReason::StorageReserve)),
+            Some(RecordingFault::StorageReserve)
+        );
+        assert_eq!(
+            fault_of(&|ended| ended.stop = stopped(RecordingStopReason::SegmentLimit)),
+            Some(RecordingFault::SegmentLimit)
+        );
+        assert_eq!(
+            fault_of(&|ended| ended.stop = stopped(RecordingStopReason::Unknown)),
+            Some(RecordingFault::Other)
+        );
+        assert_eq!(
+            fault_of(&|ended| {
+                ended.state = RecordingState::Failed;
+                ended.failure = Some(RecordingFailure::RecorderUnavailable);
+            }),
+            Some(RecordingFault::RecorderUnavailable)
+        );
+        assert_eq!(
+            fault_of(&|ended| {
+                ended.state = RecordingState::Failed;
+                ended.failure = Some(RecordingFailure::FilesMissing);
+                ended.stop = stopped(RecordingStopReason::Stopped);
+            }),
+            Some(RecordingFault::NothingSaved)
+        );
+        assert_eq!(
+            fault_of(&|ended| {
+                ended.state = RecordingState::PartlyFailed;
+                ended.stop = stopped(RecordingStopReason::Stopped);
+                ended.failed_segments = 1;
+            }),
+            Some(RecordingFault::PartlySaved)
+        );
+        // A recording that a person stopped, or that ended with its call, is no problem.
+        for reason in [RecordingStopReason::Stopped, RecordingStopReason::CallEnded] {
+            assert_eq!(fault_of(&|ended| ended.stop = stopped(reason)), None);
+            let mut ready = recording(&scene, call_id);
+            ready.state = RecordingState::Ready;
+            ready.stop = stopped(reason);
+            assert!(!is_recording_problem(&ready));
+        }
+    }
+
+    use junto_client_core::protocol::WorkspacePermission;
+    use junto_client_core::protocol::call::{CallInvitation, EntryRequest};
+    use junto_client_core::protocol::ids::{CallInvitationId, EntryRequestId};
+
+    /// Gives the "everyone" role of "Studio" these permissions.
+    fn everyone_may(scene: &mut Scene, permissions: &[WorkspacePermission]) {
+        let workspace_id = scene.studio;
+        scene.studio_mut().roles = vec![WorkspaceRole {
+            id: WorkspaceRoleId::generate(),
+            workspace_id,
+            name: "everyone".to_owned(),
+            permissions: permissions.to_vec(),
+            is_everyone: true,
+        }];
+    }
+
+    fn meeting_block(by: AccountId) -> Option<MicrophoneBlock> {
+        Some(MicrophoneBlock {
+            by,
+            reason: BlockReason::Meeting,
+        })
+    }
+
+    fn running_share() -> ShareState {
+        ShareState::Running(ShareInfo {
+            kind: ShareKind::Screen,
+            sound: ShareAudio::None,
+            sound_held: false,
+            size: (1280, 720),
+            frame_rate: 30,
+        })
+    }
+
+    #[test]
+    fn meeting_mode_can_be_turned_on_by_a_person_who_shares_has_the_permission_and_no_block() {
+        let mut scene = scene();
+        let (own, daily) = (scene.own, scene.daily);
+        scene.call(daily, vec![participant(own)]);
+        let start = |scene: &Scene, change: &dyn Fn(&mut ActiveCall)| {
+            let server = scene.server();
+            let mut call = active(target(&server, scene, daily));
+            change(&mut call);
+            let view = derive(
+                std::slice::from_ref(&server),
+                &selected(scene, daily),
+                &in_call(call),
+            );
+            let room = panel(&view).room;
+            assert_eq!(room.meeting, None);
+            room.meeting_start
+        };
+        // Without a role that allows it.
+        assert_eq!(start(&scene, &|_| {}), MeetingStart::NoPermission);
+        everyone_may(&mut scene, &[WorkspacePermission::RunMeetingMode]);
+        assert_eq!(start(&scene, &|_| {}), MeetingStart::NotSharing);
+        assert_eq!(
+            start(&scene, &|call| call.share = ShareState::Starting),
+            MeetingStart::NotSharing
+        );
+        assert_eq!(
+            start(&scene, &|call| call.share = running_share()),
+            MeetingStart::Possible
+        );
+        // A person whose microphone is blocked cannot start it (ADR 0512).
+        assert_eq!(
+            start(&scene, &|call| {
+                call.share = running_share();
+                call.microphone_block = Some(MicrophoneBlock {
+                    by: AccountId::generate(),
+                    reason: BlockReason::Moderator,
+                });
+            }),
+            MeetingStart::MicrophoneBlocked
+        );
+    }
+
+    #[test]
+    fn the_presenter_sees_the_raised_hands_and_the_people_who_were_allowed_to_speak() {
+        let mut scene = scene();
+        let (own, daily) = (scene.own, scene.daily);
+        let (ana, ben, cleo) = (
+            AccountId::generate(),
+            AccountId::generate(),
+            AccountId::generate(),
+        );
+        scene.snapshot.account.name = "Luca".to_owned();
+        // Ana raised a hand. Ben was allowed and has not opened the microphone. Cleo was
+        // allowed and speaks. A raised hand of a person without a block is no request.
+        let mut with_hand = participant(ana);
+        with_hand.microphone_block = meeting_block(own);
+        with_hand.hand_raised = true;
+        let mut allowed = participant(ben);
+        allowed.muted = true;
+        allowed.hand_raised = true;
+        let call = scene.call(
+            daily,
+            vec![with_hand, allowed, participant(cleo), participant(own)],
+        );
+        call.meeting = Some(Meeting {
+            presenter: own,
+            started_at: time(),
+        });
+        let server = scene.server();
+        let mut own_call = active(target(&server, &scene, daily));
+        own_call.share = running_share();
+        let mut known = in_call(own_call);
+        known.names.insert((server.id, ana), "Ana".to_owned());
+        known.names.insert((server.id, ben), "Ben".to_owned());
+        // The presenter's own microphone setting does not make a prompt.
+        known.media.calls.muted = true;
+        let view = derive(
+            std::slice::from_ref(&server),
+            &selected(&scene, daily),
+            &known,
+        );
+        let room = panel(&view).room;
+        assert_eq!(
+            room.meeting,
+            Some(MeetingView {
+                by_self: true,
+                presenter: Some("Luca".to_owned()),
+                hands: vec![(ana, Some("Ana".to_owned()))],
+                waiting: vec![Some("Ben".to_owned())],
+                may_speak: false,
+            })
+        );
+        assert_eq!((room.name.as_str(), room.inside), ("Daily", 4));
+        let strip = view.call.unwrap();
+        assert_eq!((strip.hand_raised, strip.may_speak), (Some(false), false));
+    }
+
+    #[test]
+    fn a_participant_of_meeting_mode_is_told_who_runs_it_and_when_the_person_may_speak() {
+        let mut scene = scene();
+        let (own, daily, general) = (scene.own, scene.daily, scene.general);
+        let ana = AccountId::generate();
+        let mut held = participant(own);
+        held.microphone_block = meeting_block(ana);
+        held.hand_raised = true;
+        let call = scene.call(daily, vec![participant(ana), held]);
+        call.meeting = Some(Meeting {
+            presenter: ana,
+            started_at: time(),
+        });
+        let shown = |scene: &Scene, held: bool, muted: bool, channel: ChannelId| {
+            let server = scene.server();
+            let mut call = active(target(&server, scene, daily));
+            call.microphone_block = held.then(|| meeting_block(ana)).flatten();
+            let mut known = in_call(call);
+            known.media.calls.muted = muted;
+            known.names.insert((server.id, ana), "Ana".to_owned());
+            derive(
+                std::slice::from_ref(&server),
+                &selected(scene, channel),
+                &known,
+            )
+        };
+        // Blocked by the meeting, with the hand raised.
+        let view = shown(&scene, true, false, daily);
+        let meeting = panel(&view).room.meeting.unwrap();
+        assert!(!meeting.by_self && !meeting.may_speak);
+        assert_eq!(meeting.presenter.as_deref(), Some("Ana"));
+        assert!(meeting.hands.is_empty() && meeting.waiting.is_empty());
+        let strip = view.call.unwrap();
+        assert_eq!((strip.hand_raised, strip.may_speak), (Some(true), false));
+        assert_eq!(view.controls.microphone, MicrophoneButton::Held);
+        // The presenter removed the block, and the own setting is "closed": the person
+        // may speak. The strip tells it when another channel is shown too.
+        let view = shown(&scene, false, true, daily);
+        assert!(panel(&view).room.meeting.unwrap().may_speak);
+        assert_eq!(view.controls.microphone, MicrophoneButton::Muted);
+        let view = shown(&scene, false, true, general);
+        let strip = view.call.unwrap();
+        assert!(strip.may_speak && !strip.shown);
+        // The person opened the microphone: nothing is left to tell.
+        let view = shown(&scene, false, false, daily);
+        assert!(!panel(&view).room.meeting.unwrap().may_speak);
+        assert!(!view.call.unwrap().may_speak);
+    }
+
+    #[test]
+    fn the_room_shows_its_lock_its_limit_its_hide_setting_and_what_the_roles_allow() {
+        let mut scene = scene();
+        let (own, daily) = (scene.own, scene.daily);
+        let ana = AccountId::generate();
+        let call = scene.call(daily, vec![participant(ana), participant(own)]);
+        call.lock = Some(CallLock {
+            by: ana,
+            at: time(),
+        });
+        for channel in &mut scene.studio_mut().channels {
+            if channel.id == daily {
+                channel.user_limit = Some(8);
+                channel.hides_occupants = true;
+            }
+        }
+        let room = |scene: &Scene| {
+            let server = scene.server();
+            let known = in_call(active(target(&server, scene, daily)));
+            let view = derive(
+                std::slice::from_ref(&server),
+                &selected(scene, daily),
+                &known,
+            );
+            (panel(&view).room, view.workspace().unwrap().allowed)
+        };
+        let (shown, allowed) = room(&scene);
+        assert!(shown.locked && shown.hides_occupants);
+        assert_eq!((shown.user_limit, shown.inside), (Some(8), 2));
+        assert_eq!(shown.allowed, Allowed::default());
+        assert_eq!(allowed, Allowed::default());
+        everyone_may(
+            &mut scene,
+            &[
+                WorkspacePermission::LockRoom,
+                WorkspacePermission::ManageChannel,
+                WorkspacePermission::MoveMembers,
+            ],
+        );
+        let (shown, allowed) = room(&scene);
+        assert_eq!(
+            shown.allowed,
+            Allowed {
+                lock: true,
+                manage: true,
+                move_members: true,
+                ..Allowed::default()
+            }
+        );
+        assert_eq!(allowed, shown.allowed);
+        // An administrator of the server may do each of them.
+        scene.snapshot.account.is_owner = true;
+        let (shown, _) = room(&scene);
+        assert_eq!(
+            shown.allowed,
+            Allowed {
+                lock: true,
+                run_meeting: true,
+                manage: true,
+                mute: true,
+                deafen: true,
+                disconnect: true,
+                move_members: true,
+            }
+        );
+    }
+
+    #[test]
+    fn a_room_that_is_locked_or_full_tells_a_person_outside_and_shows_the_request_to_enter() {
+        let mut scene = scene();
+        let (own, daily, hidden) = (scene.own, scene.daily, scene.hidden);
+        let ana = AccountId::generate();
+        scene.call(daily, vec![participant(ana)]);
+        let studio = scene.studio;
+        scene.studio_mut().calls.push(ChannelCall {
+            workspace_id: studio,
+            channel_id: hidden,
+            in_use: true,
+            call: None,
+        });
+        let server_of = |scene: &Scene| scene.server();
+        let closed = |scene: &Scene, known: &dyn Fn(&ServerSnapshot) -> Known, name: &str| {
+            let server = server_of(scene);
+            let view = derive(
+                std::slice::from_ref(&server),
+                &Selection::default(),
+                &known(&server),
+            );
+            let voice = voice(view.workspace().unwrap(), name).clone();
+            (voice.closed, voice.entry)
+        };
+        let nothing = |_: &ServerSnapshot| Known::default();
+        // An open room.
+        assert_eq!(closed(&scene, &nothing, "Daily"), (None, None));
+        // A full room. The lock is told before the limit.
+        for channel in &mut scene.studio_mut().channels {
+            if channel.id == daily {
+                channel.user_limit = Some(1);
+            }
+        }
+        assert_eq!(
+            closed(&scene, &nothing, "Daily"),
+            (Some(Closed::Full), None)
+        );
+        scene.studio_mut().calls[0].call.as_mut().unwrap().lock = Some(CallLock {
+            by: ana,
+            at: time(),
+        });
+        assert_eq!(
+            closed(&scene, &nothing, "Daily"),
+            (Some(Closed::Locked), None)
+        );
+        // The request of the person is shown at its voice channel, and at no other.
+        let asked = |state: EntryState| {
+            move |server: &ServerSnapshot| Known {
+                entry: Some(OwnEntry {
+                    server_id: server.id,
+                    channel_id: daily,
+                    request_id: Some(EntryRequestId::generate()),
+                    state,
+                }),
+                ..Known::default()
+            }
+        };
+        assert_eq!(
+            closed(&scene, &asked(EntryState::Waiting), "Daily"),
+            (Some(Closed::Locked), Some(EntryState::Waiting))
+        );
+        assert_eq!(
+            closed(&scene, &asked(EntryState::Denied), "HR"),
+            (None, None)
+        );
+        // A voice channel that hides who is inside shows no lock. The answer of the
+        // server to a join tells it (ADR 0514).
+        let refused = |code: ErrorCode| {
+            move |server: &ServerSnapshot| {
+                let mut known = Known::default();
+                known.media.calls.outcome = Some(Outcome::JoinFailed {
+                    target: CallTarget {
+                        server_id: server.id,
+                        place: CallPlace::Channel {
+                            workspace_id: studio,
+                            channel_id: hidden,
+                        },
+                    },
+                    error: FlowError::refused(code),
+                });
+                known
+            }
+        };
+        assert_eq!(
+            closed(&scene, &refused(ErrorCode::CallLocked), "HR").0,
+            Some(Closed::Locked)
+        );
+        assert_eq!(
+            closed(&scene, &refused(ErrorCode::CallFull), "HR").0,
+            Some(Closed::Full)
+        );
+        assert_eq!(closed(&scene, &refused(ErrorCode::Forbidden), "HR").0, None);
+        // A person inside is told nothing of this.
+        scene.studio_mut().calls[0]
+            .call
+            .as_mut()
+            .unwrap()
+            .participants
+            .push(participant(own));
+        let inside = |server: &ServerSnapshot| {
+            in_call(active(CallTarget {
+                server_id: server.id,
+                place: CallPlace::Channel {
+                    workspace_id: studio,
+                    channel_id: daily,
+                },
+            }))
+        };
+        assert_eq!(closed(&scene, &inside, "Daily"), (None, None));
+    }
+
+    #[test]
+    fn invitations_and_requests_to_enter_are_listed_for_the_person_whom_they_concern() {
+        let mut scene = scene();
+        let (own, daily, studio) = (scene.own, scene.daily, scene.studio);
+        let (ana, ben) = (AccountId::generate(), AccountId::generate());
+        let call_id = scene.call(daily, vec![participant(ana)]).id;
+        let place = CallPlace::Channel {
+            workspace_id: studio,
+            channel_id: daily,
+        };
+        let invitation = |account_id, invited_by| CallInvitation {
+            id: CallInvitationId::generate(),
+            call_id,
+            place,
+            account_id,
+            invited_by,
+            created_at: time(),
+            expires_at: time() + time::Duration::seconds(60),
+        };
+        // Ana invites the person. Outside a call, the invitation waits for an answer.
+        let incoming = invitation(own, ana);
+        scene.snapshot.call_invitations = vec![incoming.clone()];
+        let server = scene.server();
+        let mut known = Known::default();
+        known.names.insert((server.id, ana), "Ana".to_owned());
+        let view = derive(std::slice::from_ref(&server), &Selection::default(), &known);
+        assert_eq!(
+            view.invitations,
+            [Invited {
+                id: incoming.id,
+                target: target(&server, &scene, daily),
+                by: Some("Ana".to_owned()),
+                channel: Some("Daily".to_owned()),
+            }]
+        );
+        assert!(view.entry_prompts.is_empty());
+
+        // The person is in the call and invited Ben, who is a member outside the call.
+        // An invitation that the person made is no invitation for the person.
+        let outgoing = invitation(ben, own);
+        scene.snapshot.call_invitations = vec![outgoing.clone()];
+        scene.studio_mut().calls[0]
+            .call
+            .as_mut()
+            .unwrap()
+            .participants
+            .push(participant(own));
+        let mut model = scene.model();
+        let request = EntryRequest {
+            id: EntryRequestId::generate(),
+            call_id,
+            place,
+            account_id: ben,
+            created_at: time(),
+            expires_at: time() + time::Duration::seconds(60),
+        };
+        // A request for another call is not one for the call of this device.
+        let elsewhere = EntryRequest {
+            id: EntryRequestId::generate(),
+            place: CallPlace::Channel {
+                workspace_id: studio,
+                channel_id: scene.hidden,
+            },
+            ..request.clone()
+        };
+        model.entry_requests = vec![elsewhere, request.clone()];
+        let workspace = Arc::make_mut(&mut model.workspaces[1]);
+        workspace.members = Loadable::Loaded(vec![
+            WorkspaceMember {
+                account_id: ben,
+                name: "Ben".to_owned(),
+                role_ids: Vec::new(),
+            },
+            WorkspaceMember {
+                account_id: ana,
+                name: "Ana".to_owned(),
+                role_ids: Vec::new(),
+            },
+        ]);
+        let server = super::server("Acme Studio", Some(model), logged_in(own, Vec::new()));
+        let known = in_call(active(target(&server, &scene, daily)));
+        let view = derive(
+            std::slice::from_ref(&server),
+            &selected(&scene, daily),
+            &known,
+        );
+        assert!(view.invitations.is_empty());
+        assert_eq!(
+            view.entry_prompts,
+            [EntryPrompt {
+                id: request.id,
+                account_id: ben,
+                name: Some("Ben".to_owned()),
+                channel: Some("Daily".to_owned()),
+            }]
+        );
+        assert_eq!(
+            panel(&view).outside,
+            [OutsideMember {
+                account_id: ben,
+                name: "Ben".to_owned(),
+                place: None,
+                invitation: Some(outgoing.id),
+            }]
+        );
+    }
+
+    #[test]
+    fn the_menu_of_a_person_holds_what_the_roles_of_the_person_allow() {
+        let mut scene = scene();
+        let (own, daily, hidden) = (scene.own, scene.daily, scene.hidden);
+        let (ana, ben) = (AccountId::generate(), AccountId::generate());
+        let studio = scene.studio;
+        let focus = channel(studio, ChannelKind::Voice, "Focus", 4);
+        let focus_id = focus.id;
+        scene.studio_mut().channels.push(focus);
+        let mut blocked = participant(ben);
+        blocked.microphone_block = Some(MicrophoneBlock {
+            by: ana,
+            reason: BlockReason::Moderator,
+        });
+        blocked.sound_block = Some(SoundBlock { by: ana });
+        scene.call(daily, vec![participant(ana), participant(own)]);
+        scene.call(focus_id, vec![blocked]);
+        let menu = |scene: &Scene, channel_id: ChannelId, account_id: AccountId, inside: bool| {
+            let server = scene.server();
+            let mut known = if inside {
+                in_call(active(target(&server, scene, daily)))
+            } else {
+                Known::default()
+            };
+            known.names.insert((server.id, ben), "Ben".to_owned());
+            known.media.voice.set_volume(server.id, ben, 140);
+            let view = derive(std::slice::from_ref(&server), &Selection::default(), &known);
+            view.person_menu(channel_id, account_id)
+                .map(|menu| (menu, server.id))
+        };
+        // The own row has no menu, and neither has a person who is not there.
+        assert_eq!(menu(&scene, daily, own, true), None);
+        assert_eq!(menu(&scene, focus_id, ana, true), None);
+        assert_eq!(menu(&scene, hidden, ben, true), None);
+        // A member without moderation: the invitation into the own room, and the volume.
+        let (shown, server_id) = menu(&scene, focus_id, ben, true).unwrap();
+        assert_eq!(
+            shown,
+            PersonMenu {
+                server_id,
+                channel_id: focus_id,
+                account_id: ben,
+                name: Some("Ben".to_owned()),
+                place: "Focus".to_owned(),
+                invite_to: Some("Daily".to_owned()),
+                destinations: Vec::new(),
+                volume: 140,
+                microphone_blocked: None,
+                sound_blocked: None,
+                disconnect: false,
+            }
+        );
+        // A person of the own call is not invited into it, and a person outside a call
+        // invites nobody.
+        assert_eq!(menu(&scene, daily, ana, true).unwrap().0.invite_to, None);
+        assert_eq!(
+            menu(&scene, focus_id, ben, false).unwrap().0.invite_to,
+            None
+        );
+        // With the permissions of moderation: the blocks as they are, the removal, and
+        // every other voice channel as a destination.
+        everyone_may(
+            &mut scene,
+            &[
+                WorkspacePermission::MuteMembers,
+                WorkspacePermission::DeafenMembers,
+                WorkspacePermission::DisconnectMembers,
+                WorkspacePermission::MoveMembers,
+            ],
+        );
+        let (shown, _) = menu(&scene, focus_id, ben, true).unwrap();
+        assert_eq!(
+            (
+                shown.microphone_blocked,
+                shown.sound_blocked,
+                shown.disconnect
+            ),
+            (Some(true), Some(true), true)
+        );
+        assert_eq!(
+            shown.destinations,
+            [(daily, "Daily".to_owned()), (hidden, "HR".to_owned())]
+        );
+        let (shown, _) = menu(&scene, daily, ana, true).unwrap();
+        assert_eq!(
+            (shown.microphone_blocked, shown.sound_blocked),
+            (Some(false), Some(false))
+        );
+        assert_eq!(
+            shown.destinations,
+            [(hidden, "HR".to_owned()), (focus_id, "Focus".to_owned())]
+        );
     }
 }

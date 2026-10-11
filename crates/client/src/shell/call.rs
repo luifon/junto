@@ -12,22 +12,24 @@ use gpui::{
 };
 use gpui_base::slider::{SliderEvent, SliderState};
 use junto_client_core::protocol::ids::{AccountId, ServerId};
+use junto_client_core::voice::{SHARE_FRAME_RATES, ShareResolution};
 use junto_media::calls::Phase;
 use junto_media::permission::MicrophoneAccess;
 
 use super::channels::occupant_name;
+use super::room::option_row;
 use super::{Layer, Shell};
 use crate::assets::Icon;
 use crate::state::view::{
     CallPanel, CallStrip, ChannelRow, DeviceChoice, INPUT_SEGMENTS, Microphone, MicrophoneLine,
-    Occupant, Presence, Relation, ShellView, SoundWarning, VoiceState,
+    Occupant, OwnShare, Presence, Relation, ShellView, SoundWarning, VoiceState,
 };
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
     Button, ButtonKind, Flag, FlagKind, Menu, MenuItem, Meter, Mosaic, MosaicKind, PersonTile,
-    ScrollArea, SectionLabel, SelectBox, StyleExt, Tab, TileMark, VolumeSlider, float_shadow, icon,
-    tooltip,
+    ScrollArea, SectionLabel, Segmented, SelectBox, StyleExt, Tab, TileMark, Toggle, VolumeSlider,
+    float_shadow, icon, tooltip,
 };
 
 /// The pane of the panel of a call that is shown.
@@ -49,13 +51,13 @@ pub enum DeviceKind {
 /// The volume control of one person: its value, its keyboard focus, and the subscription
 /// that carries a change to the state of the application.
 pub(crate) struct VolumeControl {
-    state: Entity<SliderState>,
-    focus: FocusHandle,
-    _changes: Subscription,
+    pub(crate) state: Entity<SliderState>,
+    pub(crate) focus: FocusHandle,
+    pub(crate) _changes: Subscription,
 }
 
 /// The marks on the plate of the tile of a person, and the words for them.
-fn tile_marks(occupant: &Occupant) -> (Vec<TileMark>, String) {
+pub(crate) fn tile_marks(occupant: &Occupant) -> (Vec<TileMark>, String) {
     let mut marks = Vec::new();
     let mut words = vec![occupant_name(occupant).to_string()];
     if occupant.hand_raised {
@@ -123,7 +125,7 @@ fn member_states(occupant: &Occupant) -> Vec<(Icon, SharedString)> {
     states
 }
 
-fn occupants(channel: &ChannelRow) -> &[Occupant] {
+pub(crate) fn occupants(channel: &ChannelRow) -> &[Occupant] {
     channel
         .voice
         .as_ref()
@@ -134,7 +136,7 @@ fn occupants(channel: &ChannelRow) -> &[Occupant] {
 impl Shell {
     /// The volume control of one person of the call. A control is made when its person is
     /// drawn first and follows the stored volume when that changes elsewhere.
-    fn volume_control(
+    pub(crate) fn volume_control(
         &mut self,
         server_id: ServerId,
         account_id: AccountId,
@@ -155,6 +157,43 @@ impl Shell {
                     state.set_volume(server_id, account_id, percent, cx);
                     if release {
                         state.store_volume(server_id, account_id, cx);
+                    }
+                });
+            });
+            VolumeControl {
+                state,
+                focus: cx.focus_handle(),
+                _changes: changes,
+            }
+        });
+        let shown = control.state.read(cx).value().end().round() as u16;
+        if shown != percent {
+            control.state.update(cx, |state, cx| {
+                state.set_value(f32::from(percent), window, cx)
+            });
+        }
+        (control.state.clone(), control.focus.clone())
+    }
+
+    /// The volume control of the sound of the watched share.
+    fn share_volume_control(
+        &mut self,
+        percent: u16,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (Entity<SliderState>, FocusHandle) {
+        let control = self.share_volume.get_or_insert_with(|| {
+            let state = cx.new(|_| VolumeSlider::state(percent));
+            let changes = cx.subscribe(&state, move |this, _, event: &SliderEvent, cx| {
+                let (value, release) = match event {
+                    SliderEvent::Change(value) => (value.end(), false),
+                    SliderEvent::Release(value) => (value.end(), true),
+                };
+                let percent = value.round().clamp(0.0, 200.0) as u16;
+                this.state.update(cx, |state, cx| {
+                    state.set_share_volume(percent, cx);
+                    if release {
+                        state.store_share_volume(cx);
                     }
                 });
             });
@@ -286,6 +325,9 @@ impl Shell {
 
     pub(crate) fn show_call_tab(&mut self, tab: CallTab, cx: &mut Context<Self>) {
         self.call_tab = tab;
+        if tab != CallTab::Members {
+            self.invite_open = false;
+        }
         if tab == CallTab::Settings {
             self.state.update(cx, |state, cx| state.refresh_devices(cx));
         }
@@ -511,7 +553,7 @@ impl Shell {
         let pane = match self.call_tab {
             CallTab::Chat => Self::render_call_chat(channel, theme),
             CallTab::Members => self.render_call_members(view, channel, panel, theme, window, cx),
-            CallTab::Settings => self.render_call_settings(panel, theme, cx),
+            CallTab::Settings => self.render_call_settings(panel, theme, window, cx),
         };
         div()
             .id("call-panel")
@@ -757,7 +799,7 @@ impl Shell {
             .into_any_element()
         });
         let outside: Vec<AnyElement> = outside.collect();
-        ScrollArea::new("call-members", &self.call_members_scroll, text::MEMBERS)
+        let list = ScrollArea::new("call-members", &self.call_members_scroll, text::MEMBERS)
             .selector("call-members")
             .child(SectionLabel::new(text::IN_THE_CALL).count(people.len()))
             .children(inside)
@@ -765,7 +807,14 @@ impl Shell {
                 list.child(SectionLabel::new(text::NOT_IN_THE_CALL).count(outside.len()))
                     .children(outside)
             })
-            .child(div().flex_none().h(u(4.0)))
+            .child(div().flex_none().h(u(4.0)));
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .child(list)
+            .child(self.render_invite_area(panel, theme, cx))
             .into_any_element()
     }
 
@@ -773,10 +822,146 @@ impl Shell {
         &mut self,
         panel: &CallPanel,
         theme: &Theme,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme.colors;
         let audio = &panel.audio;
+        // A row with a name and a control of a few choices.
+        let choice_row = |label: &'static str, control: Segmented| {
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(u(10.0))
+                .py(u(3.0))
+                .px(u(14.0))
+                .child(
+                    div()
+                        .flex_none()
+                        .w(u(84.0))
+                        .typeface(theme.types.control, theme)
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .ink(colors.ink)
+                        .child(label),
+                )
+                .child(control)
+        };
+        let resolutions = [
+            ShareResolution::P720,
+            ShareResolution::P1080,
+            ShareResolution::Source,
+        ];
+        let resolution = choice_row(
+            text::RESOLUTION,
+            Segmented::new(
+                "share-resolution",
+                text::RESOLUTION,
+                resolutions
+                    .map(|resolution| SharedString::from(text::share_resolution(resolution))),
+            )
+            .selected(
+                resolutions
+                    .iter()
+                    .position(|resolution| *resolution == panel.share_resolution),
+            )
+            .selector("share-resolution")
+            .on_select({
+                let select = cx.listener(move |this, index: &usize, _, cx| {
+                    if let Some(resolution) = resolutions.get(*index).copied() {
+                        this.state
+                            .update(cx, |state, cx| state.set_share_resolution(resolution, cx));
+                    }
+                });
+                move |index, window, cx| select(&index, window, cx)
+            }),
+        );
+        let frame_rate = choice_row(
+            text::FRAME_RATE,
+            Segmented::new(
+                "share-frame-rate",
+                text::FRAME_RATE,
+                SHARE_FRAME_RATES.map(|rate| SharedString::from(rate.to_string())),
+            )
+            .selected(
+                SHARE_FRAME_RATES
+                    .iter()
+                    .position(|rate| *rate == panel.share_frame_rate),
+            )
+            .selector("share-frame-rate")
+            .on_select({
+                let select = cx.listener(move |this, index: &usize, _, cx| {
+                    if let Some(rate) = SHARE_FRAME_RATES.get(*index).copied() {
+                        this.state
+                            .update(cx, |state, cx| state.set_share_frame_rate(rate, cx));
+                    }
+                });
+                move |index, window, cx| select(&index, window, cx)
+            }),
+        );
+        let hide = panel.hide_without_video;
+        let hide_row = option_row(
+            text::HIDE_WITHOUT_VIDEO,
+            text::HIDE_WITHOUT_VIDEO_HELP,
+            Toggle::new(
+                "hide-without-video",
+                text::HIDE_WITHOUT_VIDEO,
+                hide,
+                (text::ON, text::OFF),
+            )
+            .selector("hide-without-video")
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.state
+                    .update(cx, |state, cx| state.set_hide_without_video(!hide, cx));
+            }))
+            .into_any_element(),
+            theme,
+        );
+        let room_rows = self.render_room_settings(&panel.room, theme, cx);
+        let share_volume = self.state.read(cx).voice().share_volume;
+        let (volume_state, volume_focus) = self.share_volume_control(share_volume, window, cx);
+        let volume_row = div()
+            .flex_none()
+            .pt(u(5.0))
+            .pb(u(6.0))
+            .px(u(14.0))
+            .child(
+                div()
+                    .typeface(theme.types.control, theme)
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .line_height(u(19.0))
+                    .ink(colors.ink)
+                    .child(text::SHARE_VOLUME),
+            )
+            .child(
+                div().mt(u(3.0)).child(
+                    VolumeSlider::new(
+                        "share-volume",
+                        &volume_state,
+                        &volume_focus,
+                        text::SHARE_VOLUME,
+                    )
+                    .selector("share-volume"),
+                ),
+            )
+            .child(
+                div()
+                    .mt(u(2.0))
+                    .typeface(theme.types.small, theme)
+                    .line_height(u(17.0))
+                    .ink(colors.ink_2)
+                    .child(text::SHARE_VOLUME_HELP),
+            );
+        let help_line = |sentence: &'static str| {
+            div()
+                .flex_none()
+                .px(u(14.0))
+                .pb(u(4.0))
+                .typeface(theme.types.small, theme)
+                .line_height(u(17.0))
+                .ink(colors.ink_2)
+                .child(sentence)
+        };
         let shown = |choices: &[DeviceChoice]| -> SharedString {
             let chosen = choices.iter().find(|choice| choice.selected);
             match chosen {
@@ -901,6 +1086,14 @@ impl Shell {
                     })
                     .child(small(text::MORE_SOUND_SETTINGS.into())),
             )
+            .child(SectionLabel::new(text::YOUR_SCREEN_SHARE))
+            .child(resolution)
+            .child(frame_rate)
+            .child(help_line(text::SHARE_SETTINGS_HELP))
+            .child(SectionLabel::new(text::YOUR_VIEW))
+            .child(hide_row)
+            .child(volume_row)
+            .children(room_rows)
             .child(div().flex_none().h(u(8.0)))
             .into_any_element()
     }
@@ -1114,6 +1307,51 @@ impl Shell {
                     .tooltip(why)
                     .disabled(true)
             };
+            // The hand of the person. A direct-message call has no meeting mode and no
+            // hand (ADR 0505).
+            let hand = strip.hand_raised.map(|raised| {
+                Button::new("call-hand")
+                    .kind(if raised {
+                        ButtonKind::CallOn
+                    } else {
+                        ButtonKind::Call
+                    })
+                    .icon(Icon::Hand)
+                    .tooltip(if raised {
+                        text::LOWER_HAND
+                    } else {
+                        text::RAISE_HAND
+                    })
+                    .selector("call-hand")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.state
+                            .update(cx, |state, cx| state.set_hand(!raised, cx));
+                    }))
+            });
+            let share = match (strip.can_share, strip.share) {
+                (false, _) => Button::new("call-share")
+                    .kind(ButtonKind::Call)
+                    .icon(Icon::Screen)
+                    .tooltip(text::SHARE_NOT_ON_THIS_SYSTEM)
+                    .disabled(true),
+                (true, OwnShare::Off) => Button::new("call-share")
+                    .kind(ButtonKind::Call)
+                    .icon(Icon::Screen)
+                    .tooltip(text::SHARE_SCREEN)
+                    .accessible_label(text::SHARE_SCREEN),
+                (true, OwnShare::Starting) => Button::new("call-share")
+                    .kind(ButtonKind::CallOn)
+                    .icon(Icon::Screen)
+                    .tooltip(text::SHARE_STARTING)
+                    .accessible_label(text::SHARE_STARTING),
+                (true, OwnShare::Running) => Button::new("call-share")
+                    .kind(ButtonKind::CallOn)
+                    .icon(Icon::Screen)
+                    .tooltip(text::SHARE_RUNS)
+                    .accessible_label(text::SHARE_RUNS),
+            }
+            .selector("call-share")
+            .on_click(cx.listener(|this, _, window, cx| this.toggle_share(window, cx)));
             div()
                 .flex()
                 .items_center()
@@ -1124,8 +1362,8 @@ impl Shell {
                     Icon::Camera,
                     text::CAMERA_NOT_AVAILABLE,
                 ))
-                .child(later("call-share", Icon::Screen, text::SHARE_NOT_AVAILABLE))
-                .child(later("call-hand", Icon::Hand, text::HAND_NOT_AVAILABLE))
+                .child(share)
+                .children(hand)
                 .child(div().flex_1())
                 .child(leave(cx))
         };
@@ -1231,7 +1469,13 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> (AnyElement, Option<AnyElement>) {
-        let stage = self.render_stage(channel, panel, &theme(cx));
+        let theme = theme(cx);
+        let stage = match &panel.stage {
+            Some(shares) if panel.phase == Phase::Connected => {
+                self.render_share_stage(channel, panel, shares, &theme, cx)
+            }
+            _ => self.render_stage(channel, panel, &theme),
+        };
         let side = (!narrow || self.call_panel_open)
             .then(|| self.render_call_panel(view, channel, panel, narrow, window, cx));
         (stage, side)

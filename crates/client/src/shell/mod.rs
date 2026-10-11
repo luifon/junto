@@ -8,8 +8,10 @@ mod channels;
 mod join;
 mod main_area;
 mod rail;
+pub mod room;
 mod server_menu;
 mod settings;
+pub mod share;
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -44,6 +46,10 @@ pub(crate) enum Layer {
     ConfirmForget(ServerId),
     /// The list of the input or of the output devices, in the sound settings of a call.
     DeviceMenu(DeviceKind),
+    /// The dialog in which the person chooses what to share.
+    SharePicker(share::SharePicker),
+    /// The menu of a person in a voice channel, at the row of the person.
+    PersonMenu(room::PersonMenuOpen),
 }
 
 /// A part of the window that can be opened without a click.
@@ -58,6 +64,14 @@ pub enum Open {
     CallTab(CallTab),
     /// The list of the input devices, in the sound settings of the call.
     InputDevices,
+    /// The dialog in which the person chooses what to share.
+    SharePicker,
+    /// What happened to the last recording of the call.
+    RecordingDetails,
+    /// The list of the members who can be invited into the call.
+    MemberPicker,
+    /// The settings of the room, at the end of the Settings pane of the call.
+    RoomSettings,
 }
 
 /// How long the menu of a collapsed server stays after the pointer has left it, so that
@@ -102,6 +116,28 @@ pub struct Shell {
     /// The press of the pointer that closed a list of devices was on the box of that
     /// list: the click that follows does not open the list again.
     pub(crate) device_menu_closed_by_press: bool,
+    /// The pictures of the shares of the call, as images of the window.
+    pub(crate) pictures: share::ShownPictures,
+    pub(crate) picture_tasks: Vec<Task<()>>,
+    /// The number of dialogs of a share that this window has opened.
+    pub(crate) share_reads: u64,
+    /// The volume control of the sound of the watched share.
+    pub(crate) share_volume: Option<VolumeControl>,
+    /// The details of the last recording of the call are shown.
+    pub(crate) recording_details_open: bool,
+    /// The press of the pointer that closed the details was on their button: the click
+    /// that follows does not open them again.
+    pub(crate) recording_details_closed_by_press: bool,
+    /// The list of the members who can be invited into the call is open.
+    pub(crate) invite_open: bool,
+    /// The press of the pointer that closed that list was on its button: the click that
+    /// follows does not open it again.
+    pub(crate) invite_closed_by_press: bool,
+    /// The text that the list of the members is searched for.
+    pub(crate) invite_find: Entity<InputState>,
+    /// What the state of the application gave last. It is derived again only after the
+    /// state told a change: a picture of a share draws the window many times a second.
+    view: Option<ShellView>,
     // The positions of the lists that scroll.
     pub(crate) servers_scroll: ScrollHandle,
     pub(crate) channels_scroll: ScrollHandle,
@@ -131,6 +167,7 @@ impl Shell {
         let address = Field::state(text::ADDRESS_PLACEHOLDER, window, cx);
         let name = Field::state(text::NAME_FIELD, window, cx);
         let code = Field::state("", window, cx);
+        let invite_find = Field::state(text::FIND_A_MEMBER, window, cx);
         let subscriptions = vec![
             // A key that is held when the window loses the focus is not seen when it is
             // released: push-to-talk ends with the focus (ADR 0507).
@@ -148,6 +185,15 @@ impl Shell {
                 // A layer whose server is gone, or whose work is done, has nothing to show.
                 let view = state.read(cx).view();
                 this.drop_stale_layer(&view, window, cx);
+                // The list of the members who can be invited belongs to the call that
+                // the window shows.
+                if view
+                    .workspace()
+                    .is_none_or(|workspace| workspace.call.is_none())
+                {
+                    this.invite_open = false;
+                }
+                this.view = Some(view);
                 cx.notify();
             }),
             Field::observe(
@@ -184,6 +230,10 @@ impl Shell {
                     FieldEvent::Submitted => this.join_with_code(window, cx),
                 },
             ),
+            // The list of the members follows the text that it is searched for.
+            Field::observe(&invite_find, window, cx, |_: &mut Self, _, _, cx| {
+                cx.notify();
+            }),
         ];
         let mut shell = Self {
             state,
@@ -205,6 +255,16 @@ impl Shell {
             call_panel_open: false,
             volumes: HashMap::new(),
             device_menu_closed_by_press: false,
+            pictures: share::ShownPictures::default(),
+            picture_tasks: Vec::new(),
+            share_reads: 0,
+            share_volume: None,
+            recording_details_open: false,
+            recording_details_closed_by_press: false,
+            invite_open: false,
+            invite_closed_by_press: false,
+            invite_find,
+            view: None,
             servers_scroll: ScrollHandle::new(),
             channels_scroll: ScrollHandle::new(),
             members_scroll: ScrollHandle::new(),
@@ -220,6 +280,7 @@ impl Shell {
             drawn: None,
             _subscriptions: subscriptions,
         };
+        shell.follow_pictures(cx);
         if shell.state.read(cx).preset_name().is_empty() {
             shell.open_layer(Layer::Welcome, window, cx);
             shell.focus_field(&shell.name.clone(), window, cx);
@@ -381,6 +442,23 @@ impl Shell {
                 self.call_panel_open = true;
                 self.show_call_tab(CallTab::Settings, cx);
                 self.open_device_menu(DeviceKind::Input, window, cx);
+            }
+            Open::SharePicker => self.open_share_picker(window, cx),
+            Open::RecordingDetails => {
+                self.recording_details_open = true;
+                cx.notify();
+            }
+            Open::RoomSettings => {
+                self.call_panel_open = true;
+                self.show_call_tab(CallTab::Settings, cx);
+                self.call_settings_scroll.scroll_to_bottom();
+            }
+            Open::MemberPicker => {
+                self.call_panel_open = true;
+                self.show_call_tab(CallTab::Members, cx);
+                if !self.invite_open {
+                    self.toggle_member_picker(window, cx);
+                }
             }
         }
     }
@@ -563,9 +641,14 @@ fn logical_width(window: &Window) -> f32 {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (view, settings): (ShellView, _) = {
-            let state = self.state.read(cx);
-            (state.view(), state.settings())
+        let settings = self.state.read(cx).settings();
+        let view: ShellView = match &self.view {
+            Some(view) => view.clone(),
+            None => {
+                let view = self.state.read(cx).view();
+                self.view = Some(view.clone());
+                view
+            }
         };
         #[cfg(feature = "test-support")]
         {
@@ -614,8 +697,27 @@ impl Render for Shell {
                 cx.listener(|this, _, _, _| {
                     this.server_menu_closed_by_press = false;
                     this.device_menu_closed_by_press = false;
+                    this.recording_details_closed_by_press = false;
+                    this.invite_closed_by_press = false;
                 }),
             )
+            // Escape closes the details of a recording and the list of the members who
+            // can be invited. Neither is a layer of the window.
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key != "escape" {
+                    return;
+                }
+                if this.invite_open {
+                    this.invite_open = false;
+                    this.focus.focus(window, cx);
+                } else if this.recording_details_open {
+                    this.recording_details_open = false;
+                } else {
+                    return;
+                }
+                cx.stop_propagation();
+                cx.notify();
+            }))
             .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _, cx| {
                 this.modifiers_changed(event.modifiers, cx);
             }))
@@ -642,6 +744,10 @@ impl Shell {
                         .workspace()
                         .is_none_or(|workspace| workspace.call.is_none())
             }
+            // A share belongs to the call of this device.
+            Layer::SharePicker(_) => view.call.is_none(),
+            // The person left the voice channel, or the channel is no longer shown.
+            Layer::PersonMenu(open) => view.person_menu(open.channel_id, open.account_id).is_none(),
             Layer::None | Layer::Welcome | Layer::Settings => false,
         };
         if stale {
@@ -656,8 +762,9 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         match &self.layer {
-            // The list of devices is drawn at its box, in the panel of the call.
-            Layer::None | Layer::DeviceMenu(_) => div().into_any_element(),
+            // The list of devices is drawn at its box, in the panel of the call, and the
+            // menu of a person at the row of the person.
+            Layer::None | Layer::DeviceMenu(_) | Layer::PersonMenu(_) => div().into_any_element(),
             Layer::Welcome => self.render_welcome(window, cx).into_any_element(),
             Layer::Settings => self.render_settings(window, cx).into_any_element(),
             Layer::Join(_) => self.render_join(view, window, cx).into_any_element(),
@@ -668,6 +775,7 @@ impl Shell {
             Layer::ConfirmForget(server_id) => self
                 .render_confirm_forget(*server_id, view, window, cx)
                 .into_any_element(),
+            Layer::SharePicker(_) => self.render_share_picker(window, cx),
         }
     }
 }

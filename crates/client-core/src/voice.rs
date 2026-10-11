@@ -1,7 +1,7 @@
 //! The sound settings of one installation: the chosen devices, the processing of the
-//! microphone, the input mode, and the volume that the person set for other people
-//! (ADR 0507, ADR 0701, ADR 0710). They belong to no server, except the volumes, which name
-//! an account of a server.
+//! microphone, the input mode, the volume that the person set for other people, and what
+//! the person set for screen shares (ADR 0502, ADR 0507, ADR 0701, ADR 0710). They belong to
+//! no server, except the volumes, which name an account of a server.
 
 use std::collections::BTreeMap;
 
@@ -11,7 +11,11 @@ use serde::{Deserialize, Serialize};
 use crate::paths::{DataDir, VOICE_FILE};
 use crate::storage::{StorageError, Versioned};
 
-pub const VOICE_FORMAT_VERSION: u32 = 1;
+pub const VOICE_FORMAT_VERSION: u32 = 2;
+
+/// The frame rates of a share that a person chooses from.
+pub const SHARE_FRAME_RATES: [u32; 3] = [15, 30, 60];
+pub const SHARE_FRAME_RATE_DEFAULT: u32 = 30;
 
 /// The volume of a person that is not stored: 100 %.
 pub const VOLUME_DEFAULT_PERCENT: u16 = 100;
@@ -25,9 +29,49 @@ const VOICE: Versioned = Versioned {
     name: VOICE_FILE,
     kind: "sound settings",
     version: VOICE_FORMAT_VERSION,
-    migrations: &[],
+    migrations: &[settings_of_shares],
     limit: 512 * 1024,
 };
+
+/// Version 1 had no settings of screen shares. Version 2 holds them, with these values for
+/// a file that had none.
+fn settings_of_shares(mut value: serde_json::Value) -> Result<serde_json::Value, String> {
+    let settings = value
+        .as_object_mut()
+        .ok_or("the sound settings are not an object")?;
+    let defaults = VoiceSettings::default();
+    for (name, default) in [
+        (
+            "share_resolution",
+            serde_json::json!(defaults.share_resolution),
+        ),
+        (
+            "share_frame_rate",
+            serde_json::json!(defaults.share_frame_rate),
+        ),
+        ("share_volume", serde_json::json!(defaults.share_volume)),
+        (
+            "hide_people_without_video",
+            serde_json::json!(defaults.hide_people_without_video),
+        ),
+    ] {
+        settings.entry(name).or_insert(default);
+    }
+    Ok(value)
+}
+
+/// The largest picture that a share of this device sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShareResolution {
+    /// At most 1280 × 720.
+    P720,
+    /// At most 1920 × 1080.
+    #[default]
+    P1080,
+    /// The size of the screen or the window.
+    Source,
+}
 
 /// When the microphone is sent (ADR 0507).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -63,6 +107,14 @@ pub struct VoiceSettings {
     /// The volume in percent that the person set for an account of a server, from 0 to
     /// 200. An account without an entry has 100.
     pub volumes: BTreeMap<ServerId, BTreeMap<AccountId, u16>>,
+    pub share_resolution: ShareResolution,
+    /// The pictures per second of a share, one of [`SHARE_FRAME_RATES`].
+    pub share_frame_rate: u32,
+    /// The volume in percent of the sound of the share that the person watches, from 0 to
+    /// 200.
+    pub share_volume: u16,
+    /// The strip of a call shows only the people who send a camera picture.
+    pub hide_people_without_video: bool,
 }
 
 impl Default for VoiceSettings {
@@ -76,6 +128,10 @@ impl Default for VoiceSettings {
             input_mode: InputMode::default(),
             talk_key: TalkKey::default(),
             volumes: BTreeMap::new(),
+            share_resolution: ShareResolution::default(),
+            share_frame_rate: SHARE_FRAME_RATE_DEFAULT,
+            share_volume: VOLUME_DEFAULT_PERCENT,
+            hide_people_without_video: false,
         }
     }
 }
@@ -126,6 +182,10 @@ impl VoiceSettings {
             });
         }
         self.volumes.retain(|_, accounts| !accounts.is_empty());
+        if !SHARE_FRAME_RATES.contains(&self.share_frame_rate) {
+            self.share_frame_rate = SHARE_FRAME_RATE_DEFAULT;
+        }
+        self.share_volume = self.share_volume.min(VOLUME_MAX_PERCENT);
         self
     }
 }
@@ -144,6 +204,10 @@ struct VoiceFile {
     talk_key: TalkKey,
     #[serde(default)]
     volumes: BTreeMap<ServerId, BTreeMap<AccountId, u16>>,
+    share_resolution: ShareResolution,
+    share_frame_rate: u32,
+    share_volume: u16,
+    hide_people_without_video: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -170,6 +234,10 @@ impl VoiceStore {
             input_mode: file.input_mode,
             talk_key: file.talk_key,
             volumes: file.volumes,
+            share_resolution: file.share_resolution,
+            share_frame_rate: file.share_frame_rate,
+            share_volume: file.share_volume,
+            hide_people_without_video: file.hide_people_without_video,
         }
         .bounded())
     }
@@ -203,6 +271,10 @@ impl VoiceStore {
                 input_mode: settings.input_mode,
                 talk_key: settings.talk_key,
                 volumes: settings.volumes.clone(),
+                share_resolution: settings.share_resolution,
+                share_frame_rate: settings.share_frame_rate,
+                share_volume: settings.share_volume,
+                hide_people_without_video: settings.hide_people_without_video,
             },
         )?;
         Ok(settings)
@@ -249,7 +321,7 @@ mod tests {
         assert_eq!(written.volume(server_id, account_id), 140);
         assert_eq!(written.volume(server_id, AccountId::generate()), 100);
         let text = fs::read_to_string(data_dir.root().join(VOICE_FILE)).unwrap();
-        assert!(text.contains("\"format_version\": 1"), "{text}");
+        assert!(text.contains("\"format_version\": 2"), "{text}");
         assert!(text.contains("\"input_mode\": \"push_to_talk\""), "{text}");
     }
 
@@ -306,11 +378,11 @@ mod tests {
     fn a_file_of_a_newer_format_stays_and_an_unreadable_file_is_replaced() {
         let (_directory, data_dir, store) = store();
         let file = data_dir.root().join(VOICE_FILE);
-        let newer = r#"{"format_version":2,"later":true}"#;
+        let newer = r#"{"format_version":3,"later":true}"#;
         fs::write(&file, newer).unwrap();
         assert!(matches!(
             store.load(),
-            Err(StorageError::NewerFormat { found: 2, .. })
+            Err(StorageError::NewerFormat { found: 3, .. })
         ));
         assert!(matches!(
             store.update(|settings| settings.automatic_gain = false),
@@ -325,6 +397,61 @@ mod tests {
             .unwrap();
         assert!(!written.automatic_gain && written.echo_cancellation);
         assert_eq!(store.load().unwrap(), written);
+    }
+
+    #[test]
+    fn a_file_of_version_1_gets_the_settings_of_shares_and_keeps_what_it_held() {
+        let (_directory, data_dir, store) = store();
+        let file = data_dir.root().join(VOICE_FILE);
+        let (server_id, account_id) = (ServerId::generate(), AccountId::generate());
+        let first = format!(
+            r#"{{"format_version":1,"input_device":"desk","echo_cancellation":false,
+                "noise_suppression":true,"automatic_gain":true,"input_mode":"push_to_talk",
+                "talk_key":"control","volumes":{{"{server_id}":{{"{account_id}":60}}}}}}"#
+        );
+        fs::write(&file, first).unwrap();
+        let read = store.load().unwrap();
+        assert_eq!(read.input_device.as_deref(), Some("desk"));
+        assert!(!read.echo_cancellation);
+        assert_eq!(read.input_mode, InputMode::PushToTalk);
+        assert_eq!(read.volume(server_id, account_id), 60);
+        assert_eq!(
+            (
+                read.share_resolution,
+                read.share_frame_rate,
+                read.share_volume
+            ),
+            (ShareResolution::P1080, 30, 100)
+        );
+        assert!(!read.hide_people_without_video);
+
+        // The next change writes the file in the present version.
+        let written = store
+            .update(|settings| {
+                settings.share_resolution = ShareResolution::Source;
+                settings.share_frame_rate = 60;
+                settings.share_volume = 40;
+                settings.hide_people_without_video = true;
+            })
+            .unwrap();
+        assert_eq!(store.load().unwrap(), written);
+        assert_eq!(written.volume(server_id, account_id), 60);
+        let text = fs::read_to_string(&file).unwrap();
+        assert!(text.contains("\"format_version\": 2"), "{text}");
+        assert!(text.contains("\"share_resolution\": \"source\""), "{text}");
+    }
+
+    #[test]
+    fn a_share_setting_outside_its_values_is_read_as_a_value_inside() {
+        let (_directory, _data_dir, store) = store();
+        let written = store
+            .update(|settings| {
+                settings.share_frame_rate = 24;
+                settings.share_volume = 900;
+            })
+            .unwrap();
+        assert_eq!(written.share_frame_rate, SHARE_FRAME_RATE_DEFAULT);
+        assert_eq!(written.share_volume, VOLUME_MAX_PERCENT);
     }
 
     #[test]

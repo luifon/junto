@@ -378,8 +378,13 @@ pub struct OccupantRow {
     name: SharedString,
     seed: u128,
     marks: Vec<OccupantMark>,
-    selector: Option<&'static str>,
+    selector: Option<SharedString>,
+    /// The menu of the person is open.
+    open: bool,
+    on_menu: Option<MenuHandler>,
 }
+
+type MenuHandler = std::rc::Rc<dyn Fn(&mut Window, &mut App) + 'static>;
 
 impl OccupantRow {
     pub fn new(id: impl Into<ElementId>, name: impl Into<SharedString>, seed: u128) -> Self {
@@ -389,6 +394,8 @@ impl OccupantRow {
             seed,
             marks: Vec::new(),
             selector: None,
+            open: false,
+            on_menu: None,
         }
     }
 
@@ -397,8 +404,21 @@ impl OccupantRow {
         self
     }
 
-    pub fn selector(mut self, selector: &'static str) -> Self {
-        self.selector = Some(selector);
+    pub fn selector(mut self, selector: impl Into<SharedString>) -> Self {
+        self.selector = Some(selector.into());
+        self
+    }
+
+    /// The menu of the person is open: the row is drawn as the one that the menu is about.
+    pub fn open(mut self, open: bool) -> Self {
+        self.open = open;
+        self
+    }
+
+    /// The row opens a menu about its person: with a right click, and from the keyboard
+    /// with the Menu key, Shift and F10, Enter or Space. The row is a tab stop then.
+    pub fn on_menu(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_menu = Some(std::rc::Rc::new(handler));
         self
     }
 }
@@ -451,7 +471,7 @@ impl RenderOnce for OccupantRow {
             .role(Role::ListItem)
             .aria_label(label)
             .when_some(self.selector, |row, selector| {
-                row.debug_selector(|| selector.to_owned())
+                row.debug_selector(move || selector.to_string())
             })
             .flex()
             .flex_none()
@@ -464,6 +484,29 @@ impl RenderOnce for OccupantRow {
             .font_weight(gpui::FontWeight::NORMAL)
             .ink(colors.ink_2)
             .hover(move |style| style.bg(Hsla::from(colors.limestone_hover)))
+            .when(self.open, |row| row.bg(Hsla::from(colors.limestone_hover)))
+            .when_some(self.on_menu, |row, open| {
+                let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
+                let (by_click, by_key) = (open.clone(), open);
+                row.focusable()
+                    .tab_stop(true)
+                    .focus_visible(move |style| style.shadow(ring))
+                    .on_mouse_down(gpui::MouseButton::Right, move |_, window, cx| {
+                        by_click(window, cx);
+                    })
+                    .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
+                        let keys = &event.keystroke;
+                        let opens = match keys.key.as_str() {
+                            "menu" | "enter" | "space" => true,
+                            "f10" => keys.modifiers.shift,
+                            _ => false,
+                        };
+                        if opens {
+                            by_key(window, cx);
+                            cx.stop_propagation();
+                        }
+                    })
+            })
             .child(Mosaic::new(MosaicKind::Large, self.seed, 20.0).radius(2.0))
             .child(div().flex_1().min_w_0().truncate().child(self.name))
             .child(

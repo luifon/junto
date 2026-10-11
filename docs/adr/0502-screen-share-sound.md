@@ -4,7 +4,7 @@
 
 Accepted, pending step 0
 
-Open: sound capture on Windows was not tested, so the sound choices of Windows are not decided. On macOS every capture ran from a program that used the permission of the terminal application that started it; a capture with the permission of the product's own application bundle was not run (`docs/step-0/README.md`, test 1).
+Open: sound capture on Windows was not tested, so the sound choices of Windows are not decided. On macOS every capture ran from a program that used the permission of the terminal application that started it; a capture with the permission of the product's own application bundle was not run (`docs/step-0/README.md`, test 1). The macOS capture of the product is built (ADR 0736) and was not run by an automated test; the capture of Linux is not built in the product yet.
 
 ## Context
 

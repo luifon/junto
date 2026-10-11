@@ -38,6 +38,7 @@ One call per account, and the transfer rule:
 - A request to enter the same call by another device of the account moves the call to that device: the earlier identity is no longer allowed, the account keeps its place, and the lock and the user limit do not apply. Others see the person leave and join.
 - A request to enter another call ends the membership in the first call. The lock and the user limit of the new place apply.
 - The earlier identity is removed from its room by the admission check.
+- The request that leaves a call can name the identity of the place that the device leaves. The server then ends the place only when the account holds it with that identity; with another identity, or without a place, nothing changes and the answer is the same. A device that leaves late does not end the place that another device of the account took. Without an identity the request ends the call of the account from whichever device.
 
 Own state and blocks:
 
@@ -46,6 +47,7 @@ Own state and blocks:
 - A block belongs to the call and to the account, not to the stay of the account. A person who leaves and returns, or moves the call to another device, keeps the block.
 - A microphone block closes every sound source: the microphone and the sound of a screen share. The media server forwards the sound of a share as an audio track that the sharing device fills, and the server cannot verify that it carries shared sound and not a voice. A block that left this source open could be passed by a modified client. The camera and the screen stay open.
 - The block is in the join token of a blocked person and is set again at every admission check.
+- The answer to a request for a place states the microphone block and the sound block of the caller. A call lists a person only after the device has connected, so a device that enters again would otherwise learn its blocks after its connection, and a sound block, which the client applies, would not hold in between. For a person on the way in by a move, the answer states the block of meeting mode that the person gets at the completion.
 - A participant with a microphone block whom the media server lists with an audio track, of whatever source, is removed from the room.
 - A sound block is a flag. The client applies it (ADR 0503).
 - A block ends with the call.

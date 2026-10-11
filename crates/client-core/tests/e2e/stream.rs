@@ -676,6 +676,17 @@ async fn the_call_routes_answer_with_typed_results_and_their_events_reach_the_st
         refused(api.raise_hand().await.unwrap_err()),
         ErrorCode::NotInCall
     );
+    // A recording belongs to a call that the caller is in. The member holds no
+    // "record calls" either.
+    let started = api.start_recording(voice.id, None).await;
+    assert_eq!(refused(started.unwrap_err()), ErrorCode::Forbidden);
+    let stopped = api.stop_recording(voice.id).await;
+    assert_eq!(refused(stopped.unwrap_err()), ErrorCode::Forbidden);
+    let started = owner.api().start_recording(voice.id, Some("pt")).await;
+    assert_eq!(refused(started.unwrap_err()), ErrorCode::NotInCall);
+    // A leave that names a place is answered as a leave without a place to end.
+    api.leave_call_as("no-such-place").await.unwrap();
+    api.leave_call().await.unwrap();
 
     // A change that the owner makes reaches the state of the member as an event.
     let changed = owner

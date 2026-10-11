@@ -8,8 +8,8 @@ use junto_authz::{ChannelScope, Participation, Request, WorkspacePermission};
 use junto_protocol::audit::AuditEvent;
 use junto_protocol::call::{
     AnswerEntryRequest, CallInvitation, CallJoin, CallMove, CallPlace, ChannelCall, DirectMute,
-    EntryOutcome, EntryRequest, InvitationOutcome, InviteToCall, LeaveReason, MeetingEnd,
-    MoveOutcome, MoveParticipant, MuteDirectConversation, OwnCallState, OwnCallView,
+    EntryOutcome, EntryRequest, InvitationOutcome, InviteToCall, LeaveCallQuery, LeaveReason,
+    MeetingEnd, MoveOutcome, MoveParticipant, MuteDirectConversation, OwnCallState, OwnCallView,
     ReportCallState, ReportScreenShare, ReportSpeaking, UpdateCallSettings,
 };
 use junto_protocol::events::Event;
@@ -29,7 +29,7 @@ use crate::calls::store::{
 use crate::db::StoredText;
 use crate::error::{ApiError, ApiResult};
 use crate::events;
-use crate::extract::{ApiJson, ApiPath, Bearer};
+use crate::extract::{ApiJson, ApiPath, ApiQuery, Bearer};
 use crate::proof;
 use crate::state::AppState;
 use crate::{read, transact};
@@ -174,21 +174,30 @@ pub async fn get_own_call(
     .map(Json)
 }
 
-/// Leaves the call that the caller's account is in, from whichever device.
+/// Leaves the call that the caller's account is in, from whichever device. With `identity`,
+/// the call is left only when the account holds its place with that identity; otherwise
+/// nothing changes, and the answer is the same.
 #[utoipa::path(
     delete,
     path = "/api/v1/call",
     tag = "calls",
+    params(LeaveCallQuery),
     security(("session" = [])),
     responses((status = 204), ApiError)
 )]
-pub async fn leave_call(State(app): State<AppState>, bearer: Bearer) -> ApiResult<StatusCode> {
+pub async fn leave_call(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiQuery(query): ApiQuery<LeaveCallQuery>,
+) -> ApiResult<StatusCode> {
     let now = app.now();
     proof::limit(&app.calls.actions, bearer.0, now)?;
     let left = transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::OwnAccount)?;
-        let call = entry::leave(connection, now, access.account_id, LeaveReason::Left).await?;
+        let identity = query.identity.as_deref();
+        let left = LeaveReason::Left;
+        let call = entry::leave(connection, now, access.account_id, identity, left).await?;
         Ok(call.map(|call| (access.account_id, call)))
     })?;
     if let Some((account_id, call)) = left {
@@ -1251,14 +1260,8 @@ pub async fn join_move(
         app.calls.admitting()?;
         app.calls.admitting_into(&to.room)?;
         app.calls.mark(to.room.as_str());
-        Ok(entry::Entered {
-            publishing: store::publishing_of(connection, &to, access.account_id).await?,
-            entry_requests: Vec::new(),
-            call: store::view(connection, &to).await?,
-            key: to.key(),
-            room: to.room,
-            identity: pending.identity,
-        })
+        let account_id = access.account_id;
+        entry::Entered::read(connection, now, to, account_id, pending.identity, false).await
     })?;
     let media = app.calls.admitting()?.clone();
     entered.join(&app, media.as_ref(), now).map(Json)

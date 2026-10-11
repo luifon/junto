@@ -28,7 +28,7 @@ The order of the requests for a place:
 - A join, a leave and a request for a new token each ask a server about the place of the account. The client runs them one at a time, in the order in which they were started, and each one handles its answer before the next one starts.
 - An answer that gives a place which no call of the client uses is followed by a leave: the person left while the server was asked, or the call ended while a new token was asked for.
 - A leave ends the call on the device at once. What it tells the server waits for its turn.
-- The leave request of the server ends the call of the account on whichever device (ADR 0510). Before the client sends it, the client reads the own call from the server, and sends the request only when the server holds the place with the identity that this device was given. A place that another device or session of the account took stays. When the read fails, no request is sent, and the server ends the place by its check, because no media connection uses it (ADR 0509).
+- The leave request of the client names the identity that this device was given, so the server ends only that place (ADR 0510). A place that another device or session of the account took stays. When the request gets no answer, the server ends the place by its check, because no media connection uses it (ADR 0509).
 - When the application quits, it leaves in the same way and waits at most 2 seconds for this work.
 
 Whether the place still exists:
@@ -52,7 +52,8 @@ Reports:
 
 Blocks:
 
-- A microphone block of the own participant in the state of the server closes the microphone and withdraws its track; without the block the microphone returns to the person's own setting. The permission of the participant in the room closes the microphone too, before the state has told the block (ADR 0733).
+- A call starts with the blocks that the server states in its answer to the join, and to a request for a new token (ADR 0510). From the moment the state of the server lists the person, the blocks are the ones of the state.
+- A microphone block closes the microphone and withdraws its track; without the block the microphone returns to the person's own setting. The permission of the participant in the room closes the microphone too (ADR 0733).
 - A sound block turns the sound off; the person cannot turn it on.
 
 When a microphone is sent (ADR 0507):
@@ -79,8 +80,8 @@ Sound settings:
 - After a restart of the media server each device returns by itself, within the waits above and the time that the server needs to observe the room again (ADR 0509).
 - While the event stream of a server is interrupted, a place that the server ended is not noticed, and no new token is asked for. A lost media connection returns when the stream is live again and the server still holds the place.
 - A request for a place waits while an earlier one has no answer. A server that does not answer holds the next request for at most the time limit of one request, 40 seconds.
-- Known limit: another device of the account that takes the place between the read of the own call and the leave request of this device loses it. Closing this needs a leave request of the server that names the identity.
-- Known limit: a sound block is told only by the state of the server, and the state lists a participant when its media connection is made. A person with a sound block who enters the call again hears it until the state shows the block. Closing this needs the block in the answer of the server to a join.
+- A person with a sound block who enters the call again hears nothing at any moment, and a device that leaves late ends no place of another device.
 - The speaking mark of the person follows what is sent: a muted microphone and a released key give none.
 - Push-to-talk does not work while another application has the focus (ADR 0507).
-- The moves between voice channels (ADR 0511), invitations, requests to enter and direct calls use the same object and are not built yet.
+- The share of the device and the shares of the other people use the same object (ADR 0737).
+- A move between voice channels, the acceptance of an invitation and the entry after an accepted request use the same object (ADR 0739). Direct calls use it too; the window has no place that starts one yet.

@@ -207,8 +207,13 @@ async fn a_leave_does_not_end_the_call_that_another_device_of_the_account_took()
     phone.enter(room.target).await;
     ann.until_heard(&phone).await;
 
-    // Ben leaves on the phone. What the phone tells the server waits on its way.
-    proxy.hold(OWN_CALL);
+    // Ben leaves on the phone. What the phone tells the server waits on its way: one
+    // request that names the identity of the place of the phone (ADR 0510).
+    let seat = phone.calls.view().call.unwrap().identity;
+    let named: String = url::form_urlencoded::byte_serialize(seat.as_bytes()).collect();
+    let leave = format!("{OWN_CALL}?identity={named}");
+    proxy.hold(&leave);
+    let reads = proxy.seen(OWN_CALL).len();
     let leaving = phone.calls.leave();
     phone
         .until("the call has ended on the phone", |view| {
@@ -216,9 +221,13 @@ async fn a_leave_does_not_end_the_call_that_another_device_of_the_account_took()
         })
         .await;
     until("the phone tells the server", || {
-        !proxy.seen(OWN_CALL).is_empty()
+        !proxy.seen(&leave).is_empty()
     })
     .await;
+    assert_eq!(proxy.seen(&leave)[0].method, "DELETE");
+    // The phone does not read the place first: between a read and the request another
+    // device could take the place.
+    assert_eq!(proxy.seen(OWN_CALL).len(), reads);
 
     // Ben enters the call on the laptop before the server hears from the phone.
     laptop.enter(room.target).await;

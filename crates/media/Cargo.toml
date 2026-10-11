@@ -39,7 +39,13 @@ cpal = { version = "0.18.2", features = ["pipewire"] }
 block2 = "0.6"
 objc2 = "0.6"
 objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "AVCaptureDevice", "AVMediaFormat", "block2"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSError", "NSProcessInfo", "NSString"] }
+# The capture of a screen, a window and the sound of applications (ADR 0502, ADR 0736).
+objc2-screen-capture-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "dispatch2", "libc", "objc2-core-foundation", "objc2-core-graphics", "objc2-core-media", "SCShareableContent", "SCStream"] }
+objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "objc2", "objc2-core-audio-types", "objc2-core-video", "CMBlockBuffer", "CMFormatDescription", "CMSampleBuffer", "CMTime"] }
+objc2-core-audio-types = { version = "0.3.2", default-features = false, features = ["std", "objc2"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGDirectDisplay", "CGWindow"] }
 
 [dev-dependencies]
 junto-media = { path = ".", features = ["test-support"] }
@@ -49,8 +55,8 @@ tokio = { workspace = true, features = ["io-util", "test-util"] }
 url = "2"
 uuid = { workspace = true }
 
-# The workspace forbids unsafe code. This crate denies it and allows it in the one module
-# that asks macOS for the state of the microphone permission.
+# The workspace forbids unsafe code. This crate denies it and allows it in the two modules
+# that call macOS: the microphone permission and the screen capture.
 [lints.rust]
 unsafe_code = "deny"
 

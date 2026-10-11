@@ -110,7 +110,7 @@ fn the_microphone_and_the_sound_button_hold_the_setting_of_the_person_outside_a_
     assert!(window.sound.opened_inputs().is_empty());
 }
 
-fn voice_file(directory: &std::path::Path) -> std::path::PathBuf {
+pub fn voice_file(directory: &std::path::Path) -> std::path::PathBuf {
     directory.join("junto").join("voice.json")
 }
 

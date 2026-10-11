@@ -20,6 +20,7 @@ use junto_media::audio::synthetic::{SyntheticHost, tone_level};
 use junto_media::calls::{CallTarget, CallTiming, CallsView, MediaOptions, Phase};
 use junto_media::engine::VoiceConfig;
 use junto_media::permission::FixedPermission;
+use junto_media::share::synthetic::SyntheticCapture;
 use tokio::sync::RwLock;
 
 use crate::support::{Device, TestServer, claim, join, logged_in};
@@ -40,6 +41,7 @@ pub struct Person {
     pub calls: Calls,
     pub host: SyntheticHost,
     pub permission: FixedPermission,
+    pub capture: SyntheticCapture,
     pub hz: f32,
 }
 
@@ -59,11 +61,13 @@ impl Person {
     pub fn with_permission(hz: f32, permission: FixedPermission) -> Self {
         let device = Device::new();
         let host = SyntheticHost::with_tone(hz);
+        let capture = SyntheticCapture::new();
         let calls = Calls::new(
             device.client.clone(),
             MediaOptions {
                 host: Arc::new(host.clone()),
                 permission: Arc::new(permission.clone()),
+                capture: Arc::new(capture.clone()),
                 timing: CallTiming {
                     reconnect_first: Duration::from_millis(300),
                     reconnect_longest: Duration::from_secs(2),
@@ -78,6 +82,7 @@ impl Person {
             calls,
             host,
             permission,
+            capture,
             hz,
         }
     }
@@ -131,6 +136,12 @@ impl Person {
     /// The level of a tone in the last half second of what this person would hear.
     pub fn hears(&self, hz: f32) -> f32 {
         let (played, rate) = self.host.played(Duration::from_millis(500));
+        tone_level(&played, rate, hz)
+    }
+
+    /// The level of a tone in the last half second of the right channel.
+    pub fn hears_right(&self, hz: f32) -> f32 {
+        let (played, rate) = self.host.played_of(Duration::from_millis(500), 1);
         tone_level(&played, rate, hz)
     }
 

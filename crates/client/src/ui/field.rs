@@ -21,6 +21,8 @@ pub enum FieldKind {
     Code,
     /// The address field of the server book, on basalt.
     RailAddress,
+    /// A field that searches a list: lower, with the search icon before the text.
+    Find,
 }
 
 /// What a field tells its owner.
@@ -142,6 +144,18 @@ fn look(kind: FieldKind, theme: &Theme) -> Look {
             selection: c.terracotta_wash,
             type_style: theme.types.mono_code,
         },
+        FieldKind::Find => Look {
+            height: 28.0,
+            padding: 6.0,
+            background: c.travertine,
+            border: c.rule,
+            border_focused: c.ink_2,
+            text: c.ink,
+            placeholder: c.ink_3,
+            caret: c.ink,
+            selection: c.terracotta_wash,
+            type_style: theme.types.control,
+        },
         FieldKind::RailAddress => Look {
             height: 30.0,
             padding: 8.0,
@@ -195,6 +209,13 @@ impl RenderOnce for Field {
             .bg(Hsla::from(look.background))
             .typeface(look.type_style, &theme)
             .ink(look.text)
+            .when(self.kind == FieldKind::Find, |frame| {
+                frame.child(div().flex_none().pl(u(8.0)).child(super::icon(
+                    crate::assets::Icon::Search,
+                    14.0,
+                    look.placeholder,
+                )))
+            })
             .child(
                 div()
                     .flex_1()

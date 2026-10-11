@@ -1128,8 +1128,19 @@
         "tags": [
           "calls"
         ],
-        "summary": "Leaves the call that the caller's account is in, from whichever device.",
+        "summary": "Leaves the call that the caller's account is in, from whichever device. With `identity`,\nthe call is left only when the account holds its place with that identity; otherwise\nnothing changes, and the answer is the same.",
         "operationId": "leave_call",
+        "parameters": [
+          {
+            "name": "identity",
+            "in": "query",
+            "description": "The identity of the place that the device leaves. The call of the account ends only\nwhen the account holds its place with this identity. Absent: the call of the\naccount ends, from whichever device it is in the call.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "204": {},
           "default": {
@@ -6347,6 +6358,28 @@
           "media_url": {
             "type": "string",
             "description": "The address of the media server for the device."
+          },
+          "microphone_block": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MicrophoneBlock",
+                "description": "The block of the caller's microphone in this call. The call lists the caller as a\nparticipant only after the device has connected, so the answer states the block."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sound_block": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SoundBlock",
+                "description": "The block of the caller's sound in this call. The client applies it from the first\nmoment of its connection (ADR 0503)."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "token": {
             "$ref": "#/components/schemas/CallToken"

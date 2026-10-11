@@ -12,17 +12,27 @@ use std::time::Duration;
 use gpui::{Modifiers, TestAppContext};
 use junto_client::shell::call::CallTab;
 use junto_client::state::view::{
-    ChannelRow, Microphone, MicrophoneButton, MicrophoneLine, Occupant, Presence, Relation,
-    SoundWarning,
+    ChannelRow, Microphone, MicrophoneButton, MicrophoneLine, Occupant, OwnShare, Presence,
+    Relation, ShareStage, SoundWarning,
 };
-use junto_client_core::protocol::call::{BlockReason, CallPlace};
+use junto_client_core::protocol::WorkspacePermission;
+use junto_client_core::protocol::call::{BlockReason, CallPlace, ShareAudio};
+use junto_client_core::protocol::roles::UpdateWorkspaceRole;
 use junto_client_core::protocol::structure::ChannelKind;
 use junto_media::calls::{CallTarget, Phase};
+use junto_media::engine::ShareId;
+use junto_media::share::synthetic::SyntheticCapture;
+use junto_media::share::{
+    CaptureError, CaptureRequest, PictureSource, Resolution, ScreenAccess, ShareKind, ShareQuality,
+    SoundChoice,
+};
 
-use crate::calls::voice_channel;
+use crate::calls::{voice_channel, voice_file};
 use crate::harness::{
     ABSENT_DBFS, ADMIN_TONE_HZ, Caller, HEARD_DBFS, WINDOW_TONE_HZ, Window, World, heard, member,
 };
+
+mod rules;
 
 /// The voice channel of the tests. A new server has a voice channel of its own beside it.
 const ROOM: &str = "Daily";
@@ -373,4 +383,232 @@ fn push_to_talk_and_a_block_of_a_moderator_in_the_window(cx: &mut TestAppContext
     window.click("leave-call");
     window.until("the call has ended", |window| window.view().call.is_none());
     world.run(caller.calls.leave());
+}
+
+/// A tone of a share that arrives is above this: the call library sends the sound of a
+/// share with one channel, so each of its two tones arrives at half its level.
+const SHARE_HEARD_DBFS: f32 = -26.0;
+/// The left tones of all system sound and of the application "Player" of the capture of a
+/// test.
+const SYSTEM_TONE_HZ: f32 = 700.0;
+const PLAYER_TONE_HZ: f32 = 1_100.0;
+
+fn own_share(window: &mut Window) -> OwnShare {
+    window.view().call.map_or(OwnShare::Off, |call| call.share)
+}
+
+fn stage(window: &mut Window) -> Option<ShareStage> {
+    window
+        .view()
+        .workspace()
+        .and_then(|workspace| workspace.call.clone())
+        .and_then(|panel| panel.stage)
+}
+
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recording(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server_with_media("Acme Studio");
+    let admin = world.owner(&server);
+    let caller = admin.caller(&world);
+    let (directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, ROOM);
+    let workspace_id = window.view().workspace().unwrap().id;
+    let voice = room(&mut window);
+    let target = CallTarget {
+        server_id: admin.handle.id(),
+        place: CallPlace::Channel {
+            workspace_id,
+            channel_id: voice.id,
+        },
+    };
+    enter(&world, &caller, target);
+    window.click_channel(ROOM);
+    window.click("join-call");
+    window.until("the call is connected", |window| {
+        window
+            .view()
+            .call
+            .is_some_and(|call| call.phase == Phase::Connected)
+    });
+    assert_eq!(own_share(&mut window), OwnShare::Off);
+    assert!(window.view().call.unwrap().can_share);
+
+    // The system does not allow the capture yet: the dialog tells how the person allows
+    // it, and reads nothing. The button makes the system ask and opens its settings.
+    window.capture.set_access(ScreenAccess::NotAllowed);
+    window.click("call-share");
+    assert!(window.shows("share-picker") && window.shows("screen-access"));
+    assert!(!window.shows("share-sources") && !window.shows("start-share"));
+    assert_eq!(window.capture.asked(), 0);
+    window.click("open-system-settings");
+    assert_eq!(
+        (window.capture.asked(), window.capture.settings_opened()),
+        (1, 1)
+    );
+    window.capture.set_access(ScreenAccess::Allowed);
+    window.click("check-screen-access");
+    window.until("the screens and windows are listed", |window| {
+        window.shows("share-sources")
+    });
+
+    // Nothing is chosen for the person: without a picture and a sound, no share starts.
+    window.click("start-share");
+    assert!(window.in_shell(|shell, _, _| shell.share_picker_is_open()));
+    window.click("share-display:1");
+    window.click("start-share");
+    assert!(window.in_shell(|shell, _, _| shell.share_picker_is_open()));
+    assert!(window.capture.started().is_empty());
+    // The screen with all system sound.
+    window.click("share-sound-1");
+    window.click("start-share");
+    assert!(!window.in_shell(|shell, _, _| shell.share_picker_is_open()));
+    window.until("the share of the window runs", |window| {
+        own_share(window) == OwnShare::Running
+    });
+    assert_eq!(
+        window.capture.started(),
+        [CaptureRequest {
+            picture: PictureSource::Display(1),
+            sound: SoundChoice::System,
+            quality: ShareQuality::default(),
+        }]
+    );
+    window.until("the own share is shown", |window| {
+        window.shows("share-header") && window.shows("share-picture")
+    });
+    let shown = stage(&mut window).unwrap();
+    assert_eq!(shown.shares.len(), 1);
+    assert_eq!(
+        (
+            shown.shares[0].id,
+            shown.shares[0].sound,
+            shown.shares[0].watched
+        ),
+        (ShareId::Own, Some(ShareAudio::System), true)
+    );
+    assert!(!window.shows("shares-bar"));
+    // The administrator gets the picture and the sound of the share.
+    window.until("the administrator watches the share", |_| {
+        caller.calls.main_picture().borrow().is_some()
+    });
+    window.until("the administrator hears the share", |_| {
+        heard(&caller.sound, SYSTEM_TONE_HZ) > SHARE_HEARD_DBFS
+    });
+
+    // The administrator shares a window with the sound of its application. The window
+    // shows the bar of the two shares, watches the share of the administrator and plays
+    // its sound.
+    caller.calls.start_share(CaptureRequest {
+        picture: PictureSource::Window(11),
+        sound: SoundChoice::Application(SyntheticCapture::player()),
+        quality: ShareQuality::default(),
+    });
+    window.until("two shares are shown", |window| {
+        window.shows("shares-bar")
+            && stage(window).is_some_and(|stage| {
+                stage.shares.len() == 2
+                    && stage.shares[0].watched
+                    && stage.shares[0].sound == Some(ShareAudio::Application)
+                    && stage.shares[0].kind == Some(ShareKind::Window)
+            })
+    });
+    window.until(
+        "the window plays the share of the administrator",
+        |window| heard(&window.sound, PLAYER_TONE_HZ) > SHARE_HEARD_DBFS,
+    );
+    // The person picks the own share: the sound of the other share stops.
+    window.click("share-card:own");
+    window.until("the own share is watched", |window| {
+        stage(window).is_some_and(|stage| stage.shares[1].watched && !stage.shares[0].watched)
+    });
+    window.until("the sound of the other share has stopped", |window| {
+        heard(&window.sound, PLAYER_TONE_HZ) < ABSENT_DBFS
+    });
+
+    // The settings of a share and of the view are stored, and the strip hides the people.
+    window.click("call-tab-settings");
+    window.click("share-resolution-0");
+    window.click("share-frame-rate-0");
+    window.click("hide-without-video");
+    window.until("the people without video are hidden", |window| {
+        window.shows("people-hidden")
+    });
+    window.until("the settings are stored", |_| {
+        std::fs::read_to_string(voice_file(directory.path())).is_ok_and(|stored| {
+            stored.contains("\"share_resolution\": \"p720\"")
+                && stored.contains("\"share_frame_rate\": 15")
+                && stored.contains("\"hide_people_without_video\": true")
+        })
+    });
+
+    // The button of the strip ends the share.
+    window.click("call-share");
+    window.until("the share of the window has ended", |window| {
+        own_share(window) == OwnShare::Off && window.capture.running() == 0
+    });
+    window.until("one share is left", |window| {
+        stage(window).is_some_and(|stage| stage.shares.len() == 1) && !window.shows("shares-bar")
+    });
+    // The next share uses the stored quality.
+    window.click("call-share");
+    window.until("the screens and windows are listed", |window| {
+        window.shows("share-sources")
+    });
+    window.click("share-window:11");
+    window.click("share-sound-0");
+    window.click("start-share");
+    window.until("the window is shared", |window| {
+        own_share(window) == OwnShare::Running
+    });
+    let second = window.capture.started().pop().unwrap();
+    assert_eq!(
+        (second.picture, second.sound),
+        (PictureSource::Window(11), SoundChoice::None)
+    );
+    assert_eq!(
+        (second.quality.resolution, second.quality.frame_rate),
+        (Resolution::P720, 15)
+    );
+    // The window that is shared is closed: the share ends, and the person is told.
+    window.capture.end_all(&CaptureError::SourceGone);
+    window.until("the end of the share is told", |window| {
+        window.shows("share-notice") && own_share(window) == OwnShare::Off
+    });
+    window.click("dismiss-share-notice");
+    assert!(!window.shows("share-notice"));
+
+    // The recording: the roles of the person do not allow it, until an administrator
+    // gives "record calls" to every member. This server has no recorder, and the refusal
+    // of the request is told.
+    assert!(window.shows("no-record-permission"));
+    let roles = world
+        .run(admin.handle.api().workspace_roles(workspace_id))
+        .unwrap();
+    let everyone = roles.iter().find(|role| role.is_everyone).unwrap();
+    let mut permissions = everyone.permissions.clone();
+    permissions.push(WorkspacePermission::RecordCalls);
+    world
+        .run(admin.handle.api().update_workspace_role(
+            workspace_id,
+            everyone.id,
+            &UpdateWorkspaceRole {
+                name: None,
+                permissions: Some(permissions),
+            },
+        ))
+        .unwrap();
+    window.until("the person may record", |window| {
+        !window.shows("no-record-permission")
+    });
+    window.click("start-recording");
+    window.until("the refusal is told", |window| {
+        window.shows("recording-error")
+    });
+    assert!(!window.shows("recording-indicator"));
+    window.click("dismiss-recording-error");
+    assert!(!window.shows("recording-error") && window.shows("start-recording"));
 }

@@ -6,5 +6,6 @@ pub mod audio;
 pub mod calls;
 pub mod engine;
 pub mod permission;
+pub mod share;
 
 pub use calls::{Calls, MediaOptions};

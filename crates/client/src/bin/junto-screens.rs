@@ -21,9 +21,10 @@ use gpui_base::input::InputState;
 use junto_client::app::{self, WindowStart};
 use junto_client::assets::Assets;
 use junto_client::shell::call::CallTab;
+use junto_client::shell::share::SoundKind;
 use junto_client::shell::{Open, Shell};
 use junto_client::state::AppState;
-use junto_client::state::view::{MediaSnapshot, ServerSnapshot, ShownLevels};
+use junto_client::state::view::{EntryState, MediaSnapshot, OwnEntry, ServerSnapshot, ShownLevels};
 use junto_client::theme;
 use junto_client_core::api::{
     HttpRequest, HttpResponse, Transport, TransportError, TransportErrorKind, TransportFuture,
@@ -32,15 +33,18 @@ use junto_client_core::flow::FlowError;
 use junto_client_core::flow::access::{AccessState, Notice};
 use junto_client_core::live::{StreamFault, StreamStatus};
 use junto_client_core::model::{Loadable, ServerModel};
+use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::account::{OwnAccount, RecoveryNotice};
 use junto_client_core::protocol::call::{
-    BlockReason, Call, CallLock, CallParticipant, CallPlace, ChannelCall, LeaveReason, Meeting,
-    MicrophoneBlock, ScreenShare, ShareAudio,
+    BlockReason, Call, CallInvitation, CallLock, CallParticipant, CallPlace, ChannelCall,
+    EntryRequest, LeaveReason, Meeting, MicrophoneBlock, ScreenShare, ShareAudio,
 };
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::protocol::events::Cursor;
 use junto_client_core::protocol::ids::{AccountId, ChannelId, WorkspaceId};
-use junto_client_core::protocol::recording::{Recording, RecordingState};
+use junto_client_core::protocol::recording::{
+    Recording, RecordingFailure, RecordingState, RecordingStop, RecordingStopReason,
+};
 use junto_client_core::protocol::roles::WorkspaceRole;
 use junto_client_core::protocol::server::ServerInfo;
 use junto_client_core::protocol::snapshot::{Snapshot, WorkspaceState};
@@ -57,8 +61,16 @@ use junto_media::audio::{AudioError, DeviceId, DeviceInfo, Devices};
 use junto_media::calls::{
     ActiveCall, CallTarget, CallTiming, CallsView, EndReason, MediaOptions, Outcome, Phase,
 };
-use junto_media::engine::{MicrophoneState, OutputState};
+use junto_media::engine::{
+    MicrophoneState, OutputState, SeenShare, ShareId, ShareInfo, ShareState,
+};
 use junto_media::permission::{FixedPermission, MicrophoneAccess};
+use junto_media::share::picture::PictureFrame;
+use junto_media::share::synthetic::SyntheticCapture;
+use junto_media::share::{
+    ApplicationId, ApplicationSource, CaptureError, DisplaySource, NoCapture, PictureSource,
+    ScreenAccess, ScreenCapture, ShareKind, ShareSources, WindowSource,
+};
 use time::OffsetDateTime;
 
 /// The window of the design: 1440 by 900 pixels at 100 %.
@@ -151,8 +163,15 @@ fn studio() -> WorkspaceState {
         permissions: Vec::new(),
         is_everyone,
     };
+    // The permissions that the "everyone" role of a new workspace has.
+    let mut everyone = role(20, "everyone", true);
+    everyone.permissions = vec![
+        WorkspacePermission::ViewChannel,
+        WorkspacePermission::LockRoom,
+        WorkspacePermission::RunMeetingMode,
+    ];
     studio.roles = vec![
-        role(20, "everyone", true),
+        everyone,
         role(21, "Leads", false),
         role(22, "Engineers", false),
     ];
@@ -412,6 +431,8 @@ struct Screen {
     scale: u32,
     /// The name of the profile preset. Empty: the first start.
     preset: &'static str,
+    /// The screen capture of the screen. It exists only in the program.
+    capture: Arc<dyn ScreenCapture>,
 }
 
 impl Screen {
@@ -422,7 +443,13 @@ impl Screen {
             media: None,
             scale: 100,
             preset: "Luca",
+            capture: Arc::new(capture()),
         }
+    }
+
+    fn capture(mut self, capture: Arc<dyn ScreenCapture>) -> Self {
+        self.capture = capture;
+        self
     }
 
     /// The screen of a call: "Acme Studio" with Luca in Daily, and this state of the
@@ -508,11 +535,12 @@ impl Studio {
             ..WindowStart::default()
         };
         let (servers, media) = (screen.servers, screen.media);
-        // The devices of a screen exist only in the program: the tool opens no microphone
-        // and plays no sound.
+        // The devices of a screen exist only in the program: the tool opens no microphone,
+        // plays no sound and captures no screen.
         let devices = MediaOptions {
             host: Arc::new(SyntheticHost::with_tone(440.0)),
             permission: Arc::new(FixedPermission::allowed()),
+            capture: screen.capture,
             timing: CallTiming::default(),
         };
         let state: Entity<AppState> = self.cx.update(|cx| {
@@ -652,6 +680,9 @@ fn in_call(phase: Phase) -> MediaSnapshot {
                 output_device: Some(device("phones", "Headphones", false)),
                 microphone_block: None,
                 sound_block: None,
+                share: ShareState::Off,
+                shares: Vec::new(),
+                watched: None,
             }),
             outcome: None,
         },
@@ -679,6 +710,7 @@ fn in_call(phase: Phase) -> MediaSnapshot {
         },
         access: Some(MicrophoneAccess::Allowed),
         now: Some(at() + time::Duration::seconds(42 * 60 + 17)),
+        can_share: true,
     }
 }
 
@@ -686,8 +718,1106 @@ fn in_call(phase: Phase) -> MediaSnapshot {
 fn no_call() -> MediaSnapshot {
     MediaSnapshot {
         access: Some(MicrophoneAccess::Allowed),
+        can_share: true,
         ..MediaSnapshot::default()
     }
+}
+
+/// What the capture of a screen lists: one screen, two windows and their applications.
+fn capture() -> SyntheticCapture {
+    let application = |process_id: i32, bundle_id: &str| ApplicationId {
+        process_id,
+        bundle_id: bundle_id.to_owned(),
+    };
+    let (desktop, editor) = (
+        application(501, "example.remote-desktop"),
+        application(502, "example.editor"),
+    );
+    let capture = SyntheticCapture::new();
+    capture.set_sources(ShareSources {
+        displays: vec![DisplaySource {
+            id: 1,
+            width: 1920,
+            height: 1200,
+        }],
+        windows: vec![
+            WindowSource {
+                id: 11,
+                title: "alpha-review-vm".to_owned(),
+                application: desktop.clone(),
+                application_name: "Remote Desktop".to_owned(),
+                width: 1440,
+                height: 900,
+            },
+            WindowSource {
+                id: 12,
+                title: "export.rs".to_owned(),
+                application: editor.clone(),
+                application_name: "Editor".to_owned(),
+                width: 1280,
+                height: 800,
+            },
+        ],
+        applications: vec![
+            ApplicationSource {
+                id: editor,
+                name: "Editor".to_owned(),
+            },
+            ApplicationSource {
+                id: desktop,
+                name: "Remote Desktop".to_owned(),
+            },
+        ],
+    });
+    capture
+}
+
+/// A picture that the program draws: rectangles of one colour each on a ground.
+struct Canvas {
+    width: u32,
+    height: u32,
+    bgra: Vec<u8>,
+}
+
+impl Canvas {
+    fn new(width: u32, height: u32, ground: u32) -> Self {
+        let mut canvas = Self {
+            width,
+            height,
+            bgra: vec![0; (width * height * 4) as usize],
+        };
+        canvas.fill((0, 0, width, height), ground);
+        canvas
+    }
+
+    /// Fills the rectangle `(x, y, width, height)` with a colour given as 0xRRGGBB.
+    fn fill(&mut self, at: (u32, u32, u32, u32), colour: u32) {
+        let [_, red, green, blue] = colour.to_be_bytes();
+        for y in at.1..(at.1 + at.3).min(self.height) {
+            for x in at.0..(at.0 + at.2).min(self.width) {
+                let index = ((y * self.width + x) * 4) as usize;
+                self.bgra[index..index + 4].copy_from_slice(&[blue, green, red, 255]);
+            }
+        }
+    }
+
+    fn frame(self) -> PictureFrame {
+        PictureFrame {
+            width: self.width,
+            height: self.height,
+            bgra: self.bgra.into(),
+            source: (self.width, self.height),
+        }
+    }
+}
+
+/// The picture of a shared screen: a desktop with one window that holds four panels.
+fn desktop_picture(width: u32, height: u32) -> PictureFrame {
+    let mut canvas = Canvas::new(width, height, 0x38_4450);
+    let unit = |share: u32, of: u32| of * share / 100;
+    let (w, h) = (width, height);
+    // The bar at the bottom of the desktop.
+    canvas.fill((0, unit(94, h), w, unit(6, h)), 0x20_2830);
+    for index in 0..6 {
+        canvas.fill(
+            (
+                unit(2, w) + index * unit(3, w),
+                unit(96, h),
+                unit(2, w),
+                unit(3, h),
+            ),
+            if index == 0 { 0x5B_9B_D5 } else { 0x4A_56_62 },
+        );
+    }
+    // The window with its title and its four panels.
+    let (left, top, wide, high) = (unit(7, w), unit(5, h), unit(90, w), unit(84, h));
+    canvas.fill((left, top, wide, high), 0x16_1C_22);
+    canvas.fill((left, top, wide, unit(4, h)), 0x10_15_1A);
+    canvas.fill(
+        (left + unit(1, w), top + unit(1, h), unit(1, w), unit(2, h)),
+        0x5B_9B_D5,
+    );
+    let (panel_w, panel_h) = (unit(44, w), unit(33, h));
+    for (index, (column, row)) in [(0, 0), (1, 0), (0, 1), (1, 1)].into_iter().enumerate() {
+        let x = left + unit(1, w) + column * (panel_w + unit(1, w));
+        let y = top + unit(9, h) + row * (panel_h + unit(1, h));
+        canvas.fill((x, y, panel_w, panel_h), 0x46_52_5E);
+        if index == 0 {
+            // The frame of the person who speaks in the shared call.
+            canvas.fill((x, y, panel_w, 3), 0x5B_9B_D5);
+            canvas.fill((x, y + panel_h - 3, panel_w, 3), 0x5B_9B_D5);
+            canvas.fill((x, y, 3, panel_h), 0x5B_9B_D5);
+            canvas.fill((x + panel_w - 3, y, 3, panel_h), 0x5B_9B_D5);
+        }
+        // A person: a head and shoulders.
+        canvas.fill(
+            (
+                x + panel_w / 2 - unit(3, w),
+                y + unit(7, h),
+                unit(6, w),
+                unit(9, h),
+            ),
+            0x9F_AC_B8,
+        );
+        canvas.fill(
+            (
+                x + panel_w / 2 - unit(7, w),
+                y + unit(18, h),
+                unit(14, w),
+                panel_h - unit(18, h),
+            ),
+            0x9F_AC_B8,
+        );
+        canvas.fill(
+            (
+                x + unit(1, w),
+                y + panel_h - unit(5, h),
+                unit(5, w),
+                unit(3, h),
+            ),
+            0x12_17_1C,
+        );
+    }
+    canvas.fill(
+        (
+            left + wide / 2 - unit(2, w),
+            top + high - unit(5, h),
+            unit(5, w),
+            unit(3, h),
+        ),
+        0xC0_45_3A,
+    );
+    canvas.frame()
+}
+
+/// The picture of a shared window: an editor with lines of text.
+fn editor_picture(width: u32, height: u32) -> PictureFrame {
+    let mut canvas = Canvas::new(width, height, 0x1E_22_28);
+    let unit = |share: u32, of: u32| of * share / 100;
+    let (w, h) = (width, height);
+    canvas.fill((0, 0, w, unit(5, h)), 0x14_17_1B);
+    canvas.fill((0, unit(5, h), unit(18, w), h), 0x19_1C_21);
+    for line in 0..9 {
+        canvas.fill(
+            (
+                unit(2, w),
+                unit(9, h) + line * unit(5, h),
+                unit(8 + (line * 5) % 7, w),
+                unit(1, h) + 2,
+            ),
+            0x6A_74_80,
+        );
+    }
+    let colours = [0xC5_86_C0, 0x9C_DC_FE, 0xCE_91_78, 0x6A_99_55, 0xDC_DC_AA];
+    for line in 0..17u32 {
+        let indent = [0, 3, 3, 6, 6, 6, 3, 0, 0, 3, 6, 6, 3, 3, 0, 0, 3][line as usize];
+        let y = unit(9, h) + line * unit(5, h);
+        let mut x = unit(21 + indent, w);
+        for part in 0..(2 + line % 3) {
+            let wide = unit(5 + (line * 7 + part * 11) % 14, w);
+            canvas.fill(
+                (x, y, wide, unit(1, h) + 3),
+                colours[((line + part) % 5) as usize],
+            );
+            x += wide + unit(1, w);
+        }
+    }
+    canvas.frame()
+}
+
+/// "Acme Studio" with Luca in the call of Daily, in which the named people share. Luca
+/// holds "record calls" unless `may_record` is false.
+fn acme_with_shares(
+    sharers: &'static [(&'static str, ShareAudio)],
+    may_record: bool,
+    change: impl Fn(&mut Call),
+) -> ServerSnapshot {
+    let mut server = acme();
+    server.model = Some(acme_model(|studio| {
+        if may_record {
+            studio.roles[0]
+                .permissions
+                .push(WorkspacePermission::RecordCalls);
+        }
+        for shown in &mut studio.calls {
+            if let Some(call) = &mut shown.call
+                && shown.channel_id == id::<ChannelId>(34)
+            {
+                call.participants.insert(3, participant("Luca"));
+                call.recording = None;
+                for participant in &mut call.participants {
+                    participant.screen_share = sharers
+                        .iter()
+                        .find(|(name, _)| person(name) == participant.account_id)
+                        .map(|(_, audio)| ScreenShare {
+                            audio: *audio,
+                            started_at: at(),
+                        });
+                }
+                change(call);
+            }
+        }
+    }));
+    server
+}
+
+fn seen(name: &str, kind: ShareKind, size: (u32, u32)) -> SeenShare {
+    SeenShare {
+        account_id: person(name),
+        kind: Some(kind),
+        frame_rate: Some(30),
+        size: Some(size),
+    }
+}
+
+/// Draws a picture as the picture of the watched share, and small pictures of the shares.
+fn show_pictures(
+    main: (ShareId, PictureFrame),
+    small: Vec<(ShareId, PictureFrame)>,
+) -> impl FnOnce(&mut Shell, &mut gpui::Window, &mut gpui::Context<Shell>) {
+    move |shell, _, cx| {
+        select_channel(shell, "Daily", cx);
+        // The design draws a call with the server book as icons.
+        shell
+            .state()
+            .update(cx, |state, cx| state.set_server_book_collapsed(true, cx));
+        shell.show_pictures_fixture(Some(main), small, cx);
+    }
+}
+
+/// A recording of the call of Daily.
+fn recording(change: impl FnOnce(&mut Recording)) -> Recording {
+    let mut recording = Recording {
+        id: id(41),
+        workspace_id: id(10),
+        channel_id: id(34),
+        call_id: id(40),
+        state: RecordingState::Recording,
+        started_by: person("Ana"),
+        requested_at: at() + time::Duration::minutes(3),
+        recording_since: Some(at() + time::Duration::seconds(3 * 60 + 15)),
+        stop: None,
+        ended_at: None,
+        failure: None,
+        language: "auto".to_owned(),
+        segments: 5,
+        failed_segments: 0,
+        bytes: None,
+        timeline_started_at: None,
+        transcript: TranscriptState::None,
+        transcript_lines: 0,
+    };
+    change(&mut recording);
+    recording
+}
+
+/// The shares of a call, the dialog of a share, the settings of a share, and the recording
+/// of a call (ADR 0738; views B, E and F of the design).
+fn draw_shares(studio: &mut Studio) -> Result<(), String> {
+    const CARLA: &[(&str, ShareAudio)] = &[("Carla", ShareAudio::System)];
+    const TWO: &[(&str, ShareAudio)] =
+        &[("Carla", ShareAudio::System), ("Bruno", ShareAudio::None)];
+    const LUCA: &[(&str, ShareAudio)] = &[("Luca", ShareAudio::Application)];
+    let screen_size = (1920, 1200);
+    let carla = ShareId::Of(person("Carla"));
+    let bruno = ShareId::Of(person("Bruno"));
+    let watching = |shares: Vec<SeenShare>, watched: ShareId| {
+        with_call(in_call(Phase::Connected), move |call| {
+            call.shares = shares;
+            call.watched = Some(watched);
+        })
+    };
+    let one = || watching(vec![seen("Carla", ShareKind::Screen, screen_size)], carla);
+    let recorded = |call: &mut Call| call.recording = Some(recording(|_| {}));
+
+    // View B: one share with its sound, and the recording of the call.
+    studio.draw(
+        Screen::call("share", one())
+            .servers(vec![acme_with_shares(CARLA, true, recorded), harbor()]),
+        show_pictures((carla, desktop_picture(1568, 980)), Vec::new()),
+    )?;
+    studio.draw(
+        Screen::call("share-scale-150", one())
+            .scale(150)
+            .servers(vec![acme_with_shares(CARLA, true, recorded), harbor()]),
+        show_pictures((carla, desktop_picture(1568, 980)), Vec::new()),
+    )?;
+    studio.draw(
+        Screen::call("share-picture-arrives", one())
+            .servers(vec![acme_with_shares(CARLA, true, |_| {}), harbor()]),
+        show_daily,
+    )?;
+    let mut hidden = one();
+    hidden.voice.hide_people_without_video = true;
+    studio.draw(
+        Screen::call("share-people-without-video-hidden", hidden)
+            .servers(vec![acme_with_shares(CARLA, true, recorded), harbor()]),
+        show_pictures((carla, desktop_picture(1568, 980)), Vec::new()),
+    )?;
+    let mut quiet = one();
+    quiet.voice.share_volume = 0;
+    studio.draw(
+        Screen::call("share-sound-off-for-the-viewer", quiet)
+            .servers(vec![acme_with_shares(CARLA, true, |_| {}), harbor()]),
+        show_pictures((carla, desktop_picture(1568, 980)), Vec::new()),
+    )?;
+
+    // View E: two shares. The viewer picks one, and the sound follows the choice.
+    let two = |watched: ShareId| {
+        watching(
+            vec![
+                seen("Carla", ShareKind::Screen, screen_size),
+                seen("Bruno", ShareKind::Window, (1280, 800)),
+            ],
+            watched,
+        )
+    };
+    let small = || {
+        vec![
+            (carla, desktop_picture(176, 110)),
+            (bruno, editor_picture(176, 110)),
+        ]
+    };
+    studio.draw(
+        Screen::call("share-two", two(carla))
+            .servers(vec![acme_with_shares(TWO, true, recorded), harbor()]),
+        show_pictures((carla, desktop_picture(1568, 980)), small()),
+    )?;
+    studio.draw(
+        Screen::call("share-two-watching-the-second", two(bruno))
+            .servers(vec![acme_with_shares(TWO, true, recorded), harbor()]),
+        show_pictures((bruno, editor_picture(1280, 800)), small()),
+    )?;
+
+    // The share of this device.
+    let own = |sound_held: bool| {
+        with_call(in_call(Phase::Connected), move |call| {
+            call.share = ShareState::Running(ShareInfo {
+                kind: ShareKind::Window,
+                sound: ShareAudio::Application,
+                sound_held,
+                size: (1280, 800),
+                frame_rate: 30,
+            });
+            call.watched = Some(ShareId::Own);
+        })
+    };
+    studio.draw(
+        Screen::call("share-own", own(false))
+            .servers(vec![acme_with_shares(LUCA, true, |_| {}), harbor()]),
+        show_pictures((ShareId::Own, editor_picture(1280, 800)), Vec::new()),
+    )?;
+    let block = MicrophoneBlock {
+        by: person("Ana"),
+        reason: BlockReason::Moderator,
+    };
+    let held = block.clone();
+    let blocked = with_call(own(true), move |call| {
+        call.microphone_block = Some(block);
+        call.microphone = MicrophoneState::Closed;
+    });
+    studio.draw(
+        Screen::call("share-own-sound-held-by-a-microphone-block", blocked).servers(vec![
+            acme_with_shares(LUCA, true, move |call| {
+                for participant in &mut call.participants {
+                    if participant.account_id == person("Luca") {
+                        participant.microphone_block = Some(held.clone());
+                    }
+                }
+            }),
+            harbor(),
+        ]),
+        show_pictures((ShareId::Own, editor_picture(1280, 800)), Vec::new()),
+    )?;
+    let starting = with_call(in_call(Phase::Connected), |call| {
+        call.share = ShareState::Starting;
+    });
+    studio.draw(Screen::call("share-own-starting", starting), show_daily)?;
+    let ended = with_call(in_call(Phase::Connected), |call| {
+        call.share = ShareState::Ended(CaptureError::SourceGone);
+    });
+    studio.draw(Screen::call("share-own-ended-by-itself", ended), show_daily)?;
+
+    // The dialog of a share.
+    let picker = |prepare: fn(&mut Shell, &mut gpui::Context<Shell>)| -> Prepare {
+        Box::new(move |shell, window, cx| {
+            select_channel(shell, "Daily", cx);
+            shell.open(Open::SharePicker, window, cx);
+            cx.spawn(async move |shell, cx| {
+                // The lists arrive after the dialog is open.
+                loop {
+                    let listed = shell.update(cx, |shell, cx| {
+                        let listed = shell.share_picker_is_listed();
+                        if listed {
+                            prepare(shell, cx);
+                        }
+                        listed
+                    });
+                    if !matches!(listed, Ok(false)) {
+                        break;
+                    }
+                    cx.background_executor()
+                        .timer(Duration::from_millis(5))
+                        .await;
+                }
+            })
+            .detach();
+        })
+    };
+    studio.draw_after(
+        Screen::call("share-dialog", in_call(Phase::Connected)),
+        picker(|_, _| {}),
+        Shell::share_picker_is_listed,
+    )?;
+    studio.draw_after(
+        Screen::call(
+            "share-dialog-window-with-its-application",
+            in_call(Phase::Connected),
+        ),
+        picker(|shell, cx| {
+            shell.pick_share_picture(PictureSource::Window(12), cx);
+            shell.pick_share_sound(SoundKind::Application, cx);
+        }),
+        Shell::share_picker_is_listed,
+    )?;
+    studio.draw_after(
+        Screen::call(
+            "share-dialog-screen-with-one-application",
+            in_call(Phase::Connected),
+        ),
+        picker(|shell, cx| {
+            shell.pick_share_picture(PictureSource::Display(1), cx);
+            shell.pick_share_sound(SoundKind::Application, cx);
+            shell.pick_share_application(
+                ApplicationId {
+                    process_id: 501,
+                    bundle_id: "example.remote-desktop".to_owned(),
+                },
+                cx,
+            );
+        }),
+        Shell::share_picker_is_listed,
+    )?;
+    studio.draw_after(
+        Screen::call(
+            "share-dialog-screen-with-system-sound",
+            in_call(Phase::Connected),
+        ),
+        picker(|shell, cx| {
+            shell.pick_share_picture(PictureSource::Display(1), cx);
+            shell.pick_share_sound(SoundKind::System, cx);
+        }),
+        Shell::share_picker_is_listed,
+    )?;
+    let refused = capture();
+    refused.set_access(ScreenAccess::NotAllowed);
+    studio.draw(
+        Screen::call("share-dialog-no-permission", in_call(Phase::Connected))
+            .capture(Arc::new(refused)),
+        |shell, window, cx| {
+            select_channel(shell, "Daily", cx);
+            shell.open(Open::SharePicker, window, cx);
+        },
+    )?;
+    let mut unsupported = in_call(Phase::Connected);
+    unsupported.can_share = false;
+    studio.draw(
+        Screen::call("share-not-on-this-system", unsupported).capture(Arc::new(NoCapture)),
+        show_daily,
+    )?;
+
+    // The settings of a share and of the view.
+    studio.draw(
+        Screen::call("call-settings-share-and-view", in_call(Phase::Connected)),
+        show_daily_tab(CallTab::Settings),
+    )?;
+
+    // The recording of the call (views B and F).
+    let recording_screen = |name: &'static str, may_record: bool, change: fn(&mut Call)| {
+        Screen::call(name, one())
+            .servers(vec![acme_with_shares(CARLA, may_record, change), harbor()])
+    };
+    let with_picture = || show_pictures((carla, desktop_picture(1568, 980)), Vec::new());
+    studio.draw(
+        recording_screen("recording-none", true, |_| {}),
+        with_picture(),
+    )?;
+    studio.draw(
+        recording_screen("recording-starting", true, |call| {
+            call.recording = Some(recording(|recording| {
+                recording.state = RecordingState::Starting;
+                recording.recording_since = None;
+            }));
+        }),
+        with_picture(),
+    )?;
+    studio.draw(
+        recording_screen("recording-stopping", true, |call| {
+            call.recording = Some(recording(|recording| {
+                recording.stop = Some(RecordingStop {
+                    reason: RecordingStopReason::Stopped,
+                    by: Some(person("Luca")),
+                    at: at() + time::Duration::minutes(42),
+                });
+            }));
+        }),
+        with_picture(),
+    )?;
+    studio.draw(
+        recording_screen("recording-seen-without-the-permission", false, |call| {
+            call.recording = Some(recording(|_| {}));
+        }),
+        with_picture(),
+    )?;
+    studio.draw(
+        recording_screen("recording-no-permission", false, |_| {}),
+        with_picture(),
+    )?;
+    let lost = || {
+        recording(|recording| {
+            recording.state = RecordingState::Processing;
+            recording.stop = Some(RecordingStop {
+                reason: RecordingStopReason::RecorderLost,
+                by: None,
+                at: at() + time::Duration::minutes(39),
+            });
+            recording.ended_at = Some(at() + time::Duration::minutes(39));
+        })
+    };
+    let failed = |problem: Recording, details: bool, request: Option<&'static str>| -> Prepare {
+        Box::new(move |shell, window, cx| {
+            select_channel(shell, "Daily", cx);
+            shell
+                .state()
+                .update(cx, |state, cx| state.set_server_book_collapsed(true, cx));
+            shell.show_pictures_fixture(
+                Some((ShareId::Of(person("Carla")), desktop_picture(1568, 980))),
+                Vec::new(),
+                cx,
+            );
+            shell.state().update(cx, |state, cx| {
+                state.show_recording_fixture(
+                    Some((id(1), problem)),
+                    request.map(str::to_owned),
+                    cx,
+                );
+            });
+            if details {
+                shell.open(Open::RecordingDetails, window, cx);
+            }
+        })
+    };
+    studio.draw_after(
+        recording_screen("recording-failed", true, |_| {}),
+        failed(lost(), false, None),
+        |_| true,
+    )?;
+    studio.draw_after(
+        recording_screen("recording-failed-details", true, |_| {}),
+        failed(lost(), true, None),
+        |_| true,
+    )?;
+    studio.draw_after(
+        recording_screen("recording-stopped-by-the-storage-reserve", true, |_| {}),
+        failed(
+            recording(|recording| {
+                recording.state = RecordingState::Processing;
+                recording.stop = Some(RecordingStop {
+                    reason: RecordingStopReason::StorageReserve,
+                    by: None,
+                    at: at() + time::Duration::minutes(39),
+                });
+            }),
+            true,
+            None,
+        ),
+        |_| true,
+    )?;
+    studio.draw_after(
+        recording_screen("recording-not-taken-by-a-recorder", true, |_| {}),
+        failed(
+            recording(|recording| {
+                recording.state = RecordingState::Failed;
+                recording.failure = Some(RecordingFailure::RecorderUnavailable);
+                recording.recording_since = None;
+            }),
+            true,
+            None,
+        ),
+        |_| true,
+    )?;
+    studio.draw_after(
+        recording_screen("recording-request-refused", true, |_| {}),
+        Box::new(|shell, _, cx| {
+            select_channel(shell, "Daily", cx);
+            shell.state().update(cx, |state, cx| {
+                state.show_recording_fixture(
+                    None,
+                    Some(
+                        "The server has no free place for a further recording. Wait until \
+                         a recording of another call has ended."
+                            .to_owned(),
+                    ),
+                    cx,
+                );
+            });
+        }),
+        |_| true,
+    )?;
+    Ok(())
+}
+
+/// The call of Daily in the state of a workspace.
+fn daily_call(studio: &mut WorkspaceState) -> Option<&mut Call> {
+    studio
+        .calls
+        .iter_mut()
+        .find(|shown| shown.channel_id == id::<ChannelId>(34))
+        .and_then(|shown| shown.call.as_mut())
+}
+
+/// "Acme Studio" with Luca in the call of Daily, nobody sharing and no recording. Luca has
+/// the role "Leads", which holds `permissions`. `change` changes the workspace.
+fn acme_with_rules(
+    permissions: &'static [WorkspacePermission],
+    change: impl Fn(&mut WorkspaceState),
+) -> ServerSnapshot {
+    let mut server = acme();
+    server.model = Some(acme_model(|studio| {
+        studio.roles[1].permissions = permissions.to_vec();
+        studio.own_role_ids = vec![studio.roles[1].id];
+        if let Some(call) = daily_call(studio) {
+            for participant in &mut call.participants {
+                participant.screen_share = None;
+            }
+            call.participants.insert(3, participant("Luca"));
+            call.recording = None;
+        }
+        change(studio);
+    }));
+    server
+}
+
+/// The rules of the room of a call (ADR 0739): meeting mode as presenter and as
+/// participant (view D), a room that is locked or full and the request to enter (view F),
+/// the invitation of a member (view B), the menu of a person (view K), the settings of the
+/// room, and what the server tells or refuses.
+fn draw_rules(studio: &mut Studio) -> Result<(), String> {
+    const MEMBER: &[WorkspacePermission] = &[];
+    const MODERATOR: &[WorkspacePermission] = &[
+        WorkspacePermission::ManageChannel,
+        WorkspacePermission::MuteMembers,
+        WorkspacePermission::DeafenMembers,
+        WorkspacePermission::DisconnectMembers,
+        WorkspacePermission::MoveMembers,
+    ];
+    let share = || ScreenShare {
+        audio: ShareAudio::Application,
+        started_at: at(),
+    };
+    // Meeting mode that `presenter` runs: that person shares, and every other microphone
+    // has the block of the meeting.
+    fn meeting(studio: &mut WorkspaceState, presenter: &str, share: ScreenShare) {
+        let Some(call) = daily_call(studio) else {
+            return;
+        };
+        call.meeting = Some(Meeting {
+            presenter: person(presenter),
+            started_at: at(),
+        });
+        for participant in &mut call.participants {
+            if participant.account_id == person(presenter) {
+                participant.screen_share = Some(share.clone());
+                participant.muted = false;
+            } else {
+                participant.microphone_block = Some(MicrophoneBlock {
+                    by: person(presenter),
+                    reason: BlockReason::Meeting,
+                });
+            }
+        }
+    }
+    fn of<'a>(call: &'a mut Call, name: &str) -> Option<&'a mut CallParticipant> {
+        call.participants
+            .iter_mut()
+            .find(|participant| participant.account_id == person(name))
+    }
+    let sharing = || {
+        with_call(in_call(Phase::Connected), |call| {
+            call.share = ShareState::Running(ShareInfo {
+                kind: ShareKind::Window,
+                sound: ShareAudio::Application,
+                sound_held: false,
+                size: (1280, 800),
+                frame_rate: 30,
+            });
+            call.watched = Some(ShareId::Own);
+        })
+    };
+    let own_picture = || show_pictures((ShareId::Own, editor_picture(1280, 800)), Vec::new());
+
+    // View D, as the presenter: Ana raised a hand.
+    let presenter = move |allowed: bool| {
+        acme_with_rules(MEMBER, move |studio| {
+            meeting(studio, "Luca", share());
+            if let Some(ana) = daily_call(studio).and_then(|call| of(call, "Ana")) {
+                if allowed {
+                    ana.microphone_block = None;
+                    ana.muted = true;
+                } else {
+                    ana.hand_raised = true;
+                }
+            }
+        })
+    };
+    studio.draw(
+        Screen::call("meeting-presenter", sharing()).servers(vec![presenter(false), harbor()]),
+        own_picture(),
+    )?;
+    studio.draw(
+        Screen::call("meeting-presenter-scale-150", sharing())
+            .scale(150)
+            .servers(vec![presenter(false), harbor()]),
+        own_picture(),
+    )?;
+    studio.draw(
+        Screen::call("meeting-presenter-allowed", sharing())
+            .servers(vec![presenter(true), harbor()]),
+        own_picture(),
+    )?;
+    studio.draw(
+        Screen::call("meeting-presenter-members", sharing())
+            .servers(vec![presenter(false), harbor()]),
+        |shell, window, cx| {
+            select_channel(shell, "Daily", cx);
+            shell.open(Open::CallTab(CallTab::Members), window, cx);
+        },
+    )?;
+    // A person who shares and has not turned meeting mode on.
+    studio.draw(
+        Screen::call("meeting-can-start", sharing()).servers(vec![
+            acme_with_rules(MEMBER, move |studio| {
+                if let Some(luca) = daily_call(studio).and_then(|call| of(call, "Luca")) {
+                    luca.screen_share = Some(share());
+                }
+            }),
+            harbor(),
+        ]),
+        own_picture(),
+    )?;
+
+    // View D, as a participant: Carla runs meeting mode.
+    let carla = ShareId::Of(person("Carla"));
+    let participant_media = |held: bool, muted: bool| {
+        let mut media = with_call(in_call(Phase::Connected), move |call| {
+            call.shares = vec![seen("Carla", ShareKind::Screen, (1920, 1200))];
+            call.watched = Some(carla);
+            if held {
+                call.microphone_block = Some(MicrophoneBlock {
+                    by: person("Carla"),
+                    reason: BlockReason::Meeting,
+                });
+                call.microphone = MicrophoneState::Closed;
+            }
+        });
+        media.calls.muted = muted;
+        media
+    };
+    let participant_server = move |hand: bool, allowed: bool| {
+        acme_with_rules(MEMBER, move |studio| {
+            meeting(studio, "Carla", share());
+            if let Some(luca) = daily_call(studio).and_then(|call| of(call, "Luca")) {
+                luca.hand_raised = hand;
+                if allowed {
+                    luca.microphone_block = None;
+                    luca.muted = true;
+                }
+            }
+        })
+    };
+    let carla_picture = || show_pictures((carla, desktop_picture(1568, 980)), Vec::new());
+    studio.draw(
+        Screen::call("meeting-participant", participant_media(true, false))
+            .servers(vec![participant_server(false, false), harbor()]),
+        carla_picture(),
+    )?;
+    studio.draw(
+        Screen::call(
+            "meeting-participant-hand-raised",
+            participant_media(true, false),
+        )
+        .servers(vec![participant_server(true, false), harbor()]),
+        carla_picture(),
+    )?;
+    studio.draw(
+        Screen::call(
+            "meeting-participant-may-speak",
+            participant_media(false, true),
+        )
+        .servers(vec![participant_server(false, true), harbor()]),
+        carla_picture(),
+    )?;
+    // The same state while the person looks at a text channel.
+    studio.draw(
+        Screen::call(
+            "meeting-participant-may-speak-elsewhere",
+            participant_media(false, true),
+        )
+        .servers(vec![participant_server(false, true), harbor()]),
+        |_, _, _| {},
+    )?;
+    // The block of the microphone ended while the person's own setting is "open".
+    studio.draw(
+        Screen::call("microphone-open-again", in_call(Phase::Connected))
+            .servers(vec![acme_with_rules(MEMBER, |_| {}), harbor()]),
+        |shell, _, cx| {
+            select_channel(shell, "Daily", cx);
+            shell.state().update(cx, |state, cx| {
+                state.show_call_rules_fixture(
+                    None,
+                    Some(junto_client::text::MICROPHONE_OPEN_AGAIN.to_owned()),
+                    None,
+                    cx,
+                );
+            });
+        },
+    )?;
+    // A request that the server refused.
+    studio.draw(
+        Screen::call("call-request-refused", in_call(Phase::Connected))
+            .servers(vec![acme_with_rules(MEMBER, |_| {}), harbor()]),
+        |shell, _, cx| {
+            select_channel(shell, "Daily", cx);
+            shell.state().update(cx, |state, cx| {
+                state.show_call_rules_fixture(
+                    None,
+                    None,
+                    Some(junto_client::text::refusal(ErrorCode::Forbidden)),
+                    cx,
+                );
+            });
+        },
+    )?;
+
+    // The room: locked, with its settings, as a member and as a person with
+    // "manage channel".
+    let locked = |studio: &mut WorkspaceState| {
+        for channel in &mut studio.channels {
+            if channel.id == id::<ChannelId>(34) {
+                channel.user_limit = Some(8);
+            }
+        }
+        if let Some(call) = daily_call(studio) {
+            call.lock = Some(CallLock {
+                by: person("Luca"),
+                at: at(),
+            });
+        }
+    };
+    studio.draw(
+        Screen::call("room-locked", in_call(Phase::Connected))
+            .servers(vec![acme_with_rules(MEMBER, locked), harbor()]),
+        show_daily,
+    )?;
+    studio.draw(
+        Screen::call("room-settings", in_call(Phase::Connected))
+            .servers(vec![acme_with_rules(MODERATOR, locked), harbor()]),
+        |shell, window, cx| {
+            select_channel(shell, "Daily", cx);
+            shell.open(Open::RoomSettings, window, cx);
+        },
+    )?;
+    studio.draw(
+        Screen::call(
+            "room-settings-without-permissions",
+            in_call(Phase::Connected),
+        )
+        .servers(vec![acme_with_rules(MEMBER, |_| {}), harbor()]),
+        |shell, window, cx| {
+            select_channel(shell, "Daily", cx);
+            shell.open(Open::RoomSettings, window, cx);
+        },
+    )?;
+
+    // View B: the invitation of a member. Elisa is invited and has not answered.
+    let inviting = || {
+        let mut server = acme_with_rules(MEMBER, |_| {});
+        if let Some(model) = &mut server.model {
+            Arc::make_mut(model).invitations.push(CallInvitation {
+                id: id(60),
+                call_id: id(40),
+                place: daily().place,
+                account_id: person("Elisa"),
+                invited_by: person("Luca"),
+                created_at: at(),
+                expires_at: at() + time::Duration::seconds(60),
+            });
+        }
+        server
+    };
+    studio.draw(
+        Screen::call("call-members-invite", in_call(Phase::Connected))
+            .servers(vec![inviting(), harbor()]),
+        show_daily_tab(CallTab::Members),
+    )?;
+    studio.draw(
+        Screen::call("call-members-invite-picker", in_call(Phase::Connected))
+            .servers(vec![inviting(), harbor()]),
+        |shell, window, cx| {
+            select_channel(shell, "Daily", cx);
+            shell.open(Open::MemberPicker, window, cx);
+        },
+    )?;
+    // A person outside asks to enter the call of this device.
+    let asked = || {
+        let mut server = acme_with_rules(MEMBER, locked);
+        if let Some(model) = &mut server.model {
+            Arc::make_mut(model).entry_requests.push(EntryRequest {
+                id: id(61),
+                call_id: id(40),
+                place: daily().place,
+                account_id: person("Diego"),
+                created_at: at(),
+                expires_at: at() + time::Duration::seconds(60),
+            });
+        }
+        server
+    };
+    studio.draw(
+        Screen::call("call-entry-request", in_call(Phase::Connected))
+            .servers(vec![asked(), harbor()]),
+        show_daily,
+    )?;
+
+    // View F, locked: a person outside chooses the locked room. Another room is full.
+    let outside = || {
+        let mut server = acme();
+        server.model = Some(acme_model(|studio| {
+            let workspace_id = studio.workspace.id;
+            let mut all_hands = channel(37, workspace_id, ChannelKind::Voice, "All hands");
+            all_hands.user_limit = Some(2);
+            let place = CallPlace::Channel {
+                workspace_id,
+                channel_id: all_hands.id,
+            };
+            let mut moved = Vec::new();
+            if let Some(call) = daily_call(studio) {
+                call.recording = None;
+                let (stay, go) = std::mem::take(&mut call.participants)
+                    .into_iter()
+                    .partition(|participant| {
+                        participant.account_id != person("Bruno")
+                            && participant.account_id != person("Marta")
+                    });
+                call.participants = stay;
+                moved = go;
+            }
+            studio.calls.push(ChannelCall {
+                workspace_id,
+                channel_id: all_hands.id,
+                in_use: true,
+                call: Some(Call {
+                    id: id(43),
+                    place,
+                    started_at: Some(at()),
+                    lock: None,
+                    meeting: None,
+                    participants: moved,
+                    recording: None,
+                }),
+            });
+            studio.channels.insert(6, all_hands);
+        }));
+        server
+    };
+    let focus_entry = |state: Option<EntryState>| {
+        move |shell: &mut Shell, _: &mut gpui::Window, cx: &mut gpui::Context<Shell>| {
+            select_channel(shell, "Focus room", cx);
+            if let Some(state) = state {
+                shell.state().update(cx, |app, cx| {
+                    app.show_call_rules_fixture(
+                        Some(OwnEntry {
+                            server_id: id(1),
+                            channel_id: id(35),
+                            request_id: Some(id(62)),
+                            state,
+                        }),
+                        None,
+                        None,
+                        cx,
+                    );
+                });
+            }
+        }
+    };
+    let out = |name: &'static str| Screen::new(name, vec![outside(), harbor()]).media(no_call());
+    studio.draw(out("room-locked-outside"), focus_entry(None))?;
+    studio.draw(
+        out("room-locked-request-waits"),
+        focus_entry(Some(EntryState::Waiting)),
+    )?;
+    studio.draw(
+        out("room-locked-request-denied"),
+        focus_entry(Some(EntryState::Denied)),
+    )?;
+    studio.draw(
+        out("room-locked-request-expired"),
+        focus_entry(Some(EntryState::Expired)),
+    )?;
+    studio.draw(out("room-full-outside"), |shell, _, cx| {
+        select_channel(shell, "All hands", cx);
+    })?;
+    // An invitation that waits for the person.
+    let invited = || {
+        let mut server = outside();
+        if let Some(model) = &mut server.model {
+            Arc::make_mut(model).invitations.push(CallInvitation {
+                id: id(63),
+                call_id: id(40),
+                place: daily().place,
+                account_id: person("Luca"),
+                invited_by: person("Carla"),
+                created_at: at(),
+                expires_at: at() + time::Duration::seconds(60),
+            });
+        }
+        server
+    };
+    studio.draw(
+        Screen::new("call-invitation", vec![invited(), harbor()]).media(no_call()),
+        |_, _, _| {},
+    )?;
+
+    // View K: the menu of a person in a voice channel, as a moderator and as a member.
+    let menu_of_diego = |moving: bool| {
+        move |shell: &mut Shell, window: &mut gpui::Window, cx: &mut gpui::Context<Shell>| {
+            select_channel(shell, "Daily", cx);
+            shell.open_person_menu(id(35), person("Diego"), window, cx);
+            if moving {
+                shell.show_move_destinations(cx);
+            }
+        }
+    };
+    let ready = |shell: &Shell| shell.person_menu_of().is_some();
+    studio.draw_after(
+        Screen::call("person-menu", in_call(Phase::Connected))
+            .servers(vec![acme_with_rules(MODERATOR, |_| {}), harbor()]),
+        Box::new(menu_of_diego(false)),
+        ready,
+    )?;
+    studio.draw_after(
+        Screen::call("person-menu-move", in_call(Phase::Connected))
+            .servers(vec![acme_with_rules(MODERATOR, |_| {}), harbor()]),
+        Box::new(menu_of_diego(true)),
+        ready,
+    )?;
+    studio.draw_after(
+        Screen::call("person-menu-member", in_call(Phase::Connected))
+            .servers(vec![acme_with_rules(MEMBER, |_| {}), harbor()]),
+        Box::new(menu_of_diego(false)),
+        ready,
+    )?;
+    Ok(())
 }
 
 fn with_call(mut media: MediaSnapshot, change: impl FnOnce(&mut ActiveCall)) -> MediaSnapshot {
@@ -1522,9 +2652,17 @@ fn draw_components(studio: &mut Studio) -> Result<(), String> {
 
 fn run(out: &Path) -> Result<(), String> {
     let mut studio = Studio::new(out.to_owned())?;
-    let drawn = draw_all(&mut studio)
-        .and_then(|()| draw_calls(&mut studio))
-        .and_then(|()| draw_components(&mut studio));
+    let only = std::env::var("JUNTO_SCREENS_ONLY").ok();
+    let drawn = match only.as_deref() {
+        // The screens of one unit, while its screens are worked on.
+        Some("shares") => draw_shares(&mut studio),
+        Some("rules") => draw_rules(&mut studio),
+        _ => draw_all(&mut studio)
+            .and_then(|()| draw_calls(&mut studio))
+            .and_then(|()| draw_shares(&mut studio))
+            .and_then(|()| draw_rules(&mut studio))
+            .and_then(|()| draw_components(&mut studio)),
+    };
     let scratch = studio.scratch.clone();
     drop(studio);
     // The data directories of the screens hold no server and no key of a real server.

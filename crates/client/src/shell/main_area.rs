@@ -4,7 +4,8 @@
 
 use gpui::{
     AnyElement, BoxShadow, Context, Hsla, InteractiveElement, IntoElement, ParentElement, Role,
-    SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
+    SharedString, StatefulInteractiveElement, Styled, StyledText, Window, deferred, div,
+    prelude::FluentBuilder, px,
 };
 use junto_client_core::protocol::structure::ChannelKind;
 
@@ -13,14 +14,14 @@ use crate::assets::Icon;
 use junto_media::calls::Phase;
 
 use crate::state::view::{
-    CallPanel, ChannelRow, Content, Members, Relation, SelectedServer, ServerStatus, ShellView,
-    VoiceState, WorkspaceView,
+    CallPanel, ChannelRow, Content, Members, RecordingControl, RecordingShown, Relation,
+    SelectedServer, ServerStatus, ShellView, VoiceState, WorkspaceView,
 };
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Button, ButtonKind, Mosaic, MosaicKind, Notice, ScrollArea, SectionLabel, SideHeader,
-    StatePanel, StyleExt, icon,
+    Button, ButtonKind, Flag, FlagKind, Mosaic, MosaicKind, Notice, ScrollArea, SectionLabel,
+    SideHeader, StatePanel, StyleExt, float_shadow, icon, tooltip,
 };
 
 /// The time of a recovery as the notice shows it: the date and the time in UTC.
@@ -136,6 +137,10 @@ impl Shell {
                 &theme,
                 cx,
             ))
+            .children(
+                call.and_then(|(_, panel)| panel.room.meeting.as_ref())
+                    .map(|meeting| self.render_meeting_bar(meeting, &theme, cx)),
+            )
             .child(split)
     }
 
@@ -179,10 +184,18 @@ impl Shell {
                 after.extend(Self::render_call_interruption(theme));
                 after.push(div().flex_1().into_any_element());
             } else {
+                // The recording of the call, and then the state of the room.
+                after.push(
+                    div()
+                        .flex_none()
+                        .w(px(1.0))
+                        .h(u(20.0))
+                        .bg(Hsla::from(colors.rule))
+                        .into_any_element(),
+                );
+                after.extend(self.render_recording_control(&panel.recording, theme, cx));
                 after.push(div().flex_1().into_any_element());
-                if let Some(voice) = voice {
-                    after.extend(voice_header_states(voice, theme));
-                }
+                after.extend(self.render_room_controls(&panel.room, theme, cx));
             }
             if narrow {
                 after.extend(self.render_call_panel_buttons(cx));
@@ -196,10 +209,12 @@ impl Shell {
             .flex()
             .flex_none()
             .items_center()
-            .gap(u(10.0))
+            // The header of a call in a narrow window holds the controls of the room and
+            // the buttons of the panel: its parts stand closer.
+            .gap(u(if narrow && call.is_some() { 6.0 } else { 10.0 }))
             .h(u(theme.metrics.header_height))
             .pl(u(16.0))
-            .pr(u(14.0))
+            .pr(u(if narrow && call.is_some() { 8.0 } else { 14.0 }))
             .bg(Hsla::from(colors.travertine))
             .border_b_1()
             .border_color(Hsla::from(colors.rule))
@@ -251,6 +266,174 @@ impl Shell {
             })
     }
 
+    /// The recording of the call of this device in the header of its voice channel
+    /// (ADR 0738): the mark with its time and the action that stops it, the action that
+    /// starts one, and what happened to the last one.
+    fn render_recording_control(
+        &mut self,
+        control: &RecordingControl,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let colors = theme.colors;
+        let record = |title: &'static str, cx: &mut Context<Self>| {
+            Button::new("start-recording")
+                .icon(Icon::Record)
+                .icon_colour(colors.cinnabar)
+                .label(text::RECORD)
+                .tooltip(title)
+                .accessible_label(title)
+                .disabled(control.busy)
+                .selector("start-recording")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.recording_details_open = false;
+                    this.state.update(cx, |state, cx| state.start_recording(cx));
+                }))
+                .into_any_element()
+        };
+        let why = |sentence: &'static str| {
+            div()
+                .id("no-record-permission")
+                .debug_selector(|| "no-record-permission".to_owned())
+                .min_w_0()
+                .truncate()
+                .typeface(theme.types.small, theme)
+                .text_size(u(13.0))
+                .ink(colors.ink_2)
+                .child(sentence)
+                .into_any_element()
+        };
+        let forbidden = || {
+            vec![
+                Button::new("start-recording")
+                    .icon(Icon::Record)
+                    .label(text::RECORD)
+                    .tooltip(text::NO_RECORD_PERMISSION)
+                    .disabled(true)
+                    .selector("start-recording")
+                    .into_any_element(),
+                why(text::NO_RECORD_PERMISSION),
+            ]
+        };
+        match &control.state {
+            RecordingShown::None if control.may_record => vec![record(text::START_RECORDING, cx)],
+            RecordingShown::None => forbidden(),
+            RecordingShown::Starting => vec![recording_mark(
+                format!("{} {}", text::RECORDING_MARK, text::RECORDING_STARTS).into(),
+                theme,
+            )],
+            RecordingShown::Running { elapsed, stopping } => {
+                let mark: SharedString = match elapsed {
+                    Some(elapsed) => text::recording_time(*elapsed).into(),
+                    None => text::RECORDING_MARK.into(),
+                };
+                let mut shown = vec![recording_mark(mark, theme)];
+                if control.may_record {
+                    shown.push(
+                        Button::new("stop-recording")
+                            .icon(Icon::Stop)
+                            .icon_colour(colors.cinnabar)
+                            .label(if *stopping {
+                                text::RECORDING_STOPS
+                            } else {
+                                text::STOP
+                            })
+                            .tooltip(text::STOP_RECORDING)
+                            .accessible_label(text::STOP_RECORDING)
+                            .disabled(*stopping || control.busy)
+                            .selector("stop-recording")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.state.update(cx, |state, cx| state.stop_recording(cx));
+                            }))
+                            .into_any_element(),
+                    );
+                }
+                shown
+            }
+            RecordingShown::Failed(problem) => {
+                let (strong, rest) = text::recording_details(problem);
+                let open = self.recording_details_open;
+                let details = div()
+                    .relative()
+                    .flex()
+                    .flex_none()
+                    .child(
+                        Button::new("recording-details")
+                            .label(text::DETAILS)
+                            .tooltip(text::RECORDING_DETAILS)
+                            .selector("recording-details")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                // A click on the button of open details closes them: the
+                                // press closed them, and the click does not open them.
+                                if std::mem::take(&mut this.recording_details_closed_by_press) {
+                                    return;
+                                }
+                                this.recording_details_open = !this.recording_details_open;
+                                cx.notify();
+                            })),
+                    )
+                    .when(open, |details| {
+                        let line = format!("{strong}{rest}");
+                        details.child(
+                            div().absolute().left_0().top(u(32.0)).child(deferred(
+                                div()
+                                    .id("recording-details-text")
+                                    .role(Role::Status)
+                                    .aria_label(line.clone())
+                                    .debug_selector(|| "recording-details-text".to_owned())
+                                    .occlude()
+                                    .w(u(340.0))
+                                    .pt(u(8.0))
+                                    .px(u(10.0))
+                                    .pb(u(9.0))
+                                    .rounded(u(theme.metrics.radius))
+                                    .border_1()
+                                    .border_color(Hsla::from(colors.rule))
+                                    .bg(Hsla::from(colors.travertine_hi))
+                                    .shadow(float_shadow(colors.shadow, 6.0, 16.0))
+                                    .typeface(theme.types.small, theme)
+                                    .line_height(u(17.0))
+                                    .font_weight(gpui::FontWeight::NORMAL)
+                                    .ink(colors.ink_2)
+                                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                        this.recording_details_open = false;
+                                        this.recording_details_closed_by_press = true;
+                                        cx.notify();
+                                    }))
+                                    .child(StyledText::new(line).with_highlights([(
+                                        0..strong.len(),
+                                        gpui::HighlightStyle {
+                                            font_weight: Some(gpui::FontWeight::BOLD),
+                                            color: Some(Hsla::from(colors.ink)),
+                                            ..gpui::HighlightStyle::default()
+                                        },
+                                    )])),
+                            )),
+                        )
+                    })
+                    .into_any_element();
+                let mut shown = vec![
+                    div()
+                        .id("recording-failed")
+                        .role(Role::Status)
+                        .aria_label(text::recording_flag(problem))
+                        .debug_selector(|| "recording-failed".to_owned())
+                        .flex_none()
+                        .child(
+                            Flag::new(FlagKind::Error, text::recording_flag(problem))
+                                .icon(Icon::Warning),
+                        )
+                        .into_any_element(),
+                    details,
+                ];
+                if control.may_record {
+                    shown.push(record(text::START_NEW_RECORDING, cx));
+                }
+                shown
+            }
+        }
+    }
+
     /// The body of a channel that has no content in this version: a text channel, and the
     /// chat of a voice channel that this device is not in.
     fn render_channel_body(&self, channel: &ChannelRow) -> impl IntoElement + use<> {
@@ -300,12 +483,62 @@ impl Shell {
                 )
                 .into_any_element()
         });
+        // The share of this device that ended by itself, and a request for a recording that
+        // the server did not take. Both concern the one call of this client.
+        let share_notice = view.share_notice.as_ref().map(|error| {
+            div()
+                .flex_none()
+                .px(u(16.0))
+                .pt(u(10.0))
+                .child(
+                    Notice::new(text::share_ended(error))
+                        .icon(Icon::Warning)
+                        .selector("share-notice")
+                        .action(
+                            Button::new("dismiss-share-notice")
+                                .label(text::DISMISS)
+                                .selector("dismiss-share-notice")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.state.update(cx, |state, _| state.stop_share());
+                                })),
+                        ),
+                )
+                .into_any_element()
+        });
+        let pending = self.state.read(cx).pending().clone();
+        let recording_notice = pending.recording_failed.as_ref().map(|reason| {
+            div()
+                .flex_none()
+                .px(u(16.0))
+                .pt(u(10.0))
+                .child(
+                    Notice::error(text::recording_request_failed(reason))
+                        .selector("recording-error")
+                        .action(
+                            Button::new("dismiss-recording-error")
+                                .label(text::DISMISS)
+                                .selector("dismiss-recording-error")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.state
+                                        .update(cx, |state, cx| state.dismiss_recording_error(cx));
+                                })),
+                        ),
+                )
+                .into_any_element()
+        });
+        let rules = self.render_call_rule_notices(view, cx);
+        let about_call = || {
+            rules
+                .into_iter()
+                .chain(call_notice)
+                .chain(share_notice)
+                .chain(recording_notice)
+        };
+        let mut notices: Vec<AnyElement> = about_call().collect();
         let Some(server) = &view.selected else {
-            return call_notice.into_iter().collect();
+            return notices;
         };
         let server_id = server.id;
-        let pending = self.state.read(cx).pending().clone();
-        let mut notices: Vec<AnyElement> = call_notice.into_iter().collect();
         notices.extend(
             server
                 .recoveries
@@ -674,9 +907,74 @@ impl Shell {
     }
 }
 
-/// The state of the call of a voice channel in the header of the main area: recording,
-/// meeting mode, the lock and the count.
+/// The mark of a recording that runs: the mark with its time on cinnabar, and beside it the
+/// statement that every person in the call sees it (ADR 0601).
+fn recording_mark(mark: SharedString, theme: &Theme) -> AnyElement {
+    let colors = theme.colors;
+    div()
+        .id("recording-indicator")
+        .role(Role::Status)
+        .aria_label(text::RECORDING_RUNS)
+        .debug_selector(|| "recording-indicator".to_owned())
+        .tooltip(tooltip(text::RECORDING_TIME))
+        .flex()
+        .flex_none()
+        .items_center()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(u(7.0))
+                .h(u(28.0))
+                .pl(u(8.0))
+                .pr(u(9.0))
+                .rounded_l(u(theme.metrics.radius))
+                .bg(Hsla::from(colors.cinnabar))
+                .typeface(theme.types.mono_mark, theme)
+                .text_size(u(13.0))
+                .ink(colors.on_terracotta)
+                .whitespace_nowrap()
+                .child(
+                    div()
+                        .size(u(9.0))
+                        .rounded_full()
+                        .bg(Hsla::from(colors.on_terracotta)),
+                )
+                .child(mark),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .h(u(28.0))
+                .px(u(9.0))
+                .rounded_r(u(theme.metrics.radius))
+                .border_1()
+                .border_l_0()
+                .border_color(Hsla::from(colors.cinnabar_wash_rule))
+                .bg(Hsla::from(colors.cinnabar_wash))
+                .typeface(theme.types.small, theme)
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .ink(colors.cinnabar_ink)
+                .whitespace_nowrap()
+                .child(text::RECORDING_VISIBLE),
+        )
+        .into_any_element()
+}
+
+/// The state of the call of a voice channel in the header of the main area, for a person
+/// outside the call: recording, meeting mode, the lock and the count.
 fn voice_header_states(voice: &VoiceState, theme: &Theme) -> Vec<AnyElement> {
+    let mut states = Vec::new();
+    if voice.recording {
+        states.push(recording_mark(text::RECORDING_MARK.into(), theme));
+    }
+    states.extend(voice_room_states(voice, theme));
+    states
+}
+
+/// The state of the room of a voice channel: meeting mode, the lock and the count.
+fn voice_room_states(voice: &VoiceState, theme: &Theme) -> Vec<AnyElement> {
     let colors = theme.colors;
     let state = |shown: Icon, label: SharedString| {
         div()
@@ -694,57 +992,6 @@ fn voice_header_states(voice: &VoiceState, theme: &Theme) -> Vec<AnyElement> {
             .into_any_element()
     };
     let mut states = Vec::new();
-    if voice.recording {
-        states.push(
-            div()
-                .id("recording-indicator")
-                .role(Role::Status)
-                .aria_label(text::RECORDING_RUNS)
-                .debug_selector(|| "recording-indicator".to_owned())
-                .flex()
-                .flex_none()
-                .items_center()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(u(7.0))
-                        .h(u(28.0))
-                        .pl(u(8.0))
-                        .pr(u(9.0))
-                        .rounded_l(u(theme.metrics.radius))
-                        .bg(Hsla::from(colors.cinnabar))
-                        .typeface(theme.types.mono_mark, theme)
-                        .text_size(u(13.0))
-                        .ink(colors.on_terracotta)
-                        .child(
-                            div()
-                                .size(u(9.0))
-                                .rounded_full()
-                                .bg(Hsla::from(colors.on_terracotta)),
-                        )
-                        .child(text::RECORDING_MARK),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .h(u(28.0))
-                        .px(u(9.0))
-                        .rounded_r(u(theme.metrics.radius))
-                        .border_1()
-                        .border_l_0()
-                        .border_color(Hsla::from(colors.cinnabar_wash_rule))
-                        .bg(Hsla::from(colors.cinnabar_wash))
-                        .typeface(theme.types.small, theme)
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .ink(colors.cinnabar_ink)
-                        .whitespace_nowrap()
-                        .child(text::RECORDING_VISIBLE),
-                )
-                .into_any_element(),
-        );
-    }
     if voice.meeting {
         states.push(state(Icon::Hand, text::MEETING_MODE.into()));
     }

@@ -8,14 +8,17 @@
 use junto_client_core::api::{TransportErrorKind, code_name};
 use junto_client_core::flow::FlowError;
 use junto_client_core::flow::access::Notice;
-use junto_client_core::protocol::call::{BlockReason, LeaveReason};
+use junto_client_core::protocol::call::{BlockReason, LeaveReason, ShareAudio};
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::version::Incompatibility;
-use junto_client_core::voice::TalkKey;
+use junto_client_core::voice::{ShareResolution, TalkKey};
 use junto_media::calls::EndReason;
 use junto_media::permission::MicrophoneAccess;
+use junto_media::share::{CaptureError, ShareKind};
 
-use crate::state::view::{CallNotice, SoundWarning};
+use crate::state::view::{
+    CallNotice, Closed, RecordingFault, RecordingProblem, ShareCard, SoundWarning,
+};
 
 pub const APP_NAME: &str = "Junto";
 pub const QUIT: &str = "Quit Junto";
@@ -160,8 +163,486 @@ pub const LEAVE_CALL: &str = "Leave call";
 pub const SHOW_CALL: &str = "Show the call";
 pub const CALL_TIME: &str = "Call time";
 pub const CAMERA_NOT_AVAILABLE: &str = "Camera. Cameras are not in this version.";
-pub const SHARE_NOT_AVAILABLE: &str = "Share screen. Screen sharing is not in this version.";
-pub const HAND_NOT_AVAILABLE: &str = "Raise hand. Meeting mode is not in this version.";
+pub const RAISE_HAND: &str = "Raise hand";
+pub const LOWER_HAND: &str = "Your hand is raised. Lower it.";
+
+// The rules of the room of a call (ADR 0739).
+pub const MEETING_MODE_HELP: &str = "The person sharing can turn this on. All other microphones close; people raise a hand to \
+     speak.";
+pub const MEETING_NEEDS_SHARE: &str =
+    "Share your screen first. The person sharing can turn meeting mode on.";
+pub const MEETING_NO_PERMISSION: &str = "You do not have the “run meeting mode” permission.";
+pub const MEETING_WHILE_BLOCKED: &str =
+    "Your microphone is closed by someone else. You cannot turn meeting mode on.";
+pub const MEETING_TURN_OFF: &str =
+    "Meeting mode is on. Turn it off: every microphone block of the call ends.";
+pub const LOCK_ROOM: &str = "Lock room";
+pub const LOCK_ROOM_HELP: &str =
+    "While the room is locked, only people who are invited or moved in can enter";
+pub const LOCK_ROOM_SETTING_HELP: &str = "Only people who are invited or moved in can enter.";
+pub const LOCK_NO_PERMISSION: &str = "You do not have the “lock room” permission.";
+pub const USER_LIMIT: &str = "User limit";
+pub const USER_LIMIT_HELP: &str = "The most people who can join by themselves. People who are invited or moved in can still \
+     enter.";
+pub const NO_USER_LIMIT: &str = "off";
+pub const LOWER_USER_LIMIT: &str = "Lower the user limit";
+pub const RAISE_USER_LIMIT: &str = "Raise the user limit";
+pub const HIDE_OCCUPANTS: &str = "Hide who is inside";
+pub const HIDE_OCCUPANTS_HELP: &str = "Others see only “in use”.";
+pub const MANAGE_NO_PERMISSION: &str = "You do not have the “manage channel” permission.";
+pub const MEETING_IS_ON: &str = "Meeting mode is on";
+pub const YOU_RUN_IT: &str = " · you run it";
+pub const MEETING_PRESENTER_HELP: &str = "Every other microphone is closed. You allow who speaks.";
+pub const MEETING_PARTICIPANT_HELP: &str =
+    "Every other microphone is closed. Raise a hand to speak.";
+pub const RAISED_A_HAND: &str = " raised a hand";
+pub const ALLOW: &str = "Allow";
+pub const MAY_SPEAK_NOT_OPEN: &str = " may speak and has not opened the microphone";
+pub const YOU_MAY_SPEAK: &str = "You may speak";
+pub const UNMUTE: &str = "Unmute";
+pub const UNMUTE_HELP: &str = "Open your microphone. The app never opens it by itself.";
+pub const MICROPHONE_OPEN_AGAIN: &str = "The block of your microphone ended. Your microphone is open, and the people in the call \
+     hear you.";
+
+/// "Room · Daily": the heading of the settings of the room of a call.
+pub fn room_section(channel: &str) -> String {
+    format!("Room · {channel}")
+}
+
+/// " · Carla runs it", after the statement that meeting mode is on.
+pub fn runs_it(presenter: Option<&str>) -> String {
+    format!(" · {} runs it", presenter.unwrap_or(UNKNOWN_PERSON))
+}
+
+/// Why a person who does not run meeting mode cannot turn it off.
+pub fn meeting_run_by(presenter: Option<&str>) -> String {
+    format!(
+        "{} runs meeting mode and turns it off.",
+        presenter.unwrap_or(UNKNOWN_PERSON)
+    )
+}
+
+pub fn allow_help(name: &str) -> String {
+    format!("{name} gets the prompt “You may speak” and opens the microphone without your help.")
+}
+
+/// "and 2 more", after the first raised hand.
+pub fn more_hands(count: usize) -> String {
+    format!("and {count} more")
+}
+
+/// The count of a room for the people inside: who is inside and what the limit means.
+pub fn occupancy_help(inside: usize, limit: u32) -> String {
+    format!(
+        "{inside} {} inside, limit {limit}. People who are invited or moved in can enter above \
+         the limit. Change the limit in Settings.",
+        if inside == 1 { "person" } else { "people" }
+    )
+}
+
+// A room that a person cannot enter without help, and the requests to enter.
+pub const ASK_TO_ENTER: &str = "Ask to enter";
+pub const ASK_TO_ENTER_HELP: &str =
+    "The people inside get a prompt. You enter when one of them accepts.";
+pub const FULL_NOTE: &str = "Full. You can enter when a person leaves or invites you.";
+pub const ENTRY_ASKING: &str = "Asking…";
+pub const ENTRY_WAITING_TITLE: &str = "You asked to enter";
+pub const ENTRY_WAITING: &str =
+    "The people inside have your request. It ends after one minute without an answer.";
+pub const ENTRY_DENIED_TITLE: &str = "Your request was denied";
+pub const ENTRY_DENIED: &str = "A person inside did not let you in.";
+pub const ENTRY_EXPIRED_TITLE: &str = "Nobody answered your request";
+pub const ENTRY_EXPIRED: &str = "The request ended after one minute.";
+pub const WITHDRAW_REQUEST: &str = "Withdraw request";
+pub const ASK_AGAIN: &str = "Ask again";
+pub const LET_IN: &str = "Let in";
+pub const DENY: &str = "Deny";
+
+/// "Focus room is locked", "All hands is full".
+pub fn closed_title(channel: &str, closed: Closed) -> String {
+    match closed {
+        Closed::Locked => format!("{channel} is locked"),
+        Closed::Full => format!("{channel} is full"),
+    }
+}
+
+pub fn closed_help(closed: Closed) -> &'static str {
+    match closed {
+        Closed::Locked => LOCK_ROOM_SETTING_HELP,
+        Closed::Full => "You can enter when a person leaves or invites you.",
+    }
+}
+
+/// The prompt of the people inside about a person who asks to enter.
+pub fn entry_prompt(name: Option<&str>, channel: &str) -> String {
+    format!(
+        "{} asks to enter {channel}.",
+        name.unwrap_or(UNKNOWN_PERSON)
+    )
+}
+
+// Invitations.
+pub const INVITE_A_MEMBER: &str = "Invite a member";
+pub const FIND_A_MEMBER: &str = "Find a member";
+pub const INVITE: &str = "Invite";
+pub const INVITED: &str = "Invited";
+pub const WITHDRAW_INVITATION: &str = "Withdraw the invitation";
+pub const NO_MEMBER_TO_INVITE: &str = "Every member of the workspace is in the call.";
+pub const NO_MEMBER_FOUND: &str = "No member has this name.";
+pub const JOIN: &str = "Join";
+pub const DECLINE: &str = "Decline";
+pub const INVITATION_DECLINED: &str = "Your invitation was declined.";
+pub const INVITATION_EXPIRED: &str = "Your invitation got no answer for one minute and ended.";
+
+pub fn invite_to(channel: &str) -> String {
+    format!("Invite to {channel}")
+}
+
+pub fn invite_help(channel: &str) -> String {
+    format!(
+        "The member gets a prompt and enters {channel} on accept, also when the room is locked \
+         or full."
+    )
+}
+
+pub fn invite_footer(channel: &str) -> String {
+    format!(
+        "Members of the workspace who are not in the call. The server refuses a member without \
+         access to {channel}."
+    )
+}
+
+/// The prompt of a person who was invited into a call.
+pub fn invitation(by: Option<&str>, channel: Option<&str>) -> String {
+    let by = by.unwrap_or(UNKNOWN_PERSON);
+    match channel {
+        Some(channel) => format!("{by} invites you to {channel}."),
+        None => format!("{by} calls you."),
+    }
+}
+
+// The menu of a person in a voice channel.
+pub const INVITE_TO_MY_ROOM: &str = "Invite to my room";
+pub const MOVE_TO: &str = "Move to…";
+pub const PERMISSION_MOVE: &str = "Permission: move members";
+pub const MODERATION: &str = "Moderation";
+pub const MUTE_FOR_EVERYONE: &str = "Mute for everyone";
+pub const REMOVE_MICROPHONE_BLOCK: &str = "Remove the microphone block";
+pub const PERMISSION_MUTE: &str = "Permission: mute members";
+pub const BLOCK_SOUND: &str = "Turn the call sound off for this person";
+pub const REMOVE_SOUND_BLOCK: &str = "Remove the sound block";
+pub const PERMISSION_DEAFEN: &str = "Permission: deafen members";
+pub const DISCONNECT: &str = "Disconnect";
+pub const PERMISSION_DISCONNECT: &str = "Permission: disconnect members";
+pub const PERSON_MENU_KEYS: &str = "Keyboard: Menu or Shift + F10";
+pub const BACK: &str = "Back";
+pub const OPEN_PERSON_MENU: &str = "Right click or Shift + F10: the menu of this person";
+
+pub fn invite_prompt(name: &str, channel: &str) -> String {
+    format!("{name} gets a prompt to enter {channel}")
+}
+
+pub fn your_volume_for(name: &str) -> String {
+    format!("Your volume for {name}")
+}
+
+/// The notice about a request in a call that the server did not perform.
+pub fn call_refused(reason: &str) -> String {
+    format!("The call was not changed. {reason}")
+}
+
+// The share of this device.
+pub const SHARE_SCREEN: &str = "Share screen";
+pub const SHARE_STARTING: &str = "Your share starts";
+pub const SHARE_RUNS: &str = "You are sharing your screen. Press to stop.";
+pub const SHARE_NOT_ON_THIS_SYSTEM: &str =
+    "Share screen. Screen sharing is not available on this system in this version.";
+pub const SHARE_PICKER_TITLE: &str = "Share your screen";
+pub const SHARE_READING: &str = "Reading the screens and windows…";
+pub const SCREENS: &str = "Screens";
+pub const WINDOWS: &str = "Windows";
+pub const NO_WINDOWS: &str = "No window of another application is open.";
+pub const WHAT_TO_SHARE: &str = "What to share";
+pub const SHARE_SOUND: &str = "Sound of this share";
+pub const SOUND_NONE: &str = "No sound";
+pub const SOUND_SYSTEM: &str = "All system sound";
+pub const SOUND_ONE_APPLICATION: &str = "One application";
+pub const SOUND_THIS_APPLICATION: &str = "This application";
+pub const SOUND_CHOICE_HELP: &str =
+    "Choose the sound for each share. The sound of Junto itself is never shared.";
+pub const SOUND_SYSTEM_HELP: &str = "The people in the call hear every sound that this computer plays, except the sound of \
+     Junto.";
+pub const SOUND_NONE_HELP: &str = "The people in the call get the picture only.";
+pub const SOUND_APPLICATION_HELP: &str = "The people in the call hear the sound of the application that you choose here, and of \
+     no other one.";
+pub const NO_APPLICATIONS: &str = "No other application with a window is open.";
+pub const SHARE: &str = "Share";
+pub const SCREEN_ACCESS_TITLE: &str = "Junto may not record the screen yet";
+pub const SCREEN_ACCESS_HELP: &str = if cfg!(target_os = "macos") {
+    "macOS gives this permission in System Settings, under Privacy & Security, Screen & \
+     System Audio Recording. Turn it on for Junto there. macOS can then ask you to quit \
+     and open Junto again."
+} else {
+    "The system does not allow Junto to record the screen. Allow it in the settings of the \
+     system."
+};
+pub const OPEN_SYSTEM_SETTINGS: &str = "Open System Settings";
+pub const SHARE_UNSUPPORTED: &str =
+    "Screen sharing is not available on this system in this version of Junto.";
+
+/// The name of a screen in the list of what can be shared.
+pub fn screen_name(number: usize) -> String {
+    format!("Screen {number}")
+}
+
+/// A size in pixels: "1920 × 1200".
+pub fn pixels(size: (u32, u32)) -> String {
+    format!("{} × {}", size.0, size.1)
+}
+
+/// The sound of a shared window when the person chooses its application.
+pub fn sound_of_window(application: &str) -> String {
+    format!(
+        "The people in the call hear the sound of {application}, the application of this \
+         window, and of no other one."
+    )
+}
+
+/// Why a share did not start, or ended by itself.
+pub fn capture_error(error: &CaptureError) -> String {
+    match error {
+        CaptureError::NotAllowed => {
+            "The system does not allow Junto to record the screen.".to_owned()
+        }
+        CaptureError::SourceGone => {
+            "The screen, the window or the application is not available any more, or the \
+             system stopped the capture."
+                .to_owned()
+        }
+        CaptureError::Unsupported => SHARE_UNSUPPORTED.to_owned(),
+        CaptureError::Interrupted => "The connection to the call was lost.".to_owned(),
+        CaptureError::Failed(reason) => {
+            format!("The system reported: {}", sentence(reason))
+        }
+    }
+}
+
+/// The notice about a share of this device that the person did not end.
+pub fn share_ended(error: &CaptureError) -> String {
+    format!(
+        "Your screen share ended. {} Start the share again when you want to continue.",
+        capture_error(error)
+    )
+}
+
+// The shares of a call.
+pub const WATCHING: &str = "Watching";
+pub const WATCH: &str = "Watch";
+pub const ENTIRE_SCREEN: &str = "Entire screen";
+pub const ONE_WINDOW: &str = "Window";
+pub const PICTURE_ARRIVES: &str = "The picture arrives…";
+pub const SOUND_FOLLOWS: &str = "The sound follows the share you watch.";
+pub const SHARE_SOUND_HELD: &str = "Its sound is closed while your microphone is blocked";
+pub const SHARE_SOUND_OFF_FOR_YOU: &str = "You turned its sound off";
+pub const LISTED_IN_MEMBERS: &str = "They are listed in Members.";
+
+/// "2 shares".
+pub fn shares_count(count: usize) -> String {
+    format!("{count} shares")
+}
+
+/// The name of a share: "Carla's screen", "Bruno's window", "Your screen".
+pub fn share_title(share: &ShareCard, is_own: bool) -> String {
+    let what = match share.kind {
+        Some(ShareKind::Screen) => "screen",
+        Some(ShareKind::Window) => "window",
+        None => "share",
+    };
+    if is_own {
+        format!("Your {what}")
+    } else {
+        let name = share.name.as_deref().unwrap_or(UNKNOWN_PERSON);
+        format!("{name}'s {what}")
+    }
+}
+
+/// What a share shows, for the line under its name.
+pub fn share_kind(kind: Option<ShareKind>) -> &'static str {
+    match kind {
+        Some(ShareKind::Screen) => ENTIRE_SCREEN,
+        Some(ShareKind::Window) => ONE_WINDOW,
+        None => "",
+    }
+}
+
+/// The measures of a share: "Entire screen · 1920 × 1200 · 30 fps". With `kind` absent
+/// the line starts with the size.
+pub fn share_measure(
+    kind: Option<ShareKind>,
+    size: Option<(u32, u32)>,
+    frame_rate: Option<u32>,
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(kind) = kind {
+        parts.push(share_kind(Some(kind)).to_owned());
+    }
+    if let Some(size) = size {
+        parts.push(pixels(size));
+    }
+    if let Some(rate) = frame_rate {
+        parts.push(format!("{rate} fps"));
+    }
+    parts.join(" · ")
+}
+
+/// The sound of a share beside the name of its sharer: "with system audio".
+pub fn share_sound(sound: Option<ShareAudio>) -> Option<&'static str> {
+    match sound? {
+        ShareAudio::System => Some("with system audio"),
+        ShareAudio::Application => Some("with the sound of one application"),
+        ShareAudio::None => Some("without sound"),
+    }
+}
+
+/// The sound of the watched share when the call has several: what the person hears.
+pub fn watched_sound(sound: Option<ShareAudio>) -> Option<&'static str> {
+    match sound? {
+        ShareAudio::System => Some("You hear its system audio."),
+        ShareAudio::Application => Some("You hear the sound of its application."),
+        ShareAudio::None => Some("This share has no sound."),
+    }
+}
+
+/// The people whom the strip of a call does not show: the part in strong type, and the
+/// rest of the sentence.
+pub fn people_hidden(count: usize) -> (String, &'static str) {
+    if count == 1 {
+        ("1 person without video".to_owned(), " is hidden.")
+    } else {
+        (format!("{count} people without video"), " are hidden.")
+    }
+}
+
+// The settings of a call.
+pub const YOUR_SCREEN_SHARE: &str = "Your screen share";
+pub const RESOLUTION: &str = "Resolution";
+pub const FRAME_RATE: &str = "Frame rate";
+pub const SHARE_SETTINGS_HELP: &str = "Used the next time you share.";
+pub const YOUR_VIEW: &str = "Your view";
+pub const HIDE_WITHOUT_VIDEO: &str = "Hide people without video";
+pub const HIDE_WITHOUT_VIDEO_HELP: &str = "They stay in Members and in the channel list.";
+pub const SHARE_VOLUME: &str = "Sound of the share you watch";
+pub const SHARE_VOLUME_HELP: &str = "At 0 % you keep the picture without its sound.";
+
+pub fn share_resolution(resolution: ShareResolution) -> &'static str {
+    match resolution {
+        ShareResolution::P720 => "720p",
+        ShareResolution::P1080 => "1080p",
+        ShareResolution::Source => "Source",
+    }
+}
+
+// The recording of a call.
+pub const RECORD: &str = "Record";
+pub const START_RECORDING: &str = "Start a recording of this call";
+pub const START_NEW_RECORDING: &str = "Start a new recording";
+pub const STOP: &str = "Stop";
+pub const STOP_RECORDING: &str = "Stop recording";
+pub const RECORDING_STOPS: &str = "The recording stops";
+pub const RECORDING_STARTS: &str = "starting…";
+pub const RECORDING_TIME: &str = "Recording time";
+pub const NO_RECORD_PERMISSION: &str = "You do not have the “record calls” permission.";
+pub const RECORDING_FAILED: &str = "Recording failed";
+pub const RECORDING_STOPPED: &str = "Recording stopped";
+pub const DETAILS: &str = "Details";
+pub const RECORDING_DETAILS: &str = "What happened and what was saved";
+
+/// The recording mark with its time: "REC 00:39:02".
+pub fn recording_time(elapsed: std::time::Duration) -> String {
+    format!("{RECORDING_MARK} {}", call_time(elapsed))
+}
+
+/// The flag of a recording that ended with a problem.
+pub fn recording_flag(problem: &RecordingProblem) -> &'static str {
+    match problem.fault {
+        RecordingFault::StorageReserve | RecordingFault::SegmentLimit => RECORDING_STOPPED,
+        _ => RECORDING_FAILED,
+    }
+}
+
+/// What happened to a recording and what was saved: the sentence in strong type, and the
+/// rest.
+pub fn recording_details(problem: &RecordingProblem) -> (String, String) {
+    let clock = |at: time::OffsetDateTime| {
+        let at = at.to_offset(time::UtcOffset::UTC);
+        format!("{:02}:{:02} UTC", at.hour(), at.minute())
+    };
+    let at = problem
+        .until
+        .map(|at| format!(" at {}", clock(at)))
+        .unwrap_or_default();
+    let range = match (problem.since, problem.until) {
+        (Some(since), Some(until)) => {
+            let minutes = (until - since).whole_minutes().max(0);
+            format!(
+                " The server has what was recorded from {} to {} ({minutes} min) and checks \
+                 it.",
+                clock(since),
+                clock(until)
+            )
+        }
+        _ => String::new(),
+    };
+    let after = problem
+        .until
+        .map(|until| format!(" Nothing after {} was recorded.", clock(until)))
+        .unwrap_or_default();
+    let again = " To continue, start a new recording.";
+    match problem.fault {
+        RecordingFault::RecorderLost => (
+            format!("The recorder lost its connection{at}."),
+            format!("{range}{after}{again}"),
+        ),
+        RecordingFault::StorageReserve => (
+            format!("The server stopped the recording{at}."),
+            format!(
+                " Its free disk space reached the reserve.{range}{after} An administrator \
+                 of the server frees disk space before a new recording."
+            ),
+        ),
+        RecordingFault::SegmentLimit => (
+            format!("The server stopped the recording{at}."),
+            format!(
+                " The recording holds as many files as one recording can have.\
+                 {range}{after}{again}"
+            ),
+        ),
+        RecordingFault::RecorderUnavailable => (
+            "No recorder took the recording.".to_owned(),
+            format!(" Nothing was recorded.{again}"),
+        ),
+        RecordingFault::NothingSaved => (
+            "Nothing of the recording was saved.".to_owned(),
+            again.to_owned(),
+        ),
+        RecordingFault::PartlySaved => (
+            "A part of the recording was not saved.".to_owned(),
+            format!(
+                " {} of its {} files failed. The saved part is on the server.",
+                problem.failed_segments, problem.segments
+            ),
+        ),
+        RecordingFault::Other => (
+            format!("The server stopped the recording{at}."),
+            format!("{range}{after}{again}"),
+        ),
+    }
+}
+
+/// The notice about a request for a recording that the server did not take.
+pub fn recording_request_failed(reason: &str) -> String {
+    format!("The recording was not changed. {reason}")
+}
 pub const A_VOICE_CHANNEL: &str = "a voice channel";
 
 /// The time of a call as hours, minutes and seconds: "00:42:17".
@@ -325,6 +806,9 @@ pub fn call_notice(notice: &CallNotice) -> String {
                 }
                 other => format!("{channel} was not joined. {}", flow_error(other)),
             }
+        }
+        CallNotice::Moved { channel } => {
+            format!("A moderator moved you to {}.", named(channel))
         }
         CallNotice::Ended { channel, reason } => {
             let channel = named(channel);
@@ -1041,5 +1525,138 @@ mod tests {
         assert!(request_sent("Harbor", "Luca").starts_with("Sent as Luca. Harbor stays"));
         assert!(request_sent("Harbor", "").starts_with("Harbor stays"));
         assert_eq!(sentence("the name is empty"), "The name is empty.");
+    }
+
+    #[test]
+    fn the_texts_of_a_share() {
+        use junto_client_core::protocol::ids::AccountId;
+        use junto_media::engine::ShareId;
+
+        let mut share = ShareCard {
+            id: ShareId::Of(AccountId::generate()),
+            account_id: AccountId::generate(),
+            name: Some("Carla".to_owned()),
+            kind: Some(ShareKind::Screen),
+            sound: Some(ShareAudio::System),
+            sound_held: false,
+            size: Some((1920, 1200)),
+            frame_rate: Some(30),
+            watched: true,
+        };
+        assert_eq!(share_title(&share, false), "Carla's screen");
+        assert_eq!(share_title(&share, true), "Your screen");
+        share.kind = Some(ShareKind::Window);
+        assert_eq!(share_title(&share, false), "Carla's window");
+        share.kind = None;
+        share.name = None;
+        assert_eq!(share_title(&share, false), "Unknown person's share");
+        assert_eq!(
+            share_measure(Some(ShareKind::Screen), Some((1920, 1200)), Some(30)),
+            "Entire screen · 1920 × 1200 · 30 fps"
+        );
+        assert_eq!(
+            share_measure(None, Some((1280, 800)), Some(30)),
+            "1280 × 800 · 30 fps"
+        );
+        assert_eq!(share_measure(Some(ShareKind::Window), None, None), "Window");
+        assert_eq!(
+            share_sound(Some(ShareAudio::System)),
+            Some("with system audio")
+        );
+        assert_eq!(share_sound(None), None);
+        assert_eq!(
+            watched_sound(Some(ShareAudio::None)),
+            Some("This share has no sound.")
+        );
+        assert_eq!(
+            people_hidden(1),
+            ("1 person without video".to_owned(), " is hidden.")
+        );
+        assert_eq!(
+            people_hidden(3),
+            ("3 people without video".to_owned(), " are hidden.")
+        );
+        assert_eq!(shares_count(2), "2 shares");
+        assert_eq!(screen_name(1), "Screen 1");
+        for error in [
+            CaptureError::NotAllowed,
+            CaptureError::SourceGone,
+            CaptureError::Unsupported,
+            CaptureError::Interrupted,
+            CaptureError::Failed("the stream stopped".to_owned()),
+        ] {
+            assert!(capture_error(&error).ends_with('.'), "{error:?}");
+            assert!(share_ended(&error).starts_with("Your screen share ended. "));
+        }
+        assert!(
+            capture_error(&CaptureError::Failed("the stream stopped".to_owned()))
+                .ends_with("The stream stopped.")
+        );
+        assert!(sound_of_window("Editor").contains("the sound of Editor,"));
+    }
+
+    #[test]
+    fn the_texts_of_a_recording() {
+        let since = time::OffsetDateTime::from_unix_timestamp(1_800_000_000 + 41 * 60).unwrap();
+        let problem = |fault: RecordingFault| RecordingProblem {
+            fault,
+            since: Some(since),
+            until: Some(since + time::Duration::minutes(36)),
+            segments: 5,
+            failed_segments: 2,
+        };
+        assert_eq!(
+            recording_time(Duration::from_secs(39 * 60 + 2)),
+            "REC 00:39:02"
+        );
+        let (strong, rest) = recording_details(&problem(RecordingFault::RecorderLost));
+        assert_eq!(strong, "The recorder lost its connection at 09:17 UTC.");
+        assert!(
+            rest.contains("from 08:41 UTC to 09:17 UTC (36 min)"),
+            "{rest}"
+        );
+        assert!(
+            rest.contains("Nothing after 09:17 UTC was recorded."),
+            "{rest}"
+        );
+        assert!(rest.ends_with("To continue, start a new recording."));
+        assert_eq!(
+            recording_flag(&problem(RecordingFault::RecorderLost)),
+            RECORDING_FAILED
+        );
+        assert_eq!(
+            recording_flag(&problem(RecordingFault::StorageReserve)),
+            RECORDING_STOPPED
+        );
+        let (_, rest) = recording_details(&problem(RecordingFault::PartlySaved));
+        assert!(rest.contains("2 of its 5 files failed"), "{rest}");
+        // A recording that never started has no times.
+        let never = RecordingProblem {
+            fault: RecordingFault::RecorderUnavailable,
+            since: None,
+            until: None,
+            segments: 0,
+            failed_segments: 0,
+        };
+        let (strong, rest) = recording_details(&never);
+        assert_eq!(strong, "No recorder took the recording.");
+        assert_eq!(
+            rest,
+            " Nothing was recorded. To continue, start a new recording."
+        );
+        for fault in [
+            RecordingFault::RecorderLost,
+            RecordingFault::StorageReserve,
+            RecordingFault::SegmentLimit,
+            RecordingFault::RecorderUnavailable,
+            RecordingFault::NothingSaved,
+            RecordingFault::PartlySaved,
+            RecordingFault::Other,
+        ] {
+            let (strong, rest) = recording_details(&problem(fault));
+            assert!(strong.ends_with('.') && rest.ends_with('.'), "{fault:?}");
+            assert!(rest.starts_with(' '), "{fault:?}");
+        }
+        assert!(recording_request_failed("No.").ends_with(" No."));
     }
 }

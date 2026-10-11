@@ -1,8 +1,8 @@
 # junto-client
 
-The Junto desktop application: a gpui window on `junto-client-core` and `junto-media`. The binary is `junto`. The design decisions are in [`docs/adr/`](../../docs/adr/README.md): ADR 0730 describes this crate, ADR 0731 its theme and components, ADR 0732 joining a server in the window, ADR 0733 the media engine, ADR 0734 the call of a client and ADR 0735 the screens of a voice call.
+The Junto desktop application: a gpui window on `junto-client-core` and `junto-media`. The binary is `junto`. The design decisions are in [`docs/adr/`](../../docs/adr/README.md): ADR 0730 describes this crate, ADR 0731 its theme and components, ADR 0732 joining a server in the window, ADR 0733 the media engine, ADR 0734 the call of a client, ADR 0735 the screens of a voice call, ADR 0736 the screen capture, ADR 0737 shares in the media engine and ADR 0738 the screens of a share and of a recording.
 
-This version shows the servers of the server book, their workspaces and channels, the people in voice channels, and the state of each server. It joins a server with a code or a request for access, and it holds a voice call in a voice channel: microphone, sound, mute, a volume per person, levels, push-to-talk and the choice of the sound devices. It has no text messages, no camera and no screen share. It is built and tested on macOS and builds for Linux; Windows is not supported yet.
+This version shows the servers of the server book, their workspaces and channels, the people in voice channels, and the state of each server. It joins a server with a code or a request for access, and it holds a voice call in a voice channel: microphone, sound, mute, a volume per person, levels, push-to-talk and the choice of the sound devices. In a call a person shares a screen or a window with its sound, watches the shares of the others, starts and stops a recording, and uses the rules of the room: meeting mode with raised hands, the lock, the user limit, requests to enter, invitations, the menu of a person with blocks, removal and move. It has no text messages, no camera and no direct-message calls. It is built and tested on macOS and builds for Linux, where the screen capture is not built yet; Windows is not supported yet.
 
 ## Run it locally
 
@@ -58,7 +58,7 @@ What macOS asks for:
 
 - **Microphone.** The first "Join call" makes macOS ask whether the microphone may be used. The question names the application that started Junto: the terminal, while Junto runs from `cargo run`. Press "Allow" once. The permission then holds for every instance that this terminal starts.
 - When the answer was "Don't Allow", the call shows "Junto may not use the microphone": you hear the call and are not heard. Open System Settings, Privacy & Security, Microphone, turn the terminal on, and press "Try again" in the call. macOS can ask to restart the terminal.
-- **Screen recording** is not asked for: this version shares no screen.
+- **Screen & System Audio Recording.** A share needs this permission. macOS has no "Allow" button for it: the person turns it on in System Settings. See the next section.
 
 The Settings tab of the call shows the state of the permission (not asked yet, allowed, refused), the input level and the two devices.
 
@@ -69,6 +69,41 @@ Two instances on one machine share one microphone and one output:
 - The level meters in the channel list, the edge of a tile and the line "Speaking" in the Members tab show that sound arrives, also with the sound off.
 
 Echo cancellation, noise suppression, automatic gain and push-to-talk are in the app settings (the gear beside the name). Push-to-talk sends the microphone while the Option or the Control key is held and the window has the focus.
+
+## Sharing a window with sound between two instances
+
+Both instances are in one call (see above). In the first instance:
+
+1. Press the share button of the call strip (the screen icon between the camera and the hand). The dialog "Share your screen" opens.
+2. Without the permission of macOS the dialog says "Junto may not record the screen yet". Press "Open System Settings": macOS lists the application that started Junto under Privacy & Security, Screen & System Audio Recording. That is the terminal while Junto runs from `cargo run`. Turn it on. macOS can ask to quit and reopen that application; start both instances again afterwards. A terminal that has the permission already skips this step. "Check again" reads the permission again.
+3. Choose a screen or a window under "What to share".
+4. Choose the sound under "Sound of this share": "No sound", "All system sound", or "This application" for a window ("One application" for a screen, with the application chosen from the list under it). Nothing is chosen for you, and "Share" works only after both choices.
+5. Press "Share". The share button is lit while the share runs; a press on it ends the share.
+
+The second instance shows the picture in the stage of the call, with the line "… is sharing" and the sound choice, and plays the sound. When both instances share, a bar lists the two shares; a press on a card watches that share, and the sound follows the choice. The Settings tab of the call has the resolution and the frame rate of the next share, and "Sound of the share you watch" (0 % keeps the picture without its sound).
+
+What to expect on one machine:
+
+- **A source of sound.** Share a window of an application that plays sound, such as a video in a browser or a music player, with "This application". The sharer does not need to hear it: the capture does not depend on the output volume.
+- **Junto is not in the lists.** No window of Junto and no second instance of Junto is offered, and the sound of Junto is never part of a share (ADR 0502). Both instances run from one terminal, so macOS treats them as one application for this rule: with "All system sound" the first instance shares every sound of the machine except what the two instances play.
+- **You hear the shared sound twice with loudspeakers or one pair of headphones**: once from the application that plays it, and once from the second instance, about 0.3 seconds later. Turn the sound of the second instance off (the headphones button) to check the picture alone, or lower the volume of the application to hear only what the call carries.
+- **The sound of a share has one channel.** The call library sends one channel per sound track (ADR 0737).
+- **A blocked microphone closes the sound of a share.** The picture stays, and the line of the share says so (ADR 0510).
+- The picture of a screen that shows the first instance contains that instance, and its preview repeats inside itself.
+
+## The rules of a room between two instances
+
+Both instances are on one server; the one that claimed the server is its owner and may do everything, the other is a member with the permissions of the "everyone" role ("lock room" and "run meeting mode" on a new server).
+
+- **Hand.** The hand button of the call strip raises and lowers the hand. The mark appears beside the name in the channel list, on the tile and in Members.
+- **Meeting mode.** The instance that shares presses "Meeting mode" in the header of the call. A press in the first second of a share can be refused, and the notice says so. The other instance shows the bar "Meeting mode is on" and its microphone as closed by the meeting. It raises the hand; the presenter sees "… raised a hand" and presses "Allow"; the other instance shows "You may speak" and opens the microphone with "Unmute". When the presenter turns meeting mode off or stops sharing, an instance whose microphone was still blocked and not muted shows the notice that its microphone is open again.
+- **Lock, user limit, hidden occupants.** "Lock room" is in the header and in the Settings tab of the call under "Room"; the user limit and "Hide who is inside" are there for a person with "manage channel". With the room locked, the instance outside selects the voice channel, presses "Ask to enter" in the channel list, and the instance inside answers the notice with "Let in" or "Deny".
+- **Invitation.** Members tab of the call, "Invite a member", "Invite". The other instance shows the notice with "Join" and "Decline". An invitation passes the lock and the limit.
+- **Menu of a person.** A right click on a person in a voice channel of the channel list (or Shift and F10 while the row has the focus). The owner sees "Move to…", "Mute for everyone", the sound block and "Disconnect"; a member sees "Invite to my room" and the volume. A move needs a second voice channel.
+
+## Recording
+
+The header of the voice channel of the call has "Record" for a person whose roles hold "record calls". A new server gives that permission to no role: the owner sees the button, and a member sees it disabled with the reason. The development server of `tools/dev-server.sh` has no recorder, so "Record" there answers with the notice that the server has no recorder. With a recorder the header shows "REC" with the time, "visible to everyone" and "Stop", and a recording that fails shows "Recording failed" with "Details".
 
 ## Options
 
@@ -88,7 +123,7 @@ tools/with-test-postgres.sh tools/serial.sh cargo test -p junto-client
 
 The tests in `tests/app` open the window code on gpui's test platform, with a client on a data directory of its own, against the server binary of this checkout. They click what is drawn and read what the window shows. A second client without a window is the administrator of the server.
 
-No test opens a microphone or plays a sound: the microphone of each client is a tone, and its output is a sink that measures what would be played. The tests of a call need a LiveKit server and are ignored in the plain run:
+No test opens a microphone, plays a sound or captures a screen: the microphone of each client is a tone, its output is a sink that measures what would be played, and its screen capture is a picture of two colours with a tone on each channel. No test causes a permission question of the system. The tests of a call need a LiveKit server and are ignored in the plain run:
 
 ```sh
 tools/with-test-postgres.sh tools/with-test-livekit.sh tools/serial.sh \
@@ -97,7 +132,9 @@ tools/with-test-postgres.sh tools/with-test-livekit.sh tools/serial.sh \
     cargo test -p junto-media --test calls -- --ignored
 ```
 
-The second command runs the tests of the media engine: two clients that hear each other, mute, a microphone block, the devices, the microphone permission, one call over two servers, a leave while a join or a new token is on its way, and the return of a call after the media server was restarted.
+The first command runs the window against a real server and a real media server: a call, a share, the request for a recording, and the rules of a room (a locked, full and hidden room with the request to enter, meeting mode as participant and as presenter, invitations, and the menu of a person with the blocks, a move and a removal). The second command runs the tests of the media engine: two clients that hear each other, mute, a microphone block, the devices, the microphone permission, one call over two servers, a leave while a join or a new token is on its way, the return of a call after the media server was restarted, and the shares: a share with its picture and its sound, two shares and the choice of the viewer, the layer that the media server sends for a drawn size, a share that ends by itself, the blocks of the server, a move between voice channels, and a person whom the presenter of meeting mode allows to speak.
+
+The calls to ScreenCaptureKit are not run by a test. The parts of the macOS capture that decide something (which application is Junto, which windows are listed, how a sound buffer is read) are functions with tests; the first real share is a test by a person.
 
 ## Screens as pictures
 
@@ -116,5 +153,5 @@ cargo run -p junto-client --features test-support --bin junto-screens -- <direct
 | `src/assets.rs`, `assets/` | The fonts and the icons, carried in the binary. The fonts are under the SIL Open Font License; the licence texts are beside the files. |
 | `src/ui/` | The components. |
 | `src/state/` | The state of the application over the client core, and the derivation of what the window shows. |
-| `src/shell/` | The main window. `call.rs` draws the call. |
+| `src/shell/` | The main window. `call.rs` draws the call, `share.rs` the dialog and the stage of a share, and `room.rs` the rules of the room of a call. |
 | `src/bin/junto-screens.rs` | The tool that draws the screens. |

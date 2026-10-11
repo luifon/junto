@@ -8,6 +8,7 @@ use junto_protocol::call::{
     ReportScreenShare, ReportSpeaking, ShareAudio, UpdateCallSettings,
 };
 use junto_protocol::ids::{AccountId, CallInvitationId, CallMoveId, ChannelId, EntryRequestId};
+use junto_protocol::recording::{Recording, StartRecording};
 use junto_protocol::snapshot::Snapshot;
 use junto_protocol::structure::Channel;
 use time::OffsetDateTime;
@@ -34,8 +35,18 @@ impl ServerApi {
         self.get("/call".to_owned()).await
     }
 
+    /// Leaves the call of the account, from whichever device it is in the call.
     pub async fn leave_call(&self) -> Result<(), ApiError> {
         self.act(Method::Delete, "/call".to_owned()).await
+    }
+
+    /// Leaves the place that this device was given with `identity`. A place that another
+    /// device or session of the account holds stays, and the answer is the same.
+    pub async fn leave_call_as(&self, identity: &str) -> Result<(), ApiError> {
+        let query = vec![("identity", identity.to_owned())];
+        self.call(Method::Delete, "/call".to_owned(), query, None)
+            .await
+            .map(|_| ())
     }
 
     /// Reports the person's own microphone and sound settings. Only the session that
@@ -109,6 +120,29 @@ impl ServerApi {
 
     pub async fn end_meeting(&self, channel_id: ChannelId) -> Result<(), ApiError> {
         let path = format!("/channels/{channel_id}/call/meeting");
+        self.act(Method::Delete, path).await
+    }
+
+    // The recording of the call of a voice channel (ADR 0601, ADR 0604).
+
+    /// Starts a recording of the call that the caller is in. The answer has the state
+    /// `starting`; what follows arrives as events. `language`: the language of the speech
+    /// for the transcript, or nothing when it is to be detected.
+    pub async fn start_recording(
+        &self,
+        channel_id: ChannelId,
+        language: Option<&str>,
+    ) -> Result<Recording, ApiError> {
+        let path = format!("/channels/{channel_id}/call/recording");
+        let body = StartRecording {
+            language: language.map(str::to_owned),
+        };
+        self.send(Method::Put, path, &body).await
+    }
+
+    /// Asks for the end of the recording of the call that the caller is in.
+    pub async fn stop_recording(&self, channel_id: ChannelId) -> Result<(), ApiError> {
+        let path = format!("/channels/{channel_id}/call/recording");
         self.act(Method::Delete, path).await
     }
 

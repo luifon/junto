@@ -47,6 +47,9 @@ gpui-base = "=0.7.1"
 # The result of a write on a background thread returns to the interface thread through
 # its one-time channel. gpui uses the same crate.
 futures-channel = "0.3"
+# The picture of a share is given to gpui as an image of this crate, in the version that
+# gpui uses.
+image = { version = "0.25", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
