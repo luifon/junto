@@ -1,14 +1,18 @@
 use std::net::{IpAddr, SocketAddr};
 
-use axum::extract::{ConnectInfo, FromRequest, FromRequestParts, Path, Query, Request};
+use axum::extract::{
+    ConnectInfo, FromRequest, FromRequestParts, MatchedPath, Path, Query, Request,
+};
 use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
+use junto_protocol::access_token::{ACCESS_TOKEN_PREFIX, TokenAction};
 use serde::de::DeserializeOwned;
 
 use crate::error::ApiError;
 use crate::rate_limit::client_address;
-use crate::secrets::{SESSION_TOKEN_PREFIX, hash_session_token};
+use crate::secrets::{SESSION_TOKEN_PREFIX, hash_access_token, hash_session_token};
 use crate::state::AppState;
+use crate::tokens;
 
 const FORWARDED_FOR: &str = "x-forwarded-for";
 
@@ -63,23 +67,45 @@ where
     }
 }
 
-/// The hash of the session token of a request. The session behind it is verified inside the
-/// transaction of the request, by `Access::open`.
+/// What kind of credential a request carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Credential {
+    Session,
+    /// An access token, on a route of this action (ADR 0210).
+    AccessToken(TokenAction),
+}
+
+/// The hash of the credential of a request: of a session token, or of an access token on a
+/// route that access tokens reach. The session or the token behind it is verified inside
+/// the transaction of the request, by `Access::open`.
 #[derive(Debug, Clone, Copy)]
-pub struct Bearer(pub [u8; 32]);
+pub struct Bearer(pub [u8; 32], pub Credential);
 
 impl<S: Send + Sync> FromRequestParts<S> for Bearer {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        parts
+        let token = parts
             .headers
             .get(AUTHORIZATION)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.strip_prefix("Bearer "))
-            .filter(|token| token.starts_with(SESSION_TOKEN_PREFIX))
-            .map(|token| Self(hash_session_token(token)))
-            .ok_or_else(ApiError::unauthenticated)
+            .ok_or_else(ApiError::unauthenticated)?;
+        if token.starts_with(SESSION_TOKEN_PREFIX) {
+            return Ok(Self(hash_session_token(token), Credential::Session));
+        }
+        if !token.starts_with(ACCESS_TOKEN_PREFIX) {
+            return Err(ApiError::unauthenticated());
+        }
+        let action = parts
+            .extensions
+            .get::<MatchedPath>()
+            .and_then(|path| tokens::reach(&parts.method, path.as_str()))
+            .ok_or_else(tokens::outside_reach)?;
+        Ok(Self(
+            hash_access_token(token),
+            Credential::AccessToken(action),
+        ))
     }
 }
 

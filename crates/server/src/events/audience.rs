@@ -86,6 +86,9 @@ impl Class {
             | Event::OwnerChanged { .. }
             | Event::ServerRoleCreated { .. }
             | Event::ServerRoleUpdated { .. }
+            | Event::AccessTokenCreated { .. }
+            | Event::AccessTokenRevoked { .. }
+            | Event::AccessTokensOfCreatorRevoked { .. }
             | Event::InviteCreated { .. }
             | Event::InviteRevoked { .. }
             | Event::InviteUsed { .. }
@@ -558,7 +561,11 @@ impl Audience {
             Event::AccountProfileUpdated { profile } => Some(Self::AccountViewers {
                 account_id: profile.id,
             }),
-            Event::ServerRoleCreated { .. } | Event::ServerRoleUpdated { .. } => {
+            Event::ServerRoleCreated { .. }
+            | Event::ServerRoleUpdated { .. }
+            | Event::AccessTokenCreated { .. }
+            | Event::AccessTokenRevoked { .. }
+            | Event::AccessTokensOfCreatorRevoked { .. } => {
                 permission(ServerPermission::Administrator)
             }
             Event::InviteCreated { .. }

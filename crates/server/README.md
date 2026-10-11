@@ -55,6 +55,8 @@ The full check takes the rooms in turn, 50 per part; with more calls than that a
 
 While the server does not reach LiveKit, nobody is let into a call. After the return the changed rooms are checked at once and every other room in its turn. A failure of one room does not stop the check of the others; that room lets nobody in until it is checked again.
 
+`DELETE /api/v1/channels/{channel_id}/call/participants/{account_id}/hand` lowers the raised hand of another person: the person who runs meeting mode does this, and a moderator with `mute_members` (ADR 0516).
+
 Two accounts have a direct-message call only while they share a workspace or one of them administers the server (ADR 0307). One account rings another at most 3 times in 10 minutes and not for 5 minutes after a decline, and an account that muted the conversation is not rung (ADR 0515).
 
 The server reaches the API of LiveKit (`JUNTO_LIVEKIT_API_URL`) without TLS and refuses an `https://` address at the start. Put that address on a private network (ADR 0508).
@@ -101,7 +103,44 @@ The worker reads the audio files of a recording and writes only into the directo
 
 The storage guard (ADR 0605) keeps 5 GiB free, reserves 8 GiB for each recording and records 2 calls at one time. A start without that space gets `storage_low`, and a third recording gets `recordings_full`. The health route states `storage_low`.
 
-The recorder writes below `JUNTO_RECORDINGS_DIR`: the file of an audio track to `<recording>/<segment>.ogg` and the composite as pieces with a playlist to `<recording>/<segment>/`. The server writes the videos and the transcripts into the same directories, so the user of the server needs write access to what the recorder creates. The recorder loads the layout page from `JUNTO_RECORDER_LAYOUT_URL`; the server does not serve that page yet.
+The recorder writes below `JUNTO_RECORDINGS_DIR`: the file of an audio track to `<recording>/<segment>.ogg` and the composite as pieces with a playlist to `<recording>/<segment>/`. The server writes the videos and the transcripts into the same directories, so the user of the server needs write access to what the recorder creates. The recorder loads the layout page from `JUNTO_RECORDER_LAYOUT_URL`. The server serves the page at `/recording-layout/` from the directory in `JUNTO_RECORDER_LAYOUT_DIR`: build it with `npm ci --ignore-scripts && npm run build` in [`recording-layout/`](../../recording-layout/README.md), put `recording-layout/dist` beside the server, and give the recorder the address of `/recording-layout/` on the private network (ADR 0615). The route asks for no credential and is not part of the public API; the log record of a request has the path without the query, so the room token of the recorder is not logged. A join token carries the display name of its account, which the page shows.
+
+## Access tokens
+
+An administrator creates an access token for another program with a session (ADR 0203, ADR 0210):
+
+```sh
+curl -X POST https://chat.example.test/api/v1/access-tokens \
+    -H "Authorization: Bearer $SESSION_TOKEN" -H 'content-type: application/json' \
+    -d '{"name": "setup", "actions": ["read_structure", "manage_structure"], "expires_at": "2027-01-01T00:00:00Z"}'
+```
+
+The answer carries the token (`jat_...`) once; the server stores its hash. A token has an expiry at most 366 days ahead and a set of actions: `read_structure`, `manage_structure`, `manage_members`, `read_audit_log`. The table `REACH` in `src/tokens.rs` lists the routes of each action; every other route refuses an access token with `forbidden`. A request with a token is decided with the roles that the creator has at that time, and never as the server owner. `GET /api/v1/access-tokens` lists the tokens and `DELETE /api/v1/access-tokens/{id}` revokes one. A ban, a removal and a recovery of the creator delete the creator's tokens. Each audit entry of a request with a token names the token in `access_token_id`.
+
+## Setup tool
+
+`junto-setup` (crate [`crates/setup`](../setup)) writes the structure of a server to a file and applies a file to a server, through the public API with an access token (ADR 0204, ADR 0211, ADR 0212):
+
+```sh
+export JUNTO_SERVER=https://chat.example.test JUNTO_ACCESS_TOKEN=jat_...
+junto-setup export --out structure.json     # workspaces, roles, categories, channels, overrides
+junto-setup plan structure.json             # prints what apply would change; changes nothing
+junto-setup apply structure.json            # all changes or none
+junto-setup plan structure.json --out plan.json && junto-setup apply --plan plan.json
+```
+
+The token is never an argument: it comes from `JUNTO_ACCESS_TOKEN` or from `--token-file`. The tool sends it over `https`, or over `http` to a loopback address. The file format is in [`docs/api/structure-file.json`](../../docs/api/structure-file.json). An entry is matched by its `id`; an entry or an optional field that the file does not hold is kept; only the channels under `delete.channels` are deleted. A new entry gets a new UUID from its author; the server generates the identifier of the object and keeps the identifier of the file for later files. A workspace with `"default": true` and a role with `"everyone": true` stand for the default workspace and for the everyone role of the server that the file is applied to, so the export of one server can be applied to another.
+
+`GET /api/v1/structure` returns the document with its revision, and `POST /api/v1/structure/changes` applies at most 200 changes in one transaction. A request that names another revision than the current one gets `conflict`, and so does a plan after any change of the structure. Both routes need the administrator permission.
+
+The tests run the commands of the tool against a server in the test process. One more tier runs the binary against two running servers with empty databases; it is ignored in the plain run:
+
+```sh
+cargo build -p junto-setup
+JUNTO_TEST_SETUP_SOURCE='http://127.0.0.1:8081|<owner code>' \
+JUNTO_TEST_SETUP_TARGET='http://127.0.0.1:8082|<owner code>' \
+    cargo test -p junto-server --test api setup_real:: -- --ignored
+```
 
 ## Host commands
 
@@ -136,6 +175,7 @@ Run `new-event-epoch` after the restore of a backup, before the server accepts c
 | `JUNTO_RECORDINGS_DIR` | none | Directory of the recordings as the server sees it, an absolute path (ADR 0604) |
 | `JUNTO_RECORDER_DIR` | the value of `JUNTO_RECORDINGS_DIR` | The same directory as the recorder sees it |
 | `JUNTO_RECORDER_LAYOUT_URL` | none | Address at which the recorder loads the layout page, with `http://` or `https://` |
+| `JUNTO_RECORDER_LAYOUT_DIR` | none | Absolute directory of the built layout page, with its `index.html`. Without it the server serves no layout page (ADR 0615) |
 | `JUNTO_FFMPEG` | `ffmpeg` | The program that joins and reads the files of a recording (ADR 0606) |
 | `JUNTO_FFPROBE` | `ffprobe` | The program that reads the packets of a file |
 | `JUNTO_TRANSCRIBE_COMMAND` | none | The program of the transcription worker and its first arguments, separated by spaces. Without it the server builds no transcript (ADR 0607) |
@@ -190,7 +230,7 @@ cargo deny check
 
 ## API description
 
-`docs/api/openapi.json` is generated from the routes, and `docs/api/events.json` from the message and event types of the event stream (ADR 0206). After a change to a route, a type or an event, write both again and commit them:
+`docs/api/openapi.json` is generated from the routes, `docs/api/events.json` from the message and event types of the event stream (ADR 0206), and `docs/api/structure-file.json` from the types of the structure file (ADR 0212). After a change to a route, a type or an event, write them again and commit them:
 
 ```sh
 cargo run -p junto-server --bin junto-openapi

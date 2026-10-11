@@ -20,8 +20,8 @@ npm ci --ignore-scripts
 
 Serve the contents of `dist/` at one static URL, including its licence files.
 Paths are relative, so the directory can be mounted below a server route. The
-server route and deployment packaging are implemented separately. No CDN or
-font service is used at runtime.
+Junto server serves the directory named by `JUNTO_RECORDER_LAYOUT_DIR` at
+`/recording-layout/` (ADR 0615). No CDN or font service is used at runtime.
 
 ## Recorder interface
 
@@ -58,7 +58,7 @@ Serve the built directory, supply the recorder's LiveKit address and room token,
 and send the main share through the layout interface. Add the participant's
 display name to its join token's `name` claim. The page shows only that name and
 shows no label when it is empty; it never labels a participant with an identity.
-Adding the display name to server tokens belongs to a later unit.
+The server puts the display name of the account into each join token (ADR 0615).
 
 ## Browser tests
 

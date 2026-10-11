@@ -44,8 +44,9 @@ pub fn verify(secret: &[u8], token: &str) -> Option<Value> {
     serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).ok()?).ok()
 }
 
-/// The claims of a join token: one room, one identity, and the sources that the participant
-/// may publish. The participant may subscribe, and may send no data messages.
+/// The claims of a join token: one room, one identity, the display name of the participant,
+/// and the sources that the participant may publish. The participant may subscribe, and may
+/// send no data messages.
 pub fn join_claims(key: &str, grant: &JoinGrant<'_>) -> Value {
     let sources: Vec<&str> = grant
         .publishing
@@ -56,6 +57,7 @@ pub fn join_claims(key: &str, grant: &JoinGrant<'_>) -> Value {
     json!({
         "iss": key,
         "sub": grant.identity,
+        "name": grant.name,
         "nbf": grant.now.unix_timestamp(),
         "exp": (grant.now + grant.lifetime).unix_timestamp(),
         "video": {
@@ -220,6 +222,7 @@ mod tests {
         let grant = JoinGrant {
             room: &room,
             identity: "account:seat",
+            name: "Ana Lima",
             publishing: &publishing,
             now: now(),
             lifetime: Duration::seconds(60),
@@ -227,6 +230,7 @@ mod tests {
         let claims = join_claims("key", &grant);
         assert_eq!(claims["iss"], "key");
         assert_eq!(claims["sub"], "account:seat");
+        assert_eq!(claims["name"], "Ana Lima");
         assert_eq!(claims["exp"], 1_800_000_060);
         assert_eq!(claims["video"]["room"], room.as_str());
         assert_eq!(claims["video"]["roomJoin"], true);

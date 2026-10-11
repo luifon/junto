@@ -576,6 +576,9 @@ pub async fn record_ended(
     Ok(())
 }
 
+/// Ends every session of an account, and with them its access tokens: a credential of the
+/// account that was created before its ban, its removal or its recovery does not work after
+/// it (ADR 0109, ADR 0210).
 pub async fn end_sessions(
     connection: &mut PgConnection,
     calls: &Calls,
@@ -589,9 +592,9 @@ pub async fn end_sessions(
         "delete from sessions where device_id in (select id from devices where account_id = $1)",
     )
     .bind(account_id)
-    .execute(connection)
+    .execute(&mut *connection)
     .await?;
-    Ok(())
+    crate::tokens::end_all_of(connection, now, account_id).await
 }
 
 /// The new device of a recovery and who performed it.

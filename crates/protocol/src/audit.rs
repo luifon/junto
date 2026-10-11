@@ -2,9 +2,10 @@ use junto_authz::{ServerPermission, WorkspacePermission};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
+use crate::access_token::TokenAction;
 use crate::ids::{
-    AccountId, AuditEntryId, CategoryId, ChannelId, DeviceId, InviteId, JoinRequestId, RecordingId,
-    ServerRoleId, WorkspaceId, WorkspaceRoleId,
+    AccessTokenId, AccountId, AuditEntryId, CategoryId, ChannelId, DeviceId, InviteId,
+    JoinRequestId, RecordingId, ServerRoleId, WorkspaceId, WorkspaceRoleId,
 };
 use crate::recording::RecordingStopReason;
 use crate::structure::ChannelKind;
@@ -98,6 +99,19 @@ pub enum AuditEvent {
     ServerRoleAssigned {
         role_id: ServerRoleId,
         account_id: AccountId,
+    },
+    /// An administrator created an access token. The entry does not contain the token.
+    AccessTokenCreated {
+        access_token_id: AccessTokenId,
+        name: String,
+        actions: Vec<TokenAction>,
+        #[serde(with = "time::serde::rfc3339")]
+        expires_at: OffsetDateTime,
+    },
+    /// A person revoked an access token.
+    AccessTokenRevoked {
+        access_token_id: AccessTokenId,
+        created_by: AccountId,
     },
     ServerRoleUnassigned {
         role_id: ServerRoleId,
@@ -260,6 +274,8 @@ impl AuditEvent {
             Self::ServerRoleUpdated { .. } => "server_role_updated",
             Self::ServerRoleAssigned { .. } => "server_role_assigned",
             Self::ServerRoleUnassigned { .. } => "server_role_unassigned",
+            Self::AccessTokenCreated { .. } => "access_token_created",
+            Self::AccessTokenRevoked { .. } => "access_token_revoked",
             Self::WorkspaceCreated { .. } => "workspace_created",
             Self::WorkspaceRenamed { .. } => "workspace_renamed",
             Self::WorkspaceRoleCreated { .. } => "workspace_role_created",
@@ -304,6 +320,10 @@ pub struct AuditEntry {
     pub occurred_at: OffsetDateTime,
     /// Absent when the server itself acted.
     pub actor_id: Option<AccountId>,
+    /// The access token that the request was made with (ADR 0210). Absent for a request
+    /// with a session and for an action of the server.
+    #[serde(default)]
+    pub access_token_id: Option<AccessTokenId>,
     pub workspace_id: Option<WorkspaceId>,
     pub channel_id: Option<ChannelId>,
     pub event: AuditEvent,
@@ -376,6 +396,16 @@ mod tests {
                 recording_id: RecordingId::generate(),
             },
             AuditEvent::GlossaryReplaced { terms: 12 },
+            AuditEvent::AccessTokenCreated {
+                access_token_id: AccessTokenId::generate(),
+                name: "setup".to_owned(),
+                actions: vec![TokenAction::ManageStructure],
+                expires_at: OffsetDateTime::UNIX_EPOCH,
+            },
+            AuditEvent::AccessTokenRevoked {
+                access_token_id: AccessTokenId::generate(),
+                created_by: account_id,
+            },
         ];
         for event in events {
             let json = serde_json::to_value(&event).unwrap();

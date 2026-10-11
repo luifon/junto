@@ -7,6 +7,7 @@ use junto_protocol::events::Event;
 use junto_protocol::ids::{AccountId, ServerRoleId};
 use junto_protocol::roles::{CreateServerRole, ServerRole, UpdateServerRole};
 use sqlx::PgConnection;
+use time::OffsetDateTime;
 
 use crate::access::Access;
 use crate::audit::{self, About};
@@ -88,35 +89,45 @@ pub async fn create_server_role(
     let now = app.now();
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        access.require(Request::ManageServerRoles {
-            granting: permissions,
-        })?;
-        sqlx::query(
-            "insert into server_roles (id, name, permissions, created_at)
-             values ($1, $2, $3, $4)",
-        )
-        .bind(role.id)
-        .bind(&role.name)
-        .bind(db::server_bits(permissions))
-        .bind(now)
-        .execute(&mut *connection)
-        .await?;
-        audit::record(
-            connection,
-            now,
-            Some(access.account_id),
-            About::Server,
-            &AuditEvent::ServerRoleCreated {
-                role_id: role.id,
-                name: role.name.clone(),
-                permissions: role.permissions.clone(),
-            },
-        )
-        .await?;
-        let created = Event::ServerRoleCreated { role: role.clone() };
-        events::publish(connection, now, &created).await
+        create(connection, &access, now, &role).await
     })?;
     Ok((StatusCode::CREATED, Json(role)))
+}
+
+pub(crate) async fn create(
+    connection: &mut PgConnection,
+    access: &Access,
+    now: OffsetDateTime,
+    role: &ServerRole,
+) -> ApiResult<()> {
+    let permissions: ServerPermissions = role.permissions.iter().copied().collect();
+    access.require(Request::ManageServerRoles {
+        granting: permissions,
+    })?;
+    sqlx::query(
+        "insert into server_roles (id, name, permissions, created_at)
+         values ($1, $2, $3, $4)",
+    )
+    .bind(role.id)
+    .bind(&role.name)
+    .bind(db::server_bits(permissions))
+    .bind(now)
+    .execute(&mut *connection)
+    .await?;
+    audit::record(
+        connection,
+        now,
+        Some(access.account_id),
+        About::Server,
+        &AuditEvent::ServerRoleCreated {
+            role_id: role.id,
+            name: role.name.clone(),
+            permissions: role.permissions.clone(),
+        },
+    )
+    .await?;
+    let created = Event::ServerRoleCreated { role: role.clone() };
+    events::publish(connection, now, &created).await
 }
 
 /// Changes the name or the permissions of a server role.
@@ -147,45 +158,64 @@ pub async fn update_server_role(
     let now = app.now();
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        access.require(Request::Server(ServerPermission::Administrator))?;
-        let (old_name, old_permissions) = locked_role(connection, role_id).await?;
-        let permissions = new_permissions.unwrap_or(old_permissions);
-        access.require(Request::ManageServerRoles {
-            granting: permissions.difference(old_permissions),
-        })?;
-
-        let role = ServerRole {
-            id: role_id,
-            name: new_name.clone().unwrap_or(old_name),
-            permissions: db::server_list(permissions),
-        };
-        sqlx::query("update server_roles set name = $2, permissions = $3 where id = $1")
-            .bind(role_id)
-            .bind(&role.name)
-            .bind(db::server_bits(permissions))
-            .execute(&mut *connection)
-            .await?;
-        audit::record(
+        update(
             connection,
+            &access,
             now,
-            Some(access.account_id),
-            About::Server,
-            &AuditEvent::ServerRoleUpdated {
-                role_id,
-                name: role.name.clone(),
-                permissions: role.permissions.clone(),
-            },
+            role_id,
+            new_name.clone(),
+            new_permissions,
         )
-        .await?;
-        let updated = Event::ServerRoleUpdated { role: role.clone() };
-        events::publish(connection, now, &updated).await?;
-        if permissions != old_permissions {
-            let holders = Affected::ServerRoleHolders(role_id);
-            events::permissions_changed(connection, now, holders, None).await?;
-        }
-        Ok(role)
+        .await
     })
     .map(Json)
+}
+
+pub(crate) async fn update(
+    connection: &mut PgConnection,
+    access: &Access,
+    now: OffsetDateTime,
+    role_id: ServerRoleId,
+    new_name: Option<String>,
+    new_permissions: Option<ServerPermissions>,
+) -> ApiResult<ServerRole> {
+    access.require(Request::Server(ServerPermission::Administrator))?;
+    let (old_name, old_permissions) = locked_role(connection, role_id).await?;
+    let permissions = new_permissions.unwrap_or(old_permissions);
+    access.require(Request::ManageServerRoles {
+        granting: permissions.difference(old_permissions),
+    })?;
+
+    let role = ServerRole {
+        id: role_id,
+        name: new_name.unwrap_or(old_name),
+        permissions: db::server_list(permissions),
+    };
+    sqlx::query("update server_roles set name = $2, permissions = $3 where id = $1")
+        .bind(role_id)
+        .bind(&role.name)
+        .bind(db::server_bits(permissions))
+        .execute(&mut *connection)
+        .await?;
+    audit::record(
+        connection,
+        now,
+        Some(access.account_id),
+        About::Server,
+        &AuditEvent::ServerRoleUpdated {
+            role_id,
+            name: role.name.clone(),
+            permissions: role.permissions.clone(),
+        },
+    )
+    .await?;
+    let updated = Event::ServerRoleUpdated { role: role.clone() };
+    events::publish(connection, now, &updated).await?;
+    if permissions != old_permissions {
+        let holders = Affected::ServerRoleHolders(role_id);
+        events::permissions_changed(connection, now, holders, None).await?;
+    }
+    Ok(role)
 }
 
 /// Records a change of the server roles of an account: for the people who list accounts, and

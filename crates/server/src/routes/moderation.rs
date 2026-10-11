@@ -135,6 +135,7 @@ pub async fn remove_account(
             .bind(account_id)
             .execute(&mut *connection)
             .await?;
+        crate::tokens::end_all_of(connection, now, account_id).await?;
         let left: Vec<WorkspaceId> = sqlx::query_scalar(
             "delete from workspace_members where account_id = $1 returning workspace_id",
         )
