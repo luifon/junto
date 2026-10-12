@@ -89,7 +89,17 @@ impl Access {
         now: OffsetDateTime,
     ) -> ApiResult<Self> {
         if let Credential::AccessToken(action) = bearer.1 {
-            return Self::open_with_token(connection, &bearer.0, action, now).await;
+            return Self::open_with_token(connection, &bearer.0, action, false, now).await;
+        }
+        if bearer.1 == Credential::RolePositionsToken {
+            return Self::open_with_token(
+                connection,
+                &bearer.0,
+                TokenAction::ReadStructure,
+                true,
+                now,
+            )
+            .await;
         }
         let session: Option<(Uuid, Vec<u8>, DeviceId, AccountId)> = sqlx::query_as(
             "select s.id, s.token_hash, d.id, d.account_id
@@ -114,13 +124,15 @@ impl Access {
     }
 
     /// The caller of a request with an access token on a route of `action`: the account that
-    /// created the token, as it stands now (ADR 0203). The token must hold the action. The
+    /// created the token, as it stands now (ADR 0203). The token must hold the action, or
+    /// the narrowly allowed alternative for reading role positions. The
     /// owner position is not carried: a token of the server owner acts with the
     /// administrator permission (ADR 0210).
     async fn open_with_token(
         connection: &mut PgConnection,
         hash: &[u8; 32],
         action: TokenAction,
+        reads_role_positions: bool,
         now: OffsetDateTime,
     ) -> ApiResult<Self> {
         let token: Option<(AccessTokenId, Vec<u8>, AccountId, i64)> = sqlx::query_as(
@@ -146,7 +158,10 @@ impl Access {
                 ));
             }
         };
-        if !tokens::stored_actions(actions)?.contains(&action) {
+        let held = tokens::stored_actions(actions)?;
+        if !(held.contains(&action)
+            || reads_role_positions && held.contains(&TokenAction::ManageMembers))
+        {
             return Err(ApiError::new(
                 ErrorCode::Forbidden,
                 format!(
@@ -269,6 +284,104 @@ impl Access {
             },
             owner_id,
         })
+    }
+
+    pub async fn rank(
+        &self,
+        connection: &mut PgConnection,
+        workspace: Option<WorkspaceId>,
+    ) -> ApiResult<junto_authz::RoleRank> {
+        Self::rank_of(connection, self.account_id, self.owner_id, workspace).await
+    }
+
+    pub async fn rank_of(
+        connection: &mut PgConnection,
+        account: AccountId,
+        owner: Option<AccountId>,
+        workspace: Option<WorkspaceId>,
+    ) -> ApiResult<junto_authz::RoleRank> {
+        let rows: Vec<(i32, i64)> = sqlx::query_as(
+            "select r.position, r.permissions from account_server_roles a
+             join server_roles r on r.id = a.role_id where a.account_id = $1",
+        )
+        .bind(account)
+        .fetch_all(&mut *connection)
+        .await?;
+        let server = rows
+            .into_iter()
+            .map(|(position, bits)| {
+                db::server_permissions(bits).map(|permissions| (position, permissions))
+            })
+            .collect::<ApiResult<Vec<_>>>()?;
+        let workspace_positions: Option<Vec<i32>> = if let Some(workspace) = workspace {
+            Some(sqlx::query_scalar(
+                "select r.position from member_roles m join workspace_roles r on r.id = m.role_id
+                 where m.workspace_id = $1 and m.account_id = $2",
+            ).bind(workspace).bind(account).fetch_all(&mut *connection).await?)
+        } else {
+            None
+        };
+        Ok(junto_authz::role_rank(
+            owner == Some(account),
+            &server,
+            workspace_positions.as_deref(),
+        ))
+    }
+
+    pub async fn require_above_restored_roles(
+        &self,
+        connection: &mut PgConnection,
+        account: AccountId,
+    ) -> ApiResult<()> {
+        if self.owner_id == Some(self.account_id) {
+            return Ok(());
+        }
+        self.require_above_account(connection, account).await?;
+        let mut after = Uuid::nil();
+        loop {
+            let workspaces: Vec<WorkspaceId> = sqlx::query_scalar(
+                "select distinct workspace_id from member_roles
+                 where account_id = $1 and workspace_id > $2 order by workspace_id limit 64",
+            )
+            .bind(account)
+            .bind(after)
+            .fetch_all(&mut *connection)
+            .await?;
+            for workspace in &workspaces {
+                let actor = self.rank(connection, Some(*workspace)).await?;
+                let target =
+                    Self::rank_of(connection, account, self.owner_id, Some(*workspace)).await?;
+                Self::require_rank(actor, target)?;
+                after = workspace.as_uuid();
+            }
+            if workspaces.len() < 64 {
+                return Ok(());
+            }
+        }
+    }
+
+    pub async fn require_above_account(
+        &self,
+        connection: &mut PgConnection,
+        account: AccountId,
+    ) -> ApiResult<()> {
+        let actor = self.rank(connection, None).await?;
+        let target = Self::rank_of(connection, account, self.owner_id, None).await?;
+        Self::require_rank(actor, target)
+    }
+
+    pub fn require_rank(
+        actor: junto_authz::RoleRank,
+        target: junto_authz::RoleRank,
+    ) -> ApiResult<()> {
+        if junto_authz::outranks(actor, target) {
+            Ok(())
+        } else {
+            Err(ApiError::new(
+                ErrorCode::Forbidden,
+                "the role order refuses this action",
+            ))
+        }
     }
 
     pub fn actor(&self) -> &Actor {

@@ -89,6 +89,8 @@ impl Class {
             | Event::AccountStatusChanged { .. }
             | Event::AccountServerRolesChanged { .. }
             | Event::OwnerChanged { .. }
+            | Event::ServerRolePositionsShifted { .. }
+            | Event::WorkspaceRolePositionsShifted { .. }
             | Event::ServerRoleCreated { .. }
             | Event::ServerRoleUpdated { .. }
             | Event::AccessTokenCreated { .. }
@@ -664,7 +666,9 @@ impl Audience {
             Event::ServerRoleCreated { .. }
             | Event::ServerRoleUpdated { .. }
             | Event::ServerRoleDeleted { .. }
-            | Event::AccessTokenCreated { .. }
+            | Event::ServerRolePositionsShifted { .. } => permission(ServerPermission::BanMembers),
+            Event::WorkspaceRolePositionsShifted { workspace_id, .. } => workspace(*workspace_id),
+            Event::AccessTokenCreated { .. }
             | Event::AccessTokenRevoked { .. }
             | Event::AccessTokensOfCreatorRevoked { .. } => {
                 permission(ServerPermission::Administrator)

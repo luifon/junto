@@ -1549,6 +1549,28 @@
       ],
       "type": "object"
     },
+    "server_role_positions_shifted": {
+      "description": "Replaces the positions of existing server roles before the following creation.",
+      "properties": {
+        "positions": {
+          "items": {
+            "$ref": "#/components/schemas/ServerRolePosition"
+          },
+          "type": "array"
+        },
+        "type": {
+          "enum": [
+            "server_role_positions_shifted"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "positions",
+        "type"
+      ],
+      "type": "object"
+    },
     "server_role_updated": {
       "properties": {
         "role": {
@@ -1804,6 +1826,32 @@
       "required": [
         "workspace_id",
         "role_id",
+        "type"
+      ],
+      "type": "object"
+    },
+    "workspace_role_positions_shifted": {
+      "description": "Replaces the positions of existing non-everyone roles before creation.",
+      "properties": {
+        "positions": {
+          "items": {
+            "$ref": "#/components/schemas/WorkspaceRolePosition"
+          },
+          "type": "array"
+        },
+        "type": {
+          "enum": [
+            "workspace_role_positions_shifted"
+          ],
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/components/schemas/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "positions",
         "type"
       ],
       "type": "object"
@@ -2818,6 +2866,28 @@
             "type": "object"
           },
           {
+            "description": "Replaces the positions of existing server roles before the following creation.",
+            "properties": {
+              "positions": {
+                "items": {
+                  "$ref": "#/components/schemas/ServerRolePosition"
+                },
+                "type": "array"
+              },
+              "type": {
+                "enum": [
+                  "server_role_positions_shifted"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "positions",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
             "properties": {
               "role": {
                 "$ref": "#/components/schemas/ServerRole"
@@ -3152,6 +3222,32 @@
               "workspace_id",
               "account_id",
               "role_ids",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Replaces the positions of existing non-everyone roles before creation.",
+            "properties": {
+              "positions": {
+                "items": {
+                  "$ref": "#/components/schemas/WorkspaceRolePosition"
+                },
+                "type": "array"
+              },
+              "type": {
+                "enum": [
+                  "workspace_role_positions_shifted"
+                ],
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            },
+            "required": [
+              "workspace_id",
+              "positions",
               "type"
             ],
             "type": "object"
@@ -5202,6 +5298,10 @@
               "$ref": "#/components/schemas/ServerPermission"
             },
             "type": "array"
+          },
+          "position": {
+            "format": "int32",
+            "type": "integer"
           }
         },
         "required": [
@@ -5214,6 +5314,22 @@
       "ServerRoleId": {
         "format": "uuid",
         "type": "string"
+      },
+      "ServerRolePosition": {
+        "properties": {
+          "position": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "role_id": {
+            "$ref": "#/components/schemas/ServerRoleId"
+          }
+        },
+        "required": [
+          "role_id",
+          "position"
+        ],
+        "type": "object"
       },
       "ShareAudio": {
         "description": "The sound that a screen share sends (ADR 0502).",
@@ -5349,6 +5465,10 @@
             },
             "type": "array"
           },
+          "position": {
+            "format": "int32",
+            "type": "integer"
+          },
           "workspace_id": {
             "$ref": "#/components/schemas/WorkspaceId"
           }
@@ -5365,6 +5485,22 @@
       "WorkspaceRoleId": {
         "format": "uuid",
         "type": "string"
+      },
+      "WorkspaceRolePosition": {
+        "properties": {
+          "position": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "role_id": {
+            "$ref": "#/components/schemas/WorkspaceRoleId"
+          }
+        },
+        "required": [
+          "role_id",
+          "position"
+        ],
+        "type": "object"
       }
     }
   }

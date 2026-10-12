@@ -15,7 +15,7 @@ Crate:
 - The tool is the crate `junto-setup` with the binary `junto-setup`. It depends on `junto-protocol` for the types of the file and of the two routes, and not on the server. Its HTTP client is the one of the client library (ADR 0714): TLS with the trust store of the operating system.
 - The function that computes a plan reads two documents and contacts nothing.
 
-File format 1:
+File format 2 (format 1 remains readable):
 
 - A file is one JSON object with `format`, `server_roles`, `workspaces` and `delete`. A workspace holds `roles`, `categories` and `channels`; a channel holds `overrides`. The types are in `junto-protocol`, and the JSON Schema is generated into `docs/api/structure-file.json` and compared by a test (ADR 0202).
 - An object of a file with a field that the format does not name is refused, so that a misspelled field is not ignored.
@@ -23,17 +23,18 @@ File format 1:
 - An entry that a file does not hold is kept. An override that a channel entry does not state is kept; an override with two empty sets removes the override.
 - `delete` lists the identifiers of the entries to delete, per kind: `channels`, `categories`, `roles` (workspace roles), `server_roles` and `workspaces`. Nothing else is deleted. A listed entry that the server does not have is no change. The channels of a deleted category stay; a deleted workspace is deleted with everything that it holds (ADR 0308).
 - An exported file states every field, and no deletion.
+- Format 2 adds optional role `position` keys expressing relative order, with larger keys higher and everyone at zero. Numeric gaps and shifts do not request changes. Only explicitly positioned roles exchange their existing slots; other roles keep their places. A new unpositioned role stays at the bottom (ADR 0309).
 
 Matching:
 
 - An entry is matched by its identifier (ADR 0211). A matched entry with another name is a rename.
 - A workspace entry with `default: true` whose identifier the server does not know stands for the default workspace of the server. A role entry with `everyone: true` stands for the "everyone" role of its workspace, whatever its identifier is.
-- The tool refuses a file before any request that changes the server when: its format is not 1; two entries of one kind share an identifier; an entry is in another workspace than its object; the kind of a channel differs; a channel names a category or a role that is neither in the file nor on the server; an override has a permission in both sets; a text channel has a setting of voice channels; an entry of any kind is also listed for deletion, or is listed twice; a channel names a category or a role that is listed for deletion; a second workspace is marked as default; two entries stand for one role, or two overrides of a channel for one role. It states the problems of the file alone together; for a file without such a problem it states the problems against the server together.
+- The tool refuses a file before any request that changes the server when: its format is neither 1 nor 2; two entries of one kind share an identifier; an entry is in another workspace than its object; the kind of a channel differs; a channel names a category or a role that is neither in the file nor on the server; an override has a permission in both sets; a text channel has a setting of voice channels; an entry of any kind is also listed for deletion, or is listed twice; a channel names a category or a role that is listed for deletion; a second workspace is marked as default; two entries stand for one role, or two overrides of a channel for one role. It states the problems of the file alone together; for a file without such a problem it states the problems against the server together.
 
 Plan:
 
 - `plan` reads the structure document and prints one line for each change, with the fields that differ. It sends only the fields that differ.
-- The changes are ordered so that each change names only entries that exist before it: server roles, then for each workspace its roles, categories and channels with their overrides, then the deletions: channels, categories, workspace roles, workspaces, server roles.
+- The changes are ordered so that each change names only entries that exist before it: server roles, then for each workspace its roles, categories and channels with their overrides, then the deletions: channels, categories, workspace roles, workspaces, server roles; atomic role reorders come last.
 - The tool refuses, against the server, a file that lists an "everyone" role or the default workspace for deletion: the server deletes neither.
 - `plan --out` writes the plan: the format, the address of the server, the revision and the changes.
 - A plan with more than 200 changes is not sent.
@@ -54,6 +55,8 @@ Commands:
 - A second `apply` of the same file plans no change and sends no request that changes the server.
 - The export of one server, applied to an empty server, renames the default workspace of that server, changes its "everyone" role, and adds the other entries. The two first channels of the empty server stay, because the file does not list them for deletion.
 - A person who writes a new entry by hand gives it a new UUID.
-- The tool reads format 1 only. A later format has another number, and the tool states which format it reads.
+- The tool reads file formats 1 and 2 and writes format 2. Saved plans use format 2; older saved plans must be recomputed. A later format has another number.
 - A structure with more than 200 differences is applied in several files, each with a part of the entries.
 - The plan file contains no credential.
+
+Role order and its action-specific exemptions are decided in ADR 0309.

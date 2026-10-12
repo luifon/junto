@@ -478,7 +478,10 @@ async fn each_server_permission_opens_its_own_action_and_no_other() {
             let reply = server
                 .send::<Value>(method.clone(), path, Some(&holder.token), None, None)
                 .await;
-            let expected = if held == needed || *held == ServerPermission::Administrator {
+            let expected = if held == needed
+                || *held == ServerPermission::Administrator
+                || (*held == ServerPermission::BanMembers && *path == "/api/v1/server-roles")
+            {
                 StatusCode::OK
             } else {
                 StatusCode::FORBIDDEN

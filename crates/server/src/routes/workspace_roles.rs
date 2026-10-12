@@ -26,6 +26,7 @@ use crate::validate;
 use crate::{read, transact};
 
 struct StoredRole {
+    position: i32,
     name: String,
     permissions: WorkspacePermissions,
     is_everyone: bool,
@@ -36,8 +37,8 @@ async fn locked_role(
     workspace_id: WorkspaceId,
     role_id: WorkspaceRoleId,
 ) -> ApiResult<StoredRole> {
-    let row: Option<(String, i64, bool)> = sqlx::query_as(
-        "select name, permissions, is_everyone from workspace_roles
+    let row: Option<(String, i64, bool, i32)> = sqlx::query_as(
+        "select name, permissions, is_everyone, position from workspace_roles
          where id = $1 and workspace_id = $2
          for update",
     )
@@ -45,8 +46,9 @@ async fn locked_role(
     .bind(workspace_id)
     .fetch_optional(connection)
     .await?;
-    let (name, bits, is_everyone) = row.ok_or_else(ApiError::not_found)?;
+    let (name, bits, is_everyone, position) = row.ok_or_else(ApiError::not_found)?;
     Ok(StoredRole {
+        position,
         name,
         permissions: db::workspace_permissions(bits)?,
         is_everyone,
@@ -82,17 +84,18 @@ pub async fn roles_of(
     connection: &mut PgConnection,
     workspace_id: WorkspaceId,
 ) -> ApiResult<Vec<WorkspaceRole>> {
-    let rows: Vec<(WorkspaceRoleId, String, i64, bool)> = sqlx::query_as(
-        "select id, name, permissions, is_everyone from workspace_roles
+    let rows: Vec<(WorkspaceRoleId, String, i64, bool, i32)> = sqlx::query_as(
+        "select id, name, permissions, is_everyone, position from workspace_roles
          where workspace_id = $1
-         order by is_everyone desc, id",
+         order by position",
     )
     .bind(workspace_id)
     .fetch_all(connection)
     .await?;
     rows.into_iter()
-        .map(|(id, name, bits, is_everyone)| {
+        .map(|(id, name, bits, is_everyone, position)| {
             Ok(WorkspaceRole {
+                position,
                 id,
                 workspace_id,
                 name,
@@ -155,6 +158,7 @@ pub async fn create_workspace_role(
 ) -> ApiResult<(StatusCode, Json<WorkspaceRole>)> {
     let permissions: WorkspacePermissions = body.permissions.iter().copied().collect();
     let role = WorkspaceRole {
+        position: 1,
         id: WorkspaceRoleId::generate(),
         workspace_id,
         name: validate::name("name", &body.name)?,
@@ -196,9 +200,10 @@ pub(crate) async fn create(
             "the workspace has the largest number of roles",
         ));
     }
+    crate::role_order::insert_bottom(connection, access, now, Some(workspace_id)).await?;
     sqlx::query(
-        "insert into workspace_roles (id, workspace_id, name, permissions, created_at)
-         values ($1, $2, $3, $4, $5)",
+        "insert into workspace_roles (id, workspace_id, name, permissions, created_at, position)
+         values ($1, $2, $3, $4, $5, 1)",
     )
     .bind(role.id)
     .bind(workspace_id)
@@ -278,6 +283,10 @@ pub(crate) async fn update(
         permission: WorkspacePermission::ManageRoles,
     })?;
     let stored = locked_role(connection, workspace_id, role_id).await?;
+    Access::require_rank(
+        access.rank(connection, Some(workspace_id)).await?,
+        junto_authz::RoleRank::Workspace(stored.position),
+    )?;
     let permissions = new_permissions.unwrap_or(stored.permissions);
     access.require(Request::ManageWorkspaceRoles {
         scope: &scope,
@@ -286,6 +295,7 @@ pub(crate) async fn update(
     })?;
 
     let role = WorkspaceRole {
+        position: stored.position,
         id: role_id,
         workspace_id,
         name: new_name.unwrap_or(stored.name),
@@ -400,6 +410,10 @@ pub(crate) async fn delete(
         permission: WorkspacePermission::ManageRoles,
     })?;
     let stored = locked_role(connection, workspace_id, role_id).await?;
+    Access::require_rank(
+        access.rank(connection, Some(workspace_id)).await?,
+        junto_authz::RoleRank::Workspace(stored.position),
+    )?;
     if stored.is_everyone {
         return Err(ApiError::conflict(
             "every member holds the everyone role; it is not deleted",
@@ -471,6 +485,10 @@ pub async fn assign_workspace_role(
             permission: WorkspacePermission::ManageRoles,
         })?;
         let stored = locked_role(connection, workspace_id, role_id).await?;
+        Access::require_rank(
+            access.rank(connection, Some(workspace_id)).await?,
+            junto_authz::RoleRank::Workspace(stored.position),
+        )?;
         let allowed_in: HashMap<ChannelId, i64> = sqlx::query_as(
             "select channel_id, allow from channel_overrides where role_id = $1 and allow <> 0",
         )
@@ -579,6 +597,15 @@ pub async fn unassign_workspace_role(
         let access = Access::open(connection, &bearer, now).await?;
         let scope = access.workspace(connection, workspace_id).await?;
         require_may_lift_denies(connection, &access, workspace_id, &scope, role_id).await?;
+        let stored = locked_role(connection, workspace_id, role_id).await?;
+        Access::require_rank(
+            access.rank(connection, Some(workspace_id)).await?,
+            junto_authz::RoleRank::Workspace(stored.position),
+        )?;
+        if stored.is_everyone {
+            return Err(ApiError::conflict("the everyone role is not assigned"));
+        }
+
         let deleted = sqlx::query(
             "delete from member_roles
              where workspace_id = $1 and account_id = $2 and role_id = $3",
@@ -603,6 +630,35 @@ pub async fn unassign_workspace_role(
             announce_roles(connection, now, workspace_id, account_id).await?;
         }
         Ok(())
+    })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Reorders up to 250 roles in one transaction.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/workspaces/{workspace_id}/roles/positions",
+    tag = "workspaces",
+    params(("workspace_id" = WorkspaceId, Path)),
+    request_body = junto_protocol::roles::ReorderWorkspaceRoles,
+    security(("session" = [])),
+    responses((status = 204), ApiError)
+)]
+pub async fn reorder_workspace_roles(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath(workspace_id): ApiPath<WorkspaceId>,
+    ApiJson(body): ApiJson<junto_protocol::roles::ReorderWorkspaceRoles>,
+) -> ApiResult<StatusCode> {
+    let now = app.now();
+    let positions: Vec<_> = body
+        .positions
+        .iter()
+        .map(|p| (p.role_id.as_uuid(), p.position))
+        .collect();
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        crate::role_order::reorder(connection, &access, now, Some(workspace_id), &positions).await
     })?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -88,6 +88,7 @@ Status values:
 | [0306](0306-ceilings-on-roles-and-invite-workspaces.md) | Ceilings on roles, role assignments and the workspaces of an invite | Accepted | 250 roles per workspace, 64 roles per member, 64 server roles per account and 100 workspaces per invite, so that no list in an event grows without a bound. |
 | [0307](0307-contact-rule-for-direct-messages-and-direct-calls.md) | Which two accounts may exchange direct messages and direct calls | Accepted | Two active accounts with a common workspace, or of which one administers the server; decided by the permission function at the start of a call, at every admission check, at the delivery of every event of the call and in the snapshot; seeing a profile does not allow a call. |
 | [0308](0308-deletion-of-roles-categories-and-workspaces.md) | Deletion of roles, categories and workspaces | Accepted | Routes with the grant rule for the denies of a deleted role; the channels of a deleted category stay; a workspace is deleted by an administrator, by the owner only with permanent messages, never the default one, and its row stays; the events for former holders and members are delivered from a stored list. |
+| [0309](0309-role-order.md) | Role order | Accepted | Ranked moderation and role management compare highest roles; positions, reorder, migration and action-specific exemptions. |
 
 ## 0401–0499 Text
 

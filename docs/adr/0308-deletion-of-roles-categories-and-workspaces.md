@@ -56,3 +56,5 @@ Access tokens:
 - The deletion of a workspace records no event and no audit entry for its single channels, roles and members.
 - A category is deleted by a person who does not see every channel of it. Those channels lose their category.
 - The identifier of a deleted workspace and of its channels stays in use for structure files (ADR 0211).
+
+Role order and its action-specific exemptions are decided in ADR 0309.

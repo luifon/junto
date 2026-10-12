@@ -16,3 +16,6 @@ pub use model::{
 pub use permissions::{
     ServerPermission, ServerPermissions, WorkspacePermission, WorkspacePermissions,
 };
+
+mod role_order;
+pub use role_order::{RoleRank, outranks, role_rank};

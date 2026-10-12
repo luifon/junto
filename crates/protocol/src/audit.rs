@@ -90,6 +90,14 @@ pub enum AuditEvent {
         account_id: AccountId,
         device_id: DeviceId,
     },
+    ServerRolePositionChanged {
+        role_id: ServerRoleId,
+        position: i32,
+    },
+    WorkspaceRolePositionChanged {
+        role_id: WorkspaceRoleId,
+        position: i32,
+    },
     ServerRoleCreated {
         role_id: ServerRoleId,
         name: String,
@@ -310,6 +318,8 @@ impl AuditEvent {
             Self::AccountUnbanned { .. } => "account_unbanned",
             Self::AccountRecovered { .. } => "account_recovered",
             Self::ServerRoleCreated { .. } => "server_role_created",
+            Self::ServerRolePositionChanged { .. } => "server_role_position_changed",
+            Self::WorkspaceRolePositionChanged { .. } => "workspace_role_position_changed",
             Self::ServerRoleUpdated { .. } => "server_role_updated",
             Self::ServerRoleAssigned { .. } => "server_role_assigned",
             Self::ServerRoleUnassigned { .. } => "server_role_unassigned",

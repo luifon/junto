@@ -24,5 +24,5 @@ ADR 0301 and ADR 0304 set no upper bound on the number of roles of a workspace, 
 - The largest events of the server base stay far below the size that an event may have: the server roles of an account, the roles of a member, an invite with its workspaces, and the overrides that the event of a deleted channel keeps.
 - A workspace that needs more than 250 roles, or a member who needs more than 64, needs a change of this record.
 - A program that writes to the database directly, at another isolation level, can pass a ceiling. ADR 0009 states the same for every rule of the server.
-- The number of server roles, of workspaces, of channels and of invites has no ceiling. None of them is sent as one list in an event.
+- ADR 0309 limits the creation of server roles to 250. The number of workspaces, of channels and of invites has no ceiling. None of them is sent as one list in an event.
 - A removal of an account records one event per workspace that the account was a member of, and a join one per granted workspace. Their number is bounded by the workspaces of the invite or by the memberships of the account.
