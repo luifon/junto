@@ -16,8 +16,13 @@ use super::rate;
 /// How long the system has to start a stream.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(5);
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static HOSTS_CREATED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub struct CpalHost {
-    host: cpal::Host,
+    host: Result<cpal::Host, AudioError>,
 }
 
 impl Default for CpalHost {
@@ -28,17 +33,23 @@ impl Default for CpalHost {
 
 impl CpalHost {
     pub fn new() -> Self {
+        #[cfg(test)]
+        HOSTS_CREATED.with(|count| count.set(count.get() + 1));
         Self { host: host() }
+    }
+
+    fn host(&self) -> Result<&cpal::Host, AudioError> {
+        self.host.as_ref().map_err(Clone::clone)
     }
 
     fn device(&self, chosen: Option<&DeviceId>, input: bool) -> Result<cpal::Device, AudioError> {
         let device = match chosen {
             Some(id) => {
                 let id: cpal::DeviceId = id.0.parse().map_err(|_| AudioError::NoDevice)?;
-                self.host.device_by_id(&id)
+                self.host()?.device_by_id(&id)
             }
-            None if input => self.host.default_input_device(),
-            None => self.host.default_output_device(),
+            None if input => self.host()?.default_input_device(),
+            None => self.host()?.default_output_device(),
         };
         device.ok_or(AudioError::NoDevice)
     }
@@ -46,9 +57,9 @@ impl CpalHost {
     fn info(&self, device: &cpal::Device, input: bool) -> Result<DeviceInfo, AudioError> {
         let id = device.id().map_err(error_of)?;
         let default = if input {
-            self.host.default_input_device()
+            self.host()?.default_input_device()
         } else {
-            self.host.default_output_device()
+            self.host()?.default_output_device()
         };
         Ok(DeviceInfo {
             name: device.description().map_or_else(
@@ -62,13 +73,13 @@ impl CpalHost {
 }
 
 #[cfg(target_os = "linux")]
-fn host() -> cpal::Host {
+fn host() -> Result<cpal::Host, AudioError> {
     super::linux::host()
 }
 
 #[cfg(not(target_os = "linux"))]
-fn host() -> cpal::Host {
-    cpal::default_host()
+fn host() -> Result<cpal::Host, AudioError> {
+    Ok(cpal::default_host())
 }
 
 fn error_of(error: cpal::Error) -> AudioError {
@@ -187,9 +198,9 @@ impl AudioHost for CpalHost {
     fn devices(&self) -> Result<Devices, AudioError> {
         let list = |input: bool| -> Result<Vec<DeviceInfo>, AudioError> {
             let devices: Vec<cpal::Device> = if input {
-                self.host.input_devices().map_err(error_of)?.collect()
+                self.host()?.input_devices().map_err(error_of)?.collect()
             } else {
-                self.host.output_devices().map_err(error_of)?.collect()
+                self.host()?.output_devices().map_err(error_of)?.collect()
             };
             Ok(devices
                 .iter()

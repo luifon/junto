@@ -2,7 +2,7 @@
 
 The Junto desktop application: a gpui window on `junto-client-core` and `junto-media`. The binary is `junto`. The design decisions are in [`docs/adr/`](../../docs/adr/README.md): ADR 0730 describes this crate, ADR 0731 its theme and components, ADR 0732 joining a server in the window, ADR 0733 the media engine, ADR 0734 the call of a client, ADR 0735 the screens of a voice call, ADR 0736 the screen capture, ADR 0737 shares in the media engine, ADR 0738 the screens of a share and of a recording, ADR 0739 the rules of a call, ADR 0740 the message list and the composer, ADR 0741 the thread panel, pins, permanent messages and direct conversations, ADR 0742 the notices, the notification settings and the system notifications, ADR 0743 the search, and ADR 0744 the card of a recording and the transcript.
 
-This version shows the servers of the server book, their workspaces and channels, the people in voice channels, and the state of each server. It joins a server with a code or a request for access, and it holds a voice call in a voice channel: microphone, sound, mute, a volume per person, levels, push-to-talk and the choice of the sound devices. In a call a person shares a screen or a window with its sound, watches the shares of the others, starts and stops a recording, and uses the rules of the room: meeting mode with raised hands, the lock, the user limit, requests to enter, invitations, the menu of a person with blocks, removal and move. A person reads and writes messages in a text channel, in the chat of a voice channel and in a direct conversation: formatted text, replies, mentions, reactions, files, edits and deletions, with unread signs in the channel list. A person answers in the thread of a message, forks a thread into a channel, and pins messages. The application lists the notices of a person, takes the notification level of a server, a workspace and a channel, the mute of a place and the quiet times, and shows notifications of the system. It searches messages and transcripts. A finished recording is a card in the chat of its voice channel, with its files and its transcript. It has no camera, no direct-message calls, no list of the recordings of a workspace, and no correction of a transcript. It is built and tested on macOS and builds for Linux, where the screen capture is not built yet; Windows is not supported yet.
+This version shows the servers of the server book, their workspaces and channels, the people in voice channels, and the state of each server. It joins a server with a code or a request for access, and it holds a voice call in a voice channel: microphone, sound, mute, a volume per person, levels, push-to-talk and the choice of the sound devices. In a call a person shares a screen or a window with its sound, watches the shares of the others, starts and stops a recording, and uses the rules of the room: meeting mode with raised hands, the lock, the user limit, requests to enter, invitations, the menu of a person with blocks, removal and move. A person reads and writes messages in a text channel, in the chat of a voice channel and in a direct conversation: formatted text, replies, mentions, reactions, files, edits and deletions, with unread signs in the channel list. A person answers in the thread of a message, forks a thread into a channel, and pins messages. The application lists the notices of a person, takes the notification level of a server, a workspace and a channel, the mute of a place and the quiet times, and shows notifications of the system. It searches messages and transcripts. A finished recording is a card in the chat of its voice channel, with its files and its transcript. It has no camera, no direct-message calls, no list of the recordings of a workspace, and no correction of a transcript. It is built and tested on macOS and in Linux containers. The Linux capture implementation and its verification limits are described below and in ADR 0751; Windows is not supported yet.
 
 ## Run it locally
 
@@ -129,7 +129,7 @@ Echo cancellation, noise suppression, automatic gain and push-to-talk are in the
 
 ## Sharing a window with sound between two instances
 
-Both instances are in one call (see above). In the first instance:
+These permission and source-list steps describe macOS. Linux uses the desktop chooser described in the Linux section below. Both instances are in one call (see above). In the first instance:
 
 1. Press the share button of the call strip (the screen icon between the camera and the hand). The dialog "Share your screen" opens.
 2. Without the permission of macOS the dialog says "Junto may not record the screen yet". Press "Open System Settings": macOS lists the application that started Junto under Privacy & Security, Screen & System Audio Recording. That is the terminal while Junto runs from `cargo run`. Turn it on. macOS can ask to quit and reopen that application; start both instances again afterwards. A terminal that has the permission already skips this step. "Check again" reads the permission again.
@@ -241,3 +241,50 @@ The variable `JUNTO_SCREENS_ONLY` limits the run to one set: `shares`, `rules`, 
 | `src/highlight.rs` | The syntax colours of a code block. |
 | `src/shell/` | The main window. `call.rs` draws the call, `share.rs` the dialog and the stage of a share, `room.rs` the rules of the room of a call, `feed.rs` the message list, `composer.rs` the composer with its pickers, `notices.rs` the notices and the notification settings, `search.rs` the search, and `recorded.rs` the card of a recording and the transcript. |
 | `src/bin/junto-screens.rs`, `src/bin/junto-screens/` | The tool that draws the screens. |
+
+## Building and checking Linux in containers
+
+`tools/linux-container.sh` builds the Linux toolchain image and runs a command with private PostgreSQL, LiveKit, D-Bus and PipeWire services. Use a separate launcher invocation for each full suite repetition so test databases do not accumulate between runs. The retained target volume is for one architecture and the debug profile. The image has arm64 and amd64 definitions; tests on one architecture do not establish results on the other. The shared lock script must provide its Linux `flock` path when the launcher runs on a Linux host. The launcher itself delegates to that script.
+
+```sh
+tools/linux-container.sh cargo check --workspace --all-targets
+tools/linux-container.sh cargo test --workspace --no-fail-fast
+tools/linux-container.sh cargo clippy --workspace --all-targets -- -D warnings
+tools/linux-container.sh cargo fmt --all -- --check
+```
+
+The window code can run on its test platform under a private X11 display or a headless Wayland compositor:
+
+```sh
+tools/linux-container.sh tools/linux/display.sh x11 \
+    cargo test -p junto-client --features test-support --test app
+tools/linux-container.sh tools/linux/display.sh wayland \
+    cargo test -p junto-client --features test-support --test app
+tools/linux-container.sh tools/linux/display.sh wayland \
+    cargo test -p junto-client --features test-support --test app live:: -- --ignored
+```
+
+The first two commands run ordinary window tests. The third runs calls and shares through the real test services, while their pictures, microphone and output remain synthetic. None uses a host microphone, speaker, display or permission dialog.
+
+To export the rendered screens:
+
+```sh
+JUNTO_LINUX_ARTIFACTS=/tmp/junto-linux1-screens \
+    tools/linux-container.sh tools/linux/display.sh wayland \
+    cargo run -p junto-client --features test-support --bin junto-screens -- \
+    /tmp/junto-linux1-artifacts
+```
+
+`tools/linux/window-smoke.sh` starts the real binary on a display created by `display.sh` and checks for a painted application surface. Build `junto` first in the same target volume. A successful gpui test-platform run alone does not prove that the real application presents a frame. The image uses Mesa 25.0.7 and the smoke test uses normal renderer selection. The same binary painted a black application surface with Mesa 22.3.6 under both Xvfb and Xorg dummy, and painted correctly with Mesa 25.0.7 under both servers. `JUNTO_LINUX_TEST_RENDERER=opengl` remains an explicit diagnostic override. These software-renderer results do not cover a hardware GPU driver.
+
+The built-in fonts are used on both systems. The Linux image also supplies a colour emoji font. Window decorations, font rasterisation and colour rounding can differ between backends. Screenshot comparisons must distinguish those differences from missing controls or content.
+
+Linux call sound uses PipeWire directly; see [`junto-media`](../media/README.md). The share picker offers desktop screen/window selection and the available sound choices under ADR 0751. The desktop authorises each share after Share is pressed; a window selection does not implicitly choose an application's sound. Container checks cover native shared sound and portal screen pixels with the explicitly patched test backend described in the media README; a human chooser and an unmodified desktop backend remain unverified.
+
+Linux system notifications use the session bus's `org.freedesktop.Notifications` service behind the same policy interface as macOS. The private-service tests check replacement, withdrawal, activation and service restart without showing a desktop notification:
+
+```sh
+tools/linux-container.sh cargo test -p junto-client --lib notify::linux::tests
+```
+
+Application tests and the screenshot tool retain the in-memory notifier. A real desktop daemon's visual presentation and a person's portal interaction require separate manual checks; fake-service and headless tests do not establish those results.

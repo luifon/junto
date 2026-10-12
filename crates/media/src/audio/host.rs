@@ -1,5 +1,5 @@
 //! The interface to the sound devices of the machine. The product opens real devices
-//! through [`super::cpal_host::CpalHost`]; a test gives a tone as the microphone and a sink
+//! through CPAL, with refreshed PipeWire snapshots on Linux; a test gives a tone and a sink
 //! that measures what would be played.
 
 use std::any::Any;

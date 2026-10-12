@@ -1,7 +1,7 @@
 #!/bin/sh
 # Run a command with an isolated software-rendered display inside the build container.
 set -eu
-backend=${1:?usage: display.sh x11|wayland command [arguments]}
+backend=${1:?usage: display.sh x11|xorg|wayland command [arguments]}
 shift
 manager_pid=""
 cleanup() {
@@ -17,6 +17,44 @@ case "$backend" in
         unset WAYLAND_DISPLAY
         export DISPLAY=:99
         Xvfb "$DISPLAY" -screen 0 1920x1080x24 -nolisten tcp >/tmp/junto-linux1-x11.log 2>&1 &
+        display_pid=$!
+        ready() { xdpyinfo >/dev/null 2>&1; }
+        ;;
+    xorg)
+        unset WAYLAND_DISPLAY
+        export DISPLAY=:99
+        cat > /tmp/junto-linux1-xorg.conf <<'CONFIG'
+Section "ServerFlags"
+    Option "AutoAddDevices" "false"
+    Option "AutoEnableDevices" "false"
+    Option "AutoAddGPU" "false"
+    Option "DontVTSwitch" "true"
+EndSection
+Section "Device"
+    Identifier "virtual"
+    Driver "dummy"
+    VideoRam 256000
+EndSection
+Section "Monitor"
+    Identifier "virtual"
+    HorizSync 5.0-1000.0
+    VertRefresh 5.0-200.0
+    Modeline "1920x1080" 148.50 1920 2008 2052 2200 1080 1084 1089 1125
+EndSection
+Section "Screen"
+    Identifier "virtual"
+    Device "virtual"
+    Monitor "virtual"
+    DefaultDepth 24
+    SubSection "Display"
+        Depth 24
+        Modes "1920x1080"
+    EndSubSection
+EndSection
+CONFIG
+        /usr/lib/xorg/Xorg "$DISPLAY" -noreset -nolisten tcp -novtswitch \
+            -config /tmp/junto-linux1-xorg.conf -logfile /tmp/junto-linux1-xorg-server.log \
+            >/tmp/junto-linux1-xorg.log 2>&1 &
         display_pid=$!
         ready() { xdpyinfo >/dev/null 2>&1; }
         ;;
@@ -54,7 +92,7 @@ until ready; do
     fi
     sleep 0.5
 done
-if [ "$backend" = x11 ]; then
+if [ "$backend" = x11 ] || [ "$backend" = xorg ]; then
     openbox >/tmp/junto-linux1-openbox.log 2>&1 &
     manager_pid=$!
     attempts=0

@@ -36,7 +36,12 @@ impl Sink {
 
 impl Drop for Sink {
     fn drop(&mut self) {
-        pactl(&["unload-module", &self.0]);
+        if let Err(error) = Command::new("pactl")
+            .args(["unload-module", &self.0])
+            .output()
+        {
+            eprintln!("could not remove the virtual sound device: {error}");
+        }
     }
 }
 
@@ -73,16 +78,20 @@ fn the_production_host_captures_its_playback_through_a_null_device() {
             Box::new(move |data, format| {
                 let mut captured = captured.lock().unwrap();
                 captured.1 = format.sample_rate;
-                if captured.0.len() < format.sample_rate as usize * 4 {
-                    captured.0.extend(
-                        data.chunks_exact(usize::from(format.channels))
-                            .map(|frame| frame[0]),
-                    );
-                }
+                captured.0.extend(
+                    data.chunks_exact(usize::from(format.channels))
+                        .map(|frame| frame[0]),
+                );
+                let stale = captured
+                    .0
+                    .len()
+                    .saturating_sub(format.sample_rate as usize * 2);
+                captured.0.drain(..stale);
             }),
             Box::new(move |error| input_faults.lock().unwrap().push(error)),
         )
         .unwrap();
+    std::thread::sleep(Duration::from_secs(5));
     let output_faults = faults.clone();
     let mut phase = 0.0_f32;
     let _output = host
@@ -135,7 +144,7 @@ fn the_production_device_list_follows_a_device_appearing_and_disappearing() {
                 samples.fill(0.0);
                 playing.fetch_add(samples.len(), Ordering::Relaxed);
             }),
-            Box::new(move |error| *reported.lock().unwrap() = Some(error)),
+            Box::new(move |error| remember_failure(&reported, error)),
         )
         .unwrap();
     until("the device starts playing before it is removed", || {
@@ -157,5 +166,103 @@ fn the_production_device_list_follows_a_device_appearing_and_disappearing() {
         host.open_output(Some(&chosen), Box::new(|_, _| {}), Box::new(|_| {}))
             .unwrap_err(),
         junto_media::audio::AudioError::NoDevice,
+    );
+}
+
+fn remember_failure(
+    reported: &Mutex<Option<junto_media::audio::AudioError>>,
+    error: junto_media::audio::AudioError,
+) {
+    reported.lock().unwrap().get_or_insert(error);
+}
+
+#[test]
+fn a_later_error_does_not_erase_the_device_disconnection() {
+    use junto_media::audio::AudioError;
+    let reported = Mutex::new(None);
+    remember_failure(&reported, AudioError::NoDevice);
+    remember_failure(
+        &reported,
+        AudioError::Failed("after the disconnection".to_owned()),
+    );
+    assert_eq!(*reported.lock().unwrap(), Some(AudioError::NoDevice));
+}
+
+#[test]
+#[ignore = "needs isolated virtual PipeWire devices: tools/linux-container.sh"]
+fn cleanup_does_not_panic_when_the_module_is_already_gone() {
+    assert!(std::panic::catch_unwind(|| drop(Sink("4294967295".to_owned()))).is_ok());
+}
+
+#[test]
+#[ignore = "needs isolated virtual PipeWire devices: tools/linux-container.sh"]
+fn an_unavailable_pipewire_daemon_is_an_audio_error() {
+    assert_eq!(
+        std::env::var("JUNTO_TEST_VIRTUAL_AUDIO").as_deref(),
+        Ok("1")
+    );
+    if std::env::var_os("JUNTO_TEST_MISSING_PIPEWIRE_CHILD").is_some() {
+        assert!(MediaOptions::system().host.devices().is_err());
+        return;
+    }
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "an_unavailable_pipewire_daemon_is_an_audio_error",
+            "--nocapture",
+        ])
+        .env("PIPEWIRE_REMOTE", "junto-linux1-unavailable")
+        .env("JUNTO_TEST_MISSING_PIPEWIRE_CHILD", "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+#[ignore = "needs isolated virtual PipeWire devices: tools/linux-container.sh"]
+fn removing_a_monitor_ends_the_capture_without_choosing_another_device() {
+    let name = "junto-test-capture-removal";
+    let sink = Sink::new(name);
+    let host = MediaOptions::system().host;
+    let input = named(&host.devices().unwrap().inputs, name).unwrap().id;
+    let captured = Arc::new(AtomicUsize::new(0));
+    let received = captured.clone();
+    let failed = Arc::new(Mutex::new(None));
+    let reported = failed.clone();
+    let stream = host
+        .open_input(
+            Some(&input),
+            Box::new(move |samples, _| {
+                received.fetch_add(samples.len(), Ordering::Relaxed);
+            }),
+            Box::new(move |error| remember_failure(&reported, error)),
+        )
+        .unwrap();
+    until("the monitor starts capturing before removal", || {
+        captured.load(Ordering::Relaxed) > 0
+    });
+    drop(sink);
+    until("the monitor reports removal", || {
+        failed.lock().unwrap().is_some()
+    });
+    assert_eq!(
+        *failed.lock().unwrap(),
+        Some(junto_media::audio::AudioError::NoDevice)
+    );
+    drop(stream);
+    until(
+        "the removed monitor leaves the refreshed device list",
+        || named(&host.devices().unwrap().inputs, name).is_none(),
+    );
+    assert_eq!(
+        host.open_input(Some(&input), Box::new(|_, _| {}), Box::new(|_| {}))
+            .unwrap_err(),
+        junto_media::audio::AudioError::NoDevice
     );
 }

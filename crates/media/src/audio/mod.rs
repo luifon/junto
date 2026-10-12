@@ -10,8 +10,7 @@ pub mod cpal_host;
 pub mod host;
 pub mod level;
 #[cfg(target_os = "linux")]
-#[allow(unsafe_code)]
-mod linux;
+pub(crate) mod linux;
 pub mod playout;
 pub mod processing;
 pub mod rate;
@@ -24,7 +23,7 @@ pub use processing::Processing;
 pub(crate) fn system() -> std::sync::Arc<dyn AudioHost> {
     #[cfg(target_os = "linux")]
     {
-        std::sync::Arc::new(linux::PipeWireHost)
+        std::sync::Arc::new(linux::PipeWireHost::default())
     }
     #[cfg(not(target_os = "linux"))]
     {

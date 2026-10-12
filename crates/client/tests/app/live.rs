@@ -196,7 +196,12 @@ fn a_person_joins_a_call_in_the_window_speaks_hears_mutes_and_leaves(cx: &mut Te
     window.until("the window plays nothing", |window| {
         heard(&window.sound, ADMIN_TONE_HZ) < ABSENT_DBFS
     });
-    assert!(heard(&caller.sound, WINDOW_TONE_HZ) > HEARD_DBFS);
+    let received = heard(&caller.sound, WINDOW_TONE_HZ);
+    assert!(
+        received > HEARD_DBFS,
+        "the remote tone is {received} dBFS after local sound was disabled; controls: {:?}",
+        window.view().controls
+    );
     window.click("sound-output");
     window.until("the window plays the call again", |window| {
         heard(&window.sound, ADMIN_TONE_HZ) > HEARD_DBFS

@@ -4,7 +4,7 @@
 
 Accepted
 
-Open: the engine was built and tested on macOS. The Linux and Windows builds were not run. No real microphone and no real output device was opened by a test (ADR 0902); a person does the first call with real devices.
+Open: the engine was built and tested on macOS and in a Linux container with virtual sound devices (ADR 0750). The Windows build was not run. No real microphone and no real output device was opened by a test (ADR 0902); a person does the first call with real devices.
 
 ## Context
 
@@ -27,7 +27,7 @@ Sound devices:
 
 - The engine opens sound devices through one interface: list the devices, open an input, open an output. The product implements it with `cpal` 0.18 (CoreAudio, WASAPI, PipeWire). The tests implement it with a tone as the microphone, a sink that keeps what it was given, and a device list that a test changes.
 - The device module of the SDK is not used. This changes ADR 0701: the SDK provides the processing, and `cpal` provides the devices.
-- On Linux the PipeWire host of `cpal` is used, so the sound of a call is played by the client's own PipeWire connection (ADR 0502).
+- On Linux the PipeWire host of `cpal` is used, so the sound of a call is played by the client's own PipeWire connection (ADR 0502). The device list and subsequent stream opens use one host snapshot. A failed PipeWire initialisation or connection is reported, without falling back to ALSA or PulseAudio (ADR 0750).
 - A chosen device is used while it is connected. When it is not, the default of the system is opened, and the choice stays stored.
 - A stream that fails is opened again once, on the device that the rule gives then. When the stream that was opened in this way fails within 5 seconds, the device stays closed and its failure is shown. A microphone is opened again when the person asks for it or chooses a device; an output when the person chooses a device or changes a sound setting. A microphone that could not be opened is not tried again by itself either.
 - A device is opened with its default format when the pipeline converts the rate of that format. Otherwise it is opened at another rate that it offers, 48 kHz first, with the channels and the sample type of the default where it offers them. A device without such a rate is not opened.
@@ -60,7 +60,7 @@ Engine:
 - The project owns the pipeline between the devices and the SDK: the conversion, the mix, the queues and the use of the processing module. An error there is an error of the project.
 - The echo canceller gets its reference from the mix that the client plays. It estimates the delay between the mix and the microphone by itself; no delay is given to it.
 - New dependencies: `cpal` (Apache-2.0) for the devices, and on macOS `objc2-av-foundation`, `objc2-foundation`, `objc2` and `block2` for the microphone permission. `cargo deny check` passes with them.
-- The crate allows unsafe code in one module: the two calls to AVFoundation.
+- The platform bindings contain the unsafe calls: AVFoundation and ScreenCaptureKit on macOS, and the PipeWire initialisation binding on Linux. The selection of a Linux host and its device snapshot remain safe Rust (ADRs 0736 and 0750).
 - A muted microphone stays open, so the system shows its microphone indicator while a person is muted in a call. Unmute has no delay.
 - The output follows a change of the default device of the system only as far as `cpal` does. A person chooses a device in the call when the sound does not follow.
 - At 22.05 kHz and 11.025 kHz the frames of a microphone are made two and four at a time, which adds up to 10 ms and 30 ms of delay.

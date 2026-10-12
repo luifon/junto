@@ -3,16 +3,11 @@ FROM rust:1.98.1-slim-bookworm@sha256:ff521445a372125ed4f76e1453a1f8098f2d05332d
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl=7.88.1-10+deb12u15 \
     ca-certificates=20250419~deb12u1 \
-    gnupg=2.2.40-1.1+deb12u2 \
-    && curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o /tmp/junto-linux1-llvm.key \
-    && echo '8b2a587ffd672c4687e7581dad4b2f6c1bb2ad6b480cd9771ba2ff48e0b8c75d  /tmp/junto-linux1-llvm.key' | sha256sum -c - \
-    && gpg --dearmor -o /usr/share/keyrings/llvm.gpg /tmp/junto-linux1-llvm.key \
-    && echo 'deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-21 main' > /etc/apt/sources.list.d/llvm.list \
-    && rm /tmp/junto-linux1-llvm.key
+    && rm -rf /var/lib/apt/lists
 
-ARG LLVM_VERSION=1:21.1.5~++20251023083151+45afac62e373-1~exp1~20251023083333.51
+COPY install-llvm.sh llvm-arm64.sha256 llvm-amd64.sha256 /opt/junto-linux/
+RUN sh /opt/junto-linux/install-llvm.sh
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    clang-21=${LLVM_VERSION} libclang-21-dev=${LLVM_VERSION} lld-21=${LLVM_VERSION} \
     pkg-config=1.8.1-1 cmake=3.25.1-1 \
     libfontconfig1-dev=2.14.1-4 libxcb1-dev=1.15-1 \
     libxkbcommon-dev=1.5.0-1 libxkbcommon-x11-dev=1.5.0-1 \
@@ -34,16 +29,35 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg=7:5.1.9-0+deb12u1 gdb=13.1-3 openbox=3.6.1-10 \
+    xserver-xorg-core=2:21.1.7-3+deb12u13 xserver-xorg-video-dummy=1:0.4.0-1 \
+    xdg-desktop-portal=1.16.0-2 swaybg=1.2.0-1 \
+    && rm -rf /var/lib/apt/lists
+RUN echo 'deb http://deb.debian.org/debian bookworm-backports main' > /etc/apt/sources.list.d/backports.list \
+    && apt-get update && apt-get install -y --no-install-recommends -t bookworm-backports \
+    mesa-vulkan-drivers=25.0.7-2~bpo12+1 libgl1-mesa-dri=25.0.7-2~bpo12+1 \
+    libegl-mesa0=25.0.7-2~bpo12+1 libglx-mesa0=25.0.7-2~bpo12+1 \
+    libgbm-dev=25.0.7-2~bpo12+1 libdrm-dev=2.4.123-1~bpo12+1 \
     && rm -rf /var/lib/apt/lists
 RUN rustup component add clippy rustfmt
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    meson=1.0.1-5 ninja-build=1.11.1-2~deb12u1 libinih-dev=55-1 \
+    libsystemd-dev=252.39-1~deb12u2 libwayland-dev=1.21.0-1 \
+    wayland-protocols=1.31-1 \
+    && rm -rf /var/lib/apt/lists
+COPY install-portal.sh /opt/junto-linux/
+RUN sh /opt/junto-linux/install-portal.sh
 ENV CC=clang-21 CXX=clang++-21 LIBCLANG_PATH=/usr/lib/llvm-21/lib
 ENV CARGO_BUILD_JOBS=4 CARGO_TARGET_DIR=/target
 ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=clang-21
+ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang-21
 ENV RUSTFLAGS="-C link-arg=-fuse-ld=lld-21"
 COPY session.sh docker-control.py /opt/junto-linux/
 COPY docker /usr/local/bin/docker
-RUN useradd --create-home --uid 1000 build \
+ARG BUILD_UID=1000
+ARG BUILD_GID=1000
+RUN if ! getent group "$BUILD_GID" >/dev/null; then groupadd --gid "$BUILD_GID" build; fi \
+    && if [ "$BUILD_UID" -ne 0 ]; then useradd --create-home --uid "$BUILD_UID" --gid "$BUILD_GID" build; fi \
     && mkdir -p /target /usr/local/cargo/registry \
-    && chown build:build /target /usr/local/cargo/registry
-USER build
+    && chown "$BUILD_UID:$BUILD_GID" /target /usr/local/cargo/registry
+USER ${BUILD_UID}:${BUILD_GID}
 WORKDIR /src

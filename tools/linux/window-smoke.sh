@@ -8,8 +8,10 @@ case "${WAYLAND_DISPLAY:-}:${DISPLAY:-}" in
     :\:99) backend=x11 ;;
     *) echo 'a private test display is required' >&2; exit 2 ;;
 esac
-if [ "$backend" = x11 ]; then
-    # Mesa's Vulkan presentation stays black under Xvfb; use software OpenGL here.
+renderer=${JUNTO_LINUX_TEST_RENDERER:-default}
+case "$renderer" in default|opengl) ;; *) echo 'unknown test renderer' >&2; exit 2 ;; esac
+if [ "$backend" = x11 ] && [ "$renderer" = opengl ]; then
+    # Keep the explicit fallback separate from checks of the normal renderer selection.
     export VK_ICD_FILENAMES=/dev/null LIBGL_ALWAYS_SOFTWARE=1
 fi
 /target/debug/junto --no-activate --data-dir "/tmp/junto-linux1-window-$backend" >"$out/$backend.log" 2>&1 &

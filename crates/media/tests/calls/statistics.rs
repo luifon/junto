@@ -50,7 +50,9 @@ async fn connection(label: &str, calls: &Calls) -> Vec<String> {
             }
         }
         Ok(Err(error)) => lines.push(format!("{label} statistics unavailable: {error}")),
-        Err(_) => lines.push(format!("{label} statistics did not answer within five seconds")),
+        Err(_) => lines.push(format!(
+            "{label} statistics did not answer within five seconds"
+        )),
     }
     lines
 }
@@ -63,11 +65,26 @@ pub struct Snapshot {
     receiver: Vec<String>,
 }
 
-pub async fn snapshot(sender: &Person, receiver: &Person, share_started: tokio::time::Instant) -> Snapshot {
-    let unix_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis();
+pub async fn snapshot(
+    sender: &Person,
+    receiver: &Person,
+    share_started: tokio::time::Instant,
+) -> Snapshot {
+    let unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
     let share_age = share_started.elapsed();
-    let (sender, receiver) = tokio::join!(connection("sender", &sender.calls), connection("receiver", &receiver.calls));
-    Snapshot { unix_ms, share_age, sender, receiver }
+    let (sender, receiver) = tokio::join!(
+        connection("sender", &sender.calls),
+        connection("receiver", &receiver.calls)
+    );
+    Snapshot {
+        unix_ms,
+        share_age,
+        sender,
+        receiver,
+    }
 }
 
 pub fn frame_rate(receiver: &Person, pictures: usize, before: &Snapshot, after: &Snapshot) {
@@ -98,7 +115,12 @@ pub fn frame_rate(receiver: &Person, pictures: usize, before: &Snapshot, after: 
         view.call.as_ref().map(|call| (&call.watched, &call.shares))
     );
     for (label, snapshot) in [("before", before), ("after", after)] {
-        eprintln!("{label}: unix_ms={}, share_age={:?}", snapshot.unix_ms, snapshot.share_age);
-        for line in snapshot.sender.iter().chain(&snapshot.receiver) { eprintln!("{label} {line}"); }
+        eprintln!(
+            "{label}: unix_ms={}, share_age={:?}",
+            snapshot.unix_ms, snapshot.share_age
+        );
+        for line in snapshot.sender.iter().chain(&snapshot.receiver) {
+            eprintln!("{label} {line}");
+        }
     }
 }

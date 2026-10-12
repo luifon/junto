@@ -14,7 +14,7 @@ use junto_client_core::protocol::call::ShareAudio;
 use junto_media::engine::ShareId;
 use junto_media::share::picture::PictureFrame;
 use junto_media::share::{
-    ApplicationId, CaptureError, PictureSource, ScreenAccess, ShareSources, SoundChoice,
+    ApplicationId, CaptureError, PictureSource, ScreenAccess, ShareKind, ShareSources, SoundChoice,
 };
 
 use super::call::{occupants, tile_marks};
@@ -93,6 +93,22 @@ impl SharePicker {
         }
     }
 
+    fn sound_kinds(&self) -> Vec<SoundKind> {
+        let Some(sources) = self.sources() else {
+            return vec![SoundKind::None];
+        };
+        SOUND_KINDS
+            .into_iter()
+            .filter(|kind| match kind {
+                SoundKind::None => true,
+                SoundKind::System => sources.system_sound,
+                SoundKind::Application => {
+                    !sources.applications.is_empty() || !sources.windows.is_empty()
+                }
+            })
+            .collect()
+    }
+
     /// The share that the choices of the person describe, when they are complete. The
     /// sound of one application is the application of a shared window, and the chosen
     /// application with a shared screen.
@@ -100,6 +116,7 @@ impl SharePicker {
         let sources = self.sources()?;
         let picture = self.picture?;
         let listed = match picture {
+            PictureSource::Portal(kind) => sources.portal.contains(&kind),
             PictureSource::Display(id) => sources.displays.iter().any(|held| held.id == id),
             PictureSource::Window(id) => sources.windows.iter().any(|held| held.id == id),
         };
@@ -108,7 +125,8 @@ impl SharePicker {
         }
         let sound = match (self.sound?, picture) {
             (SoundKind::None, _) => SoundChoice::None,
-            (SoundKind::System, _) => SoundChoice::System,
+            (SoundKind::System, _) if sources.system_sound => SoundChoice::System,
+            (SoundKind::System, _) => return None,
             (SoundKind::Application, PictureSource::Window(id)) => SoundChoice::Application(
                 sources
                     .windows
@@ -117,7 +135,7 @@ impl SharePicker {
                     .application
                     .clone(),
             ),
-            (SoundKind::Application, PictureSource::Display(_)) => {
+            (SoundKind::Application, PictureSource::Display(_) | PictureSource::Portal(_)) => {
                 let application = self.application.as_ref()?;
                 sources
                     .applications
@@ -475,6 +493,7 @@ impl Shell {
             (picker.picture, picker.sound, picker.application.clone());
         let scroll = picker.scroll.clone();
         let ready = picker.chosen().is_some();
+        let sound_kinds = picker.sound_kinds();
 
         // One row of a list in which the person chooses one entry.
         let row = |id: (&'static str, usize),
@@ -549,6 +568,26 @@ impl Shell {
                 .child(title)
         };
         let mut rows: Vec<AnyElement> = vec![section(text::SCREENS).into_any_element()];
+        if sources.portal.contains(&ShareKind::Screen) {
+            let source = PictureSource::Portal(ShareKind::Screen);
+            rows.push(
+                row(
+                    ("share-portal-screen", 0),
+                    "share-portal-screen".into(),
+                    Icon::Screen,
+                    text::SHARE_DESKTOP_SCREEN.into(),
+                    text::SHARE_DESKTOP_HELP.into(),
+                    picture == Some(source),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(picker) = this.picker() {
+                        picker.pick_picture(source);
+                        cx.notify();
+                    }
+                }))
+                .into_any_element(),
+            );
+        }
         for (index, display) in sources.displays.iter().enumerate() {
             let source = PictureSource::Display(display.id);
             rows.push(
@@ -570,7 +609,27 @@ impl Shell {
             );
         }
         rows.push(section(text::WINDOWS).into_any_element());
-        if sources.windows.is_empty() {
+        if sources.portal.contains(&ShareKind::Window) {
+            let source = PictureSource::Portal(ShareKind::Window);
+            rows.push(
+                row(
+                    ("share-portal-window", 0),
+                    "share-portal-window".into(),
+                    Icon::Detach,
+                    text::SHARE_DESKTOP_WINDOW.into(),
+                    text::SHARE_DESKTOP_HELP.into(),
+                    picture == Some(source),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(picker) = this.picker() {
+                        picker.pick_picture(source);
+                        cx.notify();
+                    }
+                }))
+                .into_any_element(),
+            );
+        }
+        if sources.windows.is_empty() && !sources.portal.contains(&ShareKind::Window) {
             rows.push(
                 div()
                     .flex_none()
@@ -620,15 +679,17 @@ impl Shell {
                 .map(|window| window.application_name.clone()),
             _ => None,
         };
-        let kinds = [
-            text::SOUND_NONE.into(),
-            text::SOUND_SYSTEM.into(),
-            if window_application.is_some() {
-                text::SOUND_THIS_APPLICATION.into()
-            } else {
-                text::SOUND_ONE_APPLICATION.into()
-            },
-        ];
+        let kinds: Vec<SharedString> = sound_kinds
+            .iter()
+            .map(|kind| match kind {
+                SoundKind::None => text::SOUND_NONE.into(),
+                SoundKind::System => text::SOUND_SYSTEM.into(),
+                SoundKind::Application if window_application.is_some() => {
+                    text::SOUND_THIS_APPLICATION.into()
+                }
+                SoundKind::Application => text::SOUND_ONE_APPLICATION.into(),
+            })
+            .collect();
         let sound_help: SharedString = match (sound, &window_application) {
             (None, _) => text::SOUND_CHOICE_HELP.into(),
             (Some(SoundKind::None), _) => text::SOUND_NONE_HELP.into(),
@@ -646,10 +707,18 @@ impl Shell {
                         let id = shared.id.clone();
                         row(
                             ("share-application", index),
-                            format!("share-application:{}", shared.id.process_id),
+                            if shared.id.process_id == 0 {
+                                format!("share-application-index:{index}")
+                            } else {
+                                format!("share-application:{}", shared.id.process_id)
+                            },
                             Icon::Speaker,
                             shared.name.clone().into(),
-                            shared.id.bundle_id.clone().into(),
+                            if shared.id.process_id == 0 {
+                                "".into()
+                            } else {
+                                shared.id.bundle_id.clone().into()
+                            },
                             application.as_ref() == Some(&shared.id),
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -704,14 +773,14 @@ impl Shell {
                     Segmented::new("share-sound", text::SHARE_SOUND, kinds)
                         .selected(
                             sound.and_then(|sound| {
-                                SOUND_KINDS.iter().position(|kind| *kind == sound)
+                                sound_kinds.iter().position(|kind| *kind == sound)
                             }),
                         )
                         .selector("share-sound")
                         .on_select({
                             let select = cx.listener(|this, index: &usize, _, cx| {
-                                if let (Some(picker), Some(kind)) =
-                                    (this.picker(), SOUND_KINDS.get(*index).copied())
+                                if let Some(picker) = this.picker()
+                                    && let Some(kind) = picker.sound_kinds().get(*index).copied()
                                 {
                                     picker.sound = Some(kind);
                                     cx.notify();
@@ -1204,6 +1273,8 @@ mod tests {
 
     fn picker() -> SharePicker {
         let sources = ShareSources {
+            portal: Vec::new(),
+            system_sound: true,
             displays: vec![DisplaySource {
                 id: 1,
                 width: 1920,
@@ -1318,5 +1389,51 @@ mod tests {
         picker.sound = Some(SoundKind::Application);
         picker.pick_picture(PictureSource::Window(11));
         assert_eq!(picker.sound, Some(SoundKind::Application));
+    }
+    #[test]
+    fn a_portal_window_requires_an_explicit_application_and_unavailable_sound_is_not_offered() {
+        let first = ApplicationId {
+            process_id: 0,
+            bundle_id: "portal:player.one".into(),
+        };
+        let second = ApplicationId {
+            process_id: 0,
+            bundle_id: "portal:player.two".into(),
+        };
+        let sources = ShareSources {
+            portal: vec![ShareKind::Window],
+            applications: vec![
+                ApplicationSource {
+                    id: first,
+                    name: "First player".into(),
+                },
+                ApplicationSource {
+                    id: second.clone(),
+                    name: "Second player".into(),
+                },
+            ],
+            ..ShareSources::default()
+        };
+        let mut picker = SharePicker::new(ScreenAccess::AskOnStart, Listed::Sources(sources), 1);
+        picker.pick_picture(PictureSource::Portal(ShareKind::Window));
+        assert!(picker.chosen().is_none());
+        assert_eq!(
+            picker.sound_kinds(),
+            [SoundKind::None, SoundKind::Application]
+        );
+        picker.sound = Some(SoundKind::System);
+        assert!(picker.chosen().is_none());
+        picker.sound = Some(SoundKind::Application);
+        assert!(picker.chosen().is_none());
+        picker.application = Some(second.clone());
+        assert_eq!(
+            picker.chosen(),
+            Some((
+                PictureSource::Portal(ShareKind::Window),
+                SoundChoice::Application(second)
+            ))
+        );
+        picker.pick_picture(PictureSource::Portal(ShareKind::Screen));
+        assert!(picker.chosen().is_none());
     }
 }

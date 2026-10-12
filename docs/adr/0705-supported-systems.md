@@ -17,6 +17,7 @@ Step 0 ran a test application on macOS 26 and on a Linux desktop, and recorded w
 - macOS: macOS 26 on Apple Silicon. This is the tested version. Older versions are not blocked and are not tested. Screen share with sound needs macOS 13 or later (ADR 0502).
 - Windows: Windows 11 on x86-64.
 - Linux: x86-64 with PipeWire, on X11 or on Wayland.
+- The Linux container checks also run on ARM64 (ADR 0750). They do not establish package support or replace installation tests. The container baseline uses PipeWire 0.3.65 or newer and Mesa 25 for its software-rendered window; Mesa 22 produced a black X11 window in the tested configuration.
 - Linux packages: a tarball and an AppImage.
 - A Linux package bundles the libraries that the binary links and that do not depend on the host: libxcb, libxkbcommon and libxkbcommon-x11 with the libraries they need, and the interface fonts.
 - A Linux package takes from the host: the C library, the graphics driver with its Vulkan or OpenGL loader, the Wayland client library, the font configuration and system fonts, the keyboard data, the certificate bundle, and the session services (notifications, secret service, desktop portal, accessibility). A graphics driver must match the kernel of the machine, so it cannot be bundled. The PipeWire library also comes from the host, because it loads its plugins from the host; this follows from how the library works and was not tested with a package.

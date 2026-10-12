@@ -6,9 +6,17 @@ image=junto-linux1-build:1
 network=junto-linux1-tests
 build=junto-linux1-build
 postgres=junto-linux1-postgres
+postgres_image=${JUNTO_TEST_POSTGRES_IMAGE:-postgres:17-alpine}
 livekit=junto-linux1-livekit
 proxy=junto-linux1-control
 created=""
+socket=${JUNTO_DOCKER_SOCKET:-/var/run/docker.sock}
+build_uid=1000
+build_gid=1000
+if [ "$(uname -s)" = Linux ]; then
+    build_uid=$(id -u)
+    build_gid=$(id -g)
+fi
 cleanup() {
     for name in $created; do docker rm -f -v "$name" >/dev/null 2>&1 || true; done
     docker network rm "$network" >/dev/null 2>&1 || true
@@ -20,14 +28,21 @@ for name in "$build" "$postgres" "$livekit" "$proxy"; do
         exit 1
     fi
 done
-docker build -t "$image" -f "$root/tools/linux/Dockerfile" "$root/tools/linux"
+if docker network inspect "$network" >/dev/null 2>&1; then
+    echo "network $network already exists; inspect and remove the interrupted run before retrying" >&2
+    exit 1
+fi
+docker build --build-arg "BUILD_UID=$build_uid" --build-arg "BUILD_GID=$build_gid" -t "$image" -f "$root/tools/linux/Dockerfile" "$root/tools/linux"
 docker volume create junto-linux1-cargo >/dev/null
 docker volume create junto-linux1-target >/dev/null
 docker run --rm --name junto-linux1-cache-init --user 0 \
     --mount type=volume,src=junto-linux1-cargo,dst=/usr/local/cargo/registry \
     --mount type=volume,src=junto-linux1-target,dst=/target \
+    -e "JUNTO_BUILD_UID=$build_uid" -e "JUNTO_BUILD_GID=$build_gid" \
     "$image" sh -c 'for directory in /target /usr/local/cargo/registry; do
-        if [ "$(stat -c %u "$directory")" != 1000 ]; then chown -R 1000:1000 "$directory"; fi
+        if [ "$(stat -c %u:%g "$directory")" != "$JUNTO_BUILD_UID:$JUNTO_BUILD_GID" ]; then
+            chown -R "$JUNTO_BUILD_UID:$JUNTO_BUILD_GID" "$directory"
+        fi
     done'
 docker network create "$network" >/dev/null
 trap cleanup EXIT
@@ -35,7 +50,7 @@ trap 'exit 130' INT TERM
 created="$postgres"
 docker run -d --name "$postgres" --network "$network" --network-alias postgres \
     -e POSTGRES_HOST_AUTH_METHOD=trust \
-    postgres:17-alpine@sha256:d4bb0a8c1b7bb2e29f976d099e7bfb9a5d8858cffe9e46b35cd302cd1f1f8168 \
+    "$postgres_image" \
     -c max_connections=400 -c fsync=off -c shared_preload_libraries=pg_stat_statements \
     -c pg_stat_statements.max=100000 >/dev/null
 created="$livekit $created"
@@ -55,7 +70,7 @@ webhook:
     --dev --bind 0.0.0.0 >/dev/null
 created="$proxy $created"
 docker run -d --user 0 --name "$proxy" --network "$network" --network-alias control \
-    --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock \
+    --mount "type=bind,src=$socket,dst=/var/run/docker.sock" \
     "$image" python3 /opt/junto-linux/docker-control.py >/dev/null
 created="$build $created"
 # Test service ports are not published; no host display, sound or home is mounted.
@@ -64,6 +79,7 @@ docker run --name "$build" --network "$network" --memory 6g --cpus 4 --shm-size 
     --mount "type=bind,src=$root,dst=/src" \
     --mount type=volume,src=junto-linux1-cargo,dst=/usr/local/cargo/registry \
     --mount type=volume,src=junto-linux1-target,dst=/target \
+    --mount type=volume,src=junto-linux1-target,dst=/src/spikes/test-participant/target \
     -e CARGO_BUILD_JOBS=4 -e CARGO_TARGET_DIR=/target \
     -e JUNTO_TEST_DATABASE_URL=postgres://postgres@postgres/postgres \
     -e JUNTO_TEST_LIVEKIT_API_URL=http://livekit:7880 \
@@ -73,8 +89,16 @@ docker run --name "$build" --network "$network" --memory 6g --cpus 4 --shm-size 
     -e JUNTO_TEST_WEBHOOK_ADDRESS=0.0.0.0:17890 \
     -e JUNTO_TEST_VIRTUAL_AUDIO=1 -e TZ=UTC \
     "$image" /opt/junto-linux/session.sh "$@" || status=$?
+if [ "$status" -ne 0 ]; then
+    docker logs "$postgres" 2>&1 | grep -E \
+        'PANIC|FATAL|No space left|server process.*terminated|database system.*interrupted|recovery in progress' \
+        >&2 || true
+fi
 if [ -n "${JUNTO_LINUX_ARTIFACTS:-}" ]; then
     mkdir -p "$JUNTO_LINUX_ARTIFACTS"
-    docker cp "$build:/tmp/junto-linux1-artifacts/." "$JUNTO_LINUX_ARTIFACTS/"
+    if ! docker cp "$build:/tmp/junto-linux1-artifacts/." "$JUNTO_LINUX_ARTIFACTS/"; then
+        echo "could not copy Linux artifacts" >&2
+        if [ "$status" -eq 0 ]; then status=1; fi
+    fi
 fi
 exit "$status"

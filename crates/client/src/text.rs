@@ -359,6 +359,11 @@ pub const SHARE_NOT_ON_THIS_SYSTEM: &str =
     "Share screen. Screen sharing is not available on this system in this version.";
 pub const SHARE_PICKER_TITLE: &str = "Share your screen";
 pub const SHARE_READING: &str = "Reading the screens and windows…";
+/// The desktop portal owns the final source chooser on Linux.
+pub const SHARE_DESKTOP_SCREEN: &str = "Choose a screen with the desktop";
+pub const SHARE_DESKTOP_WINDOW: &str = "Choose a window with the desktop";
+pub const SHARE_DESKTOP_HELP: &str = "The desktop will ask which one after you press Share.";
+
 pub const SCREENS: &str = "Screens";
 pub const WINDOWS: &str = "Windows";
 pub const NO_WINDOWS: &str = "No window of another application is open.";
@@ -375,7 +380,11 @@ pub const SOUND_SYSTEM_HELP: &str = "The people in the call hear every sound tha
 pub const SOUND_NONE_HELP: &str = "The people in the call get the picture only.";
 pub const SOUND_APPLICATION_HELP: &str = "The people in the call hear the sound of the application that you choose here, and of \
      no other one.";
-pub const NO_APPLICATIONS: &str = "No other application with a window is open.";
+pub const NO_APPLICATIONS: &str = if cfg!(target_os = "linux") {
+    "No other application is available to share sound."
+} else {
+    "No other application with a window is open."
+};
 pub const SHARE: &str = "Share";
 pub const SCREEN_ACCESS_TITLE: &str = "Junto may not record the screen yet";
 pub const SCREEN_ACCESS_HELP: &str = if cfg!(target_os = "macos") {
@@ -411,6 +420,7 @@ pub fn sound_of_window(application: &str) -> String {
 /// Why a share did not start, or ended by itself.
 pub fn capture_error(error: &CaptureError) -> String {
     match error {
+        CaptureError::Cancelled => "Screen sharing was cancelled.".to_owned(),
         CaptureError::NotAllowed => {
             "The system does not allow Junto to record the screen.".to_owned()
         }
@@ -2567,6 +2577,7 @@ mod tests {
         assert_eq!(shares_count(2), "2 shares");
         assert_eq!(screen_name(1), "Screen 1");
         for error in [
+            CaptureError::Cancelled,
             CaptureError::NotAllowed,
             CaptureError::SourceGone,
             CaptureError::Unsupported,

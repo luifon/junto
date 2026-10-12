@@ -1,10 +1,13 @@
 //! The notifications of the operating system, behind an interface (ADR 0742).
 //!
 //! The state of the application decides what is shown (`state::notices::alerts`) and tells
-//! it to a [`SystemNotifier`]. The binary gives the notifier of gpui, which shows a
+//! it to a [`SystemNotifier`]. The binary gives the notifier of the operating system, which shows a
 //! notification of the system. Every other start of the application state, such as a test
 //! and the screen tool, gets one that only keeps what it was told: no automated run shows
 //! a notification or makes the system ask for a permission.
+
+#[cfg(target_os = "linux")]
+mod linux;
 
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -37,6 +40,22 @@ impl SystemNotifier for PlatformNotifier {
 
     fn dismiss(&self, tag: &str, cx: &mut App) {
         cx.dismiss_system_notification(tag);
+    }
+}
+
+/// Installs the system backend and its activation route only for the real application.
+pub fn platform(
+    cx: &mut App,
+    pressed: impl Fn(&str, &mut App) + 'static,
+) -> std::rc::Rc<dyn SystemNotifier> {
+    #[cfg(target_os = "linux")]
+    {
+        std::rc::Rc::new(linux::DesktopNotifier::new(cx, pressed))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        cx.on_system_notification_response(move |response, cx| pressed(&response.tag, cx));
+        std::rc::Rc::new(PlatformNotifier)
     }
 }
 

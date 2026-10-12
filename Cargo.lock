@@ -3802,6 +3802,7 @@ dependencies = [
  "dirs",
  "emojis",
  "futures-channel",
+ "futures-util",
  "gpui-base",
  "gpui-pre",
  "gpui-pre-platform",
@@ -3822,6 +3823,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "zbus",
 ]
 
 [[package]]
@@ -3872,6 +3874,9 @@ dependencies = [
  "objc2-core-media",
  "objc2-foundation 0.3.2",
  "objc2-screen-capture-kit",
+ "pipewire",
+ "rtrb",
+ "serde",
  "sqlx",
  "tempfile",
  "thiserror 2.0.21",
@@ -3880,6 +3885,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "zbus",
 ]
 
 [[package]]
@@ -7923,6 +7929,7 @@ dependencies = [
  "signal-hook-registry",
  "socket2",
  "tokio-macros",
+ "tracing",
  "windows-sys 0.61.2",
 ]
 
@@ -9851,6 +9858,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_repr",
+ "tokio",
  "tracing",
  "uds_windows",
  "uuid",

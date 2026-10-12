@@ -4,6 +4,8 @@
 //! product implements it with the capture of the operating system; the tests implement it
 //! with a picture and a tone that the program makes. The engine knows no system.
 
+#[cfg(target_os = "linux")]
+pub mod linux;
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 pub mod macos;
@@ -30,13 +32,16 @@ use crate::audio::Format;
 pub enum ScreenAccess {
     Allowed,
     NotAllowed,
+    /// The desktop asks for authorisation when a share starts.
+    AskOnStart,
 }
 
 /// An application as the system identifies it for a capture.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ApplicationId {
+    /// The owning process on macOS; zero for a Linux graph identity.
     pub process_id: i32,
-    /// Empty for a program without a bundle.
+    /// A macOS bundle identifier, or the stable application identity of the Linux graph.
     pub bundle_id: String,
 }
 
@@ -66,12 +71,16 @@ pub struct ApplicationSource {
     pub name: String,
 }
 
-/// What a person can share now. The client itself is in none of the lists (ADR 0502).
+/// What a person can share now. Application-owned lists exclude the client itself.
+/// A desktop portal owns its chooser and cannot be given an exclusion list (ADR 0751).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ShareSources {
     pub displays: Vec<DisplaySource>,
     pub windows: Vec<WindowSource>,
     pub applications: Vec<ApplicationSource>,
+    /// Source kinds chosen by the desktop at start, without application-owned IDs.
+    pub portal: Vec<ShareKind>,
+    pub system_sound: bool,
 }
 
 /// The picture of a share.
@@ -79,6 +88,7 @@ pub struct ShareSources {
 pub enum PictureSource {
     Display(u32),
     Window(u32),
+    Portal(ShareKind),
 }
 
 /// What a share shows: a whole screen, or one window.
@@ -93,6 +103,7 @@ impl PictureSource {
         match self {
             Self::Display(_) => ShareKind::Screen,
             Self::Window(_) => ShareKind::Window,
+            Self::Portal(kind) => kind,
         }
     }
 }
@@ -179,6 +190,8 @@ pub struct CaptureRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CaptureError {
+    #[error("screen sharing was cancelled")]
+    Cancelled,
     /// The system does not let this application record the screen.
     #[error("the system does not allow this application to record the screen")]
     NotAllowed,
@@ -305,7 +318,11 @@ pub fn system() -> Arc<dyn ScreenCapture> {
     {
         Arc::new(macos::SystemCapture::new())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        Arc::new(linux::SystemCapture)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         Arc::new(NoCapture)
     }
