@@ -43,6 +43,7 @@ type InviteRow = (
 const INVITE_SELECT: &str = "select i.id, i.created_by, i.created_at, i.expires_at, i.max_uses, \
      i.uses, i.revocation, \
      array(select w.workspace_id from invite_workspaces w \
+           join workspaces live on live.id = w.workspace_id and live.deleted_at is null \
            where w.invite_id = i.id order by w.workspace_id) \
      from invites i";
 
@@ -296,6 +297,31 @@ async fn use_invite(
     })
 }
 
+/// The workspaces that an invite grants now: the ones that it names and that exist. An
+/// invite whose workspaces were all deleted grants nothing and counts as cancelled
+/// (ADR 0308).
+async fn granted_by(
+    connection: &mut PgConnection,
+    invite_id: InviteId,
+) -> ApiResult<Vec<WorkspaceId>> {
+    let workspace_ids: Vec<WorkspaceId> = sqlx::query_scalar(
+        "select w.workspace_id from invite_workspaces w
+         join workspaces live on live.id = w.workspace_id and live.deleted_at is null
+         where w.invite_id = $1
+         order by w.workspace_id",
+    )
+    .bind(invite_id)
+    .fetch_all(connection)
+    .await?;
+    if workspace_ids.is_empty() {
+        return Err(ApiError::new(
+            ErrorCode::InviteRevoked,
+            "every workspace of the invite was deleted",
+        ));
+    }
+    Ok(workspace_ids)
+}
+
 /// Adds the caller's account to the workspaces of an invite that it is not yet a member of.
 /// The invite counts one use, under the same rules as a join. Attempts are limited per
 /// account and per client address.
@@ -324,13 +350,14 @@ pub async fn redeem_invite(
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::OwnAccount)?;
         let (invite_id, invite_created_by) = use_invite(connection, &code_hash, now).await?;
+        let granted = granted_by(connection, invite_id).await?;
         let workspace_ids: Vec<WorkspaceId> = sqlx::query_scalar(
             "insert into workspace_members (workspace_id, account_id, joined_at)
-             select workspace_id, $2, $3 from invite_workspaces where invite_id = $1
+             select workspace_id, $2, $3 from unnest($1::uuid[]) as granted (workspace_id)
              on conflict do nothing
              returning workspace_id",
         )
-        .bind(invite_id)
+        .bind(&granted)
         .bind(access.account_id)
         .bind(now)
         .fetch_all(&mut *connection)
@@ -401,11 +428,7 @@ pub async fn join(
             DeviceOrigin::Invite,
         )
         .await?;
-        let workspace_ids: Vec<WorkspaceId> =
-            sqlx::query_scalar("select workspace_id from invite_workspaces where invite_id = $1")
-                .bind(invite_id)
-                .fetch_all(&mut *connection)
-                .await?;
+        let workspace_ids = granted_by(connection, invite_id).await?;
         store::add_members(connection, now, account_id, &workspace_ids).await?;
         audit::record(
             connection,

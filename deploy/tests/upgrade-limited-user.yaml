@@ -1,0 +1,7 @@
+# Addition to local.yaml for deploy/tests/upgrade.sh: the server connects as a database user
+# that may not create a database, so the copy before a migration cannot be made (ADR 0018).
+
+services:
+  server:
+    environment:
+      JUNTO_DATABASE_URL: postgres://junto_limited:${JUNTO_TEST_LIMITED_PASSWORD:?the test sets it}@postgres:5432/junto

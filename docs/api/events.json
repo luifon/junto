@@ -9,6 +9,63 @@
     "$ref": "#/components/schemas/ClientMessage"
   },
   "events": {
+    "access_token_created": {
+      "description": "An administrator created an access token (ADR 0210). The event never carries the\ntoken.",
+      "properties": {
+        "access_token": {
+          "$ref": "#/components/schemas/AccessTokenInfo"
+        },
+        "type": {
+          "enum": [
+            "access_token_created"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "access_token",
+        "type"
+      ],
+      "type": "object"
+    },
+    "access_token_revoked": {
+      "description": "An access token was revoked, or it ended with the access of its creator. A token\nthat reaches its expiry has no event.",
+      "properties": {
+        "access_token_id": {
+          "$ref": "#/components/schemas/AccessTokenId"
+        },
+        "type": {
+          "enum": [
+            "access_token_revoked"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "access_token_id",
+        "type"
+      ],
+      "type": "object"
+    },
+    "access_tokens_of_creator_revoked": {
+      "description": "Every access token of an account ended, because the account was banned, removed or\nrecovered.",
+      "properties": {
+        "created_by": {
+          "$ref": "#/components/schemas/AccountId"
+        },
+        "type": {
+          "enum": [
+            "access_tokens_of_creator_revoked"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "created_by",
+        "type"
+      ],
+      "type": "object"
+    },
     "account_added": {
       "properties": {
         "account": {
@@ -587,6 +644,29 @@
       ],
       "type": "object"
     },
+    "category_deleted": {
+      "description": "A category was deleted. Its channels stay and have no category.",
+      "properties": {
+        "category_id": {
+          "$ref": "#/components/schemas/CategoryId"
+        },
+        "type": {
+          "enum": [
+            "category_deleted"
+          ],
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/components/schemas/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "category_id",
+        "type"
+      ],
+      "type": "object"
+    },
     "category_updated": {
       "properties": {
         "category": {
@@ -601,6 +681,25 @@
       },
       "required": [
         "category",
+        "type"
+      ],
+      "type": "object"
+    },
+    "channel_archived": {
+      "description": "A channel was archived (ADR 0410). It is read-only and leaves the channel list; the\ncall of a voice channel ends.",
+      "properties": {
+        "channel": {
+          "$ref": "#/components/schemas/ArchivedChannel"
+        },
+        "type": {
+          "enum": [
+            "channel_archived"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "channel",
         "type"
       ],
       "type": "object"
@@ -645,6 +744,25 @@
       ],
       "type": "object"
     },
+    "channel_deletion_due": {
+      "description": "The notice that the server deletes an archived channel in 7 days, at `deletes_at`.",
+      "properties": {
+        "channel": {
+          "$ref": "#/components/schemas/ArchivedChannel"
+        },
+        "type": {
+          "enum": [
+            "channel_deletion_due"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "channel",
+        "type"
+      ],
+      "type": "object"
+    },
     "channel_override_set": {
       "description": "The allow set and the deny set of one role in a channel. Two empty sets mean that the\nrole has no override in the channel.",
       "properties": {
@@ -682,6 +800,25 @@
         "role_id",
         "allow",
         "deny",
+        "type"
+      ],
+      "type": "object"
+    },
+    "channel_restored": {
+      "description": "An archived channel is a channel of the list again.",
+      "properties": {
+        "channel": {
+          "$ref": "#/components/schemas/Channel"
+        },
+        "type": {
+          "enum": [
+            "channel_restored"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "channel",
         "type"
       ],
       "type": "object"
@@ -874,6 +1011,48 @@
       },
       "required": [
         "mute",
+        "type"
+      ],
+      "type": "object"
+    },
+    "export_removed": {
+      "description": "An export of the recipient was removed with its file.",
+      "properties": {
+        "export_id": {
+          "$ref": "#/components/schemas/ExportId"
+        },
+        "reason": {
+          "$ref": "#/components/schemas/ExportRemoval"
+        },
+        "type": {
+          "enum": [
+            "export_removed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "export_id",
+        "reason",
+        "type"
+      ],
+      "type": "object"
+    },
+    "export_updated": {
+      "description": "The state of an export of the recipient changed (ADR 0411).",
+      "properties": {
+        "export": {
+          "$ref": "#/components/schemas/Export"
+        },
+        "type": {
+          "enum": [
+            "export_updated"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "export",
         "type"
       ],
       "type": "object"
@@ -1351,6 +1530,25 @@
       ],
       "type": "object"
     },
+    "server_role_deleted": {
+      "description": "A server role was deleted. No account holds it.",
+      "properties": {
+        "role_id": {
+          "$ref": "#/components/schemas/ServerRoleId"
+        },
+        "type": {
+          "enum": [
+            "server_role_deleted"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "role_id",
+        "type"
+      ],
+      "type": "object"
+    },
     "server_role_updated": {
       "properties": {
         "role": {
@@ -1488,6 +1686,25 @@
       ],
       "type": "object"
     },
+    "workspace_deleted": {
+      "description": "A workspace was deleted with everything that it held. The event goes to the accounts\nthat were members of it and to the administrators.",
+      "properties": {
+        "type": {
+          "enum": [
+            "workspace_deleted"
+          ],
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/components/schemas/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "type"
+      ],
+      "type": "object"
+    },
     "workspace_member_added": {
       "properties": {
         "member": {
@@ -1579,6 +1796,29 @@
       ],
       "type": "object"
     },
+    "workspace_role_deleted": {
+      "description": "A workspace role was deleted. No member holds it, and no channel has an override\nof it.",
+      "properties": {
+        "role_id": {
+          "$ref": "#/components/schemas/WorkspaceRoleId"
+        },
+        "type": {
+          "enum": [
+            "workspace_role_deleted"
+          ],
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/components/schemas/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "role_id",
+        "type"
+      ],
+      "type": "object"
+    },
     "workspace_role_updated": {
       "properties": {
         "role": {
@@ -1629,6 +1869,48 @@
   },
   "components": {
     "schemas": {
+      "AccessTokenId": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "AccessTokenInfo": {
+        "description": "An access token as a list shows it. It never contains the token.",
+        "properties": {
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/TokenAction"
+            },
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "$ref": "#/components/schemas/AccountId",
+            "description": "The account that created the token. A request with the token is decided with the\npermissions that this account has at the time of the request."
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "$ref": "#/components/schemas/AccessTokenId"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "created_by",
+          "actions",
+          "created_at",
+          "expires_at"
+        ],
+        "type": "object"
+      },
       "AccountId": {
         "format": "uuid",
         "type": "string"
@@ -1700,6 +1982,31 @@
           "is_owner",
           "server_role_ids",
           "created_at"
+        ],
+        "type": "object"
+      },
+      "ArchivedChannel": {
+        "description": "A channel that is archived: it is read-only and is in no channel list (ADR 0410).",
+        "properties": {
+          "archived_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "channel": {
+            "$ref": "#/components/schemas/Channel"
+          },
+          "deletes_at": {
+            "description": "The server does not delete the channel before this time. Absent: the server does not\ndelete it, because the workspace has no archive period or the channel contains\npermanent messages.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "channel",
+          "archived_at"
         ],
         "type": "object"
       },
@@ -2553,6 +2860,63 @@
             },
             "required": [
               "role",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "An administrator created an access token (ADR 0210). The event never carries the\ntoken.",
+            "properties": {
+              "access_token": {
+                "$ref": "#/components/schemas/AccessTokenInfo"
+              },
+              "type": {
+                "enum": [
+                  "access_token_created"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "access_token",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "An access token was revoked, or it ended with the access of its creator. A token\nthat reaches its expiry has no event.",
+            "properties": {
+              "access_token_id": {
+                "$ref": "#/components/schemas/AccessTokenId"
+              },
+              "type": {
+                "enum": [
+                  "access_token_revoked"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "access_token_id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Every access token of an account ended, because the account was banned, removed or\nrecovered.",
+            "properties": {
+              "created_by": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "type": {
+                "enum": [
+                  "access_tokens_of_creator_revoked"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "created_by",
               "type"
             ],
             "type": "object"
@@ -3852,8 +4216,286 @@
               "type"
             ],
             "type": "object"
+          },
+          {
+            "description": "A channel was archived (ADR 0410). It is read-only and leaves the channel list; the\ncall of a voice channel ends.",
+            "properties": {
+              "channel": {
+                "$ref": "#/components/schemas/ArchivedChannel"
+              },
+              "type": {
+                "enum": [
+                  "channel_archived"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "channel",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "An archived channel is a channel of the list again.",
+            "properties": {
+              "channel": {
+                "$ref": "#/components/schemas/Channel"
+              },
+              "type": {
+                "enum": [
+                  "channel_restored"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "channel",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The notice that the server deletes an archived channel in 7 days, at `deletes_at`.",
+            "properties": {
+              "channel": {
+                "$ref": "#/components/schemas/ArchivedChannel"
+              },
+              "type": {
+                "enum": [
+                  "channel_deletion_due"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "channel",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A category was deleted. Its channels stay and have no category.",
+            "properties": {
+              "category_id": {
+                "$ref": "#/components/schemas/CategoryId"
+              },
+              "type": {
+                "enum": [
+                  "category_deleted"
+                ],
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            },
+            "required": [
+              "workspace_id",
+              "category_id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A workspace role was deleted. No member holds it, and no channel has an override\nof it.",
+            "properties": {
+              "role_id": {
+                "$ref": "#/components/schemas/WorkspaceRoleId"
+              },
+              "type": {
+                "enum": [
+                  "workspace_role_deleted"
+                ],
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            },
+            "required": [
+              "workspace_id",
+              "role_id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A server role was deleted. No account holds it.",
+            "properties": {
+              "role_id": {
+                "$ref": "#/components/schemas/ServerRoleId"
+              },
+              "type": {
+                "enum": [
+                  "server_role_deleted"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "role_id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A workspace was deleted with everything that it held. The event goes to the accounts\nthat were members of it and to the administrators.",
+            "properties": {
+              "type": {
+                "enum": [
+                  "workspace_deleted"
+                ],
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            },
+            "required": [
+              "workspace_id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The state of an export of the recipient changed (ADR 0411).",
+            "properties": {
+              "export": {
+                "$ref": "#/components/schemas/Export"
+              },
+              "type": {
+                "enum": [
+                  "export_updated"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "export",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "An export of the recipient was removed with its file.",
+            "properties": {
+              "export_id": {
+                "$ref": "#/components/schemas/ExportId"
+              },
+              "reason": {
+                "$ref": "#/components/schemas/ExportRemoval"
+              },
+              "type": {
+                "enum": [
+                  "export_removed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "export_id",
+              "reason",
+              "type"
+            ],
+            "type": "object"
           }
         ]
+      },
+      "Export": {
+        "description": "One export. It belongs to the account that asked for it; no other account reads it.",
+        "properties": {
+          "bytes": {
+            "description": "The size of the file. Present with the state `ready`.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "expires_at": {
+            "description": "When the server removes the export. Present when the export has finished.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "failure": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ExportFailure",
+                "description": "Present with the state `failed`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finished_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "$ref": "#/components/schemas/ExportId",
+            "description": "The export holds the items of its place whose identifier is not greater than this\none: what existed when the export was asked for."
+          },
+          "place": {
+            "$ref": "#/components/schemas/MessagePlace"
+          },
+          "requested_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ExportState"
+          }
+        },
+        "required": [
+          "id",
+          "place",
+          "state",
+          "requested_at"
+        ],
+        "type": "object"
+      },
+      "ExportFailure": {
+        "description": "Why an export has no file.",
+        "enum": [
+          "storage_low",
+          "access_ended",
+          "interrupted",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "ExportId": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "ExportRemoval": {
+        "description": "Why the server removed an export.",
+        "enum": [
+          "removed",
+          "expired",
+          "content_deleted",
+          "place_deleted",
+          "account_ended"
+        ],
+        "type": "string"
+      },
+      "ExportState": {
+        "enum": [
+          "waiting",
+          "running",
+          "ready",
+          "failed"
+        ],
+        "type": "string"
       },
       "ImageType": {
         "description": "The formats in which the server stores an avatar.",
@@ -4619,6 +5261,16 @@
       "StreamEpoch": {
         "description": "Identifies one history of event positions. It changes when positions start again.",
         "format": "uuid",
+        "type": "string"
+      },
+      "TokenAction": {
+        "description": "One group of routes that an access token can reach. A token states its actions when it is\ncreated, and a request with it is refused on a route of another action.\n\nA server can add actions within one API version. An action that this build does not know\nis read as [`TokenAction::Unknown`], which is never written.",
+        "enum": [
+          "read_structure",
+          "manage_structure",
+          "manage_members",
+          "read_audit_log"
+        ],
         "type": "string"
       },
       "TranscriptSpeaker": {

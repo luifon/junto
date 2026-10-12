@@ -219,6 +219,19 @@ pub enum By {
     Place(CallPlace),
 }
 
+/// The display name of an account, for its join token (ADR 0615).
+pub async fn display_name(
+    connection: &mut PgConnection,
+    account_id: AccountId,
+) -> ApiResult<String> {
+    Ok(
+        sqlx::query_scalar("select name from accounts where id = $1")
+            .bind(account_id)
+            .fetch_one(connection)
+            .await?,
+    )
+}
+
 /// Reads one call. With `for_change`, the row is locked and its revision grows, so that two
 /// transactions that change the same call never both commit from the same state (ADR 0510).
 pub async fn call(

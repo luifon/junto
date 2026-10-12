@@ -40,6 +40,143 @@
         }
       }
     },
+    "/api/v1/access-tokens": {
+      "get": {
+        "tags": [
+          "access tokens"
+        ],
+        "summary": "The access tokens that have not expired: every token for a caller with the administrator\npermission, the caller's own tokens for every other caller. Newest first.",
+        "operationId": "list_access_tokens",
+        "parameters": [
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Return tokens older than this one.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/AccessTokenId"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "The largest number of tokens to return, from 1 to 200. Absent: 50.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccessTokenPage"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "access tokens"
+        ],
+        "summary": "Creates an access token for the caller's account. The answer carries the token once. A\nrequest with the token is decided with the permissions that the account has at the time\nof that request, on the routes of the stated actions only.",
+        "operationId": "create_access_token",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAccessToken"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccessTokenCreated"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/access-tokens/{access_token_id}": {
+      "delete": {
+        "tags": [
+          "access tokens"
+        ],
+        "summary": "Revokes an access token: the account that created it, or a caller with the administrator\npermission. The token stops at once.",
+        "operationId": "revoke_access_token",
+        "parameters": [
+          {
+            "name": "access_token_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/AccessTokenId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/account": {
       "get": {
         "tags": [
@@ -2101,6 +2238,94 @@
         ]
       }
     },
+    "/api/v1/channels/{channel_id}/archive": {
+      "put": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "Archives a channel: it becomes read-only and leaves the channel list, and the call of a\nvoice channel ends. The caller holds `manage_channel` in the channel. A channel that is\narchived already stays as it is.",
+        "operationId": "archive_channel",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArchivedChannel"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "Restores an archived channel: it is a channel of the list again and takes changes. The\ncaller holds `manage_channel` in the channel. A channel that is not archived stays as\nit is.",
+        "operationId": "restore_channel",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Channel"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/channels/{channel_id}/call": {
       "get": {
         "tags": [
@@ -2442,6 +2667,51 @@
         ],
         "summary": "Removes a person from the call of a voice channel.",
         "operationId": "disconnect_participant",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          },
+          {
+            "name": "account_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/AccountId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/channels/{channel_id}/call/participants/{account_id}/hand": {
+      "delete": {
+        "tags": [
+          "calls"
+        ],
+        "summary": "Lowers the raised hand of a person in the call of a voice channel: the person who runs\nmeeting mode, or a moderator with `mute_members` (ADR 0516). A hand that is not raised\nstays as it is.",
+        "operationId": "lower_participant_hand",
         "parameters": [
           {
             "name": "channel_id",
@@ -2842,6 +3112,60 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Channel"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/channels/{channel_id}/exports": {
+      "post": {
+        "tags": [
+          "exports"
+        ],
+        "summary": "Asks for an export of a channel: one ZIP file with its messages, attachments, recordings\nand transcripts, as far as the caller reads them. The caller holds `export_channel` in\nthe channel. The server writes the file afterwards; the event `export_updated` tells\nwhen it is ready. While an export of the channel waits or is written for the caller,\nthe answer carries that one with the status 200.",
+        "operationId": "export_channel",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Export"
+                }
+              }
+            }
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Export"
                 }
               }
             }
@@ -3340,6 +3664,60 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Conversation"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/conversations/{conversation_id}/exports": {
+      "post": {
+        "tags": [
+          "exports"
+        ],
+        "summary": "Asks for an export of a direct-message conversation of the caller: its messages and\nattachments. Only a participant asks for it.",
+        "operationId": "export_conversation",
+        "parameters": [
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ConversationId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Export"
+                }
+              }
+            }
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Export"
                 }
               }
             }
@@ -3913,6 +4291,194 @@
         "responses": {
           "101": {
             "description": "The connection is now a WebSocket."
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/exports": {
+      "get": {
+        "tags": [
+          "exports"
+        ],
+        "summary": "The exports of the caller, the newest first.",
+        "operationId": "list_exports",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Export"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/exports/{export_id}": {
+      "get": {
+        "tags": [
+          "exports"
+        ],
+        "summary": "One export of the caller.",
+        "operationId": "get_export",
+        "parameters": [
+          {
+            "name": "export_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ExportId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Export"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "exports"
+        ],
+        "summary": "Removes an export of the caller with its file. An export that is written is stopped.",
+        "operationId": "remove_export",
+        "parameters": [
+          {
+            "name": "export_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ExportId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/exports/{export_id}/file": {
+      "get": {
+        "tags": [
+          "exports"
+        ],
+        "summary": "The file of an export of the caller, whole or as one byte range. The permission is\ndecided again: an account that can no longer export the channel, or is no longer a\nparticipant who reaches the other account, gets `not_found`, as for an export that is\nnot ready or has expired.",
+        "operationId": "get_export_file",
+        "parameters": [
+          {
+            "name": "export_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ExportId"
+            }
+          },
+          {
+            "name": "Range",
+            "in": "header",
+            "description": "One range of bytes",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The whole file.",
+            "content": {
+              "application/zip": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "206": {
+            "description": "The range of the file that `Content-Range` states.",
+            "content": {
+              "application/zip": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
           },
           "default": {
             "description": "An error. The field `error.code` states which one.",
@@ -5936,6 +6502,41 @@
       }
     },
     "/api/v1/server-roles/{role_id}": {
+      "delete": {
+        "tags": [
+          "server roles"
+        ],
+        "summary": "Deletes a server role. No account holds it afterwards.",
+        "operationId": "delete_server_role",
+        "parameters": [
+          {
+            "name": "role_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ServerRoleId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
       "patch": {
         "tags": [
           "server roles"
@@ -6003,6 +6604,86 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Snapshot"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/structure": {
+      "get": {
+        "tags": [
+          "structure"
+        ],
+        "summary": "The workspaces, roles, categories, channels and overrides of the server, with the\nrevision of that structure. The caller needs the administrator permission.",
+        "operationId": "get_structure",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructureExport"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/structure/changes": {
+      "post": {
+        "tags": [
+          "structure"
+        ],
+        "summary": "Applies changes of the structure: all of them or none. The request names the revision\nthat the changes were computed from; with another current revision the answer is\n`conflict` and nothing is changed. An error of one change names the number of the change,\ncounted from 1. The caller needs the administrator permission, and each change needs\nwhat its own route needs.",
+        "operationId": "apply_structure_changes",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyStructureChanges"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructureApplied"
                 }
               }
             }
@@ -6167,6 +6848,41 @@
       }
     },
     "/api/v1/workspaces/{workspace_id}": {
+      "delete": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Deletes a workspace with its members, roles, categories and channels. The caller holds\nthe administrator permission; only the server owner deletes a workspace of which a\nchannel contains permanent messages. The default workspace is not deleted.",
+        "operationId": "delete_workspace",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
       "patch": {
         "tags": [
           "workspaces"
@@ -6199,6 +6915,152 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Workspace"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/archive-period": {
+      "get": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "The time after which the server deletes an archived channel of the workspace. The\ncaller holds the administrator permission.",
+        "operationId": "get_archive_period",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArchivePeriod"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "Sets the archive period of the workspace: 7 to 36500 days, or `null` for never. Every\narchived channel of the workspace gets a new notice 7 days before its new time. The\ncaller holds the administrator permission.",
+        "operationId": "set_archive_period",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArchivePeriod"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArchivePeriod"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/archived-channels": {
+      "get": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "The archived channels of a workspace that the caller can see, the one archived last\nfirst.",
+        "operationId": "list_archived_channels",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ArchivedChannel"
+                  }
                 }
               }
             }
@@ -6342,6 +7204,49 @@
       }
     },
     "/api/v1/workspaces/{workspace_id}/categories/{category_id}": {
+      "delete": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "Deletes a category. Its channels stay and have no category.",
+        "operationId": "delete_category",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          },
+          {
+            "name": "category_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/CategoryId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
       "patch": {
         "tags": [
           "channels"
@@ -7252,6 +8157,49 @@
       }
     },
     "/api/v1/workspaces/{workspace_id}/roles/{role_id}": {
+      "delete": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Deletes a workspace role. No member holds it afterwards, and no channel has an override\nof it. The \"everyone\" role is not deleted.",
+        "operationId": "delete_workspace_role",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          },
+          {
+            "name": "role_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceRoleId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
       "patch": {
         "tags": [
           "workspaces"
@@ -7317,6 +8265,90 @@
   },
   "components": {
     "schemas": {
+      "AccessTokenCreated": {
+        "type": "object",
+        "description": "The answer to the creation of a token. The token is not shown again.",
+        "required": [
+          "token",
+          "access_token"
+        ],
+        "properties": {
+          "access_token": {
+            "$ref": "#/components/schemas/AccessTokenInfo"
+          },
+          "token": {
+            "type": "string"
+          }
+        }
+      },
+      "AccessTokenId": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "AccessTokenInfo": {
+        "type": "object",
+        "description": "An access token as a list shows it. It never contains the token.",
+        "required": [
+          "id",
+          "name",
+          "created_by",
+          "actions",
+          "created_at",
+          "expires_at"
+        ],
+        "properties": {
+          "actions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TokenAction"
+            }
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_by": {
+            "$ref": "#/components/schemas/AccountId",
+            "description": "The account that created the token. A request with the token is decided with the\npermissions that this account has at the time of the request."
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "$ref": "#/components/schemas/AccessTokenId"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "AccessTokenPage": {
+        "type": "object",
+        "required": [
+          "access_tokens"
+        ],
+        "properties": {
+          "access_tokens": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccessTokenInfo"
+            },
+            "description": "Newest first."
+          },
+          "next_before": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AccessTokenId",
+                "description": "Pass as `before` to read the next page. Absent on the last page."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
       "AccountId": {
         "type": "string",
         "format": "uuid"
@@ -7402,6 +8434,26 @@
           }
         }
       },
+      "ApplyStructureChanges": {
+        "type": "object",
+        "description": "`POST /api/v1/structure/changes`: the changes of one plan. The server applies all of them\nor none, and none when `revision` is not the current revision of the structure.",
+        "required": [
+          "revision",
+          "changes"
+        ],
+        "properties": {
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StructureChange"
+            },
+            "description": "At most 200 changes, applied in their order."
+          },
+          "revision": {
+            "type": "string"
+          }
+        }
+      },
       "ApproveDeviceLink": {
         "type": "object",
         "description": "The approval names the public key that the approving device saw.",
@@ -7427,6 +8479,47 @@
               "$ref": "#/components/schemas/WorkspaceId"
             },
             "description": "Empty: the default workspace."
+          }
+        }
+      },
+      "ArchivePeriod": {
+        "type": "object",
+        "description": "The time after which the server deletes an archived channel of a workspace.",
+        "properties": {
+          "days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "From 7 to 36500 days. `null`: archived channels are never deleted.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "ArchivedChannel": {
+        "type": "object",
+        "description": "A channel that is archived: it is read-only and is in no channel list (ADR 0410).",
+        "required": [
+          "channel",
+          "archived_at"
+        ],
+        "properties": {
+          "archived_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "channel": {
+            "$ref": "#/components/schemas/Channel"
+          },
+          "deletes_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The server does not delete the channel before this time. Absent: the server does not\ndelete it, because the workspace has no archive period or the channel contains\npermanent messages."
           }
         }
       },
@@ -7508,6 +8601,17 @@
           "event"
         ],
         "properties": {
+          "access_token_id": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AccessTokenId",
+                "description": "The access token that the request was made with (ADR 0210). Absent for a request\nwith a session and for an action of the server."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "actor_id": {
             "oneOf": [
               {
@@ -7991,6 +9095,64 @@
               },
               "role_id": {
                 "$ref": "#/components/schemas/ServerRoleId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "An administrator created an access token. The entry does not contain the token.",
+            "required": [
+              "access_token_id",
+              "name",
+              "actions",
+              "expires_at",
+              "action"
+            ],
+            "properties": {
+              "access_token_id": {
+                "$ref": "#/components/schemas/AccessTokenId"
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "access_token_created"
+                ]
+              },
+              "actions": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/TokenAction"
+                }
+              },
+              "expires_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "name": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A person revoked an access token.",
+            "required": [
+              "access_token_id",
+              "created_by",
+              "action"
+            ],
+            "properties": {
+              "access_token_id": {
+                "$ref": "#/components/schemas/AccessTokenId"
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "access_token_revoked"
+                ]
+              },
+              "created_by": {
+                "$ref": "#/components/schemas/AccountId"
               }
             }
           },
@@ -8703,6 +9865,194 @@
                 "minimum": 0
               }
             }
+          },
+          {
+            "type": "object",
+            "description": "A person archived the channel (ADR 0410).",
+            "required": [
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "channel_archived"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "channel_restored"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The time after which the archived channels of the workspace are deleted. Absent\ndays: never.",
+            "required": [
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "archive_period_changed"
+                ]
+              },
+              "days": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The channels of the category stay and have no category.",
+            "required": [
+              "category_id",
+              "name",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "category_deleted"
+                ]
+              },
+              "category_id": {
+                "$ref": "#/components/schemas/CategoryId"
+              },
+              "name": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The entry states the role as it was, and how many members held it.",
+            "required": [
+              "role_id",
+              "name",
+              "permissions",
+              "holders",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "workspace_role_deleted"
+                ]
+              },
+              "holders": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              "name": {
+                "type": "string"
+              },
+              "permissions": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/WorkspacePermission"
+                }
+              },
+              "role_id": {
+                "$ref": "#/components/schemas/WorkspaceRoleId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "role_id",
+              "name",
+              "permissions",
+              "holders",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "server_role_deleted"
+                ]
+              },
+              "holders": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              "name": {
+                "type": "string"
+              },
+              "permissions": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ServerPermission"
+                }
+              },
+              "role_id": {
+                "$ref": "#/components/schemas/ServerRoleId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A workspace was deleted with its members, roles, categories and channels.",
+            "required": [
+              "workspace_id",
+              "name",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "workspace_deleted"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A person asked for an export of the channel (ADR 0411).",
+            "required": [
+              "export_id",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "export_requested"
+                ]
+              },
+              "export_id": {
+                "$ref": "#/components/schemas/ExportId"
+              }
+            }
           }
         ],
         "description": "What was done. New actions are added; the fields of an existing action do not change.\n\nAn action that this build does not know is read as [`AuditEvent::Unknown`], so that a\nclient can show the entry with its time and its actor (ADR 0209). `Unknown` is never\nwritten."
@@ -9259,6 +10609,30 @@
           }
         }
       },
+      "CategoryEntry": {
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/StructureId"
+          },
+          "name": {
+            "type": "string"
+          },
+          "position": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Absent: a new category goes after the last one, an existing one keeps its position."
+          }
+        },
+        "additionalProperties": false
+      },
       "CategoryId": {
         "type": "string",
         "format": "uuid"
@@ -9411,6 +10785,75 @@
           }
         }
       },
+      "ChannelEntry": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "kind"
+        ],
+        "properties": {
+          "category": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/StructureId",
+                "description": "The identifier of a category of the same workspace. `null`: no category. Absent: a\nnew channel has no category, an existing channel keeps its category."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hides_occupants": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "For a voice channel only."
+          },
+          "id": {
+            "$ref": "#/components/schemas/StructureId"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ChannelKind",
+            "description": "The kind of a channel does not change."
+          },
+          "name": {
+            "type": "string"
+          },
+          "overrides": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OverrideEntry"
+            },
+            "description": "The overrides that the file states. An override of a role that is absent here is\nkept; an override with two empty sets is removed."
+          },
+          "permanent_messages": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "position": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Absent: a new channel goes after the last one, an existing one keeps its position."
+          },
+          "user_limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "For a voice channel only. `null`: no limit.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
       "ChannelId": {
         "type": "string",
         "format": "uuid"
@@ -9543,6 +10986,31 @@
           "text": {
             "type": "string",
             "description": "The corrected text: 1 to 2000 characters without control characters."
+          }
+        }
+      },
+      "CreateAccessToken": {
+        "type": "object",
+        "required": [
+          "name",
+          "actions",
+          "expires_at"
+        ],
+        "properties": {
+          "actions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TokenAction"
+            },
+            "description": "At least one action."
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "At most 366 days after the request."
+          },
+          "name": {
+            "type": "string"
           }
         }
       },
@@ -9687,6 +11155,27 @@
           }
         }
       },
+      "CreatedEntry": {
+        "type": "object",
+        "description": "An object that a request created: the identifier of its entry and the identifier that the\nserver gave the object.",
+        "required": [
+          "kind",
+          "entry",
+          "id"
+        ],
+        "properties": {
+          "entry": {
+            "$ref": "#/components/schemas/StructureId"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/StructureKind"
+          }
+        }
+      },
       "Cursor": {
         "type": "object",
         "description": "A place in the order of the events of one server. An event with a position at or below the\nposition of a cursor is covered by the state that the cursor belongs to.",
@@ -9726,6 +11215,47 @@
           "utc_offset_minutes": {
             "type": "integer",
             "format": "int32"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Deletions": {
+        "type": "object",
+        "properties": {
+          "categories": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StructureId"
+            },
+            "description": "The identifiers of the categories to delete. Their channels stay and have no\ncategory."
+          },
+          "channels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StructureId"
+            },
+            "description": "The identifiers of the channels to delete."
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StructureId"
+            },
+            "description": "The identifiers of the workspace roles to delete."
+          },
+          "server_roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StructureId"
+            },
+            "description": "The identifiers of the server roles to delete."
+          },
+          "workspaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StructureId"
+            },
+            "description": "The identifiers of the workspaces to delete, each with everything that it holds."
           }
         },
         "additionalProperties": false
@@ -9967,6 +11497,90 @@
             "description": "A sentence for a person who reads a log. Its text is not stable."
           }
         }
+      },
+      "Export": {
+        "type": "object",
+        "description": "One export. It belongs to the account that asked for it; no other account reads it.",
+        "required": [
+          "id",
+          "place",
+          "state",
+          "requested_at"
+        ],
+        "properties": {
+          "bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The size of the file. Present with the state `ready`.",
+            "minimum": 0
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the server removes the export. Present when the export has finished."
+          },
+          "failure": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ExportFailure",
+                "description": "Present with the state `failed`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "id": {
+            "$ref": "#/components/schemas/ExportId",
+            "description": "The export holds the items of its place whose identifier is not greater than this\none: what existed when the export was asked for."
+          },
+          "place": {
+            "$ref": "#/components/schemas/MessagePlace"
+          },
+          "requested_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ExportState"
+          }
+        }
+      },
+      "ExportFailure": {
+        "type": "string",
+        "description": "Why an export has no file.",
+        "enum": [
+          "storage_low",
+          "access_ended",
+          "interrupted",
+          "failed"
+        ]
+      },
+      "ExportId": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "ExportState": {
+        "type": "string",
+        "enum": [
+          "waiting",
+          "running",
+          "ready",
+          "failed"
+        ]
       },
       "FileCheck": {
         "type": "string",
@@ -10918,6 +12532,31 @@
         "type": "string",
         "description": "The scheme, the host and the port of a server address, without a path: `https://chat.example.test`"
       },
+      "OverrideEntry": {
+        "type": "object",
+        "required": [
+          "role"
+        ],
+        "properties": {
+          "allow": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspacePermission"
+            }
+          },
+          "deny": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspacePermission"
+            }
+          },
+          "role": {
+            "$ref": "#/components/schemas/StructureId",
+            "description": "The identifier of a role of the same workspace."
+          }
+        },
+        "additionalProperties": false
+      },
       "OwnAccount": {
         "type": "object",
         "description": "The account of the caller.",
@@ -11612,6 +13251,36 @@
         },
         "additionalProperties": false
       },
+      "RoleEntry": {
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "everyone": {
+            "type": "boolean",
+            "description": "True for the role that every member holds. An entry with this mark stands for that\nrole of its workspace, whatever its identifier is."
+          },
+          "id": {
+            "$ref": "#/components/schemas/StructureId"
+          },
+          "name": {
+            "type": "string"
+          },
+          "permissions": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/WorkspacePermission"
+            },
+            "description": "Absent: a new role has no permission, an existing role keeps its permissions."
+          }
+        },
+        "additionalProperties": false
+      },
       "ScopedNotificationSettings": {
         "type": "object",
         "required": [
@@ -11954,6 +13623,32 @@
           }
         }
       },
+      "ServerRoleEntry": {
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/StructureId"
+          },
+          "name": {
+            "type": "string"
+          },
+          "permissions": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ServerPermission"
+            },
+            "description": "Absent: a new role has no permission, an existing role keeps its permissions."
+          }
+        },
+        "additionalProperties": false
+      },
       "ServerRoleId": {
         "type": "string",
         "format": "uuid"
@@ -12242,6 +13937,586 @@
         "format": "uuid",
         "description": "Identifies one history of event positions. It changes when positions start again."
       },
+      "StructureApplied": {
+        "type": "object",
+        "required": [
+          "revision",
+          "created"
+        ],
+        "properties": {
+          "created": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CreatedEntry"
+            }
+          },
+          "revision": {
+            "type": "string",
+            "description": "The revision of the structure after the changes."
+          }
+        }
+      },
+      "StructureChange": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "name",
+              "change"
+            ],
+            "properties": {
+              "change": {
+                "type": "string",
+                "enum": [
+                  "create_server_role"
+                ]
+              },
+              "id": {
+                "$ref": "#/components/schemas/StructureId"
+              },
+              "name": {
+                "type": "string"
+              },
+              "permissions": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ServerPermission"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "change"
+            ],
+            "properties": {
+              "change": {
+                "type": "string",
+                "enum": [
+                  "update_server_role"
+                ]
+              },
+              "id": {
+                "$ref": "#/components/schemas/StructureId"
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "permissions": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "$ref": "#/components/schemas/ServerPermission"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The account of the request becomes the first member of the workspace. `everyone_role`\nis the identifier under which later changes and files name the \"everyone\" role of\nthe new workspace.",
+            "required": [
+              "id",
+              "name",
+              "everyone_role",
+              "change"
+            ],
+            "properties": {
+              "change": {
+                "type": "string",
+                "enum": [
+                  "create_workspace"
+                ]
+              },
+              "everyone_role": {
+                "$ref": "#/components/schemas/StructureId"
+              },
+              "id": {
+                "$ref": "#/components/schemas/StructureId"
+              },
+              "name": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "name",
+              "change"
+            ],
+            "properties": {
+              "change": {
+                "type": "string",
+                "enum": [
+                  "rename_workspace"
+                ]
+              },
+              "id": {
+                "$ref": "#/components/schemas/StructureId"
+              },
+              "name": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "workspace",
+              "name",
+              "change"
+            ],
+            "properties": {
+              "change": {
+                "type": "string",
+                "enum": [
+                  "create_workspace_role"
+                ]
+              },
+              "id": {
+                "$ref": "#/components/schemas/StructureId"
+              },
+              "name": {
+                "type": "string"
+              },
+              "permissions": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/WorkspacePermission"
+                }
+              },
+              "workspace": {
+                "$ref": "#/components/schemas/StructureId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "change"
+            ],
+            "properties": {
+              "change": {
+                "type": "string",
+                "enum": [
+                  "update_workspace_role"
+                ]
+              },
+              "id": {
+                "$ref": "#/components/schemas/StructureId"
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "permissions": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "$ref": "#/components/schemas/WorkspacePermission"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "workspace",
+              "name",
+              "change"
+            ],
+            "properties": {
+              "change": {
+                "type": "string",
+                "enum": [
+                  "create_category"
+                ]
+              },
+              "id": {
+                "$ref": "#/components/schemas/StructureId"
+              },
+              "name": {
+                "type": "string"
+              },
+              "position": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32"
+              },
+              "workspace": {
+                "$ref": "#/components/schemas/StructureId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "change"
+            ],
+            "properties": {
+              "change": {
+                "type": "string",
+                "enum": [
+                  "update_category"
+                ]
+              },
+              "id": {
+                "$ref": "#/components/schemas/StructureId"
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "position": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "workspace",
+              "kind",
+              "name",
+              "change"
+            ],
+            "properties": {
+              "category": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/StructureId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "change": {
+                "type": "string",
+                "enum": [
+                  "create_channel"
+                ]
+              },
+              "id": {
+                "$ref": "#/components/schemas/StructureId"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/ChannelKind"
+              },
+              "name": {
+                "type": "string"
+              },
+              "position": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32"
+              },
+              "workspace": {
+                "$ref": "#/components/schemas/StructureId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "change"
+            ],
+            "properties": {
+              "category": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/StructureId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "change": {
+                "type": "string",
+                "enum": [
+                  "update_channel"
+                ]
+              },
+              "id": {
+                "$ref": "#/components/schemas/StructureId"
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "permanent_messages": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "position": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The settings of the call of a voice channel.",
+            "required": [
+              "id",
+              "change"
+            ],
+            "properties": {
+              "change": {
+                "type": "string",
+                "enum": [
+                  "update_call_settings"
+                ]
+              },
+              "hides_occupants": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "id": {
+                "$ref": "#/components/schemas/StructureId"
+              },
+              "user_limit": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Two empty sets remove the override.",
+            "required": [
+              "channel",
+              "role",
+              "change"
+            ],
+            "properties": {
+              "allow": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/WorkspacePermission"
+                }
+              },
+              "change": {
+                "type": "string",
+                "enum": [
+                  "set_channel_override"
+                ]
+              },
+              "channel": {
+                "$ref": "#/components/schemas/StructureId"
+              },
+              "deny": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/WorkspacePermission"
+                }
+              },
+              "role": {
+                "$ref": "#/components/schemas/StructureId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "change"
+            ],
+            "properties": {
+              "change": {
+                "type": "string",
+                "enum": [
+                  "delete_channel"
+                ]
+              },
+              "id": {
+                "$ref": "#/components/schemas/StructureId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The channels of the category stay and have no category.",
+            "required": [
+              "id",
+              "change"
+            ],
+            "properties": {
+              "change": {
+                "type": "string",
+                "enum": [
+                  "delete_category"
+                ]
+              },
+              "id": {
+                "$ref": "#/components/schemas/StructureId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "change"
+            ],
+            "properties": {
+              "change": {
+                "type": "string",
+                "enum": [
+                  "delete_workspace_role"
+                ]
+              },
+              "id": {
+                "$ref": "#/components/schemas/StructureId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "change"
+            ],
+            "properties": {
+              "change": {
+                "type": "string",
+                "enum": [
+                  "delete_server_role"
+                ]
+              },
+              "id": {
+                "$ref": "#/components/schemas/StructureId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Deletes the workspace with its members, roles, categories and channels.",
+            "required": [
+              "id",
+              "change"
+            ],
+            "properties": {
+              "change": {
+                "type": "string",
+                "enum": [
+                  "delete_workspace"
+                ]
+              },
+              "id": {
+                "$ref": "#/components/schemas/StructureId"
+              }
+            }
+          }
+        ],
+        "description": "One change of the structure. Every identifier is the identifier of an entry: of an object\nthat exists, or of an entry that an earlier change of the same request creates."
+      },
+      "StructureExport": {
+        "type": "object",
+        "description": "`GET /api/v1/structure`: the structure and its revision. The revision is a text that is\nequal for equal structures and differs after every change of the structure; a reader\ncompares it and does not read it.",
+        "required": [
+          "revision",
+          "structure"
+        ],
+        "properties": {
+          "revision": {
+            "type": "string"
+          },
+          "structure": {
+            "$ref": "#/components/schemas/StructureFile"
+          }
+        }
+      },
+      "StructureFile": {
+        "type": "object",
+        "description": "The structure of a server: its server roles and its workspaces with their roles,\ncategories, channels and overrides.\n\nAn entry is matched by its identifier. An entry that is absent is kept as it is. In an\nentry, an absent optional field keeps its value. A file contains no member, no message\nand no secret.",
+        "required": [
+          "format"
+        ],
+        "properties": {
+          "delete": {
+            "$ref": "#/components/schemas/Deletions",
+            "description": "The entries that applying the file deletes. Nothing else is deleted."
+          },
+          "format": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The version of the file format: 1.",
+            "minimum": 0
+          },
+          "server_roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServerRoleEntry"
+            }
+          },
+          "workspaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceEntry"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "StructureId": {
+        "type": "string",
+        "format": "uuid",
+        "description": "Identifies one entry of a structure file (ADR 0211). It is the identifier of the\nobject, or the identifier under which a structure file created the object."
+      },
+      "StructureKind": {
+        "type": "string",
+        "enum": [
+          "server_role",
+          "workspace",
+          "workspace_role",
+          "category",
+          "channel"
+        ]
+      },
       "SystemMessage": {
         "type": "object",
         "required": [
@@ -12339,6 +14614,16 @@
             "minimum": 0
           }
         }
+      },
+      "TokenAction": {
+        "type": "string",
+        "description": "One group of routes that an access token can reach. A token states its actions when it is\ncreated, and a request with it is refused on a route of another action.\n\nA server can add actions within one API version. An action that this build does not know\nis read as [`TokenAction::Unknown`], which is never written.",
+        "enum": [
+          "read_structure",
+          "manage_structure",
+          "manage_members",
+          "read_audit_log"
+        ]
       },
       "Transcript": {
         "type": "object",
@@ -12857,6 +15142,44 @@
           }
         }
       },
+      "WorkspaceEntry": {
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "categories": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CategoryEntry"
+            }
+          },
+          "channels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChannelEntry"
+            }
+          },
+          "default": {
+            "type": "boolean",
+            "description": "True for the default workspace. An entry with this mark whose identifier the server\ndoes not know stands for the default workspace of the server."
+          },
+          "id": {
+            "$ref": "#/components/schemas/StructureId"
+          },
+          "name": {
+            "type": "string"
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RoleEntry"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
       "WorkspaceId": {
         "type": "string",
         "format": "uuid"
@@ -12994,7 +15317,7 @@
       "session": {
         "type": "http",
         "scheme": "bearer",
-        "description": "The token of a session, from a login."
+        "description": "The token of a session, from a login. The routes that an access token reaches (ADR 0210) take the access token in the same header."
       }
     }
   },
@@ -13024,6 +15347,14 @@
       "description": "Roles that hold server permissions"
     },
     {
+      "name": "access tokens",
+      "description": "Tokens of administrators for other programs"
+    },
+    {
+      "name": "structure",
+      "description": "The whole structure of the server and changes of it in one request"
+    },
+    {
       "name": "workspaces",
       "description": "Workspaces, their members and roles"
     },
@@ -13038,6 +15369,10 @@
     {
       "name": "recordings",
       "description": "Recordings of calls in voice channels, their files, their transcripts and the glossary"
+    },
+    {
+      "name": "exports",
+      "description": "Exports of a channel or of a direct-message conversation as one ZIP file"
     },
     {
       "name": "audit",

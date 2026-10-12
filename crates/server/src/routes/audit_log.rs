@@ -97,6 +97,32 @@ pub async fn get_workspace_audit_log(
     let now = app.now();
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
+        let deleted: bool = sqlx::query_scalar(
+            "select exists (select 1 from workspaces where id = $1 and deleted_at is not null)",
+        )
+        .bind(workspace_id)
+        .fetch_one(&mut *connection)
+        .await?;
+        if deleted {
+            // The entries of a deleted workspace stay for the administrators, like the
+            // entries of a deleted channel (ADR 0303). Every other caller gets the answer
+            // of a workspace that does not exist.
+            if !access.allows(Request::AuditEntry(AuditScope::DeletedWorkspace)) {
+                return Err(ApiError::not_found());
+            }
+            let rows: Vec<EntryRow> = sqlx::query_as(AssertSqlSafe(format!(
+                "select {ENTRY_COLUMNS} from audit_entries
+                 where workspace_id = $1 and ($2::uuid is null or id < $2)
+                 order by id desc
+                 limit $3"
+            )))
+            .bind(workspace_id)
+            .bind(query.before)
+            .bind(size + 1)
+            .fetch_all(&mut *connection)
+            .await?;
+            return page(rows, size);
+        }
         let scope = access.workspace(connection, workspace_id).await?;
         access.require(Request::AuditEntry(AuditScope::Workspace(&scope)))?;
 

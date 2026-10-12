@@ -47,6 +47,11 @@ impl Place {
         Self::of(&[&attachment])
     }
 
+    /// The directory of one export, below the directory of the exports.
+    pub fn export(export: junto_protocol::ids::ExportId) -> Self {
+        Self::of(&[&export])
+    }
+
     /// The directory of a recording.
     pub fn recording(recording: RecordingId) -> Self {
         Self::of(&[&recording])
@@ -345,6 +350,18 @@ mod system {
         }
     }
 
+    pub fn create_file(root: &Path, place: &Place) -> io::Result<File> {
+        let (directory, name) = holder(root, place)?;
+        let flags =
+            OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        Ok(File::from(openat(
+            &directory,
+            name,
+            flags,
+            Mode::from_raw_mode(0o600),
+        )?))
+    }
+
     pub fn write_new(root: &Path, place: &Place, bytes: &[u8]) -> io::Result<()> {
         let (directory, name) = holder(root, place)?;
         let flags =
@@ -400,6 +417,10 @@ mod system {
     }
 
     pub fn write_new(_: &Path, _: &Place, _: &[u8]) -> io::Result<()> {
+        unsupported()
+    }
+
+    pub fn create_file(_: &Path, _: &Place) -> io::Result<File> {
         unsupported()
     }
 
@@ -489,6 +510,13 @@ pub fn take_rescued(root: &Path, from: &Place, to: &Place) -> io::Result<()> {
         create_directory(root, &Place(above.to_vec()))?;
     }
     system::rename(root, from, to)
+}
+
+/// Creates a new file that only the user of the server reads, opened for reading and
+/// writing. A file or a link at the place is an error, and no directory above the place may
+/// be a link.
+pub fn create_file(root: &Path, place: &Place) -> io::Result<File> {
+    system::create_file(root, place)
 }
 
 /// Writes a new file. A file or a link at the place is an error, and no directory above the

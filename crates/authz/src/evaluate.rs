@@ -103,6 +103,13 @@ fn apply_limits<'a>(actor: &Actor, request: &Request<'a>) -> Limited<'a> {
             granting: nothing,
         }),
 
+        Request::DeleteWorkspace {
+            content: ChannelContent::PermanentMessages,
+        } => owner_only(),
+        Request::DeleteWorkspace {
+            content: ChannelContent::NoPermanentMessages,
+        } => Limited::Open(Check::Administrator),
+
         Request::Moderate {
             target: Target::Owner,
         } => deny(Denial::OwnerProtected),
@@ -166,7 +173,9 @@ fn apply_limits<'a>(actor: &Actor, request: &Request<'a>) -> Limited<'a> {
             permission: WorkspacePermission::ViewAuditEntries,
             granting: nothing,
         }),
-        Request::AuditEntry(AuditScope::DeletedChannel) => Limited::Open(Check::Administrator),
+        Request::AuditEntry(AuditScope::DeletedChannel | AuditScope::DeletedWorkspace) => {
+            Limited::Open(Check::Administrator)
+        }
     }
 }
 

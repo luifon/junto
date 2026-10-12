@@ -193,17 +193,83 @@ pub fn limiter_key(address: IpAddr) -> IpAddr {
     }
 }
 
+/// The addresses of trusted proxies: one address, or every address that shares the first
+/// `prefix` bits with `address` (the form `192.0.2.0/24`). The entry container of a Compose
+/// network has no fixed address, so the network is named (ADR 0111).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Network {
+    address: IpAddr,
+    prefix: u8,
+}
+
+fn bits(address: IpAddr) -> (u128, u8) {
+    match address {
+        IpAddr::V4(v4) => (u128::from(u32::from(v4)), 32),
+        IpAddr::V6(v6) => (u128::from(v6), 128),
+    }
+}
+
+impl Network {
+    /// True when `address` is in the network. An IPv4 address that is written as an IPv6
+    /// address is the IPv4 address.
+    pub fn contains(&self, address: IpAddr) -> bool {
+        let (wanted, width) = bits(self.address);
+        let (given, given_width) = bits(canonical(address));
+        if width != given_width {
+            return false;
+        }
+        let ignored = u32::from(width - self.prefix);
+        ignored >= 128 || (wanted >> ignored) == (given >> ignored)
+    }
+}
+
+impl From<IpAddr> for Network {
+    fn from(address: IpAddr) -> Self {
+        let address = canonical(address);
+        Self {
+            address,
+            prefix: bits(address).1,
+        }
+    }
+}
+
+impl std::str::FromStr for Network {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let (address, prefix) = match text.split_once('/') {
+            Some((address, prefix)) => (address, Some(prefix)),
+            None => (text, None),
+        };
+        let address: IpAddr = address
+            .parse()
+            .map_err(|error| format!("{address:?}: {error}"))?;
+        let single = Self::from(address);
+        let Some(prefix) = prefix else {
+            return Ok(single);
+        };
+        if single.address != address {
+            return Err(format!(
+                "{text:?}: write a network of IPv4 addresses in the IPv4 form"
+            ));
+        }
+        let width = bits(address).1;
+        let plain = !prefix.is_empty() && prefix.bytes().all(|byte| byte.is_ascii_digit());
+        match prefix.parse::<u8>() {
+            Ok(prefix) if plain && prefix <= width => Ok(Self { address, prefix }),
+            _ => Err(format!(
+                "{text:?}: the prefix is a number from 0 to {width}"
+            )),
+        }
+    }
+}
+
 /// The address of the client of a request.
 ///
 /// `forwarded_for` is used only when the connection comes from a trusted proxy. The header is
 /// read from the right, and the first address that is not a trusted proxy is the client.
-pub fn client_address(peer: IpAddr, forwarded_for: &[&str], trusted_proxies: &[IpAddr]) -> IpAddr {
-    let trusted = |address: &IpAddr| {
-        let address = canonical(*address);
-        trusted_proxies
-            .iter()
-            .any(|proxy| canonical(*proxy) == address)
-    };
+pub fn client_address(peer: IpAddr, forwarded_for: &[&str], trusted_proxies: &[Network]) -> IpAddr {
+    let trusted = |address: &IpAddr| trusted_proxies.iter().any(|proxy| proxy.contains(*address));
     if !trusted(&peer) {
         return peer;
     }
@@ -234,6 +300,10 @@ mod tests {
     use super::*;
 
     fn ip(text: &str) -> IpAddr {
+        text.parse().unwrap()
+    }
+
+    fn net(text: &str) -> Network {
         text.parse().unwrap()
     }
 
@@ -388,7 +458,7 @@ mod tests {
         let peer = ip("203.0.113.5");
         assert_eq!(client_address(peer, &["198.51.100.7"], &[]), peer);
         assert_eq!(
-            client_address(peer, &["198.51.100.7"], &[ip("192.0.2.1")]),
+            client_address(peer, &["198.51.100.7"], &[net("192.0.2.1")]),
             peer
         );
     }
@@ -396,7 +466,7 @@ mod tests {
     #[test]
     fn forwarded_address_is_used_when_the_peer_is_a_trusted_proxy() {
         let proxy = ip("192.0.2.1");
-        let trusted = [proxy];
+        let trusted = [Network::from(proxy)];
         assert_eq!(
             client_address(proxy, &["198.51.100.7"], &trusted),
             ip("198.51.100.7")
@@ -409,7 +479,7 @@ mod tests {
 
     #[test]
     fn the_rightmost_address_that_is_not_a_proxy_is_the_client() {
-        let trusted = [ip("192.0.2.1"), ip("192.0.2.2")];
+        let trusted = [net("192.0.2.1"), net("192.0.2.2")];
         assert_eq!(
             client_address(
                 ip("192.0.2.1"),
@@ -427,7 +497,7 @@ mod tests {
     #[test]
     fn the_peer_is_used_when_the_header_is_absent_or_unreadable() {
         let proxy = ip("192.0.2.1");
-        let trusted = [proxy];
+        let trusted = [Network::from(proxy)];
         assert_eq!(client_address(proxy, &[], &trusted), proxy);
         assert_eq!(client_address(proxy, &["unknown"], &trusted), proxy);
         assert_eq!(
@@ -435,5 +505,60 @@ mod tests {
             proxy
         );
         assert_eq!(client_address(proxy, &["192.0.2.1"], &trusted), proxy);
+    }
+
+    #[test]
+    fn a_network_of_proxies_is_trusted_as_a_whole() {
+        let trusted = [net("172.31.240.0/24"), net("2001:db8:1::/48")];
+        for inside in ["172.31.240.1", "172.31.240.254", "::ffff:172.31.240.7"] {
+            assert_eq!(
+                client_address(ip(inside), &["198.51.100.7"], &trusted),
+                ip("198.51.100.7"),
+                "{inside}"
+            );
+        }
+        assert_eq!(
+            client_address(ip("2001:db8:1:9::4"), &["198.51.100.7"], &trusted),
+            ip("198.51.100.7")
+        );
+        for outside in [
+            "172.31.241.1",
+            "172.31.239.255",
+            "2001:db8:2::1",
+            "10.0.0.1",
+        ] {
+            assert_eq!(
+                client_address(ip(outside), &["198.51.100.7"], &trusted),
+                ip(outside),
+                "{outside}"
+            );
+        }
+        // A hop inside the network is a proxy as well, and the client is the hop before.
+        assert_eq!(
+            client_address(
+                ip("172.31.240.1"),
+                &["203.0.113.9, 198.51.100.7, 172.31.240.9"],
+                &trusted
+            ),
+            ip("198.51.100.7")
+        );
+        assert!(net("0.0.0.0/0").contains(ip("203.0.113.9")));
+        assert!(!net("0.0.0.0/0").contains(ip("2001:db8::1")));
+        assert!(net("192.0.2.7/32").contains(ip("192.0.2.7")));
+        assert!(!net("192.0.2.7/32").contains(ip("192.0.2.8")));
+        assert_eq!(net("192.0.2.7"), Network::from(ip("192.0.2.7")));
+        assert_eq!(net("::ffff:192.0.2.7"), net("192.0.2.7"));
+        for refused in [
+            "192.0.2.0/33",
+            "192.0.2.0/",
+            "192.0.2.0/-1",
+            "192.0.2.0/ 8",
+            "2001:db8::/129",
+            "::ffff:192.0.2.0/120",
+            "proxy/8",
+            "",
+        ] {
+            assert!(refused.parse::<Network>().is_err(), "{refused:?}");
+        }
     }
 }

@@ -442,7 +442,7 @@ async fn many_slow_requests_hold_a_bounded_number_of_body_bytes() {
     const BODY: usize = 192 * 1024;
     const HELD: usize = 5;
     let server = TestServer::start_with(|config| {
-        config.trusted_proxies = vec![std::net::IpAddr::from([127, 0, 0, 1])];
+        config.trusted_proxies = vec![std::net::IpAddr::from([127, 0, 0, 1]).into()];
         config.limits.request_body_bytes = 256 * 1024;
         config.limits.request_bodies_held_per_address = 256 * 1024;
         config.limits.request_bodies_held_bytes = 1024 * 1024;

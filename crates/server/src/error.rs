@@ -84,6 +84,35 @@ impl ApiError {
         }
     }
 
+    /// The error of one change of a request with several changes (ADR 0211): the same code
+    /// with the number of the change in the message. An absent entry becomes
+    /// `invalid_request`, because every `not_found` response has one fixed body. An error
+    /// that is not about the change itself stays as it is: a lost transaction, a time limit
+    /// and an internal failure.
+    pub fn in_change(self, number: usize, name: &str) -> Self {
+        if self.retryable
+            || matches!(
+                self.code,
+                ErrorCode::Busy | ErrorCode::Timeout | ErrorCode::Internal
+            )
+        {
+            return self;
+        }
+        let (code, message) = match self.code {
+            ErrorCode::NotFound => (
+                ErrorCode::InvalidRequest,
+                Cow::Borrowed("an entry that the change names does not exist"),
+            ),
+            code => (code, self.message),
+        };
+        Self {
+            code,
+            message: format!("change {number} ({name}): {message}; nothing was changed").into(),
+            retry_after: self.retry_after,
+            retryable: false,
+        }
+    }
+
     pub fn retry_after(mut self, wait: Duration) -> Self {
         self.retry_after = Some(wait);
         self

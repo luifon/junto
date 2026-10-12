@@ -79,6 +79,9 @@ struct Plan {
     main_share: Option<String>,
     /// The recording left the active states with files to process.
     ended: bool,
+    /// The recording ends, and a job was declared lost in this pass. The recorder is asked
+    /// about the job after the stop of this plan, in a pass that follows at once.
+    asks_again: bool,
 }
 
 #[derive(Default)]
@@ -321,6 +324,9 @@ async fn decide(
     let mut segments = store::segments(&mut *connection, id).await?;
     let mut changed = false;
     let mut failed = false;
+    // The jobs that this pass declares lost without a stop that the recorder took. Their
+    // stop follows this transaction, so the recorder was not asked about them after it.
+    let mut stop_follows = HashSet::new();
 
     let call_runs: bool = sqlx::query_scalar("select exists (select 1 from calls where id = $1)")
         .bind(recording.call_id)
@@ -384,7 +390,10 @@ async fn decide(
                         let lost = Some(SegmentFailure::RecorderLost);
                         store::close_segment(&mut *connection, segment, lost, file).await?;
                         (changed, failed) = (true, true);
-                        plan.stops.push((None, job_id));
+                        if segment.stop_delivered_at.is_none() {
+                            stop_follows.insert(segment.id);
+                        }
+                        plan.stops.push((Some(segment.id), job_id));
                     }
                 }
                 (SegmentState::Failed, Some(JobStatus::Complete))
@@ -530,19 +539,36 @@ async fn decide(
     // The recording leaves the active states when a stop is asked for, the record has closed
     // every segment, the room holds no participant of the recorder, so that no job of it,
     // known or not, records, and the recorder was asked in this pass about every job that
-    // was declared lost.
+    // was declared lost. A job that was declared lost while its recorder lived ends by the
+    // stop that follows the declaration: the recorder is asked after that stop, and a job
+    // whose stop the recorder took has the time of a stopped job to report its end. In that
+    // time only a report of an end, or of a job that the recorder does not know, settles it.
     let every_job_ended = segments
         .iter()
         .all(|segment| matches!(segment.state, SegmentState::Ended | SegmentState::Failed));
     let reconciled = observed.is_some_and(|observed| {
-        let asked = |job_id: &String| {
-            observed.reports.contains_key(job_id) || observed.unreported.contains(job_id)
+        let settled = |segment: &SegmentRow| {
+            let Some(job_id) = &segment.job_id else {
+                return true;
+            };
+            let report = observed.reports.get(job_id);
+            let asked = report.is_some() || observed.unreported.contains(job_id);
+            let can_still_end = match report {
+                Some(Some(job)) => job.status == JobStatus::Running,
+                Some(None) => false,
+                None => true,
+            };
+            let ending = can_still_end
+                && segment
+                    .stop_delivered_at
+                    .is_some_and(|at| observed.at - at <= limits.ending_grace);
+            asked && !ending && !stop_follows.contains(&segment.id)
         };
         observed.recorder_participants().is_empty()
             && segments
                 .iter()
                 .filter(|segment| segment.failure == Some(SegmentFailure::RecorderLost))
-                .all(|segment| segment.job_id.as_ref().is_none_or(asked))
+                .all(settled)
     });
     if let Some(stop) = recording.stop
         && every_job_ended
@@ -564,6 +590,7 @@ async fn decide(
         plan.ended = failure.is_none();
         changed = true;
     }
+    plan.asks_again = recording.stop.is_some() && !stop_follows.is_empty();
     if failed {
         store::note_failure(&mut *connection, now, &recording).await?;
     }
@@ -726,7 +753,8 @@ async fn record(
 
 /// Runs one pass over one recording. Without a recorder or a media server, while another
 /// pass over the recording runs, and for a recording that is no longer active, it does
-/// nothing.
+/// nothing. A pass that declares a job of an ending recording lost is followed by a second
+/// one, which asks the recorder about that job after its stop.
 pub async fn tend(app: &AppState, id: RecordingId) -> ApiResult<()> {
     let (Some(backend), Some(media)) = (app.recordings.backend(), app.calls.media()) else {
         return Ok(());
@@ -734,6 +762,19 @@ pub async fn tend(app: &AppState, id: RecordingId) -> ApiResult<()> {
     let Some(_pass) = app.recordings.pass(id) else {
         return Ok(());
     };
+    if pass(app, backend, media.as_ref(), id).await? {
+        pass(app, backend, media.as_ref(), id).await?;
+    }
+    Ok(())
+}
+
+/// One pass over one recording. True when the recorder is to be asked again at once.
+async fn pass(
+    app: &AppState,
+    backend: &Backend,
+    media: &dyn MediaServer,
+    id: RecordingId,
+) -> ApiResult<bool> {
     let stored = read!(app.background(), |connection| {
         let Some(recording) = store::recording(&mut *connection, Of::Id(id), false).await? else {
             return Ok(None);
@@ -746,12 +787,12 @@ pub async fn tend(app: &AppState, id: RecordingId) -> ApiResult<()> {
     })?;
     let Some((recording, segments)) = stored else {
         app.recordings.tell_layout(id, None);
-        return Ok(());
+        return Ok(false);
     };
     let report_time_limit = app.config.limits.recordings.report_time_limit;
     let observed = observe(
         backend,
-        media.as_ref(),
+        media,
         app.now(),
         report_time_limit,
         &recording,
@@ -769,6 +810,7 @@ pub async fn tend(app: &AppState, id: RecordingId) -> ApiResult<()> {
     if plan.ended {
         app.recordings.process_now();
     }
+    let asks_again = plan.asks_again;
     let answers = act(app, backend, id, plan).await;
     let now = app.now();
     let gave_up = transact!(app.background(), |connection| {
@@ -777,7 +819,7 @@ pub async fn tend(app: &AppState, id: RecordingId) -> ApiResult<()> {
     if gave_up {
         app.recordings.poke();
     }
-    Ok(())
+    Ok(asks_again)
 }
 
 async fn active(app: &AppState) -> ApiResult<Vec<RecordingId>> {

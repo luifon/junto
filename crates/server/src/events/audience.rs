@@ -70,7 +70,10 @@ impl Class {
             | Event::ThreadRead { .. }
             | Event::MessageRead { .. }
             | Event::NotificationSettingsChanged { .. }
-            | Event::AttachmentLimitsChanged { .. } => Self::Control,
+            | Event::AttachmentLimitsChanged { .. }
+            | Event::WorkspaceDeleted { .. }
+            | Event::ExportUpdated { .. }
+            | Event::ExportRemoved { .. } => Self::Control,
             Event::ConversationOpened { .. } => Self::DirectMessage,
             Event::MessageMentioned { .. } | Event::NotificationChanged { .. } => Self::Mention,
             Event::CallInvited { .. } | Event::CallInvitationResolved { .. } => Self::CallInvite,
@@ -86,6 +89,9 @@ impl Class {
             | Event::OwnerChanged { .. }
             | Event::ServerRoleCreated { .. }
             | Event::ServerRoleUpdated { .. }
+            | Event::AccessTokenCreated { .. }
+            | Event::AccessTokenRevoked { .. }
+            | Event::AccessTokensOfCreatorRevoked { .. }
             | Event::InviteCreated { .. }
             | Event::InviteRevoked { .. }
             | Event::InviteUsed { .. }
@@ -119,7 +125,13 @@ impl Class {
             | Event::RecordingRemoved { .. }
             | Event::TranscriptLineCorrected { .. }
             | Event::TranscriptSpeakerRenamed { .. }
-            | Event::GlossaryReplaced { .. } => Self::General,
+            | Event::GlossaryReplaced { .. }
+            | Event::ChannelArchived { .. }
+            | Event::ChannelRestored { .. }
+            | Event::ChannelDeletionDue { .. }
+            | Event::CategoryDeleted { .. }
+            | Event::WorkspaceRoleDeleted { .. }
+            | Event::ServerRoleDeleted { .. } => Self::General,
         }
     }
 }
@@ -248,6 +260,19 @@ pub enum Audience {
         account_id: Option<AccountId>,
         #[serde(default)]
         notice_id: Option<uuid::Uuid>,
+    },
+    /// The accounts that the rows of `event_receivers` with this identifier list. The
+    /// change that recorded the event selected them, because the rule that named them no
+    /// longer holds after it: the holders of a deleted role.
+    Listed {
+        list: uuid::Uuid,
+    },
+    /// The accounts that could see a workspace when it was deleted: its members, which the
+    /// rows of `event_receivers` with the identifier `members` list, and the accounts that
+    /// see every workspace.
+    DeletedWorkspace {
+        workspace_id: WorkspaceId,
+        members: uuid::Uuid,
     },
 }
 
@@ -441,6 +466,8 @@ impl Audience {
             | Self::Call { workspace_id, .. } => Some(*workspace_id),
             Self::Notification { .. }
             | Self::ActiveAccounts
+            | Self::Listed { .. }
+            | Self::DeletedWorkspace { .. }
             | Self::Account { .. }
             | Self::AccountSeeing { .. }
             | Self::AccountViewers { .. }
@@ -454,6 +481,15 @@ impl Audience {
     pub const fn viewed_account_id(&self) -> Option<AccountId> {
         match self {
             Self::AccountViewers { account_id } => Some(*account_id),
+            _ => None,
+        }
+    }
+
+    /// The list of `event_receivers` that decides who receives the event.
+    pub const fn receiver_list(&self) -> Option<uuid::Uuid> {
+        match self {
+            Self::Listed { list } => Some(*list),
+            Self::DeletedWorkspace { members, .. } => Some(*members),
             _ => None,
         }
     }
@@ -539,7 +575,19 @@ impl Audience {
             | Event::RecordingUpdated { .. }
             | Event::RecordingRemoved { .. }
             | Event::TranscriptLineCorrected { .. }
-            | Event::TranscriptSpeakerRenamed { .. } => None,
+            | Event::TranscriptSpeakerRenamed { .. }
+            | Event::WorkspaceDeleted { .. }
+            | Event::ExportUpdated { .. }
+            | Event::ExportRemoved { .. } => None,
+            Event::ChannelArchived { channel } | Event::ChannelDeletionDue { channel } => {
+                Some(Self::Channel {
+                    workspace_id: channel.channel.workspace_id,
+                    channel_id: channel.channel.id,
+                    permission: WorkspacePermission::ViewChannel,
+                })
+            }
+            Event::CategoryDeleted { workspace_id, .. }
+            | Event::WorkspaceRoleDeleted { workspace_id, .. } => workspace(*workspace_id),
             Event::GlossaryReplaced { workspace_id } => workspace(*workspace_id),
             Event::CallStarted { place, .. } | Event::CallEnded { place, .. } => {
                 Some(of_call(place, None))
@@ -558,7 +606,12 @@ impl Audience {
             Event::AccountProfileUpdated { profile } => Some(Self::AccountViewers {
                 account_id: profile.id,
             }),
-            Event::ServerRoleCreated { .. } | Event::ServerRoleUpdated { .. } => {
+            Event::ServerRoleCreated { .. }
+            | Event::ServerRoleUpdated { .. }
+            | Event::ServerRoleDeleted { .. }
+            | Event::AccessTokenCreated { .. }
+            | Event::AccessTokenRevoked { .. }
+            | Event::AccessTokensOfCreatorRevoked { .. } => {
                 permission(ServerPermission::Administrator)
             }
             Event::InviteCreated { .. }
@@ -579,13 +632,13 @@ impl Audience {
             Event::CategoryCreated { category } | Event::CategoryUpdated { category } => {
                 workspace(category.workspace_id)
             }
-            Event::ChannelCreated { channel } | Event::ChannelUpdated { channel } => {
-                Some(Self::Channel {
-                    workspace_id: channel.workspace_id,
-                    channel_id: channel.id,
-                    permission: WorkspacePermission::ViewChannel,
-                })
-            }
+            Event::ChannelCreated { channel }
+            | Event::ChannelUpdated { channel }
+            | Event::ChannelRestored { channel } => Some(Self::Channel {
+                workspace_id: channel.workspace_id,
+                channel_id: channel.id,
+                permission: WorkspacePermission::ViewChannel,
+            }),
             Event::ChannelOverrideSet {
                 workspace_id,
                 channel_id,
@@ -703,6 +756,18 @@ impl Audience {
             (Event::PermissionsChanged { workspace_id: None }, Self::ServerRoleHolders { .. }) => {
                 true
             }
+            (Event::PermissionsChanged { .. }, Self::Listed { .. }) => true,
+            (
+                Event::WorkspaceDeleted { workspace_id },
+                Self::DeletedWorkspace {
+                    workspace_id: deleted,
+                    ..
+                },
+            ) => workspace_id == deleted,
+            (
+                Event::ExportUpdated { .. } | Event::ExportRemoved { .. },
+                Self::Account { .. } | Self::AccountSeeing { .. },
+            ) => true,
             (
                 Event::PermissionsChanged {
                     workspace_id: Some(named),
@@ -752,6 +817,9 @@ pub struct Recipient<'a> {
     /// How the recipient stands to the accounts that the audiences of a batch name for a
     /// direct message or a direct call. An account that is not active has no entry.
     pub contacts: &'a HashMap<AccountId, Contact>,
+    /// The lists of `event_receivers`, of the ones that the audiences of a batch name, that
+    /// hold the recipient.
+    pub listed: &'a HashSet<uuid::Uuid>,
 }
 
 impl Recipient<'_> {
@@ -871,6 +939,19 @@ pub fn receives<'a>(
         }
         Audience::AccountViewers { account_id } => {
             allows(Request::ViewAccount(recipient.acquaintance(*account_id)))
+        }
+        Audience::Listed { list } => recipient.listed.contains(list) && allows(Request::OwnAccount),
+        Audience::DeletedWorkspace { members, .. } => {
+            let scope = WorkspaceScope {
+                membership: if recipient.listed.contains(members) {
+                    Membership::Member
+                } else {
+                    Membership::NotMember
+                },
+                everyone: junto_authz::WorkspacePermissions::EMPTY,
+                roles: Vec::new(),
+            };
+            allows(Request::ViewWorkspace(&scope))
         }
         Audience::ServerPermission { permission } => allows(Request::Server(*permission)),
         Audience::ServerRoleHolders { role_id } => {
@@ -992,6 +1073,8 @@ mod tests {
         std::sync::LazyLock::new(HashSet::new);
     static NO_CONTACTS: std::sync::LazyLock<HashMap<AccountId, Contact>> =
         std::sync::LazyLock::new(HashMap::new);
+    static NO_LISTS: std::sync::LazyLock<HashSet<uuid::Uuid>> =
+        std::sync::LazyLock::new(HashSet::new);
 
     fn recipient(actor: &Actor) -> Recipient<'_> {
         Recipient {
@@ -1000,6 +1083,7 @@ mod tests {
             server_role_ids: &[],
             fellows: &NO_FELLOWS,
             contacts: &NO_CONTACTS,
+            listed: &NO_LISTS,
         }
     }
 
@@ -1553,6 +1637,61 @@ mod tests {
             }],
         };
         assert!(!may_receive(recipient(&plain), &broken, Some(&gone)));
+    }
+
+    #[test]
+    fn a_listed_event_reaches_the_listed_accounts_only() {
+        let list = uuid::Uuid::now_v7();
+        let audience = Audience::Listed { list };
+        let plain = member();
+        assert!(!may_receive(recipient(&plain), &audience, None));
+        assert!(!may_receive(recipient(&administrator()), &audience, None));
+        let lists = HashSet::from([list]);
+        let listed = Recipient {
+            listed: &lists,
+            ..recipient(&plain)
+        };
+        assert!(may_receive(listed, &audience, None));
+        let other = Audience::Listed {
+            list: uuid::Uuid::now_v7(),
+        };
+        assert!(!may_receive(listed, &other, None));
+        assert!(audience.fits(&Event::PermissionsChanged { workspace_id: None }));
+        assert_eq!(audience.receiver_list(), Some(list));
+    }
+
+    #[test]
+    fn the_deletion_of_a_workspace_reaches_its_former_members_and_the_administrators() {
+        let place = place();
+        let members = uuid::Uuid::now_v7();
+        let audience = Audience::DeletedWorkspace {
+            workspace_id: place.workspace_id,
+            members,
+        };
+        let plain = member();
+        assert!(!may_receive(recipient(&plain), &audience, None));
+        let lists = HashSet::from([members]);
+        let former = Recipient {
+            listed: &lists,
+            ..recipient(&plain)
+        };
+        assert!(may_receive(former, &audience, None));
+        assert!(may_receive(recipient(&administrator()), &audience, None));
+        let deleted = Event::WorkspaceDeleted {
+            workspace_id: place.workspace_id,
+        };
+        assert!(audience.fits(&deleted));
+        let elsewhere = Event::WorkspaceDeleted {
+            workspace_id: WorkspaceId::generate(),
+        };
+        assert!(!audience.fits(&elsewhere));
+        assert!(
+            !Audience::Workspace {
+                workspace_id: place.workspace_id
+            }
+            .fits(&deleted)
+        );
+        assert_eq!(audience.workspace_id(), None);
     }
 
     #[test]

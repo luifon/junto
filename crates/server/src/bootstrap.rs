@@ -22,7 +22,19 @@ pub const DEFAULT_VOICE_CHANNEL_NAME: &str = "voice";
 #[derive(Debug, thiserror::Error)]
 pub enum StartError {
     #[error("database migration failed: {0}")]
-    Migration(#[from] sqlx::migrate::MigrateError),
+    Migration(sqlx::migrate::MigrateError),
+    #[error(
+        "the database has the schema of a newer version of the server (its migration {0} is \
+         unknown to this version). An older server does not start on it"
+    )]
+    NewerSchema(i64),
+    #[error(
+        "the copy of the database before the migration could not be made: {0}. The copy needs \
+         that no other program is connected to the database, and that the database user may \
+         create a database. Nothing was migrated. Set JUNTO_MIGRATION_COPY=none to migrate \
+         without a copy"
+    )]
+    MigrationCopy(String),
     #[error("the client of the media server could not be built: {0}")]
     MediaServer(String),
     #[error(
@@ -44,6 +56,15 @@ pub enum StartError {
     Busy,
     #[error(transparent)]
     OwnerCode(#[from] HostCommandError),
+}
+
+impl From<sqlx::migrate::MigrateError> for StartError {
+    fn from(error: sqlx::migrate::MigrateError) -> Self {
+        match error {
+            sqlx::migrate::MigrateError::VersionMissing(version) => Self::NewerSchema(version),
+            other => Self::Migration(other),
+        }
+    }
 }
 
 impl TransactionError for StartError {
@@ -85,21 +106,149 @@ pub async fn start(
 /// True when the database has a schema of an earlier version of the server, so that this
 /// start would apply a migration. False for a database without any schema.
 async fn migration_waits(database: &Database) -> Result<bool, sqlx::Error> {
+    let mut connection = database.pool().acquire().await?;
+    Ok(waiting_from(&mut connection).await?.is_some())
+}
+
+/// The newest migration that the database has, when this version of the server would apply
+/// a further one. `None` for a database without any schema, and for one that is current.
+async fn waiting_from(connection: &mut PgConnection) -> Result<Option<i64>, sqlx::Error> {
     let recorded: bool =
         sqlx::query_scalar("select to_regclass('public._sqlx_migrations') is not null")
-            .fetch_one(database.pool())
+            .fetch_one(&mut *connection)
             .await?;
     if !recorded {
-        return Ok(false);
+        return Ok(None);
     }
     let applied: Vec<i64> =
         sqlx::query_scalar("select version from _sqlx_migrations where success")
-            .fetch_all(database.pool())
+            .fetch_all(&mut *connection)
             .await?;
-    Ok(MIGRATIONS
+    let waits = MIGRATIONS
         .iter()
         .filter(|migration| !migration.migration_type.is_down_migration())
-        .any(|migration| !applied.contains(&migration.version)))
+        .any(|migration| !applied.contains(&migration.version));
+    Ok(applied.into_iter().max().filter(|_| waits))
+}
+
+/// Whether the server copies its database before a migration (ADR 0005, ADR 0018).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MigrationCopy {
+    /// A copy as a second database on the same PostgreSQL server.
+    #[default]
+    Database,
+    None,
+}
+
+/// The comment of a database that the server made as a copy of the database `name`. The
+/// server deletes only a database with the comment of its own database: a copy of another
+/// database, whose name can start in the same way, stays.
+fn copy_comment(name: &str) -> String {
+    format!("junto: copy of the database {name} before a migration")
+}
+
+/// PostgreSQL cuts a longer name of a database.
+const MOST_NAME_BYTES: usize = 63;
+
+fn quoted(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// The name of the copy of the database `name` before the migration after `version`.
+pub fn copy_name(name: &str, version: i64) -> String {
+    format!("{name}_before_{version}")
+}
+
+/// Copies the database before a migration changes it: when this version of the server
+/// would apply a migration to a database that has a schema, the database is copied to
+/// `<name>_before_<newest applied migration>` on the same PostgreSQL server, and the copy
+/// of an earlier migration is deleted. Returns the name of the copy. It runs before the
+/// server connects, because PostgreSQL copies only a database that nobody is connected to.
+/// The way back after a failed upgrade is to rename the copy to the name of the database.
+pub async fn copy_before_migration(
+    options: &sqlx::postgres::PgConnectOptions,
+    mode: MigrationCopy,
+) -> Result<Option<String>, StartError> {
+    use sqlx::{ConnectOptions, Connection};
+
+    if mode == MigrationCopy::None {
+        return Ok(None);
+    }
+    let mut connection = options.connect().await?;
+    let waiting = waiting_from(&mut connection).await?;
+    let name: String = sqlx::query_scalar("select current_database()::text")
+        .fetch_one(&mut connection)
+        .await?;
+    let known: bool = sqlx::query_scalar("select to_regclass('public.recordings') is not null")
+        .fetch_one(&mut connection)
+        .await?;
+    let recording: i64 = if known {
+        sqlx::query_scalar(
+            "select count(*) from recordings where state in ('starting', 'recording')",
+        )
+        .fetch_one(&mut connection)
+        .await?
+    } else {
+        0
+    };
+    connection.close().await?;
+    let Some(version) = waiting else {
+        return Ok(None);
+    };
+    if recording > 0 {
+        return Err(StartError::RecordingRuns);
+    }
+
+    let copy = copy_name(&name, version);
+    if copy.len() > MOST_NAME_BYTES {
+        return Err(StartError::MigrationCopy(format!(
+            "the name {copy} of the copy is longer than the {MOST_NAME_BYTES} bytes of a \
+             database name"
+        )));
+    }
+    let failed = |error: sqlx::Error| StartError::MigrationCopy(error.to_string());
+    let mut maintenance = options
+        .clone()
+        .database("postgres")
+        .connect()
+        .await
+        .map_err(failed)?;
+    let earlier: Vec<String> = sqlx::query_scalar(
+        "select datname::text from pg_database d
+         where starts_with(datname::text, $1)
+           and shobj_description(d.oid, 'pg_database') = $2",
+    )
+    .bind(format!("{name}_before_"))
+    .bind(copy_comment(&name))
+    .fetch_all(&mut maintenance)
+    .await
+    .map_err(failed)?;
+    for earlier in earlier {
+        let statement = format!("drop database {}", quoted(&earlier));
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&mut maintenance)
+            .await
+            .map_err(failed)?;
+    }
+    for statement in [
+        format!(
+            "create database {} template {}",
+            quoted(&copy),
+            quoted(&name)
+        ),
+        format!(
+            "comment on database {} is '{}'",
+            quoted(&copy),
+            copy_comment(&name).replace('\'', "''")
+        ),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&mut maintenance)
+            .await
+            .map_err(failed)?;
+    }
+    maintenance.close().await.map_err(failed)?;
+    Ok(Some(copy))
 }
 
 /// The number of recordings that are starting or run. The server does not migrate while

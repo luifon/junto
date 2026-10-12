@@ -1,0 +1,156 @@
+# Junto on one machine without DNS names and without TLS, for a trial and for the tests of
+# the deployment (ADR 0015). Every published port is on the loopback address. It is not a
+# form for use by other machines: a client on another machine cannot log in (ADR 0117).
+#
+#   cd deploy && docker compose -f local.yaml up -d --build
+#   docker compose -f local.yaml logs server       # shows the one-time owner code
+
+name: junto-local
+
+services:
+  init:
+    extends:
+      file: base.yaml
+      service: init
+    command:
+      - /var/lib/postgresql/data:70:70:0700
+      - /var/lib/junto/attachments:1001:1001:0700
+      - /var/lib/junto/recordings:1001:10001:0750
+      - /var/lib/junto/exports:1001:1001:0700
+      - /var/lib/junto/spool:1001:10002:0750
+      - /home/egress/tmp:1001:0:0700
+    volumes:
+      - postgres:/var/lib/postgresql/data
+      - attachments:/var/lib/junto/attachments
+      - recordings:/var/lib/junto/recordings
+      - exports:/var/lib/junto/exports
+      - spool:/var/lib/junto/spool
+      - recorder-work:/home/egress/tmp
+
+  postgres:
+    extends:
+      file: base.yaml
+      service: postgres
+    environment:
+      POSTGRES_PASSWORD: ${JUNTO_POSTGRES_PASSWORD:?set JUNTO_POSTGRES_PASSWORD in deploy/.env (deploy/generate-secrets.sh)}
+    networks: [database]
+
+  server:
+    extends:
+      file: base.yaml
+      service: server
+    environment:
+      JUNTO_DATABASE_URL: postgres://junto:${JUNTO_POSTGRES_PASSWORD:?set JUNTO_POSTGRES_PASSWORD in deploy/.env (deploy/generate-secrets.sh)}@postgres:5432/junto
+      JUNTO_LIVEKIT_API_KEY: ${JUNTO_LIVEKIT_API_KEY:?set JUNTO_LIVEKIT_API_KEY in deploy/.env (deploy/generate-secrets.sh)}
+      JUNTO_LIVEKIT_API_SECRET: ${JUNTO_LIVEKIT_API_SECRET:?set JUNTO_LIVEKIT_API_SECRET in deploy/.env (deploy/generate-secrets.sh)}
+      JUNTO_PUBLIC_ORIGINS: http://localhost:${JUNTO_LOCAL_PORT:-8080},http://127.0.0.1:${JUNTO_LOCAL_PORT:-8080}
+      JUNTO_LIVEKIT_API_URL: http://livekit:7880
+      JUNTO_LIVEKIT_URL: ws://127.0.0.1:${JUNTO_LOCAL_LIVEKIT_PORT:-7880}
+      JUNTO_RECORDER_LAYOUT_URL: http://server:8080/recording-layout/
+    ports:
+      - 127.0.0.1:${JUNTO_LOCAL_PORT:-8080}:8080
+    networks: [database, backend]
+
+  redis:
+    extends:
+      file: base.yaml
+      service: redis
+    environment:
+      REDIS_PASSWORD: ${JUNTO_REDIS_PASSWORD:?set JUNTO_REDIS_PASSWORD in deploy/.env (deploy/generate-secrets.sh)}
+      REDISCLI_AUTH: ${JUNTO_REDIS_PASSWORD:?set JUNTO_REDIS_PASSWORD in deploy/.env (deploy/generate-secrets.sh)}
+    networks: [backend]
+
+  livekit:
+    extends:
+      file: base.yaml
+      service: livekit
+    environment:
+      JUNTO_CHECK_1: ${JUNTO_LIVEKIT_API_KEY:?set JUNTO_LIVEKIT_API_KEY in deploy/.env}
+      JUNTO_CHECK_2: ${JUNTO_LIVEKIT_API_SECRET:?set JUNTO_LIVEKIT_API_SECRET in deploy/.env}
+      JUNTO_CHECK_3: ${JUNTO_REDIS_PASSWORD:?set JUNTO_REDIS_PASSWORD in deploy/.env}
+      LIVEKIT_CONFIG: |
+        port: 7880
+        keys:
+          ${JUNTO_LIVEKIT_API_KEY:?set JUNTO_LIVEKIT_API_KEY in deploy/.env (deploy/generate-secrets.sh)}: ${JUNTO_LIVEKIT_API_SECRET:?set JUNTO_LIVEKIT_API_SECRET in deploy/.env (deploy/generate-secrets.sh)}
+        redis:
+          address: redis:6379
+          password: ${JUNTO_REDIS_PASSWORD:?set JUNTO_REDIS_PASSWORD in deploy/.env (deploy/generate-secrets.sh)}
+        rtc:
+          tcp_port: ${JUNTO_LOCAL_LIVEKIT_TCP_PORT:-7881}
+          udp_port: ${JUNTO_LOCAL_LIVEKIT_UDP_PORT:-7882}
+          use_external_ip: false
+          enable_loopback_candidate: true
+          # Without a STUN server of its own, the media server names public STUN servers of
+          # a third party to its clients and to the recorder (ADR 0007). On one machine no
+          # client needs one, so this names the media port on the loopback address.
+          stun_servers:
+            - 127.0.0.1:${JUNTO_LOCAL_LIVEKIT_UDP_PORT:-7882}
+        room:
+          # The media server keeps the room of a call for 60 seconds after its last person
+          # left. The server ends a call 20 seconds after its last person was seen absent
+          # and then ends the jobs of the recorder, before the room closes (ADR 0020).
+          departure_timeout: 60
+        webhook:
+          api_key: ${JUNTO_LIVEKIT_API_KEY:?set JUNTO_LIVEKIT_API_KEY in deploy/.env}
+          urls:
+            - http://server:8080/internal/media/notifications
+        logging:
+          level: info
+    ports:
+      - 127.0.0.1:${JUNTO_LOCAL_LIVEKIT_PORT:-7880}:7880
+      # The media server tells its clients these two ports, so the port of the host and the
+      # port of the container are the same number.
+      - 127.0.0.1:${JUNTO_LOCAL_LIVEKIT_TCP_PORT:-7881}:${JUNTO_LOCAL_LIVEKIT_TCP_PORT:-7881}
+      - 127.0.0.1:${JUNTO_LOCAL_LIVEKIT_UDP_PORT:-7882}:${JUNTO_LOCAL_LIVEKIT_UDP_PORT:-7882}/udp
+    networks: [backend]
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  recorder:
+    extends:
+      file: base.yaml
+      service: recorder
+    environment:
+      EGRESS_CONFIG_BODY: |
+        api_key: ${JUNTO_LIVEKIT_API_KEY:?set JUNTO_LIVEKIT_API_KEY in deploy/.env}
+        api_secret: ${JUNTO_LIVEKIT_API_SECRET:?set JUNTO_LIVEKIT_API_SECRET in deploy/.env}
+        ws_url: ws://livekit:7880
+        insecure: true
+        health_port: 9090
+        redis:
+          address: redis:6379
+          password: ${JUNTO_REDIS_PASSWORD:?set JUNTO_REDIS_PASSWORD in deploy/.env}
+        logging:
+          level: info
+        cpu_cost:
+          max_cpu_utilization: 0.8
+          room_composite_cpu_cost: 3.0
+          track_composite_cpu_cost: 0.5
+          track_cpu_cost: 0.1
+    networks: [backend]
+    depends_on:
+      redis:
+        condition: service_healthy
+      livekit:
+        condition: service_healthy
+
+  worker:
+    extends:
+      file: base.yaml
+      service: worker
+    volumes:
+      - ${JUNTO_MODELS_DIR:?set JUNTO_MODELS_DIR in deploy/.env to the directory of the transcription models}:/models:ro
+
+volumes:
+  postgres:
+  attachments:
+  recordings:
+  exports:
+  spool:
+  recorder-work:
+
+networks:
+  database:
+    internal: true
+  backend:

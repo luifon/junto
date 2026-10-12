@@ -30,7 +30,7 @@ use crate::extract::{ApiJson, ApiPath, ApiQuery, Bearer};
 use crate::proof;
 use crate::recordings::store::{self, RecordingRow};
 use crate::recordings::transcripts::{self, NotCorrected};
-use crate::routes::recordings::readable;
+use crate::routes::recordings::{changeable, readable};
 use crate::state::AppState;
 use crate::validate;
 use crate::{read, transact};
@@ -92,7 +92,7 @@ pub async fn request_transcript(
         .is_some_and(|backend| backend.settings.transcriber.is_some());
     let recording = transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        let (recording, scope) = readable(connection, &access, recording_id, true).await?;
+        let (recording, scope) = changeable(connection, &access, recording_id, true).await?;
         access.require(Request::Channel {
             scope: &scope,
             permission: WorkspacePermission::ManageRecordings,
@@ -224,7 +224,7 @@ pub async fn correct_transcript_line(
     let most = app.config.limits.recordings.most_corrections;
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        let (recording, _) = readable(connection, &access, recording_id, false).await?;
+        let (recording, _) = changeable(connection, &access, recording_id, false).await?;
         let by = access.account_id;
         let corrected =
             transcripts::correct(connection, now, recording_id, position, &text, by, most).await?;
@@ -278,7 +278,7 @@ pub async fn rename_transcript_speaker(
     let name = validate::name("name", &body.name)?;
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        let (recording, _) = readable(connection, &access, recording_id, false).await?;
+        let (recording, _) = changeable(connection, &access, recording_id, false).await?;
         let by = access.account_id;
         let speaker = transcripts::rename_speaker(connection, now, recording_id, number, &name, by)
             .await?
@@ -330,6 +330,41 @@ fn text_line(
     format!("[{}] {who}: {}\n", clock(line.start_ms), line.text)
 }
 
+/// The text form of the transcript of a recording. `None` for a recording without a
+/// transcript that is ready or partial. The caller has decided that the reader may read the
+/// recording.
+pub(crate) async fn text_of(
+    connection: &mut sqlx::PgConnection,
+    recording_id: RecordingId,
+) -> ApiResult<Option<String>> {
+    let state = transcripts::state(connection, recording_id).await?;
+    if !matches!(state, TranscriptState::Ready | TranscriptState::Partial) {
+        return Ok(None);
+    }
+    let speakers = transcripts::speakers(connection, recording_id, None).await?;
+    let names: Vec<(AccountId, String)> = sqlx::query_as(
+        "select id, name from accounts where id in (
+             select account_id from recording_segments where recording_id = $1)",
+    )
+    .bind(recording_id)
+    .fetch_all(&mut *connection)
+    .await?;
+    let names: HashMap<AccountId, String> = names.into_iter().collect();
+    let mut text = String::new();
+    let mut after = None;
+    loop {
+        let lines = transcripts::lines(connection, recording_id, after, TEXT_PAGE).await?;
+        let Some(last) = lines.last() else {
+            break;
+        };
+        after = Some(last.line);
+        for line in &lines {
+            let _ = write!(text, "{}", text_line(line, &names, &speakers));
+        }
+    }
+    Ok(Some(text))
+}
+
 /// The transcript of a recording as plain text: one line of text for each line of the
 /// transcript, with its time, its speaker and its newest correction. The caller may read
 /// the recording.
@@ -353,32 +388,9 @@ pub async fn get_transcript_text(
     let text = read!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         readable(connection, &access, recording_id, false).await?;
-        let state = transcripts::state(connection, recording_id).await?;
-        if !matches!(state, TranscriptState::Ready | TranscriptState::Partial) {
-            return Err(ApiError::not_found());
-        }
-        let speakers = transcripts::speakers(connection, recording_id, None).await?;
-        let names: Vec<(AccountId, String)> = sqlx::query_as(
-            "select id, name from accounts where id in (
-                 select account_id from recording_segments where recording_id = $1)",
-        )
-        .bind(recording_id)
-        .fetch_all(&mut *connection)
-        .await?;
-        let names: HashMap<AccountId, String> = names.into_iter().collect();
-        let mut text = String::new();
-        let mut after = None;
-        loop {
-            let lines = transcripts::lines(connection, recording_id, after, TEXT_PAGE).await?;
-            let Some(last) = lines.last() else {
-                break;
-            };
-            after = Some(last.line);
-            for line in &lines {
-                let _ = write!(text, "{}", text_line(line, &names, &speakers));
-            }
-        }
-        Ok(text)
+        text_of(connection, recording_id)
+            .await?
+            .ok_or_else(ApiError::not_found)
     })?;
     let disposition = format!("attachment; filename=\"{recording_id}.txt\"");
     let disposition =

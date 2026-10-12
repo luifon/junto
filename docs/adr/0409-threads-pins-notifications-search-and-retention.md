@@ -165,8 +165,8 @@ Retention and execution:
 - New content mutations share the message-write account limiter, and history/search/notice
   reads share the history limiter. Database transactions and event positions follow ADRs
   0009 to 0011. The snapshot carries current notices and personal notification policies.
-- Archive/export APIs remain separate work. No scheduled
-  archive deletion or export notice is produced before those features exist.
+- Archive and export are decided in ADR 0410 and ADR 0411. File retention that removes the
+  files of a message removes the exports that hold them.
 
 Notification delivery reads current visibility in one batched statement. Its join to
 server state explicitly limits that singleton to one row, so PostgreSQL does not estimate

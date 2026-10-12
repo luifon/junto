@@ -44,3 +44,4 @@ Retention:
 - Exports are written to the audit log (ADR 0303).
 - Direct messages have their own export for each participant and their own server-level retention setting (ADR 0302).
 - Import of history from other chat services is not planned (`docs/scope.md`).
+- ADR 0410 states the routes and the rules of archived channels, with the smallest period of 7 days. ADR 0411 states the routes, the content and the build of exports.

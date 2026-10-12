@@ -44,6 +44,7 @@ Limits on attempts:
 - Wrong signatures have their own limit: 10 per 10 minutes per client address (ADR 0108).
 - A refused request gets the error `rate_limited` with a `Retry-After` header.
 - The client address is the address of the connection. When that address is one of the configured proxy addresses, the server reads the `X-Forwarded-For` header from the right and takes the first address that is not a configured proxy. A header that cannot be read is ignored.
+- A configured proxy is one address or a network in the form `192.0.2.0/24`: the entry container of a Compose network has no fixed address. An IPv4 address that is written as an IPv6 address is the IPv4 address. A network of IPv4 addresses is written in the IPv4 form.
 - An IPv6 client is counted by its /64 prefix.
 - Redeeming an invite as a logged-in account is limited to 10 attempts per 10 minutes per account and to 10 per 10 minutes per client address (ADR 0115).
 - The counts are held in the memory of the server process. The window of a key starts at its first attempt.

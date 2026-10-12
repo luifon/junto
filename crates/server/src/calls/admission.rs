@@ -127,6 +127,7 @@ pub async fn may_be_at(
         CallPlace::Channel { channel_id, .. } => {
             match access.channel(connection, channel_id).await {
                 Ok((record, scope)) => Ok(record.channel.kind == ChannelKind::Voice
+                    && record.archived_at.is_none()
                     && access.allows(Request::Channel {
                         scope: &scope,
                         permission: WorkspacePermission::ViewChannel,

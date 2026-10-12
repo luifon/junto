@@ -36,6 +36,7 @@ The recorder client:
 - A request to start a job has a time limit of 25 seconds. Every other request has a time limit of 5 seconds.
 - An answer with the status 408, and a request without an answer, mean "not delivered". An answer with a status of 500 or above means that no recorder took the request.
 - The composite is requested as pieces of 2 seconds with a playlist, with the preset 1080p at 30 frames per second, and with the address of the layout page from the setting `JUNTO_RECORDER_LAYOUT_URL`.
+- Every request to start a job turns the manifest of the recorder off (`disable_manifest`). With it the recorder wrote a file `<job>.json` with the names of the room and of the track beside each audio file, which the record does not know.
 - The main share is named by the identifier of its video track: the layout value is `main:<track identifier>`, and empty when no share is named.
 
 The controller:
@@ -62,7 +63,8 @@ Lost jobs, in addition to ADR 0601:
 - A job whose stop was delivered has 20 seconds to report its end before it can be lost. After a loss of the private link a job that had ended was reported as active for 16 seconds.
 - A job that still has its participant 20 seconds after its stop was delivered gets the stop again.
 - The server sends a stop for a job that it declares lost. A job that was declared lost while its recorder lived then ends, so two jobs do not record the same source. When the stop has no answer and the participant of the job is in the room again, the job gets the stop at every pass until it has left.
-- Before a recording leaves the active states, the server asks the recorder again about every job that it declared lost. A complete file result replaces the declaration, and the segment becomes `ended`. A report that the recorder does not give does not hold the recording back.
+- Before a recording leaves the active states, the server asks the recorder again about every job that it declared lost. A complete file result replaces the declaration, and the segment becomes `ended`. A report that the recorder does not give does not hold the recording back, except in the 20 seconds below.
+- A job can be declared lost before the recorder took a stop for it. The recording does not leave the active states in the pass of that declaration: the stop of the job follows the pass. A second pass follows at once and asks the recorder about the job. When the recorder took that stop, the job has the 20 seconds of a stopped job to report its end: in that time the recording waits unless the recorder reports the end of the job or states that it does not know the job. A stop without an answer gives no such time. A job that is declared lost after the 20 seconds of a stop that the recorder took does not hold the recording back.
 
 Start and stop:
 
@@ -127,4 +129,7 @@ Settings:
 - A recording stays `processing` until its files are checked and its composite is joined (ADR 0606). Its reservation of disk space stays for that time. The transcript has its own state and does not hold the recording back (ADR 0607).
 - The route that serves the layout page (ADR 0602) is not part of this record. The server gets the address of the page as a setting.
 - The rule that no migration runs while a recording runs (ADR 0005) is enforced at the start of the server (ADR 0608).
-- The requests to the Egress service were tested with their bodies and with the answers that step 0 stored. They were not run against a recorder by the server code.
+- The requests to the Egress service are tested with their bodies and with the answers that step 0 stored. The server code ran them against the recorder in the recording test of the deployment (ADR 0910): the five calls, a recorder that was killed, and a call that everybody left.
+- When the media server closes the room of a call in the second in which the server ends that call, the jobs have no participant before their stop is sent. They are declared lost, get their stop, and become `ended` when the recorder reports their files. The note of a failure of the recording is kept in that case, although no segment failed in the end. The deployment keeps the room longer than the server keeps the call, so that the two do not meet (ADR 0020).
+- The stop that follows a declaration is held in the memory of one pass. A server that stops between the declaration and that stop does not send it: the next process asks the recorder about the job, finds no stop that the recorder took, and ends the recording with the failed segment, as before this rule. The same holds when that stop has no answer in its time limit although the recorder lives, and when the answer cannot be stored: a stop without an answer counts as not delivered (ADR 0601).
+- The last questions about lost jobs have no time limit together (above). A recording with many lost jobs and a recorder that does not answer keeps its place among the recordings at one time for 5 seconds per 8 jobs.

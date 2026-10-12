@@ -260,14 +260,11 @@ async fn rule_43_44_45_search_is_current_and_hides_other_channels_and_conversati
 
 #[tokio::test]
 async fn rule_46_search_statement_count_is_independent_of_page_size() {
-    let server = TestServer::start().await;
+    let server = TestServer::start_measured().await;
+    let evictions = server.statement_evictions().await;
     let owner = server.owner().await;
     let channel = channel(&server, &owner, "text").await;
     let root = send(&server, &owner, &channel, "quartz").await;
-    sqlx::query("create extension pg_stat_statements")
-        .execute(&server.db)
-        .await
-        .unwrap();
     sqlx::query("insert into messages(id,place_id,position,author_id,created_at,document) select
              gen_random_uuid(),place_id,position+n,author_id,created_at,document from messages cross join
              generate_series(1,199) n where id=$1")
@@ -304,6 +301,7 @@ async fn rule_46_search_statement_count_is_independent_of_page_size() {
     );
     assert!(!small.is_empty());
     assert_eq!(small, large);
+    server.require_no_statement_eviction(evictions).await;
 }
 
 #[tokio::test]
@@ -334,12 +332,9 @@ async fn a_search_query_with_a_nul_byte_is_an_invalid_request() {
 #[tokio::test]
 async fn fix_search_statement_count_does_not_grow_per_workspace() {
     use crate::messages_queries::{measure_requests, since, statements};
-    let server = TestServer::start().await;
+    let server = TestServer::start_measured().await;
+    let evictions = server.statement_evictions().await;
     let owner = server.owner().await;
-    sqlx::query("create extension pg_stat_statements")
-        .execute(&server.db)
-        .await
-        .unwrap();
     let (mut held, role) = measure_requests(&server).await;
     let observer = &mut **held.first_mut().unwrap();
     search(&server, &owner, "quartz").await;
@@ -364,6 +359,7 @@ async fn fix_search_statement_count_does_not_grow_per_workspace() {
         large, small,
         "search authorization must not issue statements per workspace"
     );
+    server.require_no_statement_eviction(evictions).await;
 }
 
 #[tokio::test]

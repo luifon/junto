@@ -6,8 +6,11 @@ use junto_authz::{
     Actor, ChannelScope, Decision, HeldRole, Membership, Override, Position, Reach, Request,
     RoleKey, RoleOverride, Target, WorkspaceScope, authorize,
 };
+use junto_authz::{ServerPermission, ServerPermissions};
+use junto_protocol::error::ErrorCode;
 use junto_protocol::ids::{
-    AccountId, CategoryId, ChannelId, DeviceId, ServerRoleId, WorkspaceId, WorkspaceRoleId,
+    AccessTokenId, AccountId, CategoryId, ChannelId, DeviceId, ServerRoleId, WorkspaceId,
+    WorkspaceRoleId,
 };
 use junto_protocol::structure::{Channel, ChannelKind};
 use sqlx::PgConnection;
@@ -16,8 +19,10 @@ use uuid::Uuid;
 
 use crate::db::{self, StoredText};
 use crate::error::{ApiError, ApiResult};
-use crate::extract::Bearer;
+use crate::extract::{Bearer, Credential};
 use crate::secrets::constant_time_eq;
+use crate::tokens;
+use junto_protocol::access_token::TokenAction;
 
 /// The caller of a request as the permission function needs it. Every route decides through
 /// [`Access::require`] or [`Access::allows`], which call the one function of `junto-authz`.
@@ -26,6 +31,9 @@ pub struct Access {
     pub device_id: DeviceId,
     pub session_id: Uuid,
     pub server_role_ids: Vec<ServerRoleId>,
+    /// The access token of the request. The account is then the creator of the token, and
+    /// the request has no device and no session.
+    pub token_id: Option<AccessTokenId>,
     actor: Actor,
     owner_id: Option<AccountId>,
 }
@@ -34,6 +42,22 @@ pub struct ChannelRecord {
     pub channel: Channel,
     pub permanent_message_count: i64,
     pub deleted_at: Option<OffsetDateTime>,
+    /// Present for an archived channel, which is read-only (ADR 0410).
+    pub archived_at: Option<OffsetDateTime>,
+}
+
+impl ChannelRecord {
+    /// Refuses a change of the content or of the settings of an archived channel.
+    pub fn require_open(&self) -> ApiResult<()> {
+        match self.archived_at {
+            Some(_) => Err(archived()),
+            None => Ok(()),
+        }
+    }
+}
+
+pub fn archived() -> ApiError {
+    ApiError::conflict("the channel is archived and takes no change; restore it first")
 }
 
 type ChannelRow = (
@@ -48,19 +72,25 @@ type ChannelRow = (
     Option<OffsetDateTime>,
     Option<i32>,
     bool,
+    Option<OffsetDateTime>,
 );
 
 const CHANNEL_COLUMNS: &str = "id, workspace_id, category_id, kind, name, position, \
-     permanent_messages, permanent_message_count, deleted_at, user_limit, hides_occupants";
+     permanent_messages, permanent_message_count, deleted_at, user_limit, hides_occupants, \
+     archived_at";
 
 impl Access {
-    /// Verifies the session of the request and loads the caller, inside the transaction that
-    /// the request then works in. The session must be unexpired and its account active.
+    /// Verifies the session or the access token of the request and loads the caller, inside
+    /// the transaction that the request then works in. The session or the token must be
+    /// unexpired and its account active.
     pub async fn open(
         connection: &mut PgConnection,
         bearer: &Bearer,
         now: OffsetDateTime,
     ) -> ApiResult<Self> {
+        if let Credential::AccessToken(action) = bearer.1 {
+            return Self::open_with_token(connection, &bearer.0, action, now).await;
+        }
         let session: Option<(Uuid, Vec<u8>, DeviceId, AccountId)> = sqlx::query_as(
             "select s.id, s.token_hash, d.id, d.account_id
              from sessions s
@@ -81,6 +111,67 @@ impl Access {
             _ => return Err(ApiError::unauthenticated()),
         };
         Self::load(connection, account_id, device_id, session_id).await
+    }
+
+    /// The caller of a request with an access token on a route of `action`: the account that
+    /// created the token, as it stands now (ADR 0203). The token must hold the action. The
+    /// owner position is not carried: a token of the server owner acts with the
+    /// administrator permission (ADR 0210).
+    async fn open_with_token(
+        connection: &mut PgConnection,
+        hash: &[u8; 32],
+        action: TokenAction,
+        now: OffsetDateTime,
+    ) -> ApiResult<Self> {
+        let token: Option<(AccessTokenId, Vec<u8>, AccountId, i64)> = sqlx::query_as(
+            "select t.id, t.token_hash, t.created_by, t.actions
+             from access_tokens t
+             join accounts a on a.id = t.created_by
+             where t.token_hash = $1 and t.expires_at > $2 and a.status = 'active'",
+        )
+        .bind(hash.as_slice())
+        .bind(now)
+        .fetch_optional(&mut *connection)
+        .await?;
+        let (token_id, account_id, actions) = match token {
+            Some((token_id, stored_hash, account_id, actions))
+                if constant_time_eq(&stored_hash, hash) =>
+            {
+                (token_id, account_id, actions)
+            }
+            _ => {
+                return Err(ApiError::new(
+                    ErrorCode::Unauthenticated,
+                    "the access token is unknown, has expired or was revoked",
+                ));
+            }
+        };
+        if !tokens::stored_actions(actions)?.contains(&action) {
+            return Err(ApiError::new(
+                ErrorCode::Forbidden,
+                format!(
+                    "the access token does not allow the action {}",
+                    action.name()
+                ),
+            ));
+        }
+        sqlx::query("select set_config($1, $2, true)")
+            .bind(crate::audit::ACCESS_TOKEN_SETTING)
+            .bind(token_id.to_string())
+            .execute(&mut *connection)
+            .await?;
+        let nobody = DeviceId::from_uuid(Uuid::nil());
+        let mut access = Self::load(connection, account_id, nobody, Uuid::nil()).await?;
+        access.token_id = Some(token_id);
+        if access.actor.position == Position::Owner {
+            access.actor.position = Position::Member;
+            access.actor.server_roles.push(
+                [ServerPermission::Administrator]
+                    .into_iter()
+                    .collect::<ServerPermissions>(),
+            );
+        }
+        Ok(access)
     }
 
     /// The standing of an active account that is not the caller of the request: a person who
@@ -171,6 +262,7 @@ impl Access {
             device_id,
             session_id,
             server_role_ids: roles.into_iter().map(|(id, _)| id).collect(),
+            token_id: None,
             actor: Actor {
                 position,
                 server_roles,
@@ -365,6 +457,21 @@ impl Access {
     }
 }
 
+/// One channel by its identifier, deleted or not, for the work of the server itself, which
+/// asks no permission.
+pub async fn stored_channel(
+    connection: &mut PgConnection,
+    channel_id: ChannelId,
+) -> ApiResult<Option<ChannelRecord>> {
+    let row: Option<ChannelRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "select {CHANNEL_COLUMNS} from channels where id = $1"
+    )))
+    .bind(channel_id)
+    .fetch_optional(connection)
+    .await?;
+    row.map(channel_record).transpose()
+}
+
 fn scoped_channels(
     rows: Vec<ChannelRow>,
     overrides: Vec<OverrideRow>,
@@ -434,6 +541,7 @@ fn channel_record(row: ChannelRow) -> ApiResult<ChannelRecord> {
         deleted_at,
         user_limit,
         hides_occupants,
+        archived_at,
     ) = row;
     Ok(ChannelRecord {
         channel: Channel {
@@ -449,5 +557,6 @@ fn channel_record(row: ChannelRow) -> ApiResult<ChannelRecord> {
         },
         permanent_message_count,
         deleted_at,
+        archived_at,
     })
 }

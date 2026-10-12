@@ -196,6 +196,8 @@ pub struct Room {
 pub struct JoinGrant<'a> {
     pub room: &'a RoomName,
     pub identity: &'a str,
+    /// The display name of the account. The layout page of a recording shows it (ADR 0615).
+    pub name: &'a str,
     pub publishing: &'a Publishing,
     pub now: OffsetDateTime,
     pub lifetime: Duration,

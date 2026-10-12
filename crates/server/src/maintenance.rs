@@ -15,7 +15,7 @@ pub const INTERVAL: Duration = Duration::from_secs(60);
 
 /// One kind of row that maintenance changes: the statement works on at most `$2` rows that
 /// are due at `$1` and returns one row for each row it changed.
-const EXPIRED_AT_NOW: [&str; 4] = [
+const EXPIRED_AT_NOW: [&str; 5] = [
     "delete from challenges where id in (
          select id from challenges where expires_at <= $1 limit $2)
      returning 1",
@@ -25,6 +25,9 @@ const EXPIRED_AT_NOW: [&str; 4] = [
     "update join_requests set state = 'expired' where id in (
          select id from join_requests
          where state = 'pending' and expires_at <= $1 limit $2)
+     returning 1",
+    "delete from access_tokens where id in (
+         select id from access_tokens where expires_at <= $1 limit $2)
      returning 1",
     "delete from direct_mutes where (account_id, other_account_id) in (
          select account_id, other_account_id from direct_mutes
@@ -50,12 +53,15 @@ const ENDED_SESSIONS_PAST_THEIR_LIFETIME: &str = "delete from ended_sessions
          select session_id from ended_sessions where ended_at <= $1 limit $2)
      returning 1";
 
-/// Deletes expired challenges, sessions, device links and mutes, marks the join requests that
+/// Deletes expired challenges, sessions, access tokens, device links and mutes, marks the join requests that
 /// waited too long as expired, deletes denied and expired join requests that are older than
 /// the history period, deletes the stored reasons of sessions that would have expired by now
 /// and the rings of direct-message calls that no limit counts any more, and removes the
-/// events that the log no longer keeps. The work is done in batches, each in
-/// its own transaction.
+/// events that the log no longer keeps. It applies the retention settings, records the
+/// notices of archived channels and deletes the archived channels whose period has ended
+/// (ADR 0410), removes the exports whose lifetime has ended (ADR 0411) and the content of
+/// deleted channels and workspaces (ADR 0017). The work is done in batches, each in its own
+/// transaction.
 pub async fn run_once(app: &AppState) -> ApiResult<()> {
     let now = app.now();
     for statement in EXPIRED_AT_NOW {
@@ -72,6 +78,10 @@ pub async fn run_once(app: &AppState) -> ApiResult<()> {
     in_batches(app, RINGS_THAT_NO_LIMIT_COUNTS, rings_from).await?;
     events::log::trim(app).await?;
     crate::messages::retention::run(app).await?;
+    crate::archive::notices(app).await?;
+    crate::archive::delete_due(app).await?;
+    crate::exports::expire(app).await?;
+    crate::purge::run_once(app).await?;
     crate::messages::uploads::cleanup(app).await?;
     Ok(())
 }

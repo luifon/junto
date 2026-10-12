@@ -1,0 +1,187 @@
+#!/bin/bash
+# The process of the worker container in the Compose deployment (ADR 0016). It takes the
+# requests that the server wrote into the spool directory, one after the other, and runs
+# `junto-transcribe run` for each. The container has no network; the spool and the
+# directory of the recordings are its only links to the server.
+#
+# A request is three lines: the job file, the transcript file, the audio root. The loop
+# writes "taken" and then "exit <code>" into the result file of the request, and the log of
+# the worker into its log file. A cancel file ends the job.
+#
+# In the container the loop runs as root with the capabilities SETUID, SETGID and KILL and
+# with the group of the spool. It runs each job as the user JUNTO_WORKER_JOB_USER
+# (<uid>:<gid>), without capabilities and without the group of the spool. A job can
+# therefore not write its own result, not read the spool and not send a signal to the loop.
+#
+# A job runs in a process group of its own, and a cancel ends the group. After each job the
+# loop ends every process that is left of the user of the job, so that no process of one
+# job is present during the next.
+#
+# A loop that is not root runs the job as its own user, for a use outside the container.
+# It then ends the process group of the job only.
+#
+# JUNTO_TRANSCRIBE_BATCH_SIZE, when it is set and not empty, is given to each job as
+# `--batch-size`: the number of speech clips that the speech model reads at one time, from
+# 1 to 64. A smaller number needs less memory.
+set -u
+
+spool=${JUNTO_WORKER_SPOOL:-/var/lib/junto/spool}
+recordings=${JUNTO_WORKER_RECORDINGS:-/var/lib/junto/recordings}
+program=${JUNTO_WORKER_PROGRAM:-junto-transcribe}
+poll_seconds=${JUNTO_WORKER_POLL_SECONDS:-1}
+end_seconds=${JUNTO_WORKER_END_SECONDS:-8}
+job_user=${JUNTO_WORKER_JOB_USER:-}
+job_groups=${JUNTO_WORKER_JOB_GROUPS:-}
+batch_size=${JUNTO_TRANSCRIBE_BATCH_SIZE:-}
+result_limit=4096
+
+case "$batch_size" in
+    "") ;;
+    [1-9] | [1-5][0-9] | 6[0-4]) ;;
+    *)
+        echo "worker-loop: JUNTO_TRANSCRIBE_BATCH_SIZE is not a whole number from 1 to 64" >&2
+        exit 1
+        ;;
+esac
+
+as_root=""
+if [ "$(id -u)" -eq 0 ]; then
+    as_root=1
+    case "$job_user" in
+        [0-9]*:[0-9]*) ;;
+        *)
+            echo "worker-loop: the loop runs as root and JUNTO_WORKER_JOB_USER is not <uid>:<gid>" >&2
+            exit 1
+            ;;
+    esac
+    job_uid=${job_user%%:*}
+    job_gid=${job_user##*:}
+    if [ "$job_uid" -eq 0 ]; then
+        echo "worker-loop: the user of a job is not root" >&2
+        exit 1
+    fi
+fi
+
+stop=""
+trap 'stop=1' TERM INT
+
+inside_recordings() {
+    case "$1" in
+        */../* | */.. | */./* | */.) return 1 ;;
+        "$recordings"/*) return 0 ;;
+    esac
+    return 1
+}
+
+report() {
+    echo "$2" >> "$1.result"
+}
+
+# Ends the process group of a job: the stop signal first, the kill signal after the wait.
+end_job() {
+    local pid=$1 waited=0
+    kill -TERM -- "-$pid" 2>/dev/null
+    while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt "$((end_seconds * 10))" ]; do
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+    kill -KILL -- "-$pid" 2>/dev/null
+}
+
+# Ends what a job left behind: its process group and, when the loop is root, every other
+# process of the user of the job.
+end_leftovers() {
+    local directory tries=0 found
+    kill -KILL -- "-$1" 2>/dev/null
+    [ -n "$as_root" ] || return 0
+    while [ "$tries" -lt 20 ]; do
+        found=""
+        for directory in /proc/[0-9]*; do
+            if [ "$(stat -c %u -- "$directory" 2>/dev/null)" = "$job_uid" ]; then
+                kill -KILL "${directory#/proc/}" 2>/dev/null
+                found=1
+            fi
+        done
+        [ -n "$found" ] || return 0
+        tries=$((tries + 1))
+        sleep 0.1
+    done
+    echo "worker-loop: processes of a job could not be ended" >&2
+    exit 1
+}
+
+# Runs the worker for one request, in a process group of its own, as the user of a job.
+start_job() {
+    if [ -n "$as_root" ]; then
+        if [ -n "$job_groups" ]; then
+            exec setsid setpriv --reuid "$job_uid" --regid "$job_gid" --groups "$job_groups" \
+                --inh-caps=-all --no-new-privs "$program" run "$@"
+        fi
+        exec setsid setpriv --reuid "$job_uid" --regid "$job_gid" --clear-groups \
+            --inh-caps=-all --no-new-privs "$program" run "$@"
+    fi
+    exec setsid "$program" run "$@"
+}
+
+result_has() {
+    head -c "$result_limit" -- "$1.result" 2>/dev/null | grep -a -q -- "$2"
+}
+
+run_request() {
+    local base=$1 job="" transcript="" audio_root="" pid code
+    if ! { IFS= read -r job && IFS= read -r transcript && IFS= read -r audio_root; } < "$base.request"; then
+        report "$base" "exit 2"
+        return
+    fi
+    if ! inside_recordings "$job" || ! inside_recordings "$transcript" || ! inside_recordings "$audio_root"; then
+        echo "worker-loop: a path of the request is not inside the recordings" >> "$base.log"
+        report "$base" "exit 2"
+        return
+    fi
+    report "$base" "taken" || return
+    start_job "$job" --out "$transcript" --audio-root "$audio_root" \
+        ${batch_size:+--batch-size "$batch_size"} \
+        < /dev/null > /dev/null 2>> "$base.log" &
+    pid=$!
+    while kill -0 "$pid" 2>/dev/null; do
+        if [ -e "$base.cancel" ] || [ -n "$stop" ]; then
+            end_job "$pid"
+            break
+        fi
+        sleep "$poll_seconds"
+    done
+    wait "$pid"
+    code=$?
+    end_leftovers "$pid"
+    report "$base" "exit $code"
+}
+
+if [ -L "$spool" ] || [ ! -d "$spool" ]; then
+    echo "worker-loop: the spool directory does not exist" >&2
+    exit 1
+fi
+echo "worker-loop: waiting for jobs" >&2
+
+while [ -z "$stop" ]; do
+    for request in "$spool"/*.request; do
+        [ -f "$request" ] || continue
+        base=${request%.request}
+        if result_has "$base" '^exit '; then
+            continue
+        fi
+        if [ -e "$base.cancel" ]; then
+            report "$base" "exit 143" 2>/dev/null
+            continue
+        fi
+        if result_has "$base" '^taken$'; then
+            # The loop ended while this job ran. The server counts a failed run and starts
+            # another (ADR 0607).
+            echo "worker-loop: the worker container restarted during the job" >> "$base.log" 2>/dev/null
+            report "$base" "exit 70" 2>/dev/null
+            continue
+        fi
+        run_request "$base" 2>/dev/null
+        [ -z "$stop" ] || break
+    done
+    sleep "$poll_seconds"
+done

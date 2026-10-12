@@ -27,6 +27,6 @@ The structure of a server consists of workspaces, categories, channels, roles an
 - An entry that is absent from a file is not deleted. Renaming an entry does not create a new one, because the entry is matched by its identifier.
 - A structure that changed after `plan` requires a new `plan` before `apply`.
 - A failed `apply` leaves the structure as it was.
-- The server keeps a revision of its structure and exposes the endpoint that applies a set of changes in one transaction.
+- The server computes a revision of its structure (ADR 0211) and exposes the endpoint that applies a set of changes in one transaction.
 - The tool has no access that the public API does not give.
 - The file contains only the structure listed above.

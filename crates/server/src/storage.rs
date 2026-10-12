@@ -78,11 +78,55 @@ impl Disk for FakeDisk {
     }
 }
 
+/// The disk of one directory of the server, whose free space the storage guard reads.
+pub struct Space {
+    disk: std::sync::Mutex<Option<std::sync::Arc<dyn Disk>>>,
+}
+
+impl Space {
+    /// The file system of `directory`. Without a directory, no space is read.
+    pub fn of(directory: Option<PathBuf>) -> Self {
+        let disk = directory.map(|directory| {
+            let disk: std::sync::Arc<dyn Disk> = std::sync::Arc::new(Directory::new(directory));
+            disk
+        });
+        Self {
+            disk: std::sync::Mutex::new(disk),
+        }
+    }
+
+    /// Replaces the disk. Only tests do this, so that a test states the free space and
+    /// changes no limit (ADR 0904).
+    pub fn use_disk(&self, disk: std::sync::Arc<dyn Disk>) {
+        *self
+            .disk
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(disk);
+    }
+
+    /// The free bytes. Absent without a directory and when the space cannot be read.
+    pub fn free_bytes(&self) -> Option<u64> {
+        let disk = self
+            .disk
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()?;
+        match disk.free_bytes() {
+            Ok(free) => Some(free),
+            Err(error) => {
+                tracing::warn!(%error, "the free disk space of a directory cannot be read");
+                None
+            }
+        }
+    }
+}
+
 /// What reserves disk space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Recording,
     Attachment,
+    Export,
 }
 
 impl Kind {
@@ -90,6 +134,7 @@ impl Kind {
         match self {
             Self::Recording => "recording",
             Self::Attachment => "attachment",
+            Self::Export => "export",
         }
     }
 }
@@ -141,6 +186,40 @@ pub async fn reserve(
     .bind(now)
     .execute(connection)
     .await?;
+    Ok(())
+}
+
+/// Raises the reservation of `subject` to `total` bytes, of which its files do not yet
+/// hold `pending`. The free space must hold the reserve of the server, every other
+/// reservation and the pending bytes.
+pub async fn reserve_more(
+    connection: &mut PgConnection,
+    subject: Uuid,
+    total: u64,
+    pending: u64,
+    free: Option<u64>,
+    reserve: u64,
+) -> ApiResult<()> {
+    let free = free.ok_or_else(low)?;
+    let others: i64 = sqlx::query_scalar(
+        "select coalesce(sum(bytes), 0)::bigint from storage_reservations
+         where subject_id <> $1",
+    )
+    .bind(subject)
+    .fetch_one(&mut *connection)
+    .await?;
+    let needed = u128::from(reserve)
+        + u128::from(u64::try_from(others).unwrap_or(u64::MAX))
+        + u128::from(pending);
+    if u128::from(free) < needed {
+        return Err(low());
+    }
+    let stored = i64::try_from(total).map_err(|error| ApiError::internal(&error))?;
+    sqlx::query("update storage_reservations set bytes = $2 where subject_id = $1")
+        .bind(subject)
+        .bind(stored)
+        .execute(connection)
+        .await?;
     Ok(())
 }
 

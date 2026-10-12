@@ -187,6 +187,58 @@ pub struct TestServer {
     tasks: Tasks,
     shutdown: Option<oneshot::Sender<()>>,
     served: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
+    /// Declared last: the database is deleted after everything else of the server is
+    /// dropped.
+    kept: Arc<TestDatabase>,
+}
+
+impl Drop for TestServer {
+    fn drop(&mut self) {
+        // The task of the server ends before the database is deleted.
+        if let Some(served) = self.served.take() {
+            served.abort();
+        }
+    }
+}
+
+/// The database of a test. It is deleted when the last server process on it is dropped:
+/// the database server holds statistics for every table and index of every database in a
+/// shared memory of fixed size, so the databases of a whole run do not fit.
+struct TestDatabase {
+    admin: PgConnectOptions,
+    name: String,
+}
+
+impl Drop for TestDatabase {
+    fn drop(&mut self) {
+        let (admin, name) = (self.admin.clone(), self.name.clone());
+        // A drop cannot wait for a future on the runtime of its test.
+        let deleted = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let mut connection = admin.connect().await?;
+                for statement in [
+                    "set pg_stat_statements.track = 'none'".to_owned(),
+                    format!("drop database if exists {name} with (force)"),
+                ] {
+                    sqlx::query(sqlx::AssertSqlSafe(statement))
+                        .execute(&mut connection)
+                        .await?;
+                }
+                connection.close().await?;
+                Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+            })
+        })
+        .join();
+        if !matches!(deleted, Ok(Ok(()))) {
+            eprintln!(
+                "the test database {} was not deleted: {deleted:?}",
+                self.name
+            );
+        }
+    }
 }
 
 /// The fake media server of a test server, with the fake recorder that puts its jobs into
@@ -251,6 +303,8 @@ struct Setup {
     tasks: Tasks,
     follows_time: bool,
     listen: Option<String>,
+    /// The database records statement statistics.
+    measured: bool,
 }
 
 impl Default for Setup {
@@ -261,6 +315,7 @@ impl Default for Setup {
             tasks: Tasks { calls: false },
             follows_time: false,
             listen: None,
+            measured: false,
         }
     }
 }
@@ -278,6 +333,9 @@ fn admin_options() -> PgConnectOptions {
 pub fn test_config() -> Config {
     Config {
         attachments_directory: None,
+        exports_directory: None,
+        migration_copy: junto_server::bootstrap::MigrationCopy::None,
+        recorder_layout_directory: None,
         database_url: String::new(),
         listen_address: SocketAddr::from(([127, 0, 0, 1], 0)),
         public_origins: PublicOrigins::of(vec![origin()]),
@@ -356,22 +414,80 @@ impl TestServer {
         Self::start_as(configure, setup).await
     }
 
+    /// Starts a server on a database that records statement statistics, for a test that
+    /// reads `pg_stat_statements`. Every connection of the server is opened after the
+    /// recording is on.
+    pub async fn start_measured() -> Self {
+        Self::start_measured_with(|_| {}).await
+    }
+
+    pub async fn start_measured_with(configure: impl FnOnce(&mut Config)) -> Self {
+        let setup = Setup {
+            measured: true,
+            ..Setup::default()
+        };
+        let server = Self::start_as(configure, setup).await;
+        sqlx::query("create extension pg_stat_statements")
+            .execute(&server.db)
+            .await
+            .unwrap();
+        server
+    }
+
+    /// How many entries the statement statistics of the database server have evicted. A
+    /// measuring test reads it at its start and gives it to
+    /// [`TestServer::require_no_statement_eviction`] at its end.
+    pub async fn statement_evictions(&self) -> i64 {
+        sqlx::query_scalar("select dealloc::bigint from pg_stat_statements_info")
+            .fetch_one(&self.db)
+            .await
+            .unwrap()
+    }
+
+    pub async fn require_no_statement_eviction(&self, before: i64) {
+        let evicted = self.statement_evictions().await - before;
+        assert_eq!(
+            evicted, 0,
+            "the database server evicted statement statistics {evicted} times during this \
+             measurement, so its counts are not complete. The cause is more distinct \
+             statements than pg_stat_statements.max: a test database that records without \
+             need. Only TestServer::start_measured turns the recording on."
+        );
+    }
+
     async fn start_as(configure: impl FnOnce(&mut Config), setup: Setup) -> Self {
         let admin = admin_options();
         let name = format!("junto_test_{}", uuid::Uuid::new_v4().simple());
         let mut connection = admin.connect().await.unwrap();
-        sqlx::query(sqlx::AssertSqlSafe(format!("create database {name}")))
-            .execute(&mut connection)
-            .await
-            .unwrap();
+        // The statement statistics of the database server hold a fixed number of entries
+        // for all databases together. Only the database of a test that reads them records.
+        let mut statements = vec![
+            "set pg_stat_statements.track = 'none'".to_owned(),
+            format!("create database {name}"),
+        ];
+        if !setup.measured {
+            statements.push(format!(
+                "alter database {name} set pg_stat_statements.track = 'none'"
+            ));
+        }
+        for statement in statements {
+            sqlx::query(sqlx::AssertSqlSafe(statement))
+                .execute(&mut connection)
+                .await
+                .unwrap();
+        }
         connection.close().await.unwrap();
+        let kept = Arc::new(TestDatabase {
+            admin: admin.clone(),
+            name: name.clone(),
+        });
 
         let mut config = test_config();
         if matches!(setup.media, Media::Fake(_)) {
             config.recorder = Some(recorder_settings());
         }
         configure(&mut config);
-        Self::on_database(admin.database(&name), config, None, setup).await
+        Self::on_database(admin.database(&name), config, None, setup, kept).await
     }
 
     /// Starts a second server process on the database of this one.
@@ -384,7 +500,8 @@ impl TestServer {
             ..Setup::default()
         };
         let now = Some(self.clock.now());
-        Self::on_database(self.database.clone(), self.config.clone(), now, setup).await
+        let kept = self.kept.clone();
+        Self::on_database(self.database.clone(), self.config.clone(), now, setup, kept).await
     }
 
     /// Starts a second server process on the database of this one, with a changed
@@ -401,7 +518,7 @@ impl TestServer {
         let mut config = self.config.clone();
         configure(&mut config);
         let now = Some(self.clock.now());
-        Self::on_database(self.database.clone(), config, now, setup).await
+        Self::on_database(self.database.clone(), config, now, setup, self.kept.clone()).await
     }
 
     /// Connects to the database of this server as a server process with a changed
@@ -445,6 +562,7 @@ impl TestServer {
         config: Config,
         now: Option<OffsetDateTime>,
         setup: Setup,
+        kept: Arc<TestDatabase>,
     ) -> Self {
         let Setup {
             send_buffer,
@@ -452,6 +570,7 @@ impl TestServer {
             tasks,
             follows_time,
             listen,
+            measured: _,
         } = setup;
         let limits = &config.limits;
         let stream_pool = limits.stream.pool();
@@ -562,6 +681,7 @@ impl TestServer {
             tasks,
             shutdown: Some(shutdown),
             served: Some(served),
+            kept,
         }
     }
 
@@ -772,6 +892,11 @@ impl TestServer {
 
     pub async fn login(&self, key: &DeviceKey) -> SessionCreated {
         self.login_reply(key).await.ok(StatusCode::CREATED)
+    }
+
+    /// A new session for the device of `member`, after the earlier one has expired.
+    pub async fn renew(&self, member: &mut Member) {
+        member.token = self.login(&member.key).await.token.expose().to_owned();
     }
 
     pub async fn claim_owner_reply(&self, key: &DeviceKey, code: &str) -> Reply {

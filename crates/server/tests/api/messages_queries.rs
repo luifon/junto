@@ -33,17 +33,10 @@ pub(crate) fn since(after: Counts, before: Counts) -> Counts {
 
 #[tokio::test]
 async fn history_and_snapshot_statement_counts_do_not_grow_with_messages_or_channels() {
-    let server = TestServer::start().await;
+    let server = TestServer::start_measured().await;
+    let evictions = server.statement_evictions().await;
     let owner = server.owner().await;
     let channel = channel(&server, &owner, "text").await;
-    sqlx::query("create extension pg_stat_statements")
-        .execute(&server.db)
-        .await
-        .unwrap();
-    let evictions: i64 = sqlx::query_scalar("select dealloc::bigint from pg_stat_statements_info")
-        .fetch_one(&server.db)
-        .await
-        .unwrap();
     let root = send(&server, &owner, &channel, "content").await;
     sqlx::query("insert into messages(id,place_id,position,author_id,created_at,document) select gen_random_uuid(),place_id,position+n,author_id,created_at,document from messages cross join generate_series(1,199) n where id=$1").bind(root.id).execute(&server.db).await.unwrap();
     let (mut held, role) = measure_requests(&server).await;
@@ -79,19 +72,11 @@ async fn history_and_snapshot_statement_counts_do_not_grow_with_messages_or_chan
     let before = statements(observer, role).await;
     server.snapshot(&owner).await;
     let large = since(statements(observer, role).await, before);
-    let after_evictions: i64 =
-        sqlx::query_scalar("select dealloc::bigint from pg_stat_statements_info")
-            .fetch_one(&mut *observer)
-            .await
-            .unwrap();
-    assert_eq!(
-        after_evictions, evictions,
-        "the query-count measurement must not lose statistics to eviction"
-    );
     assert_eq!(
         large, small,
         "snapshot statements must not grow per channel"
     );
+    server.require_no_statement_eviction(evictions).await;
 }
 
 #[tokio::test]
@@ -151,12 +136,9 @@ pub(crate) async fn measure_requests(
 
 #[tokio::test]
 async fn snapshot_and_list_statements_do_not_grow_per_conversation() {
-    let server = TestServer::start().await;
+    let server = TestServer::start_measured().await;
+    let evictions = server.statement_evictions().await;
     let owner = server.owner().await;
-    sqlx::query("create extension pg_stat_statements")
-        .execute(&server.db)
-        .await
-        .unwrap();
     let (mut held, role) = measure_requests(&server).await;
     let observer = &mut **held.first_mut().unwrap();
     let mut counts = Vec::new();
@@ -190,17 +172,15 @@ async fn snapshot_and_list_statements_do_not_grow_per_conversation() {
         counts[0], counts[1],
         "statements must not grow per conversation"
     );
+    server.require_no_statement_eviction(evictions).await;
 }
 
 #[tokio::test]
 async fn mention_event_statements_do_not_grow_per_recipient() {
-    let server = TestServer::start().await;
+    let server = TestServer::start_measured().await;
+    let evictions = server.statement_evictions().await;
     let owner = server.owner().await;
     let channel = channel(&server, &owner, "text").await;
-    sqlx::query("create extension pg_stat_statements")
-        .execute(&server.db)
-        .await
-        .unwrap();
     let (mut held, role) = measure_requests(&server).await;
     let observer = &mut **held.first_mut().unwrap();
     let route = format!("/api/v1/channels/{}/messages", channel.id);
@@ -226,6 +206,7 @@ async fn mention_event_statements_do_not_grow_per_recipient() {
         counts[0], counts[1],
         "statements must not grow per recipient"
     );
+    server.require_no_statement_eviction(evictions).await;
 }
 
 fn visited_rows(plan: &serde_json::Value) -> u64 {

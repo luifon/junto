@@ -33,6 +33,90 @@ fn committed_event_stream_document_matches_the_event_types() {
 }
 
 #[test]
+fn committed_structure_file_schema_matches_the_file_types() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(junto_server::STRUCTURE_FILE_DOCUMENT_PATH);
+    let committed = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+    let generated = junto_server::structure_file_document().unwrap();
+    assert!(
+        committed == generated,
+        "{} differs from the file types. Run `cargo run -p junto-server --bin junto-openapi` \
+         and commit the result.",
+        path.display()
+    );
+}
+
+/// Every field that a structure file can hold is described, each entry refuses a field that
+/// the schema does not name, and every reference of the schema resolves.
+#[test]
+fn the_structure_file_schema_describes_every_field_of_a_file() {
+    use junto_protocol::structure_file::StructureFile;
+    let text = junto_server::structure_file_document().unwrap();
+    let schema: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        schema["$schema"],
+        "https://json-schema.org/draft/2020-12/schema"
+    );
+    assert_eq!(schema["$ref"], "#/components/schemas/StructureFile");
+    let schemas = schema["components"]["schemas"].as_object().unwrap();
+    for (start, _) in text.match_indices("#/components/schemas/") {
+        let name: String = text[start + "#/components/schemas/".len()..]
+            .chars()
+            .take_while(|character| character.is_ascii_alphanumeric())
+            .collect();
+        assert!(schemas.contains_key(&name), "{name} has no schema");
+    }
+
+    let id = "0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e5f";
+    let full: StructureFile = serde_json::from_value(serde_json::json!({
+        "format": 1,
+        "server_roles": [{ "id": id, "name": "r", "permissions": ["administrator"] }],
+        "workspaces": [{
+            "id": id, "name": "w", "default": true,
+            "roles": [{ "id": id, "name": "r", "everyone": true, "permissions": [] }],
+            "categories": [{ "id": id, "name": "c", "position": 1 }],
+            "channels": [{ "id": id, "name": "c", "kind": "voice", "category": id,
+                           "position": 1, "permanent_messages": true, "user_limit": 2,
+                           "hides_occupants": true,
+                           "overrides": [{ "role": id, "allow": [], "deny": [] }] }],
+        }],
+        "delete": { "channels": [id], "categories": [id], "roles": [id],
+                    "server_roles": [id], "workspaces": [id] },
+    }))
+    .unwrap();
+    let written = serde_json::to_value(&full).unwrap();
+    let described = |name: &str, value: &serde_json::Value| {
+        let entry = &schemas[name];
+        assert_eq!(entry["additionalProperties"], false, "{name}");
+        let properties = entry["properties"].as_object().unwrap();
+        for field in value.as_object().unwrap().keys() {
+            assert!(
+                properties.contains_key(field),
+                "{name}.{field} is not described"
+            );
+        }
+        assert_eq!(properties.len(), value.as_object().unwrap().len(), "{name}");
+    };
+    let workspace = &written["workspaces"][0];
+    described("StructureFile", &written);
+    described("Deletions", &written["delete"]);
+    described("ServerRoleEntry", &written["server_roles"][0]);
+    described("WorkspaceEntry", workspace);
+    described("RoleEntry", &workspace["roles"][0]);
+    described("CategoryEntry", &workspace["categories"][0]);
+    described("ChannelEntry", &workspace["channels"][0]);
+    described("OverrideEntry", &workspace["channels"][0]["overrides"][0]);
+    let required = |name: &str| schemas[name]["required"].clone();
+    assert_eq!(required("StructureFile"), serde_json::json!(["format"]));
+    assert_eq!(
+        required("ChannelEntry"),
+        serde_json::json!(["id", "name", "kind"])
+    );
+}
+
+#[test]
 fn every_operation_documents_a_success_and_the_error_body() {
     let document: serde_json::Value =
         serde_json::from_str(&junto_server::openapi_document().unwrap()).unwrap();

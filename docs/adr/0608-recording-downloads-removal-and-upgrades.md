@@ -39,8 +39,8 @@ Upgrades:
 
 - A client reads a large file in parts and continues a download that was interrupted.
 - The video player of the operating system cannot send a session token. The client downloads the file and opens the copy (ADR 0602).
-- The files of a removed recording are deleted at once after the transaction, and later when the directory cannot be deleted or the server stops in between. The queue is where a running backup will hold a deletion back (ADR 0005).
-- A recording of a deleted channel is read by nobody (ADR 0604) and can therefore not be removed through the API. Its rows and files stay until retention is built (ADR 0406).
+- The files of a removed recording are deleted at once after the transaction, and later when the directory cannot be deleted or the server stops in between. While a backup runs, the queue is not worked on (ADR 0018).
+- A recording of a deleted channel is read by nobody (ADR 0604). The removal of the content of the deleted channel removes it with its files (ADR 0017).
 - An administrator who stops the server during a recording and starts a version with a migration gets a server that does not start. The earlier version is started again, the recording is ended, and the upgrade follows. The host command tells this before the stop.
 - A recording that starts between the check and the migration is not seen. Only a second server process on the same database can start one in that time.
 - The rule covers the migration of the server. That the recorder is not replaced during a recording (ADR 0005) stays a rule for the administrator, with the same host command.

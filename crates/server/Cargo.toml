@@ -56,6 +56,7 @@ uuid = { workspace = true }
 rustix = { workspace = true }
 
 [dev-dependencies]
+junto-setup = { workspace = true }
 tokio-tungstenite = { workspace = true, features = ["connect"] }
 
 [lints]

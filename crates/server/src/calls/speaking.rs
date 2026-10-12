@@ -107,7 +107,8 @@ pub async fn publish(app: &AppState) -> ApiResult<usize> {
             let speaking: Vec<AccountId> = sqlx::query_scalar(
                 "select m.account_id from call_members m
                  where m.call_id = $1 and m.account_id = any($2)
-                   and m.connected_at is not null and not m.self_muted
+                   and m.connected_at is not null and m.absent_since is null
+                   and not m.self_muted
                    and not exists (
                        select 1 from call_microphone_blocks b
                        where b.call_id = m.call_id and b.account_id = m.account_id)

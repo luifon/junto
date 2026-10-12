@@ -268,6 +268,21 @@ pub enum Event {
     ServerRoleUpdated {
         role: ServerRole,
     },
+    /// An administrator created an access token (ADR 0210). The event never carries the
+    /// token.
+    AccessTokenCreated {
+        access_token: crate::access_token::AccessTokenInfo,
+    },
+    /// An access token was revoked, or it ended with the access of its creator. A token
+    /// that reaches its expiry has no event.
+    AccessTokenRevoked {
+        access_token_id: crate::ids::AccessTokenId,
+    },
+    /// Every access token of an account ended, because the account was banned, removed or
+    /// recovered.
+    AccessTokensOfCreatorRevoked {
+        created_by: AccountId,
+    },
     InviteCreated {
         invite: Invite,
     },
@@ -544,6 +559,48 @@ pub enum Event {
         place: crate::message::MessagePlace,
         position: u64,
     },
+    /// A channel was archived (ADR 0410). It is read-only and leaves the channel list; the
+    /// call of a voice channel ends.
+    ChannelArchived {
+        channel: crate::structure::ArchivedChannel,
+    },
+    /// An archived channel is a channel of the list again.
+    ChannelRestored {
+        channel: Channel,
+    },
+    /// The notice that the server deletes an archived channel in 7 days, at `deletes_at`.
+    ChannelDeletionDue {
+        channel: crate::structure::ArchivedChannel,
+    },
+    /// A category was deleted. Its channels stay and have no category.
+    CategoryDeleted {
+        workspace_id: WorkspaceId,
+        category_id: crate::ids::CategoryId,
+    },
+    /// A workspace role was deleted. No member holds it, and no channel has an override
+    /// of it.
+    WorkspaceRoleDeleted {
+        workspace_id: WorkspaceId,
+        role_id: WorkspaceRoleId,
+    },
+    /// A server role was deleted. No account holds it.
+    ServerRoleDeleted {
+        role_id: ServerRoleId,
+    },
+    /// A workspace was deleted with everything that it held. The event goes to the accounts
+    /// that were members of it and to the administrators.
+    WorkspaceDeleted {
+        workspace_id: WorkspaceId,
+    },
+    /// The state of an export of the recipient changed (ADR 0411).
+    ExportUpdated {
+        export: crate::export::Export,
+    },
+    /// An export of the recipient was removed with its file.
+    ExportRemoved {
+        export_id: crate::ids::ExportId,
+        reason: crate::export::ExportRemoval,
+    },
 }
 
 impl Event {
@@ -562,6 +619,9 @@ impl Event {
         "owner_changed",
         "server_role_created",
         "server_role_updated",
+        "access_token_created",
+        "access_token_revoked",
+        "access_tokens_of_creator_revoked",
         "invite_created",
         "invite_revoked",
         "invite_used",
@@ -616,6 +676,15 @@ impl Event {
         "notification_changed",
         "notification_settings_changed",
         "retention_changed",
+        "channel_archived",
+        "channel_restored",
+        "channel_deletion_due",
+        "category_deleted",
+        "workspace_role_deleted",
+        "server_role_deleted",
+        "workspace_deleted",
+        "export_updated",
+        "export_removed",
     ];
 
     pub const fn name(&self) -> &'static str {
@@ -634,6 +703,9 @@ impl Event {
             Self::OwnerChanged { .. } => "owner_changed",
             Self::ServerRoleCreated { .. } => "server_role_created",
             Self::ServerRoleUpdated { .. } => "server_role_updated",
+            Self::AccessTokenCreated { .. } => "access_token_created",
+            Self::AccessTokenRevoked { .. } => "access_token_revoked",
+            Self::AccessTokensOfCreatorRevoked { .. } => "access_tokens_of_creator_revoked",
             Self::InviteCreated { .. } => "invite_created",
             Self::InviteRevoked { .. } => "invite_revoked",
             Self::InviteUsed { .. } => "invite_used",
@@ -688,6 +760,15 @@ impl Event {
             Self::MessageMentioned { .. } => "message_mentioned",
             Self::ConversationOpened { .. } => "conversation_opened",
             Self::AttachmentLimitsChanged { .. } => "attachment_limits_changed",
+            Self::ChannelArchived { .. } => "channel_archived",
+            Self::ChannelRestored { .. } => "channel_restored",
+            Self::ChannelDeletionDue { .. } => "channel_deletion_due",
+            Self::CategoryDeleted { .. } => "category_deleted",
+            Self::WorkspaceRoleDeleted { .. } => "workspace_role_deleted",
+            Self::ServerRoleDeleted { .. } => "server_role_deleted",
+            Self::WorkspaceDeleted { .. } => "workspace_deleted",
+            Self::ExportUpdated { .. } => "export_updated",
+            Self::ExportRemoved { .. } => "export_removed",
         }
     }
 }
@@ -751,6 +832,22 @@ mod tests {
             channel_id,
         };
         let direct = CallPlace::direct(account_id, other_account_id);
+        let export_id = crate::ids::ExportId::generate();
+        let archived = crate::structure::ArchivedChannel {
+            channel: Channel {
+                id: channel_id,
+                workspace_id,
+                category_id: None,
+                kind: ChannelKind::Text,
+                name: "plans".to_owned(),
+                position: 0,
+                permanent_messages: false,
+                user_limit: None,
+                hides_occupants: false,
+            },
+            archived_at: time(),
+            deletes_at: Some(time()),
+        };
         let participant = CallParticipant {
             account_id,
             identity: "seat".to_owned(),
@@ -899,6 +996,22 @@ mod tests {
                 role: server_role.clone(),
             },
             Event::ServerRoleUpdated { role: server_role },
+            Event::AccessTokenCreated {
+                access_token: crate::access_token::AccessTokenInfo {
+                    id: crate::ids::AccessTokenId::generate(),
+                    name: "setup".to_owned(),
+                    created_by: account_id,
+                    actions: vec![crate::access_token::TokenAction::ReadStructure],
+                    created_at: time(),
+                    expires_at: time(),
+                },
+            },
+            Event::AccessTokenRevoked {
+                access_token_id: crate::ids::AccessTokenId::generate(),
+            },
+            Event::AccessTokensOfCreatorRevoked {
+                created_by: account_id,
+            },
             Event::InviteCreated {
                 invite: invite.clone(),
             },
@@ -1169,6 +1282,44 @@ mod tests {
             Event::NotificationSettingsChanged {},
             Event::RetentionChanged {
                 workspace_id: Some(workspace_id),
+            },
+            Event::ChannelArchived {
+                channel: archived.clone(),
+            },
+            Event::ChannelRestored {
+                channel: archived.channel.clone(),
+            },
+            Event::ChannelDeletionDue { channel: archived },
+            Event::CategoryDeleted {
+                workspace_id,
+                category_id: CategoryId::generate(),
+            },
+            Event::WorkspaceRoleDeleted {
+                workspace_id,
+                role_id: WorkspaceRoleId::generate(),
+            },
+            Event::ServerRoleDeleted {
+                role_id: ServerRoleId::generate(),
+            },
+            Event::WorkspaceDeleted { workspace_id },
+            Event::ExportUpdated {
+                export: crate::export::Export {
+                    id: export_id,
+                    place: crate::message::MessagePlace::Channel {
+                        workspace_id,
+                        channel_id,
+                    },
+                    state: crate::export::ExportState::Ready,
+                    failure: None,
+                    requested_at: time(),
+                    finished_at: Some(time()),
+                    expires_at: Some(time()),
+                    bytes: Some(1024),
+                },
+            },
+            Event::ExportRemoved {
+                export_id,
+                reason: crate::export::ExportRemoval::Expired,
             },
         ]
     }

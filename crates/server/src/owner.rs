@@ -103,7 +103,7 @@ impl TransactionError for HostCommandError {
     }
 }
 
-async fn require_started(
+pub(crate) async fn require_started(
     connection: &mut PgConnection,
 ) -> Result<Option<AccountId>, HostCommandError> {
     let owner: Result<Option<Option<AccountId>>, sqlx::Error> =

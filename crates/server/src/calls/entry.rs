@@ -59,6 +59,8 @@ pub struct Entered {
     pub key: CallKey,
     pub room: RoomName,
     pub identity: String,
+    /// The display name of the account at the time of the entry.
+    pub name: String,
     pub publishing: Publishing,
     pub entry_requests: Vec<EntryRequest>,
     pub microphone_block: Option<MicrophoneBlock>,
@@ -86,6 +88,7 @@ impl Entered {
             },
             call: store::view(&mut *connection, &call).await?,
             key: call.key(),
+            name: store::display_name(&mut *connection, account_id).await?,
             room: call.room,
             identity,
             microphone_block,
@@ -106,6 +109,7 @@ impl Entered {
         let grant = JoinGrant {
             room: &self.room,
             identity: &self.identity,
+            name: &self.name,
             publishing: &self.publishing,
             now,
             lifetime: app.config.limits.calls.token_lifetime,
