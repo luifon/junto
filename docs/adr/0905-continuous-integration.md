@@ -14,7 +14,7 @@ ADR 0902 decides that CI builds and tests on macOS, Windows and Linux for every 
 
 - One workflow, `.github/workflows/ci.yml`, runs for every push and for every pull request from another repository.
 - Every action is named by its commit hash, with the version as a comment. Every container image that a step runs is named by its digest: the workflow gives the two test scripts the PostgreSQL image and the LiveKit image of the deployment by digest. `tools/check-pins.sh` fails when one is not, and when those two differ from the images of the deployment.
-- Not pinned: the programs of the runner image, and `ffmpeg` from the package archive of the runner, which the Rust tests run to generate and read test media.
+- A package that a step installs with `apt-get` is named with its version: `ffmpeg`, which the Rust tests run to generate and read test media. `tools/check-pins.sh` fails for an `apt-get install` without a version in a workflow. Not pinned: the programs of the runner image, the packages that `ffmpeg` depends on outside its own source package, and the system packages that Playwright installs for its browser.
 - The workflow has no permission by default. Each job gets `contents: read`. No job uses a secret, and the checkout keeps no credential.
 - The runner images are named by version, not by `latest`.
 - The Rust version is the one of `rust-toolchain.toml` (ADR 0014).
@@ -26,7 +26,7 @@ Jobs:
 - Licences: `cargo deny check` with a stated version of the tool.
 - Recording layout page: the locked packages without install scripts, the build, and the browser tests against a LiveKit server in Docker.
 - Transcription worker: the locked packages with `uv`, `ruff`, `mypy`, and the unit tests.
-- Images and deployment: the check of pinned versions, the linter for workflow files and the linter for shell scripts from pinned images, the rendered Compose files of every form, the builds of the server image and the link image, the test of the hand-over scripts, the tests of the recorder start script and of the entry, the start of the local form, which builds the worker image, a backup with a restore into an empty deployment (ADR 0902), and the start of the one-host form and of the two-host form on the runner.
+- Images and deployment: the check of pinned versions, the linter for workflow files and the linter for shell scripts from pinned images, the rendered Compose files of every form, the builds of the server image and the link image, the test of the hand-over scripts, the tests of the recorder start script and of the entry, the start of the local form, which builds the worker image, a backup of a running server with a restore into an empty deployment (ADR 0902, ADR 0911), an upgrade from an earlier release with the way back (ADR 0911), and the start of the one-host form and of the two-host form on the runner. This job fetches the whole history, because the upgrade test reads the files of an earlier commit.
 
 - `tools/serial.sh` uses `flock` where `lockf` does not exist, so that the scripts that call it run on Linux.
 
@@ -38,4 +38,5 @@ Jobs:
 - The licences of the Python packages and of the packages of the layout page are not checked by a tool in CI. The build of the layout page fails when a bundled package has no licence file, and `THIRD-PARTY.md` of the worker is kept by hand (ADR 0610).
 - The packaged desktop client and its three systems (ADR 0704, ADR 0705) are not built by this workflow. A job for them is added with the client crate, and the Linux job then needs the system libraries of gpui.
 - A new version of an action is a change of its commit hash in the workflow file.
+- The step that installs `ffmpeg` fails when the package archive of the runner no longer has the named version. The version is the one of the release of the runner's system, which its archive keeps.
 - `cargo deny` is compiled in its job when the cache has no copy.

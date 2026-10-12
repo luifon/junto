@@ -17,7 +17,7 @@ Backups:
 - A backup lists the files it needs. The server keeps those files until the backup reports that it finished.
 - Files that are still being written, such as the files of a running recording, are left out of the backup and are reported.
 - The restore procedure is part of the test plan (ADR 0902).
-- ADR 0018 states what the server binary provides of these commands and what the programs of the deployment do.
+- ADR 0018 states what the server binary provides of these commands and what the programs of the deployment do. ADR 0021 states the scripts of the deployment.
 
 Upgrades:
 
@@ -35,4 +35,4 @@ Upgrades:
 - A file that is deleted while a backup runs stays on disk until the backup reports that it finished.
 - A recording that runs during a backup is not in that backup.
 - An upgrade that contains a migration, or that replaces the recorder, waits until no recording runs.
-- There is no migration to an earlier schema. An older server version does not start on a database that a newer version migrated.
+- There is no migration to an earlier schema. An older server version does not start on a database that a newer version migrated. The way back is the copy from before the migration, or a backup (ADR 0021).

@@ -20,12 +20,14 @@ services:
       - /var/lib/postgresql/data:70:70:0700
       - /var/lib/junto/attachments:1001:1001:0700
       - /var/lib/junto/recordings:1001:10001:0750
+      - /var/lib/junto/exports:1001:1001:0700
       - /var/lib/junto/spool:1001:10002:0750
       - /home/egress/tmp:1001:0:0700
     volumes:
       - postgres:/var/lib/postgresql/data
       - attachments:/var/lib/junto/attachments
       - recordings:/var/lib/junto/recordings
+      - exports:/var/lib/junto/exports
       - spool:/var/lib/junto/spool
       - recorder-work:/home/egress/tmp
 
@@ -112,6 +114,7 @@ volumes:
   postgres:
   attachments:
   recordings:
+  exports:
   spool:
   recorder-work:
   link-keys:

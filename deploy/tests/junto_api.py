@@ -108,10 +108,14 @@ def request(
     headers: dict[str, str] | None = None,
     expect: int | tuple[int, ...] | None = None,
     timeout: float = 30,
+    content: bytes | None = None,
 ) -> Answer:
     data = None
     sent = dict(headers or {})
-    if body is not None:
+    if content is not None:
+        data = content
+        sent["content-type"] = "application/octet-stream"
+    elif body is not None:
         data = json.dumps(body).encode()
         sent["content-type"] = "application/json"
     if token is not None:
@@ -133,9 +137,9 @@ def request(
 class Device:
     """One device with its key at one server, and the session of its account."""
 
-    def __init__(self, origin: str) -> None:
+    def __init__(self, origin: str, secret: bytes | None = None) -> None:
         self.origin = origin.rstrip("/")
-        self.secret = os.urandom(32)
+        self.secret = secret or os.urandom(32)
         self.public = _text(public_key(self.secret))
         self.token: str | None = None
         self.account_id: str | None = None
@@ -185,8 +189,9 @@ class Device:
         headers: dict[str, str] | None = None,
         expect: int | tuple[int, ...] | None = None,
         timeout: float = 30,
+        content: bytes | None = None,
     ) -> Answer:
-        return request(method, f"{self.origin}{path}", body, self.token, headers, expect, timeout)
+        return request(method, f"{self.origin}{path}", body, self.token, headers, expect, timeout, content)
 
     def get(self, path: str) -> Any:
         return self.call("GET", path, expect=200).json()

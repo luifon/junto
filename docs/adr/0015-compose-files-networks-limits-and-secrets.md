@@ -87,20 +87,19 @@ Limits and behaviour:
 - Every container has a health check, except `init` and the worker. The health check of the entry connects to port 80, because a connection without a TLS greeting on port 443 is an error in its log. The server starts after `init` ended and PostgreSQL is healthy; the media server starts after Redis is healthy.
 - Redis has no volume: it holds no data that outlives a restart.
 
-Backup and upgrade until the server has the commands of ADR 0005:
+Backup, restore and upgrade:
 
-- `deploy/backup.sh` stops the server and the worker first, so that no recording can start, and ends without a backup when a recording still runs. Otherwise it writes a dump of the database, an archive of the attachments and the recordings, a copy of `.env` and checksums, readable for its owner only, and starts what it stopped. A failure removes the partial result.
+- ADR 0021 states `deploy/backup.sh`, `deploy/restore.sh`, `deploy/upgrade-undo.sh` and the upgrade procedure. They replace the scripts of this record, which stopped the server for a backup and ran `new-event-epoch` after a restore.
 - The backup does not contain the certificates of the entry and the keys of the link. Both are created again: this is narrower than ADR 0005, which names the keys.
-- `deploy/restore.sh` verifies the checksums, refuses an archive with a member outside the two directories, loads the dump into a new database and unpacks the archive into a staging directory of each volume. Only when both succeeded do the staged copies replace the database and the files. It then sets the password of the database user to the one of `.env` and runs `new-event-epoch` (ADR 0010).
-- The replacement itself deletes the old files and renames the staged ones and the database. When it is interrupted, the data is a mix of old and new until the restore is run again; no copy of the old data is kept for a way back.
-- For an upgrade the install document has the administrator stop the server, check that no recording runs, make that backup and keep the server stopped until the new version starts. The server makes no copy of the database before a migration.
+- The server has a volume `exports` for the files of exports (ADR 0411). `init` gives it the owner and the mode of the volume of the attachments.
 
 Tests:
 
-- `deploy/tests/compose-config.sh` renders each form with exactly the settings that it needs, removes each setting in turn, and checks the rendered configuration against stated rules: published ports and their addresses, pinned images, users, capabilities, limits, log limits, networks.
+- `deploy/tests/compose-config.sh` renders each form with exactly the settings that it needs, removes each setting in turn, and checks the rendered configuration against stated rules: published ports and their addresses, pinned images, users, capabilities, limits, log limits, networks, the directories of the server that are volumes, and that `init` prepares every volume of a container without root rights.
 - `deploy/tests/entry.sh` runs the entry with certificates that it signs itself and three stand-in programs.
 - `deploy/tests/smoke.sh` starts the local form, waits for the health of every container, and removes it.
-- `deploy/tests/backup-restore.sh` makes a backup of the local form, runs a restore of a damaged backup and checks that nothing was replaced, and restores the backup into a new, empty deployment with other secrets (ADR 0902).
+- `deploy/tests/backup-restore.sh` makes a backup of the local form while content is written and deleted, runs restores that are refused, and restores the backup into a new, empty deployment with other secrets, with an interruption (ADR 0902, ADR 0911).
+- `deploy/tests/upgrade.sh` upgrades the local form from an earlier release and goes back (ADR 0911).
 - `deploy/tests/recorder-start.sh` runs the start script of the recorder with a stand-in for the start script of the image.
 - `deploy/tests/one-host.sh` starts the one-host form on one machine, with certificates that the entry signs itself, and sends requests through the entry to the server and to the media server.
 - `deploy/tests/two-hosts.sh` starts the two files of the two-host form on one machine as two projects with separate networks, and checks the handshake of the link, a request from the entry to the server through the link, the server's path to the API of the media server through the link, and the recorder's path to Redis.
@@ -116,8 +115,7 @@ Tests:
 - The public address also needs port 80, for the certificate requests (ADR 0004).
 - In the two-host form every connection of a client to the server passes two `socat` processes. Each connection is one process of each link container; the limit of processes of the link is 2048.
 - The recorder container has a writable root file system, and its browser runs without its sandbox (ADR 0020).
-- The backup stops the server for the time of the copy. An upgrade stops it from the check for a recording until the new version has started.
-- A restore needs free space for a second copy of the files.
+- An upgrade stops the server from the check for a recording until the new version has started.
 - A recorder whose partial files cannot be copied, for example on a full disk, does not start until the cause is removed. Its health check fails during that time.
 - The limits of a transcription job are settings of the worker container. A line of `.env` reaches the worker; without a line the worker uses its default.
 - A rule that the rendered configuration breaks fails CI, for example a new published port.

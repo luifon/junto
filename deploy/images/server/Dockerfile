@@ -82,18 +82,19 @@ LABEL org.opencontainers.image.title="junto-server" \
 RUN groupadd --gid "${JUNTO_GID}" junto \
  && useradd --uid "${JUNTO_UID}" --gid "${JUNTO_GID}" --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin junto \
  && install -d -m 0755 /var/lib/junto \
- && install -d -o junto -g junto -m 0750 /var/lib/junto/attachments /var/lib/junto/recordings /var/lib/junto/spool
+ && install -d -o junto -g junto -m 0750 /var/lib/junto/attachments /var/lib/junto/recordings /var/lib/junto/spool \
+      /var/lib/junto/exports
 COPY --from=ffmpeg-build /opt/ffmpeg/bin/ffmpeg /opt/ffmpeg/bin/ffprobe /usr/local/bin/
 COPY --from=ffmpeg-build /opt/ffmpeg/share/licenses /usr/share/licenses
 COPY --from=layout-build /src/recording-layout/dist /usr/share/junto/recording-layout
 COPY --from=server-build /out/junto-server /usr/local/bin/junto-server
-COPY --chmod=0755 deploy/images/server/junto-healthcheck deploy/images/server/junto-transcribe-handover \
-     deploy/images/server/junto-volumes /usr/local/bin/
+COPY --chmod=0755 deploy/images/server/junto-transcribe-handover deploy/images/server/junto-volumes \
+     /usr/local/bin/
 ENV JUNTO_LISTEN_ADDRESS=0.0.0.0:8080 \
     JUNTO_RECORDER_LAYOUT_DIR=/usr/share/junto/recording-layout
 USER junto
 WORKDIR /var/lib/junto
 EXPOSE 8080
 STOPSIGNAL SIGTERM
-HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=3 CMD ["junto-healthcheck"]
+HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=3 CMD ["junto-server", "health"]
 ENTRYPOINT ["junto-server"]

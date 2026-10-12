@@ -105,6 +105,10 @@ services:
       JUNTO_ATTACHMENT_BYTES: ${JUNTO_ATTACHMENT_BYTES:-100000000}
       JUNTO_ATTACHMENTS_PER_MESSAGE: ${JUNTO_ATTACHMENTS_PER_MESSAGE:-10}
       JUNTO_RECORDINGS_DIR: /var/lib/junto/recordings
+      # Exports are copies that can be made again; a backup leaves them out (ADR 0021).
+      JUNTO_EXPORTS_DIR: /var/lib/junto/exports
+      # "database": the server copies its database before a migration (ADR 0018).
+      JUNTO_MIGRATION_COPY: ${JUNTO_MIGRATION_COPY:-database}
       JUNTO_RECORDER_LAYOUT_DIR: /usr/share/junto/recording-layout
       # An empty value turns transcripts off.
       JUNTO_TRANSCRIBE_COMMAND: ${JUNTO_TRANSCRIBE_COMMAND-/usr/local/bin/junto-transcribe-handover}
@@ -112,6 +116,7 @@ services:
     volumes:
       - attachments:/var/lib/junto/attachments
       - recordings:/var/lib/junto/recordings
+      - exports:/var/lib/junto/exports
       - spool:/var/lib/junto/spool
     stop_grace_period: 45s
     mem_limit: ${JUNTO_SERVER_MEMORY:-1g}

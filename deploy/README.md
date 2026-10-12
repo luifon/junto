@@ -1,6 +1,6 @@
 # Deployment files
 
-The files that install a Junto server with Docker Compose. The steps are in [`docs/install.md`](../docs/install.md); the decisions are in ADR 0003, 0004, 0014, 0015 and 0016.
+The files that install a Junto server with Docker Compose. The steps are in [`docs/install.md`](../docs/install.md); the decisions are in ADR 0003, 0004, 0014, 0015, 0016, 0018 and 0021.
 
 | Path | Content |
 |---|---|
@@ -11,9 +11,11 @@ The files that install a Junto server with Docker Compose. The steps are in [`do
 | `two-hosts-data.yaml`, `two-hosts-public.yaml` | Form 2: the data host and the public host. |
 | `local.yaml` | Every component on one machine without DNS names and TLS, for a trial and for the tests. |
 | `worker-gpu.yaml` | Addition to a form: the transcription worker on an NVIDIA GPU. |
-| `backup.sh`, `restore.sh` | Backup and restore with the server stopped. |
+| `backup.sh` | Backup of the database, the attachments and the recordings while the server runs. |
+| `restore.sh` | Restore of such a backup. An interrupted run is followed by a second run. |
+| `upgrade-undo.sh` | The way back to the copy of the database from before a migration. |
 | `entry/Caddyfile` | The entry on port 443 with three server names. |
-| `images/server/` | The server image: Dockerfile, health check, hand-over of transcription jobs, volume owners. |
+| `images/server/` | The server image: Dockerfile, hand-over of transcription jobs, volume owners. |
 | `images/worker/` | The loop that runs transcription jobs in the worker container. |
 | `images/recorder/` | The start script of the recorder, which saves partial files. |
 | `images/link/` | The image of the private link of form 2. |
@@ -29,11 +31,12 @@ deploy/tests/transcribe-handover.sh junto-server      # the hand-over scripts, w
 deploy/tests/recorder-start.sh junto-server           # the start script of the recorder
 deploy/tests/entry.sh                                 # the entry selects by server name
 deploy/tests/smoke.sh                                 # the local form starts and is removed
-deploy/tests/backup-restore.sh                        # backup, a failed restore, a restore into an empty deployment
+deploy/tests/backup-restore.sh                        # backup of a running server, refused restores, an interrupted restore
+deploy/tests/upgrade.sh                               # upgrade from an earlier release, and the way back
 deploy/tests/one-host.sh                              # the one-host form on one machine
 deploy/tests/two-hosts.sh                             # the two-host form on one machine, as two projects
 (cd spikes/test-participant && cargo build --release)
 deploy/tests/recording.sh                             # a recorded call with the real recorder, and three failures
 ```
 
-The last four build the images that do not exist yet, give their containers memory limits under 3 GB together, and remove everything at the end. `one-host.sh` and `two-hosts.sh` need the ports 80, 443, 3478, 5349, 7880, 7881 and 7882 of the machine, because the media server and the entry use the network of the host; run one of them at a time.
+The last five build the images that do not exist yet, give their containers memory limits under 3 GB together, and remove everything at the end. `upgrade.sh` needs the commit of the earlier release in the checkout, and also builds the server image of that release. `one-host.sh` and `two-hosts.sh` need the ports 80, 443, 3478, 5349, 7880, 7881 and 7882 of the machine, because the media server and the entry use the network of the host; run one of them at a time.

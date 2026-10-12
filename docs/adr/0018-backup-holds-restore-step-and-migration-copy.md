@@ -54,8 +54,10 @@ Newer schema:
 
 ## Consequences
 
-- A backup needs no stop of the server. The script of the deployment calls `backup-begin`, copies the database, calls `backup-files`, copies the directories of its `file` lines, and calls `backup-end`.
-- The way back after a failed upgrade is: stop the server, rename the database, rename the copy to the name of the database, start the earlier version.
+- A backup needs no stop of the server. The script of the deployment calls `backup-begin`, copies the database, calls `backup-files`, copies the directories of its `file` lines, and calls `backup-end` (ADR 0021).
+- The list has a `file` line for every recording that is not starting, running or processed, also for one without a file. A program that copies the list accepts a listed directory that is not on the disk.
+- The way back after a failed upgrade is: stop the server, rename the database, rename the copy to the name of the database, start the earlier version. `deploy/upgrade-undo.sh` does the renames (ADR 0021). The copy holds no file: a file that the newer version deleted is not brought back.
+- A start that follows a failed start with a waiting migration deletes the copy and makes it again. When the failed start had applied one of several migrations, the new copy has the schema after that migration, and its name has that number.
 - The copy doubles the disk space of the database until the next migration replaces it.
 - A backup that never reports its end holds deletions back for 24 hours at most.
 - A restored database can name an upload or a recording that was not complete when the copy was made. The upload expires, and the controller of recordings ends a recording without a recorder (ADR 0604).

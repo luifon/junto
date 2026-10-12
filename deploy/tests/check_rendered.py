@@ -53,6 +53,13 @@ USER_OF_IMAGE = {"server"}
 WRITABLE_ROOT = {"recorder"}
 NO_HEALTH_CHECK = {"init", "worker"}
 DATABASE_NETWORK = {"postgres", "server"}
+# The directories of the server that are volumes, by the setting that names each one. The
+# spool has no setting: the hand-over script names it.
+SERVER_DIRECTORIES = {
+    "JUNTO_ATTACHMENTS_DIR": "/var/lib/junto/attachments",
+    "JUNTO_RECORDINGS_DIR": "/var/lib/junto/recordings",
+    "JUNTO_EXPORTS_DIR": "/var/lib/junto/exports",
+}
 
 
 def check(form: str, project: dict) -> list[str]:
@@ -122,6 +129,33 @@ def check(form: str, project: dict) -> list[str]:
         for volume in service.get("volumes", []):
             if volume.get("source") == "/var/run/docker.sock" or volume.get("target") == "/var/run/docker.sock":
                 problem("mounts the Docker socket")
+
+    if "server" in services:
+        server = services["server"]
+        mounted = {volume.get("target") for volume in server.get("volumes", []) if volume.get("type") == "volume"}
+        for setting, directory in SERVER_DIRECTORIES.items():
+            if server.get("environment", {}).get(setting) != directory:
+                problems.append(f"server: {setting} is not {directory}")
+            if directory not in mounted:
+                problems.append(f"server: {directory} is not a volume")
+        if server.get("environment", {}).get("JUNTO_MIGRATION_COPY") != "database":
+            problems.append("server: the copy before a migration is not on by default")
+    # init sets the owner of every directory that a container without root rights gets as
+    # a volume: it mounts the same volume at the same place and names that place with an
+    # owner that is not root.
+    if "init" in services:
+        init = services["init"]
+        mounted = {(volume.get("source"), volume.get("target")) for volume in init.get("volumes", []) if volume.get("type") == "volume"}
+        prepared = {entry.split(":")[0] for entry in init.get("command") or [] if entry.split(":")[1:2] not in ([], ["0"], ["root"])}
+        for name, service in services.items():
+            if name in ROOT:
+                continue
+            for volume in service.get("volumes", []):
+                if volume.get("type") != "volume":
+                    continue
+                place = (volume.get("source"), volume.get("target"))
+                if place not in mounted or volume.get("target") not in prepared:
+                    problems.append(f"{name}: init does not prepare the volume {place[0]} at {place[1]}")
 
     if "database" in project.get("networks", {}) and not project["networks"]["database"].get("internal"):
         problems.append("the network of the database is not internal")

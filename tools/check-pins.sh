@@ -1,6 +1,7 @@
 #!/bin/sh
-# Fails when a version that two files state differs between them, or when an image or a CI
-# action is not pinned (ADR 0014, ADR 0905). Run from any directory.
+# Fails when a version that two files state differs between them, or when an image, a CI
+# action or a package that a workflow installs is not pinned (ADR 0014, ADR 0905). Run from
+# any directory.
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -19,6 +20,7 @@ same() {
 
 server=deploy/images/server/Dockerfile
 worker=workers/transcription/docker/Dockerfile
+speech=workers/transcription/tests/speech/Dockerfile
 argument() {
     sed -n "s/^ARG $2=//p" "$1" | head -n 1
 }
@@ -55,7 +57,7 @@ if [ -n "$unpinned" ]; then
 else
     echo "ok    every image of the Compose files has a digest"
 fi
-for file in "$server" "$worker" deploy/images/link/Dockerfile; do
+for file in "$server" "$worker" "$speech" deploy/images/link/Dockerfile; do
     unpinned=$(grep -n -e '^ARG [A-Z_]*_IMAGE=' -e '^# syntax=' "$file" | grep -v "$digest" || true)
     literal=$(grep -n '^FROM ' "$file" | grep -v -e '\${[A-Z_]*_IMAGE}' -e ' AS [a-z-]*$' | grep -v "$digest" || true)
     stages=$(grep -n '^FROM [a-z][a-z0-9.-]*[:/]' "$file" | grep -v "$digest" || true)
@@ -66,6 +68,17 @@ for file in "$server" "$worker" deploy/images/link/Dockerfile; do
         echo "ok    every base image of $file has a digest"
     fi
 done
+
+# The words after "pip install" that are not options: each names a package with one exact
+# version.
+unpinned=$(sed -n '/pip install/,/[^\\]$/p' "$speech" | tr -s ' \\' '\n\n' \
+    | grep -v -E -e '^$' -e '^-' -e '^(RUN|&&|pip|install)$' -e '^[A-Za-z0-9_.-]+==[0-9][0-9A-Za-z.+!-]*$' || true)
+if [ -n "$unpinned" ]; then
+    echo "$unpinned"
+    fail "$speech installs a Python package without a version"
+else
+    echo "ok    every Python package of $speech has a version"
+fi
 
 unpinned=$(grep -n '_image=[a-z]' deploy/tests/*.sh | grep -v "$digest" || true)
 if [ -n "$unpinned" ]; then
@@ -89,6 +102,26 @@ if [ -d .github/workflows ]; then
         fail "a workflow runs an image without a digest"
     else
         echo "ok    every image of the workflows has a digest"
+    fi
+    # A package of the runner is installed in one form only, "apt-get install" with its
+    # options and packages on one line, so that this rule reads every package: each word
+    # after it that is not an option names a package with one exact version.
+    other=$(grep -n -E '(apt-get|apt|aptitude|dpkg|snap)( +-[^ ]+)* +(install|-i)' .github/workflows/* \
+        | grep -v -E 'apt-get install [^\\]*$' || true)
+    unpinned=$(grep -h 'apt-get install' .github/workflows/* | sed 's/.*apt-get install//' | tr -s ' ' '\n' \
+        | grep -v -E -e '^$' -e '^-' -e '^[a-z0-9][a-z0-9+.-]*=[0-9][0-9A-Za-z.+~:-]*$' || true)
+    if [ -n "$other$unpinned" ]; then
+        echo "$other$unpinned"
+        fail "a workflow installs a package of the runner without a version, or in a form that this check does not read"
+    else
+        echo "ok    every package that a workflow installs with apt-get has a version"
+    fi
+    other=$(find .github/workflows -type f ! -name '*.yml')
+    if [ -n "$other" ]; then
+        echo "$other"
+        fail "a workflow file has another ending than .yml, and the rules above do not read it"
+    else
+        echo "ok    every workflow file is read by these rules"
     fi
 fi
 
