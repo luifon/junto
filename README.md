@@ -26,6 +26,7 @@ Design reviewed. The technical tests of step 0 are in progress. The server exist
 - [`docs/adr/`](docs/adr/README.md): the architecture decision records, with an index.
 - [`docs/scope.md`](docs/scope.md): what the first version contains, what later versions can add, and what is not planned.
 - [`docs/step-0/`](docs/step-0/README.md): the eight technical tests that run before product code, with their pass and fail gates.
+- [`docs/install.md`](docs/install.md): how to install a server with Docker Compose from this repository, and how to back it up, upgrade it and remove it.
 
 ## Licence
 

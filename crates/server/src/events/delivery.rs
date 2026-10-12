@@ -8,7 +8,7 @@ use junto_protocol::account::{AccountStatus, RecoveryNotice};
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::{Cursor, EndReason, Event, Level, ResyncReason, ServerMessage};
 use junto_protocol::ids::{
-    AccountId, ChannelId, DeviceId, RecoveryId, StreamEpoch, WorkspaceId, WorkspaceRoleId,
+    AccountId, CallId, ChannelId, DeviceId, RecoveryId, StreamEpoch, WorkspaceId, WorkspaceRoleId,
 };
 use sqlx::PgConnection;
 use sqlx::types::Json;
@@ -20,7 +20,7 @@ use crate::access::Access;
 use crate::db::StoredText;
 use crate::error::{ApiError, ApiResult};
 use crate::events::audience::{
-    Audience, ChannelStanding, Class, Recipient, WorkspaceStanding, receives,
+    Audience, CallStanding, ChannelStanding, Class, Recipient, WorkspaceStanding, receives,
 };
 use crate::events::hub::CallKey;
 use crate::events::log::{self, STORED_AUDIENCE_BYTES, STORED_PAYLOAD_BYTES};
@@ -29,6 +29,10 @@ use crate::read;
 use crate::state::AppState;
 
 const COUNTED_PER_READ: i64 = 500;
+
+/// The lists of receivers, of the ones in `$1`, that hold the account `$2`.
+pub const RECEIVER_LISTS: &str =
+    "select event_id from event_receivers where event_id = any($1) and account_id = $2";
 
 /// The device behind a connection, as the upgrade request proved it.
 #[derive(Debug, Clone, Copy)]
@@ -204,6 +208,21 @@ pub async fn validate(app: &AppState, who: &Opened) -> ApiResult<Option<Ended>> 
     })
 }
 
+/// The place of the call that the account of a connection has a seat in, read in the
+/// transaction of the batch. A background connection needs it: it widens the classes that
+/// the connection reads, and a value that is older than the batch would let the connection
+/// pass events of its own call for good (ADR 0510). A full connection reads every class.
+async fn seat_of(
+    connection: &mut PgConnection,
+    account_id: AccountId,
+    level: Level,
+) -> ApiResult<Option<CallKey>> {
+    match level {
+        Level::Full => Ok(None),
+        Level::Background => crate::calls::store::seat_key(connection, account_id).await,
+    }
+}
+
 /// The classes that the SQL statements select for a connection: every class for a full
 /// connection and for an account in a call, because the events of the call's channel are of
 /// any class.
@@ -254,6 +273,9 @@ fn decide(
         server_role_ids: &access.server_role_ids,
         fellows: &standing.fellows,
         contacts: &standing.contacts,
+        listed: &standing.listed,
+        memberships: &standing.memberships,
+        calls: &standing.calls,
     };
     let in_workspace = |workspace_id| standing.workspaces.get(&workspace_id);
     if let Audience::SystemMessage {
@@ -309,13 +331,13 @@ pub async fn subscribe(
     cursor: Option<Cursor>,
 ) -> ApiResult<Start> {
     let most = app.config.limits.stream.replay_most_events;
-    let in_call = app.streams.calls().key_of(who.account_id);
-    let classes = selected_classes(level, in_call);
     read!(app.unattended(), |connection| {
         let access = match open(connection, who, app.now()).await? {
             Ok(access) => access,
             Err(ended) => return Ok(Start::Ended(ended)),
         };
+        let in_call = seat_of(connection, access.account_id, level).await?;
+        let classes = selected_classes(level, in_call);
         let log = log::state(connection).await?;
         let Some(cursor) = cursor else {
             return Ok(Start::Subscribed(log.cursor(log.head)?));
@@ -400,14 +422,14 @@ pub async fn next_batch(
     let limits = &app.config.limits.stream;
     let size = i64::from(most.clamp(1, limits.batch.max(1)));
     let budget = i64::from(limits.batch_bytes.max(1));
-    let in_call = app.streams.calls().key_of(who.account_id);
-    let classes = selected_classes(subscription.level, in_call);
     read!(app.unattended(), |connection| {
         let read_at = Instant::now();
         let access = match open(connection, who, app.now()).await? {
             Ok(access) => access,
             Err(ended) => return Ok(Batch::Ended(ended)),
         };
+        let in_call = seat_of(connection, access.account_id, subscription.level).await?;
+        let classes = selected_classes(subscription.level, in_call);
         let log = log::state(connection).await?;
         if subscription.epoch != log.epoch {
             return Ok(Batch::Resync(ResyncReason::UnknownCursor));
@@ -503,6 +525,11 @@ struct Standing {
     workspaces: HashMap<WorkspaceId, WorkspaceStanding>,
     fellows: HashSet<AccountId>,
     contacts: HashMap<AccountId, junto_authz::Contact>,
+    listed: HashSet<Uuid>,
+    /// The workspaces, of the ones that the invites of the batch name, that the account is
+    /// a member of. Read only for an account that holds `create_invites`.
+    memberships: HashSet<WorkspaceId>,
+    calls: HashMap<CallId, CallStanding>,
     mentioned: HashSet<junto_protocol::ids::MessageId>,
     mention_notices: HashSet<Uuid>,
     notification_notices: HashMap<Uuid, (bool, bool)>,
@@ -569,26 +596,42 @@ impl Standing {
                 _ => None,
             })
             .collect();
-        let mention_notices = sqlx::query_scalar("select event_id from message_mention_receivers where event_id=any($1) and account_id=$2")
+        let mention_notices: HashSet<Uuid> = sqlx::query_scalar("select event_id from message_mention_receivers where event_id=any($1) and account_id=$2")
             .bind(notice_ids)
             .bind(access.account_id)
             .fetch_all(&mut *connection)
             .await?
             .into_iter()
             .collect();
-        let ids: Vec<junto_protocol::ids::MessageId> = candidates
+        // Only a mention that names the account or lists it as a receiver can be
+        // delivered; the others are decided without the message. One statement reads the
+        // rest, so the cost of a batch does not grow with the mentions of other accounts.
+        let mut ids: Vec<junto_protocol::ids::MessageId> = candidates
             .iter()
             .filter_map(|c| match c.audience.as_ref() {
-                Some(Audience::Mention { message_id, .. }) => Some(*message_id),
+                Some(Audience::Mention {
+                    message_id,
+                    account_id,
+                    notice_id,
+                    ..
+                }) if account_id.is_none_or(|id| id == access.account_id)
+                    && notice_id.is_none_or(|id| mention_notices.contains(&id)) =>
+                {
+                    Some(*message_id)
+                }
                 _ => None,
             })
             .collect();
-        let mut mentioned = HashSet::new();
-        for id in ids {
-            if crate::messages::is_mentioned(connection, access.account_id, id, now).await? {
-                mentioned.insert(id);
-            }
-        }
+        ids.sort_unstable();
+        ids.dedup();
+        let mentioned: HashSet<junto_protocol::ids::MessageId> = if ids.is_empty() {
+            HashSet::new()
+        } else {
+            crate::messages::mentioned_among(connection, access.account_id, &ids, now)
+                .await?
+                .into_iter()
+                .collect()
+        };
         let mut named: Vec<(WorkspaceId, Vec<ChannelId>)> = Vec::new();
         let places = candidates
             .iter()
@@ -629,6 +672,61 @@ impl Standing {
                 contacts.insert(other, contact);
             }
         }
+        let lists: Vec<Uuid> = candidates
+            .iter()
+            .filter_map(|event| event.audience.as_ref()?.receiver_list())
+            .collect();
+        let listed = if lists.is_empty() {
+            HashSet::new()
+        } else {
+            sqlx::query_scalar(RECEIVER_LISTS)
+                .bind(&lists)
+                .bind(access.account_id)
+                .fetch_all(&mut *connection)
+                .await?
+                .into_iter()
+                .collect()
+        };
+        let mut invited: Vec<WorkspaceId> = candidates
+            .iter()
+            .filter_map(|event| event.audience.as_ref())
+            .flat_map(|audience| audience.invite_workspace_ids().iter().copied())
+            .collect();
+        invited.sort_unstable();
+        invited.dedup();
+        let inviter = junto_authz::Request::Server(junto_authz::ServerPermission::CreateInvites);
+        let memberships = if invited.is_empty() || !access.allows(inviter) {
+            HashSet::new()
+        } else {
+            crate::access::memberships_among(connection, access.account_id, &invited).await?
+        };
+        let mut call_ids: Vec<CallId> = candidates
+            .iter()
+            .filter_map(|event| event.audience.as_ref()?.inside_of_call())
+            .collect();
+        call_ids.sort_unstable();
+        call_ids.dedup();
+        let calls = if call_ids.is_empty() {
+            HashMap::new()
+        } else {
+            let rows: Vec<(CallId, bool, bool)> = sqlx::query_as(
+                "select call_id, hidden, is_inside_call(call_id, $2)
+                 from call_message_privacy where call_id = any($1)",
+            )
+            .bind(&call_ids)
+            .bind(access.account_id)
+            .fetch_all(&mut *connection)
+            .await?;
+            rows.into_iter()
+                .map(|(call_id, hides_occupants, inside)| {
+                    let standing = CallStanding {
+                        hides_occupants,
+                        inside,
+                    };
+                    (call_id, standing)
+                })
+                .collect()
+        };
         let mut workspaces = HashMap::new();
         for (workspace_id, channel_ids) in named {
             let scope = match access.workspace(connection, workspace_id).await {
@@ -645,16 +743,6 @@ impl Standing {
             let channels = if channel_ids.is_empty() {
                 HashMap::new()
             } else {
-                let inside: Vec<ChannelId> = sqlx::query_scalar(
-                    "select c.channel_id
-                     from call_members m
-                     join calls c on c.id = m.call_id
-                     where m.account_id = $1 and c.channel_id = any($2)",
-                )
-                .bind(access.account_id)
-                .bind(&channel_ids)
-                .fetch_all(&mut *connection)
-                .await?;
                 access
                     .named_channels(connection, workspace_id, &scope, &channel_ids)
                     .await?
@@ -662,8 +750,6 @@ impl Standing {
                     .map(|(record, scope)| {
                         let standing = ChannelStanding {
                             deleted: record.deleted_at.is_some(),
-                            hides_occupants: record.channel.hides_occupants,
-                            inside: inside.contains(&record.channel.id),
                             scope,
                         };
                         (record.channel.id, standing)
@@ -690,6 +776,9 @@ impl Standing {
             workspaces,
             fellows,
             contacts,
+            listed,
+            memberships,
+            calls,
             mentioned,
             mention_notices,
             notification_notices,

@@ -73,13 +73,15 @@ use junto_media::share::{
 };
 use time::OffsetDateTime;
 
+/// The window of the design: 1440 by 900 pixels at 100 %.
+#[path = "junto-screens/admin.rs"]
+mod admin;
 #[path = "junto-screens/cameras.rs"]
 mod cameras;
 #[path = "junto-screens/discovery.rs"]
 mod discovery;
 #[path = "junto-screens/frames.rs"]
 mod frames;
-/// The window of the design: 1440 by 900 pixels at 100 %.
 #[path = "junto-screens/messages.rs"]
 mod messages;
 #[path = "junto-screens/recorded.rs"]
@@ -227,6 +229,7 @@ fn studio() -> WorkspaceState {
                 started_at: Some(at()),
                 lock: None,
                 meeting: None,
+                hides_occupants: false,
                 participants: vec![participant("Ana"), bruno, carla, marta],
                 recording: Some(Recording {
                     id: id(41),
@@ -263,6 +266,7 @@ fn studio() -> WorkspaceState {
                     at: at(),
                 }),
                 meeting: None,
+                hides_occupants: false,
                 participants: vec![participant("Diego"), participant("Elisa")],
                 recording: None,
             }),
@@ -299,6 +303,9 @@ fn snapshot(account: &str, workspaces: Vec<WorkspaceState>) -> Snapshot {
         own_call: None,
         direct_calls: Vec::new(),
         call_invitations: Vec::new(),
+        sent_call_invitations: Vec::new(),
+        call_moves: Vec::new(),
+        entry_requests: Vec::new(),
         direct_mutes: Vec::new(),
         messages: Vec::new(),
         threads: Vec::new(),
@@ -1757,6 +1764,7 @@ fn draw_rules(studio: &mut Studio) -> Result<(), String> {
                     started_at: Some(at()),
                     lock: None,
                     meeting: None,
+                    hides_occupants: false,
                     participants: moved,
                     recording: None,
                 }),
@@ -2699,6 +2707,7 @@ fn run(out: &Path) -> Result<(), String> {
         Some("recorded") => recorded::draw(&mut studio),
         // Not a picture: the time of a frame with 10,000 loaded messages.
         Some("frames") => frames::measure(&mut studio),
+        Some("admin") => admin::draw(&mut studio),
         _ => draw_all(&mut studio)
             .and_then(|()| draw_calls(&mut studio))
             .and_then(|()| draw_shares(&mut studio))
@@ -2707,6 +2716,7 @@ fn run(out: &Path) -> Result<(), String> {
             .and_then(|()| threads::draw(&mut studio))
             .and_then(|()| discovery::draw(&mut studio))
             .and_then(|()| recorded::draw(&mut studio))
+            .and_then(|()| admin::draw(&mut studio))
             .and_then(|()| draw_components(&mut studio)),
     };
     let scratch = studio.scratch.clone();

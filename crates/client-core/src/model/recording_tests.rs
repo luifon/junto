@@ -13,10 +13,16 @@ use junto_protocol::transcript::{
     GlossaryUse, LineSource, SegmentTranscription, SpeakerSeparation, Transcript, TranscriptLine,
     TranscriptSegment, TranscriptSpeaker, TranscriptState,
 };
-use time::OffsetDateTime;
 
 use super::tests::{Scene, scene, time};
 use super::*;
+
+fn asks(part: Part) -> Follow {
+    Follow {
+        reload: false,
+        load: vec![part],
+    }
+}
 
 /// A recording whose files are processed and whose transcript has `lines` lines.
 pub(crate) fn recording(id: RecordingId, channel_id: ChannelId, lines: u32) -> Recording {
@@ -147,21 +153,12 @@ pub(crate) fn removed(recording: &Recording) -> Event {
     }
 }
 
-pub(crate) fn corrected(
-    recording: &Recording,
-    position: u32,
-    text: &str,
-    by: AccountId,
-    at: OffsetDateTime,
-) -> Event {
+pub(crate) fn corrected(recording: &Recording, position: u32) -> Event {
     Event::TranscriptLineCorrected {
         recording_id: recording.id,
         workspace_id: recording.workspace_id,
         channel_id: recording.channel_id,
         line: position,
-        text: text.to_owned(),
-        corrected_by: by,
-        corrected_at: at,
     }
 }
 
@@ -170,7 +167,7 @@ pub(crate) fn renamed(recording: &Recording, speaker: &TranscriptSpeaker) -> Eve
         recording_id: recording.id,
         workspace_id: recording.workspace_id,
         channel_id: recording.channel_id,
-        speaker: speaker.clone(),
+        speaker: speaker.number,
     }
 }
 
@@ -408,64 +405,68 @@ fn a_removed_recording_and_a_deleted_channel_leave_nothing_of_the_recording() {
 }
 
 #[test]
-fn a_correction_changes_a_loaded_line_without_a_request() {
+fn a_correction_reads_a_loaded_line_and_preserves_its_original_text() {
     let scene = scene();
     let (mut model, read) = opened(&scene, 3);
     let id = read.recording.id;
     model.add_transcript_lines(id, answer(first_page(LINES_PAGE), 0..3, false));
-    let before = model.clone();
     let (ada, ben) = (AccountId::generate(), AccountId::generate());
     let second = time() + time::Duration::seconds(1);
-
-    let event = corrected(&read.recording, 1, "eleven seconds", ada, time());
-    assert_eq!(model.apply(&event), Follow::default());
-    let open = held(&model, id);
-    let line = open.line(1).unwrap();
-    assert_eq!(line.text, "eleven seconds");
-    // The event does not carry the text of the worker. The line held it.
-    assert_eq!(line.original_text.as_deref(), Some("line 1"));
-    assert_eq!(
-        (line.corrected_by, line.corrected_at),
-        (Some(ada), Some(time()))
-    );
-    // The other lines are the ones of the state before.
-    assert!(Arc::ptr_eq(
-        open.line(0).unwrap(),
-        held(&before, id).line(0).unwrap()
-    ));
-    let once = model.clone();
-    model.apply(&event);
-    assert_eq!(model, once);
-
-    // A second correction keeps the text of the worker.
-    model.apply(&corrected(
-        &read.recording,
-        1,
-        "twelve seconds",
-        ben,
-        second,
-    ));
-    let line = held(&model, id).line(1).unwrap();
-    assert_eq!(line.text, "twelve seconds");
-    assert_eq!(line.original_text.as_deref(), Some("line 1"));
-    assert_eq!(
-        (line.corrected_by, line.corrected_at),
-        (Some(ben), Some(second))
-    );
-    // An event that was kept for a read can be older than the line that the read gave.
+    let event = corrected(&read.recording, 1);
+    for (text, by, at) in [
+        ("eleven seconds", ada, time()),
+        ("twelve seconds", ben, second),
+    ] {
+        let before = model.clone();
+        assert_eq!(model.apply(&event), asks(Part::TranscriptLines(id)));
+        assert!(held(&model, id).lines.stale);
+        // An identifier-only event does not invent text or its author.
+        assert_eq!(held(&model, id).line(1), held(&before, id).line(1));
+        let ask = model.lines_ask(id).unwrap();
+        assert!(ask.replace);
+        let mut page = LinesRead {
+            ask,
+            lines: held(&before, id)
+                .lines
+                .lines
+                .iter()
+                .map(|line| line.as_ref().clone())
+                .collect(),
+            more: false,
+        };
+        page.lines[1].text = text.to_owned();
+        page.lines[1].original_text = Some("line 1".to_owned());
+        page.lines[1].corrected_by = Some(by);
+        page.lines[1].corrected_at = Some(at);
+        model.add_transcript_lines(id, page);
+        let line = held(&model, id).line(1).unwrap();
+        assert_eq!(line.text, text);
+        assert_eq!(line.original_text.as_deref(), Some("line 1"));
+        assert_eq!((line.corrected_by, line.corrected_at), (Some(by), Some(at)));
+        assert!(Arc::ptr_eq(
+            held(&model, id).line(0).unwrap(),
+            held(&before, id).line(0).unwrap()
+        ));
+        let newest = model.clone();
+        // Even a delayed event requests the current route; it cannot restore old text.
+        model.apply(&event);
+        assert_eq!(held(&model, id).line(1), held(&newest, id).line(1));
+        let once = model.clone();
+        model.apply(&event);
+        assert_eq!(model, once);
+    }
     let newest = model.clone();
-    model.apply(&event);
-    assert_eq!(model, newest);
-
-    // A line that is not loaded, and a recording that no reader has open.
-    model.apply(&corrected(&read.recording, 7, "no such line", ada, second));
+    assert_eq!(
+        model.apply(&corrected(&read.recording, 7)),
+        Follow::default()
+    );
     let other = recording(RecordingId::generate(), scene.daily, 3);
-    model.apply(&corrected(&other, 1, "elsewhere", ada, second));
+    assert_eq!(model.apply(&corrected(&other, 1)), Follow::default());
     assert_eq!(model, newest);
 }
 
 #[test]
-fn a_rename_changes_a_speaker_of_the_loaded_transcript_without_a_request() {
+fn a_rename_reads_the_speaker_from_the_authorized_transcript_route() {
     let scene = scene();
     let mut model = scene.model();
     let id = RecordingId::generate();
@@ -473,28 +474,36 @@ fn a_rename_changes_a_speaker_of_the_loaded_transcript_without_a_request() {
     let mut header = transcript(&read.recording);
     header.speakers = vec![speaker(1, None), speaker(3, None)];
     model.open_recording(id);
-    // The labels are not in the state before the transcript is.
     let before = model.clone();
-    model.apply(&renamed(&read.recording, &speaker(1, Some("Noor"))));
+    let event = renamed(&read.recording, &speaker(1, Some("Noor")));
+    assert_eq!(model.apply(&event), asks(Part::Recording(id)));
     assert_eq!(model, before);
     assert!(model.set_recording(id, read.clone(), header.clone()));
-
     let named = TranscriptSpeaker {
         name: Some("Noor".to_owned()),
         renamed_by: Some(scene.account_id),
         renamed_at: Some(time()),
         ..header.speakers[0].clone()
     };
-    let event = renamed(&read.recording, &named);
-    assert_eq!(model.apply(&event), Follow::default());
+    assert_eq!(model.apply(&event), asks(Part::Recording(id)));
+    assert_eq!(held(&model, id).speaker(1), Some(&header.speakers[0]));
+    header.speakers[0] = named.clone();
+    assert!(model.set_recording(id, read.clone(), header.clone()));
     assert_eq!(held(&model, id).speaker(1), Some(&named));
     assert_eq!(held(&model, id).speaker(3), Some(&header.speakers[1]));
+    assert!(!held(&model, id).stale);
+    model.apply(&event);
+    assert!(held(&model, id).stale);
     let once = model.clone();
     model.apply(&event);
     assert_eq!(model, once);
-
-    // A label that the transcript did not list is put in the order of the numbers.
-    model.apply(&renamed(&read.recording, &speaker(2, Some("Kim"))));
+    let next = speaker(2, Some("Kim"));
+    assert_eq!(
+        model.apply(&renamed(&read.recording, &next)),
+        asks(Part::Recording(id))
+    );
+    header.speakers.insert(1, next);
+    assert!(model.set_recording(id, read, header));
     let numbers: Vec<u32> = held(&model, id)
         .transcript
         .loaded()
@@ -675,7 +684,6 @@ fn the_events_that_arrive_during_a_read_are_applied_after_its_answer() {
     model.open_recording(id);
     let read = detail(recording(id, scene.daily, 0));
     let other = recording(RecordingId::generate(), scene.daily, 2);
-    let ada = AccountId::generate();
     let mut later = read.recording.clone();
     later.transcript = TranscriptState::Ready;
     later.transcript_lines = 2;
@@ -699,29 +707,38 @@ fn the_events_that_arrive_during_a_read_are_applied_after_its_answer() {
     assert!(part.concerns(&changed, &model));
     assert!(!part.concerns(&updated(&other), &model));
     assert!(!part.concerns(&renamed(&other, &named), &model));
-    assert!(!part.concerns(&corrected(&later, 1, "a", ada, time()), &model));
+    assert!(!part.concerns(&corrected(&later, 1), &model));
 
     // The answer is older than the two events. They are applied to it, and the event of
     // the recording asks for the routes again.
     let mut header = transcript(&read.recording);
-    header.speakers = vec![speaker(1, None)];
+    let unnamed = speaker(1, None);
+    header.speakers = vec![unnamed.clone()];
     assert!(model.set_recording(id, read.clone(), header));
     let kept = [updated(&later), renamed(&later, &named), deleted];
     assert_eq!(model.replay_reads(part, &kept), [part]);
     let open = held(&model, id);
     assert_eq!(open.detail.loaded().unwrap().recording, later);
-    assert_eq!(open.speaker(1), Some(&named));
+    assert_eq!(open.speaker(1), Some(&unnamed));
     assert!(!open.gone);
+    let mut refreshed = transcript(&later);
+    refreshed.speakers = vec![named.clone()];
+    assert!(model.set_recording(id, detail(later.clone()), refreshed));
+    assert_eq!(held(&model, id).speaker(1), Some(&named));
 
     let lines_part = Part::TranscriptLines(id);
     assert!(lines_part.is_read_again());
-    let fixed = corrected(&later, 1, "eleven seconds", ada, time());
+    let fixed = corrected(&later, 1);
     assert!(lines_part.concerns(&fixed, &model));
     assert!(lines_part.concerns(&removed(&later), &model));
     assert!(!lines_part.concerns(&updated(&later), &model));
-    assert!(!lines_part.concerns(&corrected(&other, 1, "a", ada, time()), &model));
+    assert!(!lines_part.concerns(&corrected(&other, 1), &model));
     model.add_transcript_lines(id, answer(first_page(LINES_PAGE), 0..2, false));
-    assert_eq!(model.replay_reads(lines_part, [&fixed]), []);
+    assert_eq!(model.replay_reads(lines_part, [&fixed]), [lines_part]);
+    assert!(held(&model, id).lines.stale);
+    let mut refreshed = answer(model.lines_ask(id).unwrap(), 0..2, false);
+    refreshed.lines[1].text = "eleven seconds".to_owned();
+    model.add_transcript_lines(id, refreshed);
     assert_eq!(held(&model, id).line(1).unwrap().text, "eleven seconds");
 
     // The recording was removed while it was read.
@@ -750,4 +767,82 @@ fn a_changed_channel_asks_for_its_open_recordings_again() {
     channel.hides_occupants = true;
     let follow = model.apply(&Event::ChannelUpdated { channel });
     assert_eq!(follow.load, [Part::Recording(id)]);
+}
+
+#[test]
+fn deleting_a_workspace_clears_its_open_recordings_and_transcripts() {
+    let scene = scene();
+    let (mut model, read) = opened(&scene, 2);
+    let id = read.recording.id;
+    model.add_transcript_lines(id, answer(first_page(LINES_PAGE), 0..2, false));
+    model.apply(&Event::WorkspaceDeleted {
+        workspace_id: scene.workspace_id,
+    });
+    let open = held(&model, id);
+    assert!(open.gone);
+    assert_eq!(open.detail, Loadable::NotLoaded);
+    assert_eq!(open.transcript, Loadable::NotLoaded);
+    assert_eq!(open.lines, TranscriptLines::default());
+}
+
+#[test]
+fn deleting_a_workspace_invalidates_recording_answers_in_flight() {
+    let scene = scene();
+    let (model, read) = opened(&scene, 2);
+    let event = Event::WorkspaceDeleted {
+        workspace_id: scene.workspace_id,
+    };
+    assert!(Part::Recording(read.recording.id).concerns(&event, &model));
+    assert!(Part::TranscriptLines(read.recording.id).concerns(&event, &model));
+}
+
+#[test]
+fn a_late_recording_answer_cannot_restore_a_deleted_workspace() {
+    let scene = scene();
+    let (mut model, mut read) = opened(&scene, 2);
+    read.recording.workspace_id = scene.workspace_id;
+    let id = read.recording.id;
+    let deleted = Event::WorkspaceDeleted {
+        workspace_id: scene.workspace_id,
+    };
+    model.apply(&deleted);
+    assert!(model.set_recording(id, read.clone(), transcript(&read.recording)));
+    model.replay_reads(Part::Recording(id), [&deleted]);
+    assert!(held(&model, id).gone);
+    assert_eq!(held(&model, id).detail, Loadable::NotLoaded);
+}
+
+#[test]
+fn a_late_recording_read_does_not_restore_an_archived_channel() {
+    use junto_protocol::structure::ArchivedChannel;
+    let scene = scene();
+    for lines in [false, true] {
+        let (mut model, read) = opened(&scene, 2);
+        let id = read.recording.id;
+        model.open_timeline(PlaceId::Channel(scene.daily));
+        model.add_transcript_lines(id, answer(first_page(LINES_PAGE), 0..2, false));
+        let mut channel = model.channel(scene.daily).unwrap().channel.clone();
+        channel.name = "Updated".to_owned();
+        let update = Event::ChannelUpdated {
+            channel: channel.clone(),
+        };
+        let archive = Event::ChannelArchived {
+            channel: ArchivedChannel {
+                channel,
+                archived_at: time(),
+                deletes_at: None,
+            },
+        };
+        model.apply(&update);
+        model.apply(&archive);
+        assert!(model.channel(scene.daily).is_none());
+        let part = if lines {
+            Part::TranscriptLines(id)
+        } else {
+            Part::Recording(id)
+        };
+        model.replay_reads(part, [&update, &archive]);
+        assert!(model.channel(scene.daily).is_none());
+        assert!(model.admin.archived_channel(scene.daily).is_some());
+    }
 }

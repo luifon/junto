@@ -17,7 +17,10 @@ Invites:
 - The workspaces of an invite are fixed when it is created. An invite that names none stores the default workspace.
 - A join counts its use with one conditional update that succeeds only while the invite is not cancelled, not expired and has uses left. The use, the account, the device, the memberships and the audit entry are one transaction.
 - A join that fails after the count does not use up the invite.
-- An invite can be cancelled by a person with the "create invites" permission. A cancelled invite stays in the list with the reason: cancelled, or creator banned (ADR 0106).
+- An account reads an invite when it holds the "create invites" permission and either created the invite or may see every workspace that the invite names. The list of invites returns the invites that the caller reads, the events of an invite go to the accounts that read it (ADR 0208), and an invite is cancelled by an account that reads it. For every other caller with the permission the cancel route answers `not_found`, as for an invite that does not exist (ADR 0205).
+- Reason: an invite names its workspaces, and a holder of "create invites" who is not a member of one of them gets `not_found` for that workspace on every other route. The permission function decides the rule in one place for the list, the cancellation and the events.
+- A workspace that was deleted (ADR 0308) is not named and does not count for this rule.
+- A cancelled invite stays in the list with the reason: cancelled, or creator banned (ADR 0106).
 - An invite is created only by an account that is active in the transaction that stores the invite (ADR 0009). A ban that overlaps the creation either cancels the invite or prevents it.
 - A logged-in account can use an invite to enter further workspaces (ADR 0115).
 
@@ -44,8 +47,10 @@ Limits on attempts:
 - Wrong signatures have their own limit: 10 per 10 minutes per client address (ADR 0108).
 - A refused request gets the error `rate_limited` with a `Retry-After` header.
 - The client address is the address of the connection. When that address is one of the configured proxy addresses, the server reads the `X-Forwarded-For` header from the right and takes the first address that is not a configured proxy. A header that cannot be read is ignored.
+- A configured proxy is one address or a network in the form `192.0.2.0/24`: the entry container of a Compose network has no fixed address. An IPv4 address that is written as an IPv6 address is the IPv4 address. A network of IPv4 addresses is written in the IPv4 form.
 - An IPv6 client is counted by its /64 prefix.
 - Redeeming an invite as a logged-in account is limited to 10 attempts per 10 minutes per account and to 10 per 10 minutes per client address (ADR 0115).
+- Looking up and approving a device link with its code share one limit: 10 attempts per 10 minutes per account (ADR 0110).
 - The counts are held in the memory of the server process. The window of a key starts at its first attempt.
 - Each limit holds at most 100 000 keys. The keys expire in the order in which their windows started, so each attempt drops the expired keys from the front of that order and scans nothing else. When a limit is full, the key whose window started first is dropped.
 

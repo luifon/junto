@@ -5,6 +5,7 @@
 //! Requests to the server run as tasks of their own and report back, and the task goes on
 //! reading the connection while they run.
 
+mod admin;
 mod messages;
 mod recordings;
 
@@ -12,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
-use junto_protocol::call::{ChannelCall, OwnCallView};
+use junto_protocol::call::OwnCallView;
 use junto_protocol::discovery::NotificationPage;
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::{
@@ -59,7 +60,6 @@ enum Payload {
     Snapshot(Box<Snapshot>),
     Members(Vec<WorkspaceMember>),
     OwnCall(OwnCallView),
-    ChannelCall(ChannelCall),
     MessageState(MessageState),
     Message(Box<Message>),
     Pages(messages::Pages),
@@ -70,6 +70,7 @@ enum Payload {
     Notices(NotificationPage),
     Recording(Box<(RecordingDetail, Transcript)>),
     Lines(LinesRead),
+    Admin(crate::model::AdminPayload),
 }
 
 struct Loaded {
@@ -246,6 +247,10 @@ struct Client {
     covered: Level,
     snapshot_retry_at: Option<Instant>,
     snapshot_backoff: Backoff,
+    /// When the call of the account is read again after a read that failed. No event
+    /// carries what that read gives of a call that hides who is inside (ADR 0517).
+    own_call_retry_at: Option<Instant>,
+    own_call_backoff: Backoff,
     /// The session ended. Nothing is tried until the client core gives another session.
     halted: bool,
     fault: Option<StreamFault>,
@@ -262,6 +267,8 @@ struct Client {
     done: mpsc::UnboundedSender<messages::Done>,
     /// What the client does for the recordings that a reader has open.
     recordings: recordings::Work,
+    /// The collections of the administration that readers have open (ADR 0760).
+    admin: admin::Collections,
 }
 
 /// Runs the stream client of one server until `desired` is closed.
@@ -299,6 +306,8 @@ pub(crate) async fn run(
         covered: Level::Full,
         snapshot_retry_at: None,
         snapshot_backoff: Backoff::new(policy.first_delay, policy.longest_delay),
+        own_call_retry_at: None,
+        own_call_backoff: Backoff::new(policy.first_delay, policy.longest_delay),
         halted: false,
         fault: None,
         shown: None,
@@ -309,6 +318,7 @@ pub(crate) async fn run(
         messages: messages::Work::default(),
         done,
         recordings: recordings::Work::default(),
+        admin: admin::Collections::default(),
     };
     let first = desired.borrow_and_update().clone();
     client.retarget(first);
@@ -427,7 +437,7 @@ impl Client {
                             .is_some_and(|workspace| workspace.members.loaded().is_none())
                 }
                 Part::OwnCall => model.own_call.is_some(),
-                Part::ChannelCall(channel_id) => model.channel(channel_id).is_some(),
+                Part::Admin(part) => self.admin_read_needed(part, model),
                 part => self.message_read_needed(part, model),
             });
             if needed && part.is_read_again() {
@@ -452,9 +462,11 @@ impl Client {
         self.waiting_for_members.clear();
         self.forget_messages();
         self.forget_recordings();
+        self.forget_admin();
         self.halted = false;
         self.fault = None;
         self.snapshot_retry_at = None;
+        self.own_call_retry_at = None;
         self.covered = Level::Full;
         self.snapshot_backoff.reset();
     }
@@ -497,6 +509,16 @@ impl Client {
         if needs_snapshot && !loading && due(self.snapshot_retry_at) {
             self.snapshot_retry_at = None;
             self.start(Load::Snapshot);
+        }
+        if !needs_snapshot && self.own_call_retry_at.is_some_and(|at| at <= now) {
+            self.own_call_retry_at = None;
+            let in_call = self
+                .model
+                .as_ref()
+                .is_some_and(|model| model.own_call.is_some());
+            if in_call {
+                self.start(Load::Part(Part::OwnCall));
+            }
         }
 
         if self.link.is_none() && self.opening.is_none() && due(self.retry_at) {
@@ -868,6 +890,15 @@ impl Client {
         for part in follow.load {
             if part.is_read_again() {
                 self.read(part);
+            } else if matches!(part, Part::Admin(_))
+                && self
+                    .pending
+                    .iter()
+                    .any(|pending| pending.load == Load::Part(part))
+            {
+                // The read on its way keeps the event that asked for this one, and one
+                // more read follows its answer (ADR 0760). A read is not ended for an
+                // event, so a row of such events cannot keep the collection unread.
             } else {
                 self.start(Load::Part(part));
             }
@@ -880,9 +911,15 @@ impl Client {
             return;
         }
         self.pending.retain(|pending| pending.load != load);
+        if load == Load::Part(Part::OwnCall) {
+            self.own_call_retry_at = None;
+        }
         if let (Load::Part(Part::Members(workspace_id)), Some(model)) = (load, &mut self.model) {
             model.set_members(workspace_id, Loadable::Loading);
             self.model_changed = true;
+        }
+        if let Load::Part(Part::Admin(part)) = load {
+            self.admin_read_starts(part);
         }
         let page = match load {
             Load::Part(Part::Messages(place, reach)) => {
@@ -958,9 +995,6 @@ impl Client {
                     .await
                     .map(Payload::Members),
                 Load::Part(Part::OwnCall) => api.own_call().await.map(Payload::OwnCall),
-                Load::Part(Part::ChannelCall(channel_id)) => {
-                    api.channel_call(channel_id).await.map(Payload::ChannelCall)
-                }
                 Load::Part(Part::MessageState(place)) => {
                     api.message_state(place).await.map(Payload::MessageState)
                 }
@@ -1021,6 +1055,7 @@ impl Client {
                         .map(Payload::Lines),
                     None => Err(ApiError::Stopped),
                 },
+                Load::Part(Part::Admin(part)) => admin::read(&api, part).await.map(Payload::Admin),
             };
             let _ = loaded.send(Loaded { ticket, result });
         });
@@ -1060,6 +1095,19 @@ impl Client {
             self.pump_message_reads();
             return;
         }
+        if let Load::Part(Part::Admin(part)) = pending.load {
+            if ended {
+                self.ended(None);
+                return;
+            }
+            let result = match loaded.result {
+                Ok(Payload::Admin(payload)) => Ok(payload),
+                Ok(_) => return,
+                Err(error) => Err(error),
+            };
+            self.admin_loaded(part, result, &kept);
+            return;
+        }
         match (pending.load, loaded.result) {
             (Load::Snapshot, Ok(Payload::Snapshot(snapshot))) => self.install(*snapshot),
             (Load::Snapshot, Err(error)) if !ended => {
@@ -1075,9 +1123,9 @@ impl Client {
                     (Part::Members(workspace_id), Payload::Members(members)) => {
                         model.set_members(workspace_id, Loadable::Loaded(members));
                     }
-                    (Part::OwnCall, Payload::OwnCall(view)) => model.set_own_call(view.call),
-                    (Part::ChannelCall(_), Payload::ChannelCall(shown)) => {
-                        model.set_channel_call(shown);
+                    (Part::OwnCall, Payload::OwnCall(view)) => {
+                        model.set_own_call(view.call);
+                        self.own_call_backoff.reset();
                     }
                     _ => return,
                 }
@@ -1089,6 +1137,10 @@ impl Client {
             }
             (Load::Part(part), Err(error)) if !ended => {
                 tracing::debug!(%error, ?part, "a part of the state was not loaded");
+                if part == Part::OwnCall {
+                    let wait = self.own_call_backoff.wait();
+                    self.own_call_retry_at = Some(Instant::now() + wait);
+                }
                 if let Part::Members(workspace_id) = part {
                     if let Some(model) = &mut self.model {
                         model.set_members(workspace_id, Loadable::NotLoaded);
@@ -1154,6 +1206,10 @@ impl Client {
         if in_call {
             self.start(Load::Part(Part::OwnCall));
         }
+        // A reader of the messages, of a thread or of the pins of a channel holds it.
+        let mut places = self.messages.wanted_places();
+        places.extend(self.messages.wanted_pins());
+        self.carry_admin(before.as_ref(), &places);
         self.carry_messages(before.as_ref());
         self.carry_recordings(before.as_ref());
         self.untold.push(Notice::Reloaded { cursor });
@@ -1210,6 +1266,9 @@ impl Client {
                     self.model_changed = true;
                 }
             }
+            Command::OpenAdmin { part, reply } => self.open_admin(part, reply),
+            Command::ReleaseAdmin(part) => self.release_admin(part),
+            Command::ReadAdminAgain(part) => self.read_admin_again(part),
             command => self.message_command(command),
         }
     }
@@ -1256,6 +1315,7 @@ impl Client {
         if self.model.is_none() || self.stale {
             times.extend(self.snapshot_retry_at);
         } else {
+            times.extend(self.own_call_retry_at);
             times.extend(self.messages.next_due());
         }
         times.into_iter().min()

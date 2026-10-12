@@ -2,9 +2,10 @@ use junto_authz::{ServerPermission, WorkspacePermission};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
+use crate::access_token::TokenAction;
 use crate::ids::{
-    AccountId, AuditEntryId, CategoryId, ChannelId, DeviceId, InviteId, JoinRequestId, RecordingId,
-    ServerRoleId, WorkspaceId, WorkspaceRoleId,
+    AccessTokenId, AccountId, AuditEntryId, CategoryId, ChannelId, DeviceId, InviteId,
+    JoinRequestId, RecordingId, ServerRoleId, WorkspaceId, WorkspaceRoleId,
 };
 use crate::recording::RecordingStopReason;
 use crate::structure::ChannelKind;
@@ -49,6 +50,10 @@ pub enum AuditEvent {
     },
     InviteRevoked {
         invite_id: InviteId,
+        /// The account that created the invite. Absent in an entry that was written before
+        /// the field existed.
+        #[serde(default)]
+        invite_created_by: Option<AccountId>,
     },
     /// States which invite created the account and which account created that invite.
     AccountJoined {
@@ -98,6 +103,19 @@ pub enum AuditEvent {
     ServerRoleAssigned {
         role_id: ServerRoleId,
         account_id: AccountId,
+    },
+    /// An administrator created an access token. The entry does not contain the token.
+    AccessTokenCreated {
+        access_token_id: AccessTokenId,
+        name: String,
+        actions: Vec<TokenAction>,
+        #[serde(with = "time::serde::rfc3339")]
+        expires_at: OffsetDateTime,
+    },
+    /// A person revoked an access token.
+    AccessTokenRevoked {
+        access_token_id: AccessTokenId,
+        created_by: AccountId,
     },
     ServerRoleUnassigned {
         role_id: ServerRoleId,
@@ -232,6 +250,41 @@ pub enum AuditEvent {
     RetentionChanged {
         days: Option<u32>,
     },
+    /// A person archived the channel (ADR 0410).
+    ChannelArchived,
+    ChannelRestored,
+    /// The time after which the archived channels of the workspace are deleted. Absent
+    /// days: never.
+    ArchivePeriodChanged {
+        days: Option<u32>,
+    },
+    /// The channels of the category stay and have no category.
+    CategoryDeleted {
+        category_id: CategoryId,
+        name: String,
+    },
+    /// The entry states the role as it was, and how many members held it.
+    WorkspaceRoleDeleted {
+        role_id: WorkspaceRoleId,
+        name: String,
+        permissions: Vec<WorkspacePermission>,
+        holders: u32,
+    },
+    ServerRoleDeleted {
+        role_id: ServerRoleId,
+        name: String,
+        permissions: Vec<ServerPermission>,
+        holders: u32,
+    },
+    /// A workspace was deleted with its members, roles, categories and channels.
+    WorkspaceDeleted {
+        workspace_id: WorkspaceId,
+        name: String,
+    },
+    /// A person asked for an export of the channel (ADR 0411).
+    ExportRequested {
+        export_id: crate::ids::ExportId,
+    },
     /// An action that this build does not know. It is read and never written.
     #[serde(other, skip_serializing)]
     Unknown,
@@ -260,6 +313,8 @@ impl AuditEvent {
             Self::ServerRoleUpdated { .. } => "server_role_updated",
             Self::ServerRoleAssigned { .. } => "server_role_assigned",
             Self::ServerRoleUnassigned { .. } => "server_role_unassigned",
+            Self::AccessTokenCreated { .. } => "access_token_created",
+            Self::AccessTokenRevoked { .. } => "access_token_revoked",
             Self::WorkspaceCreated { .. } => "workspace_created",
             Self::WorkspaceRenamed { .. } => "workspace_renamed",
             Self::WorkspaceRoleCreated { .. } => "workspace_role_created",
@@ -290,6 +345,14 @@ impl AuditEvent {
             Self::NotificationDefaultChanged { .. } => "notification_default_changed",
             Self::RecordingRetentionChanged { .. } => "recording_retention_changed",
             Self::RetentionChanged { .. } => "retention_changed",
+            Self::ChannelArchived => "channel_archived",
+            Self::ChannelRestored => "channel_restored",
+            Self::ArchivePeriodChanged { .. } => "archive_period_changed",
+            Self::CategoryDeleted { .. } => "category_deleted",
+            Self::WorkspaceRoleDeleted { .. } => "workspace_role_deleted",
+            Self::ServerRoleDeleted { .. } => "server_role_deleted",
+            Self::WorkspaceDeleted { .. } => "workspace_deleted",
+            Self::ExportRequested { .. } => "export_requested",
             Self::Unknown => "unknown",
         }
     }
@@ -304,6 +367,10 @@ pub struct AuditEntry {
     pub occurred_at: OffsetDateTime,
     /// Absent when the server itself acted.
     pub actor_id: Option<AccountId>,
+    /// The access token that the request was made with (ADR 0210). Absent for a request
+    /// with a session and for an action of the server.
+    #[serde(default)]
+    pub access_token_id: Option<AccessTokenId>,
     pub workspace_id: Option<WorkspaceId>,
     pub channel_id: Option<ChannelId>,
     pub event: AuditEvent,
@@ -376,6 +443,42 @@ mod tests {
                 recording_id: RecordingId::generate(),
             },
             AuditEvent::GlossaryReplaced { terms: 12 },
+            AuditEvent::AccessTokenCreated {
+                access_token_id: AccessTokenId::generate(),
+                name: "setup".to_owned(),
+                actions: vec![TokenAction::ManageStructure],
+                expires_at: OffsetDateTime::UNIX_EPOCH,
+            },
+            AuditEvent::AccessTokenRevoked {
+                access_token_id: AccessTokenId::generate(),
+                created_by: account_id,
+            },
+            AuditEvent::ChannelArchived,
+            AuditEvent::ChannelRestored,
+            AuditEvent::ArchivePeriodChanged { days: None },
+            AuditEvent::CategoryDeleted {
+                category_id: CategoryId::generate(),
+                name: "Projects".to_owned(),
+            },
+            AuditEvent::WorkspaceRoleDeleted {
+                role_id: WorkspaceRoleId::generate(),
+                name: "helpers".to_owned(),
+                permissions: vec![WorkspacePermission::ManageMessages],
+                holders: 2,
+            },
+            AuditEvent::ServerRoleDeleted {
+                role_id: ServerRoleId::generate(),
+                name: "inviters".to_owned(),
+                permissions: vec![ServerPermission::CreateInvites],
+                holders: 0,
+            },
+            AuditEvent::WorkspaceDeleted {
+                workspace_id: WorkspaceId::generate(),
+                name: "Closed".to_owned(),
+            },
+            AuditEvent::ExportRequested {
+                export_id: crate::ids::ExportId::generate(),
+            },
         ];
         for event in events {
             let json = serde_json::to_value(&event).unwrap();

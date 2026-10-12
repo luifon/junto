@@ -97,7 +97,9 @@ Notifications:
   `notification_changed` prompts a refresh of the caller's notices. Ordinary-message
   and thread notices reach full connections; only mention and direct notices reach background.
   Read state is idempotent and shared across devices. `notification_settings_changed`
-  refreshes policy at every connection level. Advancing a channel, conversation or thread
+  refreshes policy at every connection level. A change of the own settings is told to the
+  account, and a change of the default of a workspace to the accounts that see that
+  workspace. Advancing a channel, conversation or thread
   read position marks its notices read in the same transaction. Maintenance keeps at most
   500 notices per account and removes notices older than 90 days in bounded batches.
   Inserts queue their recipients for cap maintenance; unchanged accounts are not scanned.
@@ -165,8 +167,8 @@ Retention and execution:
 - New content mutations share the message-write account limiter, and history/search/notice
   reads share the history limiter. Database transactions and event positions follow ADRs
   0009 to 0011. The snapshot carries current notices and personal notification policies.
-- Archive/export APIs remain separate work. No scheduled
-  archive deletion or export notice is produced before those features exist.
+- Archive and export are decided in ADR 0410 and ADR 0411. File retention that removes the
+  files of a message removes the exports that hold them.
 
 Notification delivery reads current visibility in one batched statement. Its join to
 server state explicitly limits that singleton to one row, so PostgreSQL does not estimate

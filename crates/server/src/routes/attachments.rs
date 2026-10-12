@@ -61,12 +61,16 @@ pub async fn start_upload(
             (None, Some(id)) => Place::direct(connection, &access, id).await?,
             _ => return Err(ApiError::invalid("give one channel or conversation")),
         };
+        place.require_open()?;
+        // An upload counts while it waits for its message and while its reservation
+        // exists, so one account holds at most 20 reservations (ADR 0408).
         let count: i64 = sqlx::query_scalar(
             "select count(*)
-                 from attachments
-                 where owner_id=$1
-                 and not attached
-                 and removed_at is null",
+                 from attachments a
+                 where a.owner_id=$1
+                 and not a.attached
+                 and (a.removed_at is null or exists(
+                     select 1 from storage_reservations r where r.subject_id=a.id))",
         )
         .bind(access.account_id)
         .fetch_one(&mut *connection)
@@ -141,7 +145,7 @@ pub async fn put_chunk(
     }
     let account = read!(app, |connection| {
         let access = Access::open(connection, &bearer, app.now()).await?;
-        files::owned(connection, &access, id, app.now()).await?;
+        files::writable(connection, &access, id, app.now()).await?;
         Ok(access.account_id)
     })?;
     let permit = app.attachment_transfers.acquire(account).ok_or_else(|| {
@@ -156,7 +160,7 @@ pub async fn put_chunk(
     let now = app.now();
     let already = transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        let (_, upload) = files::owned(connection, &access, id, now).await?;
+        let (_, upload) = files::writable(connection, &access, id, now).await?;
         let prior: Option<(i32, String, bool)> = sqlx::query_as(
             "select bytes,sha256,stored
                  from attachment_chunks
@@ -230,7 +234,7 @@ pub async fn put_chunk(
     }
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, app.now()).await?;
-        files::owned(connection, &access, id, app.now()).await?;
+        files::writable(connection, &access, id, app.now()).await?;
         let changed = sqlx::query(
             "update attachment_chunks set stored=true
                  where attachment_id=$1
@@ -262,7 +266,7 @@ pub async fn complete_upload(
     crate::proof::limit(&app.attachment_writes, bearer.0, app.now())?;
     let (parts, expected, upload, account) = read!(app, |connection| {
         let access = Access::open(connection, &bearer, app.now()).await?;
-        let (_, upload) = files::owned(connection, &access, id, app.now()).await?;
+        let (_, upload) = files::writable(connection, &access, id, app.now()).await?;
         if upload.received != upload.bytes {
             return Err(ApiError::conflict("upload is incomplete"));
         }
@@ -314,7 +318,7 @@ pub async fn complete_upload(
         }
         transact!(app.background(), |connection| {
             let access = Access::open(connection, &bearer, app.now()).await?;
-            files::owned(connection, &access, id, app.now()).await?;
+            files::writable(connection, &access, id, app.now()).await?;
             let (media, width, height) =
                 image.map_or(("application/octet-stream", None, None), |im| {
                     (
@@ -354,12 +358,52 @@ pub async fn cancel_upload(
         sqlx::query("update attachments set removed_at=$2 where id=$1")
             .bind(id)
             .bind(app.now())
-            .execute(connection)
+            .execute(&mut *connection)
             .await?;
+        // No chunk is accepted for a cancelled upload, so it needs no reserved space.
+        storage::release(connection, id.as_uuid()).await?;
         Ok(())
     })?;
     Ok(StatusCode::NO_CONTENT)
 }
+/// The row of an attachment that the caller may download now: the upload is complete and
+/// belongs to a message that the caller reads.
+async fn downloadable(
+    connection: &mut sqlx::PgConnection,
+    access: &Access,
+    id: AttachmentId,
+) -> ApiResult<sqlx::postgres::PgRow> {
+    let row = sqlx::query(
+        "select message_id,bytes,media_type,sha256,storage_id
+             from attachments
+             where id=$1
+             and attached
+             and complete
+             and removed_at is null",
+    )
+    .bind(id)
+    .fetch_optional(&mut *connection)
+    .await?
+    .ok_or_else(ApiError::not_found)?;
+    let message: Option<MessageId> = row.try_get("message_id")?;
+    messages::get(connection, access, message.ok_or_else(ApiError::not_found)?).await?;
+    Ok(row)
+}
+
+/// The stored file of an attachment that the caller of a running download may still read.
+async fn stored_decided_again(
+    app: &AppState,
+    bearer: Bearer,
+    id: AttachmentId,
+    now: time::OffsetDateTime,
+) -> ApiResult<AttachmentId> {
+    read!(app.background(), |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        let row = downloadable(connection, &access, id).await?;
+        Ok(row.try_get::<AttachmentId, _>("storage_id")?)
+    })
+}
+
 /// Downloads the file, or one byte range. An outside range gets `range_not_satisfiable`.
 #[utoipa::path(
     get,
@@ -382,27 +426,10 @@ pub async fn download(
     bearer: Bearer,
     ApiPath(id): ApiPath<AttachmentId>,
 ) -> ApiResult<Response> {
+    let now = app.now();
     let (parts, size, media, hash, account_id, storage_id) = read!(app, |connection| {
-        let access = Access::open(connection, &bearer, app.now()).await?;
-        let row = sqlx::query(
-            "select message_id,bytes,media_type,sha256,storage_id
-                 from attachments
-                 where id=$1
-                 and attached
-                 and complete
-                 and removed_at is null",
-        )
-        .bind(id)
-        .fetch_optional(&mut *connection)
-        .await?
-        .ok_or_else(ApiError::not_found)?;
-        let message: Option<MessageId> = row.try_get("message_id")?;
-        messages::get(
-            connection,
-            &access,
-            message.ok_or_else(ApiError::not_found)?,
-        )
-        .await?;
+        let access = Access::open(connection, &bearer, now).await?;
+        let row = downloadable(connection, &access, id).await?;
         Ok((
             files::chunks(connection, id).await?,
             row.try_get::<i64, _>("bytes")?,
@@ -462,6 +489,12 @@ pub async fn download(
         .download_stall
         .try_into()
         .map_err(|error| ApiError::internal(&error))?;
+    // A download that runs ends when its caller may no longer read the message, or the
+    // message no longer has this file.
+    let still_allowed = crate::download::decided_again(&app, now, move |app, at| async move {
+        stored_decided_again(&app, bearer, id, at).await.ok() == Some(storage_id)
+    });
+    let stream = crate::download::while_allowed(stream, still_allowed);
     let mut response = crate::download::streamed(
         stream,
         size as u64,

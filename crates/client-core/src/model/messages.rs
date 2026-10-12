@@ -446,12 +446,14 @@ impl ServerModel {
     /// its channel.
     pub fn place(&self, place: PlaceId) -> Option<MessagePlace> {
         match place {
-            PlaceId::Channel(channel_id) | PlaceId::Thread { channel_id, .. } => {
-                self.channel(channel_id).map(|held| MessagePlace::Channel {
-                    workspace_id: held.channel.workspace_id,
+            // An archived channel is in no channel list and is read all the same
+            // (ADR 0410).
+            PlaceId::Channel(channel_id) | PlaceId::Thread { channel_id, .. } => self
+                .readable_channel(channel_id)
+                .map(|held| MessagePlace::Channel {
+                    workspace_id: held.workspace_id,
                     channel_id,
-                })
-            }
+                }),
             PlaceId::Direct(conversation_id) => self
                 .conversations
                 .iter()

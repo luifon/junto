@@ -160,6 +160,8 @@ impl Shell {
         let call = if let Some(call) = active {
             let (label, selector) = if call.phase == junto_media::calls::Phase::Reconnecting {
                 (text::CALL_RECONNECTING, "direct-call-reconnecting")
+            } else if call.phase == junto_media::calls::Phase::Entering {
+                (text::CALL_ENTERING, "direct-call-entering")
             } else if joined {
                 (text::DIRECT_CALL, "active-direct-call")
             } else {

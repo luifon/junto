@@ -49,6 +49,7 @@ pub async fn run(app: &AppState) -> ApiResult<()> {
                 if !notified.insert(*id) {
                     continue;
                 }
+                crate::exports::message_deleted(connection, app.now(), *id).await?;
                 let position: i64 = sqlx::query_scalar("update messages set files_removed_by_retention=true where id=$1 returning position")
                     .bind(id)
                     .fetch_one(&mut *connection)

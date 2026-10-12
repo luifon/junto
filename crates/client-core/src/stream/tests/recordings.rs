@@ -184,18 +184,19 @@ async fn a_recording_opens_with_its_segments_and_its_transcript_and_follows_its_
     assert!(open(&model, id).lines.more);
     assert_eq!(reads(&rig, id), (2, 2));
 
-    // A rename of a speaker changes the loaded label without a request.
+    // A rename reads the label through the authorized route.
     let named = speaker(1, Some("Noor"));
+    tape(&rig, |tape| tape.transcripts[0].speakers[0] = named.clone());
     peer.event(42, renamed(&ready, &named)).await;
     recording_when(&rig, id, "the name", |open| open.speaker(1) == Some(&named)).await;
-    assert_eq!(reads(&rig, id), (2, 2));
+    assert_eq!(reads(&rig, id), (3, 3));
 
     // One of the two readers releases the recording: it stays for the other one.
     rig.live.release_recording(id);
     peer.event(43, removed(&ready)).await;
     let model = recording_when(&rig, id, "the removal", |open| open.gone).await;
     assert_eq!(open(&model, id).detail, Loadable::NotLoaded);
-    assert_eq!(reads(&rig, id), (2, 2));
+    assert_eq!(reads(&rig, id), (3, 3));
     rig.live.release_recording(id);
     rig.model_when("no recording", |model| model.recording(id).is_none())
         .await;
@@ -218,13 +219,15 @@ async fn the_lines_are_read_in_pages_and_a_correction_changes_a_loaded_line() {
     assert_eq!(lines.lines.len(), LINES_PAGE);
     assert!(lines.more && !lines.reading);
 
-    // A correction of a loaded line needs no request.
+    // A correction of a loaded line is read through its authorized route.
     let ada = AccountId::generate();
-    peer.event(
-        41,
-        corrected(&read.recording, 5, "eleven seconds", ada, time()),
-    )
-    .await;
+    tape(&rig, |tape| {
+        tape.lines[5].original_text = Some(tape.lines[5].text.clone());
+        tape.lines[5].text = "eleven seconds".to_owned();
+        tape.lines[5].corrected_by = Some(ada);
+        tape.lines[5].corrected_at = Some(time());
+    });
+    peer.event(41, corrected(&read.recording, 5)).await;
     let model = recording_when(&rig, id, "the correction", |open| {
         open.line(5)
             .is_some_and(|line| line.text == "eleven seconds")
@@ -233,7 +236,7 @@ async fn the_lines_are_read_in_pages_and_a_correction_changes_a_loaded_line() {
     let fixed = open(&model, id).line(5).unwrap();
     assert_eq!(fixed.original_text.as_deref(), Some("line 5"));
     assert_eq!(fixed.corrected_by, Some(ada));
-    assert_eq!(line_reads(&rig), 1);
+    assert_eq!(line_reads(&rig), 2);
 
     // A correction that arrives while the next page is read: the answer is older than
     // the event, and the event is applied to it.
@@ -241,27 +244,25 @@ async fn the_lines_are_read_in_pages_and_a_correction_changes_a_loaded_line() {
     rig.live.read_transcript_lines(id);
     recording_when(&rig, id, "the read of the page", |open| open.lines.reading).await;
     soon("the request", async {
-        while line_reads(&rig) < 2 {
+        while line_reads(&rig) < 3 {
             tokio::task::yield_now().await;
         }
     })
     .await;
-    peer.event(
-        42,
-        corrected(&read.recording, 300, "said later", ada, time()),
-    )
-    .await;
+    peer.event(42, corrected(&read.recording, 300)).await;
     rig.model_when("the event", |model| model.cursor.position == 42)
         .await;
+    tape(&rig, |tape| tape.lines[300].text = "said later".to_owned());
     gate.add_permits(8);
     let model = recording_when(&rig, id, "the second page", |open| {
         open.lines.lines.len() == 2 * LINES_PAGE
+            && open.line(300).is_some_and(|line| line.text == "said later")
     })
     .await;
     assert_eq!(open(&model, id).line(300).unwrap().text, "said later");
     assert_eq!(
         tape(&rig, |tape| tape.asked_lines.clone()),
-        ["limit=200", "after=199&limit=200"]
+        ["limit=200", "limit=200", "after=199&limit=200", "limit=400"]
     );
 
     // The last page, and no request after it.
@@ -270,7 +271,7 @@ async fn the_lines_are_read_in_pages_and_a_correction_changes_a_loaded_line() {
     assert_eq!(open(&model, id).lines.lines.len(), 450);
     rig.live.read_transcript_lines(id);
     tokio::time::sleep(Duration::from_secs(60)).await;
-    assert_eq!(line_reads(&rig), 3);
+    assert_eq!(line_reads(&rig), 5);
 }
 
 #[tokio::test(start_paused = true)]
@@ -447,4 +448,78 @@ async fn the_recordings_that_readers_open_at_once_are_read_a_few_at_a_time() {
             .all(|id| open(&model, *id).detail.loaded().is_some())
     );
     assert_eq!(asked(&rig), 20);
+}
+
+#[tokio::test(start_paused = true)]
+async fn retrying_transcript_metadata_preserves_loaded_lines() {
+    let (mut rig, read) = recorded(600);
+    let id = read.recording.id;
+    rig.want(ConnectionLevel::Selected, "jst_one");
+    let (peer, _, _) = rig.served().await;
+    opened(&rig, id).await;
+    for count in [200, 400, 600] {
+        rig.live.read_transcript_lines(id);
+        recording_when(&rig, id, "the next page", |open| {
+            open.lines.lines.len() == count
+        })
+        .await;
+    }
+    let before = rig.model();
+    rig.http.fail("/transcript", 403, "forbidden");
+    peer.event(41, renamed(&read.recording, &speaker(1, Some("Noor"))))
+        .await;
+    recording_when(&rig, id, "the failed metadata refresh", |open| {
+        open.failed.is_some()
+    })
+    .await;
+    let gate = rig.http.hold("/transcript");
+    let retry = rig.live.reload_recording(id);
+    soon("the retry reaches the route", async {
+        while reads(&rig, id).1 < 3 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    let during = rig.model();
+    assert_eq!(open(&during, id).lines.lines, open(&before, id).lines.lines);
+    assert!(open(&during, id).transcript.loaded().is_some());
+    gate.add_permits(8);
+    soon("the retry completes", retry).await.unwrap();
+    assert_eq!(open(&rig.model(), id).failed, None);
+    assert_eq!(
+        open(&rig.model(), id).lines.lines,
+        open(&before, id).lines.lines
+    );
+    rig.http.fail("/transcript", 403, "forbidden");
+    peer.event(42, renamed(&read.recording, &speaker(1, Some("Kim"))))
+        .await;
+    recording_when(&rig, id, "another failed refresh", |open| {
+        open.failed.is_some()
+    })
+    .await;
+    rig.http.fail("/transcript", 403, "forbidden");
+    assert!(
+        soon("a retry also fails", rig.live.reload_recording(id))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        open(&rig.model(), id).lines.lines,
+        open(&before, id).lines.lines
+    );
+    soon(
+        "the following retry succeeds",
+        rig.live.reload_recording(id),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        open(&rig.model(), id).lines.lines,
+        open(&before, id).lines.lines
+    );
+    rig.live.release_recording(id);
+    rig.model_when("the sole reader is released", |model| {
+        model.recording(id).is_none()
+    })
+    .await;
 }

@@ -38,6 +38,9 @@ Removal:
 - The card has "Remove" for a person whose roles hold "manage recordings"; another person sees the control disabled with the reason. The roles are a prediction; the server decides (ADR 0739).
 - A removal asks first. The card leaves the chat when the event of the server was followed. A refusal is stated in the card: no permission, a recording that the server still works on, and every other answer by the sentence of its error code. After the answer "not found" the recording is read again, and the card states that the server does not give it.
 
+- A failed metadata refresh leaves the loaded transcript visible with an error and a retry that reloads the recording and transcript. The retry acquires its replacement reader before releasing the earlier one, keeping all loaded pages through failure and success. A failed page read retries the lines instead. This includes refreshes requested by a speaker rename.
+- An archived channel offers no removal of its recordings. An open removal confirmation closes when the card loses that permission, and the removal handler checks that the current channel is active before sending a request. For an active channel the server decides permission and its refusal remains visible in the card.
+
 ## Consequences
 
 - The prediction of "Remove" reads the roles of the workspace and not the overrides of the channel: a person who holds "manage recordings" only through an override of the voice channel sees the control disabled.

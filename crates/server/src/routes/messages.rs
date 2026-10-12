@@ -162,6 +162,7 @@ pub(super) async fn send(
     transact!(app, |connection| {
         let access = Access::open(connection, bearer, now).await?;
         let place = target.open(connection, &access).await?;
+        place.require_open()?;
         rate(app, &access, &mut counted)?;
         if let Some(reply) = body.reply_to {
             let (parent, _) = messages::get(connection, &access, reply).await?;
@@ -243,8 +244,18 @@ pub async fn get_message(
     bearer: Bearer,
     ApiPath(id): ApiPath<MessageId>,
 ) -> ApiResult<Json<Message>> {
+    let mut counted = false;
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, app.now()).await?;
+        if !counted {
+            app.message_reads
+                .attempt_of(access.account_id, app.now())
+                .map_err(|error| {
+                    ApiError::new(ErrorCode::RateLimited, "too many message reads")
+                        .retry_after(error.retry_after)
+                })?;
+            counted = true;
+        }
         Ok(messages::get(connection, &access, id).await?.1)
     })
     .map(Json)
@@ -265,6 +276,7 @@ pub async fn edit_message(
         if message.deleted {
             return Err(ApiError::not_found());
         }
+        place.require_open()?;
         place.edit(&access, &message)?;
         rate(&app, &access, &mut counted)?;
         if !document::has_content(&body.document) && message.attachments.is_empty() {
@@ -301,6 +313,7 @@ pub async fn delete_message(
         if message.deleted {
             return Err(ApiError::not_found());
         }
+        place.require_open()?;
         if let Some(system) = &message.system {
             if system.action != "recording_ready" {
                 return Err(ApiError::new(
@@ -400,6 +413,7 @@ async fn reaction(
         if message.deleted {
             return Err(ApiError::not_found());
         }
+        place.require_open()?;
         rate(app, &access, &mut counted)?;
         if add
             && message.reactions.len() >= 20

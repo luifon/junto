@@ -3,20 +3,24 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use std::collections::HashMap;
 
-use junto_authz::{ChannelGrant, Request, WorkspacePermission, WorkspacePermissions};
+use junto_authz::{
+    ChannelGrant, Override, Request, WorkspacePermission, WorkspacePermissions, WorkspaceScope,
+};
 use junto_protocol::audit::AuditEvent;
 use junto_protocol::events::Event;
 use junto_protocol::ids::{AccountId, ChannelId, WorkspaceId, WorkspaceRoleId};
 use junto_protocol::roles::{CreateWorkspaceRole, UpdateWorkspaceRole, WorkspaceRole};
 use sqlx::PgConnection;
+use time::OffsetDateTime;
 
-use crate::access::Access;
+use crate::access::{Access, stored_override};
 use crate::audit::{self, About};
 use crate::db;
 use crate::error::{ApiError, ApiResult};
 use crate::events;
 use crate::events::log::Affected;
 use crate::extract::{ApiJson, ApiPath, Bearer};
+use crate::routes::server_roles::require_active_account;
 use crate::state::AppState;
 use crate::validate;
 use crate::{read, transact};
@@ -119,7 +123,7 @@ pub async fn role_ids_of(
 /// member, whose permissions changed.
 async fn announce_roles(
     connection: &mut PgConnection,
-    now: time::OffsetDateTime,
+    now: OffsetDateTime,
     workspace_id: WorkspaceId,
     account_id: AccountId,
 ) -> ApiResult<()> {
@@ -158,51 +162,65 @@ pub async fn create_workspace_role(
         is_everyone: false,
     };
     let now = app.now();
+    let ceiling = app.config.limits.most_roles_per_workspace;
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        let scope = access.workspace(connection, workspace_id).await?;
-        access.require(Request::ManageWorkspaceRoles {
-            scope: &scope,
-            granting: permissions,
-            in_channels: &[],
-        })?;
-        let existing: i64 =
-            sqlx::query_scalar("select count(*) from workspace_roles where workspace_id = $1")
-                .bind(workspace_id)
-                .fetch_one(&mut *connection)
-                .await?;
-        if existing >= i64::from(app.config.limits.most_roles_per_workspace) {
-            return Err(ApiError::limit_reached(
-                "the workspace has the largest number of roles",
-            ));
-        }
-        sqlx::query(
-            "insert into workspace_roles (id, workspace_id, name, permissions, created_at)
-             values ($1, $2, $3, $4, $5)",
-        )
-        .bind(role.id)
-        .bind(workspace_id)
-        .bind(&role.name)
-        .bind(db::workspace_bits(permissions))
-        .bind(now)
-        .execute(&mut *connection)
-        .await?;
-        audit::record(
-            connection,
-            now,
-            Some(access.account_id),
-            About::Workspace(workspace_id),
-            &AuditEvent::WorkspaceRoleCreated {
-                role_id: role.id,
-                name: role.name.clone(),
-                permissions: role.permissions.clone(),
-            },
-        )
-        .await?;
-        let created = Event::WorkspaceRoleCreated { role: role.clone() };
-        events::publish(connection, now, &created).await
+        create(connection, &access, now, &role, ceiling).await
     })?;
     Ok((StatusCode::CREATED, Json(role)))
+}
+
+/// Creates `role` in its workspace, which holds at most `ceiling` roles.
+pub(crate) async fn create(
+    connection: &mut PgConnection,
+    access: &Access,
+    now: OffsetDateTime,
+    role: &WorkspaceRole,
+    ceiling: u32,
+) -> ApiResult<()> {
+    let workspace_id = role.workspace_id;
+    let permissions: WorkspacePermissions = role.permissions.iter().copied().collect();
+    let scope = access.workspace(connection, workspace_id).await?;
+    access.require(Request::ManageWorkspaceRoles {
+        scope: &scope,
+        granting: permissions,
+        in_channels: &[],
+    })?;
+    let existing: i64 =
+        sqlx::query_scalar("select count(*) from workspace_roles where workspace_id = $1")
+            .bind(workspace_id)
+            .fetch_one(&mut *connection)
+            .await?;
+    if existing >= i64::from(ceiling) {
+        return Err(ApiError::limit_reached(
+            "the workspace has the largest number of roles",
+        ));
+    }
+    sqlx::query(
+        "insert into workspace_roles (id, workspace_id, name, permissions, created_at)
+         values ($1, $2, $3, $4, $5)",
+    )
+    .bind(role.id)
+    .bind(workspace_id)
+    .bind(&role.name)
+    .bind(db::workspace_bits(permissions))
+    .bind(now)
+    .execute(&mut *connection)
+    .await?;
+    audit::record(
+        connection,
+        now,
+        Some(access.account_id),
+        About::Workspace(workspace_id),
+        &AuditEvent::WorkspaceRoleCreated {
+            role_id: role.id,
+            name: role.name.clone(),
+            permissions: role.permissions.clone(),
+        },
+    )
+    .await?;
+    let created = Event::WorkspaceRoleCreated { role: role.clone() };
+    events::publish(connection, now, &created).await
 }
 
 /// Changes the name or the permissions of a workspace role.
@@ -233,53 +251,193 @@ pub async fn update_workspace_role(
     let now = app.now();
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        let scope = access.workspace(connection, workspace_id).await?;
-        access.require(Request::Workspace {
-            scope: &scope,
-            permission: WorkspacePermission::ManageRoles,
-        })?;
-        let stored = locked_role(connection, workspace_id, role_id).await?;
-        let permissions = new_permissions.unwrap_or(stored.permissions);
-        access.require(Request::ManageWorkspaceRoles {
-            scope: &scope,
-            granting: permissions.difference(stored.permissions),
-            in_channels: &[],
-        })?;
-
-        let role = WorkspaceRole {
-            id: role_id,
-            workspace_id,
-            name: new_name.clone().unwrap_or(stored.name),
-            permissions: db::workspace_list(permissions),
-            is_everyone: stored.is_everyone,
-        };
-        sqlx::query("update workspace_roles set name = $2, permissions = $3 where id = $1")
-            .bind(role_id)
-            .bind(&role.name)
-            .bind(db::workspace_bits(permissions))
-            .execute(&mut *connection)
-            .await?;
-        audit::record(
+        update(
             connection,
+            &access,
             now,
-            Some(access.account_id),
-            About::Workspace(workspace_id),
-            &AuditEvent::WorkspaceRoleUpdated {
-                role_id,
-                name: role.name.clone(),
-                permissions: role.permissions.clone(),
-            },
+            (workspace_id, role_id),
+            new_name.clone(),
+            new_permissions,
         )
-        .await?;
-        let updated = Event::WorkspaceRoleUpdated { role: role.clone() };
-        events::publish(connection, now, &updated).await?;
-        if permissions != stored.permissions {
-            let holders = Affected::WorkspaceRoleHolders(workspace_id, role_id);
-            events::permissions_changed(connection, now, holders, Some(workspace_id)).await?;
-        }
-        Ok(role)
+        .await
     })
     .map(Json)
+}
+
+pub(crate) async fn update(
+    connection: &mut PgConnection,
+    access: &Access,
+    now: OffsetDateTime,
+    (workspace_id, role_id): (WorkspaceId, WorkspaceRoleId),
+    new_name: Option<String>,
+    new_permissions: Option<WorkspacePermissions>,
+) -> ApiResult<WorkspaceRole> {
+    let scope = access.workspace(connection, workspace_id).await?;
+    access.require(Request::Workspace {
+        scope: &scope,
+        permission: WorkspacePermission::ManageRoles,
+    })?;
+    let stored = locked_role(connection, workspace_id, role_id).await?;
+    let permissions = new_permissions.unwrap_or(stored.permissions);
+    access.require(Request::ManageWorkspaceRoles {
+        scope: &scope,
+        granting: permissions.difference(stored.permissions),
+        in_channels: &[],
+    })?;
+
+    let role = WorkspaceRole {
+        id: role_id,
+        workspace_id,
+        name: new_name.unwrap_or(stored.name),
+        permissions: db::workspace_list(permissions),
+        is_everyone: stored.is_everyone,
+    };
+    sqlx::query("update workspace_roles set name = $2, permissions = $3 where id = $1")
+        .bind(role_id)
+        .bind(&role.name)
+        .bind(db::workspace_bits(permissions))
+        .execute(&mut *connection)
+        .await?;
+    audit::record(
+        connection,
+        now,
+        Some(access.account_id),
+        About::Workspace(workspace_id),
+        &AuditEvent::WorkspaceRoleUpdated {
+            role_id,
+            name: role.name.clone(),
+            permissions: role.permissions.clone(),
+        },
+    )
+    .await?;
+    let updated = Event::WorkspaceRoleUpdated { role: role.clone() };
+    events::publish(connection, now, &updated).await?;
+    if permissions != stored.permissions {
+        let holders = Affected::WorkspaceRoleHolders(workspace_id, role_id);
+        events::permissions_changed(connection, now, holders, Some(workspace_id)).await?;
+    }
+    Ok(role)
+}
+
+/// Deletes a workspace role. No member holds it afterwards, and no channel has an override
+/// of it. The "everyone" role is not deleted.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/workspaces/{workspace_id}/roles/{role_id}",
+    tag = "workspaces",
+    params(("workspace_id" = WorkspaceId, Path), ("role_id" = WorkspaceRoleId, Path)),
+    security(("session" = [])),
+    responses((status = 204), ApiError)
+)]
+pub async fn delete_workspace_role(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath((workspace_id, role_id)): ApiPath<(WorkspaceId, WorkspaceRoleId)>,
+) -> ApiResult<StatusCode> {
+    let now = app.now();
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        delete(connection, &access, now, (workspace_id, role_id)).await
+    })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Requires what the grant rule asks of a caller who takes a role from its holders, by the
+/// deletion of the role or by its removal from one member: the managing permission and, in
+/// each channel, the permissions that an override of the role denies there. A holder gets
+/// those permissions back, so the change adds them (ADR 0304).
+async fn require_may_lift_denies(
+    connection: &mut PgConnection,
+    access: &Access,
+    workspace_id: WorkspaceId,
+    scope: &WorkspaceScope,
+    role_id: WorkspaceRoleId,
+) -> ApiResult<()> {
+    let denied_in: HashMap<ChannelId, i64> = sqlx::query_as(
+        "select channel_id, deny from channel_overrides where role_id = $1 and deny <> 0",
+    )
+    .bind(role_id)
+    .fetch_all(&mut *connection)
+    .await?
+    .into_iter()
+    .collect();
+    let denied_channels: Vec<ChannelId> = denied_in.keys().copied().collect();
+    let channels = if denied_channels.is_empty() {
+        Vec::new()
+    } else {
+        access
+            .named_channels(connection, workspace_id, scope, &denied_channels)
+            .await?
+    };
+    let mut in_channels = Vec::new();
+    for (record, channel_scope) in &channels {
+        if let Some(deny) = denied_in.get(&record.channel.id) {
+            in_channels.push(ChannelGrant {
+                scope: channel_scope,
+                granting: stored_override(0, *deny)?.granted_by_change_to(Override::NONE),
+            });
+        }
+    }
+    access.require(Request::ManageWorkspaceRoles {
+        scope,
+        granting: WorkspacePermissions::EMPTY,
+        in_channels: &in_channels,
+    })
+}
+
+/// Deletes a workspace role with its assignments and its overrides. The removal of an
+/// override that denies a permission can add that permission to a holder of the role, so
+/// the caller must hold, in each channel, what the role is denied there (ADR 0304).
+pub(crate) async fn delete(
+    connection: &mut PgConnection,
+    access: &Access,
+    now: OffsetDateTime,
+    (workspace_id, role_id): (WorkspaceId, WorkspaceRoleId),
+) -> ApiResult<()> {
+    let scope = access.workspace(connection, workspace_id).await?;
+    access.require(Request::Workspace {
+        scope: &scope,
+        permission: WorkspacePermission::ManageRoles,
+    })?;
+    let stored = locked_role(connection, workspace_id, role_id).await?;
+    if stored.is_everyone {
+        return Err(ApiError::conflict(
+            "every member holds the everyone role; it is not deleted",
+        ));
+    }
+    require_may_lift_denies(connection, access, workspace_id, &scope, role_id).await?;
+
+    let holders = events::Receivers::WorkspaceRoleHolders(role_id);
+    let holders =
+        events::permissions_changed_for(connection, now, holders, Some(workspace_id)).await?;
+    sqlx::query(
+        "delete from structure_identifiers where kind = 'workspace_role' and object_id = $1",
+    )
+    .bind(role_id)
+    .execute(&mut *connection)
+    .await?;
+    sqlx::query("delete from workspace_roles where id = $1")
+        .bind(role_id)
+        .execute(&mut *connection)
+        .await?;
+    audit::record(
+        connection,
+        now,
+        Some(access.account_id),
+        About::Workspace(workspace_id),
+        &AuditEvent::WorkspaceRoleDeleted {
+            role_id,
+            name: stored.name,
+            permissions: db::workspace_list(stored.permissions),
+            holders: u32::try_from(holders).map_err(|error| ApiError::internal(&error))?,
+        },
+    )
+    .await?;
+    let deleted = Event::WorkspaceRoleDeleted {
+        workspace_id,
+        role_id,
+    };
+    events::publish(connection, now, &deleted).await
 }
 
 /// Gives a workspace role to a member of the workspace.
@@ -354,6 +512,8 @@ pub async fn assign_workspace_role(
         if !is_member {
             return Err(ApiError::not_found());
         }
+        // A banned account keeps its memberships (ADR 0113) and gets no role.
+        require_active_account(connection, account_id).await?;
 
         let inserted = sqlx::query(
             "insert into member_roles (workspace_id, account_id, role_id) values ($1, $2, $3)
@@ -391,7 +551,8 @@ pub async fn assign_workspace_role(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Takes a workspace role from a member.
+/// Takes a workspace role from a member. The member gets back what the overrides of the
+/// role deny, so the caller must hold those permissions in the channels of the overrides.
 #[utoipa::path(
     delete,
     path = "/api/v1/workspaces/{workspace_id}/members/{account_id}/roles/{role_id}",
@@ -417,11 +578,7 @@ pub async fn unassign_workspace_role(
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         let scope = access.workspace(connection, workspace_id).await?;
-        access.require(Request::ManageWorkspaceRoles {
-            scope: &scope,
-            granting: WorkspacePermissions::EMPTY,
-            in_channels: &[],
-        })?;
+        require_may_lift_denies(connection, &access, workspace_id, &scope, role_id).await?;
         let deleted = sqlx::query(
             "delete from member_roles
              where workspace_id = $1 and account_id = $2 and role_id = $3",

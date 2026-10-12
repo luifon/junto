@@ -64,9 +64,10 @@ async fn rule_39_41_search_finds_threads_and_directs_with_channel_author_date_fi
 async fn rule_40_transcripts_search_current_corrections_and_speaker() {
     use crate::recordings_support::{FakeWorker, Said, Studio, transcript_of};
     let worker = FakeWorker::new();
-    let studio = Studio::on(worker.server().await).await;
+    let studio = Studio::hidden_on(worker.server().await).await;
     let server = &studio.scene.server;
     let owner = &studio.scene.owner;
+    let ann = &studio.scene.ann;
     let done = studio.finished_after(time::Duration::seconds(3)).await;
     worker.give(&transcript_of(
         &done,
@@ -74,6 +75,24 @@ async fn rule_40_transcripts_search_current_corrections_and_speaker() {
         &[Said(0, 0, 500, "quartz transcript", None)],
     ));
     assert!(server.transcribe().await);
+    // While the call runs and hides who is inside, only a person inside finds the lines
+    // (ADR 0604), also after the setting is turned off (ADR 0517).
+    for turn in 0..2 {
+        assert!(search(server, owner, "quartz").await.results.is_empty());
+        assert_eq!(search(server, ann, "quartz").await.results.len(), 1);
+        if turn == 0 {
+            server
+                .call_settings(
+                    owner,
+                    studio.scene.voice.id,
+                    json!({"hides_occupants":false}),
+                )
+                .await;
+        }
+    }
+    server.leave_call(ann).await;
+    server.leave_call(&studio.scene.ben).await;
+    server.check().await;
     let hits = search(server, owner, "quartz").await.results;
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].recording_id, Some(done.recording.id));
@@ -104,21 +123,7 @@ async fn rule_40_transcripts_search_current_corrections_and_speaker() {
         search(server, owner, "amethyst").await.results[0].text,
         "amethyst correction"
     );
-    server
-        .call_settings(
-            owner,
-            studio.scene.voice.id,
-            json!({"hides_occupants":true}),
-        )
-        .await;
-    assert!(search(server, owner, "amethyst").await.results.is_empty());
-    assert_eq!(
-        search(server, &studio.scene.ann, "amethyst")
-            .await
-            .results
-            .len(),
-        1
-    );
+    assert_eq!(search(server, ann, "amethyst").await.results.len(), 1);
     let reader = server.join(owner, "Search reader").await;
     let public = channel(server, owner, "text").await;
     let visible = mention(server, owner, &public, &reader).await;
@@ -149,11 +154,19 @@ async fn rule_40_transcripts_search_current_corrections_and_speaker() {
         )
         .await
         .ok::<Message>(StatusCode::CREATED);
+    // The reader finds the message of the channel that it sees and the line of the
+    // transcript, whose call has ended; nothing of the private channel and of the direct
+    // conversation.
     let hits = search(server, &reader, "quartz%20OR%20amethyst")
         .await
         .results;
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].message_id, Some(visible.id));
+    let messages: Vec<_> = hits.iter().filter_map(|hit| hit.message_id).collect();
+    assert_eq!(messages, [visible.id]);
+    assert_eq!(hits.len(), 2);
+    assert!(
+        hits.iter()
+            .any(|hit| hit.recording_id == Some(done.recording.id))
+    );
     let notices = notices(server, &reader).await;
     assert_eq!(notices.len(), 1);
     assert_eq!(notices[0].message_id, visible.id);
@@ -260,14 +273,11 @@ async fn rule_43_44_45_search_is_current_and_hides_other_channels_and_conversati
 
 #[tokio::test]
 async fn rule_46_search_statement_count_is_independent_of_page_size() {
-    let server = TestServer::start().await;
+    let server = TestServer::start_measured().await;
+    let evictions = server.statement_evictions().await;
     let owner = server.owner().await;
     let channel = channel(&server, &owner, "text").await;
     let root = send(&server, &owner, &channel, "quartz").await;
-    sqlx::query("create extension pg_stat_statements")
-        .execute(&server.db)
-        .await
-        .unwrap();
     sqlx::query("insert into messages(id,place_id,position,author_id,created_at,document) select
              gen_random_uuid(),place_id,position+n,author_id,created_at,document from messages cross join
              generate_series(1,199) n where id=$1")
@@ -304,6 +314,7 @@ async fn rule_46_search_statement_count_is_independent_of_page_size() {
     );
     assert!(!small.is_empty());
     assert_eq!(small, large);
+    server.require_no_statement_eviction(evictions).await;
 }
 
 #[tokio::test]
@@ -334,12 +345,9 @@ async fn a_search_query_with_a_nul_byte_is_an_invalid_request() {
 #[tokio::test]
 async fn fix_search_statement_count_does_not_grow_per_workspace() {
     use crate::messages_queries::{measure_requests, since, statements};
-    let server = TestServer::start().await;
+    let server = TestServer::start_measured().await;
+    let evictions = server.statement_evictions().await;
     let owner = server.owner().await;
-    sqlx::query("create extension pg_stat_statements")
-        .execute(&server.db)
-        .await
-        .unwrap();
     let (mut held, role) = measure_requests(&server).await;
     let observer = &mut **held.first_mut().unwrap();
     search(&server, &owner, "quartz").await;
@@ -364,6 +372,7 @@ async fn fix_search_statement_count_does_not_grow_per_workspace() {
         large, small,
         "search authorization must not issue statements per workspace"
     );
+    server.require_no_statement_eviction(evictions).await;
 }
 
 #[tokio::test]

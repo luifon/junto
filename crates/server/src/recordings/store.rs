@@ -250,11 +250,7 @@ pub async fn page(
         "select {COLUMNS} from recordings r
          where r.workspace_id = $1 and r.channel_id = any($2)
            and ($3::uuid is null or r.id < $3)
-           and (not exists (select 1 from calls k where k.id = r.call_id)
-                or not (select c.hides_occupants from channels c where c.id = r.channel_id)
-                or exists (
-                    select 1 from call_members m
-                    where m.call_id = r.call_id and m.account_id = $4))
+           and reads_call(r.call_id, $4)
          order by r.id desc
          limit $5"
     )))
@@ -337,6 +333,30 @@ pub async fn call_runs(connection: &mut PgConnection, call_id: CallId) -> ApiRes
     )
 }
 
+/// The call of a recording while it still runs, for the audience of an event about the
+/// recording.
+pub async fn running_call(
+    connection: &mut PgConnection,
+    call_id: CallId,
+) -> ApiResult<Option<CallId>> {
+    Ok(call_runs(connection, call_id).await?.then_some(call_id))
+}
+
+/// Whether an account may read a recording of a voice channel that it sees: the call of
+/// the recording has ended, or does not hide who is inside, or the account is inside it
+/// (ADR 0517, ADR 0604).
+pub async fn reads_call_of(
+    connection: &mut PgConnection,
+    call_id: CallId,
+    account_id: AccountId,
+) -> ApiResult<bool> {
+    Ok(sqlx::query_scalar("select reads_call($1, $2)")
+        .bind(call_id)
+        .bind(account_id)
+        .fetch_one(connection)
+        .await?)
+}
+
 /// Records the event of a recording for the accounts that may see it now (ADR 0604).
 pub async fn announce(
     connection: &mut PgConnection,
@@ -344,8 +364,8 @@ pub async fn announce(
     recording: &RecordingRow,
     started: bool,
 ) -> ApiResult<()> {
-    let call_runs = call_runs(&mut *connection, recording.call_id).await?;
-    announce_to(connection, now, recording, started, call_runs).await
+    let running = running_call(&mut *connection, recording.call_id).await?;
+    announce_to(connection, now, recording, started, running).await
 }
 
 async fn announce_to(
@@ -353,7 +373,7 @@ async fn announce_to(
     now: OffsetDateTime,
     recording: &RecordingRow,
     started: bool,
-    call_runs: bool,
+    running_call: Option<CallId>,
 ) -> ApiResult<()> {
     let recording = Box::new(summary(&mut *connection, recording).await?);
     let event = if started {
@@ -361,7 +381,7 @@ async fn announce_to(
     } else {
         Event::RecordingUpdated { recording }
     };
-    events::tell_of_recording(connection, now, call_runs, &event).await
+    events::tell_of_recording(connection, now, running_call, &event).await
 }
 
 /// Keeps what happened to a recording for the system lines of the text chat of its voice
@@ -404,6 +424,63 @@ async fn note(
     )
     .await?;
     Ok(())
+}
+
+/// Deletes the notes of one kind of a recording with their lines in the text chat, and
+/// tells the readers of each line that it is gone.
+async fn remove_notes(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    recording: &RecordingRow,
+    kind: &'static str,
+) -> ApiResult<()> {
+    let lines: Vec<(junto_protocol::ids::MessageId, i64, Option<Vec<AccountId>>)> = sqlx::query_as(
+        "select id, position, readers from messages
+         where recording_id = $1 and system->>'action' = $2",
+    )
+    .bind(recording.id)
+    .bind(kind)
+    .fetch_all(&mut *connection)
+    .await?;
+    for (id, position, readers) in lines {
+        crate::messages::erase(connection, now, id).await?;
+        events::log::record(
+            connection,
+            now,
+            &events::audience::Audience::SystemMessage {
+                workspace_id: recording.workspace_id,
+                channel_id: recording.channel_id,
+                call_id: recording.call_id,
+                readers,
+            },
+            &Event::MessageChanged {
+                place: junto_protocol::message::MessagePlace::Channel {
+                    workspace_id: recording.workspace_id,
+                    channel_id: recording.channel_id,
+                },
+                message_id: id,
+                position: position as u64,
+                deleted: true,
+            },
+        )
+        .await?;
+    }
+    sqlx::query("delete from call_notes where recording_id = $1 and kind = $2")
+        .bind(recording.id)
+        .bind(kind)
+        .execute(connection)
+        .await?;
+    Ok(())
+}
+
+/// No segment of the recording has a failure any more, because a file result replaced the
+/// declaration of a lost job (ADR 0604): the note of a failure goes, with its line.
+pub async fn failure_replaced(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    recording: &RecordingRow,
+) -> ApiResult<()> {
+    remove_notes(connection, now, recording, "recording_failed").await
 }
 
 /// Keeps one note that a part of the recording failed. A recording has at most one.
@@ -555,24 +632,20 @@ async fn of_call(
 }
 
 /// What the end of a call does to its recordings, in the transaction that ends the call
-/// (ADR 0604). The stop of the recording that is starting or runs is asked for. In a channel
-/// that hides who is inside, the recordings of the call were shown to the people inside
-/// only; from now on the accounts that may see the channel read them, and are told of them.
+/// (ADR 0604). The stop of the recording that is starting or runs is asked for. The
+/// recordings of a call that hid who is inside were shown to the people inside only; from
+/// now on the accounts that may see the channel read them, and are told of them.
 pub async fn call_ended(
     connection: &mut PgConnection,
     now: OffsetDateTime,
     call_id: CallId,
-    channel_id: ChannelId,
+    hides: bool,
 ) -> ApiResult<()> {
-    let hides: bool = sqlx::query_scalar("select hides_occupants from channels where id = $1")
-        .bind(channel_id)
-        .fetch_one(&mut *connection)
-        .await?;
     let active = recording(&mut *connection, Of::ActiveOfCall(call_id), true).await?;
     if hides {
         let most = MOST_TOLD_AT_ONCE - i64::from(active.is_some());
         for ended in of_call(&mut *connection, call_id, true, most).await? {
-            announce_to(&mut *connection, now, &ended, false, false).await?;
+            announce_to(&mut *connection, now, &ended, false, None).await?;
         }
     }
     let Some(mut active) = active else {
@@ -581,27 +654,7 @@ pub async fn call_ended(
     let ended = RecordingStopReason::CallEnded;
     let stopped = request_stop(&mut *connection, now, &mut active, ended, None).await?;
     if stopped || hides {
-        announce_to(connection, now, &active, false, false).await?;
-    }
-    Ok(())
-}
-
-/// A voice channel stopped hiding who is inside. The recordings of its running call were
-/// shown to the people inside only; the accounts that may see the channel are told of them.
-pub async fn occupants_shown(
-    connection: &mut PgConnection,
-    now: OffsetDateTime,
-    channel_id: ChannelId,
-) -> ApiResult<()> {
-    let call_id: Option<CallId> = sqlx::query_scalar("select id from calls where channel_id = $1")
-        .bind(channel_id)
-        .fetch_optional(&mut *connection)
-        .await?;
-    let Some(call_id) = call_id else {
-        return Ok(());
-    };
-    for shown in of_call(&mut *connection, call_id, false, MOST_TOLD_AT_ONCE).await? {
-        announce_to(&mut *connection, now, &shown, false, true).await?;
+        announce_to(connection, now, &active, false, None).await?;
     }
     Ok(())
 }
@@ -664,6 +717,9 @@ pub struct SegmentRow {
     pub requested_at: OffsetDateTime,
     pub job_started_at: Option<OffsetDateTime>,
     pub stop_delivered_at: Option<OffsetDateTime>,
+    /// The job was declared lost before the recorder took a stop for it, and no stop that
+    /// followed the declaration has had an end yet (ADR 0604).
+    pub stop_owed: bool,
     pub started_at: Option<OffsetDateTime>,
     pub ended_at: Option<OffsetDateTime>,
     pub duration_ms: Option<i64>,
@@ -746,6 +802,7 @@ struct SegmentRecord {
     requested_at: OffsetDateTime,
     job_started_at: Option<OffsetDateTime>,
     stop_delivered_at: Option<OffsetDateTime>,
+    stop_owed: bool,
     started_at: Option<OffsetDateTime>,
     ended_at: Option<OffsetDateTime>,
     duration_ms: Option<i64>,
@@ -786,9 +843,9 @@ pub async fn segments(
 ) -> ApiResult<Vec<SegmentRow>> {
     let records: Vec<SegmentRecord> = sqlx::query_as(
         "select id, source, account_id, track_id, state, failure, job_id, requested_path,
-                requested_at, job_started_at, stop_delivered_at, started_at, ended_at, duration_ms,
-                file_bytes, media_ms, file_starts_at, width, height, file_problems, file_silent,
-                file_recovered
+                requested_at, job_started_at, stop_delivered_at, stop_owed, started_at, ended_at,
+                duration_ms, file_bytes, media_ms, file_starts_at, width, height, file_problems,
+                file_silent, file_recovered
          from recording_segments where recording_id = $1 order by id",
     )
     .bind(recording_id)
@@ -814,12 +871,49 @@ pub async fn segments(
                 requested_at: record.requested_at,
                 job_started_at: record.job_started_at,
                 stop_delivered_at: record.stop_delivered_at,
+                stop_owed: record.stop_owed,
                 started_at: record.started_at,
                 ended_at: record.ended_at,
                 duration_ms: record.duration_ms,
             })
         })
         .collect()
+}
+
+/// The file of a segment of a recording, when the processing found one: true for the file
+/// of an audio track, false for the video of a composite.
+pub async fn file_is_track(
+    connection: &mut PgConnection,
+    recording_id: RecordingId,
+    segment_id: RecordingSegmentId,
+) -> ApiResult<Option<bool>> {
+    let source: Option<String> = sqlx::query_scalar(
+        "select source from recording_segments
+         where id = $1 and recording_id = $2
+           and file_bytes is not null and media_ms is not null",
+    )
+    .bind(segment_id)
+    .bind(recording_id)
+    .fetch_optional(connection)
+    .await?;
+    source
+        .map(|source| Ok(SegmentSource::read(&source)? != SegmentSource::Composite))
+        .transpose()
+}
+
+/// The names among `jobs` that are the job of no segment.
+pub async fn jobs_without_segment(
+    connection: &mut PgConnection,
+    jobs: &[String],
+) -> ApiResult<Vec<String>> {
+    Ok(sqlx::query_scalar(
+        "select wanted.name from unnest($1::text[]) as wanted (name)
+         where not exists (
+             select 1 from recording_segments where job_id = wanted.name)",
+    )
+    .bind(jobs)
+    .fetch_all(connection)
+    .await?)
 }
 
 /// Stores a segment in the state `starting`: the server is about to ask the recorder for its
@@ -867,7 +961,8 @@ fn milliseconds(file: &FileResult) -> Option<i64> {
 
 /// Stores what the recorder reported for the file of a segment, and the state that follows
 /// from it: `ended` without a failure, `failed` with one. Of a failed segment the times state
-/// the range that was saved, as far as the recorder reported it (ADR 0601).
+/// the range that was saved, as far as the recorder reported it (ADR 0601). No stop is owed
+/// for the segment afterwards; a declaration states it with [`owe_stop`].
 pub async fn close_segment(
     connection: &mut PgConnection,
     segment: &mut SegmentRow,
@@ -884,7 +979,7 @@ pub async fn close_segment(
     sqlx::query(
         "update recording_segments
          set state = $2, failure = $3, file_name = coalesce($4, file_name), started_at = $5,
-             ended_at = $6, duration_ms = $7
+             ended_at = $6, duration_ms = $7, stop_owed = false
          where id = $1",
     )
     .bind(segment.id)
@@ -898,9 +993,21 @@ pub async fn close_segment(
     .await?;
     segment.state = state;
     segment.failure = failure;
+    segment.stop_owed = false;
     segment.started_at = started_at;
     segment.ended_at = ended_at;
     segment.duration_ms = duration_ms;
+    Ok(())
+}
+
+/// The job of a segment was declared lost before the recorder took a stop for it: the stop
+/// that follows the declaration is owed until it has had an end (ADR 0604).
+pub async fn owe_stop(connection: &mut PgConnection, segment: &mut SegmentRow) -> ApiResult<()> {
+    sqlx::query("update recording_segments set stop_owed = true where id = $1")
+        .bind(segment.id)
+        .execute(connection)
+        .await?;
+    segment.stop_owed = true;
     Ok(())
 }
 
@@ -939,18 +1046,24 @@ pub async fn start_failed(
     Ok(())
 }
 
-/// The recorder took the stop of the job of a segment.
-pub async fn stop_delivered(
+/// The stop of the job of a segment has had its end. `delivered`: the recorder took it.
+/// Without that it had no answer, which is not delivered (ADR 0601). In both cases the stop
+/// is no longer owed.
+pub async fn stop_answered(
     connection: &mut PgConnection,
     now: OffsetDateTime,
     segment_id: RecordingSegmentId,
+    delivered: bool,
 ) -> ApiResult<()> {
     sqlx::query(
-        "update recording_segments set stop_delivered_at = $2
+        "update recording_segments
+         set stop_owed = false,
+             stop_delivered_at = case when $3 then $2 else stop_delivered_at end
          where id = $1 and job_id is not null",
     )
     .bind(segment_id)
     .bind(now)
+    .bind(delivered)
     .execute(connection)
     .await?;
     Ok(())
@@ -1269,47 +1382,16 @@ pub async fn remove(
     recording: &RecordingRow,
     by: Option<AccountId>,
 ) -> ApiResult<()> {
-    let call_runs = call_runs(&mut *connection, recording.call_id).await?;
+    let running = running_call(&mut *connection, recording.call_id).await?;
     let event = Event::RecordingRemoved {
         recording_id: recording.id,
         workspace_id: recording.workspace_id,
         channel_id: recording.channel_id,
     };
-    events::tell_of_recording(&mut *connection, now, call_runs, &event).await?;
-    let posts: Vec<(junto_protocol::ids::MessageId, i64, Option<Vec<AccountId>>)> = sqlx::query_as(
-        "select id, position, readers from messages
-         where recording_id=$1 and system->>'action'='recording_ready'",
-    )
-    .bind(recording.id)
-    .fetch_all(&mut *connection)
-    .await?;
-    for (id, position, readers) in posts {
-        crate::messages::erase(connection, now, id).await?;
-        events::log::record(
-            connection,
-            now,
-            &events::audience::Audience::SystemMessage {
-                workspace_id: recording.workspace_id,
-                channel_id: recording.channel_id,
-                call_id: recording.call_id,
-                readers,
-            },
-            &Event::MessageChanged {
-                place: junto_protocol::message::MessagePlace::Channel {
-                    workspace_id: recording.workspace_id,
-                    channel_id: recording.channel_id,
-                },
-                message_id: id,
-                position: position as u64,
-                deleted: true,
-            },
-        )
+    events::tell_of_recording(&mut *connection, now, running, &event).await?;
+    crate::exports::recording_removed(&mut *connection, now, recording.channel_id, recording.id)
         .await?;
-    }
-    sqlx::query("delete from call_notes where recording_id = $1 and kind = 'recording_ready'")
-        .bind(recording.id)
-        .execute(&mut *connection)
-        .await?;
+    remove_notes(&mut *connection, now, recording, "recording_ready").await?;
     // Saved audio of a lost job that the server could not take is still in the directory of
     // that job. It goes with the recording.
     let lost_jobs: Vec<String> = sqlx::query_scalar(

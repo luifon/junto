@@ -8,7 +8,9 @@ use junto_authz::{
 use junto_protocol::account::AccountStatus;
 use junto_protocol::call::CallPlace;
 use junto_protocol::events::{Event, Level};
-use junto_protocol::ids::{AccountId, ChannelId, ServerRoleId, WorkspaceId, WorkspaceRoleId};
+use junto_protocol::ids::{
+    AccountId, CallId, ChannelId, ServerRoleId, WorkspaceId, WorkspaceRoleId,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::access::{role_key, stored_override};
@@ -70,7 +72,10 @@ impl Class {
             | Event::ThreadRead { .. }
             | Event::MessageRead { .. }
             | Event::NotificationSettingsChanged { .. }
-            | Event::AttachmentLimitsChanged { .. } => Self::Control,
+            | Event::AttachmentLimitsChanged { .. }
+            | Event::WorkspaceDeleted { .. }
+            | Event::ExportUpdated { .. }
+            | Event::ExportRemoved { .. } => Self::Control,
             Event::ConversationOpened { .. } => Self::DirectMessage,
             Event::MessageMentioned { .. } | Event::NotificationChanged { .. } => Self::Mention,
             Event::CallInvited { .. } | Event::CallInvitationResolved { .. } => Self::CallInvite,
@@ -86,6 +91,9 @@ impl Class {
             | Event::OwnerChanged { .. }
             | Event::ServerRoleCreated { .. }
             | Event::ServerRoleUpdated { .. }
+            | Event::AccessTokenCreated { .. }
+            | Event::AccessTokenRevoked { .. }
+            | Event::AccessTokensOfCreatorRevoked { .. }
             | Event::InviteCreated { .. }
             | Event::InviteRevoked { .. }
             | Event::InviteUsed { .. }
@@ -119,7 +127,13 @@ impl Class {
             | Event::RecordingRemoved { .. }
             | Event::TranscriptLineCorrected { .. }
             | Event::TranscriptSpeakerRenamed { .. }
-            | Event::GlossaryReplaced { .. } => Self::General,
+            | Event::GlossaryReplaced { .. }
+            | Event::ChannelArchived { .. }
+            | Event::ChannelRestored { .. }
+            | Event::ChannelDeletionDue { .. }
+            | Event::CategoryDeleted { .. }
+            | Event::WorkspaceRoleDeleted { .. }
+            | Event::ServerRoleDeleted { .. } => Self::General,
         }
     }
 }
@@ -150,12 +164,12 @@ pub struct KeptOverride {
     pub deny: i64,
 }
 
-/// How far an event about the call of a voice channel reaches (ADR 0504, ADR 0510).
+/// How far an event about the inside of a call of a voice channel reaches (ADR 0517).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CallReach {
     /// The accounts that may see who is inside: every account that may see the channel, or
-    /// only the accounts inside when the channel hides who is inside.
+    /// only the accounts inside the call when the call hides who is inside.
     Occupancy,
     /// The accounts inside the call.
     Inside,
@@ -217,11 +231,14 @@ pub enum Audience {
         channel_id: ChannelId,
         overrides: Vec<KeptOverride>,
     },
-    /// Accounts that may see the voice channel, as far as `reach` states. The setting that
-    /// hides who is inside and the people inside are read when the event is delivered.
+    /// Accounts that may see the voice channel, as far as `reach` states for the call
+    /// `call_id`. Whether that call hides who is inside is the state that it started with;
+    /// who is inside it is read when the event is delivered. An account that enters a later
+    /// call of the channel is not inside this one (ADR 0517).
     Call {
         workspace_id: WorkspaceId,
         channel_id: ChannelId,
+        call_id: CallId,
         reach: CallReach,
     },
     /// The two participants of a direct message.
@@ -249,11 +266,32 @@ pub enum Audience {
         #[serde(default)]
         notice_id: Option<uuid::Uuid>,
     },
+    /// The accounts that the rows of `event_receivers` with this identifier list. The
+    /// change that recorded the event selected them, because the rule that named them no
+    /// longer holds after it: the holders of a deleted role.
+    Listed {
+        list: uuid::Uuid,
+    },
+    /// The accounts that could see a workspace when it was deleted: its members, which the
+    /// rows of `event_receivers` with the identifier `members` list, and the accounts that
+    /// see every workspace.
+    DeletedWorkspace {
+        workspace_id: WorkspaceId,
+        members: uuid::Uuid,
+    },
+    /// The accounts that read an invite: the holders of `create_invites` who may see every
+    /// workspace in `workspace_ids`, and the holder who created it (ADR 0111).
+    Invite {
+        created_by: AccountId,
+        workspace_ids: Vec<WorkspaceId>,
+    },
 }
 
-/// The audience of an event about a call at `place`.
-fn of_call(place: &CallPlace, reach: Option<CallReach>) -> Audience {
-    match (*place, reach) {
+/// The audience of an event about a call at `place`. `inside` names the call and the reach
+/// of an event that tells something of the inside of the call; without it the event tells
+/// only what every account at the place may know.
+fn of_call(place: &CallPlace, inside: Option<(CallId, CallReach)>) -> Audience {
+    match (*place, inside) {
         (
             CallPlace::Channel {
                 workspace_id,
@@ -270,10 +308,11 @@ fn of_call(place: &CallPlace, reach: Option<CallReach>) -> Audience {
                 workspace_id,
                 channel_id,
             },
-            Some(reach),
+            Some((call_id, reach)),
         ) => Audience::Call {
             workspace_id,
             channel_id,
+            call_id,
             reach,
         },
         (
@@ -317,15 +356,36 @@ pub fn recording_place(event: &Event) -> Option<(WorkspaceId, ChannelId)> {
 
 /// The audience of an event about a recording of a voice channel. A recording and its
 /// transcript tell who is in its call, so while the call runs the event reaches the
-/// accounts that may see who is inside. When the call has ended, it reaches the accounts
-/// that may see the voice channel. This is the rule of the routes that read recordings
-/// (ADR 0604).
-pub fn of_recording(workspace_id: WorkspaceId, channel_id: ChannelId, call_runs: bool) -> Audience {
+/// accounts that may see who is inside: `running_call` is that call. When the call has
+/// ended, the event reaches the accounts that may see the voice channel. This is the rule
+/// of the routes that read recordings (ADR 0604).
+pub fn of_recording(
+    workspace_id: WorkspaceId,
+    channel_id: ChannelId,
+    running_call: Option<CallId>,
+) -> Audience {
     let place = CallPlace::Channel {
         workspace_id,
         channel_id,
     };
-    of_call(&place, call_runs.then_some(CallReach::Occupancy))
+    of_call(
+        &place,
+        running_call.map(|call_id| (call_id, CallReach::Occupancy)),
+    )
+}
+
+/// The audience of an event for the people inside a call: a request to enter and its end.
+/// `None` for another event.
+pub fn of_the_inside(event: &Event) -> Option<Audience> {
+    let (place, call_id) = match event {
+        Event::CallEntryRequested { request } => (&request.place, request.call_id),
+        Event::CallEntryResolved { place, call_id, .. } => (place, *call_id),
+        _ => return None,
+    };
+    match place {
+        CallPlace::Channel { .. } => Some(of_call(place, Some((call_id, CallReach::Inside)))),
+        CallPlace::Direct { .. } => None,
+    }
 }
 
 impl Audience {
@@ -441,6 +501,9 @@ impl Audience {
             | Self::Call { workspace_id, .. } => Some(*workspace_id),
             Self::Notification { .. }
             | Self::ActiveAccounts
+            | Self::Listed { .. }
+            | Self::DeletedWorkspace { .. }
+            | Self::Invite { .. }
             | Self::Account { .. }
             | Self::AccountSeeing { .. }
             | Self::AccountViewers { .. }
@@ -454,6 +517,32 @@ impl Audience {
     pub const fn viewed_account_id(&self) -> Option<AccountId> {
         match self {
             Self::AccountViewers { account_id } => Some(*account_id),
+            _ => None,
+        }
+    }
+
+    /// The list of `event_receivers` that decides who receives the event.
+    pub const fn receiver_list(&self) -> Option<uuid::Uuid> {
+        match self {
+            Self::Listed { list } => Some(*list),
+            Self::DeletedWorkspace { members, .. } => Some(*members),
+            _ => None,
+        }
+    }
+
+    /// The workspaces of the invite that the audience names. A decision reads which of
+    /// them the recipient is a member of.
+    pub fn invite_workspace_ids(&self) -> &[WorkspaceId] {
+        match self {
+            Self::Invite { workspace_ids, .. } => workspace_ids,
+            _ => &[],
+        }
+    }
+
+    /// The call whose inside the audience names.
+    pub const fn inside_of_call(&self) -> Option<CallId> {
+        match self {
+            Self::Call { call_id, .. } => Some(*call_id),
             _ => None,
         }
     }
@@ -539,18 +628,32 @@ impl Audience {
             | Event::RecordingUpdated { .. }
             | Event::RecordingRemoved { .. }
             | Event::TranscriptLineCorrected { .. }
-            | Event::TranscriptSpeakerRenamed { .. } => None,
+            | Event::TranscriptSpeakerRenamed { .. }
+            | Event::WorkspaceDeleted { .. }
+            | Event::ExportUpdated { .. }
+            | Event::ExportRemoved { .. } => None,
+            Event::ChannelArchived { channel } | Event::ChannelDeletionDue { channel } => {
+                Some(Self::Channel {
+                    workspace_id: channel.channel.workspace_id,
+                    channel_id: channel.channel.id,
+                    permission: WorkspacePermission::ViewChannel,
+                })
+            }
+            Event::CategoryDeleted { workspace_id, .. }
+            | Event::WorkspaceRoleDeleted { workspace_id, .. } => workspace(*workspace_id),
             Event::GlossaryReplaced { workspace_id } => workspace(*workspace_id),
             Event::CallStarted { place, .. } | Event::CallEnded { place, .. } => {
                 Some(of_call(place, None))
             }
-            Event::CallParticipantJoined { place, .. }
-            | Event::CallParticipantUpdated { place, .. }
-            | Event::CallParticipantLeft { place, .. }
-            | Event::CallLockChanged { place, .. }
-            | Event::CallMeetingStarted { place, .. }
-            | Event::CallMeetingEnded { place, .. }
-            | Event::CallSpeaking { place, .. } => Some(of_call(place, Some(CallReach::Occupancy))),
+            Event::CallParticipantJoined { call_id, place, .. }
+            | Event::CallParticipantUpdated { call_id, place, .. }
+            | Event::CallParticipantLeft { call_id, place, .. }
+            | Event::CallLockChanged { call_id, place, .. }
+            | Event::CallMeetingStarted { call_id, place, .. }
+            | Event::CallMeetingEnded { call_id, place, .. }
+            | Event::CallSpeaking { call_id, place, .. } => {
+                Some(of_call(place, Some((*call_id, CallReach::Occupancy))))
+            }
             Event::AccountAdded { .. }
             | Event::AccountStatusChanged { .. }
             | Event::AccountServerRolesChanged { .. }
@@ -558,13 +661,18 @@ impl Audience {
             Event::AccountProfileUpdated { profile } => Some(Self::AccountViewers {
                 account_id: profile.id,
             }),
-            Event::ServerRoleCreated { .. } | Event::ServerRoleUpdated { .. } => {
+            Event::ServerRoleCreated { .. }
+            | Event::ServerRoleUpdated { .. }
+            | Event::ServerRoleDeleted { .. }
+            | Event::AccessTokenCreated { .. }
+            | Event::AccessTokenRevoked { .. }
+            | Event::AccessTokensOfCreatorRevoked { .. } => {
                 permission(ServerPermission::Administrator)
             }
             Event::InviteCreated { .. }
             | Event::InviteRevoked { .. }
-            | Event::InviteUsed { .. }
-            | Event::InvitesOfCreatorRevoked { .. } => permission(ServerPermission::CreateInvites),
+            | Event::InviteUsed { .. } => None,
+            Event::InvitesOfCreatorRevoked { .. } => permission(ServerPermission::CreateInvites),
             Event::JoinRequestCreated { .. } | Event::JoinRequestDecided { .. } => {
                 permission(ServerPermission::ApproveJoinRequests)
             }
@@ -579,13 +687,13 @@ impl Audience {
             Event::CategoryCreated { category } | Event::CategoryUpdated { category } => {
                 workspace(category.workspace_id)
             }
-            Event::ChannelCreated { channel } | Event::ChannelUpdated { channel } => {
-                Some(Self::Channel {
-                    workspace_id: channel.workspace_id,
-                    channel_id: channel.id,
-                    permission: WorkspacePermission::ViewChannel,
-                })
-            }
+            Event::ChannelCreated { channel }
+            | Event::ChannelUpdated { channel }
+            | Event::ChannelRestored { channel } => Some(Self::Channel {
+                workspace_id: channel.workspace_id,
+                channel_id: channel.id,
+                permission: WorkspacePermission::ViewChannel,
+            }),
             Event::ChannelOverrideSet {
                 workspace_id,
                 channel_id,
@@ -648,7 +756,7 @@ impl Audience {
             ) => true,
             (
                 Event::NotificationSettingsChanged { .. },
-                Self::Account { .. } | Self::ActiveAccounts,
+                Self::Account { .. } | Self::ActiveAccounts | Self::Workspace { .. },
             ) => true,
             (
                 Event::PermissionsChanged { .. }
@@ -674,35 +782,56 @@ impl Audience {
                 | Event::CallEntryAnswered { .. },
                 Self::Account { .. } | Self::AccountSeeing { .. },
             ) => true,
+            (Event::CallEntryRequested { request }, Self::AccountSeeing { .. }) => {
+                *self == Self::addressed_at(request.account_id, &[request.place])
+            }
+            (Event::CallEntryRequested { .. } | Event::CallEntryResolved { .. }, _) => {
+                of_the_inside(event).as_ref() == Some(self)
+            }
+            (Event::RecordingStarted { recording } | Event::RecordingUpdated { recording }, _) => {
+                [Some(recording.call_id), None].into_iter().any(|call| {
+                    *self == of_recording(recording.workspace_id, recording.channel_id, call)
+                })
+            }
             (
-                Event::CallEntryRequested { request },
-                Self::Call {
-                    reach: CallReach::Inside,
-                    ..
-                },
-            ) => *self == of_call(&request.place, Some(CallReach::Inside)),
-            (
-                Event::CallEntryResolved { place, .. },
-                Self::Call {
-                    reach: CallReach::Inside,
-                    ..
-                },
-            ) => *self == of_call(place, Some(CallReach::Inside)),
-            (
-                Event::RecordingStarted { .. }
-                | Event::RecordingUpdated { .. }
-                | Event::RecordingRemoved { .. }
+                Event::RecordingRemoved { .. }
                 | Event::TranscriptLineCorrected { .. }
                 | Event::TranscriptSpeakerRenamed { .. },
                 _,
             ) => recording_place(event).is_some_and(|(workspace_id, channel_id)| {
-                [true, false]
-                    .into_iter()
-                    .any(|call_runs| *self == of_recording(workspace_id, channel_id, call_runs))
+                let running = match self {
+                    Self::Call {
+                        call_id,
+                        reach: CallReach::Occupancy,
+                        ..
+                    } => Some(*call_id),
+                    _ => None,
+                };
+                *self == of_recording(workspace_id, channel_id, running)
             }),
             (Event::PermissionsChanged { workspace_id: None }, Self::ServerRoleHolders { .. }) => {
                 true
             }
+            (Event::PermissionsChanged { .. }, Self::Listed { .. }) => true,
+            (
+                Event::InviteCreated { invite },
+                Self::Invite {
+                    created_by,
+                    workspace_ids,
+                },
+            ) => invite.created_by == *created_by && invite.workspace_ids == *workspace_ids,
+            (Event::InviteRevoked { .. } | Event::InviteUsed { .. }, Self::Invite { .. }) => true,
+            (
+                Event::WorkspaceDeleted { workspace_id },
+                Self::DeletedWorkspace {
+                    workspace_id: deleted,
+                    ..
+                },
+            ) => workspace_id == deleted,
+            (
+                Event::ExportUpdated { .. } | Event::ExportRemoved { .. },
+                Self::Account { .. } | Self::AccountSeeing { .. },
+            ) => true,
             (
                 Event::PermissionsChanged {
                     workspace_id: Some(named),
@@ -752,6 +881,35 @@ pub struct Recipient<'a> {
     /// How the recipient stands to the accounts that the audiences of a batch name for a
     /// direct message or a direct call. An account that is not active has no entry.
     pub contacts: &'a HashMap<AccountId, Contact>,
+    /// The lists of `event_receivers`, of the ones that the audiences of a batch name, that
+    /// hold the recipient.
+    pub listed: &'a HashSet<uuid::Uuid>,
+    /// The workspaces, of the ones that the invites of a batch name, that the recipient is
+    /// a member of.
+    pub memberships: &'a HashSet<WorkspaceId>,
+    /// The calls whose inside the audiences of a batch name, as the recipient stands to
+    /// each now. A call without an entry is unknown, and its events reach nobody.
+    pub calls: &'a HashMap<CallId, CallStanding>,
+}
+
+/// One call as the recipient stands to it now (ADR 0517).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CallStanding {
+    /// The call shows who is inside only to the people inside: the state that it started
+    /// with, which stays stored after its end.
+    pub hides_occupants: bool,
+    /// The recipient is inside the call. False for a call that has ended.
+    pub inside: bool,
+}
+
+impl CallStanding {
+    /// Whether an event about the inside of the call with `reach` reaches the recipient.
+    const fn reached(self, reach: CallReach) -> bool {
+        match reach {
+            CallReach::Occupancy => !self.hides_occupants || self.inside,
+            CallReach::Inside => self.inside,
+        }
+    }
 }
 
 impl Recipient<'_> {
@@ -771,10 +929,6 @@ impl Recipient<'_> {
 pub struct ChannelStanding {
     pub deleted: bool,
     pub scope: ChannelScope,
-    /// The channel shows who is inside only to the people inside.
-    pub hides_occupants: bool,
-    /// The recipient is inside the call of the channel.
-    pub inside: bool,
 }
 
 /// One workspace as the recipient stands in it now.
@@ -872,6 +1026,28 @@ pub fn receives<'a>(
         Audience::AccountViewers { account_id } => {
             allows(Request::ViewAccount(recipient.acquaintance(*account_id)))
         }
+        Audience::Listed { list } => recipient.listed.contains(list) && allows(Request::OwnAccount),
+        Audience::Invite {
+            created_by,
+            workspace_ids,
+        } => crate::access::reads_invite(
+            recipient.actor,
+            *created_by == recipient.account_id,
+            workspace_ids,
+            recipient.memberships,
+        ),
+        Audience::DeletedWorkspace { members, .. } => {
+            let scope = WorkspaceScope {
+                membership: if recipient.listed.contains(members) {
+                    Membership::Member
+                } else {
+                    Membership::NotMember
+                },
+                everyone: junto_authz::WorkspacePermissions::EMPTY,
+                roles: Vec::new(),
+            };
+            allows(Request::ViewWorkspace(&scope))
+        }
         Audience::ServerPermission { permission } => allows(Request::Server(*permission)),
         Audience::ServerRoleHolders { role_id } => {
             recipient.server_role_ids.contains(role_id) && allows(Request::OwnAccount)
@@ -915,14 +1091,17 @@ pub fn receives<'a>(
                 })
             }),
         Audience::Call {
-            channel_id, reach, ..
+            channel_id,
+            call_id,
+            reach,
+            ..
         } => workspace
             .and_then(|standing| standing.channels.get(channel_id))
             .is_some_and(|channel| {
-                let reached = match reach {
-                    CallReach::Occupancy => !channel.hides_occupants || channel.inside,
-                    CallReach::Inside => channel.inside,
-                };
+                let reached = recipient
+                    .calls
+                    .get(call_id)
+                    .is_some_and(|call| call.reached(*reach));
                 reached
                     && !channel.deleted
                     && allows(Request::Channel {
@@ -992,6 +1171,12 @@ mod tests {
         std::sync::LazyLock::new(HashSet::new);
     static NO_CONTACTS: std::sync::LazyLock<HashMap<AccountId, Contact>> =
         std::sync::LazyLock::new(HashMap::new);
+    static NO_LISTS: std::sync::LazyLock<HashSet<uuid::Uuid>> =
+        std::sync::LazyLock::new(HashSet::new);
+    static NO_MEMBERSHIPS: std::sync::LazyLock<HashSet<WorkspaceId>> =
+        std::sync::LazyLock::new(HashSet::new);
+    static NO_CALLS: std::sync::LazyLock<HashMap<CallId, CallStanding>> =
+        std::sync::LazyLock::new(HashMap::new);
 
     fn recipient(actor: &Actor) -> Recipient<'_> {
         Recipient {
@@ -1000,6 +1185,9 @@ mod tests {
             server_role_ids: &[],
             fellows: &NO_FELLOWS,
             contacts: &NO_CONTACTS,
+            listed: &NO_LISTS,
+            memberships: &NO_MEMBERSHIPS,
+            calls: &NO_CALLS,
         }
     }
 
@@ -1057,8 +1245,6 @@ mod tests {
         };
         let channel = ChannelStanding {
             deleted: false,
-            hides_occupants: false,
-            inside: false,
             scope: ChannelScope {
                 workspace: scope.clone(),
                 everyone_override: if private { deny_view() } else { Override::NONE },
@@ -1258,61 +1444,71 @@ mod tests {
     }
 
     #[test]
-    fn who_is_inside_a_hidden_voice_channel_reaches_only_the_people_inside() {
+    fn who_is_inside_a_hidden_call_reaches_only_the_people_inside_that_call() {
         let place = place();
+        let call_id = CallId::generate();
         let call = |reach| Audience::Call {
             workspace_id: place.workspace_id,
             channel_id: place.channel_id,
+            call_id,
             reach,
         };
         let plain = member();
-        let me = recipient(&plain);
-        let standing_with = |hides_occupants, inside| {
-            let mut standing = standing(&place, Membership::Member, false, false);
-            let channel = standing.channels.get_mut(&place.channel_id).unwrap();
-            channel.hides_occupants = hides_occupants;
-            channel.inside = inside;
-            standing
+        let boss = administrator();
+        let sees = standing(&place, Membership::Member, false, false);
+        let stands = |hides_occupants, inside| {
+            HashMap::from([(
+                call_id,
+                CallStanding {
+                    hides_occupants,
+                    inside,
+                },
+            )])
+        };
+        let receives = |actor, calls: &HashMap<CallId, CallStanding>, reach, standing| {
+            let recipient = Recipient {
+                calls,
+                ..recipient(actor)
+            };
+            may_receive(recipient, &call(reach), standing)
         };
 
-        let open = standing_with(false, false);
-        assert!(may_receive(me, &call(CallReach::Occupancy), Some(&open)));
-        assert!(!may_receive(me, &call(CallReach::Inside), Some(&open)));
+        let open = stands(false, false);
+        assert!(receives(&plain, &open, CallReach::Occupancy, Some(&sees)));
+        assert!(!receives(&plain, &open, CallReach::Inside, Some(&sees)));
 
-        let hidden = standing_with(true, false);
-        assert!(!may_receive(me, &call(CallReach::Occupancy), Some(&hidden)));
-        assert!(!may_receive(me, &call(CallReach::Inside), Some(&hidden)));
+        let hidden = stands(true, false);
         for reach in [CallReach::Occupancy, CallReach::Inside] {
-            assert!(!may_receive(
-                recipient(&administrator()),
-                &call(reach),
-                Some(&hidden)
-            ));
+            assert!(!receives(&plain, &hidden, reach, Some(&sees)));
+            assert!(!receives(&boss, &hidden, reach, Some(&sees)));
         }
 
-        let inside = standing_with(true, true);
-        assert!(may_receive(me, &call(CallReach::Occupancy), Some(&inside)));
-        assert!(may_receive(me, &call(CallReach::Inside), Some(&inside)));
+        let inside = stands(true, true);
+        assert!(receives(&plain, &inside, CallReach::Occupancy, Some(&sees)));
+        assert!(receives(&plain, &inside, CallReach::Inside, Some(&sees)));
 
-        let mut without_sight = standing(&place, Membership::Member, false, true);
-        without_sight
-            .channels
-            .get_mut(&place.channel_id)
-            .unwrap()
-            .inside = true;
-        assert!(!may_receive(
-            me,
-            &call(CallReach::Inside),
+        // A call that the batch found no record of reaches nobody, whatever its reach.
+        for reach in [CallReach::Occupancy, CallReach::Inside] {
+            assert!(!receives(&plain, &NO_CALLS, reach, Some(&sees)));
+        }
+
+        let without_sight = standing(&place, Membership::Member, false, true);
+        assert!(!receives(
+            &plain,
+            &inside,
+            CallReach::Inside,
             Some(&without_sight)
         ));
-        let mut deleted = standing_with(false, true);
+        let mut deleted = standing(&place, Membership::Member, false, false);
         deleted.channels.get_mut(&place.channel_id).unwrap().deleted = true;
-        assert!(!may_receive(
-            me,
-            &call(CallReach::Occupancy),
+        let open_inside = stands(false, true);
+        assert!(!receives(
+            &plain,
+            &open_inside,
+            CallReach::Occupancy,
             Some(&deleted)
         ));
-        assert!(!may_receive(me, &call(CallReach::Occupancy), None));
+        assert!(!receives(&plain, &open, CallReach::Occupancy, None));
     }
 
     #[test]
@@ -1553,6 +1749,119 @@ mod tests {
             }],
         };
         assert!(!may_receive(recipient(&plain), &broken, Some(&gone)));
+    }
+
+    #[test]
+    fn an_invite_reaches_the_inviters_who_see_its_workspaces_and_its_creator() {
+        let (seen, unseen) = (WorkspaceId::generate(), WorkspaceId::generate());
+        let creator = AccountId::generate();
+        let audience = Audience::Invite {
+            created_by: creator,
+            workspace_ids: vec![seen, unseen],
+        };
+        let inviter = Actor {
+            position: Position::Member,
+            server_roles: vec![ServerPermissions::from(ServerPermission::CreateInvites)],
+        };
+        let (one, both) = (HashSet::from([seen]), HashSet::from([seen, unseen]));
+        let in_one = Recipient {
+            memberships: &one,
+            ..recipient(&inviter)
+        };
+        let in_both = Recipient {
+            memberships: &both,
+            ..recipient(&inviter)
+        };
+        let plain = member();
+        let without_permission = Recipient {
+            memberships: &both,
+            ..recipient(&plain)
+        };
+        assert!(!may_receive(in_one, &audience, None));
+        assert!(may_receive(in_both, &audience, None));
+        assert!(!may_receive(without_permission, &audience, None));
+        assert!(may_receive(recipient(&administrator()), &audience, None));
+        let own = Recipient {
+            account_id: creator,
+            ..recipient(&inviter)
+        };
+        assert!(may_receive(own, &audience, None));
+        let lost = Recipient {
+            account_id: creator,
+            ..recipient(&plain)
+        };
+        assert!(!may_receive(lost, &audience, None));
+        let nothing_left = Audience::Invite {
+            created_by: creator,
+            workspace_ids: Vec::new(),
+        };
+        assert!(may_receive(recipient(&inviter), &nothing_left, None));
+        assert_eq!(audience.invite_workspace_ids(), [seen, unseen]);
+        let revoked = Event::InviteRevoked {
+            invite_id: junto_protocol::ids::InviteId::generate(),
+            revocation: junto_protocol::invite::InviteRevocation::Revoked,
+        };
+        assert!(audience.fits(&revoked));
+        assert_eq!(Audience::fixed_by(&revoked), None);
+        let of_permission = Audience::ServerPermission {
+            permission: ServerPermission::CreateInvites,
+        };
+        assert!(!of_permission.fits(&revoked));
+    }
+
+    #[test]
+    fn a_listed_event_reaches_the_listed_accounts_only() {
+        let list = uuid::Uuid::now_v7();
+        let audience = Audience::Listed { list };
+        let plain = member();
+        assert!(!may_receive(recipient(&plain), &audience, None));
+        assert!(!may_receive(recipient(&administrator()), &audience, None));
+        let lists = HashSet::from([list]);
+        let listed = Recipient {
+            listed: &lists,
+            ..recipient(&plain)
+        };
+        assert!(may_receive(listed, &audience, None));
+        let other = Audience::Listed {
+            list: uuid::Uuid::now_v7(),
+        };
+        assert!(!may_receive(listed, &other, None));
+        assert!(audience.fits(&Event::PermissionsChanged { workspace_id: None }));
+        assert_eq!(audience.receiver_list(), Some(list));
+    }
+
+    #[test]
+    fn the_deletion_of_a_workspace_reaches_its_former_members_and_the_administrators() {
+        let place = place();
+        let members = uuid::Uuid::now_v7();
+        let audience = Audience::DeletedWorkspace {
+            workspace_id: place.workspace_id,
+            members,
+        };
+        let plain = member();
+        assert!(!may_receive(recipient(&plain), &audience, None));
+        let lists = HashSet::from([members]);
+        let former = Recipient {
+            listed: &lists,
+            ..recipient(&plain)
+        };
+        assert!(may_receive(former, &audience, None));
+        assert!(may_receive(recipient(&administrator()), &audience, None));
+        let deleted = Event::WorkspaceDeleted {
+            workspace_id: place.workspace_id,
+        };
+        assert!(audience.fits(&deleted));
+        let elsewhere = Event::WorkspaceDeleted {
+            workspace_id: WorkspaceId::generate(),
+        };
+        assert!(!audience.fits(&elsewhere));
+        assert!(
+            !Audience::Workspace {
+                workspace_id: place.workspace_id
+            }
+            .fits(&deleted)
+        );
+        assert_eq!(audience.workspace_id(), None);
     }
 
     #[test]

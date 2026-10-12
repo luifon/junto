@@ -511,3 +511,14 @@ fn the_window_holds_the_recordings_around_the_place_of_the_list() {
     );
     assert!(near_recordings(&[], Some(5), 24).is_empty());
 }
+
+#[test]
+fn a_failed_refresh_keeps_the_transcript_but_reports_the_failure() {
+    let scene = scene();
+    let mut open = scene.open(RecordingState::Ready, TranscriptState::Ready);
+    let before = scene.detail(&open).transcript;
+    open.failed = Some(ReadFailure::NoAnswer);
+    let shown = scene.detail(&open).transcript;
+    assert_eq!(shown.lines, before.lines);
+    assert!(shown.failed);
+}

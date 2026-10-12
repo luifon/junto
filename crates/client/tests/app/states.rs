@@ -74,6 +74,9 @@ fn a_ban_a_removal_and_a_forgotten_account_show_their_states(cx: &mut TestAppCon
     window.close();
     let mut window = open(cx, directory.path());
     window.until("the ban is shown again", |window| window.shows("banned"));
+    window.until("the startup check has finished", |window| {
+        window.view().selected.is_some_and(|server| !server.busy)
+    });
 
     // "Check again" finds the unban, and the account is the same.
     world.run(api.unban_account(account_id)).unwrap();
@@ -545,10 +548,9 @@ fn the_keyboard_reaches_the_menus_and_the_dialogs(cx: &mut TestAppContext) {
     window.click("channel-title");
     assert!(!window.shows("server-menu"));
 
-    // The last item, after the two for the notification settings, opens the question,
-    // and Escape answers it with "no".
+    // The last item follows notifications and administration; Escape declines.
     window.click("server-menu-button");
-    window.press("down down down down enter");
+    window.press("down down down down down enter");
     assert!(window.shows("confirm-remove"));
     window.press("escape");
     assert!(!window.shows("confirm-remove"));

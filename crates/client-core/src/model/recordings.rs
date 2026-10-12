@@ -4,10 +4,9 @@
 
 use std::sync::Arc;
 
-use junto_protocol::ids::{AccountId, ChannelId, RecordingId};
+use junto_protocol::ids::{ChannelId, RecordingId};
 use junto_protocol::recording::{Recording, RecordingDetail};
 use junto_protocol::transcript::{Transcript, TranscriptLine, TranscriptSpeaker};
-use time::OffsetDateTime;
 
 use super::{Loadable, ReadFailure, ServerModel};
 
@@ -129,7 +128,10 @@ impl ServerModel {
         self.recordings.iter().find(|held| held.id == recording_id)
     }
 
-    fn recording_mut(&mut self, recording_id: RecordingId) -> Option<&mut OpenRecording> {
+    pub(super) fn recording_mut(
+        &mut self,
+        recording_id: RecordingId,
+    ) -> Option<&mut OpenRecording> {
         self.recordings
             .iter_mut()
             .find(|held| held.id == recording_id)
@@ -272,77 +274,15 @@ impl ServerModel {
         true
     }
 
-    /// Puts a correction into a loaded line. The event carries the new text and not the
-    /// text of the worker: a line that was not corrected before holds that text, and it
-    /// becomes the original text. A correction that is older than the one of the line
-    /// changes nothing, because a read can be newer than an event that was kept for it.
-    pub(super) fn correct_line(
-        &mut self,
-        recording_id: RecordingId,
-        position: u32,
-        text: &str,
-        by: AccountId,
-        at: OffsetDateTime,
-    ) -> bool {
-        let Some(open) = self.recording(recording_id) else {
+    /// A correction carries no text; read the held lines through their authorized route.
+    pub(super) fn invalidate_line(&mut self, recording_id: RecordingId, position: u32) -> bool {
+        let Some(open) = self.recording_mut(recording_id).filter(|open| !open.gone) else {
             return false;
         };
-        let Some(index) = open.line_index(position) else {
-            return false;
-        };
-        let held = &open.lines.lines[index];
-        if held.corrected_at.is_some_and(|held| held > at) {
+        if open.line(position).is_none() {
             return false;
         }
-        let mut line = held.as_ref().clone();
-        if line.original_text.is_none() {
-            line.original_text = Some(std::mem::take(&mut line.text));
-        }
-        line.text = text.to_owned();
-        line.corrected_by = Some(by);
-        line.corrected_at = Some(at);
-        if **held == line {
-            return false;
-        }
-        if let Some(open) = self.recording_mut(recording_id) {
-            open.lines.lines[index] = Arc::new(line);
-        }
-        true
-    }
-
-    /// Puts the speaker label of an event into a loaded transcript, in the place of the
-    /// label with the same number, or in the order of the numbers.
-    pub(super) fn rename_speaker(
-        &mut self,
-        recording_id: RecordingId,
-        speaker: &TranscriptSpeaker,
-    ) -> bool {
-        let Some(speakers) = self
-            .recording(recording_id)
-            .and_then(|open| open.transcript.loaded())
-            .map(|transcript| &transcript.speakers)
-        else {
-            return false;
-        };
-        let place = speakers.binary_search_by_key(&speaker.number, |held| held.number);
-        let unchanged = match place {
-            Ok(index) => speakers[index] == *speaker,
-            Err(_) => speakers.len() >= MOST_SPEAKERS,
-        };
-        if unchanged {
-            return false;
-        }
-        let Some(speakers) = self
-            .recording_mut(recording_id)
-            .and_then(|open| open.transcript.loaded_mut())
-            .map(|transcript| &mut transcript.speakers)
-        else {
-            return false;
-        };
-        match place {
-            Ok(index) => speakers[index] = speaker.clone(),
-            Err(index) => speakers.insert(index, speaker.clone()),
-        }
+        open.lines.stale = true;
         true
     }
 
@@ -394,11 +334,14 @@ impl ServerModel {
             lines: page,
             more,
         } = read;
-        if ask.replace {
-            lines.lines.clear();
-        } else if lines.lines.last().map(|last| last.line) != ask.after {
-            return;
-        }
+        let previous = if ask.replace {
+            std::mem::take(&mut lines.lines)
+        } else {
+            if lines.lines.last().map(|last| last.line) != ask.after {
+                return;
+            }
+            Vec::new()
+        };
         let mut last = ask.after;
         let mut added = false;
         let mut foreign = false;
@@ -411,7 +354,14 @@ impl ServerModel {
                 break;
             }
             last = Some(line.line);
-            lines.lines.push(Arc::new(line));
+            let unchanged = previous
+                .binary_search_by_key(&line.line, |held| held.line)
+                .ok()
+                .and_then(|index| previous.get(index))
+                .filter(|held| ***held == line);
+            lines
+                .lines
+                .push(unchanged.cloned().unwrap_or_else(|| Arc::new(line)));
             added = true;
         }
         lines.loaded = true;

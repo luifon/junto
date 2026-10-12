@@ -13,8 +13,9 @@ publish = false
 [workspace.dependencies]
 junto-authz = { path = "crates/authz" }
 junto-protocol = { path = "crates/protocol" }
+junto-setup = { path = "crates/setup" }
 
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "matched-path", "query", "tokio"] }
 base64 = "0.23"
 ed25519-dalek = "3"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }

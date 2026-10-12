@@ -17,7 +17,9 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use crate::api::{ApiError, TransportErrorKind};
 use crate::flow::machine::lock;
-use crate::model::{PendingFile, PendingMessage, PlaceId, Reach, ServerModel};
+use crate::model::{AdminPart, PendingFile, PendingMessage, PlaceId, Reach, ServerModel};
+
+mod admin;
 
 /// How many notices wait for a reader that is slower than the stream. A reader that falls
 /// further behind is told so and reads the state.
@@ -158,6 +160,13 @@ pub(crate) enum Command {
     ReleaseRecording(RecordingId),
     /// The lines of the transcript of an open recording after the loaded ones.
     MoreTranscriptLines(RecordingId),
+    OpenAdmin {
+        part: AdminPart,
+        reply: oneshot::Sender<Result<(), LoadError>>,
+    },
+    ReleaseAdmin(AdminPart),
+    /// Reads again a collection whose last read failed.
+    ReadAdminAgain(AdminPart),
 }
 
 /// What the stream client of one server and its readers share.
@@ -417,7 +426,7 @@ impl LiveServer {
 impl LiveServer {
     /// Asks for a recording with its segments and its transcript. Both are read, appear
     /// in the state, and follow the events from then on: `recording_updated` reads them
-    /// again, a rename of a speaker changes the held label, and `recording_removed` marks
+    /// again, a rename of a speaker refreshes the labels through the transcript route, and `recording_removed` marks
     /// the recording as gone. After a reload of the state the client reads them again by
     /// itself. The future ends when the recording is in the state or the read failed;
     /// the state then tells why, or that the server has no such recording for the
@@ -440,6 +449,16 @@ impl LiveServer {
         }
     }
 
+    /// Retries a failed read for an existing reader without changing its ownership.
+    pub fn reload_recording(
+        &self,
+        recording_id: RecordingId,
+    ) -> impl Future<Output = Result<(), LoadError>> + Send + 'static + use<> {
+        let opening = self.open_recording(recording_id);
+        self.release_recording(recording_id);
+        opening
+    }
+
     /// States that a reader needs a recording no longer. When no reader is left, the
     /// state drops it.
     pub fn release_recording(&self, recording_id: RecordingId) {
@@ -449,8 +468,8 @@ impl LiveServer {
     /// Reads the next page of the lines of the transcript of an open recording: the first
     /// page when none is loaded, and else the page after the last loaded line, while the
     /// state says that there are more. Lines that a reload of the state marked as not
-    /// current are read again from the first one. A correction changes a loaded line
-    /// without a request.
+    /// current are read again from the first one. A correction of a loaded line
+    /// reads the held lines again through the authorized route.
     pub fn read_transcript_lines(&self, recording_id: RecordingId) {
         self.shared.send(Command::MoreTranscriptLines(recording_id));
     }

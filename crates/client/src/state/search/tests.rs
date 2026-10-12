@@ -42,6 +42,9 @@ fn scene() -> Scene {
     let general = channel(ChannelKind::Text, "general", 0);
     let daily = channel(ChannelKind::Voice, "Daily", 1);
     let snapshot = Snapshot {
+        call_moves: Vec::new(),
+        entry_requests: Vec::new(),
+        sent_call_invitations: Vec::new(),
         cursor: Cursor {
             epoch: StreamEpoch::generate(),
             position: 1,

@@ -14,7 +14,8 @@ use junto_protocol::recording::Recording;
 use junto_protocol::structure::Channel;
 
 use super::{
-    CallModel, ChannelModel, Loadable, PlaceId, Reach, ServerModel, ThreadMoved, WorkspaceModel,
+    AdminPart, CallModel, ChannelModel, Loadable, PlaceId, Reach, ServerModel, ThreadMoved,
+    WorkspaceModel,
 };
 
 /// A part of the state that is read from a route of its own.
@@ -23,8 +24,6 @@ pub(crate) enum Part {
     Members(WorkspaceId),
     /// The call of the account with its requests to enter.
     OwnCall,
-    /// The call of one voice channel.
-    ChannelCall(ChannelId),
     /// The unread summary of one place.
     MessageState(PlaceId),
     /// One message of a place that a reader has open.
@@ -51,6 +50,8 @@ pub(crate) enum Part {
     Recording(RecordingId),
     /// Lines of the transcript of a recording that a reader has open.
     TranscriptLines(RecordingId),
+    /// A collection of the administration that a reader has open (ADR 0760).
+    Admin(AdminPart),
 }
 
 impl Part {
@@ -58,10 +59,7 @@ impl Part {
     /// arrives while the part is read is not applied to the answer; it starts the read
     /// again.
     pub(crate) const fn is_read_again(&self) -> bool {
-        !matches!(
-            self,
-            Self::Members(_) | Self::OwnCall | Self::ChannelCall(_)
-        )
+        !matches!(self, Self::Members(_) | Self::OwnCall | Self::Admin(_))
     }
 }
 
@@ -125,6 +123,9 @@ impl Part {
                 }
                 | Event::WorkspaceMemberRolesChanged {
                     workspace_id: of, ..
+                }
+                | Event::WorkspaceRoleDeleted {
+                    workspace_id: of, ..
                 } => of == workspace_id,
                 Event::AccountProfileUpdated { .. } => true,
                 _ => false,
@@ -142,12 +143,6 @@ impl Part {
                     _ => call_of(event).is_some_and(|(call_id, _)| call_id == own.call_id),
                 }
             }
-            Self::ChannelCall(channel_id) => match event {
-                Event::RecordingRemoved { channel_id: of, .. } => of == channel_id,
-                _ => {
-                    call_of(event).is_some_and(|(_, place)| place.channel_id() == Some(*channel_id))
-                }
-            },
             Self::MessageState(place) => match event {
                 Event::MessageChanged { place: of, .. } | Event::MessageRead { place: of, .. } => {
                     PlaceId::of(of) == *place
@@ -204,15 +199,24 @@ impl Part {
                 } => of == recording_id,
                 // The answer tells the channel of the recording. A change of a channel
                 // can change what the account may read of its recordings (ADR 0604).
-                Event::ChannelDeleted { .. } | Event::ChannelUpdated { .. } => true,
+                Event::ChannelDeleted { .. }
+                | Event::ChannelUpdated { .. }
+                | Event::WorkspaceDeleted { .. } => true,
                 _ => false,
             },
-            Self::TranscriptLines(recording_id) => matches!(
-                event,
-                Event::TranscriptLineCorrected { recording_id: of, .. }
-                    | Event::RecordingRemoved { recording_id: of, .. }
-                    if of == recording_id
-            ),
+            Self::TranscriptLines(recording_id) => match event {
+                Event::TranscriptLineCorrected {
+                    recording_id: of, ..
+                }
+                | Event::RecordingRemoved {
+                    recording_id: of, ..
+                } => of == recording_id,
+                Event::ChannelDeleted { .. }
+                | Event::ChannelUpdated { .. }
+                | Event::WorkspaceDeleted { .. } => true,
+                _ => false,
+            },
+            Self::Admin(part) => part.concerns(event),
             // A page after the loaded ones is added only while the list before it is the
             // one that the request continued; no event changes its answer.
             Self::MoreThreads | Self::MoreNotices(_) => false,
@@ -247,36 +251,34 @@ fn place_of(recording: &Recording) -> CallPlace {
 }
 
 impl WorkspaceModel {
-    fn put_channel(&mut self, channel: &Channel, inside: bool) -> Option<Part> {
-        let mut load = None;
+    /// Puts a channel into the workspace. The call of a voice channel keeps the setting
+    /// "hides who is inside" of its start (ADR 0517), so a change of the channel changes
+    /// nothing of what the state holds of a running call.
+    fn put_channel(&mut self, channel: &Channel) {
         match self
             .channels
             .iter_mut()
             .find(|held| held.channel.id == channel.id)
         {
-            Some(held) => {
-                let was_hidden = held.channel.hides_occupants;
-                held.channel = channel.clone();
-                if channel.hides_occupants && !inside {
-                    held.call = None;
-                } else if was_hidden && !channel.hides_occupants && held.in_use && !inside {
-                    // The people inside are shown from now on, and no event tells who
-                    // they are.
-                    load = Some(Part::ChannelCall(channel.id));
-                }
-            }
+            Some(held) => held.channel = channel.clone(),
             None => self.channels.push(ChannelModel::new(channel.clone())),
         }
         by_position(&mut self.channels, |held| {
             (held.channel.position, held.channel.id.as_uuid().as_u128())
         });
-        load
     }
 }
 
 impl ServerModel {
     /// Applies one event. The caller moves the cursor.
     pub(crate) fn apply(&mut self, event: &Event) -> Follow {
+        let stale = self.apply_admin(event);
+        let mut follow = self.apply_event(event);
+        follow.load.extend(stale.into_iter().map(Part::Admin));
+        follow
+    }
+
+    fn apply_event(&mut self, event: &Event) -> Follow {
         match event {
             Event::PermissionsChanged { .. } | Event::CallAccessEnded {} => {
                 return Follow::reload();
@@ -382,15 +384,16 @@ impl ServerModel {
                     });
                 }
             }
-            Event::ChannelCreated { channel } | Event::ChannelUpdated { channel } => {
-                let inside = self.is_inside(channel.id);
+            Event::ChannelCreated { channel }
+            | Event::ChannelUpdated { channel }
+            | Event::ChannelRestored { channel } => {
                 // A fork of a thread is a new channel (ADR 0409).
                 let mut load = match event {
                     Event::ChannelCreated { .. } => self.thread_heads(),
                     _ => Vec::new(),
                 };
                 if let Some(workspace) = self.workspace_mut(channel.workspace_id) {
-                    load.extend(workspace.put_channel(channel, inside));
+                    workspace.put_channel(channel);
                 }
                 // A channel that hides who is inside gives a recording of its running
                 // call only to the people inside (ADR 0604). The event does not tell
@@ -424,12 +427,102 @@ impl ServerModel {
                 }
                 self.forget_place(PlaceId::Channel(*channel_id));
                 self.lose_recordings_of(*channel_id);
-                let gone = |place: &CallPlace| place.channel_id() == Some(*channel_id);
-                self.invitations.retain(|held| !gone(&held.place));
-                self.entry_requests.retain(|held| !gone(&held.place));
-                self.moves
-                    .retain(|held| !gone(&held.from) && !gone(&held.to));
+                self.forget_calls_of(*channel_id);
                 // The deleted channel can be the fork of an open thread.
+                return Follow::loads(self.thread_heads());
+            }
+            Event::ChannelArchived { channel: archived } => {
+                let workspace_id = archived.channel.workspace_id;
+                let channel_id = archived.channel.id;
+                let held = self
+                    .workspace(workspace_id)
+                    .is_some_and(|workspace| workspace.channel(channel_id).is_some());
+                if held && let Some(workspace) = self.workspace_mut(workspace_id) {
+                    workspace
+                        .channels
+                        .retain(|channel| channel.channel.id != channel_id);
+                }
+                // The call of an archived voice channel ends (ADR 0410).
+                self.forget_calls_of(channel_id);
+                // The channel stays readable for a reader that has it open, and for a
+                // reader of the archived list. For every other reader nothing of it stays.
+                if self.readable_channel(channel_id).is_none() {
+                    self.forget_place(PlaceId::Channel(channel_id));
+                }
+            }
+            Event::CategoryDeleted {
+                workspace_id,
+                category_id,
+            } => {
+                if let Some(workspace) = self.workspace_mut(*workspace_id) {
+                    workspace.categories.retain(|held| held.id != *category_id);
+                    for held in &mut workspace.channels {
+                        if held.channel.category_id == Some(*category_id) {
+                            held.channel.category_id = None;
+                        }
+                    }
+                }
+            }
+            Event::WorkspaceRoleDeleted {
+                workspace_id,
+                role_id,
+            } => {
+                if let Some(workspace) = self.workspace_mut(*workspace_id) {
+                    workspace.roles.retain(|held| held.id != *role_id);
+                    workspace.own_role_ids.retain(|held| held != role_id);
+                    if let Some(members) = workspace.members.loaded_mut() {
+                        for member in members {
+                            member.role_ids.retain(|held| held != role_id);
+                        }
+                    }
+                }
+            }
+            Event::WorkspaceDeleted { workspace_id } => {
+                let mut channels: Vec<ChannelId> = self
+                    .workspace(*workspace_id)
+                    .map(|workspace| {
+                        workspace
+                            .channels
+                            .iter()
+                            .map(|held| held.channel.id)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                channels.extend(
+                    self.admin
+                        .archived(*workspace_id)
+                        .loaded()
+                        .into_iter()
+                        .flatten()
+                        .chain(&self.admin.archived_known)
+                        .filter(|held| held.channel.workspace_id == *workspace_id)
+                        .map(|held| held.channel.id),
+                );
+                // A late recording answer can outlive the workspace in the model.
+                channels.extend(self.recordings.iter().filter_map(|open| {
+                    let recording = &open.detail.loaded()?.recording;
+                    (recording.workspace_id == *workspace_id).then_some(recording.channel_id)
+                }));
+                self.workspaces
+                    .retain(|held| held.workspace.id != *workspace_id);
+                self.account
+                    .workspace_ids
+                    .retain(|held| held != workspace_id);
+                for channel_id in &channels {
+                    self.forget_place(PlaceId::Channel(*channel_id));
+                    self.forget_calls_of(*channel_id);
+                    self.lose_recordings_of(*channel_id);
+                }
+                // The settings of the snapshot that name the workspace or one of its
+                // channels name nothing any more.
+                self.notification_settings.retain(|held| {
+                    held.scope_id != workspace_id.as_uuid()
+                        && !channels
+                            .iter()
+                            .any(|channel_id| channel_id.as_uuid() == held.scope_id)
+                });
+                self.forget_admin_workspace(*workspace_id, &channels);
+                // A channel of the workspace can be the fork of an open thread.
                 return Follow::loads(self.thread_heads());
             }
             Event::CallStarted {
@@ -437,7 +530,7 @@ impl ServerModel {
                 place,
                 started_at,
             } => {
-                let shown = self.shows_inside(place);
+                let shown = self.shows(*call_id, place);
                 if shown && let Some(call) = self.call_mut(*call_id, place, true) {
                     call.started_at = Some(*started_at);
                 }
@@ -464,6 +557,8 @@ impl ServerModel {
                 }
                 self.invitations.retain(|held| held.call_id != *call_id);
                 self.entry_requests.retain(|held| held.call_id != *call_id);
+                self.own_entry_requests
+                    .retain(|held| held.call_id != *call_id);
             }
             Event::CallParticipantJoined {
                 call_id,
@@ -482,6 +577,16 @@ impl ServerModel {
                     // The order in which a snapshot lists the people.
                     call.participants
                         .sort_by_key(|held| (held.joined_at, held.account_id));
+                }
+                // The server has seen the device of the account in the room. From now on
+                // the account reads the call and the requests to enter; before, the
+                // server gave it neither, and nothing of a call that hides who is inside
+                // (ADR 0517).
+                if matches!(event, Event::CallParticipantJoined { .. })
+                    && participant.account_id == self.account.id
+                    && self.has_place_in(*call_id)
+                {
+                    return Follow::load(Part::OwnCall);
                 }
             }
             Event::CallParticipantLeft {
@@ -564,35 +669,39 @@ impl ServerModel {
                 }
                 self.lose_recording(*recording_id);
             }
-            // The two events of a transcript change what a reader has open, without a
-            // request (ADR 0607).
             Event::TranscriptLineCorrected {
-                recording_id,
-                line,
-                text,
-                corrected_by,
-                corrected_at,
-                ..
+                recording_id, line, ..
             } => {
-                self.correct_line(*recording_id, *line, text, *corrected_by, *corrected_at);
+                if self.invalidate_line(*recording_id, *line) {
+                    return Follow::load(Part::TranscriptLines(*recording_id));
+                }
             }
-            Event::TranscriptSpeakerRenamed {
-                recording_id,
-                speaker,
-                ..
-            } => {
-                self.rename_speaker(*recording_id, speaker);
+            Event::TranscriptSpeakerRenamed { recording_id, .. } => {
+                if let Some(open) = self.recording_mut(*recording_id).filter(|open| !open.gone) {
+                    open.stale |= open.transcript.loaded().is_some();
+                    return Follow::load(Part::Recording(*recording_id));
+                }
             }
             Event::CallEntryRequested { request } => {
-                let own = self.own_call.as_ref().map(|own| own.call_id);
-                if own == Some(request.call_id) {
-                    upsert(&mut self.entry_requests, request, |held| {
-                        held.id == request.id
-                    });
+                // The event reaches the people inside and every device of the account
+                // that asked.
+                let held = if request.account_id == self.account.id {
+                    Some(&mut self.own_entry_requests)
+                } else if self.has_place_in(request.call_id) {
+                    Some(&mut self.entry_requests)
+                } else {
+                    None
+                };
+                if let Some(held) = held {
+                    upsert(held, request, |held| held.id == request.id);
                 }
             }
             Event::CallEntryResolved { request_id, .. } => {
                 self.entry_requests.retain(|held| held.id != *request_id);
+            }
+            Event::CallEntryAnswered { request_id, .. } => {
+                self.own_entry_requests
+                    .retain(|held| held.id != *request_id);
             }
             Event::CallInvited { invitation } => {
                 upsert(&mut self.invitations, invitation, |held| {
@@ -720,7 +829,8 @@ impl ServerModel {
                 return Follow::loads(load);
             }
             // The collections of these events are read from their routes when a reader
-            // needs them (ADR 0207). The state holds none of them.
+            // needs them (ADR 0207). The collections of the administration that a reader
+            // has open follow them (ADR 0760); the state holds none of the others.
             Event::DeviceAdded { .. }
             | Event::DeviceRenamed { .. }
             | Event::DeviceRemoved { .. }
@@ -733,6 +843,13 @@ impl ServerModel {
             | Event::OwnerChanged { .. }
             | Event::ServerRoleCreated { .. }
             | Event::ServerRoleUpdated { .. }
+            | Event::ServerRoleDeleted { .. }
+            | Event::AccessTokenCreated { .. }
+            | Event::AccessTokenRevoked { .. }
+            | Event::AccessTokensOfCreatorRevoked { .. }
+            | Event::ChannelDeletionDue { .. }
+            | Event::ExportUpdated { .. }
+            | Event::ExportRemoved { .. }
             | Event::InviteCreated { .. }
             | Event::InviteRevoked { .. }
             | Event::InviteUsed { .. }
@@ -740,7 +857,6 @@ impl ServerModel {
             | Event::JoinRequestCreated { .. }
             | Event::JoinRequestDecided { .. }
             | Event::ChannelOverrideSet { .. }
-            | Event::CallEntryAnswered { .. }
             | Event::GlossaryReplaced { .. }
             | Event::RetentionChanged { .. } => {}
         }
@@ -767,6 +883,30 @@ impl ServerModel {
         let mut reads = Vec::new();
         for event in events {
             if !part.concerns(event, self) {
+                continue;
+            }
+            if let (
+                Part::Recording(recording_id) | Part::TranscriptLines(recording_id),
+                Event::ChannelUpdated { channel },
+            ) = (part, event)
+            {
+                // Only the recording answer is old; the channel already holds later events.
+                if let Some(open) = self.recording_mut(recording_id)
+                    && !open.gone
+                    && open
+                        .detail
+                        .loaded()
+                        .is_some_and(|held| held.recording.channel_id == channel.id)
+                {
+                    match part {
+                        Part::Recording(_) => open.stale = true,
+                        Part::TranscriptLines(_) => open.lines.stale = true,
+                        _ => unreachable!(),
+                    }
+                    if !reads.contains(&part) {
+                        reads.push(part);
+                    }
+                }
                 continue;
             }
             for read in self.apply(event).load {
@@ -803,7 +943,9 @@ impl ServerModel {
     /// does not hold yet adds the conversation.
     fn holds_place(&mut self, place: &MessagePlace) -> bool {
         match place {
-            MessagePlace::Channel { channel_id, .. } => self.channel(*channel_id).is_some(),
+            MessagePlace::Channel { channel_id, .. } => {
+                self.readable_channel(*channel_id).is_some()
+            }
             MessagePlace::Direct {
                 conversation_id,
                 low_account_id,
@@ -831,7 +973,7 @@ impl ServerModel {
         let place = place_of(recording);
         let Some(held) = self
             .call_at(&place)
-            .filter(|call| call.id == recording.call_id && self.shows_inside(&place))
+            .filter(|call| call.id == recording.call_id && self.shows(call.id, &place))
         else {
             return;
         };
@@ -861,20 +1003,45 @@ impl ServerModel {
         self.workspace_mut(workspace_id)?.members.loaded_mut()
     }
 
-    fn is_inside(&self, channel_id: ChannelId) -> bool {
-        self.own_call
-            .as_ref()
-            .is_some_and(|own| own.place.channel_id() == Some(channel_id))
+    /// A channel takes no call any more: what waits for a call of it has ended.
+    fn forget_calls_of(&mut self, channel_id: ChannelId) {
+        let gone = |place: &CallPlace| place.channel_id() == Some(channel_id);
+        self.invitations.retain(|held| !gone(&held.place));
+        self.entry_requests.retain(|held| !gone(&held.place));
+        self.own_entry_requests.retain(|held| !gone(&held.place));
+        self.moves
+            .retain(|held| !gone(&held.from) && !gone(&held.to));
     }
 
-    /// True when the account may see who is in the call at `place` (ADR 0514).
-    pub(super) fn shows_inside(&self, place: &CallPlace) -> bool {
+    /// True when the account has a place in the call `call_id`.
+    pub(super) fn has_place_in(&self, call_id: CallId) -> bool {
+        self.own_call
+            .as_ref()
+            .is_some_and(|own| own.call_id == call_id)
+    }
+
+    /// Whether the call `call_id` at `place` hides who is inside. A call keeps the setting
+    /// of its start (ADR 0517), and the state holds it with the call. A call that the
+    /// state does not hold is a new one for it and takes the setting of its channel.
+    fn hides(&self, call_id: CallId, place: &CallPlace) -> Option<bool> {
         match place {
-            CallPlace::Channel { channel_id, .. } => self
-                .channel(*channel_id)
-                .is_some_and(|held| !held.channel.hides_occupants || self.is_inside(*channel_id)),
-            CallPlace::Direct { .. } => true,
+            CallPlace::Channel { channel_id, .. } => {
+                let channel = self.channel(*channel_id)?;
+                Some(match &channel.call {
+                    Some(call) if call.id == call_id => call.hides_occupants,
+                    _ => channel.channel.hides_occupants,
+                })
+            }
+            CallPlace::Direct { .. } => Some(false),
         }
+    }
+
+    /// True when the state holds what the events tell of the call `call_id` at `place`:
+    /// the call does not hide who is inside, or the account has a place in it (ADR 0514).
+    /// The server gives an account with a place nothing of such a call until it is inside.
+    fn shows(&self, call_id: CallId, place: &CallPlace) -> bool {
+        self.hides(call_id, place)
+            .is_some_and(|hides| !hides || self.has_place_in(call_id))
     }
 
     /// The call `call_id` at `place`. With `create`, a call that the state does not hold
@@ -886,10 +1053,11 @@ impl ServerModel {
         place: &CallPlace,
         create: bool,
     ) -> Option<&mut CallModel> {
-        // An account outside a voice channel that hides who is inside holds no details of
-        // its call. The server sends it none; an event that was kept during a read is
-        // applied by the setting of now.
-        if !self.shows_inside(place) {
+        // An account without a place in a call that hides who is inside holds no details
+        // of that call. The server sends it none; an event that was kept during a read is
+        // applied by what holds now.
+        let hides = self.hides(call_id, place)?;
+        if hides && !self.has_place_in(call_id) {
             return None;
         }
         let held = self.call_at(place).is_some_and(|call| call.id == call_id);
@@ -903,14 +1071,15 @@ impl ServerModel {
                     if channel.call.is_some() {
                         channel.in_use = false;
                     }
-                    channel.call = Some(CallModel::new(call_id, *place));
+                    channel.call = Some(CallModel::new(call_id, *place, hides));
                 }
                 channel.call.as_mut()
             }
             CallPlace::Direct { .. } => {
                 if !held {
                     self.direct_calls.retain(|call| call.place != *place);
-                    self.direct_calls.push(CallModel::new(call_id, *place));
+                    self.direct_calls
+                        .push(CallModel::new(call_id, *place, hides));
                 }
                 self.direct_calls.iter_mut().find(|call| call.id == call_id)
             }
@@ -919,16 +1088,14 @@ impl ServerModel {
 
     /// The account is no longer in the call at `place`. It keeps of that call only what
     /// an account outside is told: nothing of a call that is not in use, and nothing of a
-    /// voice channel that hides who is inside.
+    /// call that hides who is inside.
     fn left(&mut self, place: &CallPlace) {
         match place {
             CallPlace::Channel { channel_id, .. } => {
                 let drop = self.channel(*channel_id).is_some_and(|held| {
-                    held.channel.hides_occupants
-                        || held
-                            .call
-                            .as_ref()
-                            .is_some_and(|call| call.started_at.is_none())
+                    held.call
+                        .as_ref()
+                        .is_some_and(|call| call.hides_occupants || call.started_at.is_none())
                 });
                 if drop && let Some(channel) = self.channel_mut(place) {
                     channel.call = None;

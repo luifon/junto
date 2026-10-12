@@ -70,29 +70,29 @@ pub async fn tell_account_at(
     record(connection, now, &audience, event).await
 }
 
-/// Records an event about the call of a voice channel for the accounts inside that call.
+/// Records an event about a request to enter the call of a voice channel for the accounts
+/// inside that call.
 pub async fn tell_inside(
     connection: &mut PgConnection,
     now: OffsetDateTime,
-    workspace_id: WorkspaceId,
-    channel_id: ChannelId,
     event: &Event,
 ) -> ApiResult<()> {
-    let audience = Audience::Call {
-        workspace_id,
-        channel_id,
-        reach: crate::events::audience::CallReach::Inside,
-    };
+    let audience = crate::events::audience::of_the_inside(event).ok_or_else(|| {
+        ApiError::internal(&format_args!(
+            "the event {} is not for the people inside a call",
+            event.name()
+        ))
+    })?;
     record(connection, now, &audience, event).await
 }
 
 /// Records an event about a recording or its transcript: for the accounts that may see who
-/// is inside while the call of the recording runs, and for the accounts that may see the
-/// voice channel when the call has ended (ADR 0604).
+/// is inside `running_call` while the call of the recording runs, and for the accounts that
+/// may see the voice channel when the call has ended (ADR 0604).
 pub async fn tell_of_recording(
     connection: &mut PgConnection,
     now: OffsetDateTime,
-    call_runs: bool,
+    running_call: Option<junto_protocol::ids::CallId>,
     event: &Event,
 ) -> ApiResult<()> {
     let Some((workspace_id, channel_id)) = crate::events::audience::recording_place(event) else {
@@ -101,7 +101,7 @@ pub async fn tell_of_recording(
             event.name()
         )));
     };
-    let audience = crate::events::audience::of_recording(workspace_id, channel_id, call_runs);
+    let audience = crate::events::audience::of_recording(workspace_id, channel_id, running_call);
     record(connection, now, &audience, event).await
 }
 
@@ -133,6 +133,118 @@ pub async fn permissions_changed(
     let event = Event::PermissionsChanged { workspace_id };
     record(&mut *connection, now, &audience, &event).await?;
     crate::calls::store::mark_after_permission_change(connection, workspace_id).await
+}
+
+/// The accounts that an event is for, selected before the change that ends the rule that
+/// names them.
+#[derive(Debug, Clone, Copy)]
+pub enum Receivers {
+    WorkspaceRoleHolders(WorkspaceRoleId),
+    ServerRoleHolders(junto_protocol::ids::ServerRoleId),
+    WorkspaceMembers(WorkspaceId),
+    /// The accounts that have a direct-message conversation with the account.
+    ConversationPeers(AccountId),
+    /// The accounts that have a direct-message conversation with a holder of the role.
+    ConversationPeersOfServerRole(junto_protocol::ids::ServerRoleId),
+}
+
+/// Stores the accounts that `receivers` selects now as the list `list`, which is the
+/// identifier of the event that the list belongs to. The event is recorded before. Returns
+/// the number of accounts.
+async fn list_receivers(
+    connection: &mut PgConnection,
+    list: Uuid,
+    receivers: Receivers,
+) -> ApiResult<u64> {
+    let (statement, id) = match receivers {
+        Receivers::WorkspaceRoleHolders(id) => (
+            "insert into event_receivers (event_id, account_id)
+             select $1, account_id from member_roles where role_id = $2",
+            id.as_uuid(),
+        ),
+        Receivers::ServerRoleHolders(id) => (
+            "insert into event_receivers (event_id, account_id)
+             select $1, account_id from account_server_roles where role_id = $2",
+            id.as_uuid(),
+        ),
+        Receivers::WorkspaceMembers(id) => (
+            "insert into event_receivers (event_id, account_id)
+             select $1, account_id from workspace_members where workspace_id = $2",
+            id.as_uuid(),
+        ),
+        Receivers::ConversationPeers(id) => (
+            "insert into event_receivers (event_id, account_id)
+             select $1, high_account_id from conversations where low_account_id = $2
+             union
+             select $1, low_account_id from conversations where high_account_id = $2",
+            id.as_uuid(),
+        ),
+        Receivers::ConversationPeersOfServerRole(id) => (
+            "insert into event_receivers (event_id, account_id)
+             select $1, c.high_account_id
+             from account_server_roles h
+             join conversations c on c.low_account_id = h.account_id
+             where h.role_id = $2
+             union
+             select $1, c.low_account_id
+             from account_server_roles h
+             join conversations c on c.high_account_id = h.account_id
+             where h.role_id = $2",
+            id.as_uuid(),
+        ),
+    };
+    let listed = sqlx::query(statement)
+        .bind(list)
+        .bind(id)
+        .execute(connection)
+        .await?;
+    Ok(listed.rows_affected())
+}
+
+/// Records the notice that tells the accounts that `holders` selects now to load a
+/// snapshot, before the role that they hold is deleted. Returns the number of accounts.
+pub async fn permissions_changed_for(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    holders: Receivers,
+    workspace_id: Option<WorkspaceId>,
+) -> ApiResult<u64> {
+    let list = Uuid::now_v7();
+    let event = Event::PermissionsChanged { workspace_id };
+    record_at_id(
+        &mut *connection,
+        now,
+        list,
+        &Audience::Listed { list },
+        &event,
+    )
+    .await?;
+    let listed = list_receivers(&mut *connection, list, holders).await?;
+    crate::calls::store::mark_after_permission_change(connection, workspace_id).await?;
+    Ok(listed)
+}
+
+/// Records the deletion of a workspace for the accounts that could see it: its members,
+/// who are listed before their rows are deleted, and the accounts that see every workspace.
+pub async fn workspace_deleted(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    workspace_id: WorkspaceId,
+) -> ApiResult<()> {
+    let members = Uuid::now_v7();
+    let audience = Audience::DeletedWorkspace {
+        workspace_id,
+        members,
+    };
+    let event = Event::WorkspaceDeleted { workspace_id };
+    record_at_id(&mut *connection, now, members, &audience, &event).await?;
+    list_receivers(
+        &mut *connection,
+        members,
+        Receivers::WorkspaceMembers(workspace_id),
+    )
+    .await?;
+    crate::calls::store::mark_after_permission_change(connection, Some(workspace_id)).await
 }
 
 /// Records the deletion of a channel for the accounts that could see it. It reads the

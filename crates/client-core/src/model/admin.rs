@@ -1,0 +1,964 @@
+//! The collections of the administration (ADR 0760): what the snapshot does not carry and
+//! a person with the permissions reads and changes: accounts, invites, join requests,
+//! access tokens, exports, server roles, the overrides of a channel, the archived channels
+//! and the settings of a workspace.
+//!
+//! A collection is read from its route when a reader opens it, follows the events from
+//! then on, and is read again after a reload of the state (ADR 0207).
+
+use std::sync::Arc;
+
+use junto_authz::{
+    ChannelScope, HeldRole, Membership, Override, RoleKey, RoleOverride, WorkspacePermissions,
+    WorkspaceScope,
+};
+use junto_protocol::access_token::AccessTokenInfo;
+use junto_protocol::account::AccountSummary;
+use junto_protocol::discovery::Retention;
+use junto_protocol::events::Event;
+use junto_protocol::export::Export;
+use junto_protocol::ids::{ChannelId, WorkspaceId, WorkspaceRoleId};
+use junto_protocol::invite::{Invite, JoinRequest, JoinRequestState};
+use junto_protocol::roles::ServerRole;
+use junto_protocol::structure::{ArchivePeriod, ArchivedChannel, Channel, ChannelOverride};
+
+use super::{PlaceId, ServerModel};
+use crate::api::{ApiError, ErrorCategory};
+
+/// How many access tokens the client reads at most. An account holds at most 100
+/// (ADR 0210), and an administrator sees the tokens of every account.
+pub const MOST_TOKENS: usize = 2000;
+
+/// Why a collection was not read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LoadFailure {
+    /// The account may not read the collection.
+    NotAllowed,
+    /// The server has no such workspace or channel for the account.
+    NotFound,
+    /// The server answered that it cannot serve the request now.
+    Unavailable,
+    /// No answer arrived, or one that the client cannot read.
+    NoAnswer,
+}
+
+impl LoadFailure {
+    pub fn of(error: &ApiError) -> Self {
+        match error.category() {
+            Some(ErrorCategory::NotAllowed | ErrorCategory::Banned) => Self::NotAllowed,
+            Some(ErrorCategory::NotFound) => Self::NotFound,
+            Some(_) => Self::Unavailable,
+            None => Self::NoAnswer,
+        }
+    }
+}
+
+/// A collection that the snapshot does not carry.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Collection<T> {
+    /// No reader has the collection open.
+    #[default]
+    NotLoaded,
+    /// The first read is on its way.
+    Loading,
+    Loaded(T),
+    /// The last read failed. A reader opens the collection again to read it again.
+    Failed(LoadFailure),
+}
+
+impl<T> Collection<T> {
+    pub const fn loaded(&self) -> Option<&T> {
+        match self {
+            Self::Loaded(value) => Some(value),
+            Self::NotLoaded | Self::Loading | Self::Failed(_) => None,
+        }
+    }
+
+    fn loaded_mut(&mut self) -> Option<&mut T> {
+        match self {
+            Self::Loaded(value) => Some(value),
+            Self::NotLoaded | Self::Loading | Self::Failed(_) => None,
+        }
+    }
+
+    pub const fn is_not_loaded(&self) -> bool {
+        matches!(self, Self::NotLoaded)
+    }
+}
+
+/// One collection of the administration, as a reader names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum AdminPart {
+    /// Every account of the server, for a person with "ban members".
+    Accounts,
+    Invites,
+    /// The join requests that wait.
+    JoinRequests,
+    AccessTokens,
+    /// The exports of the account.
+    Exports,
+    ServerRoles,
+    /// The retention of the files of direct messages.
+    DirectRetention,
+    /// The overrides of the roles in one channel.
+    Overrides(ChannelId),
+    /// The archived channels of one workspace that the account sees.
+    Archived(WorkspaceId),
+    /// The archive period and the retention of one workspace.
+    WorkspaceSettings(WorkspaceId),
+}
+
+/// The settings of a workspace that only an administrator reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceSettings {
+    pub archive_period: ArchivePeriod,
+    pub file_retention: Retention,
+    pub recording_retention: Retention,
+}
+
+/// The answer of the route of one collection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AdminPayload {
+    Accounts(Vec<AccountSummary>),
+    Invites(Vec<Invite>),
+    JoinRequests(Vec<JoinRequest>),
+    AccessTokens {
+        tokens: Vec<AccessTokenInfo>,
+        /// The server holds more tokens than the client reads.
+        more: bool,
+    },
+    Exports(Vec<Export>),
+    ServerRoles(Vec<ServerRole>),
+    DirectRetention(Retention),
+    Overrides(Vec<ChannelOverride>),
+    Archived(Vec<ArchivedChannel>),
+    WorkspaceSettings(WorkspaceSettings),
+}
+
+/// What the stream client puts in the place of a collection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AdminSet {
+    NotLoaded,
+    Loading,
+    Failed(LoadFailure),
+    Loaded(AdminPayload),
+}
+
+/// The collections of the administration of one server.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AdminModel {
+    /// In the order of their identifiers.
+    pub accounts: Collection<Vec<AccountSummary>>,
+    /// The newest first.
+    pub invites: Collection<Vec<Invite>>,
+    /// The oldest first.
+    pub join_requests: Collection<Vec<JoinRequest>>,
+    /// The newest first.
+    pub access_tokens: Collection<Vec<AccessTokenInfo>>,
+    /// The server holds more tokens than [`MOST_TOKENS`].
+    pub access_tokens_more: bool,
+    /// The newest first.
+    pub exports: Collection<Vec<Export>>,
+    pub server_roles: Collection<Vec<ServerRole>>,
+    pub direct_retention: Collection<Retention>,
+    pub overrides: Vec<(ChannelId, Collection<Vec<ChannelOverride>>)>,
+    pub archived: Vec<(WorkspaceId, Collection<Vec<ArchivedChannel>>)>,
+    pub settings: Vec<(WorkspaceId, Collection<WorkspaceSettings>)>,
+    /// The archived channels that the state knows outside the loaded lists: a channel
+    /// that was archived while a reader had its messages open, and a channel that a
+    /// reload carried for such a reader until the list of its workspace answers.
+    pub archived_known: Vec<ArchivedChannel>,
+}
+
+/// The state of a collection without its content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollectionState {
+    NotLoaded,
+    Loading,
+    Loaded,
+    Failed(LoadFailure),
+}
+
+fn state_of<T>(collection: &Collection<T>) -> CollectionState {
+    match collection {
+        Collection::NotLoaded => CollectionState::NotLoaded,
+        Collection::Loading => CollectionState::Loading,
+        Collection::Loaded(_) => CollectionState::Loaded,
+        Collection::Failed(failure) => CollectionState::Failed(*failure),
+    }
+}
+
+fn keyed<K: Copy + PartialEq, T>(list: &[(K, Collection<T>)], key: K) -> &Collection<T> {
+    list.iter()
+        .find(|(held, _)| *held == key)
+        .map_or(&Collection::NotLoaded, |(_, collection)| collection)
+}
+
+fn set_keyed<K: Copy + PartialEq, T>(
+    list: &mut Vec<(K, Collection<T>)>,
+    key: K,
+    collection: Collection<T>,
+) {
+    list.retain(|(held, _)| *held != key);
+    if !collection.is_not_loaded() {
+        list.push((key, collection));
+    }
+}
+
+/// Keeps what a collection shows while it is read again.
+fn mark_loading<T>(collection: &mut Collection<T>) {
+    if collection.loaded().is_none() {
+        *collection = Collection::Loading;
+    }
+}
+
+fn mark_keyed_loading<K: Copy + PartialEq, T>(list: &mut Vec<(K, Collection<T>)>, key: K) {
+    match list.iter_mut().find(|(held, _)| *held == key) {
+        Some((_, collection)) => mark_loading(collection),
+        None => list.push((key, Collection::Loading)),
+    }
+}
+
+fn upsert<T: Clone>(items: &mut Vec<T>, item: &T, same: impl Fn(&T) -> bool) -> bool {
+    match items.iter_mut().find(|held| same(held)) {
+        Some(held) => {
+            *held = item.clone();
+            false
+        }
+        None => {
+            items.push(item.clone());
+            true
+        }
+    }
+}
+
+fn sort_archived(channels: &mut [ArchivedChannel]) {
+    channels.sort_by_key(|held| (held.archived_at, held.channel.id));
+}
+
+impl AdminModel {
+    pub fn overrides(&self, channel_id: ChannelId) -> &Collection<Vec<ChannelOverride>> {
+        keyed(&self.overrides, channel_id)
+    }
+
+    pub fn archived(&self, workspace_id: WorkspaceId) -> &Collection<Vec<ArchivedChannel>> {
+        keyed(&self.archived, workspace_id)
+    }
+
+    pub fn workspace_settings(&self, workspace_id: WorkspaceId) -> &Collection<WorkspaceSettings> {
+        keyed(&self.settings, workspace_id)
+    }
+
+    pub fn state(&self, part: AdminPart) -> CollectionState {
+        match part {
+            AdminPart::Accounts => state_of(&self.accounts),
+            AdminPart::Invites => state_of(&self.invites),
+            AdminPart::JoinRequests => state_of(&self.join_requests),
+            AdminPart::AccessTokens => state_of(&self.access_tokens),
+            AdminPart::Exports => state_of(&self.exports),
+            AdminPart::ServerRoles => state_of(&self.server_roles),
+            AdminPart::DirectRetention => state_of(&self.direct_retention),
+            AdminPart::Overrides(channel_id) => state_of(self.overrides(channel_id)),
+            AdminPart::Archived(workspace_id) => state_of(self.archived(workspace_id)),
+            AdminPart::WorkspaceSettings(workspace_id) => {
+                state_of(self.workspace_settings(workspace_id))
+            }
+        }
+    }
+
+    /// An archived channel that the state knows: from a loaded list, or by itself.
+    pub fn archived_channel(&self, channel_id: ChannelId) -> Option<&ArchivedChannel> {
+        self.archived
+            .iter()
+            .filter_map(|(_, list)| list.loaded())
+            .flatten()
+            .chain(&self.archived_known)
+            .find(|held| held.channel.id == channel_id)
+    }
+
+    fn set(&mut self, part: AdminPart, set: AdminSet) {
+        fn plain<T>(
+            set: AdminSet,
+            loaded: impl FnOnce(AdminPayload) -> Option<T>,
+        ) -> Collection<T> {
+            match set {
+                AdminSet::NotLoaded => Collection::NotLoaded,
+                AdminSet::Loading => Collection::Loading,
+                AdminSet::Failed(failure) => Collection::Failed(failure),
+                AdminSet::Loaded(payload) => match loaded(payload) {
+                    Some(value) => Collection::Loaded(value),
+                    None => Collection::Failed(LoadFailure::NoAnswer),
+                },
+            }
+        }
+        if set == AdminSet::Loading {
+            match part {
+                AdminPart::Accounts => mark_loading(&mut self.accounts),
+                AdminPart::Invites => mark_loading(&mut self.invites),
+                AdminPart::JoinRequests => mark_loading(&mut self.join_requests),
+                AdminPart::AccessTokens => mark_loading(&mut self.access_tokens),
+                AdminPart::Exports => mark_loading(&mut self.exports),
+                AdminPart::ServerRoles => mark_loading(&mut self.server_roles),
+                AdminPart::DirectRetention => mark_loading(&mut self.direct_retention),
+                AdminPart::Overrides(channel_id) => {
+                    mark_keyed_loading(&mut self.overrides, channel_id);
+                }
+                AdminPart::Archived(workspace_id) => {
+                    mark_keyed_loading(&mut self.archived, workspace_id);
+                }
+                AdminPart::WorkspaceSettings(workspace_id) => {
+                    mark_keyed_loading(&mut self.settings, workspace_id);
+                }
+            }
+            return;
+        }
+        match part {
+            AdminPart::Accounts => {
+                self.accounts = plain(set, |payload| match payload {
+                    AdminPayload::Accounts(mut accounts) => {
+                        accounts.sort_by_key(|held| held.id);
+                        Some(accounts)
+                    }
+                    _ => None,
+                });
+            }
+            AdminPart::Invites => {
+                self.invites = plain(set, |payload| match payload {
+                    AdminPayload::Invites(mut invites) => {
+                        invites.sort_by_key(|held| std::cmp::Reverse(held.id));
+                        Some(invites)
+                    }
+                    _ => None,
+                });
+            }
+            AdminPart::JoinRequests => {
+                self.join_requests = plain(set, |payload| match payload {
+                    AdminPayload::JoinRequests(mut requests) => {
+                        requests.sort_by_key(|held| (held.created_at, held.id));
+                        Some(requests)
+                    }
+                    _ => None,
+                });
+            }
+            AdminPart::AccessTokens => {
+                let mut more = false;
+                self.access_tokens = plain(set, |payload| match payload {
+                    AdminPayload::AccessTokens {
+                        mut tokens,
+                        more: goes_on,
+                    } => {
+                        tokens.sort_by_key(|held| std::cmp::Reverse(held.id));
+                        more = goes_on;
+                        Some(tokens)
+                    }
+                    _ => None,
+                });
+                self.access_tokens_more = more;
+            }
+            AdminPart::Exports => {
+                self.exports = plain(set, |payload| match payload {
+                    AdminPayload::Exports(mut exports) => {
+                        exports.sort_by_key(|held| std::cmp::Reverse(held.id));
+                        Some(exports)
+                    }
+                    _ => None,
+                });
+            }
+            AdminPart::ServerRoles => {
+                self.server_roles = plain(set, |payload| match payload {
+                    AdminPayload::ServerRoles(mut roles) => {
+                        roles.sort_by_key(|held| held.id);
+                        Some(roles)
+                    }
+                    _ => None,
+                });
+            }
+            AdminPart::DirectRetention => {
+                self.direct_retention = plain(set, |payload| match payload {
+                    AdminPayload::DirectRetention(retention) => Some(retention),
+                    _ => None,
+                });
+            }
+            AdminPart::Overrides(channel_id) => {
+                let collection = plain(set, |payload| match payload {
+                    AdminPayload::Overrides(mut overrides) => {
+                        overrides.sort_by_key(|held| held.role_id);
+                        Some(overrides)
+                    }
+                    _ => None,
+                });
+                set_keyed(&mut self.overrides, channel_id, collection);
+            }
+            AdminPart::Archived(workspace_id) => {
+                let collection = plain(set, |payload| match payload {
+                    AdminPayload::Archived(mut channels) => {
+                        channels.retain(|held| held.channel.workspace_id == workspace_id);
+                        sort_archived(&mut channels);
+                        Some(channels)
+                    }
+                    _ => None,
+                });
+                if collection.loaded().is_some() {
+                    // The list of the server replaces what the state knew by itself.
+                    self.archived_known
+                        .retain(|held| held.channel.workspace_id != workspace_id);
+                }
+                set_keyed(&mut self.archived, workspace_id, collection);
+            }
+            AdminPart::WorkspaceSettings(workspace_id) => {
+                let collection = plain(set, |payload| match payload {
+                    AdminPayload::WorkspaceSettings(settings) => Some(settings),
+                    _ => None,
+                });
+                set_keyed(&mut self.settings, workspace_id, collection);
+            }
+        }
+    }
+
+    /// Puts an archived channel where the state keeps it: into the loaded list of its
+    /// workspace, or beside the lists when `keep` says that a reader needs it.
+    fn put_archived(&mut self, archived: &ArchivedChannel, keep: bool) {
+        let workspace_id = archived.channel.workspace_id;
+        let same = |held: &ArchivedChannel| held.channel.id == archived.channel.id;
+        let list = self
+            .archived
+            .iter_mut()
+            .find(|(held, _)| *held == workspace_id)
+            .and_then(|(_, list)| list.loaded_mut());
+        match list {
+            Some(list) => {
+                upsert(list, archived, same);
+                sort_archived(list);
+                self.archived_known.retain(|held| !same(held));
+            }
+            None if keep || self.archived_known.iter().any(same) => {
+                upsert(&mut self.archived_known, archived, same);
+            }
+            None => {}
+        }
+    }
+
+    fn forget_archived(&mut self, channel_id: ChannelId) {
+        for (_, list) in &mut self.archived {
+            if let Some(list) = list.loaded_mut() {
+                list.retain(|held| held.channel.id != channel_id);
+            }
+        }
+        self.archived_known
+            .retain(|held| held.channel.id != channel_id);
+    }
+
+    fn forget_role(&mut self, role_id: WorkspaceRoleId) {
+        for (_, list) in &mut self.overrides {
+            if let Some(list) = list.loaded_mut() {
+                list.retain(|held| held.role_id != role_id);
+            }
+        }
+    }
+
+    fn forget_workspace(&mut self, workspace_id: WorkspaceId, channels: &[ChannelId]) {
+        self.archived.retain(|(held, _)| *held != workspace_id);
+        self.settings.retain(|(held, _)| *held != workspace_id);
+        self.overrides.retain(|(held, _)| !channels.contains(held));
+        self.archived_known
+            .retain(|held| held.channel.workspace_id != workspace_id);
+    }
+
+    /// Applies an event to the collections that are loaded.
+    fn apply(&mut self, event: &Event) {
+        match event {
+            Event::AccountAdded { account } => {
+                if let Some(accounts) = self.accounts.loaded_mut() {
+                    upsert(accounts, account, |held| held.id == account.id);
+                    accounts.sort_by_key(|held| held.id);
+                }
+            }
+            Event::AccountProfileUpdated { profile } => {
+                if let Some(accounts) = self.accounts.loaded_mut() {
+                    for held in accounts.iter_mut().filter(|held| held.id == profile.id) {
+                        held.name.clone_from(&profile.name);
+                    }
+                }
+            }
+            Event::AccountStatusChanged { account_id, status } => {
+                if let Some(accounts) = self.accounts.loaded_mut() {
+                    for held in accounts.iter_mut().filter(|held| held.id == *account_id) {
+                        held.status = *status;
+                    }
+                }
+            }
+            Event::AccountServerRolesChanged {
+                account_id,
+                server_role_ids,
+            } => {
+                if let Some(accounts) = self.accounts.loaded_mut() {
+                    for held in accounts.iter_mut().filter(|held| held.id == *account_id) {
+                        held.server_role_ids.clone_from(server_role_ids);
+                    }
+                }
+            }
+            Event::OwnerChanged { account_id, .. } => {
+                if let Some(accounts) = self.accounts.loaded_mut() {
+                    for held in accounts {
+                        held.is_owner = held.id == *account_id;
+                    }
+                }
+            }
+            Event::ServerRoleCreated { role } | Event::ServerRoleUpdated { role } => {
+                if let Some(roles) = self.server_roles.loaded_mut() {
+                    upsert(roles, role, |held| held.id == role.id);
+                    roles.sort_by_key(|held| held.id);
+                }
+            }
+            Event::ServerRoleDeleted { role_id } => {
+                if let Some(roles) = self.server_roles.loaded_mut() {
+                    roles.retain(|held| held.id != *role_id);
+                }
+                if let Some(accounts) = self.accounts.loaded_mut() {
+                    for held in accounts {
+                        held.server_role_ids.retain(|held| held != role_id);
+                    }
+                }
+            }
+            Event::AccessTokenCreated { access_token } => {
+                if let Some(tokens) = self.access_tokens.loaded_mut() {
+                    upsert(tokens, access_token, |held| held.id == access_token.id);
+                    tokens.sort_by_key(|held| std::cmp::Reverse(held.id));
+                    if tokens.len() > MOST_TOKENS {
+                        tokens.truncate(MOST_TOKENS);
+                        self.access_tokens_more = true;
+                    }
+                }
+            }
+            Event::AccessTokenRevoked { access_token_id } => {
+                if let Some(tokens) = self.access_tokens.loaded_mut() {
+                    tokens.retain(|held| held.id != *access_token_id);
+                }
+            }
+            Event::AccessTokensOfCreatorRevoked { created_by } => {
+                if let Some(tokens) = self.access_tokens.loaded_mut() {
+                    tokens.retain(|held| held.created_by != *created_by);
+                }
+            }
+            Event::InviteCreated { invite } => {
+                if let Some(invites) = self.invites.loaded_mut() {
+                    upsert(invites, invite, |held| held.id == invite.id);
+                    invites.sort_by_key(|held| std::cmp::Reverse(held.id));
+                }
+            }
+            Event::InviteRevoked {
+                invite_id,
+                revocation,
+            } => {
+                if let Some(invites) = self.invites.loaded_mut() {
+                    for held in invites.iter_mut().filter(|held| held.id == *invite_id) {
+                        held.revocation = Some(*revocation);
+                    }
+                }
+            }
+            Event::InviteUsed { invite_id, uses } => {
+                if let Some(invites) = self.invites.loaded_mut() {
+                    for held in invites.iter_mut().filter(|held| held.id == *invite_id) {
+                        // A replayed event of an earlier use does not lower the count.
+                        held.uses = held.uses.max(*uses);
+                    }
+                }
+            }
+            Event::InvitesOfCreatorRevoked {
+                created_by,
+                revocation,
+            } => {
+                if let Some(invites) = self.invites.loaded_mut() {
+                    for held in invites
+                        .iter_mut()
+                        .filter(|held| held.created_by == *created_by && held.revocation.is_none())
+                    {
+                        held.revocation = Some(*revocation);
+                    }
+                }
+            }
+            Event::JoinRequestCreated { join_request } => {
+                if let Some(requests) = self.join_requests.loaded_mut() {
+                    upsert(requests, join_request, |held| held.id == join_request.id);
+                    requests.sort_by_key(|held| (held.created_at, held.id));
+                }
+            }
+            Event::JoinRequestDecided {
+                join_request_id,
+                state,
+                ..
+            } => {
+                if *state != JoinRequestState::Pending
+                    && let Some(requests) = self.join_requests.loaded_mut()
+                {
+                    requests.retain(|held| held.id != *join_request_id);
+                }
+            }
+            Event::ExportUpdated { export } => {
+                if let Some(exports) = self.exports.loaded_mut() {
+                    upsert(exports, export, |held| held.id == export.id);
+                    exports.sort_by_key(|held| std::cmp::Reverse(held.id));
+                }
+            }
+            Event::ExportRemoved { export_id, .. } => {
+                if let Some(exports) = self.exports.loaded_mut() {
+                    exports.retain(|held| held.id != *export_id);
+                }
+            }
+            Event::ChannelOverrideSet {
+                channel_id,
+                role_id,
+                allow,
+                deny,
+                ..
+            } => {
+                let list = self
+                    .overrides
+                    .iter_mut()
+                    .find(|(held, _)| held == channel_id)
+                    .and_then(|(_, list)| list.loaded_mut());
+                if let Some(list) = list {
+                    list.retain(|held| held.role_id != *role_id);
+                    if !allow.is_empty() || !deny.is_empty() {
+                        list.push(ChannelOverride {
+                            role_id: *role_id,
+                            allow: allow.clone(),
+                            deny: deny.clone(),
+                        });
+                        list.sort_by_key(|held| held.role_id);
+                    }
+                }
+            }
+            Event::WorkspaceRoleDeleted { role_id, .. } => self.forget_role(*role_id),
+            _ => {}
+        }
+    }
+}
+
+impl AdminPart {
+    /// True when `event` changes this collection. The stream client keeps such events
+    /// while the collection is read and applies them after the answer (ADR 0207).
+    pub(crate) fn concerns(&self, event: &Event) -> bool {
+        match self {
+            Self::Accounts => matches!(
+                event,
+                Event::AccountAdded { .. }
+                    | Event::AccountProfileUpdated { .. }
+                    | Event::AccountStatusChanged { .. }
+                    | Event::AccountServerRolesChanged { .. }
+                    | Event::OwnerChanged { .. }
+                    | Event::ServerRoleDeleted { .. }
+            ),
+            Self::Invites => matches!(
+                event,
+                Event::InviteCreated { .. }
+                    | Event::InviteRevoked { .. }
+                    | Event::InviteUsed { .. }
+                    | Event::InvitesOfCreatorRevoked { .. }
+            ),
+            Self::JoinRequests => matches!(
+                event,
+                Event::JoinRequestCreated { .. } | Event::JoinRequestDecided { .. }
+            ),
+            Self::AccessTokens => matches!(
+                event,
+                Event::AccessTokenCreated { .. }
+                    | Event::AccessTokenRevoked { .. }
+                    | Event::AccessTokensOfCreatorRevoked { .. }
+            ),
+            Self::Exports => matches!(
+                event,
+                Event::ExportUpdated { .. } | Event::ExportRemoved { .. }
+            ),
+            Self::ServerRoles => matches!(
+                event,
+                Event::ServerRoleCreated { .. }
+                    | Event::ServerRoleUpdated { .. }
+                    | Event::ServerRoleDeleted { .. }
+            ),
+            Self::Overrides(channel_id) => match event {
+                Event::ChannelOverrideSet { channel_id: of, .. } => of == channel_id,
+                Event::WorkspaceRoleDeleted { .. } => true,
+                _ => false,
+            },
+            Self::Archived(workspace_id) => match event {
+                Event::ChannelArchived { channel } | Event::ChannelDeletionDue { channel } => {
+                    channel.channel.workspace_id == *workspace_id
+                }
+                Event::ChannelRestored { channel } => channel.workspace_id == *workspace_id,
+                Event::ChannelDeleted {
+                    workspace_id: of, ..
+                } => of == workspace_id,
+                _ => false,
+            },
+            Self::WorkspaceSettings(_) | Self::DirectRetention => self.is_stale_after(event),
+        }
+    }
+
+    /// True when `event` tells that this collection changed without carrying the change:
+    /// the collection is read again.
+    pub(crate) fn is_stale_after(&self, event: &Event) -> bool {
+        match (self, event) {
+            (
+                Self::WorkspaceSettings(workspace_id),
+                Event::RetentionChanged { workspace_id: of },
+            ) => *of == Some(*workspace_id),
+            (Self::DirectRetention, Event::RetentionChanged { workspace_id: None }) => true,
+            _ => false,
+        }
+    }
+
+    /// The workspace that the state must hold for this collection.
+    pub(crate) const fn workspace(&self) -> Option<WorkspaceId> {
+        match self {
+            Self::Archived(workspace_id) | Self::WorkspaceSettings(workspace_id) => {
+                Some(*workspace_id)
+            }
+            _ => None,
+        }
+    }
+}
+
+fn set_of(permissions: &[junto_protocol::WorkspacePermission]) -> WorkspacePermissions {
+    permissions.iter().copied().collect()
+}
+
+fn rule_of(held: &ChannelOverride) -> Override {
+    // A server that sends a permission in both sets states no rule that the function
+    // of the permissions accepts: the deny is kept, which gives the account less.
+    let deny = set_of(&held.deny);
+    Override::new(set_of(&held.allow).difference(deny), deny).unwrap_or(Override::NONE)
+}
+
+impl ServerModel {
+    fn admin_mut(&mut self) -> &mut AdminModel {
+        Arc::make_mut(&mut self.admin)
+    }
+
+    pub(crate) fn set_admin(&mut self, part: AdminPart, set: AdminSet) {
+        if let AdminPart::Archived(workspace_id) = part
+            && matches!(set, AdminSet::NotLoaded | AdminSet::Failed(_))
+        {
+            // The list goes; a reader of the messages of one of its channels keeps the
+            // channel.
+            let kept: Vec<ArchivedChannel> = self
+                .admin
+                .archived(workspace_id)
+                .loaded()
+                .into_iter()
+                .flatten()
+                .filter(|held| self.reads_channel(held.channel.id))
+                .cloned()
+                .collect();
+            if !kept.is_empty() {
+                self.admin_mut().archived_known.extend(kept);
+            }
+        }
+        self.admin_mut().set(part, set);
+    }
+
+    /// Applies again, in their order, the events that arrived while a collection was
+    /// read. Only the collections follow them: the rest of the state has followed each
+    /// event when it arrived, and a later event of the same object must stay applied.
+    pub(crate) fn replay_admin<'a>(
+        &mut self,
+        part: AdminPart,
+        events: impl IntoIterator<Item = &'a Event>,
+    ) {
+        for event in events {
+            if part.concerns(event) {
+                self.apply_admin(event);
+            }
+        }
+    }
+
+    /// A channel that the account reads: one of the channel lists, or an archived channel
+    /// that the state knows (ADR 0410).
+    pub fn readable_channel(&self, channel_id: ChannelId) -> Option<&Channel> {
+        self.channel(channel_id)
+            .map(|held| &held.channel)
+            .or_else(|| {
+                self.admin
+                    .archived_channel(channel_id)
+                    .map(|held| &held.channel)
+            })
+    }
+
+    /// True while a reader has the messages, a thread or the pin list of the channel
+    /// open.
+    fn reads_channel(&self, channel_id: ChannelId) -> bool {
+        self.timelines
+            .iter()
+            .any(|held| held.place.container() == PlaceId::Channel(channel_id))
+            || self.pins.iter().any(|held| held.channel_id == channel_id)
+    }
+
+    /// After the archived list of a workspace arrived and the events of the time of its
+    /// read were applied: the messages and the pins of a channel that is in no list any
+    /// more are gone. A reader holds a channel that the account reads; a channel that a
+    /// reload carried and that the list does not hold was deleted.
+    pub(crate) fn close_lost_archived(&mut self) {
+        let lost: Vec<PlaceId> = self
+            .timelines
+            .iter()
+            .map(|held| held.place.container())
+            .chain(
+                self.pins
+                    .iter()
+                    .map(|held| PlaceId::Channel(held.channel_id)),
+            )
+            .filter(|place| match place {
+                PlaceId::Channel(channel_id) => self.readable_channel(*channel_id).is_none(),
+                _ => false,
+            })
+            .collect();
+        for place in lost {
+            self.forget_place(place);
+        }
+    }
+
+    /// Carries, after a reload, the archived channels whose messages a reader has open.
+    /// The snapshot does not name them (ADR 0410); the archived list of their workspace
+    /// decides when it answers.
+    pub(crate) fn carry_archived(&mut self, before: &Self, wanted: &[PlaceId]) {
+        let mut carried = Vec::new();
+        for place in wanted {
+            let PlaceId::Channel(channel_id) = place.container() else {
+                continue;
+            };
+            if self.channel(channel_id).is_some()
+                || carried
+                    .iter()
+                    .any(|held: &ArchivedChannel| held.channel.id == channel_id)
+            {
+                continue;
+            }
+            if let Some(archived) = before.admin.archived_channel(channel_id)
+                && self.workspace(archived.channel.workspace_id).is_some()
+            {
+                carried.push(archived.clone());
+            }
+        }
+        if !carried.is_empty() {
+            self.admin_mut().archived_known = carried;
+        }
+    }
+
+    /// The part of an event that changes the collections of the administration, and the
+    /// collections that the event makes stale.
+    pub(crate) fn apply_admin(&mut self, event: &Event) -> Vec<AdminPart> {
+        let mut stale = Vec::new();
+        match event {
+            Event::ChannelArchived { channel } => {
+                let keep = self.reads_channel(channel.channel.id);
+                self.admin_mut().put_archived(channel, keep);
+            }
+            Event::ChannelDeletionDue { channel } => {
+                // The notice replaces a channel that the state knows as archived.
+                self.admin_mut().put_archived(channel, false);
+            }
+            Event::ChannelRestored { channel } => {
+                if self.admin.archived_channel(channel.id).is_some() {
+                    self.admin_mut().forget_archived(channel.id);
+                }
+            }
+            Event::ChannelDeleted { channel_id, .. } => {
+                if self.admin.archived_channel(*channel_id).is_some() {
+                    self.admin_mut().forget_archived(*channel_id);
+                }
+                if self.admin.overrides.iter().any(|(of, _)| of == channel_id) {
+                    self.admin_mut()
+                        .overrides
+                        .retain(|(of, _)| of != channel_id);
+                }
+            }
+            Event::RetentionChanged { workspace_id } => {
+                let part = match workspace_id {
+                    Some(workspace_id) => AdminPart::WorkspaceSettings(*workspace_id),
+                    None => AdminPart::DirectRetention,
+                };
+                if self.admin.state(part) != CollectionState::NotLoaded {
+                    stale.push(part);
+                }
+            }
+            Event::ServerRoleDeleted { role_id } => {
+                self.account.server_role_ids.retain(|held| held != role_id);
+                self.admin_mut().apply(event);
+            }
+            _ => {
+                let touched = [
+                    AdminPart::Accounts,
+                    AdminPart::Invites,
+                    AdminPart::JoinRequests,
+                    AdminPart::AccessTokens,
+                    AdminPart::Exports,
+                    AdminPart::ServerRoles,
+                ]
+                .into_iter()
+                .any(|part| {
+                    part.concerns(event) && self.admin.state(part) == CollectionState::Loaded
+                }) || (matches!(
+                    event,
+                    Event::ChannelOverrideSet { .. } | Event::WorkspaceRoleDeleted { .. }
+                ) && !self.admin.overrides.is_empty());
+                if touched {
+                    self.admin_mut().apply(event);
+                }
+            }
+        }
+        stale
+    }
+
+    /// A workspace is gone: nothing of it stays in the collections.
+    pub(crate) fn forget_admin_workspace(
+        &mut self,
+        workspace_id: WorkspaceId,
+        channels: &[ChannelId],
+    ) {
+        self.admin_mut().forget_workspace(workspace_id, channels);
+    }
+
+    /// The permissions that the account holds in a channel by its roles and the loaded
+    /// overrides of the channel, decided by the function of the server (ADR 0304). `None`
+    /// until the overrides of the channel are loaded. An administrator holds every
+    /// permission. The server decides every request; this is what a screen shows as
+    /// possible.
+    pub fn channel_permissions(&self, channel_id: ChannelId) -> Option<WorkspacePermissions> {
+        if self.is_administrator() {
+            return Some(WorkspacePermissions::ALL);
+        }
+        let channel = self.readable_channel(channel_id)?;
+        let workspace = self.workspace(channel.workspace_id)?;
+        let overrides = self.admin.overrides(channel_id).loaded()?;
+        let everyone = workspace.roles.iter().find(|role| role.is_everyone)?;
+        let key = |role_id: WorkspaceRoleId| RoleKey(role_id.as_uuid().as_u128());
+        let scope = ChannelScope {
+            workspace: WorkspaceScope {
+                membership: Membership::Member,
+                everyone: set_of(&everyone.permissions),
+                roles: workspace
+                    .roles
+                    .iter()
+                    .filter(|role| !role.is_everyone && workspace.own_role_ids.contains(&role.id))
+                    .map(|role| HeldRole {
+                        key: key(role.id),
+                        permissions: set_of(&role.permissions),
+                    })
+                    .collect(),
+            },
+            everyone_override: overrides
+                .iter()
+                .find(|held| held.role_id == everyone.id)
+                .map_or(Override::NONE, rule_of),
+            role_overrides: overrides
+                .iter()
+                .filter(|held| held.role_id != everyone.id)
+                .map(|held| RoleOverride {
+                    role: key(held.role_id),
+                    rule: rule_of(held),
+                })
+                .collect(),
+        };
+        Some(scope.usable_permissions())
+    }
+}

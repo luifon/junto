@@ -38,8 +38,8 @@ Reading the free space:
 
 Warning:
 
-- The server writes a log record of the level `warn` when the free space reaches the reserve, and one of the level `info` when it is above it again.
-- The health route (ADR 0012) states `storage_low`: true at or below the reserve, false above it, and `null` on a server without a recorder or when the free space cannot be read.
+- The server writes a log record of the level `warn` when the free space reaches the reserve, and one of the level `info` when it is above it again. It does this for each directory that the storage guard reads: the recordings, the attachments and the exports. The controller of recordings asks at each pass, and the maintenance pass and the health route ask for all three, so a server without a recorder warns about its attachments and its exports as well.
+- The health route (ADR 0012) states `storage_low`: true when one of the three directories is at or below the reserve, false when none is and one could be read, and `null` on a server without such a directory or when no free space can be read. The first version read the directory of the recordings only.
 
 Values:
 
@@ -51,6 +51,6 @@ Values:
 - A recording that is longer than its reservation is not stopped by the reservation. It is stopped when the free space reaches the reserve.
 - The reservations are an upper estimate: space that a recording has already written is counted as used by the file system and as reserved by its row. A server refuses a recording earlier than the free space alone would require.
 - An administrator sees the state of the storage in the log and on the health route. The client shows nothing; an administrator who starts a recording gets `storage_low`.
-- Uploads and exports do not exist yet. They will use the same reserve and the same table of reservations.
+- Uploads (ADR 0408) and exports (ADR 0411) use the same reserve and the same table of reservations. One account holds at most 20 reservations of uploads, and a cancelled upload holds none. An export reserves the bytes that its file was counted to need, read from the free space of the directory of the exports.
 - A change of a value needs a new build of the server until the values become settings.
 - What the recorder does when the disk is full was not tested (ADR 0006). The stop at the reserve is meant to act before that point; a recording with five audio files writes about 1.6 GiB per hour, so one pass per second sees the reserve in time.

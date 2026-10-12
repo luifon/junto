@@ -162,6 +162,7 @@ impl RecordingServer {
             ffmpeg: program("JUNTO_FFMPEG", "ffmpeg"),
             ffprobe: program("JUNTO_FFPROBE", "ffprobe"),
             transcriber: Some(TranscriberSettings {
+                batch_size: None,
                 command: vec!["/bin/sh".to_owned(), script.to_str().unwrap().to_owned()],
                 environment: Vec::new(),
                 separate_speakers: true,
@@ -191,6 +192,9 @@ impl RecordingServer {
             let address = listener.local_addr().unwrap();
             let origin = Origin::parse(&format!("http://{address}")).unwrap();
             let config = Config {
+                exports_directory: None,
+                migration_copy: junto_server::bootstrap::MigrationCopy::None,
+                recorder_layout_directory: None,
                 attachments_directory: Some(attachments_directory),
                 database_url: String::new(),
                 listen_address: address,

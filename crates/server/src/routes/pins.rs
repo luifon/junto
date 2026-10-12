@@ -50,6 +50,7 @@ async fn set(app: &AppState, bearer: &Bearer, id: MessageId, pin: bool) -> ApiRe
         if message.deleted || message.system.is_some() {
             return Err(ApiError::invalid("only authored messages can be pinned"));
         }
+        place.require_open()?;
         super::messages::rate(app, &access, &mut counted)?;
         let changed = if pin {
             let count: i64 = sqlx::query_scalar(

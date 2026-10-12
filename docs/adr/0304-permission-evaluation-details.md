@@ -32,9 +32,11 @@ Grant rule:
   - creating a role: the permissions of the role;
   - editing a role: the permissions that the edit adds;
   - assigning a role: the permissions of the role, and for each channel the permissions that the channel overrides of the role allow there;
+  - removing a role from a member, and deleting a role (ADR 0308): for each channel the permissions that the channel overrides of the role deny there, because the member gets them back;
   - changing a channel override: the permissions added to the allow set and the permissions removed from the deny set.
 - The caller must hold each of those permissions: in the workspace for the permissions of a role, in the channel for the permissions of an override. A caller who cannot see a channel holds nothing in it.
-- Removing a permission from a role, removing a role from a member and adding a deny need only the managing permission.
+- Removing a permission from a role and adding a deny need only the managing permission. So does removing a role whose overrides deny nothing.
+- The rule for the removal of a role is the same for every target: the caller's own account and another member.
 
 Managing permissions:
 
@@ -57,10 +59,10 @@ Stored sets:
 ## Consequences
 
 - One test suite of table tests and property tests covers the rule for every route.
-- A person with "manage roles" cannot use a role to enter a channel: assigning a role whose override allows "view channel" in a channel that the person cannot see is denied.
+- A person with "manage roles" cannot use a role to enter a channel: assigning a role whose override allows "view channel" in a channel that the person cannot see is denied, and so is removing a role whose override denies "view channel" there, from the own account or from another member.
 - The roles and overrides that a decision uses are read in the transaction of the change (ADR 0009), so a permission that was revoked before the change commits is not used.
 - A person with "manage channel" who denies a permission to a role that the person holds loses that permission in the channel and cannot remove the deny again. An administrator can.
-- A person with "manage roles" can take a role from any member, a role with more permissions included. A role order is not part of the first version.
+- A person with "manage roles" can take a role from any member, a role with more permissions included, unless an override of the role denies a permission that the person does not hold in the channel of that override. A role order is not part of the first version.
 - A person with "create workspace" and no administrator permission gets an empty workspace that an administrator has to give roles to.
 - A category does not hide its name from members who see none of its channels.
 - The number of a permission bit cannot be reused for another permission.

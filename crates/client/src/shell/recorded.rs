@@ -561,7 +561,9 @@ impl Shell {
                 .border_color(Hsla::from(colors.rule_soft))
                 .text_size(u(13.0))
                 .ink(colors.ink_2)
-                .child(SharedString::from(if transcript.failed {
+                .child(SharedString::from(if transcript.refresh_failed {
+                    text::TRANSCRIPT_REFRESH_FAILED.to_owned()
+                } else if transcript.failed {
                     text::TRANSCRIPT_LINES_FAILED.to_owned()
                 } else {
                     text::lines_shown(shown, transcript.total)
@@ -1116,6 +1118,7 @@ impl Shell {
         // control for the next page.
         let lines = open.lines.lines.len();
         let (failed, more) = (transcript.failed, transcript.more || transcript.failed);
+        let refresh_failed = transcript.refresh_failed;
         let tail = usize::from(failed) + usize::from(more);
         self.transcript_list.take(recording_id, open, tail);
         match panel.line {
@@ -1156,8 +1159,12 @@ impl Shell {
                     .px(u(14.0))
                     .pt(u(8.0))
                     .child(
-                        Notice::error(text::TRANSCRIPT_LINES_FAILED)
-                            .selector("transcript-lines-failed"),
+                        Notice::error(if refresh_failed {
+                            text::TRANSCRIPT_REFRESH_FAILED
+                        } else {
+                            text::TRANSCRIPT_LINES_FAILED
+                        })
+                        .selector("transcript-lines-failed"),
                     )
                     .into_any_element();
             }
@@ -1170,14 +1177,20 @@ impl Shell {
                     Button::new("more-lines")
                         .label(if reading {
                             text::READING_MORE_RESULTS
+                        } else if failed {
+                            text::TRY_AGAIN
                         } else {
                             text::SHOW_MORE_LINES
                         })
                         .disabled(reading)
                         .selector("more-lines")
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.state.update(cx, |state, _| {
-                                state.read_transcript_lines(server_id, recording_id);
+                            this.state.update(cx, |state, cx| {
+                                if refresh_failed {
+                                    state.reload_recording(server_id, recording_id, cx);
+                                } else {
+                                    state.read_transcript_lines(server_id, recording_id);
+                                }
                             });
                         })),
                 )

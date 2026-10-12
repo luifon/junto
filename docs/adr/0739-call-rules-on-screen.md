@@ -12,6 +12,7 @@ The server has the rules of a call: meeting mode with raised hands (ADR 0505, AD
 
 Requests and refusals:
 
+- While the media is connected but the server has not admitted the current place, the call shows "Entering call…". Invitations, answers to entry requests, recording controls, the hand and room settings are not offered. Their action handlers also require the current calls view to be connected and admitted, with the target and identity captured when the control was rendered, so an earlier view cannot send an inside-only request during entry or into a replacement call.
 - Each control asks the server and changes nothing on screen by itself. The change arrives with the state of the server.
 - A request that the server refuses is told by one notice above the content, with the sentence for the code of the refusal, until the person closes it, the next request starts, or the call ends. A refusal that arrives after a later request has started, or after the call of its request has ended, is not told.
 - A control whose request the roles of the person do not allow is drawn disabled, and its tooltip states the missing permission. The roles are a prediction: the server decides, because an override of the channel can differ.
@@ -28,12 +29,14 @@ Meeting mode:
 
 The room:
 
-- The header has "Lock room" with "On" or "Off", and the count of the people inside with the user limit. The Settings tab has "Room · name" with meeting mode, the lock, the user limit and "Hide who is inside".
+- The header has "Lock room" with "On" or "Off", and the count of the people inside with the user limit. The Settings tab has "Room · name" with meeting mode, the lock, the user limit and "Hide who is inside". A call keeps the hide setting of its start (ADR 0517): while the setting of the channel differs from the one of the call, the row states that the change holds from the next call.
 - The user limit has a button that lowers it and one that raises it. A limit of 1 that is lowered is removed. A voice channel without a limit gets the number of people inside as its first limit.
 
 A room that a person cannot enter without help:
 
 - A voice channel is closed for a person outside when it is in use and locked or full, or when the server refused the last join of the person as locked or full. The second case tells it for a voice channel that hides who is inside.
+- A voice channel in use whose call the server does not show is drawn as hidden, whatever the setting of the channel is now.
+- The row of the person of this device shows "connecting" until the server lists the person in the call. The server lists a person when its admission check has seen the device in the room, and it takes an action of a person inside (the lock, an invitation, the answer to a request, meeting mode) only from then on (ADR 0517).
 - Under the row of a closed voice channel that the person selected, the channel list shows a box with the reason and "Ask to enter". Under another full voice channel it shows one line.
 - The box shows the request of the person: on its way, waiting with "Withdraw request", denied, or without an answer, the last two with "Ask again". An acceptance enters the call at once.
 - A person has one request at a time. A new request withdraws the earlier one, and so does the entry into any call: an acceptance does not replace a call that the person entered meanwhile. An answer that arrives before the server has told the identifier of the request is kept and used when the identifier is known. A request without an answer is shown as ended after the time that the server gave it and 5 seconds.

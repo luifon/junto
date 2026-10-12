@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use gpui::TestAppContext;
 use junto_client::shell::Open;
 use junto_client::state::view::{
-    CallPanel, Closed, EntryState, MeetingStart, Microphone, MicrophoneButton, OwnShare, RoomView,
-    VoiceState,
+    CallPanel, Closed, EntryState, MeetingStart, Microphone, MicrophoneButton, OwnShare, Presence,
+    RoomView, VoiceState,
 };
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::call::{
@@ -93,10 +93,15 @@ impl Scene {
             .unwrap();
     }
 
+    /// The person enters the call in the window. The person acts as one inside from the
+    /// moment at which the server lists the person (ADR 0517).
     fn join_in_the_window(&mut self) {
         self.window.click_channel(ROOM);
         self.window.click("join-call");
         self.window.until("the call is connected", connected);
+        self.window.until("the server lists the person", |window| {
+            own(window).is_some_and(|own| own.presence == Presence::Here)
+        });
     }
 
     /// Waits for the request to enter that the people inside got.
@@ -340,18 +345,49 @@ fn a_person_asks_to_enter_a_locked_room_and_sees_a_full_and_a_hidden_room(cx: &m
         room_view(window).is_some_and(|room| room.user_limit == Some(1))
     });
     scene.window.click("room-hide");
+    // The channel hides who is inside from its next call on. The call that runs keeps the
+    // setting of its start (ADR 0517), and the row of the setting says so.
     scene
         .window
-        .until("the room hides who is inside", |window| {
-            room_view(window).is_some_and(|room| room.hides_occupants)
+        .until("the setting of the room is on", |window| {
+            room_view(window)
+                .is_some_and(|room| room.hides_occupants && room.hide_waits_for_next_call)
         });
 
-    // The person leaves. The room is full and hides who is inside: the people outside
-    // see that it is in use, and learn from a join that it is full.
+    // The person leaves. The call that runs still shows who is inside, and it is full: a
+    // full room that shows who is inside tells it under its row.
     scene.window.click("leave-call");
     scene
         .window
         .until("the call has ended", |window| window.view().call.is_none());
+    scene.window.until("the room is full and shown", |window| {
+        let voice = voice_of(window);
+        voice.in_use
+            && !voice.hidden
+            && voice.full
+            && voice.closed == Some(Closed::Full)
+            && voice.occupants.len() == 1
+    });
+    let other = scene
+        .window
+        .channels()
+        .into_iter()
+        .find(|row| row.kind == ChannelKind::Text)
+        .unwrap();
+    scene.window.click_channel(&other.name);
+    assert!(!scene.window.shows("entry-box"));
+    assert!(scene.window.shows_named(format!("full-note:{voice}")));
+    scene.window.click_channel(ROOM);
+
+    // The next call of the room hides who is inside: the people outside see that it is in
+    // use, and learn from a join that it is full.
+    scene.world.run(scene.caller.calls.leave());
+    scene
+        .window
+        .until("the call of the room has ended", |window| {
+            !voice_of(window).in_use
+        });
+    enter(&scene.world, &scene.caller, scene.target);
     scene
         .window
         .until("the room is in use and hidden", |window| {
@@ -365,33 +401,8 @@ fn a_person_asks_to_enter_a_locked_room_and_sees_a_full_and_a_hidden_room(cx: &m
             window.shows("call-notice") && voice_of(window).closed == Some(Closed::Full)
         });
     assert!(scene.window.shows("entry-box"));
-    // A full room that shows who is inside tells it under its row.
-    scene
-        .world
-        .run(api.update_call_settings(
-            voice,
-            &UpdateCallSettings {
-                user_limit: None,
-                hides_occupants: Some(false),
-            },
-        ))
-        .unwrap();
-    scene.window.click("dismiss-call-notice");
-    scene.window.until("the room is full and shown", |window| {
-        let voice = voice_of(window);
-        voice.full && voice.closed == Some(Closed::Full) && voice.occupants.len() == 1
-    });
-    let other = scene
-        .window
-        .channels()
-        .into_iter()
-        .find(|row| row.kind == ChannelKind::Text)
-        .unwrap();
-    scene.window.click_channel(&other.name);
-    assert!(!scene.window.shows("entry-box"));
-    assert!(scene.window.shows_named(format!("full-note:{voice}")));
-    // The request to enter passes the limit.
-    scene.window.click_channel(ROOM);
+    // The request to enter passes the limit. The person reads who is inside from the
+    // moment at which the server has seen the device in the room.
     scene.window.click("ask-to-enter");
     let request = scene.entry_request();
     scene
@@ -402,12 +413,19 @@ fn a_person_asks_to_enter_a_locked_room_and_sees_a_full_and_a_hidden_room(cx: &m
         .window
         .until("the person is in the full room", connected);
     scene.window.until("the room holds two people", |window| {
-        room_view(window).is_some_and(|room| room.inside == 2 && room.user_limit == Some(1))
+        room_view(window).is_some_and(|room| {
+            room.inside == 2 && room.user_limit == Some(1) && !room.hide_waits_for_next_call
+        }) && occupants(window).len() == 2
     });
+    // The person leaves the call that hides who is inside, and keeps nothing of it.
     scene.window.click("leave-call");
     scene
         .window
         .until("the call has ended", |window| window.view().call.is_none());
+    scene.window.until("the room is hidden again", |window| {
+        let voice = voice_of(window);
+        voice.in_use && voice.hidden && voice.occupants.is_empty()
+    });
     scene.world.run(scene.caller.calls.leave());
 }
 
@@ -471,10 +489,12 @@ fn meeting_mode_in_the_window_as_a_participant_and_as_the_presenter(cx: &mut Tes
             && window.view().controls.microphone == MicrophoneButton::Muted
             && hand(window) == Some(false)
     });
-    assert_eq!(
-        own(&mut scene.window).unwrap().microphone,
-        Microphone::Closed
-    );
+    // The server lists the person as muted when the report of the device has arrived.
+    scene
+        .window
+        .until("the server lists the person as muted", |window| {
+            own(window).is_some_and(|own| own.microphone == Microphone::Closed)
+        });
     // The statement follows the person to another channel.
     let other = scene
         .window

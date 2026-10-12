@@ -420,7 +420,7 @@ impl ServerStatus {
 /// The state of a server as the account of the session sees it. The event stream follows
 /// the access flow with a delay (ADR 0718): for that time it can still hold the state of
 /// the account before, or of a session that has ended. That state is not shown.
-pub(super) fn shown_model(server: &ServerSnapshot) -> Option<&ServerModel> {
+pub(crate) fn shown_model(server: &ServerSnapshot) -> Option<&ServerModel> {
     match &server.access {
         AccessState::LoggedIn { account_id, .. } => server
             .model
@@ -516,7 +516,9 @@ pub enum Microphone {
 pub enum Presence {
     #[default]
     Here,
-    /// This device has its place and makes its first media connection.
+    /// This device has its place, and makes its first media connection or is not listed
+    /// by the server yet: the server lists a person when it has seen the device in the
+    /// room, and the person is inside the call from then on (ADR 0517).
     Connecting,
     /// This device restores its media connection.
     Reconnecting,
@@ -694,6 +696,7 @@ pub enum MeetingStart {
 /// The room of the call of this device: its rules and what the person may change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoomView {
+    pub ready: bool,
     /// The name of the voice channel.
     pub name: String,
     /// The number of people inside.
@@ -702,7 +705,12 @@ pub struct RoomView {
     pub meeting_start: MeetingStart,
     pub locked: bool,
     pub user_limit: Option<u32>,
+    /// The setting of the voice channel.
     pub hides_occupants: bool,
+    /// The call of now keeps another setting than its channel has: a call keeps the
+    /// setting of its start, and the one of the channel holds for the next call
+    /// (ADR 0517).
+    pub hide_waits_for_next_call: bool,
     pub allowed: Allowed,
 }
 
@@ -904,6 +912,9 @@ pub struct WorkspaceView {
     pub search: Option<SearchPanel>,
     /// The transcript of a recording that the side panel shows.
     pub transcript: Option<TranscriptPanel>,
+    /// Present when the shown channel is archived (ADR 0762): it is read and takes no
+    /// message.
+    pub archived: Option<ArchivedState>,
 }
 
 /// The transcript of one recording of the shown voice channel, as the side panel shows it
@@ -937,6 +948,17 @@ pub enum TranscriptPanelState {
     },
 }
 
+/// The archive state of the shown channel, in the time zone of the person.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArchivedState {
+    pub archived_at: OffsetDateTime,
+    /// The server does not delete the channel before this time. Absent: the server does
+    /// not delete it.
+    pub deletes_at: Option<OffsetDateTime>,
+    /// The roles of the person hold "manage channel": the channel can be restored.
+    pub may_restore: bool,
+}
+
 /// The menu of a person in a voice channel (ADR 0739): what the person of this device can
 /// do with that person.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -962,6 +984,21 @@ pub struct PersonMenu {
 }
 
 impl ShellView {
+    pub fn may_remove_recording(&self, server_id: ServerId, recording_id: RecordingId) -> bool {
+        self.selected
+            .as_ref()
+            .is_some_and(|server| server.id == server_id)
+            && self
+                .workspace()
+                .and_then(|workspace| workspace.feed.as_ref())
+                .is_some_and(|feed| {
+                    feed.rows.iter().any(|row| {
+                        matches!(row, feed::FeedRow::Recording(row)
+                    if row.card.recording_id == recording_id && row.card.may_remove)
+                    })
+                })
+    }
+
     /// The call and server named by the detached window.
     pub fn call_title(&self) -> String {
         let name = self
@@ -1003,7 +1040,9 @@ impl ShellView {
             name: occupant.name.clone(),
             place: row.name.clone(),
             invite_to: own_call
-                .filter(|call| call.channel_id != Some(channel_id))
+                .filter(|call| {
+                    call.phase == Phase::Connected && call.channel_id != Some(channel_id)
+                })
                 .and_then(|call| call.name.clone()),
             destinations: if allowed.move_members {
                 rows()
@@ -1252,7 +1291,10 @@ impl ShellView {
 
 /// The workspace of a server that is shown: the selected one when the state holds it, the
 /// default workspace otherwise, and the first one when there is no default.
-fn shown_workspace(model: &ServerModel, selected: Option<WorkspaceId>) -> Option<&WorkspaceModel> {
+pub(crate) fn shown_workspace(
+    model: &ServerModel,
+    selected: Option<WorkspaceId>,
+) -> Option<&WorkspaceModel> {
     selected
         .and_then(|id| model.workspace(id))
         .or_else(|| {
@@ -1325,12 +1367,17 @@ fn voice_state(
     };
     let name_of = |account_id: AccountId| name_of(server_id, account_id, workspace, model, known);
     let own_presence = match active.map(|call| call.phase) {
-        Some(Phase::Connecting) => Presence::Connecting,
+        Some(Phase::Connecting | Phase::Entering) => Presence::Connecting,
         Some(Phase::Reconnecting) => Presence::Reconnecting,
         Some(Phase::Connected) | None => Presence::Here,
     };
     // The server lists a person after the media server has listed them (ADR 0510). The
-    // person of this device is shown from the moment the device has its place.
+    // person of this device is shown from the moment the device has its place, and as
+    // connecting until the server lists the person.
+    let unlisted = match own_presence {
+        Presence::Here => Presence::Connecting,
+        other => other,
+    };
     let own_row = |held: Option<&junto_client_core::protocol::call::MicrophoneBlock>| Occupant {
         account_id: own,
         name: name_of(own),
@@ -1348,7 +1395,7 @@ fn voice_state(
         sound_off: media.calls.deafened,
         sound_blocked: active.is_some_and(|call| call.sound_block.is_some()),
         level: Some(media.levels.own.0),
-        presence: own_presence,
+        presence: unlisted,
         volume: VOLUME_DEFAULT_PERCENT,
     };
     let entry = known
@@ -1374,7 +1421,9 @@ fn voice_state(
         return VoiceState {
             relation,
             in_use: channel.in_use,
-            hidden: channel.in_use && channel.channel.hides_occupants,
+            // The server tells nothing of a call in use only when that call hides who is
+            // inside. The setting of the channel holds for its next call (ADR 0517).
+            hidden: channel.in_use,
             entry,
             closed: refused.filter(|_| outside && channel.in_use),
             user_limit: channel.channel.user_limit,
@@ -1705,9 +1754,17 @@ fn workspace_view(
     let directs = directs(server_id, workspace, model, known, conversation_id);
     let conversation = directs.iter().find(|row| row.selected).cloned();
     let wanted = selection.channels.get(&workspace.workspace.id).copied();
+    // An archived channel is in no list. The main area shows it while the state knows it
+    // and the person has it selected (ADR 0762).
+    let archived = wanted
+        .filter(|_| conversation.is_none())
+        .and_then(|id| model.admin.archived_channel(id))
+        .filter(|held| held.channel.workspace_id == workspace.workspace.id);
     let rows = || sections.iter().flat_map(|section| section.rows.iter());
     let shown = if conversation.is_some() {
         None
+    } else if let Some(archived) = archived {
+        Some(archived.channel.id)
     } else {
         wanted
             .filter(|id| rows().any(|row| row.id == *id))
@@ -1746,6 +1803,25 @@ fn workspace_view(
             channel = Some(row.clone());
         }
     }
+    if let (None, Some(archived)) = (&channel, archived) {
+        let channel_id = archived.channel.id;
+        let open = open_thread
+            .filter(|(of, _)| *of == channel_id)
+            .map(|(_, root_id)| root_id);
+        // A call of an archived voice channel has ended: the row has no voice state, and
+        // the main area shows its messages.
+        channel = Some(ChannelRow {
+            id: channel_id,
+            kind: archived.channel.kind,
+            name: archived.channel.name.clone(),
+            selected: true,
+            voice: None,
+            unread: Unread::of(model, PlaceId::Channel(channel_id)),
+            permanent: archived.channel.permanent_messages,
+            mute: Mute::of_channel(channel_id, model, known),
+            threads: thread_entries(channel_id, model, &names, open),
+        });
+    }
     let call = channel
         .as_ref()
         .filter(|row| {
@@ -1770,7 +1846,7 @@ fn workspace_view(
             channel: row.name.as_str(),
             channel_id: row.id,
             accounts: &accounts,
-            may_remove: allowed.manage_recordings,
+            may_remove: allowed.manage_recordings && archived.is_none(),
             downloads: &known.segment_downloads,
             texts: &known.text_downloads,
             removing: &known.recordings_removing,
@@ -1797,6 +1873,29 @@ fn workspace_view(
     let feed = place
         .and_then(|place| model.timeline(place))
         .map(|timeline| feed::derive(&source(timeline)));
+    // An archived channel takes no change (ADR 0410): its messages offer none, in the
+    // main area, in a thread and in the pin list.
+    let read_only = archived.is_some();
+    let fixed = |mut row: MessageRow| {
+        if read_only {
+            row.can_edit = false;
+            row.can_delete = false;
+            row.can_pin = false;
+            row.can_thread = false;
+        }
+        row
+    };
+    let fixed_feed = |mut feed: Feed| {
+        if read_only {
+            for row in Arc::make_mut(&mut feed.rows) {
+                if let feed::FeedRow::Message(row) = row {
+                    *row = fixed(row.clone());
+                }
+            }
+        }
+        feed
+    };
+    let feed = feed.map(fixed_feed);
     let draft_of = |place: PlaceId| {
         known
             .drafts
@@ -1822,9 +1921,13 @@ fn workspace_view(
                 root: timeline
                     .and_then(|timeline| Some((timeline, timeline.root.as_ref()?)))
                     .map(|(timeline, root)| {
-                        feed::message_row(&source(timeline), root, &mut feed::Loaded::default())
+                        fixed(feed::message_row(
+                            &source(timeline),
+                            root,
+                            &mut feed::Loaded::default(),
+                        ))
                     }),
-                feed: timeline.map(|timeline| feed::derive(&source(timeline))),
+                feed: timeline.map(|timeline| fixed_feed(feed::derive(&source(timeline)))),
                 forks: timeline
                     .map(|timeline| timeline.forks.as_slice())
                     .unwrap_or_default()
@@ -1834,7 +1937,7 @@ fn workspace_view(
                         Some((*fork, held.channel.name.clone(), held.channel.kind))
                     })
                     .collect(),
-                may_fork: allowed.manage,
+                may_fork: allowed.manage && !read_only,
                 draft: draft_of(place),
                 fork: known
                     .fork
@@ -1860,7 +1963,9 @@ fn workspace_view(
                         PinsState::Loaded(
                             pinned
                                 .iter()
-                                .map(|message| feed::message_row(&source, message, &mut loaded))
+                                .map(|message| {
+                                    fixed(feed::message_row(&source, message, &mut loaded))
+                                })
                                 .collect(),
                         )
                     }
@@ -1955,6 +2060,13 @@ fn workspace_view(
         transcript,
         notices,
         unread_notices: super::notices::unread_notices(model),
+        archived: archived
+            .filter(|held| workspace.channel(held.channel.id).is_none())
+            .map(|held| ArchivedState {
+                archived_at: known.zone.local(held.archived_at),
+                deletes_at: held.deletes_at.map(|at| known.zone.local(at)),
+                may_restore: allowed.manage,
+            }),
     }
 }
 
@@ -2215,7 +2327,11 @@ fn call_panel(
     CallPanel {
         phase: active.phase,
         interrupted_at: active.interrupted_at,
-        outside,
+        outside: if active.phase == Phase::Connected {
+            outside
+        } else {
+            Vec::new()
+        },
         audio: AudioSettings {
             inputs: device_choices(&media.devices.inputs, media.voice.input_device.as_deref()),
             outputs: device_choices(&media.devices.outputs, media.voice.output_device.as_deref()),
@@ -2255,9 +2371,11 @@ fn may_speak(
     model: Option<&ServerModel>,
     known: &Known,
 ) -> bool {
-    call.and_then(|call| call.meeting.as_ref())
-        .zip(model)
-        .is_some_and(|(meeting, model)| meeting.presenter != model.account.id)
+    active.phase == Phase::Connected
+        && call
+            .and_then(|call| call.meeting.as_ref())
+            .zip(model)
+            .is_some_and(|(meeting, model)| meeting.presenter != model.account.id)
         && active.microphone_block.is_none()
         && known.media.calls.muted
 }
@@ -2291,38 +2409,48 @@ fn room_view(
     let call = model.call_at(&active.target.place);
     let name_of = |account_id: AccountId| name_of(server_id, account_id, workspace, model, known);
     let own = model.account.id;
-    let meeting = call.and_then(|call| call.meeting.as_ref()).map(|meeting| {
-        let by_self = meeting.presenter == own;
-        MeetingView {
-            by_self,
-            presenter: name_of(meeting.presenter),
-            hands: call
-                .map(|call| call.participants.as_slice())
-                .unwrap_or_default()
-                .iter()
-                .filter(|participant| {
-                    by_self && participant.hand_raised && participant.microphone_block.is_some()
-                })
-                .map(|participant| (participant.account_id, name_of(participant.account_id)))
-                .collect(),
-            waiting: call
-                .map(|call| call.participants.as_slice())
-                .unwrap_or_default()
-                .iter()
-                .filter(|participant| {
-                    by_self
-                        && participant.account_id != own
-                        && participant.microphone_block.is_none()
-                        && participant.muted
-                })
-                .map(|participant| name_of(participant.account_id))
-                .collect(),
-            may_speak: may_speak(active, call, Some(model), known),
-        }
-    });
+    let meeting = call
+        .filter(|_| active.phase == Phase::Connected)
+        .and_then(|call| call.meeting.as_ref())
+        .map(|meeting| {
+            let by_self = meeting.presenter == own;
+            MeetingView {
+                by_self,
+                presenter: name_of(meeting.presenter),
+                hands: call
+                    .map(|call| call.participants.as_slice())
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|participant| {
+                        by_self && participant.hand_raised && participant.microphone_block.is_some()
+                    })
+                    .map(|participant| (participant.account_id, name_of(participant.account_id)))
+                    .collect(),
+                waiting: call
+                    .map(|call| call.participants.as_slice())
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|participant| {
+                        by_self
+                            && participant.account_id != own
+                            && participant.microphone_block.is_none()
+                            && participant.muted
+                    })
+                    .map(|participant| name_of(participant.account_id))
+                    .collect(),
+                may_speak: may_speak(active, call, Some(model), known),
+            }
+        });
     let voice = row.voice.as_ref();
     let allowed = allowed(workspace, model);
+    let hides = active
+        .target
+        .place
+        .channel_id()
+        .and_then(|channel_id| model.channel(channel_id))
+        .is_some_and(|channel| channel.channel.hides_occupants);
     RoomView {
+        ready: active.phase == Phase::Connected,
         name: row.name.clone(),
         inside: voice.map_or(0, |voice| voice.occupants.len()),
         meeting_start: if !allowed.run_meeting {
@@ -2337,12 +2465,8 @@ fn room_view(
         meeting,
         locked: voice.is_some_and(|voice| voice.locked),
         user_limit: voice.and_then(|voice| voice.user_limit),
-        hides_occupants: active
-            .target
-            .place
-            .channel_id()
-            .and_then(|channel_id| model.channel(channel_id))
-            .is_some_and(|channel| channel.channel.hides_occupants),
+        hides_occupants: hides,
+        hide_waits_for_next_call: call.is_some_and(|call| call.hides_occupants != hides),
         allowed,
     }
 }
@@ -2395,6 +2519,9 @@ fn entry_prompts(servers: &[ServerSnapshot], known: &Known) -> Vec<EntryPrompt> 
     let Some(active) = known.media.calls.call.as_ref() else {
         return Vec::new();
     };
+    if active.phase != Phase::Connected {
+        return Vec::new();
+    }
     let Some((server, model)) = servers
         .iter()
         .find(|server| server.id == active.target.server_id)
@@ -2535,10 +2662,13 @@ fn call_strip(servers: &[ServerSnapshot], known: &Known, shown: Shown) -> Option
             ShareState::Running(_) => OwnShare::Running,
         },
         can_share: known.media.can_share,
-        hand_raised: channel_id.zip(model).map(|(_, model)| {
-            call.and_then(|call| call.participant(model.account.id))
-                .is_some_and(|own| own.hand_raised)
-        }),
+        hand_raised: channel_id
+            .zip(model)
+            .filter(|_| active.phase == Phase::Connected)
+            .map(|(_, model)| {
+                call.and_then(|call| call.participant(model.account.id))
+                    .is_some_and(|own| own.hand_raised)
+            }),
         may_speak: may_speak(active, call, model, known),
     })
 }

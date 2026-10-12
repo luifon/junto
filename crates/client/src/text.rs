@@ -20,6 +20,8 @@ use crate::state::view::{
     CallNotice, Closed, RecordingFault, RecordingProblem, ShareCard, SoundWarning,
 };
 
+pub mod admin;
+
 pub const APP_NAME: &str = "Junto";
 pub const QUIT: &str = "Quit Junto";
 
@@ -156,6 +158,8 @@ pub fn sound_warning(warning: &SoundWarning) -> (String, String) {
 // The strip of the person's call.
 pub const IN_CALL: &str = "In call";
 pub const CALL_RECONNECTING: &str = "Reconnecting…";
+pub const CALL_ENTERING: &str = "Entering call…";
+pub const CALL_ENTERING_HELP: &str = "Waiting for the server to confirm your entry.";
 pub const CALL_CONNECTING: &str = "Connecting…";
 pub const MICROPHONE_PAUSED: &str = "Your microphone is paused.";
 pub const LEAVE: &str = "Leave";
@@ -189,6 +193,8 @@ pub const LOWER_USER_LIMIT: &str = "Lower the user limit";
 pub const RAISE_USER_LIMIT: &str = "Raise the user limit";
 pub const HIDE_OCCUPANTS: &str = "Hide who is inside";
 pub const HIDE_OCCUPANTS_HELP: &str = "Others see only “in use”.";
+pub const HIDE_OCCUPANTS_NEXT_CALL: &str =
+    "This call keeps its setting. The change holds from the next call.";
 pub const MANAGE_NO_PERMISSION: &str = "You do not have the “manage channel” permission.";
 pub const MEETING_IS_ON: &str = "Meeting mode is on";
 pub const YOU_RUN_IT: &str = " · you run it";
@@ -1532,6 +1538,10 @@ pub fn system_line(action: &str) -> (crate::state::feed::SystemKind, &'static st
         "call_member_moved_out" => (Plain, "{actor} moved {subject} to another voice channel"),
         "call_member_moved_in" => (Plain, "{actor} moved {subject} into this voice channel"),
         "permanent_message_deleted" => (Plain, "{actor} deleted a permanent message"),
+        "channel_archived" => (Plain, "{actor} archived this channel"),
+        "channel_restored" => (Plain, "{actor} restored this channel"),
+        "channel_deletion_due" => (Plain, "The server deletes this archived channel in 7 days"),
+        "export_requested" => (Plain, "{actor} asked for an export of this channel"),
         _ => (Plain, "An event that this version of Junto does not know"),
     }
 }
@@ -1940,6 +1950,7 @@ pub const REMOVE_RECORDING_CONFIRM: &str = "The server deletes the video, the au
 pub const TRANSCRIPT: &str = "Transcript";
 pub const CLOSE_TRANSCRIPT: &str = "Close the transcript";
 pub const TRANSCRIPT_READING: &str = "Reading the transcript…";
+pub const TRANSCRIPT_REFRESH_FAILED: &str = "The transcript could not be refreshed. Try again.";
 pub const TRANSCRIPT_LINES_FAILED: &str = "The lines of the transcript could not be read.";
 pub const SHOW_ALL: &str = "Show all";
 pub const SHOW_MORE_LINES: &str = "Show more lines";

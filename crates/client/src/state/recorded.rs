@@ -113,8 +113,9 @@ pub struct TranscriptShown {
     /// The transcript has lines after the read ones.
     pub more: bool,
     pub reading: bool,
-    /// The last read of lines failed.
+    /// The last read of lines or transcript metadata failed.
     pub failed: bool,
+    pub refresh_failed: bool,
 }
 
 /// A recording as its card shows it.
@@ -291,7 +292,8 @@ pub fn transcript(open: &OpenRecording, names: &HashMap<AccountId, String>) -> T
         lines: first_lines(open, &open.lines, names),
         more: open.lines.more,
         reading: open.lines.reading,
-        failed: open.lines.failed.is_some(),
+        failed: open.lines.failed.is_some() || open.failed.is_some(),
+        refresh_failed: open.failed.is_some(),
     }
 }
 

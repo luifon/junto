@@ -17,8 +17,18 @@ pub struct Place {
     pub id: Uuid,
     pub value: MessagePlace,
     pub scope: Option<ChannelScope>,
+    /// True for an archived channel, which takes no change (ADR 0410).
+    pub archived: bool,
 }
 impl Place {
+    /// Refuses a change of the content of an archived channel.
+    pub fn require_open(&self) -> ApiResult<()> {
+        if self.archived {
+            Err(crate::access::archived())
+        } else {
+            Ok(())
+        }
+    }
     pub async fn channel(
         connection: &mut PgConnection,
         access: &Access,
@@ -36,6 +46,7 @@ impl Place {
                 channel_id: id,
             },
             scope: Some(scope),
+            archived: record.archived_at.is_some(),
         })
     }
     pub async fn direct(
@@ -70,6 +81,7 @@ impl Place {
                 high_account_id: high,
             },
             scope: None,
+            archived: false,
         })
     }
     pub async fn conversations(

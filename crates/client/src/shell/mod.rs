@@ -3,6 +3,7 @@
 //! [`AppState::view`] gives and holds only what belongs to the window itself: which layer
 //! is open, the text of its fields, and where the keyboard focus returns to.
 
+pub mod admin;
 pub mod call;
 mod camera;
 mod channels;
@@ -81,6 +82,9 @@ pub(crate) enum Layer {
     RecordingFiles(junto_client_core::protocol::ids::RecordingId),
     /// The question before a recording is removed.
     ConfirmRemoveRecording(ServerId, junto_client_core::protocol::ids::RecordingId),
+    /// The administration of a server, or the settings of a channel. The state of the
+    /// application holds which page is open.
+    Admin,
 }
 
 /// What the emoji of the picker is for.
@@ -265,6 +269,8 @@ pub struct Shell {
     pub(crate) quiet_until: Entity<InputState>,
     /// The two typed times are no time span.
     pub(crate) quiet_refused: bool,
+    /// The fields and the open forms of the administration.
+    pub(crate) admin: admin::AdminUi,
     /// What the window drew last. A test reads the data of the window from it, and not
     /// from the client core, which can be ahead of the window.
     #[cfg(feature = "test-support")]
@@ -274,6 +280,22 @@ pub struct Shell {
 }
 
 impl Shell {
+    fn call_listener<E: ?Sized>(
+        &self,
+        cx: &Context<Self>,
+        listener: impl Fn(&mut Self, &E, &mut Window, &mut Context<Self>) + 'static,
+    ) -> impl Fn(&E, &mut Window, &mut gpui::App) + 'static {
+        let action = self.state.read(cx).call_action();
+        cx.listener(move |this, event, window, cx| {
+            if action
+                .as_ref()
+                .is_some_and(|action| action.permits(&this.state.read(cx).calls().view()))
+            {
+                listener(this, event, window, cx);
+            }
+        })
+    }
+
     pub fn new(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self::new_window(state, false, window, cx)
     }
@@ -305,8 +327,9 @@ impl Shell {
             .set_scroll_handler(cx.listener(|this, event, window, cx| {
                 this.feed_scrolled(Pane::Thread, event, window, cx);
             }));
+        let (admin, admin_subscriptions) = admin::AdminUi::new(window, cx);
         let own_entity = cx.entity_id();
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             cx.on_release(move |this: &mut Self, cx| {
                 this.state
                     .update(cx, |state, _| state.window_talking(own_entity, false));
@@ -442,6 +465,7 @@ impl Shell {
                 cx.notify();
             }),
         ];
+        subscriptions.extend(admin_subscriptions);
         let mut shell = Self {
             state,
             focus: cx.focus_handle(),
@@ -508,6 +532,7 @@ impl Shell {
             quiet_from,
             quiet_until,
             quiet_refused: false,
+            admin,
             #[cfg(feature = "test-support")]
             drawn: None,
             _subscriptions: subscriptions,
@@ -749,6 +774,11 @@ impl Shell {
             // A code is not kept in a field that nobody sees.
             self.code
                 .update(cx, |code, cx| code.set_value("", window, cx));
+        }
+        if matches!(self.layer, Layer::Admin) {
+            // A code or a token that the layer showed is gone with it.
+            self.reset_admin_ui(window, cx);
+            self.state.update(cx, |state, cx| state.close_admin(cx));
         }
         self.layer = Layer::None;
         self.return_focus_to_content(window, cx);
@@ -1078,8 +1108,10 @@ impl Shell {
                 .workspace()
                 .is_none_or(|workspace| workspace.search.is_none()),
             // The card of the recording is no longer among the shown rows.
-            Layer::RecordingFiles(recording_id)
-            | Layer::ConfirmRemoveRecording(_, recording_id) => !view
+            Layer::ConfirmRemoveRecording(server_id, recording_id) => {
+                !view.may_remove_recording(*server_id, *recording_id)
+            }
+            Layer::RecordingFiles(recording_id) => !view
                 .workspace()
                 .and_then(|workspace| workspace.feed.as_ref())
                 .is_some_and(|feed| {
@@ -1088,6 +1120,9 @@ impl Shell {
                                 if row.card.recording_id == *recording_id)
                     })
                 }),
+            // The server shows no content any more, or the channel of the open
+            // settings is gone.
+            Layer::Admin => self.state.read(cx).admin_view().is_none(),
             Layer::None | Layer::Welcome | Layer::Settings => false,
         };
         if stale {
@@ -1130,6 +1165,7 @@ impl Shell {
                 .render_confirm_forget(*server_id, view, window, cx)
                 .into_any_element(),
             Layer::SharePicker(_) => self.render_share_picker(window, cx),
+            Layer::Admin => self.render_admin(window, cx),
         }
     }
 }

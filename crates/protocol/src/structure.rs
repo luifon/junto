@@ -1,5 +1,6 @@
 use junto_authz::WorkspacePermission;
 use serde::{Deserialize, Deserializer, Serialize};
+use time::OffsetDateTime;
 
 use crate::ids::{AccountId, CategoryId, ChannelId, WorkspaceId, WorkspaceRoleId};
 
@@ -88,6 +89,29 @@ pub struct Channel {
     pub hides_occupants: bool,
 }
 
+/// A channel that is archived: it is read-only and is in no channel list (ADR 0410).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ArchivedChannel {
+    pub channel: Channel,
+    #[serde(with = "time::serde::rfc3339")]
+    pub archived_at: OffsetDateTime,
+    /// The server does not delete the channel before this time. Absent: the server does not
+    /// delete it, because the workspace has no archive period or the channel contains
+    /// permanent messages.
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub deletes_at: Option<OffsetDateTime>,
+}
+
+/// The time after which the server deletes an archived channel of a workspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ArchivePeriod {
+    /// From 7 to 36500 days. `null`: archived channels are never deleted.
+    pub days: Option<u32>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateChannel {
@@ -119,7 +143,7 @@ pub struct UpdateChannel {
     pub permanent_messages: Option<bool>,
 }
 
-fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+pub(crate) fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: Deserializer<'de>,
     T: Deserialize<'de>,

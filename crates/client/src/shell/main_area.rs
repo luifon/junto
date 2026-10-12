@@ -256,7 +256,10 @@ impl Shell {
             after.extend(voice_header_states(voice, theme));
             after.extend(entry);
         } else if let Some(panel) = call {
-            if panel.phase == Phase::Reconnecting {
+            if matches!(panel.phase, Phase::Connecting | Phase::Entering) {
+                after.push(div().child(text::CALL_ENTERING_HELP).into_any_element());
+                after.push(div().flex_1().into_any_element());
+            } else if panel.phase == Phase::Reconnecting {
                 after.extend(Self::render_call_interruption(theme));
                 after.push(div().flex_1().into_any_element());
             } else {
@@ -279,6 +282,15 @@ impl Shell {
         } else {
             if permanent {
                 after.push(Self::render_permanent_marker(theme));
+            }
+            if self.shown_archived().is_some() {
+                after.push(
+                    div()
+                        .flex_none()
+                        .debug_selector(|| "archived-mark".to_owned())
+                        .child(crate::ui::Chip::new(text::admin::ARCHIVED_MARK).icon(Icon::Lock))
+                        .into_any_element(),
+                );
             }
             after.push(div().flex_1().into_any_element());
         }
@@ -361,6 +373,33 @@ impl Shell {
                     )
                 },
             )
+            .when(
+                channel.is_some() && conversation.is_none() && call.is_none(),
+                |header| {
+                    header.child(
+                        Button::new("channel-settings")
+                            .icon(Icon::Gear)
+                            .tooltip(text::admin::CHANNEL_SETTINGS)
+                            .accessible_label(text::admin::CHANNEL_SETTINGS)
+                            .selector("channel-settings")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_shown_channel_settings(window, cx);
+                            })),
+                    )
+                },
+            )
+            .when(conversation.is_some(), |header| {
+                header.child(
+                    Button::new("export-conversation")
+                        .icon(Icon::Download)
+                        .tooltip(text::admin::EXPORT_CONVERSATION)
+                        .accessible_label(text::admin::EXPORT_CONVERSATION)
+                        .selector("export-conversation")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.export_shown_conversation(window, cx);
+                        })),
+                )
+            })
             .when(view.workspace().is_some() && call.is_none(), |header| {
                 header.child(
                     Button::new("members")
@@ -450,7 +489,7 @@ impl Shell {
                 .accessible_label(title)
                 .disabled(control.busy)
                 .selector("start-recording")
-                .on_click(cx.listener(|this, _, _, cx| {
+                .on_click(self.call_listener(cx, |this, _, _, cx| {
                     this.recording_details_open = false;
                     this.state.update(cx, |state, cx| state.start_recording(cx));
                 }))
@@ -511,7 +550,7 @@ impl Shell {
                             .accessible_label(text::STOP_RECORDING)
                             .disabled(*stopping || control.busy)
                             .selector("stop-recording")
-                            .on_click(cx.listener(|this, _, _, cx| {
+                            .on_click(self.call_listener(cx, |this, _, _, cx| {
                                 this.state.update(cx, |state, cx| state.stop_recording(cx));
                             }))
                             .into_any_element(),

@@ -405,6 +405,11 @@ impl Shell {
                 .child(sentence)
         };
         let body = match panel.phase {
+            Phase::Entering => viewport.justify_center().child(waiting(
+                text::CALL_ENTERING,
+                text::CALL_ENTERING_HELP.to_owned(),
+                "call-entering",
+            )),
             Phase::Connecting => viewport.justify_center().child(waiting(
                 text::CONNECTING_TO_CALL,
                 text::CONNECTING_TO_CALL_HELP.to_owned(),
@@ -1301,6 +1306,7 @@ impl Shell {
         let state_word = match strip.phase {
             Phase::Connected => text::IN_CALL,
             Phase::Connecting => text::CALL_CONNECTING,
+            Phase::Entering => text::CALL_ENTERING,
             Phase::Reconnecting => text::CALL_RECONNECTING,
         };
         // The state in strong type and the name of the voice channel, as one line of text
@@ -1399,7 +1405,7 @@ impl Shell {
                         text::RAISE_HAND
                     })
                     .selector("call-hand")
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                    .on_click(self.call_listener(cx, move |this, _, _, cx| {
                         this.state
                             .update(cx, |state, cx| state.set_hand(!raised, cx));
                     }))

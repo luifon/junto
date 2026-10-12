@@ -309,5 +309,6 @@ mod tests {
         assert!(share_visible(Phase::Connected));
         assert!(!share_visible(Phase::Reconnecting));
         assert!(!share_visible(Phase::Connecting));
+        assert!(!share_visible(Phase::Entering));
     }
 }

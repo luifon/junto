@@ -273,6 +273,8 @@ pub enum AuditScope<'a> {
     Workspace(&'a WorkspaceScope),
     Channel(&'a ChannelScope),
     DeletedChannel,
+    /// An entry of a workspace that was deleted.
+    DeletedWorkspace,
 }
 
 /// What the actor asks to do.
@@ -320,6 +322,11 @@ pub enum Request<'a> {
     },
     DeleteChannel {
         scope: &'a ChannelScope,
+        content: ChannelContent,
+    },
+    /// Deleting a workspace with every channel of it. `content` tells whether one of its
+    /// channels contains permanent messages.
+    DeleteWorkspace {
         content: ChannelContent,
     },
     DirectMessage(Participation),

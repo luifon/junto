@@ -7,6 +7,7 @@ use junto_protocol::events::Event;
 use junto_protocol::ids::{AccountId, ServerRoleId};
 use junto_protocol::roles::{CreateServerRole, ServerRole, UpdateServerRole};
 use sqlx::PgConnection;
+use time::OffsetDateTime;
 
 use crate::access::Access;
 use crate::audit::{self, About};
@@ -88,35 +89,45 @@ pub async fn create_server_role(
     let now = app.now();
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        access.require(Request::ManageServerRoles {
-            granting: permissions,
-        })?;
-        sqlx::query(
-            "insert into server_roles (id, name, permissions, created_at)
-             values ($1, $2, $3, $4)",
-        )
-        .bind(role.id)
-        .bind(&role.name)
-        .bind(db::server_bits(permissions))
-        .bind(now)
-        .execute(&mut *connection)
-        .await?;
-        audit::record(
-            connection,
-            now,
-            Some(access.account_id),
-            About::Server,
-            &AuditEvent::ServerRoleCreated {
-                role_id: role.id,
-                name: role.name.clone(),
-                permissions: role.permissions.clone(),
-            },
-        )
-        .await?;
-        let created = Event::ServerRoleCreated { role: role.clone() };
-        events::publish(connection, now, &created).await
+        create(connection, &access, now, &role).await
     })?;
     Ok((StatusCode::CREATED, Json(role)))
+}
+
+pub(crate) async fn create(
+    connection: &mut PgConnection,
+    access: &Access,
+    now: OffsetDateTime,
+    role: &ServerRole,
+) -> ApiResult<()> {
+    let permissions: ServerPermissions = role.permissions.iter().copied().collect();
+    access.require(Request::ManageServerRoles {
+        granting: permissions,
+    })?;
+    sqlx::query(
+        "insert into server_roles (id, name, permissions, created_at)
+         values ($1, $2, $3, $4)",
+    )
+    .bind(role.id)
+    .bind(&role.name)
+    .bind(db::server_bits(permissions))
+    .bind(now)
+    .execute(&mut *connection)
+    .await?;
+    audit::record(
+        connection,
+        now,
+        Some(access.account_id),
+        About::Server,
+        &AuditEvent::ServerRoleCreated {
+            role_id: role.id,
+            name: role.name.clone(),
+            permissions: role.permissions.clone(),
+        },
+    )
+    .await?;
+    let created = Event::ServerRoleCreated { role: role.clone() };
+    events::publish(connection, now, &created).await
 }
 
 /// Changes the name or the permissions of a server role.
@@ -147,60 +158,156 @@ pub async fn update_server_role(
     let now = app.now();
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        access.require(Request::Server(ServerPermission::Administrator))?;
-        let (old_name, old_permissions) = locked_role(connection, role_id).await?;
-        let permissions = new_permissions.unwrap_or(old_permissions);
-        access.require(Request::ManageServerRoles {
-            granting: permissions.difference(old_permissions),
-        })?;
-
-        let role = ServerRole {
-            id: role_id,
-            name: new_name.clone().unwrap_or(old_name),
-            permissions: db::server_list(permissions),
-        };
-        sqlx::query("update server_roles set name = $2, permissions = $3 where id = $1")
-            .bind(role_id)
-            .bind(&role.name)
-            .bind(db::server_bits(permissions))
-            .execute(&mut *connection)
-            .await?;
-        audit::record(
+        update(
             connection,
+            &access,
             now,
-            Some(access.account_id),
-            About::Server,
-            &AuditEvent::ServerRoleUpdated {
-                role_id,
-                name: role.name.clone(),
-                permissions: role.permissions.clone(),
-            },
+            role_id,
+            new_name.clone(),
+            new_permissions,
         )
-        .await?;
-        let updated = Event::ServerRoleUpdated { role: role.clone() };
-        events::publish(connection, now, &updated).await?;
-        if permissions != old_permissions {
-            let holders = Affected::ServerRoleHolders(role_id);
-            events::permissions_changed(connection, now, holders, None).await?;
-        }
-        Ok(role)
+        .await
     })
     .map(Json)
 }
 
+pub(crate) async fn update(
+    connection: &mut PgConnection,
+    access: &Access,
+    now: OffsetDateTime,
+    role_id: ServerRoleId,
+    new_name: Option<String>,
+    new_permissions: Option<ServerPermissions>,
+) -> ApiResult<ServerRole> {
+    access.require(Request::Server(ServerPermission::Administrator))?;
+    let (old_name, old_permissions) = locked_role(connection, role_id).await?;
+    let permissions = new_permissions.unwrap_or(old_permissions);
+    access.require(Request::ManageServerRoles {
+        granting: permissions.difference(old_permissions),
+    })?;
+
+    let role = ServerRole {
+        id: role_id,
+        name: new_name.unwrap_or(old_name),
+        permissions: db::server_list(permissions),
+    };
+    sqlx::query("update server_roles set name = $2, permissions = $3 where id = $1")
+        .bind(role_id)
+        .bind(&role.name)
+        .bind(db::server_bits(permissions))
+        .execute(&mut *connection)
+        .await?;
+    audit::record(
+        connection,
+        now,
+        Some(access.account_id),
+        About::Server,
+        &AuditEvent::ServerRoleUpdated {
+            role_id,
+            name: role.name.clone(),
+            permissions: role.permissions.clone(),
+        },
+    )
+    .await?;
+    let updated = Event::ServerRoleUpdated { role: role.clone() };
+    events::publish(connection, now, &updated).await?;
+    if permissions != old_permissions {
+        let holders = Affected::ServerRoleHolders(role_id);
+        events::permissions_changed(connection, now, holders, None).await?;
+    }
+    if administers(permissions) != administers(old_permissions) {
+        store::contact_changed_for_holders(connection, now, role_id).await?;
+    }
+    Ok(role)
+}
+
+/// Deletes a server role. No account holds it afterwards.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/server-roles/{role_id}",
+    tag = "server roles",
+    params(("role_id" = ServerRoleId, Path)),
+    security(("session" = [])),
+    responses((status = 204), ApiError)
+)]
+pub async fn delete_server_role(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath(role_id): ApiPath<ServerRoleId>,
+) -> ApiResult<StatusCode> {
+    let now = app.now();
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        delete(connection, &access, now, role_id).await
+    })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn delete(
+    connection: &mut PgConnection,
+    access: &Access,
+    now: OffsetDateTime,
+    role_id: ServerRoleId,
+) -> ApiResult<()> {
+    access.require(Request::ManageServerRoles {
+        granting: ServerPermissions::EMPTY,
+    })?;
+    let (name, permissions) = locked_role(connection, role_id).await?;
+    if administers(permissions) {
+        store::contact_changed_for_holders(connection, now, role_id).await?;
+    }
+    let holders = events::Receivers::ServerRoleHolders(role_id);
+    let holders = events::permissions_changed_for(connection, now, holders, None).await?;
+    sqlx::query("delete from structure_identifiers where kind = 'server_role' and object_id = $1")
+        .bind(role_id)
+        .execute(&mut *connection)
+        .await?;
+    sqlx::query("delete from server_roles where id = $1")
+        .bind(role_id)
+        .execute(&mut *connection)
+        .await?;
+    audit::record(
+        connection,
+        now,
+        Some(access.account_id),
+        About::Server,
+        &AuditEvent::ServerRoleDeleted {
+            role_id,
+            name,
+            permissions: db::server_list(permissions),
+            holders: u32::try_from(holders).map_err(|error| ApiError::internal(&error))?,
+        },
+    )
+    .await?;
+    events::publish(connection, now, &Event::ServerRoleDeleted { role_id }).await
+}
+
+/// Whether a role with these permissions makes its holders reach every account, and every
+/// account reach them, for direct messages and direct calls (ADR 0307).
+fn administers(permissions: ServerPermissions) -> bool {
+    permissions.contains(ServerPermission::Administrator)
+}
+
 /// Records a change of the server roles of an account: for the people who list accounts, and
-/// for the account, whose permissions changed.
+/// for the account, whose permissions changed. A role with the administrator permission
+/// changes whom the account reaches, so the accounts that have a direct-message
+/// conversation with it are told too.
 async fn announce_roles(
     connection: &mut PgConnection,
     now: time::OffsetDateTime,
     account_id: AccountId,
+    role: ServerPermissions,
 ) -> ApiResult<()> {
     let changed = Event::AccountServerRolesChanged {
         account_id,
         server_role_ids: store::server_role_ids_of(connection, account_id).await?,
     };
     events::publish(connection, now, &changed).await?;
-    events::permissions_changed(connection, now, Affected::Account(account_id), None).await
+    events::permissions_changed(connection, now, Affected::Account(account_id), None).await?;
+    if administers(role) {
+        store::contact_changed(connection, now, account_id).await?;
+    }
+    Ok(())
 }
 
 pub async fn require_active_account(
@@ -271,7 +378,7 @@ pub async fn assign_server_role(
                 },
             )
             .await?;
-            announce_roles(connection, now, account_id).await?;
+            announce_roles(connection, now, account_id, permissions).await?;
         }
         Ok(())
     })?;
@@ -305,6 +412,7 @@ pub async fn unassign_server_role(
                 .execute(&mut *connection)
                 .await?;
         if deleted.rows_affected() > 0 {
+            let (_, permissions) = locked_role(connection, role_id).await?;
             audit::record(
                 connection,
                 now,
@@ -316,7 +424,7 @@ pub async fn unassign_server_role(
                 },
             )
             .await?;
-            announce_roles(connection, now, account_id).await?;
+            announce_roles(connection, now, account_id, permissions).await?;
         }
         Ok(())
     })?;

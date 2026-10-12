@@ -34,7 +34,7 @@ Without the four LiveKit settings the server runs, and a request to join a call 
 
 A logged-in device receives the changes of the server over one WebSocket connection (ADR 0107).
 
-1. `GET /api/v1/snapshot` returns the account, its workspaces, and the roles, categories and channels that it may see, with a cursor.
+1. `GET /api/v1/snapshot` returns the account, its workspaces, and the roles, categories and channels that it may see, with a cursor. It also carries the calls that the account may see, and what waits for the account in calls: invitations for it and by it, moves that name it, and its own requests to enter.
 2. The device opens `GET /api/v1/events` as a WebSocket with its session token in the `Authorization` header. The server sends `hello`.
 3. The device sends `{"type": "subscribe", "level": "full", "cursor": <cursor of the snapshot>}`. The level `background` delivers control events, direct messages, mentions and call invites, with access checked at delivery.
 4. The server sends each event that the account may receive as `{"type": "event", "id": <position>, "at": <time>, "event": {...}}`, in the order of the positions. The device keeps the `id` of the last event that it applied; an event with an `id` at or below it is a repeat.
@@ -46,16 +46,19 @@ Events are written in the transaction of the change that they describe and get t
 
 The server decides who is in a call; media goes from the clients to LiveKit and never through the server (ADR 0501 to ADR 0514).
 
-1. A device asks for its place: `POST /api/v1/channels/{channel_id}/call/join` for a voice channel, or `POST /api/v1/direct-calls/{account_id}/join` for a direct message. The server checks the access with the permission function, then the lock and the user limit, and records the place.
+1. A device asks for its place: `POST /api/v1/channels/{channel_id}/call/join` for a voice channel, or `POST /api/v1/direct-calls/{account_id}/join` for a direct message. The server checks the access with the permission function, then the lock and the user limit, and records the place: the account has a seat. A second request for the same seat returns a new token and does not move the end of a seat that has not connected.
 2. The answer carries the address of the media server, the identity of the participant and a join token for one room that is valid for 60 seconds. The device connects to LiveKit with it.
-3. The admission check compares the participants of the rooms with the record at the start and every 2 seconds. After each request that changes a call or ends an access, and after each notification of LiveKit that names a room, it checks the changed rooms at once. It removes whoever is not allowed, sets what each participant may publish, and records who is in each call. A removed person who holds a usable token can be back until the next check (ADR 0509).
-4. The events of a call go to the accounts that may see who is inside its voice channel; a channel that hides who is inside shows the people outside only that it is in use (ADR 0514). A connection whose account is in a call receives the events of that call at any level.
+3. The admission check compares the participants of the rooms with the record at the start and every 2 seconds. After each request that changes a call or ends an access, and after each notification of LiveKit that names a room, it checks the changed rooms at once. It removes whoever is not allowed, sets what each participant may publish, and records who is in each call. An account is inside a call from the check that sees its seat in the room (ADR 0517): only then it is shown to others, receives the requests to enter, and acts in the call. A removed person who holds a usable token can be back until the next check (ADR 0509).
+4. The events of a call go to the accounts that may see who is inside it; a call that hides who is inside shows the people outside only that the channel is in use (ADR 0514). A call keeps the setting `hides_occupants` that its voice channel had when the call began, and states it in its own field `hides_occupants`; a change of the channel applies to the next call. A connection whose account has a seat in a call receives the events of that call at any level.
+5. For a call that hides who is inside, the answer of a join and `GET /api/v1/call` carry no participant, no lock, no meeting and no recording until the account is inside. The device reads `GET /api/v1/call` when `call_participant_joined` names its own account.
 
 The full check takes the rooms in turn, 50 per part; with more calls than that a room is checked less often than every 2 seconds, as ADR 0509 states.
 
 While the server does not reach LiveKit, nobody is let into a call. After the return the changed rooms are checked at once and every other room in its turn. A failure of one room does not stop the check of the others; that room lets nobody in until it is checked again.
 
-Two accounts have a direct-message call only while they share a workspace or one of them administers the server (ADR 0307). One account rings another at most 3 times in 10 minutes and not for 5 minutes after a decline, and an account that muted the conversation is not rung (ADR 0515).
+`DELETE /api/v1/channels/{channel_id}/call/participants/{account_id}/hand` lowers the raised hand of another person: the person who runs meeting mode does this, and a moderator with `mute_members` (ADR 0516).
+
+Two accounts have a direct-message call only while they share a workspace or one of them administers the server (ADR 0307). One account rings another at most 3 times in 10 minutes and not for 5 minutes after a decline, and an account that muted the conversation or is in its quiet time is not rung; the caller gets the same events and the same count of rings in both cases (ADR 0515).
 
 The server reaches the API of LiveKit (`JUNTO_LIVEKIT_API_URL`) without TLS and refuses an `https://` address at the start. Put that address on a private network (ADR 0508).
 
@@ -72,23 +75,23 @@ A person in the call of a voice channel who holds `record_calls` records it (ADR
 
 After its jobs have ended a recording has the state `processing` (ADR 0606). One task then takes each recording in turn:
 
-1. It finds the file of each segment below `JUNTO_RECORDINGS_DIR`. The audio file of a lost job is taken from `rescued/<job>/<segment>.ogg`, where the start script of the recorder saves it.
+1. It finds the file of each segment below `JUNTO_RECORDINGS_DIR`. The audio file of a lost job is taken from `rescued/<job>/<segment>.ogg`, where the start script of the recorder saves it. Maintenance deletes an entry below `rescued/` that is the job of no segment when it is older than 24 hours.
 2. It joins the pieces of each composite into `<recording>/<segment>.mp4` with `ffmpeg`, without encoding again.
 3. It checks each file with `ffprobe` and `ffmpeg`, which read the file from the server and get no path of it: the streams, their timestamps, the length against the length that the recorder reported, the key frames of the picture, and the sound of the composite against the microphone files.
 4. The recording becomes `ready`, `partly_failed` or, without any file, `failed`. Its reservation of disk space ends, and `recording_updated` is recorded. Each segment then states its file and the problems that the check found.
 
 A server with a recorder needs `ffmpeg` and `ffprobe` on its path, or `JUNTO_FFMPEG` and `JUNTO_FFPROBE`, and does not start without them.
 
-`GET /api/v1/recordings/{recording_id}/segments/{segment_id}/file` returns the video or an audio file, whole or as one byte range (`Range: bytes=...`). `DELETE /api/v1/recordings/{recording_id}` removes a recording with its files and its transcript; it needs `manage_recordings` (ADR 0608).
+`GET /api/v1/recordings/{recording_id}/segments/{segment_id}/file` returns the video or an audio file, whole or as one byte range (`Range: bytes=...`). The server sends 32 files at one time and 4 of them to one account; a further request gets `busy`. A download that runs is decided again every 5 seconds and ends when its account may no longer read the file; the downloads of attachments and of exports follow the same rule (ADR 0608). `DELETE /api/v1/recordings/{recording_id}` removes a recording with its files and its transcript; it needs `manage_recordings` (ADR 0608).
 
 ## Transcripts
 
 With `JUNTO_TRANSCRIBE_COMMAND`, the server hands each processed recording to the transcription worker of [`workers/transcription`](../../workers/transcription/README.md) (ADR 0607, ADR 0611).
 
-1. The server writes the job file into a new directory `<recording>/transcription/<run>/` and runs `<command> run <job file> --out <transcript file> --audio-root <directory of the recording>` as a child process in a process group of its own. The process gets `PATH` and the `JUNTO_TRANSCRIBE_*` variables of the worker, and nothing else of the environment of the server.
+1. The server writes the job file into a new directory `<recording>/transcription/<run>/` and runs `<command> run <job file> --out <transcript file> --audio-root <directory of the recording>` as a child process in a process group of its own. The process gets `PATH` and the `JUNTO_TRANSCRIBE_*` variables of the worker, and nothing else of the environment of the server. With `JUNTO_TRANSCRIBE_BATCH_SIZE`, the server adds `--batch-size <number>` to the command.
 2. One job runs at a time for all server processes, and none starts while a call is recorded. A run has a time limit of 13 hours. A run that fails is repeated twice, with a wait.
 3. The server accepts a transcript only when it agrees with its job, and stores its lines. The transcript of a recording is `waiting`, `running`, `ready`, `partial` or `failed`; the recording carries that state, and each change is a `recording_updated` event.
-4. `GET /api/v1/recordings/{recording_id}/transcript` returns the state and the result of each audio segment, `.../transcript/lines` the lines in pages, and `.../transcript/text` the transcript as plain text. `PUT .../transcript/lines/{line}` corrects a line and `PUT .../transcript/speakers/{number}` names a voice of shared sound; every person who reads the recording does both, each change names its author, and the text of the worker stays. `POST .../transcript` asks for a failed transcript again and needs `manage_recordings`.
+4. `GET /api/v1/recordings/{recording_id}/transcript` returns the state and the result of each audio segment, `.../transcript/lines` the lines in pages, and `.../transcript/text` the transcript as plain text. `PUT .../transcript/lines/{line}` corrects a line and `PUT .../transcript/speakers/{number}` names a voice of shared sound; every person who reads the recording does both, each change names its author, and the text of the worker stays. The events `transcript_line_corrected` and `transcript_speaker_renamed` state the line and the label that changed and carry no text and no name; a client reads the line from `.../transcript/lines?after=<line - 1>&limit=1` and the label from `.../transcript`. `POST .../transcript` asks for a failed transcript again and needs `manage_recordings`.
 5. `GET` and `PUT /api/v1/workspaces/{workspace_id}/glossary` read and replace the glossary of a workspace: at most 200 names and terms, most important first, which the speech model receives. `PUT` needs `manage_glossary`.
 
 The settings for a worker that is installed beside the server:
@@ -101,18 +104,82 @@ The worker reads the audio files of a recording and writes only into the directo
 
 The storage guard (ADR 0605) keeps 5 GiB free, reserves 8 GiB for each recording and records 2 calls at one time. A start without that space gets `storage_low`, and a third recording gets `recordings_full`. The health route states `storage_low`.
 
-The recorder writes below `JUNTO_RECORDINGS_DIR`: the file of an audio track to `<recording>/<segment>.ogg` and the composite as pieces with a playlist to `<recording>/<segment>/`. The server writes the videos and the transcripts into the same directories, so the user of the server needs write access to what the recorder creates. The recorder loads the layout page from `JUNTO_RECORDER_LAYOUT_URL`; the server does not serve that page yet.
+The recorder writes below `JUNTO_RECORDINGS_DIR`: the file of an audio track to `<recording>/<segment>.ogg` and the composite as pieces with a playlist to `<recording>/<segment>/`. The server writes the videos and the transcripts into the same directories, so the user of the server needs write access to what the recorder creates. The recorder loads the layout page from `JUNTO_RECORDER_LAYOUT_URL`. The server serves the page at `/recording-layout/` from the directory in `JUNTO_RECORDER_LAYOUT_DIR`: build it with `npm ci --ignore-scripts && npm run build` in [`recording-layout/`](../../recording-layout/README.md), put `recording-layout/dist` beside the server, and give the recorder the address of `/recording-layout/` on the private network (ADR 0615). The route asks for no credential and is not part of the public API; the log record of a request has the path without the query, so the room token of the recorder is not logged. A join token carries the display name of its account, which the page shows.
+
+## Access tokens
+
+An administrator creates an access token for another program with a session (ADR 0203, ADR 0210):
+
+```sh
+curl -X POST https://chat.example.test/api/v1/access-tokens \
+    -H "Authorization: Bearer $SESSION_TOKEN" -H 'content-type: application/json' \
+    -d '{"name": "setup", "actions": ["read_structure", "manage_structure"], "expires_at": "2027-01-01T00:00:00Z"}'
+```
+
+The answer carries the token (`jat_...`) once; the server stores its hash. A token has an expiry at most 366 days ahead and a set of actions: `read_structure`, `manage_structure`, `manage_members`, `read_audit_log`. The table `REACH` in `src/tokens.rs` lists the routes of each action; every other route refuses an access token with `forbidden`. A request with a token gives and takes no role of an account and lifts no ban; these routes need a session (ADR 0213). A request with a token is decided with the roles that the creator has at that time, and never as the server owner. `GET /api/v1/access-tokens` lists the tokens and `DELETE /api/v1/access-tokens/{id}` revokes one. A ban, a removal and a recovery of the creator delete the creator's tokens. Each audit entry of a request with a token names the token in `access_token_id`.
+
+## Setup tool
+
+`junto-setup` (crate [`crates/setup`](../setup)) writes the structure of a server to a file and applies a file to a server, through the public API with an access token (ADR 0204, ADR 0211, ADR 0212):
+
+```sh
+export JUNTO_SERVER=https://chat.example.test JUNTO_ACCESS_TOKEN=jat_...
+junto-setup export --out structure.json     # workspaces, roles, categories, channels, overrides
+junto-setup plan structure.json             # prints what apply would change; changes nothing
+junto-setup apply structure.json            # all changes or none
+junto-setup plan structure.json --out plan.json && junto-setup apply --plan plan.json
+```
+
+The token is never an argument: it comes from `JUNTO_ACCESS_TOKEN` or from `--token-file`. The tool sends it over `https`, or over `http` to a loopback address. The file format is in [`docs/api/structure-file.json`](../../docs/api/structure-file.json). An entry is matched by its `id`; an entry or an optional field that the file does not hold is kept; only what the file lists under `delete` is deleted: `channels`, `categories`, `roles`, `server_roles` and `workspaces`. A new entry gets a new UUID from its author; the server generates the identifier of the object and keeps the identifier of the file for later files. A workspace with `"default": true` and a role with `"everyone": true` stand for the default workspace and for the everyone role of the server that the file is applied to, so the export of one server can be applied to another.
+
+`GET /api/v1/structure` returns the document with its revision, and `POST /api/v1/structure/changes` applies at most 200 changes in one transaction. A request that names another revision than the current one gets `conflict`, and so does a plan after any change of the structure. Both routes need the administrator permission.
+
+The tests run the commands of the tool against a server in the test process. One more tier runs the binary against two running servers with empty databases; it is ignored in the plain run:
+
+```sh
+cargo build -p junto-setup
+JUNTO_TEST_SETUP_SOURCE='http://127.0.0.1:8081|<owner code>' \
+JUNTO_TEST_SETUP_TARGET='http://127.0.0.1:8082|<owner code>' \
+    cargo test -p junto-server --test api setup_real:: -- --ignored
+```
 
 ## Host commands
 
-Four commands work on the database directly and are not part of the API (ADR 0114, ADR 0010). Each reads `JUNTO_DATABASE_URL` and can run while the server runs.
+These commands work on the database directly and are not part of the API (ADR 0114, ADR 0010, ADR 0018). Each reads `JUNTO_DATABASE_URL` and can run while the server runs; `health` and `schema-version` read no database.
 
 ```sh
 junto-server assign-owner <account-id>   # make an active account the server owner
 junto-server issue-owner-code            # print a one-time code that returns the owner to their account
 junto-server new-event-epoch             # make every client load a snapshot
 junto-server check-upgrade               # tell whether a recording runs; exit code 3 while one does
+junto-server backup-begin                # hold file deletions back; print the identifier of a backup
+junto-server backup-files <backup-id>    # after the copy of the database: print the directories to copy
+junto-server backup-end <backup-id>      # the backup has copied its files; exit code 1 when it has expired
+junto-server restored                    # after a restore: new event epoch, no export, no backup
+junto-server schema-version              # print the newest migration of this binary
+junto-server unnamed-files [--remove]    # list, or remove, the directories that no row names
+junto-server health                      # exit code 0 while the server of this host answers 200
 ```
+
+`health` reads `JUNTO_LISTEN_ADDRESS` only and asks `GET /api/v1/health`; it is the health check of a container (ADR 0012).
+
+A backup copies the database and the files with the programs of the deployment (ADR 0018). `backup-begin` prints `backup <id> <expiry>`. From then on, and for 24 hours at most, the server deletes no directory of an attachment or of a recording. Copy the database. Then run `backup-files <id>` with the settings of the server: it prints `file <directory>` for each directory that the backup copies and `skip <directory> <reason>` for each one that is still written. Copy the directories of the `file` lines, then run `backup-end <id>`. After the database and the files of a backup were put in place, run `restored` before the server starts.
+
+`backup-files` prints no line for a recording of the state `failed`, which has no file. It prints the `file` line of a `ready` or `partly_failed` recording also when the directory is absent; treat an absent directory of a `file` line as a loss. `backup-end` ends with the exit code 1 and changes nothing for a backup that has expired (`the backup <id> expired at <time>`) and for an identifier of no backup; a backup that was ended is unknown afterwards. Discard a backup whose `backup-end` failed: the server may have deleted files before they were copied.
+
+`schema-version` prints one line, `schema <number>`, where the number is the newest migration that the binary applies, in decimal digits without leading zeros; the exit code is 0, and the command reads no setting. A server that runs has this schema. Store the line with a backup, and compare it with the line of the installed binary before a restore replaces anything. `restored` compares the newest migration of the database with that number: when they differ it prints `the database has the schema <found>, and this version of the server needs the schema <needed>`, changes nothing and ends with the exit code 1.
+
+`unnamed-files` reads the directories of `JUNTO_ATTACHMENTS_DIR`, `JUNTO_RECORDINGS_DIR` and `JUNTO_EXPORTS_DIR` that are set, in one full scan each; run it with the settings of the server. A restore and the way back from an upgrade can leave directories that the database does not name. The command prints one line for each directory whose name is an identifier and that no attachment, recording, queued removal or export names:
+
+- `unnamed <kind>/<identifier>` without `--remove`: nothing is changed.
+- `removed <kind>/<identifier>` with `--remove`: the directory was deleted.
+- `skip <kind>/<identifier> changed_recently` in both forms: the directory was changed in the last 24 hours and stays.
+
+The kind is `attachments`, `recordings` or `exports`. The exit code is 0, also when no line is printed. With `--remove`, the command removes nothing and ends with the exit code 1 while a backup holds deletions back. In both forms it changes nothing and ends with the exit code 1 when no directory setting is given, when two settings name the same directory, and when the database has another schema than the binary. It examines no entry with another name (`rescued/` is swept by maintenance) and no file or link. Run `unnamed-files --remove` before `backup-begin` of a regular backup, so that each backup removes what a restore or the way back from an upgrade left more than 24 hours before.
+
+Before a version of the server applies a migration, it copies the database to `<name>_before_<newest applied migration>` on the same PostgreSQL server and keeps that one copy. The copy needs that no other program is connected to the database and that the database user may create a database; otherwise the server does not start. `JUNTO_MIGRATION_COPY=none` turns the copy off. To go back: stop the server, rename the database, rename the copy to the name of the database, and start the earlier version.
+
+The copy has the comment `junto: copy of the database <name> before a migration`. From the copy until a start has applied every migration, the comment of the database itself begins with the line `junto: an upgrade of this database has not finished. <copy> is the copy from before the upgrade`; a comment that the database had stays after that line. While the database has the line, a start keeps the copy and makes no copy: a migration that failed can have left the database migrated in part. The next upgrade after a finished one replaces the copy. The server creates the copy as `<name>_making_<newest applied migration>` and gives it the name of a copy when it has its comment. Before it creates that database, it writes the line `junto: the server makes the copy <that name>` into the comment of its own database; a start removes a database of that name that a stopped start left, and only one that this line or the comment of a copy states as its own. Another database with that name stops the start.
 
 Run `check-upgrade` before an upgrade of the server or of the recorder. A server whose new version changes the database does not start while a recording is starting or runs (ADR 0005, ADR 0608).
 
@@ -126,7 +193,9 @@ Run `new-event-epoch` after the restore of a backup, before the server accepts c
 | `JUNTO_LISTEN_ADDRESS` | `127.0.0.1:8080` | Address and port of the HTTP listener |
 | `JUNTO_PUBLIC_ORIGINS` | the loopback origins of the port, when the server listens on a loopback address; required otherwise | Comma-separated origins at which clients reach the server, for example `https://chat.example.test`; `http` is accepted for a loopback host only (ADR 0117) |
 | `JUNTO_SERVER_NAME` | `Junto` | Name of the server and of its default workspace; read at the first start only |
-| `JUNTO_TRUSTED_PROXIES` | empty | Comma-separated IP addresses of the entry hosts whose `X-Forwarded-For` header the server trusts |
+| `JUNTO_TRUSTED_PROXIES` | empty | Comma-separated IP addresses or networks (`172.31.240.0/24`) of the entry hosts whose `X-Forwarded-For` header the server trusts |
+| `JUNTO_EXPORTS_DIR` | none | Existing absolute directory for the files of exports. Without it the server makes no export (ADR 0411) |
+| `JUNTO_MIGRATION_COPY` | `database` | `database`: copy the database before a migration; `none`: do not (ADR 0018) |
 | `JUNTO_LOG_FORMAT` | `json` | `json` or `text`; log records go to standard error |
 | `JUNTO_LOG_LEVEL` | `info` | `error`, `warn`, `info`, `debug` or `trace` |
 | `JUNTO_LIVEKIT_API_URL` | none | Address of the LiveKit API on the private network, with `http://` (ADR 0508) |
@@ -136,10 +205,12 @@ Run `new-event-epoch` after the restore of a backup, before the server accepts c
 | `JUNTO_RECORDINGS_DIR` | none | Directory of the recordings as the server sees it, an absolute path (ADR 0604) |
 | `JUNTO_RECORDER_DIR` | the value of `JUNTO_RECORDINGS_DIR` | The same directory as the recorder sees it |
 | `JUNTO_RECORDER_LAYOUT_URL` | none | Address at which the recorder loads the layout page, with `http://` or `https://` |
+| `JUNTO_RECORDER_LAYOUT_DIR` | none | Absolute directory of the built layout page, with its `index.html`. Without it the server serves no layout page (ADR 0615) |
 | `JUNTO_FFMPEG` | `ffmpeg` | The program that joins and reads the files of a recording (ADR 0606) |
 | `JUNTO_FFPROBE` | `ffprobe` | The program that reads the packets of a file |
 | `JUNTO_TRANSCRIBE_COMMAND` | none | The program of the transcription worker and its first arguments, separated by spaces. Without it the server builds no transcript (ADR 0607) |
 | `JUNTO_TRANSCRIBE_SEPARATE_SPEAKERS` | `true` | Whether the voices in shared sound get speaker labels (ADR 0614) |
+| `JUNTO_TRANSCRIBE_BATCH_SIZE` | none | The speech clips that the speech model reads at one time, from 1 to 64. The server gives it to each run of the worker as `--batch-size`; without it the worker uses the number of its model. A smaller number needs less memory (ADR 0607) |
 | `JUNTO_TRANSCRIBE_MODELS`, `JUNTO_TRANSCRIBE_WHISPER_MODEL`, `JUNTO_TRANSCRIBE_DEVICE`, `JUNTO_TRANSCRIBE_MAX_*` | none | Settings of the worker, which the server passes to its process |
 
 The four LiveKit settings are given together or not at all. The directory of the recordings and the address of the layout page are given together and need the LiveKit settings; without them a request to record gets `recorder_unavailable`. The settings of ffmpeg and of the transcription worker need the directory of the recordings.
@@ -169,7 +240,7 @@ tools/with-test-postgres.sh tools/with-test-livekit.sh tools/serial.sh \
     cargo test -p junto-server --test api live:: -- --ignored
 ```
 
-The tests of recordings use a recorder in memory that behaves as step 0 measured LiveKit Egress, and each test runs the passes of the controller, the processing and the transcription itself. The recorder in memory writes files that `ffmpeg` generates, so these tests, and `cargo test -p junto-server --lib`, need `ffmpeg` and `ffprobe` with the encoders `libopus` and `libx264` on the path. No test runs against a real recorder yet.
+The tests of recordings use a recorder in memory that behaves as step 0 measured LiveKit Egress, and each test runs the passes of the controller, the processing and the transcription itself. The recorder in memory writes files that `ffmpeg` generates, so these tests, and `cargo test -p junto-server --lib`, need `ffmpeg` and `ffprobe` with the encoders `libopus` and `libx264` on the path. `deploy/tests/recording.sh` records a call through the deployment with the real recorder (ADR 0910); it is not part of CI.
 
 The tests of the hand-over to the transcription worker run a stand-in script that follows the contract of ADR 0611. One more tier runs the real worker with its development model on generated speech. It is ignored in the plain run and needs the virtual environment, the models and the test speech of `workers/transcription`:
 
@@ -190,7 +261,7 @@ cargo deny check
 
 ## API description
 
-`docs/api/openapi.json` is generated from the routes, and `docs/api/events.json` from the message and event types of the event stream (ADR 0206). After a change to a route, a type or an event, write both again and commit them:
+`docs/api/openapi.json` is generated from the routes, `docs/api/events.json` from the message and event types of the event stream (ADR 0206), and `docs/api/structure-file.json` from the types of the structure file (ADR 0212). After a change to a route, a type or an event, write them again and commit them:
 
 ```sh
 cargo run -p junto-server --bin junto-openapi
@@ -200,10 +271,18 @@ The test `openapi` fails while a committed file differs from the code.
 
 ## Text messages
 
-The test database starts with `pg_stat_statements` preloaded. The message read-cost test
-uses it to check that history and snapshot query counts remain bounded. Its entry limit
-keeps statistics for the whole suite without eviction. A temporary database role identifies
-request statements separately from the event watcher.
+The test database server starts with `pg_stat_statements` preloaded. The tests that count
+statements read it. Its list of entries has a fixed size for all databases together, so the
+database of a test records no statement: the test support sets `pg_stat_statements.track`
+to `none` for each database that it creates. A test that counts statements starts its server
+with `TestServer::start_measured`, which leaves the recording on for that database, and ends
+with `require_no_statement_eviction`, which fails when the database server evicted an entry
+during the measurement. A temporary database role identifies request statements separately
+from the event watcher. The ignored test `statement_statistics::entries_of_the_run` prints
+the number of entries when it runs after the suite in the same call of
+`tools/with-test-postgres.sh`. The test support deletes the database of a test when the
+test ends: the database server holds statistics for each table and index of each database
+in a shared memory of fixed size, and the databases of a whole run do not fit into it.
 
 Channels (including voice-channel chat) use `GET` and `POST /api/v1/channels/{id}/messages`.
 Two-account conversations are opened with `POST /api/v1/conversations` and use
@@ -254,3 +333,37 @@ batches for one place at a time. Final recordings include ready, partly_failed a
 Message retention and attachment cleanup run in maintenance.
 Messages retain a flag when file retention removes their attachments.
 The full rules and pagination contracts are in ADR 0409.
+
+## Archive, export and deletions
+
+`PUT /api/v1/channels/{id}/archive` archives a channel and `DELETE` on the same path restores
+it; both need `manage_channel` (ADR 0410). An archived channel is in no channel list and not
+in the snapshot. The people who see it read it; every change of its content or settings gets
+`conflict`, and the call of an archived voice channel ends. `GET
+/api/v1/workspaces/{id}/archived-channels` lists the archived channels with the time of their
+deletion. `GET` and `PUT /api/v1/workspaces/{id}/archive-period` read and set the period: 7 to
+36500 days or `null` for never, 30 by default. Maintenance records the notice
+`channel_deletion_due` 7 days before a deletion and deletes the channel 7 days after its
+notice. A channel that contains permanent messages is not deleted by the server.
+
+`POST /api/v1/channels/{id}/exports` asks for an export of a channel and needs
+`export_channel`; `POST /api/v1/conversations/{id}/exports` asks for an export of a
+direct-message conversation of the caller (ADR 0411). An export belongs to its requester:
+`GET /api/v1/exports`, `GET` and `DELETE /api/v1/exports/{id}` and `GET
+/api/v1/exports/{id}/file` serve that account only, and the download decides the permission
+again. The file is a ZIP64 archive with `export.json`, `messages.json`, `messages.html`,
+`attachments/` and `recordings/`. It holds what the requester reads of the items that existed
+at the request. One task writes one export at a time: it counts the bytes, reserves them
+(ADR 0605) and writes in pages. An export is removed 7 days after it finished, when an item of
+it is deleted, and with its account or its channel. Set `JUNTO_EXPORTS_DIR`.
+
+`DELETE /api/v1/workspaces/{id}/roles/{role}`, `DELETE /api/v1/server-roles/{role}`, `DELETE
+/api/v1/workspaces/{id}/categories/{category}` and `DELETE /api/v1/workspaces/{id}` delete a
+role, a category and a workspace (ADR 0308). The channels of a deleted category stay. A
+workspace is deleted by an administrator, by the server owner only when a channel of it
+contains permanent messages, and never the default workspace.
+
+A deletion of a channel or of a workspace changes rows of the structure in its request. The
+content (messages, attachments, recordings, exports) is removed afterwards by one task, in
+transactions of at most 500 rows (ADR 0017). The tests run it with
+`junto_server::purge::run_once`, the exports with `junto_server::exports::run_once`.

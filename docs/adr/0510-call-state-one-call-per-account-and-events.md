@@ -28,13 +28,13 @@ The record:
 Who is in a call:
 
 - A person is in a call for others when two things hold: the record allows the identity, and the media server lists it. The admission check records the first sighting (ADR 0509).
-- A member who has asked for a place and has not connected is not shown. It takes a place for the user limit.
+- A member who has asked for a place and has not connected is not shown. It takes a place for the user limit. It is not inside the call: ADR 0517 states what a seat alone gives and what only a person inside reads and does.
 - A person leaves the call for others when the member row is removed.
 - A voice channel is "in use" from the first sighting of a participant until the call ends.
 
 One call per account, and the transfer rule:
 
-- A request to enter by the device that holds the place returns a new token for the same identity.
+- A request to enter by the device that holds the place returns a new token for the same identity. It does not move the end of a seat that has not connected; a request after that end is a new entry (ADR 0517).
 - A request to enter the same call by another device of the account moves the call to that device: the earlier identity is no longer allowed, the account keeps its place, and the lock and the user limit do not apply. Others see the person leave and join.
 - A request to enter another call ends the membership in the first call. The lock and the user limit of the new place apply.
 - The earlier identity is removed from its room by the admission check.
@@ -47,7 +47,7 @@ Own state and blocks:
 - A block belongs to the call and to the account, not to the stay of the account. A person who leaves and returns, or moves the call to another device, keeps the block.
 - A microphone block closes every sound source: the microphone and the sound of a screen share. The media server forwards the sound of a share as an audio track that the sharing device fills, and the server cannot verify that it carries shared sound and not a voice. A block that left this source open could be passed by a modified client. The camera and the screen stay open.
 - The block is in the join token of a blocked person and is set again at every admission check.
-- The answer to a request for a place states the microphone block and the sound block of the caller. A call lists a person only after the device has connected, so a device that enters again would otherwise learn its blocks after its connection, and a sound block, which the client applies, would not hold in between. For a person on the way in by a move, the answer states the block of meeting mode that the person gets at the completion.
+- The answer to a request for a place states the microphone block and the sound block of the caller. A call lists a person only after the device has connected, so a device that enters again would otherwise learn its blocks after its connection, and a sound block, which the client applies, would not hold in between. For a person on the way in by a move, the answer states the block of meeting mode that the person gets at the completion. For an account that is not inside a call that hides who is inside, the answer states no block (ADR 0517): a block names the person who set it, and the block of meeting mode tells that meeting mode is on. That account reads its blocks with the call when the admission check has seen it, and its client plays no sound of the call before that (ADR 0734).
 - A participant with a microphone block whom the media server lists with an audio track, of whatever source, is removed from the room.
 - A sound block is a flag. The client applies it (ADR 0503).
 - A block ends with the call.
@@ -64,7 +64,8 @@ Events:
 |---|---|
 | `call_started`, `call_ended` | Accounts that may see the voice channel; the two accounts of a direct message |
 | `call_participant_joined`, `call_participant_updated`, `call_participant_left`, `call_lock_changed`, `call_meeting_started`, `call_meeting_ended`, `call_speaking` | Accounts that may see who is inside (ADR 0514); the two accounts of a direct message |
-| `call_entry_requested`, `call_entry_resolved` | The accounts inside the call |
+| `call_entry_requested`, `call_entry_resolved` | The accounts inside the call, while the call exists (ADR 0517) |
+| `call_entry_requested` | Also the account that asked, while it may be at the place of the call, so that its other devices learn of the request that the snapshot carries |
 | `call_entry_answered` | The account that asked, while it may be at the place of the call |
 | `call_invited`, `call_invitation_resolved` | The invited account and the inviting account, each while it may be at the place of the call |
 | `call_move_requested`, `call_move_resolved` | The moved account and the account that moved, each while it may see both voice channels |
@@ -86,8 +87,8 @@ When an account loses a place:
 - No outcome of those things is sent to that account, then or later. The other side of an invitation gets `call_invitation_resolved` with `cancelled`, and the people inside get `call_entry_resolved` with `cancelled`.
 - A member of the call who loses the place also gets `own_call_changed` without a call, as for every end of a place.
 - `call_invited` and `call_invitation_resolved` have the class of call invites and reach every connection level (ADR 0107). The events of moves, `call_entry_answered`, `own_call_changed`, `call_access_ended` and the events of mutes are control events. The others are general.
-- A connection whose account is in a call receives every event of that call at any level. The server keeps the accounts in calls in memory (ADR 0116); every admission check replaces the list with the content of the record. The list widens the classes that a connection reads and never decides an access.
-- The snapshot (ADR 0207) carries the call of the account, the calls of the voice channels that the account may see, the direct-message calls of the account that are in progress, and its invitations that wait.
+- A connection whose account has a seat in a call receives every event of that call at any level. A background connection reads the seat of its account in the transaction of each batch, so the classes that it reads are those of the record at that moment. The server also keeps the accounts in calls in memory (ADR 0116); every admission check replaces the list with the content of the record. That list decides only which new events wake a background connection, and a replacement wakes the connections of the accounts that it adds. It never decides an access, and it no longer decides which classes a batch reads: a list that was behind the record let a background connection pass events of its own call for good.
+- The snapshot (ADR 0207) carries the call of the account, the calls of the voice channels that the account may see, the direct-message calls of the account that are in progress, the invitations that wait for the account, the invitations that the account made and that wait, the moves that wait and that name the account as the moved person or as the person who moved, and the requests of the account to enter that wait. Each of the last four is carried only while the account may be at every place that it names. A device that had to load a snapshot learned of none of the last three before.
 
 Kept for the text chat:
 

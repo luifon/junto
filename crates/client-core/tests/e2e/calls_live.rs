@@ -255,8 +255,9 @@ async fn a_call_with_a_real_participant_is_shown_to_the_accounts_that_may_see_it
         "{told:?}"
     );
 
-    // The channel hides who is inside: the people outside keep only that it is in use.
-    // When it stops hiding, their clients read who is inside.
+    // A call keeps the setting "hides who is inside" that its channel had when the call
+    // began (ADR 0517). The channel hides from its next call on, and the people outside
+    // still see who is in the call that runs.
     let hide = |hides| UpdateCallSettings {
         user_limit: None,
         hides_occupants: Some(hides),
@@ -265,23 +266,30 @@ async fn a_call_with_a_real_participant_is_shown_to_the_accounts_that_may_see_it
         .update_call_settings(voice, &hide(true))
         .await
         .unwrap();
-    model_when(ben, "nobody is shown", |model| {
+    let model = model_when(ben, "the setting of the channel", |model| {
         model
             .channel(voice)
-            .is_some_and(|held| held.in_use && held.call.is_none())
+            .is_some_and(|held| held.channel.hides_occupants)
     })
     .await;
-    let inside = ann.live().view().model.unwrap();
-    assert_eq!(inside.call_at(&place).unwrap().participants.len(), 1);
-    assert!(ben.api().channel_call(voice).await.unwrap().call.is_none());
+    let held = model.channel(voice).unwrap();
+    assert!(held.in_use);
+    let call = held.call.as_ref().unwrap();
+    assert!(!call.hides_occupants && call.participant(ann_id).is_some());
+    let shown = ben.api().channel_call(voice).await.unwrap().call.unwrap();
+    assert!(!shown.hides_occupants && shown.participants.len() == 1);
     ann.api()
         .update_call_settings(voice, &hide(false))
         .await
         .unwrap();
-    model_when(ben, "Ann is shown again", |model| {
-        model
-            .call_at(&place)
-            .is_some_and(|call| call.participant(ann_id).is_some())
+    model_when(ben, "the setting is off again", |model| {
+        model.channel(voice).is_some_and(|held| {
+            !held.channel.hides_occupants
+                && held
+                    .call
+                    .as_ref()
+                    .is_some_and(|call| call.participant(ann_id).is_some())
+        })
     })
     .await;
 

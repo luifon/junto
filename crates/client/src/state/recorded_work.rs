@@ -181,14 +181,26 @@ impl AppState {
         recording_id: RecordingId,
         cx: &mut Context<Self>,
     ) {
-        if self
-            .open_recordings
-            .remove(&(server_id, recording_id))
-            .is_some()
-            && let Some(server) = self.client.server(server_id)
-        {
-            server.live().release_recording(recording_id);
-        }
+        let key = (server_id, recording_id);
+        let Some(server) = self
+            .client
+            .server(server_id)
+            .filter(|_| self.open_recordings.contains_key(&key))
+        else {
+            self.changed(cx);
+            return;
+        };
+        let opening = server.live().reload_recording(recording_id);
+        let task = cx.spawn(async move |this, cx| {
+            let result = opening.await;
+            let _ = this.update(cx, |this, cx| {
+                if matches!(result, Err(LoadError::Off | LoadError::NotInState)) {
+                    this.open_recordings.remove(&key);
+                }
+                cx.notify();
+            });
+        });
+        self.open_recordings.insert(key, task);
         self.changed(cx);
     }
 
@@ -408,6 +420,18 @@ impl AppState {
         let Some(server) = self.client.server(server_id) else {
             return;
         };
+        // Archived channels are read-only even when an old confirmation remains.
+        // For an active channel the server decides permission and the card tells its
+        // refusal, including when roles changed after the control was drawn.
+        let active = server.live().view().model.is_some_and(|model| {
+            model
+                .recording(recording_id)
+                .and_then(|open| open.detail.loaded())
+                .is_some_and(|detail| model.channel(detail.recording.channel_id).is_some())
+        });
+        if !active {
+            return;
+        }
         let key = (server_id, recording_id);
         if !self.known.recordings_removing.insert(key) {
             return;

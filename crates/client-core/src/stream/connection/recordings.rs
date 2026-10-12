@@ -2,8 +2,8 @@
 //! of their two routes, and the pages of the lines of their transcripts.
 //!
 //! `recording_updated` carries a recording without its segments and without its
-//! transcript, so the client reads both routes after it. The events of a transcript carry
-//! what they change, and cost no request.
+//! transcript, so the client reads both routes after it. Transcript events carry only
+//! identifiers; changed content is read through its authorized route.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

@@ -18,10 +18,11 @@ ADR 0007 states that a health endpoint reports whether the database and LiveKit 
 - The status depends on the database only. A server that reaches its database and not its media server answers 200.
 - Otherwise the response is 503 with the error `unavailable` in the error body of ADR 0205, and `Retry-After: 1`.
 - The body states nothing else about the server.
+- The server binary has the command `junto-server health`. It reads `JUNTO_LISTEN_ADDRESS` (default `127.0.0.1:8080`), asks this route on that address, or on the loopback address when the server listens on every address, and waits 4 seconds at most. Its exit code is 0 for the status 200 and 1 otherwise. It needs no database setting.
 
 ## Consequences
 
-- A health check of the container runtime needs only the status code.
+- A health check of the container runtime needs only the status code, or the exit code of `junto-server health`, so the image needs no further program for it.
 - A caller without a session learns whether the server reaches its database and its media server, and how many rooms cannot be checked. It learns no room name.
 - A health check that restarts the container on a status other than 200 does not restart the server because the media server is down. A monitoring program reads `media_server` and `failing_call_rooms` from the body.
 - The state of the media server is as old as the last admission check: at most the interval of ADR 0509.

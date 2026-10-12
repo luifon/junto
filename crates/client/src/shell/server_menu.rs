@@ -3,7 +3,9 @@
 
 use std::ops::Not as _;
 
-use gpui::{Context, Hsla, IntoElement, ParentElement, Styled, Window, div};
+use gpui::{
+    Context, Hsla, IntoElement, ParentElement, Styled, Window, div, prelude::FluentBuilder,
+};
 use junto_client_core::protocol::ids::ServerId;
 
 use super::{Layer, Shell};
@@ -41,6 +43,7 @@ impl Shell {
         };
         let server_id = server.id;
         let keep = server.keep_connected;
+        let has_content = !matches!(server.content, crate::state::view::Content::State);
         let header = div()
             .flex()
             .flex_none()
@@ -135,6 +138,22 @@ impl Shell {
                             })),
                     )
                     .children(notifications)
+                    // The administration needs the state of the server.
+                    .when(has_content, |menu| {
+                        menu.child(
+                            MenuItem::new("administration", text::admin::OPEN_ADMINISTRATION)
+                                .icon(Icon::Gear)
+                                .detail(text::admin::OPEN_ADMINISTRATION_HELP)
+                                .selector("menu-administration")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_server_admin(
+                                        crate::state::admin::AdminPage::Workspaces,
+                                        window,
+                                        cx,
+                                    );
+                                })),
+                        )
+                    })
                     .child(menu_separator(cx))
                     .child(
                         MenuItem::new("remove-server", text::REMOVE_SERVER)

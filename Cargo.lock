@@ -3835,6 +3835,7 @@ dependencies = [
  "ed25519-dalek",
  "futures-util",
  "getrandom 0.4.3",
+ "junto-authz",
  "junto-protocol",
  "junto-server",
  "reqwest 0.12.28",
@@ -3917,6 +3918,7 @@ dependencies = [
  "hyper-util",
  "junto-authz",
  "junto-protocol",
+ "junto-setup",
  "reqwest 0.13.5",
  "rustix",
  "serde",
@@ -3934,6 +3936,18 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "uuid",
+]
+
+[[package]]
+name = "junto-setup"
+version = "0.1.0"
+dependencies = [
+ "junto-protocol",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]

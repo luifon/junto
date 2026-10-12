@@ -36,6 +36,7 @@ The recorder client:
 - A request to start a job has a time limit of 25 seconds. Every other request has a time limit of 5 seconds.
 - An answer with the status 408, and a request without an answer, mean "not delivered". An answer with a status of 500 or above means that no recorder took the request.
 - The composite is requested as pieces of 2 seconds with a playlist, with the preset 1080p at 30 frames per second, and with the address of the layout page from the setting `JUNTO_RECORDER_LAYOUT_URL`.
+- Every request to start a job turns the manifest of the recorder off (`disable_manifest`). With it the recorder wrote a file `<job>.json` with the names of the room and of the track beside each audio file, which the record does not know.
 - The main share is named by the identifier of its video track: the layout value is `main:<track identifier>`, and empty when no share is named.
 
 The controller:
@@ -62,7 +63,10 @@ Lost jobs, in addition to ADR 0601:
 - A job whose stop was delivered has 20 seconds to report its end before it can be lost. After a loss of the private link a job that had ended was reported as active for 16 seconds.
 - A job that still has its participant 20 seconds after its stop was delivered gets the stop again.
 - The server sends a stop for a job that it declares lost. A job that was declared lost while its recorder lived then ends, so two jobs do not record the same source. When the stop has no answer and the participant of the job is in the room again, the job gets the stop at every pass until it has left.
-- Before a recording leaves the active states, the server asks the recorder again about every job that it declared lost. A complete file result replaces the declaration, and the segment becomes `ended`. A report that the recorder does not give does not hold the recording back.
+- Before a recording leaves the active states, the server asks the recorder again about every job that it declared lost. A complete file result replaces the declaration, and the segment becomes `ended`. A report that the recorder does not give does not hold the recording back, except in the 20 seconds below.
+- A job can be declared lost before the recorder took a stop for it. The transaction of the declaration stores with the segment that the stop of its job is owed. While a stop is owed, each pass sends it, and the recording does not leave the active states. The transaction that stores the answers of a pass ends the owed state of each stop that had an end: a stop that the recorder took, or refused because the job had ended, is stored as delivered, and a stop without an answer was not delivered (ADR 0601) and is not sent for this reason again.
+- The owed stop is a column of the segment and not a value in the memory of a pass. A server process that stops between the declaration and the answer to the stop, and a transaction of the answers that fails, leave the stop owed: the next pass, of the same process or of the next one, sends it.
+- For a recording whose stop is asked for, a second pass follows the pass of a declaration at once and asks the recorder about the job. When the recorder took that stop, the job has the 20 seconds of a stopped job to report its end: in that time the recording waits unless the recorder reports the end of the job or states that it does not know the job. A stop without an answer gives no such time. A job that is declared lost after the 20 seconds of a stop that the recorder took does not hold the recording back.
 
 Start and stop:
 
@@ -81,7 +85,8 @@ Reading:
 
 - `GET /api/v1/workspaces/{workspace_id}/recordings` returns the recordings of the workspace, newest first, in pages as the audit log (ADR 0205). `GET /api/v1/recordings/{recording_id}` returns one recording with its segments.
 - A recording is returned to a caller with `view_channel` in its voice channel (ADR 0602).
-- A recording names the person who started it and the people whose tracks it holds, so it tells who is in its call. While its call runs in a channel that hides who is inside (ADR 0514), it is returned only to the people inside: also a recording that has ended while the call continues. When the call has ended, every caller with `view_channel` reads it.
+- A recording names the person who started it and the people whose tracks it holds, so it tells who is in its call. While its call runs and hides who is inside (ADR 0514), it is returned only to the people inside: also a recording that has ended while the call continues. Inside is the rule of ADR 0517: the admission check has seen the seat of the account. The call hides who is inside when its voice channel did so at the start of the call. When the call has ended, every caller with `view_channel` reads it.
+- The audit entries that name a recording (`recording_started`, `recording_stopped`, `recording_removed`, `transcript_requested`) name a person inside its call. The audit log of the workspace returns such an entry by the rule of the recording: while the call runs and hides who is inside, to a reader inside only. A reader outside gets the entries when the call has ended. The entry stores the call of its recording, in a column that the API does not return, so the rule holds after the recording was removed while its call runs. An entry from before that column existed is decided by the row of its recording, and when that row is gone, by the call that the channel had when the entry was written. The entries of moderation in a hidden voice channel are returned as ADR 0510 states.
 - A recording of a deleted channel is returned to nobody (ADR 0407). Its rows and files stay until retention removes them (ADR 0406).
 - The view of a call (ADR 0510) carries the recording that is starting or runs, so a person who joins later sees the indicator.
 
@@ -89,14 +94,14 @@ Events:
 
 | Event | Recipients |
 |---|---|
-| `recording_started`, `recording_updated` while the call of the recording runs | Accounts that may see who is inside (ADR 0514) |
+| `recording_started`, `recording_updated` while the call of the recording runs | Accounts that may see who is inside that call (ADR 0514, ADR 0517) |
 | `recording_updated` when the call has ended | Accounts with `view_channel` in the voice channel |
 
 - Each event carries the whole recording without its segments. A client reads the segments from the route of the recording.
 - The events are general (ADR 0208). An account in the call receives them at any level (ADR 0510).
 - `recording_updated` is recorded when the state changes, when a stop is asked for, and when a segment is added, ends or fails.
-- The end of a call in a channel that hides who is inside records `recording_updated` for the recordings of that call, so that the people outside learn of them: the one that is starting or runs and the newest others, at most 50 together. A call with more leaves the others to the list.
-- A channel that stops hiding who is inside while its call runs records `recording_updated` for the newest 50 recordings of that call in the same transaction, because the people outside read them from then on.
+- The end of a call that hid who is inside records `recording_updated` for the recordings of that call, so that the people outside learn of them: the one that is starting or runs and the newest others, at most 50 together. A call with more leaves the others to the list.
+- A channel that stops hiding who is inside while its call runs changes nothing for the recordings of that call: the call keeps the setting that it started with (ADR 0517), and the people outside read its recordings when it has ended. The first version of this record showed them at the change, which let a person with "manage channel" outside the call read who is inside.
 - The indicator of ADR 0601 therefore reaches the people in the call and the members who may see who is in the call. It reaches no other person.
 - The reasons of a stop and of a failure are open sets: a client reads a reason that it does not know as `unknown`, as ADR 0209 states for error codes.
 
@@ -104,6 +109,7 @@ Audit and notes:
 
 - The start and the stop of a recording are audit entries about the channel (ADR 0305). The entry of a stop by the server has no acting account and states the reason.
 - The server keeps a note for the start, the stop and the first failure of a recording, and for its post when its files are processed (ADR 0606), with the identifier of the recording, for the system lines of the text chat (ADR 0501, ADR 0510).
+- A file result that replaces a declaration (above) can leave a recording without a failed segment. The transaction of that pass then deletes the note of the failure and its line in the text chat, and records `message_changed` for the deleted line. The note of a failure therefore exists while a segment of the recording has a failure, and for a recording that is not `ready` after its processing (ADR 0606).
 
 Settings:
 
@@ -117,7 +123,7 @@ Settings:
 - The state of a recording is correct after a restart of the server: the passes read the record and the room again. A job that was started twice for one source is ended by the stop for unknown participants of the recorder.
 - A restart of the LiveKit server removes the participants of the recorder for some seconds. A composite that is older than 10 seconds can then be declared lost: it gets a stop, a new composite starts, and the first one becomes `ended` when the recording stops. The recording then has two composite segments.
 - A person outside a hidden voice channel does not learn from a recording who is inside while the call runs. After the call has ended, every person who sees the channel reads who started its recordings and whose tracks they hold, as the transcript states them (ADR 0603).
-- The delivery decides an event by the current standing of the account (ADR 0011). A person who is in a later call of a hidden channel can therefore receive, in a replay, the events of a recording of an earlier call there; that recording is readable for the person by then, because its call has ended.
+- The delivery decides an event of a recording that was recorded while its call ran by the people inside that call (ADR 0517). A person who is in a later call of the channel does not receive it in a replay; the event that the end of the call recorded for the accounts with `view_channel` reaches that person.
 - A person in the call with `record_calls` can stop a recording that another person started. A person with `manage_recordings` who is not in the call cannot.
 - A recording whose call has ended, and whose jobs the recorder never reports as ended, ends when the participants of the recorder have left the room.
 - A recording does not leave the active states while the server cannot read the participants of its room, or while a participant of the recorder stays in the room. It counts among the recordings at one time until then, and its stop is sent again at every pass.
@@ -127,4 +133,8 @@ Settings:
 - A recording stays `processing` until its files are checked and its composite is joined (ADR 0606). Its reservation of disk space stays for that time. The transcript has its own state and does not hold the recording back (ADR 0607).
 - The route that serves the layout page (ADR 0602) is not part of this record. The server gets the address of the page as a setting.
 - The rule that no migration runs while a recording runs (ADR 0005) is enforced at the start of the server (ADR 0608).
-- The requests to the Egress service were tested with their bodies and with the answers that step 0 stored. They were not run against a recorder by the server code.
+- The requests to the Egress service are tested with their bodies and with the answers that step 0 stored. The server code ran them against the recorder in the recording test of the deployment (ADR 0910): the five calls, a recorder that was killed, and a call that everybody left.
+- When the media server closes the room of a call in the second in which the server ends that call, the jobs have no participant before their stop is sent. They are declared lost, get their stop, and become `ended` when the recorder reports their files. The note of a failure that the declaration wrote is deleted with its line in the same run of the controller, some milliseconds later; a client that reads the text chat in between shows the line and removes it. The deployment keeps the room longer than the server keeps the call, so that the two do not meet (ADR 0020).
+- A server that stops between a declaration and the answer to its stop leaves the stop owed in the record. The next process sends the stop, holds the recording for it, and asks the recorder about the job after it: the file result of a recorder that lives replaces the declaration. A stop that the first process had sent, and whose answer it did not store, is sent a second time; the recorder refuses a stop for a job that has ended, and that answer counts as delivered.
+- A stop that follows a declaration and has no answer in its time limit, although the recorder lives, ends the recording with the failed segment: a stop without an answer counts as not delivered (ADR 0601). A lost recorder gives the same answer, so a repetition of that stop would keep every recording of a lost recorder active for the time of the repetitions. The recovery of the files on disk finds the file of such a job (ADR 0606).
+- The last questions about lost jobs have no time limit together (above). A recording with many lost jobs and a recorder that does not answer keeps its place among the recordings at one time for 5 seconds per 8 jobs.

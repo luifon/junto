@@ -1,0 +1,28 @@
+#!/bin/bash
+# Sets the owner and the mode of the directories of the volumes, before the other containers
+# start (ADR 0015). It runs as root without a network and changes the named directories only,
+# never what is inside them.
+#
+#   junto-volumes <directory>:<uid>:<gid>:<mode> ...
+set -eu
+if [ "$#" -eq 0 ]; then
+    echo "usage: $0 <directory>:<uid>:<gid>:<mode> ..." >&2
+    exit 2
+fi
+for entry in "$@"; do
+    IFS=: read -r directory uid gid mode rest <<<"$entry"
+    if [ -n "${rest:-}" ] || [ -z "${mode:-}" ]; then
+        echo "junto-volumes: \"$entry\" is not <directory>:<uid>:<gid>:<mode>" >&2
+        exit 2
+    fi
+    case "$directory" in
+        /*) ;;
+        *) echo "junto-volumes: \"$directory\" is not an absolute path" >&2; exit 2 ;;
+    esac
+    if [ -L "$directory" ] || [ ! -d "$directory" ]; then
+        echo "junto-volumes: $directory is not a directory" >&2
+        exit 1
+    fi
+    chown -h "$uid:$gid" "$directory"
+    chmod "$mode" "$directory"
+done

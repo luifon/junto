@@ -314,6 +314,11 @@ impl Work {
         self.retries.retain(|(part, _, _)| !of(part));
     }
 
+    /// The channels whose pin list a reader has open, as places.
+    pub(super) fn wanted_pins(&self) -> Vec<PlaceId> {
+        self.pins.keys().copied().map(PlaceId::Channel).collect()
+    }
+
     /// The next moment at which a read position, a retry or a search is due, of the
     /// moments after the last step. What was due at that step was started in it, or waits
     /// for the answer to a request, and that answer wakes the task. A moment that has
@@ -398,7 +403,7 @@ impl Client {
             Part::Recording(recording_id) | Part::TranscriptLines(recording_id) => {
                 self.recordings.wants(recording_id)
             }
-            Part::Members(_) | Part::OwnCall | Part::ChannelCall(_) => false,
+            Part::Members(_) | Part::OwnCall | Part::Admin(_) => false,
         }
     }
 
@@ -844,7 +849,7 @@ impl Client {
         let mut pins: Vec<ChannelId> = self.messages.pins.keys().copied().collect();
         let mut unpinned = Vec::new();
         pins.retain(|channel_id| {
-            let held = model.channel(*channel_id).is_some();
+            let held = model.readable_channel(*channel_id).is_some();
             if held {
                 model.open_pins(*channel_id);
             } else {
@@ -993,7 +998,10 @@ impl Client {
             | Command::ReleaseMembers(_)
             | Command::OpenRecording { .. }
             | Command::ReleaseRecording(_)
-            | Command::MoreTranscriptLines(_) => {}
+            | Command::MoreTranscriptLines(_)
+            | Command::OpenAdmin { .. }
+            | Command::ReleaseAdmin(_)
+            | Command::ReadAdminAgain(_) => {}
         }
     }
 
@@ -1004,7 +1012,7 @@ impl Client {
         }
         let ready = match &mut self.model {
             Some(model) if !self.stale => {
-                if model.channel(channel_id).is_none() {
+                if model.readable_channel(channel_id).is_none() {
                     let _ = reply.send(Err(LoadError::NotInState));
                     return;
                 }

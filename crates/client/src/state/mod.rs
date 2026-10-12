@@ -5,6 +5,7 @@
 //! event stream of each server, and tells the window to draw again. The window reads plain
 //! data through [`AppState::view`] and calls the methods here for what a person does.
 
+pub mod admin;
 pub mod feed;
 mod messages;
 pub mod notices;
@@ -276,6 +277,8 @@ pub struct AppState {
     selection: Selection,
     known: Known,
     pending: Pending,
+    /// What the administration holds: the open page and its requests (ADR 0761).
+    admin: admin::AdminState,
     /// What the window showed after the last change. Side effects follow a change of it.
     shown: Shown,
     /// The accounts whose name was asked for from their profile route.
@@ -539,6 +542,7 @@ impl AppState {
             selection: Selection::default(),
             known,
             pending: Pending::default(),
+            admin: admin::AdminState::default(),
             shown: Shown::default(),
             asked_names: HashMap::new(),
             members: None,
@@ -598,6 +602,10 @@ impl AppState {
 
     pub fn is_call_detached(&self) -> bool {
         self.call_window.is_some()
+    }
+
+    pub(crate) fn call_action(&self) -> Option<CallAction> {
+        self.known.media.calls.call.as_ref().map(CallAction::of)
     }
 
     pub fn calls(&self) -> &Calls {
@@ -733,7 +741,7 @@ impl AppState {
 
     /// The server and the voice channel of the call of this device.
     fn call_channel(&self) -> Option<(ServerHandle, ChannelId)> {
-        let target = self.known.media.calls.call.as_ref()?.target;
+        let target = actionable_call(&self.known.media.calls, &self.calls.view())?;
         let channel_id = target.place.channel_id()?;
         Some((self.client.server(target.server_id)?, channel_id))
     }
@@ -1813,6 +1821,12 @@ impl AppState {
         self.drop_lost_search_filter(&snapshots, cx);
         self.shown = shown;
         self.ask_missing_names(&view, cx);
+        let archived = shown.server.zip(
+            view.workspace()
+                .filter(|workspace| workspace.archived.is_some())
+                .map(|workspace| workspace.id),
+        );
+        self.follow_admin(archived, cx);
         self.follow_places(shown, cx);
         self.follow_recordings(shown, cx);
         self.follow_jump(shown);
@@ -2243,6 +2257,45 @@ impl AppState {
         );
         cx.notify();
     }
+}
+
+#[derive(Clone)]
+pub(crate) struct CallAction {
+    target: CallTarget,
+    identity: String,
+}
+
+impl CallAction {
+    fn of(call: &junto_media::calls::ActiveCall) -> Self {
+        Self {
+            target: call.target,
+            identity: call.identity.clone(),
+        }
+    }
+
+    pub(crate) fn permits(&self, current: &junto_media::calls::CallsView) -> bool {
+        current.call.as_ref().is_some_and(|call| {
+            call.phase == junto_media::calls::Phase::Connected
+                && call.target == self.target
+                && call.identity == self.identity
+        })
+    }
+}
+
+fn actionable_call(
+    shown: &junto_media::calls::CallsView,
+    current: &junto_media::calls::CallsView,
+) -> Option<CallTarget> {
+    let shown = shown.call.as_ref()?;
+    current
+        .call
+        .as_ref()
+        .filter(|call| {
+            call.phase == junto_media::calls::Phase::Connected
+                && call.target == shown.target
+                && call.identity == shown.identity
+        })
+        .map(|call| call.target)
 }
 
 pub mod direct;

@@ -6,7 +6,9 @@ It needs no microphone, camera or screen. It does not use the SDK's platform
 audio mode, so it opens no audio device and plays no sound.
 
 It was written for the recorder spike (`../recorder`) and is meant to be reused
-for the capacity tests. It is a test tool, not product code.
+for the capacity tests. The second tier of the call tests of the server and the
+recording test of the deployment (`deploy/tests/recording.sh`) run it. It is a
+test tool, not product code.
 
 ## Build
 
@@ -60,6 +62,14 @@ Tracks:
 | Camera | `camera` | Colour bars, a moving white line, the label `CAM <label>` and a frame counter | `--camera`, `--camera-size` (default 640x360), `--camera-fps` (default 15) |
 | Screen share | `screen_share` | One background colour with a grid, a moving square, the label `SCREEN <label>` and a frame counter | `--screen`, `--screen-size` (default 1280x720), `--screen-fps` (default 5), `--screen-color RRGGBB` |
 | Share audio | `screen_share_audio` | Sine tone, sent at 128 kbit/s without DTX and without redundancy | `--screen-audio-hz` (needs `--screen`) |
+
+Sound from a file: `--mic-file <file.wav>` and `--screen-audio-file <file.wav>`
+(needs `--screen`) publish a WAV file with 16-bit PCM and one channel, at any
+sample rate, in place of the tone. With `--play-on-stdin` a track carries its
+tone (the share audio: silence, without `--screen-audio-hz`) until the line
+`play` arrives on standard input; then every file starts, and after a file its
+track is silent. Without that option a file starts with its track. The output
+has a `file_started` line with the length of the file and a `file_ended` line.
 
 Other options: `--level` (tone peak, 0 to 1, default 0.25, which is -12 dBFS),
 `--label` (default: the identity), `--simulcast` (off by default). Video is
@@ -134,7 +144,7 @@ line lists the reason under `failures`.
 | `src/session.rs` | Token creation and connection. |
 | `src/publish.rs` | Publishing and the timed actions. |
 | `src/subscribe.rs` | Subscriber mode and expectations. |
-| `src/tone.rs` | Tone generator, time marker, tone detector (Goertzel sweep). |
+| `src/tone.rs` | Tone generator, WAV reader, time marker, tone detector (Goertzel sweep). |
 | `src/pattern.rs` | Video patterns and the 5x7 font. |
 | `src/events.rs` | JSON output lines. |
 

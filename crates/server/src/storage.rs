@@ -78,11 +78,93 @@ impl Disk for FakeDisk {
     }
 }
 
+/// The disk of one directory of the server, whose free space the storage guard reads.
+pub struct Space {
+    disk: std::sync::Mutex<Option<std::sync::Arc<dyn Disk>>>,
+    low: std::sync::atomic::AtomicBool,
+}
+
+impl Space {
+    /// The file system of `directory`. Without a directory, no space is read.
+    pub fn of(directory: Option<PathBuf>) -> Self {
+        let disk = directory.map(|directory| {
+            let disk: std::sync::Arc<dyn Disk> = std::sync::Arc::new(Directory::new(directory));
+            disk
+        });
+        Self {
+            disk: std::sync::Mutex::new(disk),
+            low: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Replaces the disk. Only tests do this, so that a test states the free space and
+    /// changes no limit (ADR 0904).
+    pub fn use_disk(&self, disk: std::sync::Arc<dyn Disk>) {
+        *self
+            .disk
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(disk);
+    }
+
+    /// The free bytes. Absent without a directory and when the space cannot be read.
+    pub fn free_bytes(&self) -> Option<u64> {
+        let disk = self
+            .disk
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()?;
+        match disk.free_bytes() {
+            Ok(free) => Some(free),
+            Err(error) => {
+                tracing::warn!(%error, "the free disk space of a directory cannot be read");
+                None
+            }
+        }
+    }
+}
+
+impl Space {
+    /// Whether the free space of the directory is at or below `reserve`. A change is logged,
+    /// which is the warning for the administrators (ADR 0006); `what` names the directory in
+    /// the log record. Absent without a directory and when the space cannot be read.
+    pub fn at_reserve(&self, what: &'static str, reserve: u64) -> Option<bool> {
+        let low = at_reserve(self.free_bytes()?, reserve);
+        if self.low.swap(low, Ordering::SeqCst) != low {
+            if low {
+                tracing::warn!(
+                    reserve,
+                    directory = what,
+                    "the free disk space reached the reserve: the server refuses new files \
+                     in this directory"
+                );
+            } else {
+                tracing::info!(
+                    directory = what,
+                    "the free disk space is above the reserve again"
+                );
+            }
+        }
+        Some(low)
+    }
+}
+
+/// The state of the storage guard over several directories: low when one of them is at
+/// its reserve, not low when none is and one could be read, and absent when none could be
+/// read.
+pub fn any_at_reserve(spaces: &[Option<bool>]) -> Option<bool> {
+    spaces
+        .iter()
+        .flatten()
+        .copied()
+        .reduce(|low, other| low || other)
+}
+
 /// What reserves disk space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Recording,
     Attachment,
+    Export,
 }
 
 impl Kind {
@@ -90,6 +172,7 @@ impl Kind {
         match self {
             Self::Recording => "recording",
             Self::Attachment => "attachment",
+            Self::Export => "export",
         }
     }
 }
@@ -141,6 +224,40 @@ pub async fn reserve(
     .bind(now)
     .execute(connection)
     .await?;
+    Ok(())
+}
+
+/// Raises the reservation of `subject` to `total` bytes, of which its files do not yet
+/// hold `pending`. The free space must hold the reserve of the server, every other
+/// reservation and the pending bytes.
+pub async fn reserve_more(
+    connection: &mut PgConnection,
+    subject: Uuid,
+    total: u64,
+    pending: u64,
+    free: Option<u64>,
+    reserve: u64,
+) -> ApiResult<()> {
+    let free = free.ok_or_else(low)?;
+    let others: i64 = sqlx::query_scalar(
+        "select coalesce(sum(bytes), 0)::bigint from storage_reservations
+         where subject_id <> $1",
+    )
+    .bind(subject)
+    .fetch_one(&mut *connection)
+    .await?;
+    let needed = u128::from(reserve)
+        + u128::from(u64::try_from(others).unwrap_or(u64::MAX))
+        + u128::from(pending);
+    if u128::from(free) < needed {
+        return Err(low());
+    }
+    let stored = i64::try_from(total).map_err(|error| ApiError::internal(&error))?;
+    sqlx::query("update storage_reservations set bytes = $2 where subject_id = $1")
+        .bind(subject)
+        .bind(stored)
+        .execute(connection)
+        .await?;
     Ok(())
 }
 

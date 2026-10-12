@@ -129,12 +129,15 @@ pub async fn remove_account(
         }
 
         set_status(connection, now, account_id, AccountStatus::Removed).await?;
+        store::contact_changed(connection, now, account_id).await?;
         let sessions = Sessions::OfAccount(account_id);
         store::record_ended(connection, &app.calls, now, sessions, SessionEnd::Removed).await?;
         sqlx::query("delete from devices where account_id = $1")
             .bind(account_id)
             .execute(&mut *connection)
             .await?;
+        crate::tokens::end_all_of(connection, now, account_id).await?;
+        crate::exports::account_ended(connection, now, account_id).await?;
         let left: Vec<WorkspaceId> = sqlx::query_scalar(
             "delete from workspace_members where account_id = $1 returning workspace_id",
         )
@@ -200,7 +203,9 @@ pub async fn ban_account(
         }
 
         set_status(connection, now, account_id, AccountStatus::Banned).await?;
+        store::contact_changed(connection, now, account_id).await?;
         store::end_sessions(connection, &app.calls, now, account_id, SessionEnd::Banned).await?;
+        crate::exports::account_ended(connection, now, account_id).await?;
         let cancelled_invite_ids: Vec<InviteId> = sqlx::query_scalar(
             "update invites set revoked_at = $2, revocation = 'creator_banned'
              where created_by = $1 and revoked_at is null
@@ -256,6 +261,7 @@ pub async fn unban_account(
             return Err(ApiError::conflict("the account is not banned"));
         }
         set_status(connection, now, account_id, AccountStatus::Active).await?;
+        store::contact_changed(connection, now, account_id).await?;
         audit::record(
             connection,
             now,

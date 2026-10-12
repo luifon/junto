@@ -136,6 +136,9 @@ impl Shell {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
+        if !room.ready {
+            return vec![SectionLabel::new(text::CALL_ENTERING_HELP).into_any_element()];
+        }
         let colors = theme.colors;
         let (meeting_on, meeting_held, meeting_help) = meeting_switch(room);
         let locked = room.locked;
@@ -154,7 +157,7 @@ impl Shell {
                 })
                 .disabled(meeting_held.is_some())
                 .selector("meeting-toggle")
-                .on_click(cx.listener(move |this, _, _, cx| {
+                .on_click(self.call_listener(cx, move |this, _, _, cx| {
                     this.state
                         .update(cx, |state, cx| state.set_meeting(!meeting_on, cx));
                 }))
@@ -180,7 +183,7 @@ impl Shell {
                 })
                 .disabled(!room.allowed.lock)
                 .selector("lock-toggle")
-                .on_click(cx.listener(move |this, _, _, cx| {
+                .on_click(self.call_listener(cx, move |this, _, _, cx| {
                     this.state
                         .update(cx, |state, cx| state.set_locked(!locked, cx));
                 }))
@@ -281,7 +284,7 @@ impl Shell {
                                     .accessible_label(text::allow_help(&name))
                                     .selector("meeting-allow")
                                     .h(u(28.0))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                    .on_click(self.call_listener(cx, move |this, _, _, cx| {
                                         this.state.update(cx, |state, cx| {
                                             state.allow_to_speak(account_id, cx);
                                         });
@@ -381,6 +384,9 @@ impl Shell {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
+        if !room.ready {
+            return vec![SectionLabel::new(text::CALL_ENTERING_HELP).into_any_element()];
+        }
         let colors = theme.colors;
         let (meeting_on, meeting_held, _) = meeting_switch(room);
         let locked = room.locked;
@@ -388,8 +394,8 @@ impl Shell {
         let manage = room.allowed.manage;
         let (limit, inside) = (room.user_limit, room.inside);
         let step = |up: bool| stepped_limit(limit, inside, up).filter(|_| manage);
-        let lower = step(false).map(|next| Self::limit_listener(next, cx));
-        let raise = step(true).map(|next| Self::limit_listener(next, cx));
+        let lower = step(false).map(|next| self.limit_listener(next, cx));
+        let raise = step(true).map(|next| self.limit_listener(next, cx));
         let mut rows = vec![
             SectionLabel::new(text::room_section(&room.name)).into_any_element(),
             option_row(
@@ -403,7 +409,7 @@ impl Shell {
                 )
                 .held(meeting_held)
                 .selector("room-meeting")
-                .on_click(cx.listener(move |this, _, _, cx| {
+                .on_click(self.call_listener(cx, move |this, _, _, cx| {
                     this.state
                         .update(cx, |state, cx| state.set_meeting(!meeting_on, cx));
                 }))
@@ -417,7 +423,7 @@ impl Shell {
                 Toggle::new("room-lock", text::LOCK_ROOM, locked, (text::ON, text::OFF))
                     .held((!room.allowed.lock).then_some(text::LOCK_NO_PERMISSION))
                     .selector("room-lock")
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                    .on_click(self.call_listener(cx, move |this, _, _, cx| {
                         this.state
                             .update(cx, |state, cx| state.set_locked(!locked, cx));
                     }))
@@ -445,7 +451,11 @@ impl Shell {
             .into_any_element(),
             option_row(
                 text::HIDE_OCCUPANTS,
-                text::HIDE_OCCUPANTS_HELP,
+                if room.hide_waits_for_next_call {
+                    text::HIDE_OCCUPANTS_NEXT_CALL
+                } else {
+                    text::HIDE_OCCUPANTS_HELP
+                },
                 Toggle::new(
                     "room-hide",
                     text::HIDE_OCCUPANTS,
@@ -454,7 +464,7 @@ impl Shell {
                 )
                 .held((!manage).then_some(text::MANAGE_NO_PERMISSION))
                 .selector("room-hide")
-                .on_click(cx.listener(move |this, _, _, cx| {
+                .on_click(self.call_listener(cx, move |this, _, _, cx| {
                     this.state.update(cx, |state, cx| {
                         state.update_room(
                             UpdateCallSettings {
@@ -490,10 +500,11 @@ impl Shell {
 
     /// The click that sets the user limit of the room of the call.
     fn limit_listener(
+        &self,
         next: Option<u32>,
         cx: &mut Context<Self>,
     ) -> impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static {
-        cx.listener(move |this, _, _, cx| {
+        self.call_listener(cx, move |this, _, _, cx| {
             this.state.update(cx, |state, cx| {
                 state.update_room(
                     UpdateCallSettings {
@@ -537,7 +548,9 @@ impl Shell {
         let colors = theme.colors;
         let picker = self
             .invite_open
-            .then(|| self.render_member_picker(panel, theme, cx));
+            .then_some(panel.room.ready)
+            .filter(|ready| *ready)
+            .map(|_| self.render_member_picker(panel, theme, cx));
         div()
             .id("invite-area")
             .relative()
@@ -555,6 +568,7 @@ impl Shell {
                     .icon(Icon::Invite)
                     .label(text::INVITE_A_MEMBER)
                     .selector("invite-open")
+                    .disabled(!panel.room.ready)
                     .w_full()
                     .h(u(32.0))
                     .on_click(cx.listener(|this, _, window, cx| {
@@ -610,7 +624,7 @@ impl Shell {
                                         .kind(ButtonKind::Ghost)
                                         .icon(Icon::X)
                                         .tooltip(text::WITHDRAW_INVITATION)
-                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                        .on_click(self.call_listener(cx, move |this, _, _, cx| {
                                             this.state.update(cx, |state, cx| {
                                                 state.withdraw_invitation(invitation_id, cx);
                                             });
@@ -625,7 +639,7 @@ impl Shell {
                             Button::new(("invite", index))
                                 .label(text::INVITE)
                                 .h(u(26.0))
-                                .on_click(cx.listener(move |this, _, _, cx| {
+                                .on_click(self.call_listener(cx, move |this, _, _, cx| {
                                     this.state
                                         .update(cx, |state, cx| state.invite(account_id, cx));
                                 })),
@@ -1017,7 +1031,7 @@ impl Shell {
                         .icon(Icon::Invite)
                         .detail(text::invite_prompt(&name, channel))
                         .selector("menu-invite")
-                        .on_click(cx.listener(move |this, _, window, cx| {
+                        .on_click(self.call_listener(cx, move |this, _, window, cx| {
                             this.state
                                 .update(cx, |state, cx| state.invite(account_id, cx));
                             this.close_layer(window, cx);
@@ -1272,14 +1286,14 @@ impl Shell {
                         .kind(ButtonKind::Primary)
                         .label(text::LET_IN)
                         .selector("entry-accept")
-                        .on_click(cx.listener(move |this, _, _, cx| {
+                        .on_click(self.call_listener(cx, move |this, _, _, cx| {
                             this.state
                                 .update(cx, |state, cx| state.answer_entry(request_id, true, cx));
                         })),
                     Button::new(("entry-deny", index))
                         .label(text::DENY)
                         .selector("entry-deny")
-                        .on_click(cx.listener(move |this, _, _, cx| {
+                        .on_click(self.call_listener(cx, move |this, _, _, cx| {
                             this.state.update(cx, |state, cx| {
                                 state.answer_entry(request_id, false, cx);
                             });

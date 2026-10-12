@@ -213,6 +213,10 @@ async fn a_leave_does_not_end_the_call_that_another_device_of_the_account_took()
     let named: String = url::form_urlencoded::byte_serialize(seat.as_bytes()).collect();
     let leave = format!("{OWN_CALL}?identity={named}");
     proxy.hold(&leave);
+    // Admission can refresh the own call in the background (ADR 0517). Hold all new
+    // reads: leaving must send its identity-scoped DELETE without waiting for one.
+    // Counting requests alone would confuse that refresh with a read by the leave.
+    proxy.hold(OWN_CALL);
     let reads = proxy.seen(OWN_CALL).len();
     let leaving = phone.calls.leave();
     phone
@@ -227,7 +231,14 @@ async fn a_leave_does_not_end_the_call_that_another_device_of_the_account_took()
     assert_eq!(proxy.seen(&leave)[0].method, "DELETE");
     // The phone does not read the place first: between a read and the request another
     // device could take the place.
-    assert_eq!(proxy.seen(OWN_CALL).len(), reads);
+    assert!(
+        proxy
+            .seen(OWN_CALL)
+            .iter()
+            .skip(reads)
+            .all(|request| request.answer.is_none()),
+        "no read made after leaving was requested has completed"
+    );
 
     // Ben enters the call on the laptop before the server hears from the phone.
     laptop.enter(room.target).await;

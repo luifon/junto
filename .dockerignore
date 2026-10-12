@@ -1,0 +1,19 @@
+# The build context of deploy/images/server/Dockerfile is the repository root. Everything is
+# left out, and the build inputs are named. A local settings file never enters a context.
+*
+!Cargo.toml
+!Cargo.lock
+!crates/
+!recording-layout/package.json
+!recording-layout/package-lock.json
+!recording-layout/build.mjs
+!recording-layout/index.html
+!recording-layout/layout.js
+!recording-layout/messages.js
+!recording-layout/theme.css
+!deploy/images/server/
+**/target/
+**/node_modules/
+**/.env
+**/.env.*
+**/*.local

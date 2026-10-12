@@ -19,6 +19,7 @@ Join, and one call per client:
 
 - A join asks the server for the place first. A refusal leaves a call that the device is in as it is, and is told with the code of the server.
 - When the place is given, the earlier call ends, and then the media connection of the new call starts. A call on another server is left with a request to that server. A call on the same server was ended by that server when it gave the new place (ADR 0510), so no request is sent for it.
+- A connected media transport is shown as `entering` until the server lists the current place identity among the participants. The calls object tracks this admission separately from the engine connection. A renewed token for the same identity preserves admission; a replacement identity needs its own listing.
 - One join runs at a time. A second one is refused as busy.
 - A leave ends a join that waits for the answer of its server. Nothing is shown as asked for from then on, and the join returns as cancelled. When the server gives the place afterwards, the client gives it up with a leave request and starts no media connection.
 - The client joins on the selected server, whose event stream is live (ADR 0720).
@@ -55,6 +56,8 @@ Blocks:
 - A call starts with the blocks that the server states in its answer to the join, and to a request for a new token (ADR 0510). From the moment the state of the server lists the person, the blocks are the ones of the state.
 - A microphone block closes the microphone and withdraws its track; without the block the microphone returns to the person's own setting. The permission of the participant in the room closes the microphone too (ADR 0733).
 - A sound block turns the sound off; the person cannot turn it on.
+- In a call that hides who is inside, the answer of the server states no block for a place whose device the server has not seen in the room, and its join token allows pictures only (ADR 0517). The calls keep the sound off from the start of the media connection until the state of the server lists the person with the identity of this place, so a sound block holds from the first moment as in every other call. A listing with the place of another device of the account does not end the wait. While the event stream is not live, the state lists nothing, and the sound stays off. The engine opens the microphone when the media server reports the changed permission (ADR 0733), which the admission check sets when it has seen the device.
+- An answer to a request for a new token that tells no blocks, for the same reason, leaves the blocks that the call holds.
 
 When a microphone is sent (ADR 0507):
 
@@ -81,6 +84,7 @@ Sound settings:
 - While the event stream of a server is interrupted, a place that the server ended is not noticed, and no new token is asked for. A lost media connection returns when the stream is live again and the server still holds the place.
 - A request for a place waits while an earlier one has no answer. A server that does not answer holds the next request for at most the time limit of one request, 40 seconds.
 - A person with a sound block who enters the call again hears nothing at any moment, and a device that leaves late ends no place of another device.
+- A person who enters a call that hides who is inside hears the call and is heard from the moment at which the server lists the person, which is after the media connection is made.
 - The speaking mark of the person follows what is sent: a muted microphone and a released key give none.
 - Push-to-talk does not work while another application has the focus (ADR 0507).
 - The share of the device and the shares of the other people use the same object (ADR 0737).

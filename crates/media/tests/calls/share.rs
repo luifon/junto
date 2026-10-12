@@ -410,27 +410,17 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
     assert_eq!(picture.frame.source.0 * 3, picture.frame.source.1 * 4);
     // The share is sent at the frame rate that its sharer chose, 30 pictures per second.
     // The defaults of the call library send a picture of 800 pixels at 5 per second: in
-    // three seconds 15 pictures arrive with them, at any load. A busy processor lowers
-    // the frame rate for a time (ADR 0737), so the count is taken again until it holds.
+    // three seconds 15 pictures arrive with them.
     let mut pictures = cal.calls.main_picture();
-    let started = tokio::time::Instant::now();
-    loop {
-        pictures.borrow_and_update();
-        let mut arrived = 0;
-        let counted = tokio::time::timeout(Duration::from_secs(3), async {
-            while pictures.changed().await.is_ok() {
-                arrived += 1;
-            }
-        });
-        let _ = counted.await;
-        if arrived >= 36 {
-            break;
+    pictures.borrow_and_update();
+    let mut arrived = 0;
+    let counted = tokio::time::timeout(Duration::from_secs(3), async {
+        while pictures.changed().await.is_ok() {
+            arrived += 1;
         }
-        assert!(
-            started.elapsed() < PATIENCE,
-            "after {PATIENCE:?} still {arrived} pictures in three seconds"
-        );
-    }
+    });
+    let _ = counted.await;
+    assert!(arrived >= 36, "{arrived} pictures in three seconds");
     cal.until_heard_tone(PLAYER.0).await;
     cal.until_silent_tone(SYSTEM.0).await;
 

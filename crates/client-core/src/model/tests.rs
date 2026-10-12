@@ -15,7 +15,7 @@ use junto_protocol::recording::{Recording, RecordingState, RecordingStop, Record
 use junto_protocol::roles::WorkspaceRole;
 use junto_protocol::snapshot::{Snapshot, WorkspaceState};
 use junto_protocol::structure::{Category, Channel, ChannelKind, Workspace, WorkspaceMember};
-use junto_protocol::transcript::{TranscriptSpeaker, TranscriptState};
+use junto_protocol::transcript::TranscriptState;
 use junto_protocol::{ServerPermission, WorkspacePermission};
 use time::OffsetDateTime;
 
@@ -104,6 +104,9 @@ pub(crate) fn scene() -> Scene {
         own_call: None,
         direct_calls: Vec::new(),
         call_invitations: Vec::new(),
+        sent_call_invitations: Vec::new(),
+        call_moves: Vec::new(),
+        entry_requests: Vec::new(),
         direct_mutes: Vec::new(),
         messages: Vec::new(),
         threads: Vec::new(),
@@ -211,6 +214,7 @@ fn a_snapshot_gives_the_structure_the_calls_and_the_permissions_of_the_roles() {
                 started_at: Some(time()),
                 lock: None,
                 meeting: None,
+                hides_occupants: false,
                 participants: vec![participant(other)],
                 recording: None,
             }),
@@ -656,36 +660,266 @@ fn a_voice_channel_that_hides_who_is_inside_shows_only_that_it_is_in_use() {
 }
 
 #[test]
-fn a_change_of_the_hide_setting_drops_or_asks_for_the_people_inside() {
+fn a_call_keeps_the_hide_setting_of_its_start_and_a_change_applies_to_the_next_call() {
     let scene = scene();
     let mut model = scene.model();
     let (call_id, place) = (CallId::generate(), scene.place(scene.daily));
+    let first = participant(AccountId::generate());
     model.apply(&started(call_id, place));
-    model.apply(&joined(call_id, place, &participant(AccountId::generate())));
+    model.apply(&joined(call_id, place, &first));
     let mut daily = model.channel(scene.daily).unwrap().channel.clone();
 
+    // The channel hides who is inside from now on. The call that runs does not: the
+    // server still tells who is in it (ADR 0517).
     daily.hides_occupants = true;
     let follow = model.apply(&Event::ChannelUpdated {
         channel: daily.clone(),
     });
     assert_eq!(follow, Follow::default());
+    let second = participant(AccountId::generate());
+    model.apply(&joined(call_id, place, &second));
+    let held = model.channel(scene.daily).unwrap();
+    assert!(held.channel.hides_occupants && held.in_use);
+    let call = held.call.as_ref().unwrap();
+    assert!(!call.hides_occupants);
+    assert_eq!(call.participants.len(), 2);
+
+    // The account enters and leaves that call: it keeps what an account outside is told.
+    model.apply(&Event::OwnCallChanged {
+        call: Some(scene.own_call(call_id, scene.daily)),
+        left: None,
+    });
+    model.apply(&Event::OwnCallChanged {
+        call: None,
+        left: Some(LeaveReason::Left),
+    });
+    assert_eq!(model.call_at(&place).unwrap().participants.len(), 2);
+
+    // The next call of the channel hides who is inside.
+    model.apply(&Event::CallEnded { call_id, place });
+    let next = CallId::generate();
+    model.apply(&started(next, place));
+    model.apply(&joined(next, place, &first));
     let held = model.channel(scene.daily).unwrap();
     assert!(held.in_use && held.call.is_none());
 
+    // The setting is turned off during that call: nothing of the call is shown or asked
+    // for, and the call after it is shown.
     daily.hides_occupants = false;
-    let follow = model.apply(&Event::ChannelUpdated {
-        channel: daily.clone(),
+    let follow = model.apply(&Event::ChannelUpdated { channel: daily });
+    assert_eq!(follow, Follow::default());
+    let held = model.channel(scene.daily).unwrap();
+    assert!(held.in_use && held.call.is_none());
+    model.apply(&Event::CallEnded {
+        call_id: next,
+        place,
     });
-    assert_eq!(follow.load, [Part::ChannelCall(scene.daily)]);
-    assert!(!follow.reload);
+    let last = CallId::generate();
+    model.apply(&started(last, place));
+    model.apply(&joined(last, place, &first));
+    let call = model.call_at(&place).unwrap();
+    assert!(!call.hides_occupants);
+    assert_eq!(call.participants.len(), 1);
+}
 
-    // A voice channel that is not in use has nobody to ask for.
-    let mut hidden = model.channel(scene.hidden).unwrap().channel.clone();
-    hidden.hides_occupants = false;
+/// ADR 0517: the server gives an account with a place nothing of a call that hides who is
+/// inside, and no request to enter of any call, until it has seen the device of the
+/// account in the room. The event of the own entry is the first one that the account
+/// receives, and the account reads its call then.
+#[test]
+fn the_account_reads_its_call_when_the_server_has_seen_its_device_in_the_room() {
+    let scene = scene();
+    let mut model = scene.model();
+    let (call_id, place) = (CallId::generate(), scene.place(scene.hidden));
+    let own = scene.own_call(call_id, scene.hidden);
+    let follow = model.apply(&Event::OwnCallChanged {
+        call: Some(own.clone()),
+        left: None,
+    });
+    assert_eq!(follow.load, [Part::OwnCall]);
+    let answer = |participants: Vec<CallParticipant>| OwnCallState {
+        own: own.clone(),
+        call: Call {
+            id: call_id,
+            place,
+            started_at: Some(time()),
+            lock: None,
+            meeting: None,
+            hides_occupants: true,
+            participants,
+            recording: None,
+        },
+        entry_requests: Vec::new(),
+    };
+    model.set_own_call(Some(answer(Vec::new())));
+    let call = model.call_at(&place).unwrap();
+    assert!(call.hides_occupants && call.participants.is_empty());
+    assert!(model.channel(scene.hidden).unwrap().in_use);
+
+    let me = participant(scene.account_id);
+    let other = participant(AccountId::generate());
+    let follow = model.apply(&joined(call_id, place, &me));
+    assert_eq!(follow.load, [Part::OwnCall]);
+    assert!(!follow.reload);
+    // The entry of another person and a change of the own state ask for nothing.
     assert_eq!(
-        model.apply(&Event::ChannelUpdated { channel: hidden }),
+        model.apply(&joined(call_id, place, &other)),
         Follow::default()
     );
+    let updated = Event::CallParticipantUpdated {
+        call_id,
+        place,
+        participant: CallParticipant {
+            muted: true,
+            ..me.clone()
+        },
+    };
+    assert_eq!(model.apply(&updated), Follow::default());
+    model.set_own_call(Some(answer(vec![me.clone(), other])));
+    assert_eq!(model.call_at(&place).unwrap().participants.len(), 2);
+
+    // The account leaves: it keeps nothing of the call, also after the channel stopped
+    // hiding who is inside, because the call keeps the setting of its start.
+    let mut shown = model.channel(scene.hidden).unwrap().channel.clone();
+    shown.hides_occupants = false;
+    model.apply(&Event::ChannelUpdated { channel: shown });
+    model.apply(&Event::OwnCallChanged {
+        call: None,
+        left: Some(LeaveReason::Left),
+    });
+    let hidden = model.channel(scene.hidden).unwrap();
+    assert!(hidden.in_use && hidden.call.is_none());
+
+    // The same event in a call that shows who is inside: the requests to enter are given
+    // to an account inside only.
+    let (call_id, place) = (CallId::generate(), scene.place(scene.daily));
+    model.apply(&Event::OwnCallChanged {
+        call: Some(scene.own_call(call_id, scene.daily)),
+        left: None,
+    });
+    assert_eq!(
+        model.apply(&joined(call_id, place, &me)).load,
+        [Part::OwnCall]
+    );
+    // An event that names the account in a call that is not its own asks for nothing.
+    let elsewhere = joined(CallId::generate(), scene.place(scene.daily), &me);
+    assert_eq!(model.apply(&elsewhere), Follow::default());
+}
+
+/// The events of a read that was on its way when the account left a call that hides who is
+/// inside, and the answer of that read, show nothing of the call.
+#[test]
+fn a_read_of_a_hidden_call_that_the_account_left_shows_nothing_of_it() {
+    let scene = scene();
+    let mut model = scene.model();
+    let (call_id, place) = (CallId::generate(), scene.place(scene.hidden));
+    let own = scene.own_call(call_id, scene.hidden);
+    let person = participant(AccountId::generate());
+    model.apply(&started(call_id, place));
+    model.apply(&Event::OwnCallChanged {
+        call: Some(own.clone()),
+        left: None,
+    });
+    let during = [
+        joined(call_id, place, &person),
+        Event::OwnCallChanged {
+            call: None,
+            left: Some(LeaveReason::Left),
+        },
+    ];
+    for event in &during {
+        model.apply(event);
+    }
+    model.set_own_call(Some(OwnCallState {
+        own,
+        call: Call {
+            id: call_id,
+            place,
+            started_at: Some(time()),
+            lock: None,
+            meeting: None,
+            hides_occupants: true,
+            participants: vec![person],
+            recording: None,
+        },
+        entry_requests: Vec::new(),
+    }));
+    model.replay(Part::OwnCall, &during);
+    let held = model.channel(scene.hidden).unwrap();
+    assert!(held.in_use && held.call.is_none());
+}
+
+/// The snapshot carries what waits for the account and what the account made: the moves,
+/// the invitations of both directions and its own requests to enter (ADR 0207).
+#[test]
+fn a_snapshot_gives_the_moves_the_sent_invitations_and_the_own_requests_to_enter() {
+    let mut scene = scene();
+    let (call_id, place) = (CallId::generate(), scene.place(scene.daily));
+    let other = AccountId::generate();
+    let invitation = |account_id, invited_by| CallInvitation {
+        id: CallInvitationId::generate(),
+        call_id,
+        place,
+        account_id,
+        invited_by,
+        created_at: time(),
+        expires_at: time(),
+    };
+    let (got, made) = (
+        invitation(scene.account_id, other),
+        invitation(other, scene.account_id),
+    );
+    let call_move = CallMove {
+        id: CallMoveId::generate(),
+        account_id: other,
+        from: place,
+        to: scene.place(scene.hidden),
+        moved_by: scene.account_id,
+        expires_at: time(),
+    };
+    let request = EntryRequest {
+        id: EntryRequestId::generate(),
+        call_id,
+        place,
+        account_id: scene.account_id,
+        created_at: time(),
+        expires_at: time(),
+    };
+    scene.snapshot.call_invitations = vec![got.clone()];
+    scene.snapshot.sent_call_invitations = vec![made.clone()];
+    scene.snapshot.call_moves = vec![call_move.clone()];
+    scene.snapshot.entry_requests = vec![request.clone()];
+    let mut model = scene.model();
+    assert_eq!(model.invitations, [got.clone(), made]);
+    assert_eq!(model.incoming_invitations().collect::<Vec<_>>(), [&got]);
+    assert_eq!(model.moves, [call_move]);
+    assert_eq!(model.own_entry_requests, std::slice::from_ref(&request));
+    assert!(model.entry_requests.is_empty());
+
+    // The answer ends the request on every device of the account.
+    model.apply(&Event::CallEntryAnswered {
+        request_id: request.id,
+        outcome: EntryOutcome::Denied,
+    });
+    assert!(model.own_entry_requests.is_empty());
+
+    // The event of a request reaches every device of the account that asked. The request
+    // is not one of people outside the call of the account.
+    let asked = Event::CallEntryRequested {
+        request: request.clone(),
+    };
+    model.apply(&asked);
+    model.apply(&asked);
+    assert_eq!(model.own_entry_requests, std::slice::from_ref(&request));
+    assert!(model.entry_requests.is_empty());
+    model.apply(&Event::CallEnded { call_id, place });
+    assert!(model.own_entry_requests.is_empty());
+    model.apply(&asked);
+    model.apply(&Event::ChannelDeleted {
+        workspace_id: scene.workspace_id,
+        channel_id: scene.daily,
+    });
+    assert!(model.own_entry_requests.is_empty());
 }
 
 #[test]
@@ -706,6 +940,7 @@ fn the_account_that_leaves_a_call_that_never_started_keeps_nothing_of_it() {
             started_at: None,
             lock: None,
             meeting: None,
+            hides_occupants: false,
             participants: Vec::new(),
             recording: None,
         },
@@ -760,6 +995,7 @@ fn the_answer_for_the_own_call_gives_the_people_and_the_requests_of_that_call_on
             started_at: Some(time()),
             lock: None,
             meeting: None,
+            hides_occupants: false,
             participants: vec![participant(scene.account_id)],
             recording: None,
         },
@@ -1027,20 +1263,25 @@ fn the_events_that_arrived_during_a_read_are_applied_to_its_part_after_the_answe
     without_members.set_members(scene.workspace_id, Loadable::Loading);
     assert_eq!(without_members, before_answer);
 
-    // While the call of the channel is read: the answer is older than the leave.
-    let answer = ChannelCall {
-        workspace_id: scene.workspace_id,
-        channel_id: scene.daily,
-        in_use: true,
-        call: Some(Call {
+    // While the call of the account is read: the answer is older than the leave.
+    let own = scene.own_call(call_id, scene.daily);
+    model.apply(&Event::OwnCallChanged {
+        call: Some(own.clone()),
+        left: None,
+    });
+    let answer = OwnCallState {
+        own,
+        call: Call {
             id: call_id,
             place,
             started_at: Some(time()),
             lock: None,
             meeting: None,
+            hides_occupants: false,
             participants: vec![speaker.clone()],
             recording: None,
-        }),
+        },
+        entry_requests: Vec::new(),
     };
     let late = participant(AccountId::generate());
     let during = [
@@ -1057,8 +1298,8 @@ fn the_events_that_arrived_during_a_read_are_applied_to_its_part_after_the_answe
             &participant(AccountId::generate()),
         ),
     ];
-    model.set_channel_call(answer);
-    model.replay(Part::ChannelCall(scene.daily), &during);
+    model.set_own_call(Some(answer));
+    model.replay(Part::OwnCall, &during);
     assert_eq!(model.call_at(&place).unwrap().participants, [late]);
     assert!(model.channel(scene.hidden).unwrap().call.is_none());
 }
@@ -1112,6 +1353,7 @@ fn direct_calls_and_muted_conversations_follow_their_events() {
             started_at: None,
             lock: None,
             meeting: None,
+            hides_occupants: false,
             participants: Vec::new(),
             recording: None,
         },
@@ -1139,41 +1381,6 @@ fn direct_calls_and_muted_conversations_follow_their_events() {
     assert_eq!(model.direct_mutes, [until]);
     model.apply(&Event::DirectMuteRemoved { account_id: other });
     assert!(model.direct_mutes.is_empty());
-}
-
-#[test]
-fn the_answer_for_the_call_of_a_channel_shows_nobody_when_the_channel_hides_again() {
-    let scene = scene();
-    let mut model = scene.model();
-    let (call_id, place) = (CallId::generate(), scene.place(scene.hidden));
-    let answer = ChannelCall {
-        workspace_id: scene.workspace_id,
-        channel_id: scene.hidden,
-        in_use: true,
-        call: Some(Call {
-            id: call_id,
-            place,
-            started_at: Some(time()),
-            lock: None,
-            meeting: None,
-            participants: vec![participant(AccountId::generate())],
-            recording: None,
-        }),
-    };
-    // The server made the answer while the channel showed who is inside. Before the
-    // answer arrived, the channel hid them again.
-    model.apply(&started(call_id, place));
-    model.set_channel_call(answer.clone());
-    let hidden = model.channel(scene.hidden).unwrap();
-    assert!(hidden.in_use && hidden.call.is_none());
-
-    // The account inside is shown the people.
-    model.apply(&Event::OwnCallChanged {
-        call: Some(scene.own_call(call_id, scene.hidden)),
-        left: None,
-    });
-    model.set_channel_call(answer);
-    assert_eq!(model.call_at(&place).unwrap().participants.len(), 1);
 }
 
 #[test]
@@ -1205,49 +1412,6 @@ fn the_people_of_a_call_are_in_the_order_of_the_server() {
             people[0].account_id
         ]
     );
-}
-
-#[test]
-fn the_events_of_a_read_do_not_show_the_people_of_a_channel_that_hides_again() {
-    let scene = scene();
-    let mut model = scene.model();
-    let (call_id, place) = (CallId::generate(), scene.place(scene.hidden));
-    let person = participant(AccountId::generate());
-    let mut shown = model.channel(scene.hidden).unwrap().channel.clone();
-    shown.hides_occupants = false;
-    let mut hidden = shown.clone();
-    hidden.hides_occupants = true;
-
-    // The channel stops hiding and its call is read. During the read a person joins, and
-    // then the channel hides again.
-    model.apply(&started(call_id, place));
-    let follow = model.apply(&Event::ChannelUpdated { channel: shown });
-    assert_eq!(follow.load, [Part::ChannelCall(scene.hidden)]);
-    let during = [
-        joined(call_id, place, &person),
-        Event::ChannelUpdated { channel: hidden },
-    ];
-    for event in &during {
-        model.apply(event);
-    }
-    assert!(model.channel(scene.hidden).unwrap().call.is_none());
-    model.set_channel_call(ChannelCall {
-        workspace_id: scene.workspace_id,
-        channel_id: scene.hidden,
-        in_use: true,
-        call: Some(Call {
-            id: call_id,
-            place,
-            started_at: Some(time()),
-            lock: None,
-            meeting: None,
-            participants: vec![person],
-            recording: None,
-        }),
-    });
-    model.replay(Part::ChannelCall(scene.hidden), &during);
-    let held = model.channel(scene.hidden).unwrap();
-    assert!(held.in_use && held.call.is_none());
 }
 
 fn recording(scene: &Scene, channel_id: ChannelId, call_id: CallId) -> Recording {
@@ -1418,6 +1582,7 @@ fn the_views_of_a_call_carry_its_recording_and_a_read_keeps_the_events_of_it() {
         started_at: Some(time()),
         lock: None,
         meeting: None,
+        hides_occupants: false,
         participants: vec![participant(scene.account_id)],
         recording,
     };
@@ -1440,8 +1605,10 @@ fn the_views_of_a_call_carry_its_recording_and_a_read_keeps_the_events_of_it() {
     // other one, whatever a server sends.
     let mut ended = record.clone();
     ended.state = RecordingState::Processing;
-    model.set_channel_call(shown(Some(ended.clone())));
-    assert_eq!(model.call_at(&place).unwrap().recording, None);
+    let mut later = scene.snapshot.clone();
+    later.workspaces[0].calls = vec![shown(Some(ended.clone()))];
+    let after = ServerModel::from_snapshot(later);
+    assert_eq!(after.call_at(&place).unwrap().recording, None);
 
     // The call of the account.
     model.apply(&Event::OwnCallChanged {
@@ -1458,15 +1625,17 @@ fn the_views_of_a_call_carry_its_recording_and_a_read_keeps_the_events_of_it() {
         Some(record.clone())
     );
 
-    // While the call of the channel is read: the answer is older than the end of the
+    // While the call of the account is read: the answer is older than the end of the
     // recording, and the event that was kept is applied after it.
     let during = [updated(&ended)];
-    assert!(Part::ChannelCall(scene.daily).concerns(&during[0], &model));
     assert!(Part::OwnCall.concerns(&during[0], &model));
-    assert!(!Part::ChannelCall(scene.hidden).concerns(&during[0], &model));
     assert!(!Part::Members(scene.workspace_id).concerns(&during[0], &model));
-    model.set_channel_call(shown(Some(record)));
-    model.replay(Part::ChannelCall(scene.daily), &during);
+    model.set_own_call(Some(OwnCallState {
+        own: scene.own_call(call_id, scene.daily),
+        call: call(Some(record)),
+        entry_requests: Vec::new(),
+    }));
+    model.replay(Part::OwnCall, &during);
     assert_eq!(model.call_at(&place).unwrap().recording, None);
 }
 
@@ -1491,8 +1660,6 @@ fn a_removed_recording_leaves_the_call_that_shows_it() {
     assert_eq!(model, before);
 
     let event = removed(record.id, scene.daily);
-    assert!(Part::ChannelCall(scene.daily).concerns(&event, &model));
-    assert!(!Part::ChannelCall(scene.hidden).concerns(&event, &model));
     assert!(!Part::OwnCall.concerns(&event, &model));
     assert_eq!(model.apply(&event), Follow::default());
     let call = model.call_at(&place).unwrap();
@@ -1524,21 +1691,12 @@ fn the_events_of_transcripts_and_of_the_glossary_change_nothing() {
             workspace_id: scene.workspace_id,
             channel_id: scene.daily,
             line: 3,
-            text: "corrected".to_owned(),
-            corrected_by: scene.account_id,
-            corrected_at: time(),
         },
         Event::TranscriptSpeakerRenamed {
             recording_id: record.id,
             workspace_id: scene.workspace_id,
             channel_id: scene.daily,
-            speaker: TranscriptSpeaker {
-                number: 1,
-                account_id: scene.account_id,
-                name: Some("Guest".to_owned()),
-                renamed_by: Some(scene.account_id),
-                renamed_at: Some(time()),
-            },
+            speaker: 1,
         },
         Event::GlossaryReplaced {
             workspace_id: scene.workspace_id,
@@ -1546,7 +1704,7 @@ fn the_events_of_transcripts_and_of_the_glossary_change_nothing() {
     ];
     for event in &events {
         assert_eq!(model.apply(event), Follow::default(), "{}", event.name());
-        assert!(!Part::ChannelCall(scene.daily).concerns(event, &model));
+        assert!(!Part::OwnCall.concerns(event, &model));
         assert!(!Part::Members(scene.workspace_id).concerns(event, &model));
     }
     assert_eq!(model, before);

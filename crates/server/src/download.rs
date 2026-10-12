@@ -7,11 +7,14 @@ use axum::http::header::{
 };
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
+use futures_util::FutureExt;
+use futures_util::future::BoxFuture;
 use junto_protocol::error::ErrorCode;
+use time::OffsetDateTime;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
-use tokio::sync::OwnedSemaphorePermit;
 
 use crate::error::ApiError;
+use crate::state::AppState;
 
 /// The bytes that the server reads of a file at one time.
 const CHUNK: usize = 64 * 1024;
@@ -88,16 +91,76 @@ pub struct Described<'a> {
     pub file_name: &'a str,
 }
 
+/// The question that decides a download that runs again (ADR 0608). `decide` is asked
+/// when the interval of the downloads has passed since the last decision, on the clock of
+/// the server or on a clock that a change of the time of the machine does not move: the
+/// earlier one counts. Between two decisions the answer is true. `now` is the time of the
+/// decision that started the download.
+pub fn decided_again<D, F>(
+    app: &AppState,
+    now: OffsetDateTime,
+    decide: D,
+) -> impl FnMut() -> BoxFuture<'static, bool> + Send + 'static
+where
+    D: Fn(AppState, OffsetDateTime) -> F + Send + 'static,
+    F: Future<Output = bool> + Send + 'static,
+{
+    let interval = app.config.limits.recordings.download_check;
+    let app = app.clone();
+    let mut decided = (now, tokio::time::Instant::now());
+    move || {
+        let at = app.now();
+        let due = (at - decided.0).abs() >= interval || decided.1.elapsed() >= interval;
+        if !due {
+            return std::future::ready(true).boxed();
+        }
+        decided = (at, tokio::time::Instant::now());
+        decide(app.clone(), at).boxed()
+    }
+}
+
+/// The parts of a file as long as `allowed` answers true. It is asked before each part;
+/// when it answers false, the stream ends with an error in the place of the rest.
+pub fn while_allowed<S, A, F>(
+    parts: S,
+    allowed: A,
+) -> impl futures_util::Stream<Item = std::io::Result<Bytes>> + Send + 'static
+where
+    S: futures_util::Stream<Item = std::io::Result<Bytes>> + Send + 'static,
+    A: FnMut() -> F + Send + 'static,
+    F: Future<Output = bool> + Send,
+{
+    use futures_util::StreamExt;
+    let state = (Box::pin(parts), allowed);
+    futures_util::stream::try_unfold(state, |(mut parts, mut allowed)| async move {
+        if !allowed().await {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "the download is no longer permitted",
+            ));
+        }
+        let part = parts.next().await.transpose()?;
+        Ok(part.map(|part| (part, (parts, allowed))))
+    })
+}
+
 /// The response that sends `file`, whole or as the range that `headers` ask for. `place`
 /// is held until the body has ended. A client that takes no bytes for `stall` ends the
-/// download.
-pub async fn send(
+/// download. `allowed` is asked before each part of the file is read; when it answers
+/// false, the download ends without the rest of the file.
+pub async fn send_while<G, A, F>(
     file: std::fs::File,
     headers: &HeaderMap,
     described: Described<'_>,
-    place: OwnedSemaphorePermit,
+    place: G,
     stall: std::time::Duration,
-) -> Result<Response, ApiError> {
+    allowed: A,
+) -> Result<Response, ApiError>
+where
+    G: Send + 'static,
+    A: FnMut() -> F + Send + 'static,
+    F: Future<Output = bool> + Send,
+{
     let mut file = tokio::fs::File::from_std(file);
     let length = file
         .metadata()
@@ -111,14 +174,14 @@ pub async fn send(
     file.seek(std::io::SeekFrom::Start(first))
         .await
         .map_err(|error| ApiError::internal(&error))?;
-    let stream = futures_util::stream::try_unfold(file, |mut file| async move {
+    let parts = futures_util::stream::try_unfold(file, |mut file| async move {
         let mut bytes = vec![0; CHUNK];
         let count = file.read(&mut bytes).await?;
         bytes.truncate(count);
         Ok::<_, std::io::Error>((count > 0).then(|| (Bytes::from(bytes), file)))
     });
     let mut response = streamed(
-        stream,
+        while_allowed(parts, allowed),
         length,
         first,
         headers,
@@ -137,8 +200,8 @@ pub async fn send(
     Ok(response)
 }
 
-/// A bounded producer shared by recording and attachment downloads. The producer owns the
-/// capacity guard even when the HTTP body is no longer polled.
+/// A bounded producer shared by the downloads of recordings, exports and attachments. The
+/// producer owns the capacity guard even when the HTTP body is no longer polled.
 pub fn streamed<S, G>(
     stream: S,
     length: u64,
@@ -268,6 +331,24 @@ mod tests {
             .await
             .expect("an error must not hold a stalled download forever")
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_parts_of_a_file_end_with_an_error_when_the_download_is_no_longer_allowed() {
+        use futures_util::StreamExt;
+        let parts =
+            futures_util::stream::iter([b"a", b"b", b"c"].map(|part| Ok(Bytes::from_static(part))));
+        let mut asked = 0;
+        let allowed = move || {
+            asked += 1;
+            std::future::ready(asked < 3)
+        };
+        let read: Vec<std::io::Result<Bytes>> = while_allowed(parts, allowed).collect().await;
+        assert_eq!(read.len(), 3);
+        assert_eq!(read[0].as_ref().unwrap().as_ref(), b"a");
+        assert_eq!(read[1].as_ref().unwrap().as_ref(), b"b");
+        let refused = read[2].as_ref().unwrap_err();
+        assert_eq!(refused.kind(), std::io::ErrorKind::PermissionDenied);
     }
 
     #[test]

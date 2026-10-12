@@ -132,6 +132,9 @@ pub(super) fn scene() -> Scene {
         own_call: None,
         direct_calls: Vec::new(),
         call_invitations: Vec::new(),
+        sent_call_invitations: Vec::new(),
+        call_moves: Vec::new(),
+        entry_requests: Vec::new(),
         direct_mutes: Vec::new(),
         messages: Vec::new(),
         threads: Vec::new(),
@@ -173,6 +176,7 @@ impl Scene {
                 started_at: Some(time()),
                 lock: None,
                 meeting: None,
+                hides_occupants: false,
                 participants,
                 recording: None,
             }),
@@ -559,6 +563,31 @@ fn a_voice_channel_shows_its_people_with_their_marks_and_the_state_of_its_call()
     let state = voice(workspace, "HR");
     assert!(state.in_use && state.hidden && state.occupants.is_empty());
     assert!(!state.locked && !state.recording && !state.full);
+}
+
+/// A call keeps the setting of its start (ADR 0517). The server tells nothing of a call
+/// in use only when that call hides who is inside, so the room is shown as hidden also
+/// after the setting of its channel was turned off.
+#[test]
+fn a_call_in_use_that_the_server_does_not_show_is_hidden_whatever_its_channel_says_now() {
+    let mut scene = scene();
+    let (studio, hidden) = (scene.studio, scene.hidden);
+    scene.studio_mut().calls.push(ChannelCall {
+        workspace_id: studio,
+        channel_id: hidden,
+        in_use: true,
+        call: None,
+    });
+    for channel in &mut scene.studio_mut().channels {
+        if channel.id == hidden {
+            channel.hides_occupants = false;
+        }
+    }
+    let server = scene.server();
+    let known = Known::default();
+    let view = derive(std::slice::from_ref(&server), &Selection::default(), &known);
+    let state = voice(view.workspace().unwrap(), "HR");
+    assert!(state.in_use && state.hidden && state.occupants.is_empty());
 }
 
 #[test]
@@ -977,6 +1006,65 @@ mod calls {
         }
     }
 
+    #[test]
+    fn a_stale_call_snapshot_cannot_authorize_an_inside_action() {
+        let scene = scene();
+        let server = server(
+            "Acme",
+            Some(scene.model()),
+            logged_in(scene.own, Vec::new()),
+        );
+        let target = target(&server, &scene, scene.daily);
+        let shown = CallsView {
+            call: Some(active(target)),
+            ..CallsView::default()
+        };
+        let mut current = shown.clone();
+        current.call.as_mut().unwrap().phase = Phase::Entering;
+        assert_eq!(crate::state::actionable_call(&shown, &current), None);
+        current.call.as_mut().unwrap().identity = "replacement".to_owned();
+        assert_eq!(crate::state::actionable_call(&shown, &current), None);
+        current.call.as_mut().unwrap().phase = Phase::Connected;
+        assert_eq!(crate::state::actionable_call(&shown, &current), None);
+        current.call.as_mut().unwrap().identity = "seat".to_owned();
+        assert_eq!(
+            crate::state::actionable_call(&shown, &current),
+            Some(target)
+        );
+    }
+
+    #[test]
+    fn a_rendered_call_action_cannot_target_a_replacement_call() {
+        let scene = scene();
+        let server = server(
+            "Acme",
+            Some(scene.model()),
+            logged_in(scene.own, Vec::new()),
+        );
+        let original = active(target(&server, &scene, scene.daily));
+        let action = crate::state::CallAction::of(&original);
+        let mut current = CallsView {
+            call: Some(original),
+            ..CallsView::default()
+        };
+        let requests = std::cell::Cell::new(0);
+        let callback = |current: &CallsView| {
+            if action.permits(current) {
+                requests.set(requests.get() + 1);
+            }
+        };
+        current.call.as_mut().unwrap().identity = "replacement".to_owned();
+        callback(&current);
+        assert_eq!(requests.get(), 0);
+        current.call.as_mut().unwrap().identity = "seat".to_owned();
+        current.call.as_mut().unwrap().phase = Phase::Entering;
+        callback(&current);
+        assert_eq!(requests.get(), 0);
+        current.call.as_mut().unwrap().phase = Phase::Connected;
+        callback(&current);
+        assert_eq!(requests.get(), 1);
+    }
+
     fn in_call(call: ActiveCall) -> Known {
         Known {
             media: MediaSnapshot {
@@ -1004,6 +1092,59 @@ mod calls {
             .find(|occupant| occupant.account_id == account_id)
             .cloned()
             .unwrap()
+    }
+
+    #[test]
+    fn a_call_waiting_for_admission_offers_no_invitation_or_entry_answer() {
+        let mut scene = scene();
+        let other = AccountId::generate();
+        let call_id = scene.call(scene.daily, vec![]).id;
+        let focus = channel(scene.studio, ChannelKind::Voice, "Focus", 5);
+        let focus_id = focus.id;
+        scene.studio_mut().channels.push(focus);
+        scene.call(focus_id, vec![participant(other)]);
+        let mut model = scene.model();
+        model.entry_requests.push(EntryRequest {
+            id: EntryRequestId::generate(),
+            call_id,
+            place: CallPlace::Channel {
+                workspace_id: scene.studio,
+                channel_id: scene.daily,
+            },
+            account_id: other,
+            created_at: time(),
+            expires_at: time() + time::Duration::seconds(60),
+        });
+        let server = server("Acme", Some(model), logged_in(scene.own, Vec::new()));
+        let mut active = active(target(&server, &scene, scene.daily));
+        for phase in [Phase::Connecting, Phase::Entering, Phase::Reconnecting] {
+            active.phase = phase;
+            let view = derive(
+                std::slice::from_ref(&server),
+                &selected(&scene, scene.daily),
+                &in_call(active.clone()),
+            );
+            let menu = view.person_menu(focus_id, other).unwrap();
+            assert_eq!(menu.invite_to, None);
+            assert!(view.entry_prompts.is_empty());
+            assert_eq!(view.call.as_ref().unwrap().hand_raised, None);
+            assert!(!view.workspace().unwrap().call.as_ref().unwrap().room.ready);
+        }
+        active.phase = Phase::Connected;
+        let view = derive(
+            std::slice::from_ref(&server),
+            &selected(&scene, scene.daily),
+            &in_call(active),
+        );
+        assert!(
+            view.person_menu(focus_id, other)
+                .unwrap()
+                .invite_to
+                .is_some()
+        );
+        assert_eq!(view.entry_prompts.len(), 1);
+        assert!(view.call.as_ref().unwrap().hand_raised.is_some());
+        assert!(view.workspace().unwrap().call.as_ref().unwrap().room.ready);
     }
 
     #[test]
@@ -1191,6 +1332,20 @@ mod calls {
         let people = &voice(view.workspace().unwrap(), "Daily").occupants;
         assert_eq!(people.len(), 1);
         assert!(people[0].is_self);
+        // The media connection is made, and the server has not listed the person yet:
+        // the person is not inside the call for the server (ADR 0517).
+        assert_eq!(people[0].presence, Presence::Connecting);
+        let mut listed = self::scene();
+        let person = listed.own;
+        listed.call(listed.daily, vec![participant(person)]);
+        let server = listed.server();
+        let call = active(target(&server, &listed, listed.daily));
+        let view = derive(
+            std::slice::from_ref(&server),
+            &selected(&listed, listed.daily),
+            &in_call(call),
+        );
+        assert_eq!(occupant(&view, "Daily", person).presence, Presence::Here);
 
         // While the call is restored, the person is marked and the others are not.
         scene.call(scene.hidden, Vec::new());
@@ -2082,6 +2237,8 @@ mod calls {
         };
         let (shown, allowed) = room(&scene);
         assert!(shown.locked && shown.hides_occupants);
+        // The call began before the setting was turned on, and keeps its own.
+        assert!(shown.hide_waits_for_next_call);
         assert_eq!((shown.user_limit, shown.inside), (Some(8), 2));
         assert_eq!(shown.allowed, Allowed::default());
         assert_eq!(allowed, Allowed::default());

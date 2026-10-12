@@ -50,9 +50,8 @@ pub fn io(e: std::io::Error) -> ApiError {
 }
 
 pub async fn free(app: &AppState) -> Option<u64> {
-    use storage::Disk;
-    let directory = root(app).ok()?.to_path_buf();
-    tokio::task::spawn_blocking(move || storage::Directory::new(directory).free_bytes().ok())
+    let app = app.clone();
+    tokio::task::spawn_blocking(move || app.attachment_space.free_bytes())
         .await
         .ok()
         .flatten()
@@ -83,6 +82,19 @@ pub async fn owned(
             expires_at: row.try_get("expires_at")?,
         },
     ))
+}
+
+/// Like [`owned`], for a request that adds bytes to the upload or completes it. The upload
+/// of an archived channel takes no change (ADR 0410).
+pub async fn writable(
+    connection: &mut PgConnection,
+    access: &Access,
+    id: AttachmentId,
+    now: OffsetDateTime,
+) -> ApiResult<(Place, Upload)> {
+    let found = owned(connection, access, id, now).await?;
+    found.0.require_open()?;
+    Ok(found)
 }
 
 pub async fn of_messages(
@@ -219,7 +231,13 @@ pub async fn cleanup(app: &AppState) -> ApiResult<()> {
         return Ok(());
     };
     let now = app.now();
-    let ids: Vec<(AttachmentId, AttachmentId)> = transact!(app, |connection| {
+    let ids: Option<Vec<(AttachmentId, AttachmentId)>> = transact!(app, |connection| {
+        // A backup that runs still copies the files (ADR 0018). The same transaction
+        // reads the backup and selects the files: a file that is removed after the start
+        // of a backup is not selected.
+        if crate::backup::held(&mut *connection, now).await? {
+            return Ok(None);
+        }
         sqlx::query(EXPIRE_QUERY)
             .bind(now)
             .bind(i64::from(app.config.limits.maintenance_batch))
@@ -232,8 +250,11 @@ pub async fn cleanup(app: &AppState) -> ApiResult<()> {
             .bind(i64::from(app.config.limits.maintenance_batch))
             .fetch_all(&mut *connection)
             .await?;
-        Ok(ids)
+        Ok(Some(ids))
     })?;
+    let Some(ids) = ids else {
+        return Ok(());
+    };
     for (id, storage_id) in ids {
         if app.attachment_checks.contains(id) {
             continue;

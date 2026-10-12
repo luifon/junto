@@ -1,0 +1,24 @@
+[package]
+name = "junto-setup"
+description = "The Junto setup tool: writes the structure of a server to a file and applies a file to a server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "junto-setup"
+path = "src/main.rs"
+
+[dependencies]
+junto-protocol = { workspace = true }
+# The 0.12 line with the trust store of the operating system, as `junto-client-core` (ADR 0714).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

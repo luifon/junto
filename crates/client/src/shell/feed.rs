@@ -805,7 +805,11 @@ impl Shell {
             }))
             .children(stale)
             .child(body)
-            .child(self.render_composer(pane, shown.draft, compact, shown.permanent, cx))
+            .child(match self.shown_archived() {
+                // An archived channel takes no message (ADR 0410).
+                Some(archived) => self.render_archived_bar(pane, archived, cx),
+                None => self.render_composer(pane, shown.draft, compact, shown.permanent, cx),
+            })
             .into_any_element()
     }
 

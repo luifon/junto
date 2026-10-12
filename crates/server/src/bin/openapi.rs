@@ -7,7 +7,7 @@ type Generator = fn() -> Result<String, serde_json::Error>;
 /// with one argument, into that directory.
 fn main() -> ExitCode {
     let directory = std::env::args_os().nth(1).map(PathBuf::from);
-    let documents: [(&str, Generator); 2] = [
+    let documents: [(&str, Generator); 3] = [
         (
             junto_server::OPENAPI_DOCUMENT_PATH,
             junto_server::openapi_document,
@@ -15,6 +15,10 @@ fn main() -> ExitCode {
         (
             junto_server::EVENTS_DOCUMENT_PATH,
             junto_server::events_document,
+        ),
+        (
+            junto_server::STRUCTURE_FILE_DOCUMENT_PATH,
+            junto_server::structure_file_document,
         ),
     ];
     for (committed_path, generate) in documents {

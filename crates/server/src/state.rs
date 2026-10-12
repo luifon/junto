@@ -29,17 +29,26 @@ pub struct Shared {
     pub wrong_signatures: RateLimiter,
     pub redemptions_by_address: RateLimiter,
     pub redemptions_by_account: RateLimiter<AccountId>,
+    pub account_changes: RateLimiter<AccountId>,
+    pub link_code_attempts: RateLimiter<AccountId>,
     pub outstanding_challenges: Outstanding,
     pub attachment_writes: RateLimiter<[u8; 32]>,
+    /// The disk of the attachments, whose free space the storage guard reads.
+    pub attachment_space: crate::storage::Space,
     pub attachment_checks: Arc<crate::messages::transfers::Checks>,
-    pub attachment_downloads: Arc<crate::messages::transfers::Downloads>,
-    pub attachment_transfers: Arc<crate::messages::transfers::Uploads>,
+    pub attachment_downloads: Arc<crate::messages::transfers::Transfers>,
+    pub attachment_transfers: Arc<crate::messages::transfers::Transfers>,
     pub message_history: RateLimiter<AccountId>,
+    /// The reads of one message, which a client makes for each `message_changed` event
+    /// (ADR 0408).
+    pub message_reads: RateLimiter<AccountId>,
     pub message_writes: RateLimiter<AccountId>,
     pub stream_opens: RateLimiter<AccountId>,
     pub streams: Arc<Streams>,
     pub calls: Calls,
     pub recordings: Recordings,
+    pub exports: crate::exports::Exports,
+    pub purges: crate::purge::Purges,
     pub bodies: Arc<BodyBudget>,
 }
 
@@ -59,6 +68,8 @@ impl AppState {
         let wrong_signatures = RateLimiter::with_capacity(limits.wrong_signatures, entries);
         let redemptions_by_address = RateLimiter::with_capacity(limits.redemptions, entries);
         let redemptions_by_account = RateLimiter::with_capacity(limits.redemptions, entries);
+        let account_changes = RateLimiter::with_capacity(limits.account_changes, entries);
+        let link_code_attempts = RateLimiter::with_capacity(limits.link_code_attempts, entries);
         let outstanding_challenges = Outstanding::new(limits.most_outstanding_challenges);
         let message_writes = RateLimiter::with_capacity(
             crate::config::RateLimit {
@@ -71,6 +82,8 @@ impl AppState {
         let streams = Arc::new(Streams::new(&limits.stream));
         let calls = Calls::new(media, server_id, limits);
         let recordings = Recordings::new(recorder, &limits.recordings);
+        let exports = crate::exports::Exports::new(config.exports_directory.clone());
+        let attachment_space = crate::storage::Space::of(config.attachments_directory.clone());
         let bodies = Arc::new(BodyBudget::new(
             limits.request_bodies_held_bytes,
             limits.request_bodies_held_per_address,
@@ -85,6 +98,8 @@ impl AppState {
             wrong_signatures,
             redemptions_by_address,
             redemptions_by_account,
+            account_changes,
+            link_code_attempts,
             outstanding_challenges,
             attachment_writes: RateLimiter::with_capacity(
                 crate::config::RateLimit {
@@ -93,12 +108,24 @@ impl AppState {
                 },
                 entries,
             ),
+            attachment_space,
             attachment_checks: Arc::new(crate::messages::transfers::Checks::default()),
-            attachment_downloads: Arc::new(crate::messages::transfers::Downloads::default()),
-            attachment_transfers: Arc::new(crate::messages::transfers::Uploads::default()),
+            attachment_downloads: Arc::new(
+                crate::messages::transfers::Transfers::attachment_downloads(),
+            ),
+            attachment_transfers: Arc::new(
+                crate::messages::transfers::Transfers::attachment_uploads(),
+            ),
             message_history: RateLimiter::with_capacity(
                 crate::config::RateLimit {
                     attempts: 120,
+                    window: time::Duration::minutes(1),
+                },
+                entries,
+            ),
+            message_reads: RateLimiter::with_capacity(
+                crate::config::RateLimit {
+                    attempts: 1200,
                     window: time::Duration::minutes(1),
                 },
                 entries,
@@ -108,6 +135,8 @@ impl AppState {
             streams,
             calls,
             recordings,
+            exports,
+            purges: crate::purge::Purges::default(),
             bodies,
         }))
     }
@@ -144,7 +173,7 @@ impl AppState {
         Background(self)
     }
 
-    /// The free-space reserve shared by recordings and attachments (ADR 0006).
+    /// The free-space reserve shared by recordings, attachments and exports (ADR 0006).
     pub fn storage_reserve_bytes(&self) -> u64 {
         self.config.limits.recordings.reserve_bytes
     }

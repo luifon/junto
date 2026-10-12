@@ -48,8 +48,20 @@ impl Voice {
 }
 
 /// Access to a voice channel is the permission to see it: a member who sees a voice channel
-/// can enter it, unless its lock or its user limit stops the entry (ADR 0504).
+/// can enter it, unless its lock or its user limit stops the entry (ADR 0504). An archived
+/// voice channel has no call and takes no change (ADR 0410).
 pub(super) async fn voice(
+    connection: &mut PgConnection,
+    access: &Access,
+    channel_id: ChannelId,
+) -> ApiResult<Voice> {
+    let voice = seen_voice(connection, access, channel_id).await?;
+    voice.record.require_open()?;
+    Ok(voice)
+}
+
+/// A voice channel that the caller sees, archived or not, for a route that only reads.
+async fn seen_voice(
     connection: &mut PgConnection,
     access: &Access,
     channel_id: ChannelId,
@@ -73,7 +85,9 @@ pub(super) async fn voice(
     })
 }
 
-/// The call of a voice channel, locked for a change, and the caller's membership in it.
+/// The call of a voice channel, locked for a change, and the member row of the caller, who
+/// is inside it (ADR 0517). A caller with a seat that the admission check has not seen is
+/// not inside.
 pub(super) async fn inside(
     connection: &mut PgConnection,
     access: &Access,
@@ -82,40 +96,56 @@ pub(super) async fn inside(
     let call = store::call(&mut *connection, By::Place(voice.place), true)
         .await?
         .ok_or_else(not_in_call)?;
-    let member = store::member_of(connection, access.account_id, true)
+    let member = store::member_of(&mut *connection, access.account_id, true)
         .await?
         .filter(|member| member.call_id == call.id)
         .ok_or_else(not_in_call)?;
+    if !store::is_inside(connection, call.id, access.account_id).await? {
+        return Err(not_in_call());
+    }
     Ok((call, member))
 }
 
 /// The call of a voice channel, locked for a change, and one member of it, for a moderator.
 ///
-/// In a voice channel that hides who is inside, a moderator who is outside gets `not_in_call`
-/// for every account, so that the answer does not tell who is inside (ADR 0504).
+/// A moderator who may not read who is inside gets `not_in_call` for every account, so that
+/// the answer does not tell who is inside (ADR 0504, ADR 0517).
 async fn member_in(
     connection: &mut PgConnection,
     access: &Access,
     voice: &Voice,
     account_id: AccountId,
 ) -> ApiResult<(CallRow, MemberRow)> {
-    let call = store::call(&mut *connection, By::Place(voice.place), true).await?;
-    if voice.record.channel.hides_occupants {
-        let caller = store::member_of(&mut *connection, access.account_id, false).await?;
-        let is_inside = match (&call, caller) {
-            (Some(call), Some(caller)) => caller.call_id == call.id,
-            _ => false,
-        };
-        if !is_inside {
-            return Err(not_in_call());
-        }
-    }
+    let call = moderated(&mut *connection, access, voice).await?;
     let call = call.ok_or_else(ApiError::not_found)?;
     let member = store::member_of(connection, account_id, true)
         .await?
         .filter(|member| member.call_id == call.id)
         .ok_or_else(ApiError::not_found)?;
     Ok((call, member))
+}
+
+/// The call of a voice channel, locked for a change, for a caller who changes what another
+/// person in it may do. `None` when the channel has no call.
+///
+/// The answer must not tell who is inside. A caller who may not read that gets
+/// `not_in_call`, whether or not the channel has a call: when the call hides who is inside
+/// and the caller is not inside it, and when the channel has no call and its setting hides
+/// who is inside.
+async fn moderated(
+    connection: &mut PgConnection,
+    access: &Access,
+    voice: &Voice,
+) -> ApiResult<Option<CallRow>> {
+    let call = store::call(&mut *connection, By::Place(voice.place), true).await?;
+    let reads = match &call {
+        Some(call) => store::reads(connection, call, access.account_id).await?,
+        None => !voice.record.channel.hides_occupants,
+    };
+    if !reads {
+        return Err(not_in_call());
+    }
+    Ok(call)
 }
 
 /// The call that the caller's account is in, when the calling device is the one in it and
@@ -166,8 +196,9 @@ pub async fn get_own_call(
         Ok(OwnCallView {
             call: Some(OwnCallState {
                 own: member.own_call(&call),
-                entry_requests: store::entry_requests(connection, now, &call).await?,
-                call: store::view(connection, &call).await?,
+                entry_requests: store::entry_requests(connection, now, &call, access.account_id)
+                    .await?,
+                call: store::view_for(connection, &call, access.account_id).await?,
             }),
         })
     })
@@ -336,7 +367,7 @@ pub async fn end_screen_share(
 
 async fn set_hand(app: &AppState, bearer: &Bearer, raised: bool) -> ApiResult<StatusCode> {
     let now = app.now();
-    proof::limit(&app.calls.state_reports, bearer.0, now)?;
+    proof::limit(&app.calls.actions, bearer.0, now)?;
     transact!(app, |connection| {
         let access = Access::open(connection, bearer, now).await?;
         access.require(Request::OwnAccount)?;
@@ -441,7 +472,7 @@ pub async fn get_channel_call(
     let now = app.now();
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        let voice = voice(connection, &access, channel_id).await?;
+        let voice = seen_voice(connection, &access, channel_id).await?;
         visible_call(connection, &access, &voice.record.channel).await
     })
     .map(Json)
@@ -453,17 +484,7 @@ pub async fn visible_call(
     access: &Access,
     channel: &Channel,
 ) -> ApiResult<ChannelCall> {
-    let is_inside: bool = sqlx::query_scalar(
-        "select exists (
-             select 1 from call_members m
-             join calls c on c.id = m.call_id
-             where m.account_id = $1 and c.channel_id = $2)",
-    )
-    .bind(access.account_id)
-    .bind(channel.id)
-    .fetch_one(&mut *connection)
-    .await?;
-    store::channel_call(connection, channel, is_inside).await
+    store::channel_call(connection, channel, access.account_id).await
 }
 
 /// Changes the user limit of a voice channel and whether it hides who is inside.
@@ -482,60 +503,75 @@ pub async fn update_call_settings(
     ApiPath(channel_id): ApiPath<ChannelId>,
     ApiJson(body): ApiJson<UpdateCallSettings>,
 ) -> ApiResult<Json<Channel>> {
+    check_call_settings(&app, &body)?;
+    let now = app.now();
+    proof::limit(&app.calls.actions, bearer.0, now)?;
+    let channel = transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        update_call_settings_in(connection, &access, now, channel_id, &body).await
+    })?;
+    Ok(Json(channel))
+}
+
+/// Refuses a user limit outside the range of the server.
+pub(crate) fn check_call_settings(app: &AppState, change: &UpdateCallSettings) -> ApiResult<()> {
     let largest = app.config.limits.calls.largest_user_limit;
-    if let Some(Some(limit)) = body.user_limit
+    if let Some(Some(limit)) = change.user_limit
         && !(1..=largest).contains(&limit)
     {
         return Err(ApiError::invalid(format!(
             "user_limit is from 1 to {largest}"
         )));
     }
-    let now = app.now();
-    proof::limit(&app.calls.actions, bearer.0, now)?;
-    let channel = transact!(app, |connection| {
-        let access = Access::open(connection, &bearer, now).await?;
-        let voice = voice(connection, &access, channel_id).await?;
-        access.require(Request::Channel {
-            scope: &voice.scope,
-            permission: WorkspacePermission::ManageChannel,
-        })?;
-        let mut channel = voice.record.channel.clone();
-        if let Some(user_limit) = body.user_limit {
-            channel.user_limit = user_limit;
-        }
-        if let Some(hides_occupants) = body.hides_occupants {
-            channel.hides_occupants = hides_occupants;
-        }
-        if channel == voice.record.channel {
-            return Ok(channel);
-        }
-        let limit = channel
-            .user_limit
-            .map(i32::try_from)
-            .transpose()
-            .map_err(|error| ApiError::internal(&error))?;
-        sqlx::query("update channels set user_limit = $2, hides_occupants = $3 where id = $1")
-            .bind(channel_id)
-            .bind(limit)
-            .bind(channel.hides_occupants)
-            .execute(&mut *connection)
-            .await?;
-        let changed = AuditEvent::ChannelCallSettingsUpdated {
-            user_limit: channel.user_limit,
-            hides_occupants: channel.hides_occupants,
-        };
-        let actor = Some(access.account_id);
-        audit::record(connection, now, actor, voice.about(), &changed).await?;
-        let updated = Event::ChannelUpdated {
-            channel: channel.clone(),
-        };
-        events::publish(connection, now, &updated).await?;
-        if voice.record.channel.hides_occupants && !channel.hides_occupants {
-            crate::recordings::store::occupants_shown(connection, now, channel_id).await?;
-        }
-        Ok(channel)
+    Ok(())
+}
+
+/// Changes the settings of the call of a voice channel. `change` passed
+/// [`check_call_settings`].
+pub(crate) async fn update_call_settings_in(
+    connection: &mut PgConnection,
+    access: &Access,
+    now: OffsetDateTime,
+    channel_id: ChannelId,
+    change: &UpdateCallSettings,
+) -> ApiResult<Channel> {
+    let voice = voice(connection, access, channel_id).await?;
+    access.require(Request::Channel {
+        scope: &voice.scope,
+        permission: WorkspacePermission::ManageChannel,
     })?;
-    Ok(Json(channel))
+    let mut channel = voice.record.channel.clone();
+    if let Some(user_limit) = change.user_limit {
+        channel.user_limit = user_limit;
+    }
+    if let Some(hides_occupants) = change.hides_occupants {
+        channel.hides_occupants = hides_occupants;
+    }
+    if channel == voice.record.channel {
+        return Ok(channel);
+    }
+    let limit = channel
+        .user_limit
+        .map(i32::try_from)
+        .transpose()
+        .map_err(|error| ApiError::internal(&error))?;
+    sqlx::query("update channels set user_limit = $2, hides_occupants = $3 where id = $1")
+        .bind(channel_id)
+        .bind(limit)
+        .bind(channel.hides_occupants)
+        .execute(&mut *connection)
+        .await?;
+    let changed = AuditEvent::ChannelCallSettingsUpdated {
+        user_limit: channel.user_limit,
+        hides_occupants: channel.hides_occupants,
+    };
+    let actor = Some(access.account_id);
+    audit::record(connection, now, actor, voice.about(), &changed).await?;
+    let updated = Event::ChannelUpdated {
+        channel: channel.clone(),
+    };
+    events::publish(connection, now, &updated).await?;
+    Ok(channel)
 }
 
 /// Asks for the place of the caller in the call of a voice channel. The answer carries the
@@ -726,15 +762,11 @@ pub async fn request_entry(
         let requested = Event::CallEntryRequested {
             request: request.clone(),
         };
-        let channel = &voice.record.channel;
-        events::tell_inside(
-            connection,
-            now,
-            channel.workspace_id,
-            channel.id,
-            &requested,
-        )
-        .await?;
+        events::tell_inside(connection, now, &requested).await?;
+        // The other devices of the account that asked learn of the request, which the
+        // snapshot carries (ADR 0207).
+        let at = [request.place];
+        events::tell_account_at(connection, now, access.account_id, &at, &requested).await?;
         Ok(request)
     })?;
     Ok((StatusCode::CREATED, Json(request)))
@@ -774,6 +806,9 @@ pub async fn answer_entry_request(
         let member = store::member_of(connection, access.account_id, false)
             .await?
             .ok_or_else(ApiError::not_found)?;
+        if !store::is_inside(connection, member.call_id, access.account_id).await? {
+            return Err(ApiError::not_found());
+        }
         let stored: Option<StoredEntry> = sqlx::query_as(
             "select call_id, account_id, created_at, expires_at, accepted_by
              from call_entry_requests where id = $1 and call_id = $2 for update",
@@ -938,8 +973,15 @@ pub async fn invite_to_call(
         .execute(&mut *connection)
         .await
         .map_err(ApiError::concurrent)?;
-        let row = (id, body.account_id, access.account_id, now, expires_at);
-        let invitation = store::invitation(&call, row);
+        let row = (
+            id,
+            body.account_id,
+            access.account_id,
+            now,
+            expires_at,
+            false,
+        );
+        let invitation = store::invitation(&call, row).invitation;
         let invited = Event::CallInvited {
             invitation: invitation.clone(),
         };
@@ -958,30 +1000,44 @@ type StoredInvitation = (
     AccountId,
     OffsetDateTime,
     OffsetDateTime,
+    bool,
 );
 
+/// Which side of an invitation a caller is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Invited,
+    Inviting,
+}
+
 /// An invitation that names the caller as `side` states, with its call locked for a change.
+/// A silent invitation does not exist for the account that it invites (ADR 0515).
 async fn own_invitation(
     connection: &mut PgConnection,
     invitation_id: CallInvitationId,
-    side: &'static str,
+    side: Side,
     account_id: AccountId,
-) -> ApiResult<(CallRow, CallInvitation)> {
+) -> ApiResult<(CallRow, store::Waiting)> {
+    let filter = match side {
+        Side::Invited => "account_id = $2 and not silent",
+        Side::Inviting => "invited_by = $2",
+    };
     let stored: Option<StoredInvitation> = sqlx::query_as(AssertSqlSafe(format!(
         "select call_id, {INVITATION_COLUMNS} from call_invitations
-         where id = $1 and {side} = $2 for update"
+         where id = $1 and {filter} for update"
     )))
     .bind(invitation_id)
     .bind(account_id)
     .fetch_optional(&mut *connection)
     .await?;
-    let (call_id, id, invited, invited_by, created_at, expires_at) =
+    let (call_id, id, invited, invited_by, created_at, expires_at, silent) =
         stored.ok_or_else(ApiError::not_found)?;
     let call = store::call(connection, By::Id(call_id), true)
         .await?
         .ok_or_else(ApiError::not_found)?;
-    let invitation = store::invitation(&call, (id, invited, invited_by, created_at, expires_at));
-    Ok((call, invitation))
+    let row = (id, invited, invited_by, created_at, expires_at, silent);
+    let waiting = store::invitation(&call, row);
+    Ok((call, waiting))
 }
 
 /// Accepts an invitation into a call and asks for the place of the caller in it.
@@ -1004,9 +1060,10 @@ pub async fn accept_call_invitation(
     let (entered, account_id) = transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::OwnAccount)?;
-        let (call, invitation) =
-            own_invitation(connection, invitation_id, "account_id", access.account_id).await?;
-        if invitation.expires_at <= now || !may_be_at(connection, &access, &call.place).await? {
+        let (call, waiting) =
+            own_invitation(connection, invitation_id, Side::Invited, access.account_id).await?;
+        let expired = waiting.invitation.expires_at <= now;
+        if expired || !may_be_at(connection, &access, &call.place).await? {
             return Err(ApiError::not_found());
         }
         app.calls.admitting()?;
@@ -1038,7 +1095,7 @@ pub async fn refuse_call_invitation(
         &app,
         &bearer,
         invitation_id,
-        "account_id",
+        Side::Invited,
         InvitationOutcome::Declined,
     )
     .await
@@ -1062,7 +1119,7 @@ pub async fn cancel_call_invitation(
         &app,
         &bearer,
         invitation_id,
-        "invited_by",
+        Side::Inviting,
         InvitationOutcome::Cancelled,
     )
     .await
@@ -1072,7 +1129,7 @@ async fn end_invitation(
     app: &AppState,
     bearer: &Bearer,
     invitation_id: CallInvitationId,
-    side: &'static str,
+    side: Side,
     outcome: InvitationOutcome,
 ) -> ApiResult<StatusCode> {
     let now = app.now();
@@ -1473,6 +1530,40 @@ async fn set_block(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// The call of a voice channel, locked for a change, for a person who changes what another
+/// person in it may do: a holder of `permission`, or, when `presenter_counts`, the person who
+/// runs meeting mode in the call. `None` when the channel has no call.
+///
+/// A caller who may not read who is inside gets `not_in_call` (see [`moderated`]). The
+/// person who runs meeting mode acts without the permission only while inside the call
+/// (ADR 0517): the meeting keeps its presenter for a time after the presenter left.
+async fn call_for_presenter_or(
+    connection: &mut PgConnection,
+    access: &Access,
+    voice: &Voice,
+    permission: WorkspacePermission,
+    presenter_counts: bool,
+) -> ApiResult<Option<CallRow>> {
+    let call = moderated(&mut *connection, access, voice).await?;
+    let mut presents = false;
+    if let Some(call) = &call
+        && presenter_counts
+        && call
+            .meeting
+            .as_ref()
+            .is_some_and(|meeting| meeting.presenter == access.account_id)
+    {
+        presents = store::is_inside(connection, call.id, access.account_id).await?;
+    }
+    if !presents {
+        access.require(Request::Channel {
+            scope: &voice.scope,
+            permission,
+        })?;
+    }
+    Ok(call)
+}
+
 async fn remove_block(
     app: &AppState,
     bearer: &Bearer,
@@ -1485,30 +1576,15 @@ async fn remove_block(
     transact!(app, |connection| {
         let access = Access::open(connection, bearer, now).await?;
         let voice = voice(connection, &access, channel_id).await?;
-        let call = store::call(connection, By::Place(voice.place), true).await?;
-        if voice.record.channel.hides_occupants {
-            let caller = store::member_of(connection, access.account_id, false).await?;
-            let is_inside = match (&call, caller) {
-                (Some(call), Some(caller)) => caller.call_id == call.id,
-                _ => false,
-            };
-            if !is_inside {
-                return Err(not_in_call());
-            }
-        }
-        let presents = call.as_ref().is_some_and(|call| {
-            block == Block::Microphone
-                && call
-                    .meeting
-                    .as_ref()
-                    .is_some_and(|meeting| meeting.presenter == access.account_id)
-        });
-        if !presents {
-            access.require(Request::Channel {
-                scope: &voice.scope,
-                permission: block.permission(),
-            })?;
-        }
+        let presenter_counts = block == Block::Microphone;
+        let call = call_for_presenter_or(
+            connection,
+            &access,
+            &voice,
+            block.permission(),
+            presenter_counts,
+        )
+        .await?;
         let call = call.ok_or_else(ApiError::not_found)?;
         let table = match block {
             Block::Microphone => "call_microphone_blocks",
@@ -1570,6 +1646,51 @@ pub async fn unblock_microphone(
     ApiPath((channel_id, account_id)): ApiPath<(ChannelId, AccountId)>,
 ) -> ApiResult<StatusCode> {
     remove_block(&app, &bearer, channel_id, account_id, Block::Microphone).await
+}
+
+/// Lowers the raised hand of a person in the call of a voice channel: the person who runs
+/// meeting mode, or a moderator with `mute_members` (ADR 0516). A hand that is not raised
+/// stays as it is.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/channels/{channel_id}/call/participants/{account_id}/hand",
+    tag = "calls",
+    params(("channel_id" = ChannelId, Path), ("account_id" = AccountId, Path)),
+    security(("session" = [])),
+    responses((status = 204), ApiError)
+)]
+pub async fn lower_participant_hand(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath((channel_id, account_id)): ApiPath<(ChannelId, AccountId)>,
+) -> ApiResult<StatusCode> {
+    let now = app.now();
+    proof::limit(&app.calls.actions, bearer.0, now)?;
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        let voice = voice(connection, &access, channel_id).await?;
+        let moderating = WorkspacePermission::MuteMembers;
+        let call = call_for_presenter_or(connection, &access, &voice, moderating, true)
+            .await?
+            .ok_or_else(ApiError::not_found)?;
+        let member = store::member_of(connection, account_id, true)
+            .await?
+            .filter(|member| member.call_id == call.id)
+            .ok_or_else(ApiError::not_found)?;
+        if member.hand_raised_at.is_some() {
+            sqlx::query(
+                "update call_members set hand_raised_at = null
+                 where call_id = $1 and account_id = $2",
+            )
+            .bind(call.id)
+            .bind(account_id)
+            .execute(&mut *connection)
+            .await?;
+            store::announce_participant(connection, now, &call, account_id).await?;
+        }
+        Ok(())
+    })?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Blocks the sound of a person in the call of a voice channel. The client of the person
@@ -1718,7 +1839,7 @@ pub async fn refuse_direct_call(
             .await?
             .ok_or_else(ApiError::not_found)?;
         let own = Some(access.account_id.as_uuid());
-        let filter = "account_id = $2 and $3::timestamptz is null";
+        let filter = "account_id = $2 and not silent and $3::timestamptz is null";
         let declined = InvitationOutcome::Declined;
         let resolved =
             store::resolve_invitations(connection, now, &call, filter, own, None, declined).await?;

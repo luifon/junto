@@ -54,6 +54,26 @@ pub async fn get_own_account(
     .map(Json)
 }
 
+/// Counts one change of the own profile or of the name of an own device. The four routes
+/// share one limit per account, because each of them can record an event (ADR 0119). A
+/// request whose transaction runs again counts once.
+fn limit_change(app: &AppState, access: &Access, counted: &mut bool) -> ApiResult<()> {
+    if !*counted {
+        proof::limit(&app.account_changes, access.account_id, app.now())?;
+        *counted = true;
+    }
+    Ok(())
+}
+
+/// Counts one attempt of the account with a link code (ADR 0110).
+fn limit_link_code(app: &AppState, access: &Access, counted: &mut bool) -> ApiResult<()> {
+    if !*counted {
+        proof::limit(&app.link_code_attempts, access.account_id, app.now())?;
+        *counted = true;
+    }
+    Ok(())
+}
+
 /// The bytes of an image as the whole body of a request or of a response.
 pub struct ImageBytes;
 
@@ -85,9 +105,11 @@ pub async fn update_own_account(
 ) -> ApiResult<Json<OwnAccount>> {
     let name = validate::name("name", &body.name)?;
     let now = app.now();
+    let mut counted = false;
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::OwnAccount)?;
+        limit_change(&app, &access, &mut counted)?;
         let changed = sqlx::query("update accounts set name = $2 where id = $1 and name <> $2")
             .bind(access.account_id)
             .bind(&name)
@@ -147,10 +169,12 @@ pub async fn set_avatar(
         Ok((stated.kind, width, height, hash))
     };
     let now = app.now();
+    let mut counted = false;
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::OwnAccount)?;
         let (kind, width, height, hash) = inspected()?;
+        limit_change(&app, &access, &mut counted)?;
         let stored: Option<Vec<u8>> =
             sqlx::query_scalar("select hash from account_avatars where account_id = $1")
                 .bind(access.account_id)
@@ -197,9 +221,11 @@ pub async fn set_avatar(
 )]
 pub async fn remove_avatar(State(app): State<AppState>, bearer: Bearer) -> ApiResult<StatusCode> {
     let now = app.now();
+    let mut counted = false;
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::OwnAccount)?;
+        limit_change(&app, &access, &mut counted)?;
         let removed = sqlx::query("delete from account_avatars where account_id = $1")
             .bind(access.account_id)
             .execute(&mut *connection)
@@ -347,25 +373,33 @@ pub async fn rename_device(
 ) -> ApiResult<Json<Device>> {
     let name = validate::optional_name("name", &body.name)?;
     let now = app.now();
+    let mut counted = false;
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::OwnAccount)?;
-        let row: Option<DeviceRow> = sqlx::query_as(AssertSqlSafe(format!(
-            "update devices set name = $3
-             where id = $1 and account_id = $2
-             returning {DEVICE_COLUMNS}"
-        )))
+        limit_change(&app, &access, &mut counted)?;
+        let stored: Option<String> = sqlx::query_scalar(
+            "select name from devices where id = $1 and account_id = $2 for update",
+        )
         .bind(device_id)
         .bind(access.account_id)
-        .bind(&name)
         .fetch_optional(&mut *connection)
         .await?;
-        let row = row.ok_or_else(ApiError::not_found)?;
-        let renamed = Event::DeviceRenamed {
-            device_id,
-            name: name.clone(),
-        };
-        events::tell_account(connection, now, access.account_id, &renamed).await?;
+        let stored = stored.ok_or_else(ApiError::not_found)?;
+        let row: DeviceRow = sqlx::query_as(AssertSqlSafe(format!(
+            "update devices set name = $2 where id = $1 returning {DEVICE_COLUMNS}"
+        )))
+        .bind(device_id)
+        .bind(&name)
+        .fetch_one(&mut *connection)
+        .await?;
+        if stored != name {
+            let renamed = Event::DeviceRenamed {
+                device_id,
+                name: name.clone(),
+            };
+            events::tell_account(connection, now, access.account_id, &renamed).await?;
+        }
         store::device(row, access.device_id)
     })
     .map(Json)
@@ -588,9 +622,11 @@ pub async fn look_up_device_link(
 ) -> ApiResult<Json<PendingDeviceLink>> {
     let now = app.now();
     let code_hash = hash_code(CodePurpose::DeviceLink, body.code.expose());
+    let mut counted = false;
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::OwnAccount)?;
+        limit_link_code(&app, &access, &mut counted)?;
         let row: Option<(Vec<u8>, String, OffsetDateTime)> = sqlx::query_as(
             "select public_key, device_name, expires_at from device_links
              where code_hash = $1 and expires_at > $2",
@@ -626,9 +662,11 @@ pub async fn approve_device_link(
 ) -> ApiResult<(StatusCode, Json<Device>)> {
     let now = app.now();
     let code_hash = hash_code(CodePurpose::DeviceLink, body.code.expose());
+    let mut counted = false;
     let device = transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::OwnAccount)?;
+        limit_link_code(&app, &access, &mut counted)?;
         let link: Option<(Vec<u8>, String)> = sqlx::query_as(
             "delete from device_links where code_hash = $1 and expires_at > $2
                  returning public_key, device_name",

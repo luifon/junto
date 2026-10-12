@@ -29,7 +29,8 @@ use junto_media::share::{
 
 use crate::calls::{voice_channel, voice_file};
 use crate::harness::{
-    ABSENT_DBFS, ADMIN_TONE_HZ, Caller, HEARD_DBFS, WINDOW_TONE_HZ, Window, World, heard, member,
+    ABSENT_DBFS, ADMIN_TONE_HZ, Caller, HEARD_DBFS, PATIENCE, WINDOW_TONE_HZ, Window, World, heard,
+    member,
 };
 
 mod cameras;
@@ -77,8 +78,26 @@ fn turn_processing_off(window: &mut Window) {
     window.press("escape");
 }
 
+/// The administrator enters a call. The server lists a person when its admission check
+/// has seen the device in the room, and the person acts as one inside from then on
+/// (ADR 0517): the function returns then.
 fn enter(world: &World, caller: &Caller, target: CallTarget) {
     world.run(caller.calls.join(target)).unwrap();
+    let listed = || {
+        caller.handle.live().view().model.is_some_and(|model| {
+            model
+                .call_at(&target.place)
+                .is_some_and(|call| call.participant(model.account.id).is_some())
+        })
+    };
+    let deadline = std::time::Instant::now() + PATIENCE;
+    while !listed() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "after {PATIENCE:?} the server does not list the administrator in the call"
+        );
+        world.run(async { tokio::time::sleep(Duration::from_millis(20)).await });
+    }
 }
 
 #[gpui::test]
