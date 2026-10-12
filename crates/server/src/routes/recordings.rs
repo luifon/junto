@@ -297,11 +297,8 @@ async fn read_by(
         scope: &scope,
         permission: WorkspacePermission::ViewChannel,
     })?;
-    if record.channel.hides_occupants && store::call_runs(&mut *connection, row.call_id).await? {
-        let member = calls::member_of(&mut *connection, access.account_id, false).await?;
-        if member.is_none_or(|member| member.call_id != row.call_id) {
-            return Err(ApiError::not_found());
-        }
+    if !store::reads_call_of(&mut *connection, row.call_id, access.account_id).await? {
+        return Err(ApiError::not_found());
     }
     let archived = record.archived_at.is_some();
     if !for_change {
@@ -424,18 +421,13 @@ pub async fn get_segment_file(
     headers: HeaderMap,
 ) -> ApiResult<Response> {
     let now = app.now();
-    let is_track = read!(app, |connection| {
+    let (account_id, is_track) = read!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        readable(connection, &access, recording_id, false).await?;
-        let segments = store::segments(connection, recording_id).await?;
-        segments
-            .iter()
-            .find(|segment| segment.id == segment_id && segment.file.is_some())
-            .map(store::SegmentRow::is_track)
-            .ok_or_else(ApiError::not_found)
+        let is_track = file_of(connection, &access, recording_id, segment_id).await?;
+        Ok((access.account_id, is_track))
     })?;
     let backend = app.recordings.backend().ok_or_else(ApiError::not_found)?;
-    let place = app.recordings.download().ok_or_else(|| {
+    let place = app.recordings.download(account_id).ok_or_else(|| {
         ApiError::new(
             ErrorCode::Busy,
             "the server sends as many files as it sends at one time; send the request again",
@@ -465,5 +457,39 @@ pub async fn get_segment_file(
         file_name: &file_name,
     };
     let stall = app.config.limits.recordings.download_stall.unsigned_abs();
-    download::send(file, &headers, described, place, stall).await
+    // A download that runs ends when its caller may no longer read the recording, or the
+    // segment no longer has this file.
+    let still_allowed = download::decided_again(&app, now, move |app, at| async move {
+        let decided = file_decided_again(&app, bearer, recording_id, segment_id, at).await;
+        decided.ok() == Some(is_track)
+    });
+    download::send_while(file, &headers, described, place, stall, still_allowed).await
+}
+
+async fn file_decided_again(
+    app: &AppState,
+    bearer: Bearer,
+    recording_id: RecordingId,
+    segment_id: RecordingSegmentId,
+    now: time::OffsetDateTime,
+) -> ApiResult<bool> {
+    read!(app.background(), |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        file_of(connection, &access, recording_id, segment_id).await
+    })
+}
+
+/// The file of a segment that the caller may download now: true for an audio track, false
+/// for the video of a composite. A recording that the caller may not read, a segment that
+/// the recording does not have and a segment without a file are not found.
+async fn file_of(
+    connection: &mut PgConnection,
+    access: &Access,
+    recording_id: RecordingId,
+    segment_id: RecordingSegmentId,
+) -> ApiResult<bool> {
+    readable(connection, access, recording_id, false).await?;
+    store::file_is_track(connection, recording_id, segment_id)
+        .await?
+        .ok_or_else(ApiError::not_found)
 }

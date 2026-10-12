@@ -150,6 +150,10 @@ pub struct TranscriberSettings {
     pub environment: Vec<(String, String)>,
     /// Whether the voices in shared sound get speaker labels (ADR 0614).
     pub separate_speakers: bool,
+    /// The speech clips that the speech model reads at one time, from 1 to 64. The server
+    /// gives it to each job as the option `--batch-size` of the worker. Absent: the worker
+    /// uses the number of its model.
+    pub batch_size: Option<u8>,
 }
 
 /// The numbers of the transcription jobs (ADR 0607).
@@ -236,8 +240,16 @@ pub struct RecordingLimits {
     pub transcription: TranscriptionLimits,
     /// The downloads of files that the server sends at one time.
     pub most_downloads: u32,
+    /// The downloads among them that one account has at one time.
+    pub downloads_per_account: u32,
     /// A download whose client takes no bytes for this long is ended.
     pub download_stall: Duration,
+    /// A download that runs is decided again at this interval: it ends at most this long
+    /// after its account lost the access to the file.
+    pub download_check: Duration,
+    /// A directory below `rescued/` that no segment names is deleted when it is older than
+    /// this (ADR 0606).
+    pub rescued_age: Duration,
     /// The terms of the glossary of one workspace (ADR 0603).
     pub most_glossary_terms: u32,
     /// The corrections that the server keeps for one line of a transcript.
@@ -268,7 +280,10 @@ impl Default for RecordingLimits {
             removal_retry: Duration::minutes(5),
             transcription: TranscriptionLimits::default(),
             most_downloads: 32,
+            downloads_per_account: 4,
             download_stall: Duration::seconds(60),
+            download_check: Duration::seconds(5),
+            rescued_age: Duration::hours(24),
             most_glossary_terms: 200,
             most_corrections: 100,
         }
@@ -421,6 +436,13 @@ pub struct Limits {
     pub challenge_requests: RateLimit,
     pub wrong_signatures: RateLimit,
     pub redemptions: RateLimit,
+    /// The changes of the own profile and of the names of the own devices, per account
+    /// (ADR 0119).
+    pub account_changes: RateLimit,
+    /// The lookups and approvals with a link code, per account (ADR 0110).
+    pub link_code_attempts: RateLimit,
+    /// The sessions that one device holds. A further login ends the oldest (ADR 0109).
+    pub most_sessions_per_device: u32,
     pub limiter_entries: usize,
     pub most_outstanding_challenges: u32,
     pub most_pending_device_links: u32,
@@ -546,9 +568,6 @@ pub struct ExportLimits {
     pub check_interval: Duration,
     /// A file that could not be deleted is tried again after this time.
     pub removal_retry: Duration,
-    /// A download that runs is ended at most this long after its account lost the access
-    /// to the export.
-    pub download_check: Duration,
 }
 
 impl Default for ExportLimits {
@@ -563,7 +582,6 @@ impl Default for ExportLimits {
             lease: Duration::seconds(90),
             check_interval: Duration::seconds(5),
             removal_retry: Duration::minutes(5),
-            download_check: Duration::seconds(5),
         }
     }
 }
@@ -602,6 +620,15 @@ impl Default for Limits {
                 attempts: 10,
                 window: Duration::minutes(10),
             },
+            account_changes: RateLimit {
+                attempts: 30,
+                window: Duration::minutes(1),
+            },
+            link_code_attempts: RateLimit {
+                attempts: 10,
+                window: Duration::minutes(10),
+            },
+            most_sessions_per_device: 4,
             limiter_entries: 100_000,
             most_outstanding_challenges: 10_000,
             most_pending_device_links: 500,
@@ -657,6 +684,7 @@ impl Config {
     pub const FFPROBE: &'static str = "JUNTO_FFPROBE";
     pub const TRANSCRIBE_COMMAND: &'static str = "JUNTO_TRANSCRIBE_COMMAND";
     pub const TRANSCRIBE_SPEAKERS: &'static str = "JUNTO_TRANSCRIBE_SEPARATE_SPEAKERS";
+    pub const TRANSCRIBE_BATCH_SIZE: &'static str = "JUNTO_TRANSCRIBE_BATCH_SIZE";
     /// The variables of the transcription worker that the server passes to it
     /// (`workers/transcription/README.md`).
     pub const WORKER_VARIABLES: [&'static str; 10] = [
@@ -812,6 +840,20 @@ impl Config {
                         ));
                     }
                 };
+                let batch_size = match trimmed(Self::TRANSCRIBE_BATCH_SIZE) {
+                    None => None,
+                    Some(text) => match text.parse::<u8>() {
+                        Ok(size @ 1..=64) if text.bytes().all(|byte| byte.is_ascii_digit()) => {
+                            Some(size)
+                        }
+                        _ => {
+                            return Err(invalid(
+                                Self::TRANSCRIBE_BATCH_SIZE,
+                                "expected a whole number from 1 to 64".to_owned(),
+                            ));
+                        }
+                    },
+                };
                 Some(TranscriberSettings {
                     command: command.split_whitespace().map(str::to_owned).collect(),
                     environment: Self::WORKER_VARIABLES
@@ -819,6 +861,7 @@ impl Config {
                         .filter_map(|name| Some((name.to_owned(), value(name)?)))
                         .collect(),
                     separate_speakers,
+                    batch_size,
                 })
             }
             None => None,
@@ -1243,6 +1286,7 @@ mod tests {
             ("JUNTO_TRANSCRIBE_MODELS", "/srv/junto/models"),
             ("JUNTO_TRANSCRIBE_DEVICE", "cpu"),
             ("JUNTO_TRANSCRIBE_SEPARATE_SPEAKERS", "false"),
+            ("JUNTO_TRANSCRIBE_BATCH_SIZE", " 2 "),
         ])
         .unwrap();
         let recorder = config.recorder.unwrap();
@@ -1264,6 +1308,7 @@ mod tests {
             ]
         );
         assert!(!transcriber.separate_speakers);
+        assert_eq!(transcriber.batch_size, Some(2));
 
         let config = with(&[
             ("JUNTO_RECORDINGS_DIR", "/srv/junto/recordings"),
@@ -1272,6 +1317,23 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(config.recorder.unwrap().recorder_directory, "/out");
+
+        for size in ["0", "65", "+2", "2.0", "two"] {
+            let refused = Config::from_lookup(move |name| match name {
+                "JUNTO_TRANSCRIBE_BATCH_SIZE" => Some(size.to_owned()),
+                "JUNTO_TRANSCRIBE_COMMAND" => Some("junto-transcribe".to_owned()),
+                "JUNTO_RECORDINGS_DIR" => Some("/srv/junto/recordings".to_owned()),
+                "JUNTO_RECORDER_LAYOUT_URL" => Some("http://server:8080/layout/".to_owned()),
+                _ => BASE
+                    .iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| (*value).to_owned()),
+            });
+            let Err(ConfigError::Invalid { name, .. }) = refused else {
+                panic!("the batch size {size:?} was accepted");
+            };
+            assert_eq!(name, "JUNTO_TRANSCRIBE_BATCH_SIZE");
+        }
 
         let refused: [&'static [(&str, &str)]; 9] = [
             &[("JUNTO_RECORDINGS_DIR", "/srv/junto/recordings")],

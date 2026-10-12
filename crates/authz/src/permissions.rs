@@ -4,7 +4,9 @@ macro_rules! permission_set {
         permission $permission:ident;
         $(#[$set_meta:meta])*
         set $set:ident;
-        $( $variant:ident = $bit:literal => $name:literal, )+
+        // `$name` is a `tt`: a `literal` fragment reaches a derive inside a group
+        // without delimiters, and the schema derive then does not read the `rename`.
+        $( $variant:ident = $bit:literal => $name:tt, )+
     ) => {
         $(#[$permission_meta])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

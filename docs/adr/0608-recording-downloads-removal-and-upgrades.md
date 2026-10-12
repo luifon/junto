@@ -17,8 +17,9 @@ Downloads:
 - A request with `Range: bytes=<first>-<last>`, `bytes=<first>-` or `bytes=-<count>` gets that part with the status 206 and `Content-Range`. A range outside the file gets `range_not_satisfiable` (416) with `Content-Range: bytes */<length>`. A header of another form, and a header with several ranges, gets the whole file.
 - The response states `Content-Length`, `Accept-Ranges: bytes`, a file name for saving, and `X-Content-Type-Options: nosniff`.
 - The file is opened without following a link (ADR 0606). A link in the place of a file gets `not_found`.
-- The server sends at most 32 files at one time. A further request gets `busy` with `Retry-After: 1`.
+- The server sends at most 32 files at one time, and at most 4 of them to one account. A further request gets `busy` with `Retry-After: 1`. The places are counted by the mechanism of the attachment downloads (ADR 0408), with these two numbers. The files of exports use the same places (ADR 0411).
 - A download whose client takes no bytes for 60 seconds is ended.
+- A download that runs is decided again every 5 seconds, with the session of its request, by the rule of the route: the session counts, the caller may read the recording, and the segment has its file. The 5 seconds are measured on the clock of the server and on a clock that a change of the time of the machine does not move; the earlier one decides. When the decision fails, the server reads no further part of the file and ends the response without its rest. One function does this for the files of recordings, of attachments (ADR 0408) and of exports (ADR 0411).
 
 Removal:
 
@@ -38,6 +39,8 @@ Upgrades:
 ## Consequences
 
 - A client reads a large file in parts and continues a download that was interrupted.
+- One account cannot take every place of the downloads: with 4 places per account, 8 accounts are needed to fill the 32.
+- After a ban, a logout, the loss of the voice channel, the removal of the recording, and for a person who leaves a call that hides who is inside while that call runs, a download that runs sends at most 5 further seconds of the file, and the bytes that the connection already held. Each running download costs one read transaction per 5 seconds.
 - The video player of the operating system cannot send a session token. The client downloads the file and opens the copy (ADR 0602).
 - The files of a removed recording are deleted at once after the transaction, and later when the directory cannot be deleted or the server stops in between. While a backup runs, the queue is not worked on (ADR 0018).
 - A recording of a deleted channel is read by nobody (ADR 0604). The removal of the content of the deleted channel removes it with its files (ADR 0017).

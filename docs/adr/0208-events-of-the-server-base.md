@@ -18,7 +18,8 @@ Audiences:
 | `permissions_changed` | The accounts whose permissions the change can have altered |
 | `account_added`, `account_status_changed`, `account_server_roles_changed`, `owner_changed` | Accounts with `ban_members` |
 | `server_role_created`, `server_role_updated` | Accounts with `administrator` |
-| `invite_created`, `invite_used`, `invite_revoked`, `invites_of_creator_revoked` | Accounts with `create_invites` |
+| `invite_created`, `invite_used`, `invite_revoked` | Accounts with `create_invites` that created the invite or may see every workspace that it names (ADR 0111) |
+| `invites_of_creator_revoked` | Accounts with `create_invites` |
 | `join_request_created`, `join_request_decided` | Accounts with `approve_join_requests` |
 | `workspace_created`, `workspace_updated`, `workspace_member_added`, `workspace_member_removed`, `workspace_member_roles_changed`, `workspace_role_created`, `workspace_role_updated`, `category_created`, `category_updated` | Accounts that may see the workspace |
 | `channel_created`, `channel_updated`, `channel_deleted` | Accounts with `view_channel` in the channel |
@@ -35,6 +36,7 @@ Permission changes:
 - A change that can alter what an account may see or do records the notice `permissions_changed`. The notice names the workspace, or no workspace for the permissions of the server. It names no role and no channel.
 - The client that receives the notice loads a snapshot (ADR 0207).
 - The notice goes to the account when its membership, its roles or the owner position change. It goes to the holders of a role when the permissions of the role or a channel override of the role change; for the "everyone" role these are all members of the workspace.
+- The notice goes to the accounts that have a direct-message conversation with an account when a change can alter whether they reach it (ADR 0307): a ban, an unban and a removal of that account, a server role with the administrator permission that it gets or loses, a change of that permission in a role that it holds, the deletion of such a role, and a change of the server owner. No other event of these changes goes to those accounts. The change stores them as the receivers of the notice, in one statement (ADR 0308). The notice names no workspace.
 - A change of the name of a role records no notice.
 
 Classes:

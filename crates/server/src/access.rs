@@ -1,6 +1,6 @@
 pub mod visibility;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use junto_authz::{
     Actor, ChannelScope, Decision, HeldRole, Membership, Override, Position, Reach, Request,
@@ -455,6 +455,50 @@ impl Access {
         .await?;
         scoped_channels(rows, overrides, workspace)
     }
+}
+
+/// The workspaces in `workspace_ids` that an account is a member of.
+pub async fn memberships_among(
+    connection: &mut PgConnection,
+    account_id: AccountId,
+    workspace_ids: &[WorkspaceId],
+) -> ApiResult<HashSet<WorkspaceId>> {
+    let joined: Vec<WorkspaceId> = sqlx::query_scalar(
+        "select workspace_id from workspace_members
+         where account_id = $1 and workspace_id = any($2)",
+    )
+    .bind(account_id)
+    .bind(workspace_ids)
+    .fetch_all(connection)
+    .await?;
+    Ok(joined.into_iter().collect())
+}
+
+/// Whether an account reads an invite: its list entry, its events and its revocation. The
+/// account holds `create_invites`, and it created the invite or may see every workspace
+/// that the invite names (ADR 0111). `member_of` holds the workspaces, of the ones that the
+/// invite names, that the account is a member of.
+pub fn reads_invite(
+    actor: &Actor,
+    is_creator: bool,
+    workspace_ids: &[WorkspaceId],
+    member_of: &HashSet<WorkspaceId>,
+) -> bool {
+    let allows = |request: Request<'_>| authorize(actor, &request).is_allowed();
+    let sees = |workspace_id: &WorkspaceId| {
+        let scope = WorkspaceScope {
+            membership: if member_of.contains(workspace_id) {
+                Membership::Member
+            } else {
+                Membership::NotMember
+            },
+            everyone: junto_authz::WorkspacePermissions::EMPTY,
+            roles: Vec::new(),
+        };
+        allows(Request::ViewWorkspace(&scope))
+    };
+    allows(Request::Server(ServerPermission::CreateInvites))
+        && (is_creator || workspace_ids.iter().all(sees))
 }
 
 /// One channel by its identifier, deleted or not, for the work of the server itself, which

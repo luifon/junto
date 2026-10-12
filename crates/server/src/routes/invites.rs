@@ -17,11 +17,12 @@ use junto_protocol::secret::InviteCode;
 use sqlx::PgConnection;
 use time::OffsetDateTime;
 
-use crate::access::Access;
+use crate::access::{self, Access};
 use crate::audit::{self, About};
 use crate::db::{self, StoredText};
 use crate::error::{ApiError, ApiResult, violates};
 use crate::events;
+use crate::events::audience::Audience;
 use crate::extract::{ApiJson, ApiPath, Bearer, ClientAddress};
 use crate::proof;
 use crate::secrets::{CodePurpose, INVITE_CODE_SYMBOLS, hash_code, random_code};
@@ -73,6 +74,46 @@ fn invite(row: InviteRow) -> ApiResult<Invite> {
             .map(InviteRevocation::read)
             .transpose()?,
     })
+}
+
+/// Records an event about an invite for the accounts that read the invite: the holders of
+/// `create_invites` who may see every workspace in `workspace_ids`, and its creator
+/// (ADR 0111).
+async fn announce(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    created_by: AccountId,
+    workspace_ids: &[WorkspaceId],
+    event: &Event,
+) -> ApiResult<()> {
+    let audience = Audience::Invite {
+        created_by,
+        workspace_ids: workspace_ids.to_vec(),
+    };
+    events::log::record(connection, now, &audience, event).await
+}
+
+/// Whether the caller reads each of `invites`, in their order. One statement reads the
+/// memberships of the caller in the workspaces that the invites name.
+async fn readable(
+    connection: &mut PgConnection,
+    access: &Access,
+    invites: &[(AccountId, &[WorkspaceId])],
+) -> ApiResult<Vec<bool>> {
+    let mut named: Vec<WorkspaceId> = invites
+        .iter()
+        .flat_map(|(_, workspace_ids)| workspace_ids.iter().copied())
+        .collect();
+    named.sort_unstable();
+    named.dedup();
+    let member_of = access::memberships_among(connection, access.account_id, &named).await?;
+    Ok(invites
+        .iter()
+        .map(|(created_by, workspace_ids)| {
+            let is_creator = *created_by == access.account_id;
+            access::reads_invite(access.actor(), is_creator, workspace_ids, &member_of)
+        })
+        .collect())
 }
 
 /// Creates an invite code. The response is the only one that carries the code.
@@ -168,7 +209,8 @@ pub async fn create_invite(
         let created = Event::InviteCreated {
             invite: invite.clone(),
         };
-        events::publish(connection, now, &created).await?;
+        let (creator, named) = (invite.created_by, &invite.workspace_ids);
+        announce(connection, now, creator, named, &created).await?;
         Ok(invite)
     })?;
 
@@ -181,7 +223,8 @@ pub async fn create_invite(
     ))
 }
 
-/// Every invite of the server, without its code.
+/// The invites that the caller reads, without their codes: the invites that the caller
+/// created, and the invites whose workspaces the caller may all see.
 #[utoipa::path(
     get,
     path = "/api/v1/invites",
@@ -202,12 +245,26 @@ pub async fn list_invites(
         )))
         .fetch_all(&mut *connection)
         .await?;
-        rows.into_iter().map(invite).collect()
+        let invites = rows
+            .into_iter()
+            .map(invite)
+            .collect::<ApiResult<Vec<_>>>()?;
+        let named: Vec<(AccountId, &[WorkspaceId])> = invites
+            .iter()
+            .map(|invite| (invite.created_by, invite.workspace_ids.as_slice()))
+            .collect();
+        let read = readable(connection, &access, &named).await?;
+        Ok(invites
+            .into_iter()
+            .zip(read)
+            .filter_map(|(invite, read)| read.then_some(invite))
+            .collect())
     })
     .map(Json)
 }
 
-/// Cancels an invite. Its code stops working.
+/// Cancels an invite that the caller reads. Its code stops working. An invite that the
+/// caller does not read is answered as an invite that does not exist.
 #[utoipa::path(
     delete,
     path = "/api/v1/invites/{invite_id}",
@@ -225,16 +282,19 @@ pub async fn revoke_invite(
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::Server(ServerPermission::CreateInvites))?;
-        let revoked: Option<bool> = sqlx::query_scalar(
-            "select revoked_at is not null from invites where id = $1 for update",
+        let stored: Option<(AccountId, bool)> = sqlx::query_as(
+            "select created_by, revoked_at is not null from invites where id = $1 for update",
         )
         .bind(invite_id)
         .fetch_optional(&mut *connection)
         .await?;
-        match revoked {
-            None => return Err(ApiError::not_found()),
-            Some(true) => return Ok(()),
-            Some(false) => {}
+        let (created_by, revoked) = stored.ok_or_else(ApiError::not_found)?;
+        let workspace_ids = named_by(connection, invite_id).await?;
+        if readable(connection, &access, &[(created_by, &workspace_ids)]).await? != [true] {
+            return Err(ApiError::not_found());
+        }
+        if revoked {
+            return Ok(());
         }
         sqlx::query("update invites set revoked_at = $2, revocation = 'revoked' where id = $1")
             .bind(invite_id)
@@ -246,24 +306,28 @@ pub async fn revoke_invite(
             now,
             Some(access.account_id),
             About::Server,
-            &AuditEvent::InviteRevoked { invite_id },
+            &AuditEvent::InviteRevoked {
+                invite_id,
+                invite_created_by: Some(created_by),
+            },
         )
         .await?;
         let revoked = Event::InviteRevoked {
             invite_id,
             revocation: InviteRevocation::Revoked,
         };
-        events::publish(connection, now, &revoked).await
+        announce(connection, now, created_by, &workspace_ids, &revoked).await
     })?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// Counts one use of the invite behind `code_hash`, or states why it cannot be used.
+/// Returns the invite, its creator and the workspaces that it grants now.
 async fn use_invite(
     connection: &mut PgConnection,
     code_hash: &[u8; 32],
     now: OffsetDateTime,
-) -> ApiResult<(InviteId, AccountId)> {
+) -> ApiResult<(InviteId, AccountId, Vec<WorkspaceId>)> {
     let used: Option<(InviteId, AccountId, i32)> = sqlx::query_as(
         "update invites set uses = uses + 1
          where code_hash = $1 and revoked_at is null and expires_at > $2 and uses < max_uses
@@ -274,12 +338,13 @@ async fn use_invite(
     .fetch_optional(&mut *connection)
     .await?;
     if let Some((invite_id, created_by, uses)) = used {
+        let granted = granted_by(connection, invite_id).await?;
         let used = Event::InviteUsed {
             invite_id,
             uses: db::count(uses)?,
         };
-        events::publish(connection, now, &used).await?;
-        return Ok((invite_id, created_by));
+        announce(connection, now, created_by, &granted, &used).await?;
+        return Ok((invite_id, created_by, granted));
     }
     let row: Option<(bool, OffsetDateTime)> = sqlx::query_as(
         "select revoked_at is not null, expires_at from invites where code_hash = $1",
@@ -297,14 +362,12 @@ async fn use_invite(
     })
 }
 
-/// The workspaces that an invite grants now: the ones that it names and that exist. An
-/// invite whose workspaces were all deleted grants nothing and counts as cancelled
-/// (ADR 0308).
-async fn granted_by(
+/// The workspaces that an invite names and that exist, at most 100 (ADR 0306).
+async fn named_by(
     connection: &mut PgConnection,
     invite_id: InviteId,
 ) -> ApiResult<Vec<WorkspaceId>> {
-    let workspace_ids: Vec<WorkspaceId> = sqlx::query_scalar(
+    Ok(sqlx::query_scalar(
         "select w.workspace_id from invite_workspaces w
          join workspaces live on live.id = w.workspace_id and live.deleted_at is null
          where w.invite_id = $1
@@ -312,7 +375,17 @@ async fn granted_by(
     )
     .bind(invite_id)
     .fetch_all(connection)
-    .await?;
+    .await?)
+}
+
+/// The workspaces that an invite grants now: the ones that it names and that exist. An
+/// invite whose workspaces were all deleted grants nothing and counts as cancelled
+/// (ADR 0308).
+async fn granted_by(
+    connection: &mut PgConnection,
+    invite_id: InviteId,
+) -> ApiResult<Vec<WorkspaceId>> {
+    let workspace_ids = named_by(connection, invite_id).await?;
     if workspace_ids.is_empty() {
         return Err(ApiError::new(
             ErrorCode::InviteRevoked,
@@ -349,8 +422,8 @@ pub async fn redeem_invite(
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::OwnAccount)?;
-        let (invite_id, invite_created_by) = use_invite(connection, &code_hash, now).await?;
-        let granted = granted_by(connection, invite_id).await?;
+        let (invite_id, invite_created_by, granted) =
+            use_invite(connection, &code_hash, now).await?;
         let workspace_ids: Vec<WorkspaceId> = sqlx::query_scalar(
             "insert into workspace_members (workspace_id, account_id, joined_at)
              select workspace_id, $2, $3 from unnest($1::uuid[]) as granted (workspace_id)
@@ -417,7 +490,8 @@ pub async fn join(
             now,
         )
         .await?;
-        let (invite_id, invite_created_by) = use_invite(connection, &code_hash, now).await?;
+        let (invite_id, invite_created_by, workspace_ids) =
+            use_invite(connection, &code_hash, now).await?;
         let account_id = store::create_account(connection, now, &name).await?;
         let device = store::create_device(
             connection,
@@ -428,7 +502,6 @@ pub async fn join(
             DeviceOrigin::Invite,
         )
         .await?;
-        let workspace_ids = granted_by(connection, invite_id).await?;
         store::add_members(connection, now, account_id, &workspace_ids).await?;
         audit::record(
             connection,

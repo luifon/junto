@@ -459,6 +459,126 @@ async fn a_job_that_was_declared_lost_and_reports_no_end_in_time_stays_failed() 
     assert_eq!(states(&done), [LOST; 3]);
 }
 
+/// Runs a pass of `server` up to the stop requests that it sends, and drops it there: the
+/// requests of the fake recorder have no end. This is a server process that stops between
+/// the transaction of a pass and the answers to its requests.
+async fn stopped_before_the_answers(server: &TestServer, stops: usize) {
+    server.recorder().hold_stops(true);
+    tokio::select! {
+        _ = server.tend() => panic!("a stop of the fake recorder has no answer"),
+        () = until("the pass sends its stop requests", async || {
+            server.recorder().stops().len() == stops
+        }) => {}
+    }
+    server.recorder().hold_stops(false);
+}
+
+/// ADR 0604: the stop that follows a declaration is stored with the declaration. A server
+/// process that stops before the recorder took that stop leaves it to the next process,
+/// which sends it, holds the recording for it, and asks the recorder about the job after
+/// it. The file results then replace the declarations.
+#[tokio::test]
+async fn a_stop_that_follows_a_lost_declaration_is_sent_by_the_next_server_process() {
+    let studio = Studio::open().await;
+    let scene = &studio.scene;
+    let (server, owner, ann, ben) = (&scene.server, &scene.owner, &scene.ann, &scene.ben);
+    let started = studio.record().await;
+    server.clock.advance(Duration::seconds(12));
+
+    server.leave_call(ann).await;
+    server.leave_call(ben).await;
+    for job in server.recorder().jobs() {
+        server.fake().leave(&studio.ann_seat.room, &job.id);
+    }
+    stopped_before_the_answers(server, 3).await;
+    let declared = server.recording(owner, started.id).await;
+    assert_eq!(declared.recording.state, RecordingState::Recording);
+    assert_eq!(states(&declared), [LOST; 3]);
+    assert_eq!(server.recorder().recording().len(), 3);
+
+    let second = server.restart().await;
+    second.tend().await;
+    assert_eq!(second.recorder().stops().len(), 6);
+    assert!(second.recorder().recording().is_empty());
+    let done = second.recording(owner, started.id).await;
+    assert_eq!(done.recording.state, RecordingState::Processing);
+    assert_eq!(states(&done), [ENDED; 3]);
+    assert_eq!(done.recording.failed_segments, 0);
+    assert_eq!(done.segments[0].duration_ms, Some(12_000));
+    second.tend().await;
+    assert_eq!(second.recorder().stops().len(), 6);
+}
+
+/// The next process sends the stop once. When that stop has no answer, it was not
+/// delivered (ADR 0601), and the recording ends with the failed segments.
+#[tokio::test]
+async fn a_stop_of_the_next_server_process_that_has_no_answer_gives_no_further_time() {
+    let studio = Studio::open().await;
+    let scene = &studio.scene;
+    let (server, owner, ann, ben) = (&scene.server, &scene.owner, &scene.ann, &scene.ben);
+    let started = studio.record().await;
+    server.clock.advance(Duration::seconds(12));
+
+    server.leave_call(ann).await;
+    server.leave_call(ben).await;
+    for job in server.recorder().jobs() {
+        server.fake().leave(&studio.ann_seat.room, &job.id);
+    }
+    stopped_before_the_answers(server, 3).await;
+
+    let second = server.restart().await;
+    second.recorder().set_link(false);
+    second.tend().await;
+    assert_eq!(second.recorder().stops().len(), 6);
+    let done = second.recording(owner, started.id).await;
+    assert_eq!(done.recording.state, RecordingState::Processing);
+    assert_eq!(states(&done), [LOST; 3]);
+}
+
+/// The same for a job that is declared lost while the recording continues: the next
+/// process sends the stop of the declaration, so that two jobs do not record one source.
+#[tokio::test]
+async fn a_job_that_was_declared_lost_gets_its_stop_from_the_next_server_process() {
+    let studio = Studio::open().await;
+    let scene = &studio.scene;
+    let (server, owner) = (&scene.server, &scene.owner);
+    let started = studio.record().await;
+    server.clock.advance(Duration::seconds(11));
+
+    let composite = composites(&server.recorder().jobs())[0].id.clone();
+    server.fake().leave(&studio.ann_seat.room, &composite);
+    stopped_before_the_answers(server, 1).await;
+    let detail = server.recording(owner, started.id).await;
+    assert_eq!(states(&detail)[0], LOST);
+    let recorded_by = |server: &TestServer, job: &str| {
+        server
+            .recorder()
+            .recording()
+            .iter()
+            .any(|running| running.id == job)
+    };
+    assert!(recorded_by(server, &composite));
+
+    let second = server.restart().await;
+    second.tend().await;
+    assert!(!recorded_by(&second, &composite));
+    let stops = second.recorder().stops();
+    assert_eq!(
+        stops.iter().filter(|job| **job == composite).count(),
+        2,
+        "{stops:?}"
+    );
+    second.tend().await;
+    second.tend().await;
+    let stops = second.recorder().stops();
+    assert_eq!(
+        stops.iter().filter(|job| **job == composite).count(),
+        2,
+        "{stops:?}"
+    );
+    assert_eq!(composites(&second.recorder().recording()).len(), 1);
+}
+
 #[tokio::test]
 async fn a_job_that_the_recorder_ends_with_an_error_fails_its_segment_and_a_new_job_starts() {
     let studio = Studio::open().await;

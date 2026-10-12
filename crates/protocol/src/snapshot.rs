@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::account::OwnAccount;
-use crate::call::{Call, CallInvitation, ChannelCall, DirectMute, OwnCall};
+use crate::call::{Call, CallInvitation, CallMove, ChannelCall, DirectMute, EntryRequest, OwnCall};
 use crate::events::Cursor;
 use crate::ids::WorkspaceRoleId;
 use crate::roles::WorkspaceRole;
@@ -27,6 +27,16 @@ pub struct Snapshot {
     pub direct_calls: Vec<Call>,
     /// The invitations into calls that wait for an answer of the account.
     pub call_invitations: Vec<CallInvitation>,
+    /// The invitations into calls that the account made and that wait for an answer.
+    #[serde(default)]
+    pub sent_call_invitations: Vec<CallInvitation>,
+    /// The moves between voice channels that wait and that name the account, as the person
+    /// who is moved or as the person who moved (ADR 0511).
+    #[serde(default)]
+    pub call_moves: Vec<CallMove>,
+    /// The requests of the account to enter a voice channel that wait for an answer.
+    #[serde(default)]
+    pub entry_requests: Vec<EntryRequest>,
     /// The direct-message conversations that the account has muted.
     #[serde(default)]
     pub direct_mutes: Vec<DirectMute>,

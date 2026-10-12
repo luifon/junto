@@ -97,7 +97,9 @@ Notifications:
   `notification_changed` prompts a refresh of the caller's notices. Ordinary-message
   and thread notices reach full connections; only mention and direct notices reach background.
   Read state is idempotent and shared across devices. `notification_settings_changed`
-  refreshes policy at every connection level. Advancing a channel, conversation or thread
+  refreshes policy at every connection level. A change of the own settings is told to the
+  account, and a change of the default of a workspace to the accounts that see that
+  workspace. Advancing a channel, conversation or thread
   read position marks its notices read in the same transaction. Maintenance keeps at most
   500 notices per account and removes notices older than 90 days in bounded batches.
   Inserts queue their recipients for cap maintenance; unchanged accounts are not scanned.

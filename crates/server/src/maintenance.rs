@@ -6,7 +6,7 @@ use std::time::Duration;
 use time::OffsetDateTime;
 
 use crate::calls::store as calls;
-use crate::error::ApiResult;
+use crate::error::{ApiError, ApiResult};
 use crate::events;
 use crate::state::AppState;
 use crate::transact;
@@ -60,30 +60,77 @@ const ENDED_SESSIONS_PAST_THEIR_LIFETIME: &str = "delete from ended_sessions
 /// events that the log no longer keeps. It applies the retention settings, records the
 /// notices of archived channels and deletes the archived channels whose period has ended
 /// (ADR 0410), removes the exports whose lifetime has ended (ADR 0411) and the content of
-/// deleted channels and workspaces (ADR 0017). The work is done in batches, each in its own
-/// transaction.
+/// deleted channels and workspaces (ADR 0017), and deletes the audio that was saved of lost
+/// jobs of the recorder and that no recording names (ADR 0606). The work is done in
+/// batches, each in its own transaction.
+///
+/// A step that fails does not keep the later steps from running: each step is tried in
+/// every pass. The pass returns the failure of its first failing step.
 pub async fn run_once(app: &AppState) -> ApiResult<()> {
     let now = app.now();
+    let mut pass = Pass::default();
     for statement in EXPIRED_AT_NOW {
-        in_batches(app, statement, now).await?;
+        pass.ran("expired rows", in_batches(app, statement, now).await);
     }
-    expire_sessions(app, now).await?;
+    pass.ran("expired sessions", expire_sessions(app, now).await);
     let history_start = now - app.config.limits.join_request_history;
-    in_batches(app, PAST_THE_HISTORY_PERIOD, history_start).await?;
+    let history = in_batches(app, PAST_THE_HISTORY_PERIOD, history_start).await;
+    pass.ran("join request history", history);
     let kept_from = now - app.config.limits.session_lifetime;
-    in_batches(app, ENDED_SESSIONS_PAST_THEIR_LIFETIME, kept_from).await?;
+    let ended = in_batches(app, ENDED_SESSIONS_PAST_THEIR_LIFETIME, kept_from).await;
+    pass.ran("ended sessions", ended);
     let calls = &app.config.limits.calls;
     let counted = calls.rings.window.max(calls.ring_pause_after_decline);
     let rings_from = now - counted - calls.invitation_lifetime;
-    in_batches(app, RINGS_THAT_NO_LIMIT_COUNTS, rings_from).await?;
-    events::log::trim(app).await?;
-    crate::messages::retention::run(app).await?;
-    crate::archive::notices(app).await?;
-    crate::archive::delete_due(app).await?;
-    crate::exports::expire(app).await?;
-    crate::purge::run_once(app).await?;
-    crate::messages::uploads::cleanup(app).await?;
-    Ok(())
+    let rings = in_batches(app, RINGS_THAT_NO_LIMIT_COUNTS, rings_from).await;
+    pass.ran("rings", rings);
+    pass.ran("event log", events::log::trim(app).await.map(drop));
+    pass.ran("retention", crate::messages::retention::run(app).await);
+    pass.ran("archive notices", crate::archive::notices(app).await);
+    pass.ran("archive deletions", crate::archive::delete_due(app).await);
+    pass.ran("exports", crate::exports::expire(app).await);
+    pass.ran("purge", crate::purge::run_once(app).await.map(drop));
+    pass.ran("uploads", crate::messages::uploads::cleanup(app).await);
+    storage_low(app).await;
+    let rescued = crate::recordings::process::sweep_rescued(app).await;
+    pass.ran("saved audio of lost jobs", rescued.map(drop));
+    pass.outcome()
+}
+
+/// Whether a directory that the server writes large files to is at the reserve of free
+/// space (ADR 0006): the recordings, the attachments or the exports. Each directory logs a
+/// change, which is the warning for the administrators; the maintenance pass and the health
+/// route both ask, so a server without a recorder warns as well.
+pub async fn storage_low(app: &AppState) -> Option<bool> {
+    let app = app.clone();
+    let read = move || {
+        let reserve = app.storage_reserve_bytes();
+        crate::storage::any_at_reserve(&[
+            app.recordings.storage_low(reserve),
+            app.attachment_space.at_reserve("attachments", reserve),
+            app.exports.space().at_reserve("exports", reserve),
+        ])
+    };
+    tokio::task::spawn_blocking(read).await.ok().flatten()
+}
+
+/// The steps of one pass of maintenance that have run.
+#[derive(Default)]
+struct Pass {
+    first_failure: Option<ApiError>,
+}
+
+impl Pass {
+    fn ran(&mut self, step: &'static str, outcome: ApiResult<()>) {
+        if let Err(error) = outcome {
+            tracing::warn!(step, code = ?error.code(), "a step of maintenance failed");
+            self.first_failure.get_or_insert(error);
+        }
+    }
+
+    fn outcome(self) -> ApiResult<()> {
+        self.first_failure.map_or(Ok(()), Err)
+    }
 }
 
 /// Deletes the expired sessions. The transaction that deletes sessions also ends the places

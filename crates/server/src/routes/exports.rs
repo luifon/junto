@@ -296,12 +296,13 @@ pub async fn get_export_file(
     headers: HeaderMap,
 ) -> ApiResult<Response> {
     let now = app.now();
-    let attempt: i32 = read!(app, |connection| {
+    let (account_id, attempt): (_, i32) = read!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        downloadable(connection, &access, export_id, now).await
+        let attempt = downloadable(connection, &access, export_id, now).await?;
+        Ok((access.account_id, attempt))
     })?;
     let root = app.exports.directory()?.to_path_buf();
-    let place = app.recordings.download().ok_or_else(|| {
+    let place = app.recordings.download(account_id).ok_or_else(|| {
         ApiError::new(
             ErrorCode::Busy,
             "the server sends as many files as it sends at one time; send the request again",
@@ -324,24 +325,11 @@ pub async fn get_export_file(
         file_name: &file_name,
     };
     let stall = app.config.limits.recordings.download_stall.unsigned_abs();
-    // A download that runs is asked again at an interval: it ends when the export is gone
-    // or its account may no longer read it.
-    // The interval is measured on the clock of the server and on a clock that a change of
-    // the time of the machine does not move: the earlier one decides.
-    let interval = app.config.limits.exports.download_check;
-    let mut checked = (now, tokio::time::Instant::now());
-    let watched = app.clone();
-    let still_allowed = move || {
-        let app = watched.clone();
-        let at = app.now();
-        let due = (at - checked.0).abs() >= interval || checked.1.elapsed() >= interval;
-        if due {
-            checked = (at, tokio::time::Instant::now());
-        }
-        async move {
-            !due || still_downloadable(&app, bearer, export_id, at).await.ok() == Some(attempt)
-        }
-    };
+    // A download that runs ends when the export is gone or its account may no longer
+    // read it.
+    let still_allowed = download::decided_again(&app, now, move |app, at| async move {
+        still_downloadable(&app, bearer, export_id, at).await.ok() == Some(attempt)
+    });
     download::send_while(file, &headers, described, place, stall, still_allowed).await
 }
 

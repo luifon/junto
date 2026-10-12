@@ -114,11 +114,14 @@ async fn rename(server: &TestServer, owner: &Member, channel: &Channel, name: &s
         .ok::<Channel>(StatusCode::OK);
 }
 
-/// Makes every statement that reads the channel overrides wait until the returned
-/// transaction ends.
-async fn block_channel_reads(server: &TestServer) -> sqlx::Transaction<'static, sqlx::Postgres> {
+/// Makes every statement that reads `table` wait until the returned transaction ends.
+async fn block_reads_of(
+    server: &TestServer,
+    table: &str,
+) -> sqlx::Transaction<'static, sqlx::Postgres> {
     let mut transaction = server.db.begin().await.unwrap();
-    sqlx::query("lock table channel_overrides in access exclusive mode")
+    let lock = format!("lock table {table} in access exclusive mode");
+    sqlx::query(sqlx::AssertSqlSafe(lock))
         .execute(&mut *transaction)
         .await
         .unwrap();
@@ -130,10 +133,21 @@ async fn block_channel_reads(server: &TestServer) -> sqlx::Transaction<'static, 
 pub async fn queue_an_event_and_block_its_read(
     world: &Private,
 ) -> sqlx::Transaction<'static, sqlx::Postgres> {
+    queue_an_event_and_block_its_read_of(world, "channel_overrides").await
+}
+
+/// Like [`queue_an_event_and_block_its_read`], with the lock on `table`. The removal of a
+/// role reads the channel overrides of the role (ADR 0304), so a test that takes a role
+/// while the read waits locks the state of the log, which a delivery reads after it has
+/// taken its snapshot and which no request reads.
+async fn queue_an_event_and_block_its_read_of(
+    world: &Private,
+    table: &str,
+) -> sqlx::Transaction<'static, sqlx::Postgres> {
     let server = &world.server;
     server.state.streams.hold();
     rename(server, &world.owner, &world.channel, "secret-renamed").await;
-    let lock = block_channel_reads(server).await;
+    let lock = block_reads_of(server, table).await;
     server.state.streams.release();
     server.until_blocked().await;
     lock
@@ -148,7 +162,7 @@ async fn a_batch_that_was_read_from_an_old_snapshot_is_discarded() {
     let (server, owner) = (&world.server, &world.owner);
     let mut stream = server.subscribed(&world.insider, Level::Full).await;
 
-    let lock = queue_an_event_and_block_its_read(&world).await;
+    let lock = queue_an_event_and_block_its_read_of(&world, "event_stream").await;
 
     assign(
         server,

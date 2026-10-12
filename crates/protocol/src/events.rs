@@ -22,7 +22,6 @@ use crate::keys::PublicKey;
 use crate::recording::Recording;
 use crate::roles::{ServerRole, WorkspaceRole};
 use crate::structure::{Category, Channel, Workspace, WorkspaceMember};
-use crate::transcript::TranscriptSpeaker;
 
 /// The path of the event stream. A device opens it with its session token in the
 /// `Authorization` header of the upgrade request.
@@ -503,24 +502,24 @@ pub enum Event {
         workspace_id: WorkspaceId,
         channel_id: ChannelId,
     },
-    /// A person corrected a line of the transcript of a recording. The text that the
-    /// worker wrote is read from the route of the lines.
+    /// A person corrected the line at the position `line` of the transcript of a
+    /// recording. The event carries no text, no author and no time, because the log of
+    /// events keeps an event after its recording was removed (ADR 0607). The line is read
+    /// from the route of the lines.
     TranscriptLineCorrected {
         recording_id: RecordingId,
         workspace_id: WorkspaceId,
         channel_id: ChannelId,
         line: u32,
-        text: String,
-        corrected_by: AccountId,
-        #[serde(with = "time::serde::rfc3339")]
-        corrected_at: OffsetDateTime,
     },
-    /// A person gave a name to a voice in the shared sound of a recording.
+    /// A person gave a name to the voice with the label `Speaker <speaker>` in the shared
+    /// sound of a recording. The event carries no name, for the same reason. The label is
+    /// read from the route of the transcript.
     TranscriptSpeakerRenamed {
         recording_id: RecordingId,
         workspace_id: WorkspaceId,
         channel_id: ChannelId,
-        speaker: TranscriptSpeaker,
+        speaker: u32,
     },
     /// The glossary of a workspace was replaced. The terms are read from its route.
     GlossaryReplaced {
@@ -1220,21 +1219,12 @@ mod tests {
                 workspace_id,
                 channel_id,
                 line: 4,
-                text: "The export takes eleven seconds.".to_owned(),
-                corrected_by: account_id,
-                corrected_at: time(),
             },
             Event::TranscriptSpeakerRenamed {
                 recording_id,
                 workspace_id,
                 channel_id,
-                speaker: TranscriptSpeaker {
-                    number: 1,
-                    account_id,
-                    name: Some("Noor".to_owned()),
-                    renamed_by: Some(other_account_id),
-                    renamed_at: Some(time()),
-                },
+                speaker: 1,
             },
             Event::GlossaryReplaced { workspace_id },
             Event::MessageChanged {

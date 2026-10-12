@@ -139,6 +139,9 @@ pub struct CallRow {
     pub lock: Option<CallLock>,
     pub meeting: Option<Meeting>,
     pub presenter_gone_since: Option<OffsetDateTime>,
+    /// The call shows who is inside only to the people inside. The value is the setting of
+    /// the voice channel at the creation of the record of the call (ADR 0517).
+    pub hides_occupants: bool,
 }
 
 impl CallRow {
@@ -171,11 +174,12 @@ struct CallRecord {
     meeting_presenter: Option<AccountId>,
     meeting_started_at: Option<OffsetDateTime>,
     meeting_presenter_gone_since: Option<OffsetDateTime>,
+    hides_occupants: bool,
 }
 
 const CALL_COLUMNS: &str = "id, room_name, workspace_id, channel_id, direct_low, direct_high, \
      started_at, locked_by, locked_at, meeting_presenter, meeting_started_at, \
-     meeting_presenter_gone_since";
+     meeting_presenter_gone_since, hides_occupants";
 
 fn call_row(record: CallRecord) -> ApiResult<CallRow> {
     let place = match (
@@ -210,6 +214,7 @@ fn call_row(record: CallRecord) -> ApiResult<CallRow> {
             },
         ),
         presenter_gone_since: record.meeting_presenter_gone_since,
+        hides_occupants: record.hides_occupants,
     })
 }
 
@@ -289,10 +294,11 @@ pub async fn call_for_entry(
             high_account_id,
         } => (None, None, Some(low_account_id), Some(high_account_id)),
     };
-    sqlx::query(
+    let hides_occupants: bool = sqlx::query_scalar(
         "insert into calls
              (id, room_name, workspace_id, channel_id, direct_low, direct_high, created_at)
-         values ($1, $2, $3, $4, $5, $6, $7)",
+         values ($1, $2, $3, $4, $5, $6, $7)
+         returning hides_occupants",
     )
     .bind(new_id)
     .bind(new_room.as_str())
@@ -301,7 +307,7 @@ pub async fn call_for_entry(
     .bind(low)
     .bind(high)
     .bind(now)
-    .execute(&mut *connection)
+    .fetch_one(&mut *connection)
     .await
     .map_err(ApiError::concurrent)?;
     Ok(CallRow {
@@ -312,6 +318,7 @@ pub async fn call_for_entry(
         lock: None,
         meeting: None,
         presenter_gone_since: None,
+        hides_occupants,
     })
 }
 
@@ -454,6 +461,32 @@ pub async fn participants(
     records.into_iter().map(participant).collect()
 }
 
+/// Whether an account is inside a call: the admission check has recorded that the media
+/// server lists its seat, and the member row exists (ADR 0517). The database function
+/// decides it, for this code and for every statement and trigger.
+pub async fn is_inside(
+    connection: &mut PgConnection,
+    call_id: CallId,
+    account_id: AccountId,
+) -> ApiResult<bool> {
+    Ok(sqlx::query_scalar("select is_inside_call($1, $2)")
+        .bind(call_id)
+        .bind(account_id)
+        .fetch_one(connection)
+        .await?)
+}
+
+/// Whether an account may read what tells who is inside a call: the call does not hide who
+/// is inside, or the account is inside.
+pub async fn reads(
+    connection: &mut PgConnection,
+    call: &CallRow,
+    account_id: AccountId,
+) -> ApiResult<bool> {
+    Ok(!call.hides_occupants || is_inside(connection, call.id, account_id).await?)
+}
+
+/// The whole call, for an account that [`reads`] it.
 pub async fn view(connection: &mut PgConnection, call: &CallRow) -> ApiResult<Call> {
     Ok(Call {
         id: call.id,
@@ -461,17 +494,41 @@ pub async fn view(connection: &mut PgConnection, call: &CallRow) -> ApiResult<Ca
         started_at: call.started_at,
         lock: call.lock.clone(),
         meeting: call.meeting.clone(),
+        hides_occupants: call.hides_occupants,
         participants: participants(&mut *connection, call.id, None).await?,
         recording: crate::recordings::store::active_of_call(connection, call.id).await?,
     })
 }
 
-/// What the caller learns of the call of a voice channel that it may see. `inside` states
-/// whether the caller is a member of that call.
+/// The call as an account with a seat in it, or on its way into it, may read it now. An
+/// account that is not inside a call that hides who is inside gets no lock, no meeting, no
+/// participant and no recording; it reads them from `GET /api/v1/call` when the admission
+/// check has seen it (ADR 0517).
+pub async fn view_for(
+    connection: &mut PgConnection,
+    call: &CallRow,
+    account_id: AccountId,
+) -> ApiResult<Call> {
+    if reads(&mut *connection, call, account_id).await? {
+        return view(connection, call).await;
+    }
+    Ok(Call {
+        id: call.id,
+        place: call.place,
+        started_at: call.started_at,
+        lock: None,
+        meeting: None,
+        hides_occupants: true,
+        participants: Vec::new(),
+        recording: None,
+    })
+}
+
+/// What `viewer`, who may see the voice channel, learns of its call.
 pub async fn channel_call(
     connection: &mut PgConnection,
     channel: &Channel,
-    inside: bool,
+    viewer: AccountId,
 ) -> ApiResult<ChannelCall> {
     let place = CallPlace::Channel {
         workspace_id: channel.workspace_id,
@@ -480,7 +537,7 @@ pub async fn channel_call(
     let row = call(&mut *connection, By::Place(place), false).await?;
     let in_use = row.as_ref().is_some_and(|call| call.started_at.is_some());
     let shown = match &row {
-        Some(call) if in_use && (!channel.hides_occupants || inside) => {
+        Some(call) if in_use && reads(&mut *connection, call, viewer).await? => {
             Some(view(connection, call).await?)
         }
         _ => None,
@@ -540,6 +597,22 @@ pub async fn publishing_of(
     } else {
         Publishing::open()
     })
+}
+
+/// What the join token of an account states that the account may publish. An account that
+/// is not inside a call that hides who is inside gets pictures only, whatever the state of
+/// the call: the grant of [`publishing_of`] depends on meeting mode, which such an account
+/// must not learn (ADR 0517). The admission check sets what the account may publish when it
+/// has seen the account in the room.
+pub async fn publishing_at_join(
+    connection: &mut PgConnection,
+    call: &CallRow,
+    account_id: AccountId,
+) -> ApiResult<Publishing> {
+    if !reads(&mut *connection, call, account_id).await? {
+        return Ok(Publishing::pictures_only());
+    }
+    publishing_of(connection, call, account_id).await
 }
 
 /// One place in a call: the account, the device and the session that asked for it, and the
@@ -837,13 +910,15 @@ pub async fn take_out(
 
 /// Tells both sides of an invitation how it ended, each while it may be at the place of the
 /// call. A declined ring of a direct-message call is recorded for the pause that follows
-/// it, and an accepted one is no longer counted (ADR 0515).
+/// it, and an accepted one is no longer counted (ADR 0515). The invited account of a
+/// silent invitation was not told of it and is not told how it ended.
 pub async fn tell_invitation(
     connection: &mut PgConnection,
     now: OffsetDateTime,
-    invitation: &CallInvitation,
+    waiting: &Waiting,
     outcome: InvitationOutcome,
 ) -> ApiResult<()> {
+    let invitation = &waiting.invitation;
     match outcome {
         InvitationOutcome::Declined => {
             ring_declined(&mut *connection, now, invitation.id).await?;
@@ -861,32 +936,56 @@ pub async fn tell_invitation(
         outcome,
     };
     let at = [invitation.place];
-    for account_id in [invitation.account_id, invitation.invited_by] {
+    for account_id in waiting.told() {
         events::tell_account_at(&mut *connection, now, account_id, &at, &resolved).await?;
     }
     Ok(())
 }
 
-type InvitationRow = (
+pub type InvitationRow = (
     CallInvitationId,
     AccountId,
     AccountId,
     OffsetDateTime,
     OffsetDateTime,
+    bool,
 );
 
-pub const INVITATION_COLUMNS: &str = "id, account_id, invited_by, created_at, expires_at";
+pub const INVITATION_COLUMNS: &str = "id, account_id, invited_by, created_at, expires_at, silent";
 
-pub fn invitation(call: &CallRow, row: InvitationRow) -> CallInvitation {
-    let (id, account_id, invited_by, created_at, expires_at) = row;
-    CallInvitation {
-        id,
-        call_id: call.id,
-        place: call.place,
-        account_id,
-        invited_by,
-        created_at,
-        expires_at,
+/// An invitation that waits. A silent one is the ring of a direct-message call for an
+/// account that muted the conversation or is in its quiet time: the caller has it, with
+/// the events and the end of every ring, and the invited account learns nothing of it
+/// (ADR 0515).
+#[derive(Debug, Clone)]
+pub struct Waiting {
+    pub invitation: CallInvitation,
+    pub silent: bool,
+}
+
+impl Waiting {
+    /// The accounts that are told of the invitation and of its end.
+    pub fn told(&self) -> impl Iterator<Item = AccountId> {
+        let invited = (!self.silent).then_some(self.invitation.account_id);
+        invited
+            .into_iter()
+            .chain(std::iter::once(self.invitation.invited_by))
+    }
+}
+
+pub fn invitation(call: &CallRow, row: InvitationRow) -> Waiting {
+    let (id, account_id, invited_by, created_at, expires_at, silent) = row;
+    Waiting {
+        invitation: CallInvitation {
+            id,
+            call_id: call.id,
+            place: call.place,
+            account_id,
+            invited_by,
+            created_at,
+            expires_at,
+        },
+        silent,
     }
 }
 
@@ -933,12 +1032,17 @@ pub fn entry_request(call: &CallRow, row: EntryRow) -> EntryRequest {
     }
 }
 
-/// The requests to enter a call that wait for an answer.
+/// The requests to enter a call that wait for an answer, for an account inside the call.
+/// Another account gets none: the requests are for the people inside (ADR 0517).
 pub async fn entry_requests(
     connection: &mut PgConnection,
     now: OffsetDateTime,
     call: &CallRow,
+    reader: AccountId,
 ) -> ApiResult<Vec<EntryRequest>> {
+    if !is_inside(&mut *connection, call.id, reader).await? {
+        return Ok(Vec::new());
+    }
     let rows: Vec<EntryRow> = sqlx::query_as(AssertSqlSafe(format!(
         "select {ENTRY_COLUMNS} from call_entry_requests
          where call_id = $1 and accepted_by is null and expires_at > $2
@@ -972,12 +1076,8 @@ pub async fn tell_entry(
         outcome,
         by,
     };
-    if let CallPlace::Channel {
-        workspace_id,
-        channel_id,
-    } = request.place
-    {
-        events::tell_inside(&mut *connection, now, workspace_id, channel_id, &resolved).await?;
+    if matches!(request.place, CallPlace::Channel { .. }) {
+        events::tell_inside(&mut *connection, now, &resolved).await?;
     }
     let answered = Event::CallEntryAnswered {
         request_id: request.id,
@@ -1037,8 +1137,9 @@ pub async fn end_if_empty(
     resolve_invitations(&mut *connection, now, &ending, all, None, None, cancelled).await?;
     let cancelled = EntryOutcome::Cancelled;
     resolve_entries(&mut *connection, now, &ending, all, None, None, cancelled).await?;
-    if let Some(channel_id) = ending.place.channel_id() {
-        crate::recordings::store::call_ended(&mut *connection, now, call_id, channel_id).await?;
+    if ending.place.channel_id().is_some() {
+        let hides = ending.hides_occupants;
+        crate::recordings::store::call_ended(&mut *connection, now, call_id, hides).await?;
     }
     if ending.started_at.is_some() {
         note(&mut *connection, now, &ending, Note::CallEnded, None).await?;
@@ -1269,6 +1370,29 @@ pub async fn mark_channel(
         calls.mark(&room);
     }
     Ok(())
+}
+
+/// The place of the call that an account has a seat in.
+pub async fn seat_key(
+    connection: &mut PgConnection,
+    account_id: AccountId,
+) -> ApiResult<Option<CallKey>> {
+    let row: Option<(Option<ChannelId>, Option<AccountId>, Option<AccountId>)> = sqlx::query_as(
+        "select c.channel_id, c.direct_low, c.direct_high
+         from call_members m
+         join calls c on c.id = m.call_id
+         where m.account_id = $1",
+    )
+    .bind(account_id)
+    .fetch_optional(connection)
+    .await?;
+    Ok(
+        row.and_then(|(channel_id, low, high)| match (channel_id, low, high) {
+            (Some(channel_id), ..) => Some(CallKey::Channel(channel_id)),
+            (None, Some(low), Some(high)) => Some(CallKey::Direct(low, high)),
+            _ => None,
+        }),
+    )
 }
 
 /// Every account that is a member of a call, with the place of its call.

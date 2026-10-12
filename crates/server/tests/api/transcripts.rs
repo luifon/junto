@@ -342,7 +342,7 @@ async fn voices_in_shared_sound_get_labels_that_a_person_renames() {
             recording_id: id,
             workspace_id: scene.workspace_id,
             channel_id: scene.voice.id,
-            speaker: named.clone(),
+            speaker: 1,
         }]
     );
     let again: TranscriptSpeaker = server
@@ -1137,6 +1137,36 @@ async fn a_server_without_a_worker_builds_no_transcript() {
     assert_eq!(server.count("transcripts").await, 0);
 }
 
+/// A server that starts the worker itself gives the batch size of its setting to each job,
+/// as the loop of the worker container does (ADR 0607, ADR 0016).
+#[tokio::test]
+async fn the_batch_size_of_the_setting_is_an_option_of_each_run_of_the_worker() {
+    let worker = FakeWorker::new();
+    let mut settings = worker.settings();
+    settings.batch_size = Some(2);
+    let server = TestServer::start_for_calls_with(|config| {
+        config.recorder.as_mut().unwrap().transcriber = Some(settings);
+    })
+    .await;
+    let studio = Studio::on(server).await;
+    let server = &studio.scene.server;
+    let done = studio.finished_after(length()).await;
+    worker.give(&two_lines(&done));
+    assert!(server.transcribe().await);
+    let runs = worker.runs();
+    assert_eq!(runs.len(), 1);
+    let directory = server.recordings_dir().join(done.recording.id.to_string());
+    let expected = format!("--audio-root {} --batch-size 2", directory.display());
+    assert!(runs[0].ends_with(&expected), "{}", runs[0]);
+    assert_eq!(
+        server
+            .transcript(&studio.scene.ann, done.recording.id)
+            .await
+            .state,
+        TranscriptState::Ready
+    );
+}
+
 #[tokio::test]
 async fn a_line_is_corrected_by_every_person_who_reads_the_recording() {
     let worker = FakeWorker::new();
@@ -1182,11 +1212,14 @@ async fn a_line_is_corrected_by_every_person_who_reads_the_recording() {
             workspace_id: scene.workspace_id,
             channel_id: scene.voice.id,
             line: 1,
-            text: "Can you all hear me?".to_owned(),
-            corrected_by: ben.account_id,
-            corrected_at: first_at,
         }]
     );
+    // The event states which line changed. The text is read from the route of the lines.
+    let read: TranscriptLinePage = server
+        .get(owner, &path(id, "/lines?after=0&limit=1"))
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(read.lines, std::slice::from_ref(&corrected));
 
     // A later correction is shown with its author; the text of the worker stays.
     server.clock.advance(Duration::seconds(5));
@@ -1333,7 +1366,7 @@ async fn the_lines_are_read_in_pages() {
 #[tokio::test]
 async fn a_transcript_is_read_and_changed_by_the_rule_of_its_recording() {
     let worker = FakeWorker::new();
-    let studio = Studio::on(worker.server().await).await;
+    let studio = Studio::hidden_on(worker.server().await).await;
     let scene = &studio.scene;
     let (server, owner, ann) = (&scene.server, &scene.owner, &scene.ann);
     server.publish(
@@ -1431,26 +1464,33 @@ async fn a_transcript_is_read_and_changed_by_the_rule_of_its_recording() {
     assert_eq!(observable(by_the_stranger), not_found);
     assert_eq!(server.count("transcript_corrections").await, 0);
 
-    // Every member of the workspace sees the channel and reads the transcript.
-    let seen = requests("outsider", id).await;
-    assert!(seen.iter().all(|reply| reply.status == StatusCode::OK));
-
-    // While the call runs in a channel that hides who is inside, a person outside gets the
-    // answer of an absent recording, for every route.
-    server
-        .call_settings(owner, scene.voice.id, json!({ "hides_occupants": true }))
-        .await;
-    assert_eq!(observable(requests("outsider", id).await), not_found);
-    assert_eq!(observable(requests("owner", id).await), not_found);
-    assert_eq!(observable(managing(id).await), absent_managed);
+    // While the call runs and hides who is inside, a person outside gets the answer of an
+    // absent recording, for every route. Turning the setting off changes nothing for that
+    // call (ADR 0517).
+    for turn in 0..2 {
+        assert_eq!(observable(requests("outsider", id).await), not_found);
+        assert_eq!(observable(requests("owner", id).await), not_found);
+        assert_eq!(observable(managing(id).await), absent_managed);
+        if turn == 0 {
+            server
+                .call_settings(owner, scene.voice.id, json!({ "hides_occupants": false }))
+                .await;
+        }
+    }
     let inside = requests("ann", id).await;
     assert!(inside.iter().all(|reply| reply.status == StatusCode::OK));
+    assert_eq!(server.count("transcript_corrections").await, 1);
+
+    // When the call has ended, every member of the workspace sees the channel and reads
+    // and changes the transcript.
+    server.leave_call(ann).await;
+    server.leave_call(&scene.ben).await;
+    server.check().await;
+    let seen = requests("outsider", id).await;
+    assert!(seen.iter().all(|reply| reply.status == StatusCode::OK));
     assert_eq!(server.count("transcript_corrections").await, 2);
 
     // A person who does not see the channel reads nothing of it.
-    server
-        .call_settings(owner, scene.voice.id, json!({ "hides_occupants": false }))
-        .await;
     let role: junto_protocol::roles::WorkspaceRole = server
         .post(
             owner,

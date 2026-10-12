@@ -136,14 +136,25 @@ async fn a_hidden_voice_channel_shows_the_people_outside_only_that_it_is_in_use(
         .empty(StatusCode::NO_CONTENT);
     assert!(server.call_events(ben, &mut to_ben).await.is_empty());
     let mut ann_stream = server.full_stream(ann).await;
+    // The answer of the join shows nothing of the call before the check has seen the seat
+    // (ADR 0517).
     let ben_join = server.join_call(ben, voice).await;
-    assert_eq!(ben_join.call.participants.len(), 1);
-    assert_eq!(ben_join.call.participants[0].account_id, ann.account_id);
-    assert!(ben_join.call.participants[0].muted);
+    assert!(ben_join.call.hides_occupants);
+    assert!(ben_join.call.participants.is_empty());
+    assert_eq!(ben_join.call.lock, None);
     server.connect(ben_join);
+    // The token of a seat of a hidden call allows pictures only; the check that sees the
+    // account gives it its microphone (ADR 0517).
+    let seen = Outcome::Checked {
+        removed: 0,
+        updated: 1,
+    };
+    assert_eq!(server.check().await, seen);
     assert_eq!(server.check().await, CLEAN);
     let inside = server.channel_call(ben, voice).await.call.unwrap();
     assert_eq!(inside.participants.len(), 2);
+    assert_eq!(inside.participants[0].account_id, ann.account_id);
+    assert!(inside.participants[0].muted);
     assert_eq!(
         names(&server.call_events(ben, &mut to_ben).await),
         ["own_call_changed", "call_participant_joined"]
@@ -163,11 +174,12 @@ async fn a_hidden_voice_channel_shows_the_people_outside_only_that_it_is_in_use(
         ["own_call_changed"]
     );
 
+    // The running call keeps the setting that it started with; the next call shows who is
+    // inside (ADR 0517).
     server
         .call_settings(owner, voice, json!({ "hides_occupants": false }))
         .await;
-    let open = server.channel_call(ben, voice).await.call.unwrap();
-    assert_eq!(open.participants[0].account_id, ann.account_id);
+    assert_eq!(server.channel_call(ben, voice).await.call, None);
     server
         .put(
             ann,
@@ -176,14 +188,18 @@ async fn a_hidden_voice_channel_shows_the_people_outside_only_that_it_is_in_use(
         )
         .await
         .empty(StatusCode::NO_CONTENT);
-    assert_eq!(
-        names(&server.call_events(ben, &mut to_ben).await),
-        ["call_participant_updated"]
-    );
     server.leave_call(ann).await;
     assert_eq!(
         names(&server.call_events(ben, &mut to_ben).await),
-        ["call_participant_left", "call_ended"]
+        ["call_ended"]
+    );
+    server.enter_call(ann, voice).await;
+    let open = server.channel_call(ben, voice).await.call.unwrap();
+    assert_eq!(open.participants[0].account_id, ann.account_id);
+    assert!(!open.hides_occupants);
+    assert_eq!(
+        names(&server.call_events(ben, &mut to_ben).await),
+        ["call_started", "call_participant_joined"]
     );
 }
 
@@ -221,7 +237,13 @@ async fn a_person_outside_asks_to_enter_and_the_first_answer_of_a_person_inside_
         }]
     );
     assert!(server.call_events(&carl, &mut to_carl).await.is_empty());
-    assert!(server.call_events(ben, &mut to_ben).await.is_empty());
+    // The account that asked is told of its own request, for its other devices.
+    assert_eq!(
+        server.call_events(ben, &mut to_ben).await,
+        [Event::CallEntryRequested {
+            request: request.clone()
+        }]
+    );
     assert_eq!(
         server.own_call(ann).await.call.unwrap().entry_requests,
         std::slice::from_ref(&request)
@@ -335,10 +357,13 @@ async fn a_person_outside_asks_to_enter_and_the_first_answer_of_a_person_inside_
     assert_eq!(server.check().await, CLEAN);
     assert!(matches!(
         server.call_events(&carl, &mut to_carl).await.as_slice(),
-        [Event::CallEntryAnswered {
-            outcome: EntryOutcome::Expired,
-            ..
-        }]
+        [
+            Event::CallEntryRequested { .. },
+            Event::CallEntryAnswered {
+                outcome: EntryOutcome::Expired,
+                ..
+            }
+        ]
     ));
     answer(server, ann, &expiring, true)
         .await

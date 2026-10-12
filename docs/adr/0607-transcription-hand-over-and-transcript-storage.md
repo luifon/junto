@@ -30,6 +30,7 @@ The worker process:
 - Each run has a new directory `<recording>/transcription/<attempt>-<random>/` with the job file, and the worker writes the transcript file into it. A run first deletes the directories of earlier attempts, and at its end deletes its own directory. It never deletes the directory of a later attempt, which belongs to a process that took the job from it. The audio paths of the job are the names of the audio files in the directory of the recording.
 - A run is a process group of its own, because the command can be a script that starts the worker. The server signals the group. When a run has ended, in any way, the server ends every process that is left of its group, and waits at most 5 seconds for the log of the run to close. It ends the group before it collects the worker, so the identifier of the group cannot belong to another process by then.
 - The process gets `PATH` and the variables of the worker that are set for the server (`JUNTO_TRANSCRIBE_MODELS`, `JUNTO_TRANSCRIBE_WHISPER_MODEL`, `JUNTO_TRANSCRIBE_DEVICE` and the limits of `workers/transcription/README.md`). It gets no other variable.
+- `JUNTO_TRANSCRIBE_BATCH_SIZE` is a setting of the server: a whole number from 1 to 64, the speech clips that the speech model reads at one time. The server adds it to each run as the option `--batch-size <number>` after the audio root. The worker reads the batch size from that option only, so the variable is not passed to the process. A server with another value does not start. Without the setting the worker uses the number of its model.
 - The log lines of the worker are written to the log of the server. They hold no value of a job (ADR 0610).
 - A run has a time limit of 13 hours, one hour above the worker's own limit. At the limit the server sends the stop signal to the group, and ends the group 10 seconds later when the worker still runs.
 
@@ -66,7 +67,9 @@ Routes:
 - `PUT .../transcript/lines/{line}` corrects a line with a text of 1 to 2000 characters. `PUT .../transcript/speakers/{number}` names the voice of the label `Speaker <number>` in this recording.
 - `GET .../transcript/text` returns the transcript as plain text, one line of text for each line, with its time, its speaker and its newest correction.
 - Every route follows the rule of the recording (ADR 0604): the caller sees the voice channel, and while the call of the recording runs in a channel that hides who is inside, the caller is inside. Corrections and renames need no further permission (ADR 0603) and count against the limit of actions of a session.
-- `transcript_line_corrected` carries the position, the text, the author and the time. `transcript_speaker_renamed` carries the label with its name. Both go to the recipients of the events of the recording.
+- `transcript_line_corrected` carries the recording, its workspace, its voice channel and the position of the line. `transcript_speaker_renamed` carries the same three identifiers and the number of the label. Neither carries a text, a name, an author or a time. The event log is append-only (ADR 0010): a text in an event stays readable from the log after its recording was removed (ADR 0608), also for an account that joined later. ADR 0408 keeps message text out of events for the same reason.
+- A client that receives one of the two events reads the line from `.../transcript/lines` (`after` is the position before the line, `limit` is 1) or the label from `.../transcript`. Both events go to the recipients of the events of the recording.
+- The migration that introduces this rule removes the text, the author and the time from the stored events of corrections, and replaces the label of the stored events of renames by its number.
 
 Glossary:
 
@@ -88,5 +91,6 @@ Glossary:
 - A glossary term that the tokenizer of the speech model turns into a control token makes the worker refuse the job (ADR 0613). The transcript fails with `job_refused` until the term is removed and the transcript is asked for again.
 - A transcript that was asked for again replaces the failed one. A transcript with lines is not replaced, so no correction is lost.
 - Every person who reads a recording can change its transcript. The corrections of a line are kept in the database; the API shows the newest.
+- The event of a correction or of a rename states which line or label changed, not what it holds now. A client that shows the transcript sends one request for it. After the removal of a recording, the event log holds the identifiers of the recording and the positions that were changed, and no text of it.
 - The lines are rows, so the search of ADR 0405 can read them.
 - The tests run a stand-in process that follows the contract. One tier, which is ignored in the plain run, runs the worker of `workers/transcription` with the development model on a short generated speech file.

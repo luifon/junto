@@ -139,6 +139,12 @@ pub struct Call {
     pub started_at: Option<OffsetDateTime>,
     pub lock: Option<CallLock>,
     pub meeting: Option<Meeting>,
+    /// The call shows who is inside only to the people inside. It keeps the setting that
+    /// its voice channel had when the call began; a later change of the channel applies to
+    /// the next call (ADR 0517). An account that is not inside such a call yet gets it
+    /// without lock, meeting, participants and recording.
+    #[serde(default)]
+    pub hides_occupants: bool,
     /// The people whom the media server lists in the room and whom the server allows there.
     pub participants: Vec<CallParticipant>,
     /// The recording of the call that is starting or runs. The people in the call see an

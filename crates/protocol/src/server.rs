@@ -27,9 +27,10 @@ pub struct Health {
     /// person, and it lets nobody in.
     #[serde(default)]
     pub failing_call_rooms: u32,
-    /// True while the free disk space of the recordings is at or below the reserve: the
-    /// server starts no recording and stops the ones that run (ADR 0006). Absent on a server
-    /// without a recorder, and when the free space cannot be read.
+    /// True while the free disk space of the recordings, of the attachments or of the
+    /// exports is at or below the reserve: the server starts no recording, stops the ones
+    /// that run, and refuses new uploads and exports (ADR 0006). Absent on a server without
+    /// such a directory, and when no free space can be read.
     #[serde(default)]
     pub storage_low: Option<bool>,
 }

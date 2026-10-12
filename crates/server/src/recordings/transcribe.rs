@@ -246,6 +246,13 @@ async fn run_worker(
         .arg(job_directory.join(JOB_TRANSCRIPT))
         .arg("--audio-root")
         .arg(audio_root)
+        .args(
+            settings
+                .batch_size
+                .map(|size| ["--batch-size".to_owned(), size.to_string()])
+                .into_iter()
+                .flatten(),
+        )
         .env_clear()
         .envs(
             settings

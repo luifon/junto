@@ -79,8 +79,9 @@ struct Plan {
     main_share: Option<String>,
     /// The recording left the active states with files to process.
     ended: bool,
-    /// The recording ends, and a job was declared lost in this pass. The recorder is asked
-    /// about the job after the stop of this plan, in a pass that follows at once.
+    /// The recording ends, and the stop of a job that was declared lost is owed. The
+    /// recorder is asked about the job after the stop of this plan, in a pass that follows
+    /// at once.
     asks_again: bool,
 }
 
@@ -245,6 +246,7 @@ fn new_segment(
         requested_at: now,
         job_started_at: None,
         stop_delivered_at: None,
+        stop_owed: false,
         started_at: None,
         ended_at: None,
         duration_ms: None,
@@ -324,9 +326,8 @@ async fn decide(
     let mut segments = store::segments(&mut *connection, id).await?;
     let mut changed = false;
     let mut failed = false;
-    // The jobs that this pass declares lost without a stop that the recorder took. Their
-    // stop follows this transaction, so the recorder was not asked about them after it.
-    let mut stop_follows = HashSet::new();
+    // A file result replaced the declaration of a lost job.
+    let mut replaced = false;
 
     let call_runs: bool = sqlx::query_scalar("select exists (select 1 from calls where id = $1)")
         .bind(recording.call_id)
@@ -359,7 +360,7 @@ async fn decide(
             };
             let is_present = present.contains(job_id.as_str());
             let is_closed = matches!(segment.state, SegmentState::Ended | SegmentState::Failed);
-            if is_closed && is_present {
+            if is_closed && is_present && !segment.stop_owed {
                 // The record has closed the segment and its job is still in the room: a job
                 // that was declared lost while its recorder lived, and whose stop had no
                 // answer. It gets the stop until it has left.
@@ -391,22 +392,32 @@ async fn decide(
                         store::close_segment(&mut *connection, segment, lost, file).await?;
                         (changed, failed) = (true, true);
                         if segment.stop_delivered_at.is_none() {
-                            stop_follows.insert(segment.id);
+                            // The stop follows this transaction. It is stored as owed, so
+                            // that a pass of another server process sends it as well.
+                            store::owe_stop(&mut *connection, segment).await?;
+                        } else {
+                            plan.stops.push((Some(segment.id), job_id));
                         }
-                        plan.stops.push((Some(segment.id), job_id));
                     }
                 }
                 (SegmentState::Failed, Some(JobStatus::Complete))
                     if recorded && segment.failure == Some(SegmentFailure::RecorderLost) =>
                 {
                     store::close_segment(&mut *connection, segment, None, file).await?;
-                    changed = true;
+                    (changed, replaced) = (true, true);
                 }
                 _ => {}
             }
         }
         for job_id in &observed.unknown_jobs {
             plan.stops.push((None, job_id.clone()));
+        }
+    }
+    // A stop that is owed is sent by every pass until it has had an end: the pass that
+    // declared the job lost, or a later one when that pass did not store an answer.
+    for segment in &segments {
+        if let (true, Some(job_id)) = (segment.stop_owed, &segment.job_id) {
+            plan.stops.push((Some(segment.id), job_id.clone()));
         }
     }
 
@@ -540,9 +551,10 @@ async fn decide(
     // every segment, the room holds no participant of the recorder, so that no job of it,
     // known or not, records, and the recorder was asked in this pass about every job that
     // was declared lost. A job that was declared lost while its recorder lived ends by the
-    // stop that follows the declaration: the recorder is asked after that stop, and a job
-    // whose stop the recorder took has the time of a stopped job to report its end. In that
-    // time only a report of an end, or of a job that the recorder does not know, settles it.
+    // stop that follows the declaration: while that stop is owed the recording stays, the
+    // recorder is asked after the stop, and a job whose stop the recorder took has the time
+    // of a stopped job to report its end. In that time only a report of an end, or of a job
+    // that the recorder does not know, settles it.
     let every_job_ended = segments
         .iter()
         .all(|segment| matches!(segment.state, SegmentState::Ended | SegmentState::Failed));
@@ -562,7 +574,7 @@ async fn decide(
                 && segment
                     .stop_delivered_at
                     .is_some_and(|at| observed.at - at <= limits.ending_grace);
-            asked && !ending && !stop_follows.contains(&segment.id)
+            asked && !ending && !segment.stop_owed
         };
         observed.recorder_participants().is_empty()
             && segments
@@ -590,7 +602,10 @@ async fn decide(
         plan.ended = failure.is_none();
         changed = true;
     }
-    plan.asks_again = recording.stop.is_some() && !stop_follows.is_empty();
+    plan.asks_again = recording.stop.is_some() && segments.iter().any(|segment| segment.stop_owed);
+    if replaced && segments.iter().all(|segment| segment.failure.is_none()) {
+        store::failure_replaced(&mut *connection, now, &recording).await?;
+    }
     if failed {
         store::note_failure(&mut *connection, now, &recording).await?;
     }
@@ -726,9 +741,8 @@ async fn record(
         }
     }
     for (segment_id, answer) in &answers.stopped {
-        if matches!(answer, Ok(()) | Err(RecorderError::Refused(_))) {
-            store::stop_delivered(&mut *connection, now, *segment_id).await?;
-        }
+        let delivered = matches!(answer, Ok(()) | Err(RecorderError::Refused(_)));
+        store::stop_answered(&mut *connection, now, *segment_id, delivered).await?;
     }
     if answers.started.is_empty() {
         return Ok(false);
@@ -753,8 +767,8 @@ async fn record(
 
 /// Runs one pass over one recording. Without a recorder or a media server, while another
 /// pass over the recording runs, and for a recording that is no longer active, it does
-/// nothing. A pass that declares a job of an ending recording lost is followed by a second
-/// one, which asks the recorder about that job after its stop.
+/// nothing. A pass that sends the owed stop of a job of an ending recording is followed by
+/// a second one, which asks the recorder about that job after its stop.
 pub async fn tend(app: &AppState, id: RecordingId) -> ApiResult<()> {
     let (Some(backend), Some(media)) = (app.recordings.backend(), app.calls.media()) else {
         return Ok(());

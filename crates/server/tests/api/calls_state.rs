@@ -842,7 +842,7 @@ async fn speaking_marks_reach_the_people_outside_at_a_bounded_rate() {
     let scene = Scene::start().await;
     let (server, owner, ann, ben) = (&scene.server, &scene.owner, &scene.ann, &scene.ben);
     let voice = scene.voice.id;
-    let seat = server.enter_call(ann, voice).await;
+    server.enter_call(ann, voice).await;
     server.enter_call(ben, voice).await;
     let mut to_owner = server.full_stream(owner).await;
     let publish = || async { speaking::publish(&server.state).await.unwrap() };
@@ -909,9 +909,16 @@ async fn speaking_marks_reach_the_people_outside_at_a_bounded_rate() {
             .all(Vec::is_empty)
     );
 
+    // The call that begins after the setting hides who is inside (ADR 0517): it has no
+    // speaking mark.
     server
         .call_settings(owner, voice, json!({ "hides_occupants": true }))
         .await;
+    server.leave_call(ann).await;
+    server.leave_call(ben).await;
+    server.check().await;
+    let seat = server.enter_call(ann, voice).await;
+    server.call_events(owner, &mut to_owner).await;
     report_state(server, ann, false, false)
         .await
         .empty(StatusCode::NO_CONTENT);
@@ -1751,11 +1758,17 @@ async fn rule_71_72_a_moderator_lowers_a_hand_and_other_people_are_refused() {
         .await
         .error(ErrorCode::NotFound);
 
-    // In a channel that hides who is inside, a moderator outside learns nothing.
-    raise_hand(server, ben).await;
+    // In a call that hides who is inside, a moderator outside learns nothing. The setting
+    // applies to the call that begins after it (ADR 0517).
     server
         .call_settings(owner, voice, json!({ "hides_occupants": true }))
         .await;
+    server.leave_call(ann).await;
+    server.leave_call(ben).await;
+    server.check().await;
+    server.enter_call(ann, voice).await;
+    server.enter_call(ben, voice).await;
+    raise_hand(server, ben).await;
     server
         .delete(owner, &hand)
         .await

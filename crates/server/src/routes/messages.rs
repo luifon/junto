@@ -244,8 +244,18 @@ pub async fn get_message(
     bearer: Bearer,
     ApiPath(id): ApiPath<MessageId>,
 ) -> ApiResult<Json<Message>> {
+    let mut counted = false;
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, app.now()).await?;
+        if !counted {
+            app.message_reads
+                .attempt_of(access.account_id, app.now())
+                .map_err(|error| {
+                    ApiError::new(ErrorCode::RateLimited, "too many message reads")
+                        .retry_after(error.retry_after)
+                })?;
+            counted = true;
+        }
         Ok(messages::get(connection, &access, id).await?.1)
     })
     .map(Json)

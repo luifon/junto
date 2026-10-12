@@ -24,10 +24,13 @@ const USAGE: &str = "usage:
   junto-server backup-files <backup-id>    after the copy of the database: list the files to copy
   junto-server backup-end <backup-id>      state that the backup has copied its files
   junto-server restored                    after a restore: new event epoch, no export, no backup
+  junto-server schema-version              print the newest migration of this binary
+  junto-server unnamed-files [--remove]    list, or remove, the directories that no row names
   junto-server health                      exit code 0 while the server of this host is healthy
 
-Every form except health reads JUNTO_DATABASE_URL; the commands work on the database
-directly. health reads JUNTO_LISTEN_ADDRESS and asks the health route.";
+Every form except health and schema-version reads JUNTO_DATABASE_URL; the commands work on
+the database directly. health reads JUNTO_LISTEN_ADDRESS and asks the health route.
+schema-version reads no setting.";
 
 enum Command {
     Serve,
@@ -39,6 +42,8 @@ enum Command {
     BackupFiles(uuid::Uuid),
     BackupEnd(uuid::Uuid),
     Restored,
+    SchemaVersion,
+    UnnamedFiles { remove: bool },
     Health,
 }
 
@@ -51,6 +56,11 @@ fn command(arguments: &[String]) -> Result<Command, String> {
         [name] if name == "check-upgrade" => Ok(Command::CheckUpgrade),
         [name] if name == "backup-begin" => Ok(Command::BackupBegin),
         [name] if name == "restored" => Ok(Command::Restored),
+        [name] if name == "schema-version" => Ok(Command::SchemaVersion),
+        [name] if name == "unnamed-files" => Ok(Command::UnnamedFiles { remove: false }),
+        [name, flag] if name == "unnamed-files" && flag == "--remove" => {
+            Ok(Command::UnnamedFiles { remove: true })
+        }
         [name] if name == "health" => Ok(Command::Health),
         [name, backup_id] if name == "backup-end" || name == "backup-files" => backup_id
             .parse()
@@ -80,8 +90,13 @@ async fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    if matches!(command, Command::Health) {
-        return health().await;
+    match command {
+        Command::Health => return health().await,
+        Command::SchemaVersion => {
+            println!("schema {}", junto_server::bootstrap::schema_version());
+            return ExitCode::SUCCESS;
+        }
+        _ => {}
     }
     let config = match Config::from_env() {
         Ok(config) => config,
@@ -109,7 +124,8 @@ async fn main() -> ExitCode {
         Command::BackupFiles(id) => backup_files(config, id).await,
         Command::BackupEnd(id) => backup_end(config, id).await,
         Command::Restored => restored(config).await,
-        Command::Health => Ok(()),
+        Command::UnnamedFiles { remove } => unnamed_files(config, remove).await,
+        Command::Health | Command::SchemaVersion => Ok(()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -197,13 +213,18 @@ async fn health() -> ExitCode {
 
 async fn serve(config: Config) -> Result<(), Failure> {
     let options: PgConnectOptions = config.database_url.parse()?;
-    let copy =
-        junto_server::bootstrap::copy_before_migration(&options, config.migration_copy).await?;
-    if let Some(copy) = &copy {
-        tracing::info!(
+    use junto_server::bootstrap::MigrationCopied;
+    match junto_server::bootstrap::copy_before_migration(&options, config.migration_copy).await? {
+        MigrationCopied::Nothing => {}
+        MigrationCopied::Made(copy) => tracing::info!(
             database = %copy,
             "this version changes the database; a copy of the database was made before"
-        );
+        ),
+        MigrationCopied::Unfinished(copy) => tracing::warn!(
+            database = copy.as_deref().unwrap_or("none"),
+            "an upgrade before this start did not apply every migration: no copy of the \
+             database was made; the database named here is the copy from before that upgrade"
+        ),
     }
     let database = connect(&config, DATABASE_CONNECTIONS).await?;
     let listen_address = config.listen_address;
@@ -291,13 +312,7 @@ async fn backup_files(config: Config, id: uuid::Uuid) -> Result<(), Failure> {
     use std::io::Write;
 
     let database = connect(&config, HOST_COMMAND_CONNECTIONS).await?;
-    let roots = junto_server::backup::Roots {
-        attachments: config.attachments_directory.clone(),
-        recordings: config
-            .recorder
-            .as_ref()
-            .map(|recorder| recorder.directory.clone()),
-    };
+    let roots = roots(&config);
     let mut output = std::io::stdout().lock();
     let mut failed = None;
     let now = SystemClock.now();
@@ -326,25 +341,86 @@ async fn backup_files(config: Config, id: uuid::Uuid) -> Result<(), Failure> {
     }
 }
 
+/// The directories of the files of the server, as its settings name them.
+fn roots(config: &Config) -> junto_server::backup::Roots {
+    junto_server::backup::Roots {
+        attachments: config.attachments_directory.clone(),
+        recordings: config
+            .recorder
+            .as_ref()
+            .map(|recorder| recorder.directory.clone()),
+        exports: config.exports_directory.clone(),
+    }
+}
+
+/// Ends a backup that runs. A backup that has expired, and the identifier of no backup,
+/// are failures: the server did not hold deletions back until this command.
 async fn backup_end(config: Config, id: uuid::Uuid) -> Result<(), Failure> {
+    use junto_server::backup::Ended;
+
     let database = connect(&config, HOST_COMMAND_CONNECTIONS).await?;
-    if junto_server::backup::end(&database, id).await? {
-        println!("The backup {id} has ended. The server deletes files again.");
-        Ok(())
-    } else {
-        Err(format!("no backup has the identifier {id}; it has ended or has expired").into())
+    match junto_server::backup::end_running(&database, SystemClock.now(), id).await? {
+        Ended::Done => {
+            println!("The backup {id} has ended. The server deletes files again.");
+            Ok(())
+        }
+        Ended::Expired(expired_at) => {
+            let expired_at = expired_at.format(&time::format_description::well_known::Rfc3339)?;
+            Err(format!(
+                "the backup {id} expired at {expired_at}: the server may have deleted files \
+                 before the backup copied them. Make the backup again"
+            )
+            .into())
+        }
+        Ended::Unknown => {
+            Err(format!("no backup has the identifier {id}; it has ended or has expired").into())
+        }
     }
 }
 
 async fn restored(config: Config) -> Result<(), Failure> {
+    use junto_server::backup::Restored;
+
     let database = connect(&config, HOST_COMMAND_CONNECTIONS).await?;
-    let done = junto_server::backup::restored(&database, SystemClock.now()).await?;
-    println!(
-        "The event stream has a new epoch, no backup holds deletions back, and {} export(s) \
-         were removed. Start the server.",
-        done.exports_removed
-    );
-    Ok(())
+    match junto_server::backup::restored(&database, SystemClock.now()).await? {
+        Restored::Done { exports_removed } => {
+            println!(
+                "The event stream has a new epoch, no backup holds deletions back, and \
+                 {exports_removed} export(s) were removed. Start the server."
+            );
+            Ok(())
+        }
+        Restored::OtherSchema(other) => Err(format!(
+            "{other}. Nothing was changed. Run the command with the version of the server \
+             that wrote the backup"
+        )
+        .into()),
+    }
+}
+
+/// Prints one line for each directory of an attachment, of a recording and of an export
+/// that no row names, and with `remove` deletes the ones that are old enough.
+async fn unnamed_files(config: Config, remove: bool) -> Result<(), Failure> {
+    use std::io::Write;
+
+    let database = connect(&config, HOST_COMMAND_CONNECTIONS).await?;
+    let roots = roots(&config);
+    let mut output = std::io::stdout().lock();
+    let mut failed = None;
+    let now = SystemClock.now();
+    let done = junto_server::backup::unnamed(&database, now, &roots, remove, |line| {
+        if failed.is_none()
+            && let Err(error) = writeln!(output, "{line}")
+        {
+            failed = Some(error);
+        }
+    })
+    .await;
+    if let Some(error) = failed {
+        return Err(error.into());
+    }
+    output.flush()?;
+    Ok(done?)
 }
 
 async fn issue_owner_code(config: Config) -> Result<(), Failure> {

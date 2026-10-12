@@ -50,6 +50,10 @@ pub enum AuditEvent {
     },
     InviteRevoked {
         invite_id: InviteId,
+        /// The account that created the invite. Absent in an entry that was written before
+        /// the field existed.
+        #[serde(default)]
+        invite_created_by: Option<AccountId>,
     },
     /// States which invite created the account and which account created that invite.
     AccountJoined {

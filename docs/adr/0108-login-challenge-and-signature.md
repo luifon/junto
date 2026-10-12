@@ -42,13 +42,15 @@ Challenge:
 - The origin is not a field of the challenge. The device takes it from the address that it connected to, and the server accepts only one of its own public origins (ADR 0117).
 - A request that needs proof carries the challenge identifier, the origin that the device signed, and the signature. The server reads the public key from the stored challenge.
 - A challenge lives 60 seconds.
-- The server stores one challenge per public key and operation, so at most 6 per key. A new challenge replaces the earlier one of the same key and operation.
+- The server stores one challenge per public key and operation, so at most 6 per key.
+- A request for a key and an operation whose stored challenge is unused and has at least half of its lifetime left gets that same challenge again. Otherwise a new challenge replaces the stored one.
+- Reason: a public key is not a secret. With a replacement at every request, a party that knows the key of a device ends each challenge of that key before the device answers it, and the logins of the device fail. A challenge is not a secret either: only the holder of the private key can answer it. A device answers within seconds, so a challenge is never replaced while a device still answers it in the first half of its lifetime, and no device gets a challenge that is about to expire.
 - The server marks a challenge as used in the transaction of the operation that the challenge authorizes (ADR 0009). When that transaction commits, the challenge is used, and a second request with it gets `challenge_invalid`.
 - When that transaction does not commit, the challenge is unused. This is the case after a wrong signature, after a refused operation, and after the errors `busy` and `timeout`. The client can send the same signed request again until the challenge expires.
 - A route accepts only a challenge of its own operation.
 - A `login` challenge is given only for a key of an active account. Another key gets the error `unknown_device`, and a key of a banned account gets `account_banned`.
 - Expired challenges are deleted by the maintenance task (ADR 0009).
-- The server counts the challenges that it issued and that have not expired. At 10 000 it refuses a further one with the error `challenges_full` and a `Retry-After` header that states when the oldest one expires. The count is held in memory, and a challenge that is replaced or used keeps its place until its expiry time.
+- The server counts the challenges that it issued and that have not expired. At 10 000 it refuses a further one with the error `challenges_full` and a `Retry-After` header that states when the oldest one expires. The count is held in memory, and a challenge that is replaced or used keeps its place until its expiry time. A request that gets the stored challenge again takes no place.
 
 Failed attempts:
 

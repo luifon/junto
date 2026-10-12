@@ -477,4 +477,65 @@ proptest! {
             }
         }
     }
+
+    #[test]
+    fn nobody_without_the_administrator_permission_lifts_a_deny_by_taking_a_role(
+        actor in non_administrator(),
+        caller in member_channel_scope(),
+        target_roles in prop::collection::vec(workspace_permissions(), 1..5),
+        taken in any::<Index>(),
+    ) {
+        let holding = |roles: Vec<HeldRole>| ChannelScope {
+            workspace: WorkspaceScope {
+                membership: Membership::Member,
+                everyone: caller.workspace.everyone,
+                roles,
+            },
+            everyone_override: caller.everyone_override,
+            role_overrides: caller.role_overrides.clone(),
+        };
+        let lifted = |role: RoleKey| caller
+            .role_overrides
+            .iter()
+            .find(|role_override| role_override.role == role)
+            .map_or(Override::NONE, |role_override| role_override.rule)
+            .granted_by_change_to(Override::NONE);
+        let allowed = |role: RoleKey| {
+            let grants = [ChannelGrant { scope: &caller, granting: lifted(role) }];
+            authorize(&actor, &Request::ManageWorkspaceRoles {
+                scope: &caller.workspace,
+                granting: WorkspacePermissions::EMPTY,
+                in_channels: &grants,
+            })
+            .is_allowed()
+        };
+
+        // Another member as the target: what the member gets back is what the caller can
+        // use in the channel.
+        let roles: Vec<HeldRole> = target_roles
+            .into_iter()
+            .enumerate()
+            .map(|(index, permissions)| HeldRole { key: RoleKey(index as u128), permissions })
+            .collect();
+        let role = roles[taken.index(roles.len())].key;
+        let before = holding(roles.clone());
+        let after = holding(roles.into_iter().filter(|held| held.key != role).collect());
+        let gained = after.effective_permissions().difference(before.effective_permissions());
+        prop_assert!(lifted(role).contains_all(gained));
+        if allowed(role) {
+            prop_assert!(caller.usable_permissions().contains_all(gained));
+        }
+
+        // The own account as the target: the caller gets nothing back.
+        if !caller.workspace.roles.is_empty() {
+            let own = caller.workspace.roles[taken.index(caller.workspace.roles.len())].key;
+            if allowed(own) {
+                let kept = caller.workspace.roles.iter().copied().filter(|held| held.key != own);
+                let without = holding(kept.collect());
+                prop_assert!(
+                    caller.effective_permissions().contains_all(without.effective_permissions())
+                );
+            }
+        }
+    }
 }

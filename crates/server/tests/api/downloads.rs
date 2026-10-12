@@ -133,7 +133,7 @@ async fn one_range_of_a_file_is_downloaded() {
 
 #[tokio::test]
 async fn a_file_is_downloaded_by_the_rule_of_its_recording() {
-    let studio = Studio::open().await;
+    let studio = Studio::hidden().await;
     let scene = &studio.scene;
     let (server, owner, ann) = (&scene.server, &scene.owner, &scene.ann);
     let done = studio.finished().await;
@@ -155,28 +155,34 @@ async fn a_file_is_downloaded_by_the_rule_of_its_recording() {
             absent
         );
     }
-    assert_eq!(
-        server
-            .get(&outsider, &file_path(id, composite.id))
-            .await
-            .status,
-        StatusCode::OK
-    );
 
-    // While the call runs in a channel that hides who is inside, only the people inside
-    // download a file (ADR 0604).
-    server
-        .call_settings(owner, scene.voice.id, json!({ "hides_occupants": true }))
-        .await;
-    for path in [file_path(id, composite.id), file_path(id, tracks[0].id)] {
-        assert_eq!(server.get(&outsider, &path).await.observable(), absent);
-        assert_eq!(server.get(owner, &path).await.observable(), absent);
-        assert_eq!(server.get(ann, &path).await.status, StatusCode::OK);
+    // While the call runs and hides who is inside, only the people inside download a file
+    // (ADR 0604). Turning the setting off changes nothing for that call (ADR 0517).
+    for turn in 0..2 {
+        for path in [file_path(id, composite.id), file_path(id, tracks[0].id)] {
+            assert_eq!(server.get(&outsider, &path).await.observable(), absent);
+            assert_eq!(server.get(owner, &path).await.observable(), absent);
+            assert_eq!(server.get(ann, &path).await.status, StatusCode::OK);
+        }
+        if turn == 0 {
+            server
+                .call_settings(owner, scene.voice.id, json!({ "hides_occupants": false }))
+                .await;
+        }
     }
     let unsigned = server
         .send::<Value>(Method::GET, &file_path(id, composite.id), None, None, None)
         .await;
     unsigned.error(ErrorCode::Unauthenticated);
+
+    // When the call has ended, every person who sees the channel downloads the file.
+    server.leave_call(ann).await;
+    server.leave_call(&scene.ben).await;
+    server.check().await;
+    for reader in [&outsider, owner] {
+        let whole = server.get(reader, &file_path(id, composite.id)).await;
+        assert_eq!(whole.status, StatusCode::OK);
+    }
 }
 
 #[tokio::test]
@@ -243,7 +249,7 @@ async fn the_server_sends_a_bounded_number_of_files_at_one_time() {
             .await;
         assert_eq!(sent.status, StatusCode::OK);
         let waited = std::time::Instant::now();
-        while one.state.recordings.download().is_none() {
+        while one.state.recordings.download(ann.account_id).is_none() {
             assert!(waited.elapsed() < std::time::Duration::from_secs(20));
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }

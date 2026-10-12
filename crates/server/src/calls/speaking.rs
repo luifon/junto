@@ -101,7 +101,7 @@ pub async fn publish(app: &AppState) -> ApiResult<usize> {
             let Some(call) = store::call(connection, By::Id(call_id), false).await? else {
                 return Ok(Found::NoMarks);
             };
-            let CallPlace::Channel { channel_id, .. } = call.place else {
+            let CallPlace::Channel { .. } = call.place else {
                 return Ok(Found::NoMarks);
             };
             let speaking: Vec<AccountId> = sqlx::query_scalar(
@@ -112,13 +112,13 @@ pub async fn publish(app: &AppState) -> ApiResult<usize> {
                    and not exists (
                        select 1 from call_microphone_blocks b
                        where b.call_id = m.call_id and b.account_id = m.account_id)
-                   and not (select hides_occupants from channels where id = $3)
+                   and not $3
                  order by m.account_id
                  limit $4",
             )
             .bind(call_id)
             .bind(&reported)
-            .bind(channel_id)
+            .bind(call.hides_occupants)
             .bind(most)
             .fetch_all(&mut *connection)
             .await?;
