@@ -22,10 +22,10 @@ Relay:
 
 - At each interval of one second, and for each call that has a report or whose last event carried a speaker, the server computes the set of speakers from the record of that moment: the people who report that they speak, whom the media server lists, whose own microphone setting is not muted and who have no microphone block. The set has at most 16 accounts.
 - The server compares that set with the set that the last event of the call carried, and records the event `call_speaking` with the whole set when the two differ. It does not compare the reports.
-- A block, a removed block, a mute, a leave and a change of the hide setting therefore change the marks at the next interval, also while the reports stay the same.
+- A block, a removed block, a mute and a leave therefore change the marks at the next interval, also while the reports stay the same.
 - One call gets at most one such event per second.
 - The event goes to the accounts that may see who is inside the voice channel (ADR 0514), and is decided when it is delivered (ADR 0011).
-- The set of a voice channel that hides who is inside is empty, so the server records no speaker of it. It records no speaking event for a direct-message call. The people inside have the levels from the media server.
+- The set of a call that hides who is inside is empty, so the server records no speaker of it. The call keeps the setting that it started with (ADR 0517). It records no speaking event for a direct-message call. The people inside have the levels from the media server.
 
 ## Consequences
 

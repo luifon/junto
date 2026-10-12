@@ -17,12 +17,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use junto_protocol::error::ErrorCode;
-use junto_protocol::ids::RecordingId;
-use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
+use junto_protocol::ids::{AccountId, RecordingId};
+use tokio::sync::Notify;
 use uuid::Uuid;
 
 use crate::config::{RecorderSettings, RecordingLimits};
 use crate::error::{ApiError, ApiResult};
+use crate::messages::transfers::{Permit, Transfers};
 use crate::recorder::Recorder;
 use crate::recordings::tools::Tools;
 use crate::storage::{self, Disk};
@@ -79,7 +80,10 @@ pub struct Recordings {
     instance: Uuid,
     files_wait: Notify,
     jobs_wait: Notify,
-    downloads: Arc<Semaphore>,
+    downloads: Arc<Transfers>,
+    /// The name below `rescued/` that the sweep of saved audio examined last, when more
+    /// names follow it (ADR 0606).
+    rescued_after: Mutex<Option<String>>,
 }
 
 /// One pass of the controller over one recording. A recording has at most one at a time.
@@ -99,7 +103,11 @@ impl Drop for Pass<'_> {
 
 impl Recordings {
     pub fn new(backend: Option<Backend>, limits: &RecordingLimits) -> Self {
-        let downloads = usize::try_from(limits.most_downloads).unwrap_or(usize::MAX);
+        let places = |number: u32| usize::try_from(number).unwrap_or(usize::MAX);
+        let downloads = Transfers::new(
+            places(limits.most_downloads),
+            places(limits.downloads_per_account),
+        );
         Self {
             backend,
             wake: Notify::new(),
@@ -109,7 +117,8 @@ impl Recordings {
             instance: Uuid::new_v4(),
             files_wait: Notify::new(),
             jobs_wait: Notify::new(),
-            downloads: Arc::new(Semaphore::new(downloads)),
+            downloads: Arc::new(downloads),
+            rescued_after: Mutex::new(None),
         }
     }
 
@@ -135,10 +144,26 @@ impl Recordings {
         self.jobs_wait.notified().await;
     }
 
-    /// A place among the downloads that the server sends at one time. `None` when every
-    /// place is taken.
-    pub fn download(&self) -> Option<OwnedSemaphorePermit> {
-        self.downloads.clone().try_acquire_owned().ok()
+    /// A place among the downloads that the server sends at one time, for a download of
+    /// `account`. `None` when every place is taken, or every place of the account
+    /// (ADR 0608).
+    pub fn download(&self, account: AccountId) -> Option<Permit> {
+        self.downloads.acquire(account)
+    }
+
+    /// Where the sweep of saved audio continues: after this name, or at the first name.
+    pub(crate) fn rescued_after(&self) -> Option<String> {
+        self.rescued_after
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn continue_rescued_after(&self, name: Option<String>) {
+        *self
+            .rescued_after
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = name;
     }
 
     pub fn backend(&self) -> Option<&Backend> {

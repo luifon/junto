@@ -22,7 +22,7 @@ While it is on:
 - Every member except the presenter who has no microphone block gets one with the reason `meeting`. A block that a moderator set before stays, with its own reason.
 - A person who enters the call gets the block on entry, in the join token as well.
 - A person raises and lowers a hand. The hand is a field of the participant.
-- The presenter removes the microphone block of a person, whatever its reason. A moderator with "mute members" can do the same.
+- The presenter removes the microphone block of a person, whatever its reason, while the presenter is inside the call (ADR 0517). A presenter who left or was removed has no right from the meeting in the 60 seconds in which the meeting still names that person. A moderator with "mute members" can do the same.
 - A moderator can block the presenter's microphone.
 
 End:

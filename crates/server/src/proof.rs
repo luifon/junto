@@ -60,18 +60,30 @@ pub async fn issue(app: &AppState, request: &CreateChallenge) -> ApiResult<Chall
             )
             .retry_after(exceeded.retry_after)
         })?;
-    let stored = store(app, request, now).await;
-    if stored.is_err() {
-        app.outstanding_challenges.release(counted_until);
+    match store(app, request, now).await {
+        Ok(Issued::New(challenge)) => Ok(challenge),
+        Ok(Issued::Waiting(challenge)) => {
+            app.outstanding_challenges.release(counted_until);
+            Ok(challenge)
+        }
+        Err(error) => {
+            app.outstanding_challenges.release(counted_until);
+            Err(error)
+        }
     }
-    stored
+}
+
+enum Issued {
+    New(Challenge),
+    /// The challenge that the key already had for the operation. No row was stored.
+    Waiting(Challenge),
 }
 
 async fn store(
     app: &AppState,
     request: &CreateChallenge,
     now: OffsetDateTime,
-) -> ApiResult<Challenge> {
+) -> ApiResult<Issued> {
     let key = request.public_key.as_bytes().as_slice();
     let whole_second = now.replace_nanosecond(0).unwrap_or(now);
     let nonce = Nonce::from_bytes(random_bytes()?);
@@ -101,6 +113,34 @@ async fn store(
             | ChallengeOperation::JoinRequestStatus
             | ChallengeOperation::LinkDevice => None,
         };
+        // A request does not replace a challenge that its key can still answer in time:
+        // a party that knows a public key could otherwise end every challenge of that key
+        // before the device answers it. A challenge is not a secret (ADR 0108).
+        let lifetime = app.config.limits.challenge_lifetime;
+        let waiting: Option<(ChallengeId, Vec<u8>, OffsetDateTime)> = sqlx::query_as(
+            "select id, nonce, expires_at from challenges
+             where public_key = $1 and operation = $2 and consumed_at is null
+               and account_id is not distinct from $3 and expires_at >= $4
+             for update",
+        )
+        .bind(key)
+        .bind(request.operation.stored())
+        .bind(account_id)
+        .bind(whole_second + lifetime / 2)
+        .fetch_optional(&mut *connection)
+        .await?;
+        if let Some((id, nonce, expires_at)) = waiting {
+            return Ok(Issued::Waiting(Challenge {
+                id,
+                server_id: app.server_id,
+                operation: request.operation,
+                account_id,
+                public_key: request.public_key,
+                nonce: Nonce::try_from(nonce.as_slice())
+                    .map_err(|error| ApiError::internal(&error))?,
+                expires_at,
+            }));
+        }
         let challenge = Challenge {
             id,
             server_id: app.server_id,
@@ -108,7 +148,7 @@ async fn store(
             account_id,
             public_key: request.public_key,
             nonce,
-            expires_at: whole_second + app.config.limits.challenge_lifetime,
+            expires_at: whole_second + lifetime,
         };
         sqlx::query(
             "insert into challenges (id, public_key, operation, account_id, nonce, expires_at)
@@ -128,7 +168,7 @@ async fn store(
         .bind(challenge.expires_at)
         .execute(&mut *connection)
         .await?;
-        Ok(challenge)
+        Ok(Issued::New(challenge))
     })
 }
 

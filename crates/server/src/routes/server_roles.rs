@@ -215,6 +215,9 @@ pub(crate) async fn update(
         let holders = Affected::ServerRoleHolders(role_id);
         events::permissions_changed(connection, now, holders, None).await?;
     }
+    if administers(permissions) != administers(old_permissions) {
+        store::contact_changed_for_holders(connection, now, role_id).await?;
+    }
     Ok(role)
 }
 
@@ -250,6 +253,9 @@ pub(crate) async fn delete(
         granting: ServerPermissions::EMPTY,
     })?;
     let (name, permissions) = locked_role(connection, role_id).await?;
+    if administers(permissions) {
+        store::contact_changed_for_holders(connection, now, role_id).await?;
+    }
     let holders = events::Receivers::ServerRoleHolders(role_id);
     let holders = events::permissions_changed_for(connection, now, holders, None).await?;
     sqlx::query("delete from structure_identifiers where kind = 'server_role' and object_id = $1")
@@ -276,19 +282,32 @@ pub(crate) async fn delete(
     events::publish(connection, now, &Event::ServerRoleDeleted { role_id }).await
 }
 
+/// Whether a role with these permissions makes its holders reach every account, and every
+/// account reach them, for direct messages and direct calls (ADR 0307).
+fn administers(permissions: ServerPermissions) -> bool {
+    permissions.contains(ServerPermission::Administrator)
+}
+
 /// Records a change of the server roles of an account: for the people who list accounts, and
-/// for the account, whose permissions changed.
+/// for the account, whose permissions changed. A role with the administrator permission
+/// changes whom the account reaches, so the accounts that have a direct-message
+/// conversation with it are told too.
 async fn announce_roles(
     connection: &mut PgConnection,
     now: time::OffsetDateTime,
     account_id: AccountId,
+    role: ServerPermissions,
 ) -> ApiResult<()> {
     let changed = Event::AccountServerRolesChanged {
         account_id,
         server_role_ids: store::server_role_ids_of(connection, account_id).await?,
     };
     events::publish(connection, now, &changed).await?;
-    events::permissions_changed(connection, now, Affected::Account(account_id), None).await
+    events::permissions_changed(connection, now, Affected::Account(account_id), None).await?;
+    if administers(role) {
+        store::contact_changed(connection, now, account_id).await?;
+    }
+    Ok(())
 }
 
 pub async fn require_active_account(
@@ -359,7 +378,7 @@ pub async fn assign_server_role(
                 },
             )
             .await?;
-            announce_roles(connection, now, account_id).await?;
+            announce_roles(connection, now, account_id, permissions).await?;
         }
         Ok(())
     })?;
@@ -393,6 +412,7 @@ pub async fn unassign_server_role(
                 .execute(&mut *connection)
                 .await?;
         if deleted.rows_affected() > 0 {
+            let (_, permissions) = locked_role(connection, role_id).await?;
             audit::record(
                 connection,
                 now,
@@ -404,7 +424,7 @@ pub async fn unassign_server_role(
                 },
             )
             .await?;
-            announce_roles(connection, now, account_id).await?;
+            announce_roles(connection, now, account_id, permissions).await?;
         }
         Ok(())
     })?;

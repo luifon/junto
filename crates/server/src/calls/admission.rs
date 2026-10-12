@@ -15,7 +15,7 @@ use junto_protocol::call::{CallPlace, EntryOutcome, InvitationOutcome, LeaveReas
 use junto_protocol::call::{MoveOutcome, OwnCall};
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::Event;
-use junto_protocol::ids::{AccountId, CallId, CallInvitationId, EntryRequestId};
+use junto_protocol::ids::{AccountId, CallId, EntryRequestId};
 use junto_protocol::structure::ChannelKind;
 use sqlx::{AssertSqlSafe, PgConnection};
 use time::OffsetDateTime;
@@ -206,20 +206,15 @@ async fn end_what_lost_its_place(
         lose(high_account_id);
     }
 
-    let invitations: Vec<(
-        CallInvitationId,
-        AccountId,
-        AccountId,
-        OffsetDateTime,
-        OffsetDateTime,
-    )> = sqlx::query_as(AssertSqlSafe(format!(
+    let invitations: Vec<store::InvitationRow> = sqlx::query_as(AssertSqlSafe(format!(
         "select {INVITATION_COLUMNS} from call_invitations where call_id = $1 order by id"
     )))
     .bind(call.id)
     .fetch_all(&mut *connection)
     .await?;
     for row in invitations {
-        let invitation = store::invitation(call, row);
+        let waiting = store::invitation(call, row);
+        let invitation = &waiting.invitation;
         let mut sides = Vec::new();
         for account_id in [invitation.account_id, invitation.invited_by] {
             let sees = sight.of(&mut *connection, &call.place, account_id).await?;
@@ -237,6 +232,10 @@ async fn end_what_lost_its_place(
             outcome: InvitationOutcome::Cancelled,
         };
         for (account_id, sees) in sides {
+            // The invited account of a silent invitation never learned of it.
+            if !waiting.told().any(|told| told == account_id) {
+                continue;
+            }
             if sees {
                 let at = [call.place];
                 events::tell_account_at(&mut *connection, now, account_id, &at, &cancelled).await?;
@@ -267,12 +266,7 @@ async fn end_what_lost_its_place(
         .bind(request.id)
         .fetch_optional(&mut *connection)
         .await?;
-        if waited == Some(true)
-            && let CallPlace::Channel {
-                workspace_id,
-                channel_id,
-            } = request.place
-        {
+        if waited == Some(true) && matches!(request.place, CallPlace::Channel { .. }) {
             let cancelled = Event::CallEntryResolved {
                 request_id: request.id,
                 call_id: request.call_id,
@@ -281,8 +275,7 @@ async fn end_what_lost_its_place(
                 outcome: EntryOutcome::Cancelled,
                 by: None,
             };
-            events::tell_inside(&mut *connection, now, workspace_id, channel_id, &cancelled)
-                .await?;
+            events::tell_inside(&mut *connection, now, &cancelled).await?;
         }
         lose(request.account_id);
     }
@@ -656,11 +649,19 @@ async fn apply(
                     lost.push(account_id);
                 }
             }
-        } else if present.contains_key(pending.identity.as_str())
+        } else if let Some(participant) = present.get(pending.identity.as_str())
             && complete_move(&mut *connection, now, &call, &pending, &mut orders).await?
         {
             allowed.insert(pending.identity.clone());
             call.started_at = call.started_at.or(Some(now));
+            // The token of a move into a call that hides who is inside allows pictures
+            // only (ADR 0517). The account is inside now and gets what it may publish.
+            let wanted = store::publishing_of(&mut *connection, &call, pending.account_id).await?;
+            if participant.publishing.as_ref() != Some(&wanted) {
+                orders
+                    .updates
+                    .push((room.clone(), pending.identity.clone(), wanted));
+            }
         }
     }
 
@@ -1002,8 +1003,7 @@ async fn replace_registry(app: &AppState, read_at: u64) {
     match members {
         Ok(members) => {
             app.streams
-                .calls()
-                .replace_since(read_at, members.into_iter().collect());
+                .replace_calls(read_at, members.into_iter().collect());
         }
         Err(error) => tracing::warn!(code = ?error.code(), "the accounts in calls were not read"),
     }

@@ -139,11 +139,28 @@ pub async fn get_workspace_audit_log(
             .map(|(record, _)| record.channel.id)
             .collect();
 
+        // An entry about a recording names a person inside its call. While that call runs
+        // and hides who is inside, the entry is for the people inside, as the recording is
+        // (ADR 0604). The entry keeps the call of its recording. An entry from before that
+        // column existed is decided by the row of its recording, and when that row is
+        // gone, by the call that the channel had when the entry was written.
         let rows: Vec<EntryRow> = sqlx::query_as(AssertSqlSafe(format!(
-            "select {ENTRY_COLUMNS} from audit_entries
+            "select {ENTRY_COLUMNS} from audit_entries e
              where workspace_id = $1
                and (channel_id is null or channel_id = any($2))
                and ($3::uuid is null or id < $3)
+               and case
+                       when e.call_id is not null then reads_call(e.call_id, $5)
+                       when not (e.event ? 'recording_id') then true
+                       else coalesce((
+                               select reads_call(r.call_id, $5) from recordings r
+                               where r.id = (e.event ->> 'recording_id')::uuid),
+                           not exists (
+                               select 1 from calls k
+                               where k.channel_id = e.channel_id
+                                 and k.created_at <= e.occurred_at
+                                 and not reads_call(k.id, $5)))
+                   end
              order by id desc
              limit $4"
         )))
@@ -151,6 +168,7 @@ pub async fn get_workspace_audit_log(
         .bind(&readable_channels)
         .bind(query.before)
         .bind(size + 1)
+        .bind(access.account_id)
         .fetch_all(&mut *connection)
         .await?;
         page(rows, size)

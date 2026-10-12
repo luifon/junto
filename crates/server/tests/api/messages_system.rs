@@ -265,7 +265,7 @@ async fn every_call_note_becomes_exactly_one_line_in_order() {
 async fn hidden_recording_post_reactions_and_deletion_keep_the_participant_audience() {
     use junto_protocol::events::{Event, Level};
     use serde_json::json;
-    let studio = crate::recordings_support::Studio::open().await;
+    let studio = crate::recordings_support::Studio::hidden().await;
     let scene = &studio.scene;
     let server = &scene.server;
     server
@@ -274,13 +274,6 @@ async fn hidden_recording_post_reactions_and_deletion_keep_the_participant_audie
             &scene.ann,
             scene.workspace_id,
             &[junto_protocol::WorkspacePermission::ManageRecordings],
-        )
-        .await;
-    server
-        .call_settings(
-            &scene.owner,
-            scene.voice.id,
-            json!({"hides_occupants":true}),
         )
         .await;
     let recording = studio.record().await;
@@ -431,41 +424,45 @@ async fn call_line(scene: &crate::calls_support::Scene, action: &str) -> Message
     id
 }
 
+/// ADR 0408 and ADR 0517: a line has the audience of the setting that its call started
+/// with. A change of the setting during a call changes no line of that call, in either
+/// direction, and a later join grants no earlier line.
 #[tokio::test]
-async fn each_line_keeps_its_audience_when_the_active_call_switches_in_both_directions() {
+async fn each_line_keeps_the_audience_of_the_setting_that_its_call_started_with() {
     let scene = crate::calls_support::Scene::start().await;
     let server = &scene.server;
-    server.enter_call(&scene.ann, scene.voice.id).await;
-    let public = call_line(&scene, "meeting_started").await;
-    server
-        .call_settings(
+    let hides = |hides_occupants: bool| {
+        server.call_settings(
             &scene.owner,
             scene.voice.id,
-            serde_json::json!({"hides_occupants":true}),
+            serde_json::json!({ "hides_occupants": hides_occupants }),
         )
-        .await;
-    let private = call_line(&scene, "meeting_ended").await;
+    };
+    server.enter_call(&scene.ann, scene.voice.id).await;
+    let public = call_line(&scene, "meeting_started").await;
+    hides(true).await;
+    let still_public = call_line(&scene, "meeting_ended").await;
+    server.leave_call(&scene.ann).await;
+    server.check().await;
+
+    server.enter_call(&scene.ann, scene.voice.id).await;
+    let private = call_line(&scene, "meeting_started").await;
     server.enter_call(&scene.ben, scene.voice.id).await;
     server
         .get(&scene.ben, &message(private))
         .await
         .error(ErrorCode::NotFound);
-    let shared = call_line(&scene, "meeting_started").await;
-    server
-        .call_settings(
-            &scene.owner,
-            scene.voice.id,
-            serde_json::json!({"hides_occupants":false}),
-        )
-        .await;
-    let public_again = call_line(&scene, "meeting_ended").await;
-    for id in [public, public_again] {
+    let shared = call_line(&scene, "meeting_ended").await;
+    hides(false).await;
+    let still_private = call_line(&scene, "meeting_started").await;
+
+    for id in [public, still_public] {
         server
             .get(&scene.owner, &message(id))
             .await
             .ok::<Message>(StatusCode::OK);
     }
-    for id in [private, shared] {
+    for id in [private, shared, still_private] {
         server
             .get(&scene.owner, &message(id))
             .await
@@ -475,10 +472,12 @@ async fn each_line_keeps_its_audience_when_the_active_call_switches_in_both_dire
             .await
             .ok::<Message>(StatusCode::OK);
     }
-    server
-        .get(&scene.ben, &message(shared))
-        .await
-        .ok::<Message>(StatusCode::OK);
+    for id in [shared, still_private] {
+        server
+            .get(&scene.ben, &message(id))
+            .await
+            .ok::<Message>(StatusCode::OK);
+    }
 }
 
 #[tokio::test]
@@ -627,8 +626,11 @@ async fn an_account_that_left_a_hidden_call_before_its_end_reads_the_call_ended_
         .error(ErrorCode::NotFound);
 }
 
+/// ADR 0517: a call that began while the channel showed who is inside keeps public lines
+/// after the setting is turned on. The line of its end is read by every viewer of the
+/// channel.
 #[tokio::test]
-async fn only_participation_while_hidden_grants_later_call_lines() {
+async fn a_call_that_started_visible_keeps_public_lines_when_the_setting_is_turned_on() {
     let scene = crate::calls_support::Scene::start().await;
     let server = &scene.server;
     server.enter_call(&scene.ann, scene.voice.id).await;
@@ -641,7 +643,6 @@ async fn only_participation_while_hidden_grants_later_call_lines() {
             serde_json::json!({"hides_occupants":true}),
         )
         .await;
-    // Ann was already inside when the setting changed and no new admission follows.
     server.leave_call(&scene.ann).await;
     let page: MessagePage = server
         .get(
@@ -663,6 +664,6 @@ async fn only_participation_while_hidden_grants_later_call_lines() {
         server
             .get(outside, &message(ended.id))
             .await
-            .error(ErrorCode::NotFound);
+            .ok::<Message>(StatusCode::OK);
     }
 }

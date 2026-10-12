@@ -19,6 +19,7 @@ Entry:
 - A new action is a new variant. The fields of an existing action are not changed, so stored entries stay readable.
 - An entry is written in the transaction of the change that it describes.
 - An entry refers to an invite by its identifier and states the account that created the invite (ADR 0105). It never contains a code, a token or a key.
+- The entry of a revoked invite states that account in `invite_created_by`. The first version of `invite_revoked` named the invite only, so an entry that was written before has no such field.
 
 Read-only:
 

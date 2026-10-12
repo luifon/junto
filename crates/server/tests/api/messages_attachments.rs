@@ -53,6 +53,13 @@ async fn sending_refuses_excess_and_repeated_attachments() {
     );
 }
 
+async fn removed_rows(files: &Files) -> i64 {
+    sqlx::query_scalar("select count(*) from attachments where removed_at is not null")
+        .fetch_one(&files.server.db)
+        .await
+        .unwrap()
+}
+
 #[tokio::test]
 async fn an_account_has_at_most_twenty_pending_uploads() {
     let files = Files::open().await;
@@ -176,15 +183,19 @@ async fn completion_cancellation_and_expiry_release_their_reservations() {
         )
         .await
         .error(ErrorCode::NotFound);
+    // The cancel ends the reservation in its transaction; the cleanup removes the row
+    // one minute later.
+    assert_eq!(count().await, 0);
     files.server.clock.advance(Duration::seconds(59));
     junto_server::maintenance::run_once(&files.server.state)
         .await
         .unwrap();
-    assert_eq!(count().await, 1);
+    assert_eq!(removed_rows(&files).await, 1);
     files.server.clock.advance(Duration::seconds(2));
     junto_server::maintenance::run_once(&files.server.state)
         .await
         .unwrap();
+    assert_eq!(removed_rows(&files).await, 0);
     assert_eq!(count().await, 0);
     let expired = files.start(b"expired").await;
     assert_eq!(count().await, 1);

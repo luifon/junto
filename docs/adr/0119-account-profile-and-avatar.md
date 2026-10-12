@@ -44,7 +44,12 @@ Events:
 
 - A change of the name or of the avatar records `account_profile_updated` with the whole profile.
 - The event goes to the accounts that may see the profile. The decision is made when the event is delivered (ADR 0011).
-- A request that changes nothing records no event.
+- A request that changes nothing records no event. The same holds for the name of a device: `PATCH /api/v1/account/devices/{device_id}` with the name that the device has records no `device_renamed`.
+
+Limit:
+
+- `PATCH /api/v1/account`, `PUT` and `DELETE /api/v1/account/avatar` and `PATCH /api/v1/account/devices/{device_id}` share one limit: 30 requests per account per minute. A further request gets `rate_limited` with a `Retry-After` header.
+- Reason: each of these requests can record an event, and an event uses one position of the log, which keeps a fixed number of positions (ADR 0207). A change of the profile is also delivered to every fellow member.
 
 ## Consequences
 

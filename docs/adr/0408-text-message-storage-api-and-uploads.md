@@ -60,7 +60,10 @@ Documents:
   caller's own flag.
 - Message changes and conversation opens share a per-account limit of 120 attempts per
   minute, using the bounded limiter of the server. Read-position changes share this limit.
-  History reads have a separate limit of 120 per account per minute. Attachment mutations
+  History reads have a separate limit of 120 per account per minute. The read of one
+  message has a separate limit of 1,200 per account per minute: a client reads one message
+  for each `message_changed` event, and a client that receives more changes than that reads
+  the history of the place. Attachment mutations
   have a separate limit of 1,200 per session token per minute. Serializable retries count
   once.
 
@@ -105,10 +108,11 @@ System messages:
   converted by the migration. Recording start and stop use their notes only, avoiding
   duplicate lines from their audit entries.
 - Each system line fixes its audience when written. A public line stays public. A line
-  written while occupants are hidden is visible only to the accounts inside at that
-  instant, including after the call ends. A later join does not grant earlier lines.
-  Setting changes affect subsequent lines in either direction; they never change earlier
-  positions, counts or audiences. This persistent-message rule is separate from dynamic
+  of a call that hides who is inside is visible only to the accounts inside at that
+  instant (ADR 0517: the admission check has seen their seats), including after the call
+  ends. A later join does not grant earlier lines. A call keeps the setting that it started
+  with, so a change of the setting affects the lines of the next call and never the lines,
+  positions, counts or audiences of the running call or of an earlier one. This persistent-message rule is separate from dynamic
   delivery of live call events (ADR 0514). A hidden call line written with no participants,
   including `call_ended`, the recording post and later lines, is visible to every account
   that participated at any time while occupants were hidden. `call_message_members`
@@ -137,7 +141,10 @@ Attachments:
 - An upload belongs to its author and one place. It declares a basename of 1 to 200
   characters, byte length and lowercase SHA-256. Paths, control characters, invisible
   formatting and directional controls are refused. An account has at most 20 unattached
-  uploads. They expire after 24 hours.
+  uploads. They expire after 24 hours. A cancel of an upload ends its reservation in the
+  same transaction, because no chunk is accepted for it afterwards. The limit of 20 also
+  counts a removed upload while its reservation exists, so one account holds at most 20
+  reservations at one time.
 - Chunks contain 1 MiB except the final chunk. A request names its byte offset. Only the
   next offset is accepted. Repeating identical bytes is idempotent; different bytes at
   that offset are refused. The upload status gives the durable received length.
@@ -162,7 +169,10 @@ Attachments:
   two per account. Downloads use
   the recording download's single-range parser and bounded producer; a stalled producer
   releases capacity after the configured download stall interval. Each 1 MiB chunk is
-  verified before transmission.
+  verified before transmission. A download that runs is decided again every 5 seconds by
+  the rule of the route, as the download of a recording file is (ADR 0608): when the
+  session, the access to the message or the attachment has ended, the server reads no
+  further chunk and ends the response without the rest of the file.
 - Cancellation, expiry, message deletion and channel deletion make files immediately
   unavailable through the API. Maintenance removes their directories and releases any
   remaining reservation in bounded batches. Deletion queues removal in its own transaction;

@@ -17,6 +17,9 @@ use TokenAction::{ManageMembers, ManageStructure, ReadAuditLog, ReadStructure};
 /// Every route that an access token reaches, with the action that the token must hold. A
 /// route that is not listed refuses every access token. A test compares the list with the
 /// generated OpenAPI document.
+///
+/// No route that gives or takes a role of an account and no route that lifts a ban is
+/// listed: a request with a token changes no role assignment and lifts no ban (ADR 0213).
 pub const REACH: &[(&str, &str, TokenAction)] = &[
     ("GET", "/api/v1/structure", ReadStructure),
     ("GET", "/api/v1/workspaces", ReadStructure),
@@ -110,30 +113,9 @@ pub const REACH: &[(&str, &str, TokenAction)] = &[
         ManageMembers,
     ),
     ("PUT", "/api/v1/accounts/{account_id}/ban", ManageMembers),
-    ("DELETE", "/api/v1/accounts/{account_id}/ban", ManageMembers),
-    (
-        "PUT",
-        "/api/v1/accounts/{account_id}/server-roles/{role_id}",
-        ManageMembers,
-    ),
-    (
-        "DELETE",
-        "/api/v1/accounts/{account_id}/server-roles/{role_id}",
-        ManageMembers,
-    ),
     (
         "PUT",
         "/api/v1/workspaces/{workspace_id}/members/{account_id}",
-        ManageMembers,
-    ),
-    (
-        "PUT",
-        "/api/v1/workspaces/{workspace_id}/members/{account_id}/roles/{role_id}",
-        ManageMembers,
-    ),
-    (
-        "DELETE",
-        "/api/v1/workspaces/{workspace_id}/members/{account_id}/roles/{role_id}",
         ManageMembers,
     ),
     ("GET", "/api/v1/invites", ManageMembers),

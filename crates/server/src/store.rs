@@ -282,6 +282,7 @@ pub async fn start_session(
     .bind(expires_at)
     .execute(&mut *connection)
     .await?;
+    end_surplus_sessions(app, connection, now, device_id).await?;
 
     Ok(SessionCreated {
         token: SessionToken::new(token),
@@ -290,6 +291,37 @@ pub async fn start_session(
         device_id,
         recoveries,
     })
+}
+
+/// Ends the oldest sessions of a device beyond the number that a device holds, with their
+/// places in calls (ADR 0109). The newest sessions are the ones that the device uses. No
+/// reason is stored: the connection of such a session ends as for an expired session.
+async fn end_surplus_sessions(
+    app: &AppState,
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    device_id: DeviceId,
+) -> ApiResult<()> {
+    let surplus: Vec<Uuid> = sqlx::query_scalar(
+        "select id from sessions where device_id = $1
+         order by created_at desc, id desc
+         offset $2 limit 100",
+    )
+    .bind(device_id)
+    .bind(i64::from(app.config.limits.most_sessions_per_device))
+    .fetch_all(&mut *connection)
+    .await?;
+    for session_id in &surplus {
+        let session = Sessions::One(*session_id);
+        crate::calls::store::end_places_of(&mut *connection, &app.calls, now, session).await?;
+    }
+    if !surplus.is_empty() {
+        sqlx::query("delete from sessions where id = any($1)")
+            .bind(&surplus)
+            .execute(connection)
+            .await?;
+    }
+    Ok(())
 }
 
 type RecoveryRow = (
@@ -434,6 +466,56 @@ pub async fn acquaintance(
     } else {
         Acquaintance::Unrelated
     })
+}
+
+/// Records the notice `permissions_changed` for the accounts that have a direct-message
+/// conversation with `account_id`. Whether they reach the account can have changed: its
+/// state, its memberships or its administrator permission did (ADR 0307). The change
+/// records this, because no other event of it goes to those accounts (ADR 0208).
+pub async fn contact_changed(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    account_id: AccountId,
+) -> ApiResult<()> {
+    let has_peers: bool = sqlx::query_scalar(
+        "select exists (select 1 from conversations where low_account_id = $1)
+             or exists (select 1 from conversations where high_account_id = $1)",
+    )
+    .bind(account_id)
+    .fetch_one(&mut *connection)
+    .await?;
+    if has_peers {
+        let peers = events::Receivers::ConversationPeers(account_id);
+        events::permissions_changed_for(connection, now, peers, None).await?;
+    }
+    Ok(())
+}
+
+/// Like [`contact_changed`], for every holder of a server role whose administrator
+/// permission changes or that is deleted with it.
+pub async fn contact_changed_for_holders(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    role_id: ServerRoleId,
+) -> ApiResult<()> {
+    let has_peers: bool = sqlx::query_scalar(
+        "select exists (
+                 select 1 from account_server_roles h
+                 join conversations c on c.low_account_id = h.account_id
+                 where h.role_id = $1)
+             or exists (
+                 select 1 from account_server_roles h
+                 join conversations c on c.high_account_id = h.account_id
+                 where h.role_id = $1)",
+    )
+    .bind(role_id)
+    .fetch_one(&mut *connection)
+    .await?;
+    if has_peers {
+        let peers = events::Receivers::ConversationPeersOfServerRole(role_id);
+        events::permissions_changed_for(connection, now, peers, None).await?;
+    }
+    Ok(())
 }
 
 /// How the caller stands to another account for a direct message or a direct call. `None`

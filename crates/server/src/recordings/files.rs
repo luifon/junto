@@ -270,6 +270,51 @@ mod system {
             .collect())
     }
 
+    /// The first `most` names of a directory that `wanted` accepts and that come after
+    /// `after`, in the order of the names, each with the time of the last change of its
+    /// entry in seconds since 1970. A link is not followed.
+    pub fn entries_after(
+        root: &Path,
+        place: &Place,
+        after: Option<&str>,
+        most: usize,
+        wanted: impl Fn(&str) -> bool,
+    ) -> io::Result<Vec<(String, i64)>> {
+        let directory = directory(root, place.parts())?;
+        // The names are read one at a time and only the first `most` are kept, so the
+        // memory of a pass does not grow with the directory.
+        let mut first = std::collections::BTreeSet::new();
+        for entry in Dir::read_from(&directory)? {
+            let name = entry?.file_name().to_owned();
+            if name.as_c_str() == c"." || name.as_c_str() == c".." {
+                continue;
+            }
+            let Ok(name) = name.to_str() else {
+                continue;
+            };
+            if !wanted(name) || after.is_some_and(|after| name <= after) {
+                continue;
+            }
+            first.insert(name.to_owned());
+            if first.len() > most {
+                first.pop_last();
+            }
+        }
+        let mut entries = Vec::with_capacity(first.len());
+        for name in first {
+            match statat(&directory, name.as_str(), AtFlags::SYMLINK_NOFOLLOW) {
+                // The type of the field differs between systems.
+                Ok(found) => {
+                    let changed = i64::try_from(i128::from(found.st_mtime)).unwrap_or(i64::MAX);
+                    entries.push((name, changed));
+                }
+                Err(rustix::io::Errno::NOENT) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(entries)
+    }
+
     fn remove_entry(directory: &OwnedFd, name: &std::ffi::CStr, depth: usize) -> io::Result<()> {
         if kind(directory, name)? != FileType::Directory {
             return Ok(unlinkat(directory, name, AtFlags::empty())?);
@@ -400,6 +445,16 @@ mod system {
         unsupported()
     }
 
+    pub fn entries_after(
+        _: &Path,
+        _: &Place,
+        _: Option<&str>,
+        _: usize,
+        _: impl Fn(&str) -> bool,
+    ) -> io::Result<Vec<(String, i64)>> {
+        unsupported()
+    }
+
     pub fn remove(_: &Path, _: &Place) -> io::Result<()> {
         unsupported()
     }
@@ -464,6 +519,21 @@ pub fn pieces(root: &Path, place: &Place) -> io::Result<Vec<String>> {
 /// when the directory is not there.
 pub fn unfinished(root: &Path, place: &Place) -> io::Result<Vec<String>> {
     match system::listed(root, place, |name| name.ends_with(UNFINISHED)) {
+        Err(error) if is_absent(&error) => Ok(Vec::new()),
+        listed => listed,
+    }
+}
+
+/// The first `most` entries of `rescued/` after the name `after`, in the order of their
+/// names, each with the time of its last change in seconds since 1970. Only a name that
+/// can be the identifier of a job is listed. Empty when the directory is not there.
+pub fn rescued_entries(
+    root: &Path,
+    after: Option<&str>,
+    most: usize,
+) -> io::Result<Vec<(String, i64)>> {
+    let rescued = Place(vec![RESCUED.to_owned()]);
+    match system::entries_after(root, &rescued, after, most, is_name) {
         Err(error) if is_absent(&error) => Ok(Vec::new()),
         listed => listed,
     }
@@ -707,6 +777,32 @@ mod tests {
         remove(&root, &place(&["rescued"])).unwrap();
         assert!(std::fs::symlink_metadata(root.join("rescued")).is_err());
         assert!(outside.join("EG_1/track.ogg").exists());
+    }
+
+    #[test]
+    fn the_saved_files_of_jobs_are_listed_in_the_order_of_their_names_and_in_parts() {
+        let scratch = Scratch::new();
+        let root = &scratch.0;
+        assert!(rescued_entries(root, None, 10).unwrap().is_empty());
+        for name in ["EG_c", "EG_a", "EG_d", "EG_b", "not a job", "a.b"] {
+            std::fs::create_dir_all(root.join("rescued").join(name)).unwrap();
+        }
+        std::os::unix::fs::symlink(root, root.join("rescued/EG_e")).unwrap();
+        let names = |after: Option<&str>, most| -> Vec<String> {
+            let entries = rescued_entries(root, after, most).unwrap();
+            entries.into_iter().map(|(name, _)| name).collect()
+        };
+        assert_eq!(names(None, 2), ["EG_a", "EG_b"]);
+        assert_eq!(names(Some("EG_b"), 2), ["EG_c", "EG_d"]);
+        assert_eq!(names(Some("EG_d"), 2), ["EG_e"]);
+        assert_eq!(names(None, 10).len(), 5);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        for (name, changed) in rescued_entries(root, None, 10).unwrap() {
+            assert!((now - changed).abs() < 3600, "{name} {changed} {now}");
+        }
     }
 
     #[test]

@@ -179,6 +179,7 @@ async fn announce_owner(
     events::publish(connection, now, &changed).await?;
     for affected in previous_owner_id.into_iter().chain([account_id]) {
         events::permissions_changed(connection, now, Affected::Account(affected), None).await?;
+        crate::store::contact_changed(connection, now, affected).await?;
     }
     Ok(())
 }

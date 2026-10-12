@@ -202,12 +202,12 @@
       "ServerPermission": {
         "description": "A permission that acts on the whole server. The number is the bit of the stored set.",
         "enum": [
-          "Administrator",
-          "CreateWorkspace",
-          "CreateInvites",
-          "ApproveJoinRequests",
-          "BanMembers",
-          "ViewServerAuditLog"
+          "administrator",
+          "create_workspace",
+          "create_invites",
+          "approve_join_requests",
+          "ban_members",
+          "view_server_audit_log"
         ],
         "type": "string"
       },
@@ -315,22 +315,22 @@
       "WorkspacePermission": {
         "description": "A permission inside one workspace. The number is the bit of the stored set.",
         "enum": [
-          "ViewChannel",
-          "ManageRoles",
-          "ManageChannel",
-          "ManageMessages",
-          "MentionEveryone",
-          "ManageGlossary",
-          "RecordCalls",
-          "ManageRecordings",
-          "ExportChannel",
-          "MoveMembers",
-          "MuteMembers",
-          "DeafenMembers",
-          "DisconnectMembers",
-          "LockRoom",
-          "RunMeetingMode",
-          "ViewAuditEntries"
+          "view_channel",
+          "manage_roles",
+          "manage_channel",
+          "manage_messages",
+          "mention_everyone",
+          "manage_glossary",
+          "record_calls",
+          "manage_recordings",
+          "export_channel",
+          "move_members",
+          "mute_members",
+          "deafen_members",
+          "disconnect_members",
+          "lock_room",
+          "run_meeting_mode",
+          "view_audit_entries"
         ],
         "type": "string"
       }

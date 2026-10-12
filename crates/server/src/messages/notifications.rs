@@ -107,6 +107,17 @@ pub async fn visible(
     visible_in(connection, access, now, ids, before, limit, &allowed).await
 }
 
+/// The notices that the account `$1` reads at the time `$2` in the places `$3`: the source
+/// and the conditions of a statement, which adds its own conditions with `and`.
+const READABLE_NOTICES: &str = "notifications n join messages m on m.id=n.message_id left join
+             conversations cv on cv.id=m.place_id cross join lateral notification_policy($1,m.place_id,$2) p where
+             n.account_id=$1 and m.place_id=any($3) and not m.deleted and (m.readers is null or $1=any(m.readers))
+             and not p.muted and (cv.id is not null or p.level<> 'nothing' ) and (n.kind<> 'mention' or
+             notification_mentioned($1,m.id,p.roles,p.everyone)) and (n.kind<> 'message' or p.level= 'all' ) and
+             (cv.id is null or not exists(select 1 from direct_mutes dm where dm.account_id=$1 and
+             dm.other_account_id=case when cv.low_account_id=$1 then cv.high_account_id else cv.low_account_id end
+             and (dm.muted_until is null or dm.muted_until>$2)))";
+
 pub async fn visible_in(
     connection: &mut PgConnection,
     access: &Access,
@@ -116,36 +127,37 @@ pub async fn visible_in(
     limit: i64,
     places: &crate::access::visibility::Places,
 ) -> ApiResult<Vec<Notification>> {
-    if let Some(before) = before {
-        let exists: bool = sqlx::query_scalar(
-            "select exists(select 1 from notifications where account_id=$1 and id=$2)",
-        )
-        .bind(access.account_id)
-        .bind(before)
-        .fetch_one(&mut *connection)
-        .await?;
-        if !exists {
-            return Err(ApiError::invalid("invalid notification cursor"));
+    // The cursor is a notice that this caller reads now. A notice that is hidden from the
+    // caller is not a cursor, as a notice that does not exist is not (ADR 0205).
+    let after: Option<(OffsetDateTime, Uuid)> = match before {
+        None => None,
+        Some(before) => {
+            let cursor: Option<(OffsetDateTime, Uuid)> = sqlx::query_as(sqlx::AssertSqlSafe(
+                format!("select n.created_at,n.id from {READABLE_NOTICES} and n.id=$4"),
+            ))
+            .bind(access.account_id)
+            .bind(now)
+            .bind(places.ids())
+            .bind(before)
+            .fetch_optional(&mut *connection)
+            .await?;
+            Some(cursor.ok_or_else(|| ApiError::invalid("invalid notification cursor"))?)
         }
-    }
-    let rows = sqlx::query("select n.* from notifications n join messages m on m.id=n.message_id left join conversations cv on
-             cv.id=m.place_id cross join lateral notification_policy($1,m.place_id,$2) p where n.account_id=$1 and
-             m.place_id=any($3) and not m.deleted and (m.readers is null or $1=any(m.readers)) and ($4::uuid[] is null
-             or n.message_id=any($4)) and ($5::uuid is null or (n.created_at,n.id)<(select created_at,id from
-             notifications where account_id=$1 and id=$5)) and not p.muted and (cv.id is not null or p.level<>
-             'nothing' ) and (n.kind<> 'mention' or notification_mentioned($1,m.id,p.roles,p.everyone)) and (n.kind<>
-             'message' or p.level= 'all' ) and (cv.id is null or not exists(select 1 from direct_mutes dm where
-             dm.account_id=$1 and dm.other_account_id=case when cv.low_account_id=$1 then cv.high_account_id else
-             cv.low_account_id end and (dm.muted_until is null or dm.muted_until>$2))) order by n.created_at desc,n.id
-             desc limit $6")
-        .bind(access.account_id)
-        .bind(now)
-        .bind(places.ids())
-        .bind(ids)
-        .bind(before)
-        .bind(limit)
-        .fetch_all(connection)
-        .await?;
+    };
+    let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "select n.* from {READABLE_NOTICES} and ($4::uuid[] is null or n.message_id=any($4)) and
+             ($5::timestamptz is null or (n.created_at,n.id)<($5,$6)) order by n.created_at desc,n.id
+             desc limit $7"
+    )))
+    .bind(access.account_id)
+    .bind(now)
+    .bind(places.ids())
+    .bind(ids)
+    .bind(after.map(|(created_at, _)| created_at))
+    .bind(after.map(|(_, id)| id))
+    .bind(limit)
+    .fetch_all(connection)
+    .await?;
     rows.into_iter()
         .map(|row| {
             Ok(Notification {

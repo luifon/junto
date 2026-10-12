@@ -147,12 +147,27 @@ impl CallRegistry {
     /// `generation` was taken. When a request changed the list in between, the list stays
     /// as it is and the next admission check replaces it.
     pub fn replace_since(&self, generation: u64, members: HashMap<AccountId, CallKey>) -> bool {
+        self.replace(generation, members).is_some()
+    }
+
+    /// Like [`Self::replace_since`]. Returns the accounts that the list did not hold with
+    /// the same call before, or `None` when the list stayed as it is.
+    fn replace(
+        &self,
+        generation: u64,
+        members: HashMap<AccountId, CallKey>,
+    ) -> Option<Vec<AccountId>> {
         let mut inner = lock(&self.inner);
         if inner.generation != generation {
-            return false;
+            return None;
         }
+        let entered = members
+            .iter()
+            .filter(|(account_id, key)| inner.by_account.get(account_id) != Some(key))
+            .map(|(account_id, _)| *account_id)
+            .collect();
         inner.by_account = members;
-        true
+        Some(entered)
     }
 }
 
@@ -269,6 +284,24 @@ impl Streams {
                 registry.by_account.remove(&link.account_id);
             }
         }
+    }
+
+    /// Replaces the list of the accounts in calls with `members`, as
+    /// [`CallRegistry::replace_since`] does, and wakes the connections of the accounts that
+    /// the list did not hold with the same call before. The list decides which events wake
+    /// a background connection, so such a connection can have slept through events of its
+    /// call; it reads them now.
+    pub fn replace_calls(&self, generation: u64, members: HashMap<AccountId, CallKey>) -> bool {
+        let Some(entered) = self.calls.replace(generation, members) else {
+            return false;
+        };
+        let registry = lock(&self.registry);
+        for account_id in entered {
+            for link in registry.by_account.get(&account_id).into_iter().flatten() {
+                link.news.notify_one();
+            }
+        }
+        true
     }
 
     /// Wakes the connections that the new events can concern and makes the connections of

@@ -53,7 +53,7 @@ Snapshot:
 - The route reads all of it in one read-only transaction. The cursor of the snapshot is the highest position that this transaction sees.
 - A change and its events commit together (ADR 0011), and a higher position is never visible before a lower one (ADR 0010). The snapshot therefore contains the effect of every event up to its cursor, and of no later event.
 - The snapshot carries: the account with its server permissions and workspaces, and for each workspace its roles, the caller's own roles, its categories and its channels.
-- The snapshot also carries the calls in progress as the caller may see them (ADR 0510): the call of the caller's account, the calls of the voice channels that the caller sees, the caller's direct-message calls, and the invitations into calls that wait for the caller.
+- The snapshot also carries the calls in progress as the caller may see them (ADR 0510): the call of the caller's account, the calls of the voice channels that the caller sees, the caller's direct-message calls, the invitations into calls that wait for the caller, the invitations that the caller made and that wait, the moves between voice channels that wait and name the caller, and the caller's own requests to enter that wait.
 - Loaded on demand from their routes, and not in the snapshot: the members of a workspace, the accounts, the devices of the account, the invites, the join requests, the server roles and the channel overrides.
 - A client that loads one of these collections while it is subscribed applies to it the events that arrived since it sent the request, in their order, after the response. The events carry whole objects, so applying one twice changes nothing.
 
@@ -73,5 +73,6 @@ Change of level:
 - A client that was disconnected for longer than the log keeps, or during more than 1000 events, loads a snapshot.
 - A server that records more than 5000 events within one minute keeps more than 5000 until the next run of the maintenance task.
 - The count of the replay bound reads the kept part of the log after the cursor and decides each event, 500 at a time. The cost of a `subscribe` grows with the length of that part.
-- A reconnect loads a snapshot only because of events that the account would have received. An account cannot push another account over the bound with events that the other account may not see.
+- A reconnect loads a snapshot only because of events that the account would have received. An account cannot push another account over the bound of 1000 events with events that the other account may not see.
+- The bound of the kept log counts positions, whoever they are for. A connection that is more than 5000 positions behind loads a snapshot. Every route that records an event for a request of one account has a limit of requests, so one account uses a bounded number of positions per minute: message changes (ADR 0408), the changes of the own profile and of the names of the own devices (ADR 0119), and the requests of calls (ADR 0509).
 - After a restore of an older backup the epoch changes (ADR 0010), every cursor is unknown, and every client loads a snapshot.

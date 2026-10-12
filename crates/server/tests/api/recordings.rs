@@ -675,13 +675,9 @@ async fn recordings_are_read_by_the_people_who_see_the_voice_channel() {
 /// channel read it and are told of it.
 #[tokio::test]
 async fn a_recording_in_a_hidden_channel_is_shown_to_the_people_outside_when_its_call_has_ended() {
-    let studio = Studio::open().await;
+    let studio = Studio::hidden().await;
     let scene = &studio.scene;
     let (server, owner, ann, ben) = (&scene.server, &scene.owner, &scene.ann, &scene.ben);
-    let voice = scene.voice.id;
-    server
-        .call_settings(owner, voice, json!({ "hides_occupants": true }))
-        .await;
     let mut inside = server.full_stream(ben).await;
     let mut outside = server.full_stream(owner).await;
     let absent = junto_protocol::ids::RecordingId::generate();
@@ -777,29 +773,38 @@ async fn a_recording_in_a_hidden_channel_is_shown_to_the_people_outside_when_its
     );
 }
 
-/// Review 2, finding 4: a channel that stops hiding who is inside shows the recordings of
-/// its running call to the people outside from then on, and tells them.
+/// ADR 0517: a channel that stops hiding who is inside while its call runs shows nothing of
+/// the recordings of that call. The people outside read them, and are told of them, when
+/// the call has ended.
 #[tokio::test]
-async fn a_channel_that_stops_hiding_who_is_inside_shows_the_recordings_of_its_call() {
-    let studio = Studio::open().await;
+async fn a_channel_that_stops_hiding_who_is_inside_shows_the_recordings_when_its_call_has_ended() {
+    let studio = Studio::hidden().await;
     let scene = &studio.scene;
-    let (server, owner) = (&scene.server, &scene.owner);
+    let (server, owner, ann, ben) = (&scene.server, &scene.owner, &scene.ann, &scene.ben);
     let voice = scene.voice.id;
-    server
-        .call_settings(owner, voice, json!({ "hides_occupants": true }))
-        .await;
     let first = studio.record().await;
     let done = studio.stop(first.id).await;
     let second = studio.record().await;
     let mut outside = server.full_stream(owner).await;
-    server
-        .recording_reply(owner, first.id)
-        .await
-        .error(ErrorCode::NotFound);
 
     server
         .call_settings(owner, voice, json!({ "hides_occupants": false }))
         .await;
+    assert!(
+        server
+            .recording_events(owner, &mut outside)
+            .await
+            .is_empty()
+    );
+    for hidden in [first.id, second.id] {
+        server
+            .recording_reply(owner, hidden)
+            .await
+            .error(ErrorCode::NotFound);
+    }
+
+    server.leave_call(ann).await;
+    server.leave_call(ben).await;
     let events = server.recording_events(owner, &mut outside).await;
     assert_eq!(
         states(&events),
@@ -811,28 +816,15 @@ async fn a_channel_that_stops_hiding_who_is_inside_shows_the_recordings_of_its_c
     assert_eq!(events[0].1, done.recording);
     assert_eq!(events[1].1.id, second.id);
     assert_eq!(server.recording(owner, first.id).await, done);
-
-    server
-        .call_settings(owner, voice, json!({ "user_limit": 5 }))
-        .await;
-    assert!(
-        server
-            .recording_events(owner, &mut outside)
-            .await
-            .is_empty()
-    );
 }
 
 /// ADR 0604: the end of a call in a hidden channel tells the people outside of at most 50
 /// recordings of that call, and the one that still runs is among them.
 #[tokio::test]
 async fn the_end_of_a_hidden_call_tells_of_at_most_fifty_recordings() {
-    let studio = Studio::open().await;
+    let studio = Studio::hidden().await;
     let scene = &studio.scene;
     let (server, owner, ann, ben) = (&scene.server, &scene.owner, &scene.ann, &scene.ben);
-    server
-        .call_settings(owner, scene.voice.id, json!({ "hides_occupants": true }))
-        .await;
     let first = studio.record().await;
     studio.stop(first.id).await;
     sqlx::query(
