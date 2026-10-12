@@ -5,6 +5,7 @@
 //! Requests to the server run as tasks of their own and report back, and the task goes on
 //! reading the connection while they run.
 
+mod admin;
 mod messages;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -65,6 +66,7 @@ enum Payload {
     ThreadHead(Box<ThreadPage>),
     Pins(Vec<Message>),
     Notices(NotificationPage),
+    Admin(crate::model::AdminPayload),
 }
 
 struct Loaded {
@@ -255,6 +257,8 @@ struct Client {
     /// What the client does for the messages (ADR 0721).
     messages: messages::Work,
     done: mpsc::UnboundedSender<messages::Done>,
+    /// The collections of the administration that readers have open (ADR 0760).
+    admin: admin::Collections,
 }
 
 /// Runs the stream client of one server until `desired` is closed.
@@ -301,6 +305,7 @@ pub(crate) async fn run(
         applied_bytes: 0,
         messages: messages::Work::default(),
         done,
+        admin: admin::Collections::default(),
     };
     let first = desired.borrow_and_update().clone();
     client.retarget(first);
@@ -420,6 +425,7 @@ impl Client {
                 }
                 Part::OwnCall => model.own_call.is_some(),
                 Part::ChannelCall(channel_id) => model.channel(channel_id).is_some(),
+                Part::Admin(part) => self.admin_read_needed(part, model),
                 part => self.message_read_needed(part, model),
             });
             if needed && part.is_read_again() {
@@ -443,6 +449,7 @@ impl Client {
         self.wanted_members.clear();
         self.waiting_for_members.clear();
         self.forget_messages();
+        self.forget_admin();
         self.halted = false;
         self.fault = None;
         self.snapshot_retry_at = None;
@@ -859,6 +866,15 @@ impl Client {
         for part in follow.load {
             if part.is_read_again() {
                 self.read(part);
+            } else if matches!(part, Part::Admin(_))
+                && self
+                    .pending
+                    .iter()
+                    .any(|pending| pending.load == Load::Part(part))
+            {
+                // The read on its way keeps the event that asked for this one, and one
+                // more read follows its answer (ADR 0760). A read is not ended for an
+                // event, so a row of such events cannot keep the collection unread.
             } else {
                 self.start(Load::Part(part));
             }
@@ -874,6 +890,9 @@ impl Client {
         if let (Load::Part(Part::Members(workspace_id)), Some(model)) = (load, &mut self.model) {
             model.set_members(workspace_id, Loadable::Loading);
             self.model_changed = true;
+        }
+        if let Load::Part(Part::Admin(part)) = load {
+            self.admin_read_starts(part);
         }
         let page = match load {
             Load::Part(Part::Messages(place, reach)) => {
@@ -988,6 +1007,7 @@ impl Client {
                     .message(message_id)
                     .await
                     .map(|message| Payload::Message(Box::new(message))),
+                Load::Part(Part::Admin(part)) => admin::read(&api, part).await.map(Payload::Admin),
             };
             let _ = loaded.send(Loaded { ticket, result });
         });
@@ -1025,6 +1045,19 @@ impl Client {
                 self.read_answered(part, loaded.result, &kept);
             }
             self.pump_message_reads();
+            return;
+        }
+        if let Load::Part(Part::Admin(part)) = pending.load {
+            if ended {
+                self.ended(None);
+                return;
+            }
+            let result = match loaded.result {
+                Ok(Payload::Admin(payload)) => Ok(payload),
+                Ok(_) => return,
+                Err(error) => Err(error),
+            };
+            self.admin_loaded(part, result, &kept);
             return;
         }
         match (pending.load, loaded.result) {
@@ -1121,6 +1154,10 @@ impl Client {
         if in_call {
             self.start(Load::Part(Part::OwnCall));
         }
+        // A reader of the messages, of a thread or of the pins of a channel holds it.
+        let mut places = self.messages.wanted_places();
+        places.extend(self.messages.wanted_pins());
+        self.carry_admin(before.as_ref(), &places);
         self.carry_messages(before.as_ref());
         self.untold.push(Notice::Reloaded { cursor });
     }
@@ -1173,6 +1210,9 @@ impl Client {
                     self.model_changed = true;
                 }
             }
+            Command::OpenAdmin { part, reply } => self.open_admin(part, reply),
+            Command::ReleaseAdmin(part) => self.release_admin(part),
+            Command::ReadAdminAgain(part) => self.read_admin_again(part),
             command => self.message_command(command),
         }
     }

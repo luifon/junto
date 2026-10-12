@@ -1,5 +1,6 @@
 //! The client of the public API of one server (ADR 0201, ADR 0205).
 
+mod admin;
 mod calls;
 mod client;
 pub(crate) mod error;

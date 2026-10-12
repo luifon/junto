@@ -71,6 +71,8 @@ pub struct TestServer {
     media: bool,
     /// Where the server stores the files of messages.
     attachments: tempfile::TempDir,
+    /// Where the server writes the files of exports.
+    exports: tempfile::TempDir,
     pub database_url: String,
 }
 
@@ -112,6 +114,7 @@ impl TestServer {
             proxy_port,
             media,
             attachments: tempfile::tempdir().unwrap(),
+            exports: tempfile::tempdir().unwrap(),
             database_url: database_url.into(),
         };
         server.run(true).await;
@@ -207,6 +210,10 @@ impl TestServer {
             .env(
                 "JUNTO_ATTACHMENTS_DIR",
                 self.attachments.path().canonicalize().unwrap(),
+            )
+            .env(
+                "JUNTO_EXPORTS_DIR",
+                self.exports.path().canonicalize().unwrap(),
             )
             .env("JUNTO_LOG_FORMAT", "text")
             .env("JUNTO_LOG_LEVEL", "warn")

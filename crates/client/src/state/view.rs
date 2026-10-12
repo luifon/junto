@@ -366,7 +366,7 @@ impl ServerStatus {
 /// The state of a server as the account of the session sees it. The event stream follows
 /// the access flow with a delay (ADR 0718): for that time it can still hold the state of
 /// the account before, or of a session that has ended. That state is not shown.
-fn shown_model(server: &ServerSnapshot) -> Option<&ServerModel> {
+pub(crate) fn shown_model(server: &ServerSnapshot) -> Option<&ServerModel> {
     match &server.access {
         AccessState::LoggedIn { account_id, .. } => server
             .model
@@ -838,6 +838,20 @@ pub struct WorkspaceView {
     /// The account whose direct conversation the server was asked for, while the answer
     /// is on its way.
     pub conversation_asked: Option<AccountId>,
+    /// Present when the shown channel is archived (ADR 0762): it is read and takes no
+    /// message.
+    pub archived: Option<ArchivedState>,
+}
+
+/// The archive state of the shown channel, in the time zone of the person.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArchivedState {
+    pub archived_at: OffsetDateTime,
+    /// The server does not delete the channel before this time. Absent: the server does
+    /// not delete it.
+    pub deletes_at: Option<OffsetDateTime>,
+    /// The roles of the person hold "manage channel": the channel can be restored.
+    pub may_restore: bool,
 }
 
 /// The menu of a person in a voice channel (ADR 0739): what the person of this device can
@@ -1116,7 +1130,10 @@ impl ShellView {
 
 /// The workspace of a server that is shown: the selected one when the state holds it, the
 /// default workspace otherwise, and the first one when there is no default.
-fn shown_workspace(model: &ServerModel, selected: Option<WorkspaceId>) -> Option<&WorkspaceModel> {
+pub(crate) fn shown_workspace(
+    model: &ServerModel,
+    selected: Option<WorkspaceId>,
+) -> Option<&WorkspaceModel> {
     selected
         .and_then(|id| model.workspace(id))
         .or_else(|| {
@@ -1567,9 +1584,17 @@ fn workspace_view(
     let directs = directs(server_id, workspace, model, known, conversation_id);
     let conversation = directs.iter().find(|row| row.selected).cloned();
     let wanted = selection.channels.get(&workspace.workspace.id).copied();
+    // An archived channel is in no list. The main area shows it while the state knows it
+    // and the person has it selected (ADR 0762).
+    let archived = wanted
+        .filter(|_| conversation.is_none())
+        .and_then(|id| model.admin.archived_channel(id))
+        .filter(|held| held.channel.workspace_id == workspace.workspace.id);
     let rows = || sections.iter().flat_map(|section| section.rows.iter());
     let shown = if conversation.is_some() {
         None
+    } else if let Some(archived) = archived {
+        Some(archived.channel.id)
     } else {
         wanted
             .filter(|id| rows().any(|row| row.id == *id))
@@ -1608,6 +1633,24 @@ fn workspace_view(
             channel = Some(row.clone());
         }
     }
+    if let (None, Some(archived)) = (&channel, archived) {
+        let channel_id = archived.channel.id;
+        let open = open_thread
+            .filter(|(of, _)| *of == channel_id)
+            .map(|(_, root_id)| root_id);
+        // A call of an archived voice channel has ended: the row has no voice state, and
+        // the main area shows its messages.
+        channel = Some(ChannelRow {
+            id: channel_id,
+            kind: archived.channel.kind,
+            name: archived.channel.name.clone(),
+            selected: true,
+            voice: None,
+            unread: Unread::of(model, PlaceId::Channel(channel_id)),
+            permanent: archived.channel.permanent_messages,
+            threads: thread_entries(channel_id, model, &names, open),
+        });
+    }
     let call = channel
         .as_ref()
         .filter(|row| {
@@ -1640,6 +1683,29 @@ fn workspace_view(
     let feed = place
         .and_then(|place| model.timeline(place))
         .map(|timeline| feed::derive(&source(timeline)));
+    // An archived channel takes no change (ADR 0410): its messages offer none, in the
+    // main area, in a thread and in the pin list.
+    let read_only = archived.is_some();
+    let fixed = |mut row: MessageRow| {
+        if read_only {
+            row.can_edit = false;
+            row.can_delete = false;
+            row.can_pin = false;
+            row.can_thread = false;
+        }
+        row
+    };
+    let fixed_feed = |mut feed: Feed| {
+        if read_only {
+            for row in Arc::make_mut(&mut feed.rows) {
+                if let feed::FeedRow::Message(row) = row {
+                    *row = fixed(row.clone());
+                }
+            }
+        }
+        feed
+    };
+    let feed = feed.map(fixed_feed);
     let draft_of = |place: PlaceId| {
         known
             .drafts
@@ -1665,9 +1731,13 @@ fn workspace_view(
                 root: timeline
                     .and_then(|timeline| Some((timeline, timeline.root.as_ref()?)))
                     .map(|(timeline, root)| {
-                        feed::message_row(&source(timeline), root, &mut feed::Loaded::default())
+                        fixed(feed::message_row(
+                            &source(timeline),
+                            root,
+                            &mut feed::Loaded::default(),
+                        ))
                     }),
-                feed: timeline.map(|timeline| feed::derive(&source(timeline))),
+                feed: timeline.map(|timeline| fixed_feed(feed::derive(&source(timeline)))),
                 forks: timeline
                     .map(|timeline| timeline.forks.as_slice())
                     .unwrap_or_default()
@@ -1677,7 +1747,7 @@ fn workspace_view(
                         Some((*fork, held.channel.name.clone(), held.channel.kind))
                     })
                     .collect(),
-                may_fork: allowed.manage,
+                may_fork: allowed.manage && !read_only,
                 draft: draft_of(place),
                 fork: known
                     .fork
@@ -1703,7 +1773,9 @@ fn workspace_view(
                         PinsState::Loaded(
                             pinned
                                 .iter()
-                                .map(|message| feed::message_row(&source, message, &mut loaded))
+                                .map(|message| {
+                                    fixed(feed::message_row(&source, message, &mut loaded))
+                                })
                                 .collect(),
                         )
                     }
@@ -1749,6 +1821,13 @@ fn workspace_view(
             .conversation_asked
             .filter(|(server, _)| *server == server_id)
             .map(|(_, account_id)| account_id),
+        archived: archived
+            .filter(|held| workspace.channel(held.channel.id).is_none())
+            .map(|held| ArchivedState {
+                archived_at: known.zone.local(held.archived_at),
+                deletes_at: held.deletes_at.map(|at| known.zone.local(at)),
+                may_restore: allowed.manage,
+            }),
     }
 }
 

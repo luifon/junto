@@ -32,6 +32,7 @@ use crate::model::tests::{Scene, channel, member, participant, scene, time};
 use crate::model::{Loadable, ServerModel};
 use crate::version::SupportedVersions;
 
+mod admin;
 mod discovery;
 mod messages;
 

@@ -3819,6 +3819,7 @@ dependencies = [
  "ed25519-dalek",
  "futures-util",
  "getrandom 0.4.3",
+ "junto-authz",
  "junto-protocol",
  "reqwest 0.12.28",
  "rustix",

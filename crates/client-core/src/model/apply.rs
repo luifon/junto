@@ -14,7 +14,8 @@ use junto_protocol::recording::Recording;
 use junto_protocol::structure::Channel;
 
 use super::{
-    CallModel, ChannelModel, Loadable, PlaceId, Reach, ServerModel, ThreadMoved, WorkspaceModel,
+    AdminPart, CallModel, ChannelModel, Loadable, PlaceId, Reach, ServerModel, ThreadMoved,
+    WorkspaceModel,
 };
 
 /// A part of the state that is read from a route of its own.
@@ -47,6 +48,8 @@ pub(crate) enum Part {
     MoreNotices(uuid::Uuid),
     /// A message that a list of the state names by its identifier.
     Named(MessageId),
+    /// A collection of the administration that a reader has open (ADR 0760).
+    Admin(AdminPart),
 }
 
 impl Part {
@@ -56,7 +59,7 @@ impl Part {
     pub(crate) const fn is_read_again(&self) -> bool {
         !matches!(
             self,
-            Self::Members(_) | Self::OwnCall | Self::ChannelCall(_)
+            Self::Members(_) | Self::OwnCall | Self::ChannelCall(_) | Self::Admin(_)
         )
     }
 }
@@ -120,6 +123,9 @@ impl Part {
                     workspace_id: of, ..
                 }
                 | Event::WorkspaceMemberRolesChanged {
+                    workspace_id: of, ..
+                }
+                | Event::WorkspaceRoleDeleted {
                     workspace_id: of, ..
                 } => of == workspace_id,
                 Event::AccountProfileUpdated { .. } => true,
@@ -188,6 +194,7 @@ impl Part {
             Self::Named(message_id) => {
                 matches!(event, Event::MessageChanged { message_id: of, .. } if of == message_id)
             }
+            Self::Admin(part) => part.concerns(event),
             // A page after the loaded ones is added only while the list before it is the
             // one that the request continued; no event changes its answer.
             Self::MoreThreads | Self::MoreNotices(_) => false,
@@ -252,6 +259,13 @@ impl WorkspaceModel {
 impl ServerModel {
     /// Applies one event. The caller moves the cursor.
     pub(crate) fn apply(&mut self, event: &Event) -> Follow {
+        let stale = self.apply_admin(event);
+        let mut follow = self.apply_event(event);
+        follow.load.extend(stale.into_iter().map(Part::Admin));
+        follow
+    }
+
+    fn apply_event(&mut self, event: &Event) -> Follow {
         match event {
             Event::PermissionsChanged { .. } | Event::CallAccessEnded {} => {
                 return Follow::reload();
@@ -357,7 +371,9 @@ impl ServerModel {
                     });
                 }
             }
-            Event::ChannelCreated { channel } | Event::ChannelUpdated { channel } => {
+            Event::ChannelCreated { channel }
+            | Event::ChannelUpdated { channel }
+            | Event::ChannelRestored { channel } => {
                 let inside = self.is_inside(channel.id);
                 // A fork of a thread is a new channel (ADR 0409).
                 let mut load = match event {
@@ -382,12 +398,96 @@ impl ServerModel {
                         .retain(|channel| channel.channel.id != *channel_id);
                 }
                 self.forget_place(PlaceId::Channel(*channel_id));
-                let gone = |place: &CallPlace| place.channel_id() == Some(*channel_id);
-                self.invitations.retain(|held| !gone(&held.place));
-                self.entry_requests.retain(|held| !gone(&held.place));
-                self.moves
-                    .retain(|held| !gone(&held.from) && !gone(&held.to));
+                self.forget_calls_of(*channel_id);
                 // The deleted channel can be the fork of an open thread.
+                return Follow::loads(self.thread_heads());
+            }
+            Event::ChannelArchived { channel: archived } => {
+                let workspace_id = archived.channel.workspace_id;
+                let channel_id = archived.channel.id;
+                let held = self
+                    .workspace(workspace_id)
+                    .is_some_and(|workspace| workspace.channel(channel_id).is_some());
+                if held && let Some(workspace) = self.workspace_mut(workspace_id) {
+                    workspace
+                        .channels
+                        .retain(|channel| channel.channel.id != channel_id);
+                }
+                // The call of an archived voice channel ends (ADR 0410).
+                self.forget_calls_of(channel_id);
+                // The channel stays readable for a reader that has it open, and for a
+                // reader of the archived list. For every other reader nothing of it stays.
+                if self.readable_channel(channel_id).is_none() {
+                    self.forget_place(PlaceId::Channel(channel_id));
+                }
+            }
+            Event::CategoryDeleted {
+                workspace_id,
+                category_id,
+            } => {
+                if let Some(workspace) = self.workspace_mut(*workspace_id) {
+                    workspace.categories.retain(|held| held.id != *category_id);
+                    for held in &mut workspace.channels {
+                        if held.channel.category_id == Some(*category_id) {
+                            held.channel.category_id = None;
+                        }
+                    }
+                }
+            }
+            Event::WorkspaceRoleDeleted {
+                workspace_id,
+                role_id,
+            } => {
+                if let Some(workspace) = self.workspace_mut(*workspace_id) {
+                    workspace.roles.retain(|held| held.id != *role_id);
+                    workspace.own_role_ids.retain(|held| held != role_id);
+                    if let Some(members) = workspace.members.loaded_mut() {
+                        for member in members {
+                            member.role_ids.retain(|held| held != role_id);
+                        }
+                    }
+                }
+            }
+            Event::WorkspaceDeleted { workspace_id } => {
+                let mut channels: Vec<ChannelId> = self
+                    .workspace(*workspace_id)
+                    .map(|workspace| {
+                        workspace
+                            .channels
+                            .iter()
+                            .map(|held| held.channel.id)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                channels.extend(
+                    self.admin
+                        .archived(*workspace_id)
+                        .loaded()
+                        .into_iter()
+                        .flatten()
+                        .chain(&self.admin.archived_known)
+                        .filter(|held| held.channel.workspace_id == *workspace_id)
+                        .map(|held| held.channel.id),
+                );
+                self.workspaces
+                    .retain(|held| held.workspace.id != *workspace_id);
+                self.account
+                    .workspace_ids
+                    .retain(|held| held != workspace_id);
+                for channel_id in &channels {
+                    self.forget_place(PlaceId::Channel(*channel_id));
+                    self.forget_calls_of(*channel_id);
+                }
+                // The settings of the snapshot that name the workspace or one of its
+                // channels name nothing any more.
+                self.notification_settings.retain(|held| {
+                    held.scope_id != workspace_id.as_uuid()
+                        && !channels
+                            .iter()
+                            .any(|channel_id| channel_id.as_uuid() == held.scope_id)
+                });
+                self.forget_admin_workspace(*workspace_id, &channels);
+                // A channel of the workspace can be the fork of an open thread.
                 return Follow::loads(self.thread_heads());
             }
             Event::CallStarted {
@@ -655,7 +755,8 @@ impl ServerModel {
                 return Follow::loads(load);
             }
             // The collections of these events are read from their routes when a reader
-            // needs them (ADR 0207). The state holds none of them.
+            // needs them (ADR 0207). The collections of the administration that a reader
+            // has open follow them (ADR 0760); the state holds none of the others.
             Event::DeviceAdded { .. }
             | Event::DeviceRenamed { .. }
             | Event::DeviceRemoved { .. }
@@ -668,6 +769,13 @@ impl ServerModel {
             | Event::OwnerChanged { .. }
             | Event::ServerRoleCreated { .. }
             | Event::ServerRoleUpdated { .. }
+            | Event::ServerRoleDeleted { .. }
+            | Event::AccessTokenCreated { .. }
+            | Event::AccessTokenRevoked { .. }
+            | Event::AccessTokensOfCreatorRevoked { .. }
+            | Event::ChannelDeletionDue { .. }
+            | Event::ExportUpdated { .. }
+            | Event::ExportRemoved { .. }
             | Event::InviteCreated { .. }
             | Event::InviteRevoked { .. }
             | Event::InviteUsed { .. }
@@ -740,7 +848,9 @@ impl ServerModel {
     /// does not hold yet adds the conversation.
     fn holds_place(&mut self, place: &MessagePlace) -> bool {
         match place {
-            MessagePlace::Channel { channel_id, .. } => self.channel(*channel_id).is_some(),
+            MessagePlace::Channel { channel_id, .. } => {
+                self.readable_channel(*channel_id).is_some()
+            }
             MessagePlace::Direct {
                 conversation_id,
                 low_account_id,
@@ -796,6 +906,15 @@ impl ServerModel {
     ) -> Option<&mut Vec<junto_protocol::structure::WorkspaceMember>> {
         self.workspace(workspace_id)?.members.loaded()?;
         self.workspace_mut(workspace_id)?.members.loaded_mut()
+    }
+
+    /// A channel takes no call any more: what waits for a call of it has ended.
+    fn forget_calls_of(&mut self, channel_id: ChannelId) {
+        let gone = |place: &CallPlace| place.channel_id() == Some(channel_id);
+        self.invitations.retain(|held| !gone(&held.place));
+        self.entry_requests.retain(|held| !gone(&held.place));
+        self.moves
+            .retain(|held| !gone(&held.from) && !gone(&held.to));
     }
 
     fn is_inside(&self, channel_id: ChannelId) -> bool {

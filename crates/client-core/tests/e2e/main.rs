@@ -3,6 +3,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod admin;
 mod calls_live;
 mod messages;
 mod stream;

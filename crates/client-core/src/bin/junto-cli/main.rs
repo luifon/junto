@@ -1,6 +1,7 @@
 //! `junto-cli`: operates Junto servers from a terminal with the client library and nothing
 //! else.
 
+mod admin;
 mod discovery;
 mod live;
 mod messages;
@@ -74,6 +75,22 @@ commands:
                                [--max-uses <n>] [--expires-in-hours <n>] [--workspace <id>]...
   requests                     list the join requests that wait
   approve-request <id>         approve a join request
+  deny-request <id>            deny a join request
+  invites <action> [arguments] list the invites, or cancel one
+  redeem                       enter the workspaces of an invite code with the account of
+                               this device
+  workspaces <action> [arguments]
+  categories <action> [arguments]
+  channels <action> [arguments]
+  overrides <action> [arguments]
+  members <action> [arguments]
+  accounts <action> [arguments]
+  tokens <action> [arguments]
+  exports <action> [arguments]
+  audit <action> [arguments]
+  archive-period <action> [arguments]
+  retention <action> [arguments]
+                               send one request of the administration routes
   profile                      show or set the local profile preset
                                [--name <name>] [--avatar <file>] [--no-avatar]
   state                        connect the event stream of the server and show the state
@@ -171,6 +188,80 @@ actions of notices:
 A scope is account, workspace:<id> or channel:<id>. A time is written as
 2026-01-31T00:00:00Z.
 
+actions of workspaces:
+  list
+  create <name>
+  rename <workspace> <name>
+  delete <workspace>           delete a workspace with its members, roles, categories and
+                               channels
+
+actions of categories:
+  create <workspace> <name>
+  rename <workspace> <category> <name>
+  move <workspace> <category> <position>
+  delete <workspace> <category>
+                               the channels of the category stay and have no category
+
+actions of channels:
+  list <workspace>             the categories and the channels that the account sees
+  create <workspace> <name> --kind <text|voice> [--category <id>]
+  update <channel> [--name <name>] [--category <id> | --no-category] [--position <n>]
+         [--permanent <on|off>]
+  delete <channel>
+  archive <channel>, restore <channel>
+  archived <workspace>         the archived channels that the account sees
+  call-settings <channel> [--limit <n> | --no-limit] [--hide <on|off>]
+
+actions of overrides:
+  list <channel>
+  set <channel> <role> [--allow <permission>]... [--deny <permission>]...
+                               set the override of a role in a channel; without an option
+                               the override is removed. A permission is written as the
+                               server names it, such as view_channel
+
+actions of members:
+  list <workspace>
+  add <workspace> <account>    add an existing account to a workspace
+
+actions of accounts:
+  list
+  remove <account>, ban <account>, unban <account>
+
+actions of invites:
+  list
+  revoke <invite>
+
+actions of tokens:
+  list [--before <token>] [--limit <n>]
+  create <name> --action <action>... --days <n>
+                               create an access token and print it once. An action is
+                               read_structure, manage_structure, manage_members or
+                               read_audit_log
+  revoke <token>
+
+actions of exports:
+  list
+  channel <channel>, conversation <conversation>
+                               ask for an export
+  show <export>
+  download <export> <new file>
+  remove <export>
+
+actions of audit:
+  server [--before <entry>] [--limit <n>]
+  workspace <workspace> [--before <entry>] [--limit <n>]
+
+actions of archive-period:
+  show <workspace>
+  set <workspace> <days|never> the time after which the server deletes an archived channel
+
+actions of retention:
+  show <workspace>             the retention of the files and of the recordings
+  files <workspace> <days|never>
+  recordings <workspace> <days|never>
+  direct show
+  direct set <days|never>      the retention of the files of direct messages
+
 An action that joins a call prints the token for the media server only with --show-token.
 A place in a call belongs to the session that asked for it, and every command ends its
 session, so a place that `call` takes ends with the command. `watch` takes the same actions
@@ -224,6 +315,13 @@ const VALUE_OPTIONS: &[&str] = &[
     "from",
     "until",
     "cursor",
+    "category",
+    "position",
+    "permanent",
+    "allow",
+    "deny",
+    "action",
+    "days",
 ];
 const FLAGS: &[&str] = &[
     "when-selected",
@@ -233,6 +331,7 @@ const FLAGS: &[&str] = &[
     "no-limit",
     "show-token",
     "no-quiet",
+    "no-category",
 ];
 const WAIT_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -548,6 +647,9 @@ async fn run(arguments: Arguments) -> Result<(), Failure> {
         "threads" | "pins" | "notices" | "search" => {
             discovery::run(&client, command, &arguments).await
         }
+        "deny-request" | "invites" | "redeem" | "workspaces" | "categories" | "channels"
+        | "overrides" | "members" | "accounts" | "tokens" | "exports" | "audit"
+        | "archive-period" | "retention" => admin::run(&client, command, &arguments).await,
         other => Err(usage(format!("unknown command {other}"))),
     }
 }

@@ -16,6 +16,8 @@ name = "e2e"
 path = "tests/e2e/main.rs"
 
 [dependencies]
+# The permission function of the server, for what a screen shows as possible (ADR 0760).
+junto-authz = { workspace = true }
 junto-protocol = { workspace = true }
 base64 = { workspace = true }
 bytes = "1"

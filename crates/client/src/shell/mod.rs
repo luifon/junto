@@ -3,6 +3,7 @@
 //! [`AppState::view`] gives and holds only what belongs to the window itself: which layer
 //! is open, the text of its fields, and where the keyboard focus returns to.
 
+pub mod admin;
 pub mod call;
 mod channels;
 mod composer;
@@ -61,6 +62,9 @@ pub(crate) enum Layer {
     Emoji(EmojiTarget),
     /// The dialog that forks the thread of the side panel into a channel.
     Fork(threads::ForkDialog),
+    /// The administration of a server, or the settings of a channel. The state of the
+    /// application holds which page is open.
+    Admin,
 }
 
 /// What the emoji of the picker is for.
@@ -218,6 +222,8 @@ pub struct Shell {
     pub(crate) pins_scroll: ScrollHandle,
     /// The name of the channel that a thread is forked into.
     pub(crate) fork_name: Entity<InputState>,
+    /// The fields and the open forms of the administration.
+    pub(crate) admin: admin::AdminUi,
     /// What the window drew last. A test reads the data of the window from it, and not
     /// from the client core, which can be ahead of the window.
     #[cfg(feature = "test-support")]
@@ -246,7 +252,8 @@ impl Shell {
             .set_scroll_handler(cx.listener(|this, event, window, cx| {
                 this.feed_scrolled(Pane::Thread, event, window, cx);
             }));
-        let subscriptions = vec![
+        let (admin, admin_subscriptions) = admin::AdminUi::new(window, cx);
+        let mut subscriptions = vec![
             Self::observe_composer(Pane::Main, &composer.input, window, cx),
             Self::observe_composer(Pane::Thread, &thread_composer.input, window, cx),
             Field::observe(
@@ -337,6 +344,7 @@ impl Shell {
                 cx.notify();
             }),
         ];
+        subscriptions.extend(admin_subscriptions);
         let mut shell = Self {
             state,
             focus: cx.focus_handle(),
@@ -385,6 +393,7 @@ impl Shell {
             thread_composer,
             pins_scroll: ScrollHandle::new(),
             fork_name,
+            admin,
             #[cfg(feature = "test-support")]
             drawn: None,
             _subscriptions: subscriptions,
@@ -615,6 +624,11 @@ impl Shell {
             // A code is not kept in a field that nobody sees.
             self.code
                 .update(cx, |code, cx| code.set_value("", window, cx));
+        }
+        if matches!(self.layer, Layer::Admin) {
+            // A code or a token that the layer showed is gone with it.
+            self.reset_admin_ui(window, cx);
+            self.state.update(cx, |state, cx| state.close_admin(cx));
         }
         self.layer = Layer::None;
         self.return_focus_to_content(window, cx);
@@ -916,6 +930,9 @@ impl Shell {
                     .is_none_or(|workspace| workspace.thread.is_none())
                     || Self::fork_is_done(dialog, view)
             }
+            // The server shows no content any more, or the channel of the open
+            // settings is gone.
+            Layer::Admin => self.state.read(cx).admin_view().is_none(),
             Layer::None | Layer::Welcome | Layer::Settings => false,
         };
         if stale {
@@ -949,6 +966,7 @@ impl Shell {
                 .render_confirm_forget(*server_id, view, window, cx)
                 .into_any_element(),
             Layer::SharePicker(_) => self.render_share_picker(window, cx),
+            Layer::Admin => self.render_admin(window, cx),
         }
     }
 }

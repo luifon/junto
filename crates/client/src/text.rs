@@ -20,6 +20,8 @@ use crate::state::view::{
     CallNotice, Closed, RecordingFault, RecordingProblem, ShareCard, SoundWarning,
 };
 
+pub mod admin;
+
 pub const APP_NAME: &str = "Junto";
 pub const QUIT: &str = "Quit Junto";
 
@@ -1523,6 +1525,10 @@ pub fn system_line(action: &str) -> (crate::state::feed::SystemKind, &'static st
         "call_member_moved_out" => (Plain, "{actor} moved {subject} to another voice channel"),
         "call_member_moved_in" => (Plain, "{actor} moved {subject} into this voice channel"),
         "permanent_message_deleted" => (Plain, "{actor} deleted a permanent message"),
+        "channel_archived" => (Plain, "{actor} archived this channel"),
+        "channel_restored" => (Plain, "{actor} restored this channel"),
+        "channel_deletion_due" => (Plain, "The server deletes this archived channel in 7 days"),
+        "export_requested" => (Plain, "{actor} asked for an export of this channel"),
         _ => (Plain, "An event that this version of Junto does not know"),
     }
 }

@@ -7,10 +7,13 @@
 //! A copy shares every workspace that did not change since the copy before, so a reader
 //! that keeps an old copy costs the memory of the changed workspaces only.
 
+mod admin;
 mod apply;
 mod discovery;
 mod messages;
 
+#[cfg(test)]
+mod admin_tests;
 #[cfg(test)]
 mod discovery_tests;
 #[cfg(test)]
@@ -40,6 +43,10 @@ use junto_protocol::structure::{Category, Channel, Workspace, WorkspaceMember};
 use junto_protocol::{ServerPermission, WorkspacePermission};
 use time::OffsetDateTime;
 
+pub use admin::{
+    AdminModel, AdminPart, Collection, CollectionState, LoadFailure, MOST_TOKENS, WorkspaceSettings,
+};
+pub(crate) use admin::{AdminPayload, AdminSet};
 pub(crate) use apply::{Follow, Part};
 pub(crate) use discovery::ThreadMoved;
 pub use discovery::{MOST_NOTICES, MOST_PINS, MOST_THREADS, Named, PinList, in_daily_quiet};
@@ -280,6 +287,8 @@ pub struct ServerModel {
     pub pins: Vec<PinList>,
     /// The highest position of each place that an event named since the snapshot.
     pub(crate) seen_positions: std::collections::BTreeMap<PlaceId, u64>,
+    /// The collections of the administration that a reader has open (ADR 0760).
+    pub admin: Arc<AdminModel>,
 }
 
 impl ServerModel {
@@ -341,6 +350,7 @@ impl ServerModel {
             named: Vec::new(),
             pins: Vec::new(),
             seen_positions: std::collections::BTreeMap::new(),
+            admin: Arc::default(),
         }
     }
 

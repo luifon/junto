@@ -5,6 +5,7 @@
 //! event stream of each server, and tells the window to draw again. The window reads plain
 //! data through [`AppState::view`] and calls the methods here for what a person does.
 
+pub mod admin;
 pub mod feed;
 mod messages;
 pub mod recording;
@@ -260,6 +261,8 @@ pub struct AppState {
     selection: Selection,
     known: Known,
     pending: Pending,
+    /// What the administration holds: the open page and its requests (ADR 0761).
+    admin: admin::AdminState,
     /// What the window showed after the last change. Side effects follow a change of it.
     shown: Shown,
     /// The accounts whose name was asked for from their profile route.
@@ -458,6 +461,7 @@ impl AppState {
             selection: Selection::default(),
             known,
             pending: Pending::default(),
+            admin: admin::AdminState::default(),
             shown: Shown::default(),
             asked_names: HashMap::new(),
             members: None,
@@ -1558,6 +1562,12 @@ impl AppState {
         }
         self.shown = shown;
         self.ask_missing_names(&view, cx);
+        let archived = shown.server.zip(
+            view.workspace()
+                .filter(|workspace| workspace.archived.is_some())
+                .map(|workspace| workspace.id),
+        );
+        self.follow_admin(archived, cx);
         self.follow_places(shown, cx);
         self.ask_missing_quotes(shown, cx);
         self.end_uploads_of_other_accounts();

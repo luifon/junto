@@ -74,6 +74,8 @@ use junto_media::share::{
 use time::OffsetDateTime;
 
 /// The window of the design: 1440 by 900 pixels at 100 %.
+#[path = "junto-screens/admin.rs"]
+mod admin;
 #[path = "junto-screens/messages.rs"]
 mod messages;
 #[path = "junto-screens/threads.rs"]
@@ -2670,12 +2672,14 @@ fn run(out: &Path) -> Result<(), String> {
         Some("rules") => draw_rules(&mut studio),
         Some("messages") => messages::draw(&mut studio),
         Some("threads") => threads::draw(&mut studio),
+        Some("admin") => admin::draw(&mut studio),
         _ => draw_all(&mut studio)
             .and_then(|()| draw_calls(&mut studio))
             .and_then(|()| draw_shares(&mut studio))
             .and_then(|()| draw_rules(&mut studio))
             .and_then(|()| messages::draw(&mut studio))
             .and_then(|()| threads::draw(&mut studio))
+            .and_then(|()| admin::draw(&mut studio))
             .and_then(|()| draw_components(&mut studio)),
     };
     let scratch = studio.scratch.clone();

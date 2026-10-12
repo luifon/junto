@@ -947,6 +947,41 @@ fn event_details(event: &Event) -> String {
             Some(workspace_id) => format!("workspace={workspace_id}"),
             None => "direct_messages".to_owned(),
         },
+        Event::AccessTokenCreated { access_token } => format!(
+            "token={} account={}",
+            access_token.id, access_token.created_by
+        ),
+        Event::AccessTokenRevoked { access_token_id } => format!("token={access_token_id}"),
+        Event::AccessTokensOfCreatorRevoked { created_by } => format!("account={created_by}"),
+        Event::ChannelArchived { channel } | Event::ChannelDeletionDue { channel } => {
+            let deletion = match channel.deletes_at {
+                Some(at) => format!(" deletes_at={}", at.unix_timestamp()),
+                None => String::new(),
+            };
+            format!(
+                "workspace={} channel={}{deletion}",
+                channel.channel.workspace_id, channel.channel.id
+            )
+        }
+        Event::ChannelRestored { channel } => {
+            format!("workspace={} channel={}", channel.workspace_id, channel.id)
+        }
+        Event::CategoryDeleted {
+            workspace_id,
+            category_id,
+        } => format!("workspace={workspace_id} category={category_id}"),
+        Event::WorkspaceRoleDeleted {
+            workspace_id,
+            role_id,
+        } => format!("workspace={workspace_id} role={role_id}"),
+        Event::ServerRoleDeleted { role_id } => format!("role={role_id}"),
+        Event::WorkspaceDeleted { workspace_id } => format!("workspace={workspace_id}"),
+        Event::ExportUpdated { export } => {
+            format!("export={} state={}", export.id, word(&export.state))
+        }
+        Event::ExportRemoved { export_id, reason } => {
+            format!("export={export_id} reason={}", word(reason))
+        }
     }
 }
 

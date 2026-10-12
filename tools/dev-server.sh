@@ -61,9 +61,13 @@ export JUNTO_LOG_LEVEL="${JUNTO_LOG_LEVEL:-warn}"
 # The files of messages: a directory of this run (ADR 0408).
 attachments=$(mktemp -d "${TMPDIR:-/tmp}/junto-dev-attachments.XXXXXX")
 attachments=$(cd "$attachments" && pwd -P)
-trap 'rm -rf "$attachments"' EXIT
+# The files of exports: a directory of this run (ADR 0411).
+exports=$(mktemp -d "${TMPDIR:-/tmp}/junto-dev-exports.XXXXXX")
+exports=$(cd "$exports" && pwd -P)
+trap 'rm -rf "$attachments" "$exports"' EXIT
 trap 'exit 130' INT TERM
 export JUNTO_ATTACHMENTS_DIR="$attachments"
+export JUNTO_EXPORTS_DIR="$exports"
 if [ "$media" -eq 1 ]; then
     export JUNTO_LIVEKIT_API_URL="$JUNTO_TEST_LIVEKIT_API_URL"
     export JUNTO_LIVEKIT_URL="$JUNTO_TEST_LIVEKIT_URL"

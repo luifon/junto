@@ -17,7 +17,9 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use crate::api::{ApiError, TransportErrorKind};
 use crate::flow::machine::lock;
-use crate::model::{PendingFile, PendingMessage, PlaceId, Reach, ServerModel};
+use crate::model::{AdminPart, PendingFile, PendingMessage, PlaceId, Reach, ServerModel};
+
+mod admin;
 
 /// How many notices wait for a reader that is slower than the stream. A reader that falls
 /// further behind is told so and reads the state.
@@ -151,6 +153,13 @@ pub(crate) enum Command {
     MoreThreads,
     /// The page of notices after the loaded ones.
     MoreNotices,
+    OpenAdmin {
+        part: AdminPart,
+        reply: oneshot::Sender<Result<(), LoadError>>,
+    },
+    ReleaseAdmin(AdminPart),
+    /// Reads again a collection whose last read failed.
+    ReadAdminAgain(AdminPart),
 }
 
 /// What the stream client of one server and its readers share.

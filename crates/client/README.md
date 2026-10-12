@@ -1,8 +1,8 @@
 # junto-client
 
-The Junto desktop application: a gpui window on `junto-client-core` and `junto-media`. The binary is `junto`. The design decisions are in [`docs/adr/`](../../docs/adr/README.md): ADR 0730 describes this crate, ADR 0731 its theme and components, ADR 0732 joining a server in the window, ADR 0733 the media engine, ADR 0734 the call of a client, ADR 0735 the screens of a voice call, ADR 0736 the screen capture, ADR 0737 shares in the media engine, ADR 0738 the screens of a share and of a recording, ADR 0739 the rules of a call, ADR 0740 the message list and the composer, and ADR 0741 the thread panel, pins, permanent messages and direct conversations.
+The Junto desktop application: a gpui window on `junto-client-core` and `junto-media`. The binary is `junto`. The design decisions are in [`docs/adr/`](../../docs/adr/README.md): ADR 0730 describes this crate, ADR 0731 its theme and components, ADR 0732 joining a server in the window, ADR 0733 the media engine, ADR 0734 the call of a client, ADR 0735 the screens of a voice call, ADR 0736 the screen capture, ADR 0737 shares in the media engine, ADR 0738 the screens of a share and of a recording, ADR 0739 the rules of a call, ADR 0740 the message list and the composer, ADR 0741 the thread panel, pins, permanent messages and direct conversations, ADR 0761 the administration, and ADR 0762 archived channels.
 
-This version shows the servers of the server book, their workspaces and channels, the people in voice channels, and the state of each server. It joins a server with a code or a request for access, and it holds a voice call in a voice channel: microphone, sound, mute, a volume per person, levels, push-to-talk and the choice of the sound devices. In a call a person shares a screen or a window with its sound, watches the shares of the others, starts and stops a recording, and uses the rules of the room: meeting mode with raised hands, the lock, the user limit, requests to enter, invitations, the menu of a person with blocks, removal and move. A person reads and writes messages in a text channel, in the chat of a voice channel and in a direct conversation: formatted text, replies, mentions, reactions, files, edits and deletions, with unread signs in the channel list. A person answers in the thread of a message, forks a thread into a channel, and pins messages. It has no list of notices, no notification settings, no system notifications, no search, no camera and no direct-message calls. It is built and tested on macOS and builds for Linux, where the screen capture is not built yet; Windows is not supported yet.
+This version shows the servers of the server book, their workspaces and channels, the people in voice channels, and the state of each server. It joins a server with a code or a request for access, and it holds a voice call in a voice channel: microphone, sound, mute, a volume per person, levels, push-to-talk and the choice of the sound devices. In a call a person shares a screen or a window with its sound, watches the shares of the others, starts and stops a recording, and uses the rules of the room: meeting mode with raised hands, the lock, the user limit, requests to enter, invitations, the menu of a person with blocks, removal and move. A person reads and writes messages in a text channel, in the chat of a voice channel and in a direct conversation: formatted text, replies, mentions, reactions, files, edits and deletions, with unread signs in the channel list. A person answers in the thread of a message, forks a thread into a channel, and pins messages. A person with the permissions manages workspaces, categories, channels, the permissions of a channel, members, bans, invites, join requests, access tokens and exports, and reads the audit log; the roles of a workspace cannot be created or changed in the window yet. It has no list of notices, no notification settings, no system notifications, no search, no camera and no direct-message calls. It is built and tested on macOS and builds for Linux, where the screen capture is not built yet; Windows is not supported yet.
 
 ## Run it locally
 
@@ -89,6 +89,33 @@ JUNTO_DATA_DIR=/tmp/junto-first cargo run -p junto-client-core --bin junto-cli -
     notices set-settings channel:<channel id> --level all
 JUNTO_DATA_DIR=/tmp/junto-first cargo run -p junto-client-core --bin junto-cli -- search "retention spec"
 ```
+
+## Administration between two instances
+
+The instance that claimed the server is its owner and may do everything. The menu of the server (the button beside the server name) has "Administration". The layer has a list of pages at the left; a page that the account may not use is not in the list. The second instance, a member, has the pages "Workspaces", "Archive and retention", "Members", "Access tokens" (its own tokens) and "Exports".
+
+- **Workspaces.** "New workspace" makes a second workspace; it appears in the server book of the owner at once. "Rename" and "Delete" are in its row. The default workspace cannot be deleted. A member enters a further workspace with "Enter an invite code" and a code that names that workspace.
+- **Channels.** The page lists the categories and the channels of the shown workspace. "New channel" under a category creates a text or a voice channel; "Up", "Down" and "Move to…" change its place; "Settings" opens the settings of the channel. The second instance shows each change without a reload.
+- **Channel settings.** The gear in the header of a channel opens the same settings. "Overview" has the name, the category, "Permanent messages", "Private channel", and for a voice channel the user limit and "Hide who is inside". "Permissions" has, for each role, one choice per permission: allow, default, deny. A choice that would give a permission that the account does not hold in the channel is disabled, and the row says so. "Archive and deletion" has "Archive", "Export" and "Delete".
+- **Archive.** Archive a channel while the second instance shows it: its header there gets the mark "Archived", and a bar in place of the composer says that nobody can write in it and when the server deletes it. The channel leaves the channel list of both instances. "Archive and retention" lists it with "Open" and "Restore". An administrator sets the archive period and the retention there.
+- **People.** "People" lists every account with "Remove" and "Ban". A ban ends the session of the second instance at once: its window shows the state "banned". "Unban" lets it log in again. "Members" lists the members of the shown workspace with their roles.
+- **Invites and join requests.** "New invite" asks for the expiry, the uses and the workspaces, and shows the code once, with "Copy". "Revoke" is in the row of an invite. "Join requests" lists the people who pressed "Request access", with "Approve" and "Deny".
+- **Access tokens.** An administrator creates a token with a name, actions and an expiry. The token is shown once. The tool `junto-setup` uses such a token.
+- **Exports.** "Export" in the settings of a channel, or the download button in the header of a direct conversation, asks for an export. "Exports" shows its state and saves the file to the download directory. The development server of `tools/dev-server.sh` keeps the files of exports in a temporary directory.
+- **Audit log.** "Audit log" shows the entries of the server or of the shown workspace, the newest first, with "Load older" and filters for the kind of action and the person.
+
+The same routes from a terminal:
+
+```sh
+JUNTO_DATA_DIR=/tmp/junto-first cargo run -p junto-client-core --bin junto-cli -- workspaces list
+JUNTO_DATA_DIR=/tmp/junto-first cargo run -p junto-client-core --bin junto-cli -- \
+    channels create <workspace id> plans --kind text
+JUNTO_DATA_DIR=/tmp/junto-first cargo run -p junto-client-core --bin junto-cli -- channels archive <channel id>
+JUNTO_DATA_DIR=/tmp/junto-first cargo run -p junto-client-core --bin junto-cli -- accounts list
+JUNTO_DATA_DIR=/tmp/junto-first cargo run -p junto-client-core --bin junto-cli -- audit server --limit 20
+```
+
+`junto-cli` without arguments lists every command.
 
 ## A call on one machine
 
@@ -202,4 +229,7 @@ cargo run -p junto-client --features test-support --bin junto-screens -- <direct
 | `src/compose.rs` | The marks of the composer and the document of a message, in both directions, and the limits of a document. |
 | `src/state/feed.rs` | The derivation of the rows of a message list. |
 | `src/shell/` | The main window. `call.rs` draws the call, `share.rs` the dialog and the stage of a share, `room.rs` the rules of the room of a call, `feed.rs` the message list, and `composer.rs` the composer with its pickers. |
+| `src/state/admin.rs`, `src/state/admin/` | The administration: the open page, its requests, and the derivation of each page. |
+| `src/shell/admin.rs`, `src/shell/admin/` | The layer of the administration and its pages. |
+| `src/text/admin.rs`, `src/text/admin/` | The text of the administration. |
 | `src/bin/junto-screens.rs`, `src/bin/junto-screens/` | The tool that draws the screens. |

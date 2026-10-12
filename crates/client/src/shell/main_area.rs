@@ -250,6 +250,15 @@ impl Shell {
             if permanent {
                 after.push(Self::render_permanent_marker(theme));
             }
+            if self.shown_archived().is_some() {
+                after.push(
+                    div()
+                        .flex_none()
+                        .debug_selector(|| "archived-mark".to_owned())
+                        .child(crate::ui::Chip::new(text::admin::ARCHIVED_MARK).icon(Icon::Lock))
+                        .into_any_element(),
+                );
+            }
             after.push(div().flex_1().into_any_element());
         }
         div()
@@ -331,6 +340,33 @@ impl Shell {
                     )
                 },
             )
+            .when(
+                channel.is_some() && conversation.is_none() && call.is_none(),
+                |header| {
+                    header.child(
+                        Button::new("channel-settings")
+                            .icon(Icon::Gear)
+                            .tooltip(text::admin::CHANNEL_SETTINGS)
+                            .accessible_label(text::admin::CHANNEL_SETTINGS)
+                            .selector("channel-settings")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_shown_channel_settings(window, cx);
+                            })),
+                    )
+                },
+            )
+            .when(conversation.is_some(), |header| {
+                header.child(
+                    Button::new("export-conversation")
+                        .icon(Icon::Download)
+                        .tooltip(text::admin::EXPORT_CONVERSATION)
+                        .accessible_label(text::admin::EXPORT_CONVERSATION)
+                        .selector("export-conversation")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.export_shown_conversation(window, cx);
+                        })),
+                )
+            })
             .when(view.workspace().is_some() && call.is_none(), |header| {
                 header.child(
                     Button::new("members")
