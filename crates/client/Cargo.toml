@@ -80,3 +80,6 @@ junto-server = { path = "../server" }
 sqlx = { workspace = true }
 tempfile = "3"
 tokio = { workspace = true, features = ["io-util"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-video = { version = "0.5.2", features = ["metal"] }

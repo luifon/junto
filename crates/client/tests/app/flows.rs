@@ -225,8 +225,12 @@ fn a_cancelled_request_leaves_no_server_in_the_server_book(cx: &mut TestAppConte
     let (directory, mut window) = named(cx, "Luca");
 
     window.find_server(&server.address());
+    let results = window.in_shell(|shell, _, _| shell.join_results());
     window.click("request-access");
-    window.until("the request waits", |window| window.shows("cancel-request"));
+    window.until("the request waits", |window| {
+        window.shows("cancel-request")
+            && window.in_shell(|shell, _, _| shell.join_results()) == results + 1
+    });
     window.click("cancel-request");
     window.until("the server is removed", |window| {
         window.view().servers.is_empty()

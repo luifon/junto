@@ -92,6 +92,9 @@ impl Admin {
             let calls = junto_media::Calls::new(
                 self.device.client.clone(),
                 MediaOptions {
+                    camera: std::sync::Arc::new(
+                        junto_media::camera::synthetic::SyntheticCamera::new(),
+                    ),
                     host: std::sync::Arc::new(sound.clone()),
                     permission: std::sync::Arc::new(FixedPermission::allowed()),
                     capture: std::sync::Arc::new(SyntheticCapture::new()),
@@ -175,6 +178,7 @@ pub fn open_with(cx: &mut TestAppContext, data_dir: &Path, scale: Option<u32>) -
     let sound = SyntheticHost::with_tone(WINDOW_TONE_HZ);
     let capture = SyntheticCapture::new();
     let media = MediaOptions {
+        camera: std::sync::Arc::new(junto_media::camera::synthetic::SyntheticCamera::new()),
         host: std::sync::Arc::new(sound.clone()),
         permission: std::sync::Arc::new(FixedPermission::allowed()),
         capture: std::sync::Arc::new(capture.clone()),

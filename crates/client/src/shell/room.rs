@@ -1222,7 +1222,16 @@ impl Shell {
                     invited.channel.as_deref(),
                 ))
                 .icon(Icon::Invite)
-                .selector("call-invitation")
+                .selector(
+                    if matches!(
+                        invited.target.place,
+                        junto_client_core::protocol::call::CallPlace::Direct { .. }
+                    ) {
+                        "incoming-direct-call"
+                    } else {
+                        "call-invitation"
+                    },
+                )
                 .action(pair(
                     Button::new(("invitation-join", index))
                         .kind(ButtonKind::Primary)

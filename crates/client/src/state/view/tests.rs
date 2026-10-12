@@ -958,6 +958,8 @@ mod calls {
 
     fn active(target: CallTarget) -> ActiveCall {
         ActiveCall {
+            camera: junto_media::camera::CameraState::Off,
+            cameras: Vec::new(),
             target,
             identity: "seat".to_owned(),
             phase: Phase::Connected,
@@ -2432,5 +2434,31 @@ mod calls {
             shown.destinations,
             [(hidden, "HR".to_owned()), (focus_id, "Focus".to_owned())]
         );
+    }
+}
+
+#[test]
+fn direct_call_refusals_name_the_direct_call() {
+    for code in [
+        ErrorCode::NotFound,
+        ErrorCode::RateLimited,
+        ErrorCode::MediaUnavailable,
+    ] {
+        let mut known = Known::default();
+        known.media.calls.outcome = Some(Outcome::JoinFailed {
+            target: CallTarget {
+                server_id: ServerId::generate(),
+                place: CallPlace::direct(AccountId::generate(), AccountId::generate()),
+            },
+            error: FlowError::Refused {
+                code,
+                category: junto_client_core::api::ErrorCategory::ClientFault,
+            },
+        });
+        let notice = call_notice(&[], &known).unwrap();
+        assert!(
+            matches!(&notice, CallNotice::JoinFailed { channel: Some(name), .. } if name == crate::text::DIRECT_CALL)
+        );
+        assert!(!crate::text::call_notice(&notice).contains(crate::text::A_VOICE_CHANNEL));
     }
 }

@@ -42,7 +42,9 @@ use crate::permission::{MicrophoneAccess, MicrophonePermission};
 use crate::share::picture::PictureFrame;
 use crate::share::{CaptureError, CaptureRequest, ScreenCapture};
 
+mod camera;
 mod order;
+use camera::{OwnCamera, RemoteCamera};
 mod share;
 
 pub use share::{
@@ -144,6 +146,8 @@ pub enum OutputState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EngineState {
+    pub camera: crate::camera::CameraState,
+    pub cameras: Vec<AccountId>,
     pub connection: Connection,
     pub microphone: MicrophoneState,
     /// The microphone permission as the system held it when the engine last read it.
@@ -182,6 +186,7 @@ pub struct Levels {
 /// The devices, the permission and the screen capture that an engine uses.
 #[derive(Clone)]
 pub struct EngineOptions {
+    pub camera: Arc<dyn crate::camera::CameraCapture>,
     pub host: Arc<dyn AudioHost>,
     pub permission: Arc<dyn MicrophonePermission>,
     pub capture: Arc<dyn ScreenCapture>,
@@ -206,6 +211,8 @@ impl Default for Watching {
 }
 
 enum Command {
+    StartCamera(Option<String>),
+    StopCamera,
     Controls(Controls),
     Talking(bool),
     Volume(AccountId, f32),
@@ -228,6 +235,10 @@ enum Command {
 type Events = mpsc::UnboundedReceiver<RoomEvent>;
 
 enum Internal {
+    CameraStarted(u64),
+    CameraEnded(u64, crate::camera::CameraError),
+    CameraPublished(u64, Result<LocalTrackPublication, String>),
+    CameraDue(u64, TrackSid),
     Connected(u64, Result<(Room, Events), String>),
     Permission(MicrophoneAccess),
     InputFailed(u64, AudioError),
@@ -248,6 +259,7 @@ enum Internal {
 
 /// The media connection of one call. Dropping it ends the connection.
 pub struct Engine {
+    camera_pictures: watch::Receiver<HashMap<ShareId, Arc<crate::camera::CameraFrame>>>,
     commands: mpsc::UnboundedSender<Command>,
     state: watch::Receiver<EngineState>,
     levels: watch::Receiver<Levels>,
@@ -256,6 +268,17 @@ pub struct Engine {
 }
 
 impl Engine {
+    pub fn start_camera(&self, device: Option<String>) {
+        let _ = self.commands.send(Command::StartCamera(device));
+    }
+    pub fn stop_camera(&self) {
+        let _ = self.commands.send(Command::StopCamera);
+    }
+    pub fn camera_pictures(
+        &self,
+    ) -> watch::Receiver<HashMap<ShareId, Arc<crate::camera::CameraFrame>>> {
+        self.camera_pictures.clone()
+    }
     /// Starts the connection on `runtime`. The result is in [`Engine::state`].
     pub fn start(
         runtime: &tokio::runtime::Handle,
@@ -268,6 +291,8 @@ impl Engine {
     ) -> Self {
         let access = options.permission.state();
         let (state, state_seen) = watch::channel(EngineState {
+            camera: crate::camera::CameraState::Off,
+            cameras: Vec::new(),
             connection: Connection::Connecting,
             microphone: MicrophoneState::Closed,
             access,
@@ -295,7 +320,13 @@ impl Engine {
             FrameQueue::new(link.clone(), frames_taken),
             source.clone(),
         ));
+        let camera_pictures = watch::Sender::new(HashMap::new());
+        let camera_seen = camera_pictures.subscribe();
         let actor = Actor {
+            camera: None,
+            camera_generation: 0,
+            remote_cameras: HashMap::new(),
+            camera_pictures,
             runtime: runtime.clone(),
             options,
             config: config.clone(),
@@ -341,6 +372,7 @@ impl Engine {
         };
         runtime.spawn(actor.run(join, taken, internal_taken));
         Self {
+            camera_pictures: camera_seen,
             commands,
             state: state_seen,
             levels: levels_seen,
@@ -486,6 +518,10 @@ impl Drop for Remote {
 }
 
 struct Actor {
+    camera: Option<OwnCamera>,
+    camera_generation: u64,
+    remote_cameras: HashMap<TrackSid, RemoteCamera>,
+    camera_pictures: watch::Sender<HashMap<ShareId, Arc<crate::camera::CameraFrame>>>,
     runtime: tokio::runtime::Handle,
     options: EngineOptions,
     config: VoiceConfig,
@@ -565,6 +601,8 @@ impl Actor {
         let mut events: Option<Events> = None;
         let mut tick = tokio::time::interval(LEVEL_INTERVAL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut camera_tick = tokio::time::interval(Duration::from_millis(33));
+        camera_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         self.connect(join);
         let done = loop {
             tokio::select! {
@@ -580,6 +618,7 @@ impl Actor {
                     None => self.lost(Lost::Failed, &mut events).await,
                 },
                 _ = tick.tick() => self.tell_levels(),
+                _ = camera_tick.tick() => self.draw_cameras(),
             }
         };
         self.leave(&mut events).await;
@@ -622,6 +661,8 @@ impl Actor {
 
     async fn command(&mut self, command: Command, events: &mut Option<Events>) {
         match command {
+            Command::StartCamera(device) => self.start_camera(device),
+            Command::StopCamera => self.end_camera(None),
             Command::Controls(controls) => {
                 let before = std::mem::replace(&mut self.controls, controls);
                 if before.microphone_blocked != controls.microphone_blocked {
@@ -692,6 +733,12 @@ impl Actor {
 
     async fn internal(&mut self, message: Internal, events: &mut Option<Events>) {
         match message {
+            Internal::CameraStarted(generation) => self.camera_started(generation),
+            Internal::CameraEnded(generation, error) => self.camera_ended(generation, error),
+            Internal::CameraPublished(generation, result) => {
+                self.camera_published(generation, result)
+            }
+            Internal::CameraDue(generation, sid) => self.camera_due(generation, sid),
             Internal::Connected(attempt, result) => {
                 if attempt != self.attempt {
                     if let Ok((room, _)) = result {
@@ -799,7 +846,10 @@ impl Actor {
                 publication,
                 participant,
             } => {
-                // A camera is not shown in this version.
+                if publication.source() == TrackSource::Camera {
+                    self.remote_camera(&track, publication, participant.identity().as_str());
+                    return;
+                }
                 if publication.source() == TrackSource::Screenshare {
                     self.remote_picture(&track, publication, participant.identity().as_str());
                 }
@@ -849,6 +899,7 @@ impl Actor {
             RoomEvent::TrackUnsubscribed { publication, .. }
             | RoomEvent::TrackUnpublished { publication, .. } => {
                 let sid = publication.sid();
+                self.camera_track_ended(&sid);
                 if !self.remote_track_ended(&sid) {
                     self.remotes.remove(&sid);
                 }
@@ -873,6 +924,7 @@ impl Actor {
                         let _ = internal.send(Internal::MicrophoneDue(generation));
                     });
                 } else {
+                    self.camera_track_taken(&sid);
                     self.share_track_taken(&sid);
                 }
             }
@@ -904,7 +956,11 @@ impl Actor {
                         self.withdraw(publication);
                     }
                 } else {
-                    self.share_track_republished(&previous_sid, publication);
+                    if publication.source() == TrackSource::Camera {
+                        self.camera_republished(previous_sid, publication);
+                    } else {
+                        self.share_track_republished(&previous_sid, publication);
+                    }
                 }
             }
             RoomEvent::ParticipantPermissionChanged {
@@ -913,6 +969,9 @@ impl Actor {
             } => {
                 self.sync_microphone();
                 self.sync_share_sound();
+                if self.camera.is_some() && !self.may_send(1) {
+                    self.end_camera(Some(crate::camera::CameraError::Blocked));
+                }
             }
             _ => {}
         }
@@ -931,6 +990,12 @@ impl Actor {
         if self.share.is_some() {
             self.end_share(Some(CaptureError::Interrupted));
         }
+        if self.camera.is_some() {
+            self.end_camera(Some(crate::camera::CameraError::Interrupted));
+        }
+        self.remote_cameras.clear();
+        self.camera_pictures.send_replace(HashMap::new());
+        self.change(|s| s.cameras.clear());
         self.forget_remote_shares();
         self.tell_shares();
         self.remotes.clear();

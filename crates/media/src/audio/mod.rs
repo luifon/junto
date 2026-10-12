@@ -34,3 +34,5 @@ pub(crate) fn to_i16(sample: f32) -> i16 {
 pub(crate) fn to_f32(sample: i16) -> f32 {
     f32::from(sample) / f32::from(i16::MAX)
 }
+
+pub mod ring;

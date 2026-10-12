@@ -86,6 +86,7 @@ impl Default for CallTiming {
 /// client use.
 #[derive(Clone)]
 pub struct MediaOptions {
+    pub camera: Arc<dyn crate::camera::CameraCapture>,
     pub host: Arc<dyn AudioHost>,
     pub permission: Arc<dyn MicrophonePermission>,
     pub capture: Arc<dyn ScreenCapture>,
@@ -97,6 +98,7 @@ impl MediaOptions {
     pub fn system() -> Self {
         Self {
             host: Arc::new(crate::audio::cpal_host::CpalHost::new()),
+            camera: crate::camera::system(),
             permission: Arc::new(crate::permission::SystemPermission),
             capture: crate::share::system(),
             timing: CallTiming::default(),
@@ -123,6 +125,8 @@ pub enum Phase {
 /// The call that this device is in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveCall {
+    pub camera: crate::camera::CameraState,
+    pub cameras: Vec<AccountId>,
     pub target: CallTarget,
     /// The identity of this device in the room (ADR 0508).
     pub identity: String,
@@ -213,6 +217,8 @@ pub enum JoinError {
 }
 
 enum SessionCommand {
+    StartCamera(Option<String>),
+    StopCamera,
     Controls,
     Talking(bool),
     Volume(AccountId, f32),
@@ -265,6 +271,7 @@ struct Shared {
 type Turn = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
 struct Inner {
+    camera_pictures: watch::Sender<HashMap<ShareId, Arc<crate::camera::CameraFrame>>>,
     client: Client,
     runtime: tokio::runtime::Handle,
     options: MediaOptions,
@@ -341,6 +348,7 @@ impl Calls {
         runtime.spawn(turns(runtime.clone(), turns_taken));
         Self {
             inner: Arc::new(Inner {
+                camera_pictures: watch::Sender::new(HashMap::new()),
                 client,
                 runtime,
                 options,
@@ -489,6 +497,26 @@ impl Calls {
     }
 
     /// The picture of the watched share of the call of this device.
+    pub fn start_camera(&self, device: Option<String>) {
+        self.inner.tell(SessionCommand::StartCamera(device));
+    }
+
+    pub fn camera_devices(
+        &self,
+    ) -> Result<Vec<crate::camera::CameraDevice>, crate::camera::CameraError> {
+        self.inner.options.camera.devices()
+    }
+
+    pub fn stop_camera(&self) {
+        self.inner.tell(SessionCommand::StopCamera);
+    }
+
+    pub fn camera_pictures(
+        &self,
+    ) -> watch::Receiver<HashMap<ShareId, Arc<crate::camera::CameraFrame>>> {
+        self.inner.camera_pictures.subscribe()
+    }
+
     pub fn main_picture(&self) -> watch::Receiver<Option<MainPicture>> {
         self.inner.main_picture.subscribe()
     }
@@ -772,6 +800,7 @@ fn start(
     let engine = Engine::start(
         &inner.runtime,
         EngineOptions {
+            camera: inner.options.camera.clone(),
             host: inner.options.host.clone(),
             permission: inner.options.permission.clone(),
             capture: inner.options.capture.clone(),
@@ -1224,6 +1253,7 @@ impl Session {
         let mut levels = self.engine.levels();
         let mut main_picture = self.engine.main_picture();
         let mut small_pictures = self.engine.small_pictures();
+        let mut camera_pictures = self.engine.camera_pictures();
         let mut live = self.server.live().watch();
         let mut notices = self.server.live().notices();
         let (done, mut finished) = mpsc::unbounded_channel::<Done>();
@@ -1261,6 +1291,9 @@ impl Session {
                         let now = main_picture.borrow_and_update().clone();
                         self.inner.main_picture.send_replace(now);
                     }
+                }
+                changed = camera_pictures.changed() => {
+                    if changed.is_ok() { self.inner.camera_pictures.send_replace(camera_pictures.borrow_and_update().clone()); }
                 }
                 changed = small_pictures.changed() => {
                     if changed.is_ok() {
@@ -1300,6 +1333,7 @@ impl Session {
         inner.levels.send_replace(Levels::default());
         inner.main_picture.send_replace(None);
         inner.small_pictures.send_replace(HashMap::new());
+        inner.camera_pictures.send_replace(HashMap::new());
         let reason = match reason {
             Some(EndReason::Server(None)) => {
                 let cause = first_within(CAUSE_WAIT, &mut notices, |notice| {
@@ -1465,6 +1499,8 @@ impl Session {
 
     fn command(&mut self, command: SessionCommand) {
         match command {
+            SessionCommand::StartCamera(device) => self.engine.start_camera(device),
+            SessionCommand::StopCamera => self.engine.stop_camera(),
             SessionCommand::Controls => self.apply_controls(),
             SessionCommand::Talking(talking) => self.engine.set_talking(talking),
             SessionCommand::Volume(account_id, gain) => self.engine.set_volume(account_id, gain),
@@ -1765,6 +1801,8 @@ impl Session {
             }
         };
         let call = ActiveCall {
+            camera: state.camera.clone(),
+            cameras: state.cameras.clone(),
             target: self.target,
             identity: self.place.identity().to_owned(),
             phase,

@@ -182,7 +182,7 @@ fn conversation(number: u32, with: &str) -> Conversation {
 /// "Acme Studio" with two direct conversations, the one with Ana with messages.
 /// `closed`: the server does not give the conversation with Ana any more, and one
 /// message of the person waits in it.
-fn with_directs(closed: bool) -> (Vec<ServerSnapshot>, ConversationId) {
+pub(super) fn with_directs(closed: bool) -> (Vec<ServerSnapshot>, ConversationId) {
     let (with_ana, with_marta) = (conversation(1, "Ana"), conversation(2, "Marta"));
     let ana_id = with_ana.id;
     let mut made = Made::new(GENERAL);

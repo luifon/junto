@@ -42,6 +42,7 @@ pub struct Person {
     pub host: SyntheticHost,
     pub permission: FixedPermission,
     pub capture: SyntheticCapture,
+    pub camera: junto_media::camera::synthetic::SyntheticCamera,
     pub hz: f32,
 }
 
@@ -62,9 +63,11 @@ impl Person {
         let device = Device::new();
         let host = SyntheticHost::with_tone(hz);
         let capture = SyntheticCapture::new();
+        let camera = junto_media::camera::synthetic::SyntheticCamera::new();
         let calls = Calls::new(
             device.client.clone(),
             MediaOptions {
+                camera: Arc::new(camera.clone()),
                 host: Arc::new(host.clone()),
                 permission: Arc::new(permission.clone()),
                 capture: Arc::new(capture.clone()),
@@ -83,6 +86,7 @@ impl Person {
             host,
             permission,
             capture,
+            camera,
             hz,
         }
     }

@@ -597,6 +597,11 @@ fn a_second_press_on_a_notice_goes_to_its_message_again(cx: &mut TestAppContext)
     };
     window.click_named(format!("notice:{}", first.id.as_uuid()));
     window.until("the message of the notice is shown", at_message);
+    window.until("the notice is marked read", |window| {
+        window
+            .notices()
+            .is_some_and(|panel| panel.rows.len() == 1 && panel.rows.iter().all(|row| row.read))
+    });
     // The person goes to the end of the list and presses the same row again: the list
     // goes to the message again.
     window.click("go-to-end");

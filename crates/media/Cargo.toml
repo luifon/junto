@@ -35,11 +35,14 @@ tracing = { workspace = true }
 cpal = { version = "0.18.2", features = ["pipewire"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+core-video = { version = "0.5.2", features = ["metal"] }
+core-foundation = "0.10"
 # The state of the microphone permission and the request for it.
 block2 = "0.6"
+dispatch2 = "0.3"
 objc2 = "0.6"
-objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "AVCaptureDevice", "AVMediaFormat", "block2"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSError", "NSProcessInfo", "NSString"] }
+objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "AVCaptureDevice", "AVCaptureInput", "AVCaptureOutputBase", "AVCaptureSession", "AVCaptureSessionPreset", "AVCaptureVideoDataOutput", "AVMediaFormat", "block2", "dispatch2", "objc2-core-media"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSDictionary", "NSValue", "NSError", "NSProcessInfo", "NSString"] }
 # The capture of a screen, a window and the sound of applications (ADR 0502, ADR 0736).
 objc2-screen-capture-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "dispatch2", "libc", "objc2-core-foundation", "objc2-core-graphics", "objc2-core-media", "SCShareableContent", "SCStream"] }
 objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "objc2", "objc2-core-audio-types", "objc2-core-video", "CMBlockBuffer", "CMFormatDescription", "CMSampleBuffer", "CMTime"] }

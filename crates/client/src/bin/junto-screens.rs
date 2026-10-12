@@ -73,6 +73,8 @@ use junto_media::share::{
 };
 use time::OffsetDateTime;
 
+#[path = "junto-screens/cameras.rs"]
+mod cameras;
 #[path = "junto-screens/discovery.rs"]
 mod discovery;
 #[path = "junto-screens/frames.rs"]
@@ -442,6 +444,7 @@ struct Studio {
 
 /// One screen: the servers it shows, the state of the calls and the interface scale.
 struct Screen {
+    size: (f32, f32),
     name: &'static str,
     servers: Vec<ServerSnapshot>,
     media: Option<MediaSnapshot>,
@@ -455,6 +458,7 @@ struct Screen {
 impl Screen {
     fn new(name: &'static str, servers: Vec<ServerSnapshot>) -> Self {
         Self {
+            size: WINDOW,
             name,
             servers,
             media: None,
@@ -594,6 +598,7 @@ impl Studio {
         // The devices of a screen exist only in the program: the tool opens no microphone,
         // plays no sound and captures no screen.
         let devices = MediaOptions {
+            camera: Arc::new(junto_media::camera::synthetic::SyntheticCamera::new()),
             host: Arc::new(SyntheticHost::with_tone(440.0)),
             permission: Arc::new(FixedPermission::allowed()),
             capture: screen.capture,
@@ -615,16 +620,19 @@ impl Studio {
         let slot = built.clone();
         let window = self
             .cx
-            .open_window(size(px(WINDOW.0), px(WINDOW.1)), move |window, cx| {
-                window.set_rem_size(theme::rem_size(scale));
-                let shell = cx.new(|cx| {
-                    let mut shell = Shell::new(state, window, cx);
-                    prepare(&mut shell, window, cx);
-                    shell
-                });
-                *slot.borrow_mut() = Some(shell.clone());
-                cx.new(|cx| Root::new(shell, window, cx))
-            })
+            .open_window(
+                size(px(screen.size.0), px(screen.size.1)),
+                move |window, cx| {
+                    window.set_rem_size(theme::rem_size(scale));
+                    let shell = cx.new(|cx| {
+                        let mut shell = Shell::new(state, window, cx);
+                        prepare(&mut shell, window, cx);
+                        shell
+                    });
+                    *slot.borrow_mut() = Some(shell.clone());
+                    cx.new(|cx| Root::new(shell, window, cx))
+                },
+            )
             .map_err(|error| format!("{error:#}"))?;
         let shell = built
             .borrow_mut()
@@ -689,6 +697,8 @@ fn in_call(phase: Phase) -> MediaSnapshot {
             deafened: false,
             joining: None,
             call: Some(ActiveCall {
+                camera: junto_media::camera::CameraState::Off,
+                cameras: Vec::new(),
                 target: daily(),
                 identity: "seat-Luca".to_owned(),
                 phase,
@@ -2680,6 +2690,7 @@ fn run(out: &Path) -> Result<(), String> {
     let only = std::env::var("JUNTO_SCREENS_ONLY").ok();
     let drawn = match only.as_deref() {
         // The screens of one unit, while its screens are worked on.
+        Some("cameras") => cameras::draw(&mut studio),
         Some("shares") => draw_shares(&mut studio),
         Some("rules") => draw_rules(&mut studio),
         Some("messages") => messages::draw(&mut studio),

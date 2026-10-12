@@ -2231,6 +2231,33 @@ pub fn quiet_failed(server: &str, reason: &str) -> String {
     format!("{server} did not take the change. {reason}")
 }
 
+pub const CAMERA: &str = "Camera";
+
+pub const DIRECT_CALL: &str = "Direct call";
+pub const CALLING: &str = "Calling…";
+pub const MISSED_CALL: &str = "Missed call";
+pub const DIRECT_CALL_DECLINED: &str = "Call declined";
+pub const DIRECT_CALL_CANCELLED: &str = "Call cancelled";
+
+pub const DETACH_CALL: &str = "Open call in a separate window";
+pub const RETURN_CALL: &str = "Return to main window";
+pub const CALL_SEPARATE: &str = "Call is in a separate window";
+pub const KEEP_ON_TOP: &str = "Keep on top";
+pub const FULLSCREEN: &str = "Full screen";
+
+pub const FOCUS_SPEAKER: &str = "Focus the speaker";
+pub const CAMERA_REFUSED: &str =
+    "Allow camera access in system settings, then turn the camera on again.";
+pub const CAMERA_GONE: &str = "The chosen camera is disconnected. Choose a camera in settings.";
+pub const CAMERA_BLOCKED: &str = "The call does not allow this camera to publish.";
+pub const CAMERA_UNSUPPORTED: &str = "Camera capture is unavailable on this system.";
+pub const CAMERA_INTERRUPTED: &str = "Camera capture was interrupted. Turn it on again to resume.";
+pub const CAMERA_FAILED: &str = "The camera stopped. Choose a camera or try again.";
+
+pub const DIRECT_CALL_ENDED: &str = "Call ended";
+
+pub const CAMERA_RESTRICTED: &str = "Camera access is restricted by this system.";
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;

@@ -2396,6 +2396,9 @@ fn entry_prompts(servers: &[ServerSnapshot], known: &Known) -> Vec<EntryPrompt> 
 
 /// The name of the voice channel of a call, from the state of its server.
 fn channel_of(servers: &[ServerSnapshot], target: &CallTarget) -> Option<String> {
+    if matches!(target.place, CallPlace::Direct { .. }) {
+        return Some(crate::text::DIRECT_CALL.to_owned());
+    }
     let server = servers
         .iter()
         .find(|server| server.id == target.server_id)?;
@@ -2467,7 +2470,29 @@ fn call_strip(servers: &[ServerSnapshot], known: &Known, shown: Shown) -> Option
         server_id: active.target.server_id,
         workspace_id,
         channel_id,
-        name: channel_of(servers, &active.target),
+        name: channel_of(servers, &active.target).or_else(|| {
+            let CallPlace::Direct {
+                low_account_id,
+                high_account_id,
+            } = active.target.place
+            else {
+                return None;
+            };
+            let other = model.map(|model| {
+                if model.account.id == low_account_id {
+                    high_account_id
+                } else {
+                    low_account_id
+                }
+            })?;
+            Some(
+                known
+                    .names
+                    .get(&(active.target.server_id, other))
+                    .cloned()
+                    .unwrap_or_else(|| crate::text::DIRECT_CALL.to_owned()),
+            )
+        }),
         phase: active.phase,
         elapsed: started_at.zip(known.media.now).map(|(started_at, now)| {
             // The clock of the server and the clock of this machine can differ.

@@ -16,7 +16,7 @@ mod pattern;
 mod rows;
 mod scroll;
 mod segmented;
-mod tile;
+pub(crate) mod tile;
 mod tooltip;
 
 use std::sync::Arc;

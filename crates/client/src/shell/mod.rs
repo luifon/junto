@@ -4,8 +4,11 @@
 //! is open, the text of its fields, and where the keyboard focus returns to.
 
 pub mod call;
+mod camera;
 mod channels;
 mod composer;
+pub mod detached;
+mod direct;
 mod feed;
 mod join;
 mod main_area;
@@ -150,6 +153,10 @@ pub enum Open {
 const HOVER_MENU_LINGER: Duration = Duration::from_millis(220);
 
 pub struct Shell {
+    detached: bool,
+    software_video: bool,
+    camera_focus: bool,
+    focused_camera: std::cell::Cell<Option<AccountId>>,
     pub(crate) state: Entity<AppState>,
     focus: FocusHandle,
     /// The focus of the layer that is open.
@@ -189,6 +196,7 @@ pub struct Shell {
     pub(crate) device_menu_closed_by_press: bool,
     /// The pictures of the shares of the call, as images of the window.
     pub(crate) pictures: share::ShownPictures,
+    pub(crate) cameras: camera::ShownCameras,
     pub(crate) picture_tasks: Vec<Task<()>>,
     /// The number of dialogs of a share that this window has opened.
     pub(crate) share_reads: u64,
@@ -265,6 +273,15 @@ pub struct Shell {
 
 impl Shell {
     pub fn new(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::new_window(state, false, window, cx)
+    }
+
+    fn new_window(
+        state: Entity<AppState>,
+        detached: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let address = Field::state(text::ADDRESS_PLACEHOLDER, window, cx);
         let name = Field::state(text::NAME_FIELD, window, cx);
         let code = Field::state("", window, cx);
@@ -286,7 +303,12 @@ impl Shell {
             .set_scroll_handler(cx.listener(|this, event, window, cx| {
                 this.feed_scrolled(Pane::Thread, event, window, cx);
             }));
+        let own_entity = cx.entity_id();
         let subscriptions = vec![
+            cx.on_release(move |this: &mut Self, cx| {
+                this.state
+                    .update(cx, |state, _| state.window_talking(own_entity, false));
+            }),
             Self::observe_composer(Pane::Main, &composer.input, window, cx),
             Self::observe_composer(Pane::Thread, &thread_composer.input, window, cx),
             Field::observe(
@@ -330,16 +352,27 @@ impl Shell {
                 // The rules of a system notification read whether the person looks at
                 // the window (ADR 0742).
                 let active = window.is_window_active();
-                this.state
-                    .update(cx, |state, cx| state.set_window_active(active, cx));
+                if !this.detached {
+                    this.state
+                        .update(cx, |state, cx| state.set_window_active(active, cx));
+                }
                 if !window.is_window_active() {
                     this.set_talking(false, cx);
-                } else if let Some(view) = this.view.clone() {
-                    // The person looks at the window again: what it shows is seen.
-                    this.feed_changed(&view, window, cx);
+                } else {
+                    this.modifiers_changed(window.modifiers(), cx);
+                    if !this.detached
+                        && let Some(view) = this.view.clone()
+                    {
+                        this.feed_changed(&view, window, cx);
+                    }
                 }
             }),
             cx.observe_in(&state, window, |this, state, window, cx| {
+                if this.detached {
+                    this.view = Some(state.read(cx).call_view());
+                    cx.notify();
+                    return;
+                }
                 if let Some((submitted, result)) =
                     state.update(cx, |state, _| state.take_name_result())
                 {
@@ -427,7 +460,14 @@ impl Shell {
             call_panel_open: false,
             volumes: HashMap::new(),
             device_menu_closed_by_press: false,
+            detached,
+            software_video: window
+                .gpu_specs()
+                .is_some_and(|gpu| gpu.is_software_emulated),
+            camera_focus: false,
+            focused_camera: std::cell::Cell::new(None),
             pictures: share::ShownPictures::default(),
+            cameras: HashMap::new(),
             picture_tasks: Vec::new(),
             share_reads: 0,
             share_volume: None,
@@ -471,10 +511,12 @@ impl Shell {
         };
         shell.follow_pictures(cx);
         let active = window.is_window_active();
-        shell
-            .state
-            .update(cx, |state, cx| state.set_window_active(active, cx));
-        if shell.state.read(cx).preset_name().is_empty() {
+        if !detached {
+            shell
+                .state
+                .update(cx, |state, cx| state.set_window_active(active, cx));
+        }
+        if !detached && shell.state.read(cx).preset_name().is_empty() {
             shell.open_layer(Layer::Welcome, window, cx);
             shell.focus_field(&shell.name.clone(), window, cx);
         } else {
@@ -535,7 +577,9 @@ impl Shell {
     /// The calls keep the state of the key and act on a change only, so the window tells
     /// them what holds and keeps no copy that could differ.
     fn set_talking(&mut self, talking: bool, cx: &mut Context<Self>) {
-        self.state.update(cx, |state, _| state.set_talking(talking));
+        let id = cx.entity_id();
+        self.state
+            .update(cx, |state, _| state.window_talking(id, talking));
     }
 
     pub fn state(&self) -> &Entity<AppState> {
@@ -865,6 +909,9 @@ fn logical_width(window: &Window) -> f32 {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.detached {
+            return self.render_detached(window, cx);
+        }
         let settings = self.state.read(cx).settings();
         let view: ShellView = match &self.view {
             Some(view) => view.clone(),
@@ -955,6 +1002,7 @@ impl Render for Shell {
             .when(!matches!(self.layer, Layer::None), |shell| {
                 shell.child(self.render_layer(&view, window, cx))
             })
+            .into_any_element()
     }
 }
 

@@ -174,7 +174,30 @@ impl Shell {
                 }
             }
         });
-        self.picture_tasks = vec![follow_main, follow_small];
+        let mut cameras = calls.camera_pictures();
+        let software_video = self.software_video;
+        let follow_cameras = cx.spawn(async move |this, cx| {
+            loop {
+                if software_video {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(200))
+                        .await;
+                }
+                let pictures = cameras.borrow_and_update().clone();
+                if this
+                    .update(cx, |this, cx| {
+                        this.show_cameras(&pictures, cx);
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+                if cameras.changed().await.is_err() {
+                    break;
+                }
+            }
+        });
+        self.picture_tasks = vec![follow_main, follow_small, follow_cameras];
     }
 
     pub(crate) fn show_main(
@@ -1033,6 +1056,8 @@ impl Shell {
             .flex()
             .flex_1()
             .min_h_0()
+            .min_w_0()
+            .overflow_hidden()
             .items_center()
             .justify_center()
             .px(u(12.0))
@@ -1061,8 +1086,17 @@ impl Shell {
                         .role(Role::Image)
                         .aria_label(watched.map(title_of).unwrap_or_default())
                         .debug_selector(|| "share-picture".to_owned())
+                        .relative()
                         .size_full()
-                        .child(img(image).size_full().object_fit(ObjectFit::Contain)),
+                        .min_h_0()
+                        .overflow_hidden()
+                        .child(
+                            img(image)
+                                .absolute()
+                                .inset(u(0.0))
+                                .size_full()
+                                .object_fit(ObjectFit::Contain),
+                        ),
                 ),
                 None => viewport.child(
                     div()
@@ -1077,15 +1111,13 @@ impl Shell {
                 ),
             });
 
-        // The strip of the people. This version has no camera, so every person is without
-        // video: with the setting on, the strip tells how many it does not show.
+        // The setting affects only the tiles; the member list stays complete.
         let people = occupants(channel);
         let hidden = panel.hide_without_video;
-        let tiles: Vec<AnyElement> = if hidden {
-            Vec::new()
-        } else {
+        let tiles: Vec<AnyElement> = {
             people
                 .iter()
+                .filter(|occupant| !hidden || self.camera_image(occupant).is_some())
                 .enumerate()
                 .map(|(index, occupant)| {
                     let (marks, label) = tile_marks(occupant);
@@ -1101,6 +1133,8 @@ impl Shell {
                         label,
                     )
                     .in_strip()
+                    .sidebar(self.detached)
+                    .picture(self.camera_image(occupant))
                     .speaking(matches!(
                         occupant.microphone,
                         Microphone::Open { speaking: true }
@@ -1111,8 +1145,12 @@ impl Shell {
                 })
                 .collect()
         };
-        let hidden_note = (hidden && !people.is_empty()).then(|| {
-            let (strong, rest) = text::people_hidden(people.len());
+        let hidden_count = people
+            .iter()
+            .filter(|person| hidden && self.camera_image(person).is_none())
+            .count();
+        let hidden_note = (hidden_count > 0).then(|| {
+            let (strong, rest) = text::people_hidden(hidden_count);
             let line = format!("{strong}{rest}");
             let avatars = people.iter().take(3).map(|occupant| {
                 Mosaic::new(
@@ -1138,6 +1176,9 @@ impl Shell {
                 .line_height(u(18.0))
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .ink(colors.bone_2)
+                .when(self.detached, |note| {
+                    note.flex_col().items_start().w_full().ml(u(0.0)).mb(u(0.0))
+                })
                 .child(div().flex().gap(u(3.0)).children(avatars))
                 .child(
                     div()
@@ -1169,11 +1210,22 @@ impl Shell {
             .border_color(Hsla::from(colors.basalt_rule))
             .bg(Hsla::from(colors.basalt_deep))
             .when(hidden, |strip| strip.items_center())
+            .when(self.detached, |strip| {
+                strip
+                    .flex_col()
+                    .w(u(112.0))
+                    .h_full()
+                    .px(u(8.0))
+                    .items_start()
+                    .overflow_y_scroll()
+            })
             .children(tiles)
             .children(hidden_note);
 
         div()
             .id("call-stage")
+            .relative()
+            .overflow_hidden()
             .debug_selector(|| "call-stage".to_owned())
             .flex()
             .flex_col()
@@ -1183,8 +1235,17 @@ impl Shell {
             .bg(Hsla::from(colors.stage))
             .children(bar)
             .children(header)
-            .child(viewport)
-            .child(strip)
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .when(!self.detached, |area| area.flex_col())
+                    .child(viewport)
+                    .child(strip),
+            )
             .into_any_element()
     }
 }

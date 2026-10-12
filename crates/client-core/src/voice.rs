@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::paths::{DataDir, VOICE_FILE};
 use crate::storage::{StorageError, Versioned};
 
-pub const VOICE_FORMAT_VERSION: u32 = 2;
+pub const VOICE_FORMAT_VERSION: u32 = 3;
 
 /// The frame rates of a share that a person chooses from.
 pub const SHARE_FRAME_RATES: [u32; 3] = [15, 30, 60];
@@ -29,7 +29,7 @@ const VOICE: Versioned = Versioned {
     name: VOICE_FILE,
     kind: "sound settings",
     version: VOICE_FORMAT_VERSION,
-    migrations: &[settings_of_shares],
+    migrations: &[settings_of_shares, settings_of_camera],
     limit: 512 * 1024,
 };
 
@@ -57,6 +57,15 @@ fn settings_of_shares(mut value: serde_json::Value) -> Result<serde_json::Value,
     ] {
         settings.entry(name).or_insert(default);
     }
+    Ok(value)
+}
+
+fn settings_of_camera(mut value: serde_json::Value) -> Result<serde_json::Value, String> {
+    value
+        .as_object_mut()
+        .ok_or("the sound settings are not an object")?
+        .entry("camera_device")
+        .or_insert(serde_json::Value::Null);
     Ok(value)
 }
 
@@ -96,6 +105,7 @@ pub enum TalkKey {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VoiceSettings {
+    pub camera_device: Option<String>,
     /// The identifier of the chosen input device. Absent: the default of the system.
     pub input_device: Option<String>,
     pub output_device: Option<String>,
@@ -120,6 +130,7 @@ pub struct VoiceSettings {
 impl Default for VoiceSettings {
     fn default() -> Self {
         Self {
+            camera_device: None,
             input_device: None,
             output_device: None,
             echo_cancellation: true,
@@ -171,6 +182,7 @@ impl VoiceSettings {
                 !id.is_empty() && id.len() <= DEVICE_ID_BYTES && !id.chars().any(char::is_control)
             })
         };
+        self.camera_device = usable(self.camera_device);
         self.input_device = usable(self.input_device);
         self.output_device = usable(self.output_device);
         let mut kept = 0;
@@ -192,6 +204,8 @@ impl VoiceSettings {
 
 #[derive(Serialize, Deserialize)]
 struct VoiceFile {
+    #[serde(default)]
+    camera_device: Option<String>,
     format_version: u32,
     #[serde(default)]
     input_device: Option<String>,
@@ -226,6 +240,7 @@ impl VoiceStore {
             return Ok(VoiceSettings::default());
         };
         Ok(VoiceSettings {
+            camera_device: file.camera_device,
             input_device: file.input_device,
             output_device: file.output_device,
             echo_cancellation: file.echo_cancellation,
@@ -263,6 +278,7 @@ impl VoiceStore {
             self.data_dir.files(),
             &VoiceFile {
                 format_version: VOICE_FORMAT_VERSION,
+                camera_device: settings.camera_device.clone(),
                 input_device: settings.input_device.clone(),
                 output_device: settings.output_device.clone(),
                 echo_cancellation: settings.echo_cancellation,
@@ -321,7 +337,7 @@ mod tests {
         assert_eq!(written.volume(server_id, account_id), 140);
         assert_eq!(written.volume(server_id, AccountId::generate()), 100);
         let text = fs::read_to_string(data_dir.root().join(VOICE_FILE)).unwrap();
-        assert!(text.contains("\"format_version\": 2"), "{text}");
+        assert!(text.contains("\"format_version\": 3"), "{text}");
         assert!(text.contains("\"input_mode\": \"push_to_talk\""), "{text}");
     }
 
@@ -378,11 +394,11 @@ mod tests {
     fn a_file_of_a_newer_format_stays_and_an_unreadable_file_is_replaced() {
         let (_directory, data_dir, store) = store();
         let file = data_dir.root().join(VOICE_FILE);
-        let newer = r#"{"format_version":3,"later":true}"#;
+        let newer = r#"{"format_version":4,"later":true}"#;
         fs::write(&file, newer).unwrap();
         assert!(matches!(
             store.load(),
-            Err(StorageError::NewerFormat { found: 3, .. })
+            Err(StorageError::NewerFormat { found: 4, .. })
         ));
         assert!(matches!(
             store.update(|settings| settings.automatic_gain = false),
@@ -437,7 +453,7 @@ mod tests {
         assert_eq!(store.load().unwrap(), written);
         assert_eq!(written.volume(server_id, account_id), 60);
         let text = fs::read_to_string(&file).unwrap();
-        assert!(text.contains("\"format_version\": 2"), "{text}");
+        assert!(text.contains("\"format_version\": 3"), "{text}");
         assert!(text.contains("\"share_resolution\": \"source\""), "{text}");
     }
 
@@ -466,5 +482,32 @@ mod tests {
             .unwrap();
         assert!(!written.echo_cancellation);
         assert_eq!(written.talk_key, TalkKey::Control);
+    }
+}
+
+#[cfg(test)]
+mod camera_tests {
+    use super::*;
+    #[test]
+    fn camera_choice_survives_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = DataDir::open(directory.path().join("client")).unwrap();
+        let store = VoiceStore::new(data.clone());
+        assert_eq!(store.load().unwrap().camera_device, None);
+        store
+            .update(|settings| settings.camera_device = Some("chosen-camera".into()))
+            .unwrap();
+        assert_eq!(
+            VoiceStore::new(data)
+                .load()
+                .unwrap()
+                .camera_device
+                .as_deref(),
+            Some("chosen-camera")
+        );
+        store
+            .update(|settings| settings.camera_device = Some("x".repeat(513)))
+            .unwrap();
+        assert_eq!(store.load().unwrap().camera_device, None);
     }
 }

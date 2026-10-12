@@ -3,7 +3,8 @@
 
 use gpui::{
     App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce, Role,
-    SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
+    SharedString, StatefulInteractiveElement, Styled, StyledImage, Window, div,
+    prelude::FluentBuilder,
 };
 
 use super::{Meter, Mosaic, MosaicKind, StyleExt, icon};
@@ -30,6 +31,7 @@ pub const STRIP_TILE_SIZE: (f32, f32) = (148.0, 84.0);
 
 #[derive(IntoElement)]
 pub struct PersonTile {
+    picture: Option<CameraPicture>,
     id: ElementId,
     name: SharedString,
     seed: u128,
@@ -38,6 +40,8 @@ pub struct PersonTile {
     label: SharedString,
     selector: Option<SharedString>,
     in_strip: bool,
+    focused: bool,
+    sidebar: bool,
 }
 
 impl PersonTile {
@@ -49,6 +53,7 @@ impl PersonTile {
         label: impl Into<SharedString>,
     ) -> Self {
         Self {
+            picture: None,
             id: id.into(),
             name: name.into(),
             seed,
@@ -57,7 +62,23 @@ impl PersonTile {
             label: label.into(),
             selector: None,
             in_strip: false,
+            focused: false,
+            sidebar: false,
         }
+    }
+
+    pub fn sidebar(mut self, sidebar: bool) -> Self {
+        self.sidebar = sidebar;
+        self
+    }
+
+    pub fn focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+    pub fn picture(mut self, picture: Option<CameraPicture>) -> Self {
+        self.picture = picture;
+        self
     }
 
     /// The tile of the strip under a share: the size of the design.
@@ -87,7 +108,11 @@ impl RenderOnce for PersonTile {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = theme(cx);
         let colors = theme.colors;
-        let (size, avatar) = if self.in_strip {
+        let (size, avatar) = if self.sidebar {
+            ((96.0, 60.0), 28.0)
+        } else if self.focused {
+            ((480.0, 270.0), 51.0)
+        } else if self.in_strip {
             (STRIP_TILE_SIZE, 34.0)
         } else {
             (TILE_SIZE, 51.0)
@@ -136,6 +161,7 @@ impl RenderOnce for PersonTile {
                     .mb(u(16.0))
                     .child(Mosaic::new(MosaicKind::Large, self.seed, avatar)),
             )
+            .when_some(self.picture, |tile, picture| tile.child(picture.element()))
             .child(
                 div()
                     .absolute()
@@ -156,5 +182,36 @@ impl RenderOnce for PersonTile {
                     .children(marks)
                     .child(div().min_w_0().truncate().child(self.name)),
             )
+    }
+}
+
+#[derive(Clone)]
+pub enum CameraPicture {
+    Image(std::sync::Arc<gpui::RenderImage>),
+    #[cfg(target_os = "macos")]
+    Surface(core_video::pixel_buffer::CVPixelBuffer),
+}
+impl CameraPicture {
+    pub(crate) fn image(&self) -> Option<&std::sync::Arc<gpui::RenderImage>> {
+        match self {
+            Self::Image(image) => Some(image),
+            #[cfg(target_os = "macos")]
+            Self::Surface(_) => None,
+        }
+    }
+    fn element(self) -> gpui::AnyElement {
+        match self {
+            Self::Image(image) => gpui::img(image)
+                .absolute()
+                .size_full()
+                .object_fit(gpui::ObjectFit::Contain)
+                .into_any_element(),
+            #[cfg(target_os = "macos")]
+            Self::Surface(buffer) => gpui::surface(buffer)
+                .absolute()
+                .size_full()
+                .object_fit(gpui::ObjectFit::Contain)
+                .into_any_element(),
+        }
     }
 }

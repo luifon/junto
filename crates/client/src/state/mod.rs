@@ -247,6 +247,11 @@ pub struct Pending {
 }
 
 pub struct AppState {
+    talking_windows: HashSet<gpui::EntityId>,
+    call_window: Option<gpui::WindowHandle<gpui_base::Root>>,
+    call_window_settings: junto_client_core::call_window::CallWindowSettings,
+    direct: direct::DirectCalls,
+    ringer: junto_media::audio::ring::RingPlayer,
     client: Client,
     calls: Calls,
     /// Why the sound settings are not in their file.
@@ -410,6 +415,7 @@ impl AppState {
                 VoiceSettings::default()
             }
         };
+        let ringer = junto_media::audio::ring::RingPlayer::new(media.host.clone());
         let calls = Calls::new(client.clone(), media);
         calls.set_voice(voice_config(&voice));
         calls.set_share_volume(f32::from(voice.share_volume) / 100.0);
@@ -445,6 +451,10 @@ impl AppState {
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
                 let told = this.update(cx, |this, cx| {
+                    this.reconcile_direct();
+                    if this.direct.ringing() {
+                        cx.notify();
+                    }
                     if this.known.media.calls.call.is_some() {
                         this.known.media.now = Some(time::OffsetDateTime::now_utc());
                         cx.notify();
@@ -499,7 +509,16 @@ impl AppState {
             ..Known::default()
         };
         let kept = crate::notify::KeptNotifier::default();
+        let call_window_settings =
+            junto_client_core::call_window::CallWindowStore::new(client.data_dir().clone())
+                .load()
+                .unwrap_or_default();
         let mut state = Self {
+            talking_windows: HashSet::new(),
+            call_window: None,
+            call_window_settings,
+            direct: direct::DirectCalls::default(),
+            ringer,
             client,
             calls,
             voice_failed: None,
@@ -571,6 +590,10 @@ impl AppState {
         state
     }
 
+    pub fn is_call_detached(&self) -> bool {
+        self.call_window.is_some()
+    }
+
     pub fn calls(&self) -> &Calls {
         &self.calls
     }
@@ -605,6 +628,7 @@ impl AppState {
         self.recording.in_call(now.as_deref());
         self.show_recording();
         if ended {
+            self.return_call(cx);
             // What was told about a call ends with it.
             self.pending.call_refused = None;
             self.pending.call_told = None;
@@ -634,6 +658,16 @@ impl AppState {
             // that its acceptance does not replace this call.
             self.withdraw_entry(cx);
             self.refresh_devices(cx);
+            if self
+                .known
+                .media
+                .calls
+                .call
+                .as_ref()
+                .is_some_and(|call| matches!(call.target.place, CallPlace::Direct { .. }))
+            {
+                self.show_call(cx);
+            }
         }
         self.changed(cx);
     }
@@ -1186,6 +1220,19 @@ impl AppState {
             .and_then(|server| server.live().view().model)
             .and_then(|model| model.own_call.as_ref().map(|own| own.call_id));
         match event.as_ref() {
+            Event::CallEnded { call_id, .. } => {
+                self.direct.ended(server_id, *call_id);
+                self.reconcile_direct();
+                cx.notify();
+            }
+            Event::CallInvited { invitation } => {
+                if let Some(own) = self.client.server(server_id).and_then(|s| s.account()) {
+                    self.direct
+                        .see(server_id, own, invitation, time::OffsetDateTime::now_utc());
+                }
+                self.reconcile_direct();
+                cx.notify();
+            }
             Event::RecordingStarted { .. } | Event::RecordingUpdated { .. } => {
                 self.recording.event(server_id, own_call, event);
                 self.show_recording();
@@ -1216,6 +1263,24 @@ impl AppState {
                 invitation_id,
                 outcome,
             } => {
+                self.direct.resolve(server_id, *invitation_id, *outcome);
+                let outgoing_ended = self
+                    .direct
+                    .rings
+                    .get(&(server_id, *invitation_id))
+                    .is_some_and(|ring| {
+                        !ring.incoming
+                            && own_call == Some(ring.invitation.call_id)
+                            && matches!(
+                                outcome,
+                                InvitationOutcome::Declined | InvitationOutcome::Expired
+                            )
+                    });
+                if outgoing_ended {
+                    self.leave_call(cx);
+                }
+                self.reconcile_direct();
+                cx.notify();
                 let made = self.made_invitations.remove(&(server_id, *invitation_id));
                 let told = match outcome {
                     InvitationOutcome::Declined => Some(text::INVITATION_DECLINED),
@@ -1309,6 +1374,28 @@ impl AppState {
             return;
         };
         let target = call.target;
+        if let CallPlace::Direct {
+            low_account_id,
+            high_account_id,
+        } = target.place
+        {
+            if let Some(own) = self
+                .client
+                .server(target.server_id)
+                .and_then(|s| s.account())
+            {
+                self.open_conversation(
+                    target.server_id,
+                    if own == low_account_id {
+                        high_account_id
+                    } else {
+                        low_account_id
+                    },
+                    cx,
+                );
+            }
+            return;
+        }
         self.end_jump();
         self.navigations += 1;
         self.selection.server = Some(target.server_id);
@@ -1558,6 +1645,7 @@ impl AppState {
     /// Runs after every change of the client core and of an event stream: starts and ends
     /// the work that depends on what exists and on what is shown, and draws again.
     fn changed(&mut self, cx: &mut Context<Self>) {
+        self.reconcile_direct();
         let servers = self.client.servers();
         let ids: HashSet<ServerId> = servers.iter().map(ServerHandle::id).collect();
         self.watchers.retain(|id, _| ids.contains(id));
@@ -2107,3 +2195,9 @@ impl AppState {
         cx.notify();
     }
 }
+
+pub mod direct;
+
+mod camera;
+
+mod call_window;

@@ -65,7 +65,7 @@ impl PictureFrame {
 
 /// The picture of a buffer in planes of brightness and colour, whatever form the buffer
 /// has: the decoder of a system gives its own form.
-fn planes(buffer: &dyn VideoBuffer) -> Option<I420Buffer> {
+pub(crate) fn planes(buffer: &dyn VideoBuffer) -> Option<I420Buffer> {
     if let Some(buffer) = buffer.as_i420() {
         return Some(buffer.to_i420());
     }

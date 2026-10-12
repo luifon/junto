@@ -87,20 +87,27 @@ impl Shell {
                     .into_any_element(),
                 None,
             ),
-            (Some(_), Some(shown)) => match (call, channel) {
-                (Some((channel, panel)), _) => {
+            (Some(server), Some(shown)) => match (call, channel, shown.conversation.as_ref()) {
+                (Some((channel, panel)), _, _) => {
                     self.render_call(view, channel, panel, narrow, window, cx)
                 }
-                (None, Some(_)) => (
+                (None, Some(_), _) => (
                     self.render_feed(shown, false, window, cx),
                     side_of(self, shown, window, cx),
                 ),
                 // A direct conversation in place of a channel.
-                (None, None) if shown.conversation.is_some() => (
-                    self.render_feed(shown, false, window, cx),
+                (None, None, Some(conversation)) => (
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_h_0()
+                        .child(self.render_direct_call(server.id, conversation.account_id, cx))
+                        .child(self.render_feed(shown, false, window, cx))
+                        .into_any_element(),
                     side_of(self, shown, window, cx),
                 ),
-                (None, None) => (
+                (None, None, None) => (
                     StatePanel::new(text::NO_CHANNEL_TITLE, text::NO_CHANNELS)
                         .selector("no-channel")
                         .into_any_element(),
@@ -427,7 +434,7 @@ impl Shell {
     /// The recording of the call of this device in the header of its voice channel
     /// (ADR 0738): the mark with its time and the action that stops it, the action that
     /// starts one, and what happened to the last one.
-    fn render_recording_control(
+    pub(crate) fn render_recording_control(
         &mut self,
         control: &RecordingControl,
         theme: &Theme,
