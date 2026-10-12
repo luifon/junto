@@ -594,12 +594,31 @@ pub async fn apply(server: &TestServer, member: &Member, snapshot: &mut Snapshot
                     categories: Vec::new(),
                     channels: Vec::new(),
                     calls: Vec::new(),
+                    permissions: Vec::new(),
+                    channel_permissions: Vec::new(),
+                    notification_default: None,
                 });
             }
         }
         Event::WorkspaceUpdated { workspace } => {
             if let Some(index) = state(snapshot, workspace.id) {
                 snapshot.workspaces[index].workspace = workspace;
+            }
+        }
+        // The client loads a snapshot (ADR 0208). The lists of the permissions of the
+        // account are part of it (ADR 0310).
+        Event::PermissionsChanged {
+            workspace_id: Some(workspace_id),
+        } => {
+            let loaded = server.snapshot(member).await;
+            let current = loaded
+                .workspaces
+                .iter()
+                .find(|state| state.workspace.id == workspace_id);
+            if let (Some(index), Some(current)) = (state(snapshot, workspace_id), current) {
+                snapshot.workspaces[index].permissions = current.permissions.clone();
+                snapshot.workspaces[index].channel_permissions =
+                    current.channel_permissions.clone();
             }
         }
         Event::CategoryCreated { category } | Event::CategoryUpdated { category } => {
@@ -629,6 +648,22 @@ pub async fn apply(server: &TestServer, member: &Member, snapshot: &mut Snapshot
                 snapshot.workspaces[index]
                     .channels
                     .retain(|channel| channel.id != channel_id);
+            }
+        }
+        Event::WorkspaceRolePositionsShifted {
+            workspace_id,
+            positions,
+        } => {
+            if let Some(index) = state(snapshot, workspace_id) {
+                for changed in positions {
+                    if let Some(role) = snapshot.workspaces[index]
+                        .roles
+                        .iter_mut()
+                        .find(|r| r.id == changed.role_id)
+                    {
+                        role.position = changed.position;
+                    }
+                }
             }
         }
         Event::WorkspaceRoleCreated { role } | Event::WorkspaceRoleUpdated { role } => {

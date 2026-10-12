@@ -392,6 +392,11 @@ async fn ring(
     for account_id in waiting.told() {
         events::tell_account(&mut *connection, now, account_id, &invited).await?;
     }
+    // A later ring of the same call, after a new seat of an account that waits alone,
+    // starts no second call.
+    if call.direct_caller.is_none() {
+        store::direct_call_rung(connection, now, call, caller, other).await?;
+    }
     Ok(())
 }
 

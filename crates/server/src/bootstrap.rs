@@ -563,6 +563,7 @@ pub async fn create_workspace(
         .execute(&mut *connection)
         .await?;
     let everyone = WorkspaceRole {
+        position: 0,
         id: WorkspaceRoleId::generate(),
         workspace_id,
         name: EVERYONE_ROLE_NAME.to_owned(),

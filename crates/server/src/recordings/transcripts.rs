@@ -793,26 +793,66 @@ const NEWEST_CORRECTION: &str = "left join lateral (
          where recording_id = l.recording_id and line = l.line
          order by id desc limit 1) c on true";
 
-/// The lines of a transcript after the position `after`, at most `most`, each with its
-/// newest correction.
+/// Which lines of a transcript a read asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Window {
+    /// The lines after a position, or from the first line.
+    After(Option<u32>),
+    /// The lines before a position, the ones nearest to it.
+    Before(u32),
+    /// The lines from a position on, that position included.
+    From(u32),
+}
+
+/// The lines of a transcript in `window`, at most `most`, in the order of the timeline,
+/// each with its newest correction.
 pub async fn lines(
     connection: &mut PgConnection,
     recording_id: RecordingId,
-    after: Option<u32>,
+    window: Window,
     most: i64,
 ) -> ApiResult<Vec<TranscriptLine>> {
-    let after = after.map_or(-1, i64::from);
+    let (condition, bound, order) = match window {
+        Window::After(after) => ("l.line > $2", after.map_or(-1, i64::from), "asc"),
+        Window::From(first) => ("l.line >= $2", i64::from(first), "asc"),
+        Window::Before(before) => ("l.line < $2", i64::from(before), "desc"),
+    };
     let records: Vec<LineRecord> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "select {LINE_COLUMNS} from transcript_lines l {NEWEST_CORRECTION}
-         where l.recording_id = $1 and l.line > $2
-         order by l.line limit $3"
+         where l.recording_id = $1 and {condition}
+         order by l.line {order} limit $3"
     )))
     .bind(recording_id)
-    .bind(after)
+    .bind(bound)
     .bind(most)
     .fetch_all(connection)
     .await?;
-    records.into_iter().map(line).collect()
+    let mut lines = records
+        .into_iter()
+        .map(line)
+        .collect::<ApiResult<Vec<_>>>()?;
+    if matches!(window, Window::Before(_)) {
+        lines.reverse();
+    }
+    Ok(lines)
+}
+
+/// Whether the transcript has a line before `position` (`before`), or at or after it.
+pub async fn has_line(
+    connection: &mut PgConnection,
+    recording_id: RecordingId,
+    position: u32,
+    before: bool,
+) -> ApiResult<bool> {
+    let condition = if before { "line < $2" } else { "line >= $2" };
+    Ok(sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "select exists (
+             select 1 from transcript_lines where recording_id = $1 and {condition})"
+    )))
+    .bind(recording_id)
+    .bind(i64::from(position))
+    .fetch_one(connection)
+    .await?)
 }
 
 /// Why a correction was not stored.

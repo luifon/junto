@@ -115,6 +115,8 @@ fn documented_routes() -> OpenApiRouter<AppState> {
         .routes(routes!(threads::fork))
         .routes(routes!(threads::read_state, threads::mark_read))
         .routes(routes!(threads::unread))
+        .routes(routes!(threads::set_follow, threads::remove_follow))
+        .routes(routes!(threads::followed))
         .routes(routes!(pins::list))
         .routes(routes!(pins::pin, pins::unpin))
         .routes(routes!(search::search))
@@ -124,9 +126,11 @@ fn documented_routes() -> OpenApiRouter<AppState> {
         ))
         .routes(routes!(
             notifications::get_default,
-            notifications::set_default
+            notifications::set_default,
+            notifications::remove_default
         ))
         .routes(routes!(notifications::list))
+        .routes(routes!(notifications::mark_all_read))
         .routes(routes!(notifications::mark_read))
         .routes(routes!(retention::get_workspace, retention::set_workspace))
         .routes(routes!(retention::get_direct, retention::set_direct))
@@ -198,6 +202,8 @@ fn documented_routes() -> OpenApiRouter<AppState> {
         .routes(routes!(moderation::remove_account))
         .routes(routes!(moderation::ban_account, moderation::unban_account))
         .routes(routes!(moderation::recover_account))
+        .routes(routes!(server_roles::reorder_server_roles))
+        .routes(routes!(workspace_roles::reorder_workspace_roles))
         .routes(routes!(
             server_roles::list_server_roles,
             server_roles::create_server_role
@@ -257,6 +263,7 @@ fn documented_routes() -> OpenApiRouter<AppState> {
         .routes(routes!(exports::list_exports))
         .routes(routes!(exports::get_export, exports::remove_export))
         .routes(routes!(exports::get_export_file))
+        .routes(routes!(channels::get_channel_permissions))
         .routes(routes!(channels::list_channel_overrides))
         .routes(routes!(channels::set_channel_override))
         .routes(routes!(calls::get_own_call, calls::leave_call))

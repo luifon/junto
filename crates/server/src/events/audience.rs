@@ -75,7 +75,10 @@ impl Class {
             | Event::AttachmentLimitsChanged { .. }
             | Event::WorkspaceDeleted { .. }
             | Event::ExportUpdated { .. }
-            | Event::ExportRemoved { .. } => Self::Control,
+            | Event::ExportRemoved { .. }
+            | Event::NotificationsRead { .. }
+            | Event::ThreadFollowChanged { .. }
+            | Event::NotificationDefaultChanged { .. } => Self::Control,
             Event::ConversationOpened { .. } => Self::DirectMessage,
             Event::MessageMentioned { .. } | Event::NotificationChanged { .. } => Self::Mention,
             Event::CallInvited { .. } | Event::CallInvitationResolved { .. } => Self::CallInvite,
@@ -89,6 +92,8 @@ impl Class {
             | Event::AccountStatusChanged { .. }
             | Event::AccountServerRolesChanged { .. }
             | Event::OwnerChanged { .. }
+            | Event::ServerRolePositionsShifted { .. }
+            | Event::WorkspaceRolePositionsShifted { .. }
             | Event::ServerRoleCreated { .. }
             | Event::ServerRoleUpdated { .. }
             | Event::AccessTokenCreated { .. }
@@ -600,7 +605,10 @@ impl Audience {
             Event::ThreadRead { .. }
             | Event::MessageRead { .. }
             | Event::NotificationChanged { .. }
-            | Event::NotificationSettingsChanged { .. } => None,
+            | Event::NotificationSettingsChanged { .. }
+            | Event::NotificationsRead { .. }
+            | Event::ThreadFollowChanged { .. } => None,
+            Event::NotificationDefaultChanged { workspace_id, .. } => workspace(*workspace_id),
             Event::RetentionChanged { workspace_id } => match workspace_id {
                 Some(id) => workspace(*id),
                 None => permission(ServerPermission::Administrator),
@@ -664,7 +672,9 @@ impl Audience {
             Event::ServerRoleCreated { .. }
             | Event::ServerRoleUpdated { .. }
             | Event::ServerRoleDeleted { .. }
-            | Event::AccessTokenCreated { .. }
+            | Event::ServerRolePositionsShifted { .. } => permission(ServerPermission::BanMembers),
+            Event::WorkspaceRolePositionsShifted { workspace_id, .. } => workspace(*workspace_id),
+            Event::AccessTokenCreated { .. }
             | Event::AccessTokenRevoked { .. }
             | Event::AccessTokensOfCreatorRevoked { .. } => {
                 permission(ServerPermission::Administrator)
@@ -762,7 +772,9 @@ impl Audience {
                 Event::PermissionsChanged { .. }
                 | Event::CallAccessEnded {}
                 | Event::DirectMuteSet { .. }
-                | Event::DirectMuteRemoved { .. },
+                | Event::DirectMuteRemoved { .. }
+                | Event::NotificationsRead { .. }
+                | Event::ThreadFollowChanged { .. },
                 Self::Account { .. },
             ) => true,
             (
@@ -813,6 +825,19 @@ impl Audience {
                 true
             }
             (Event::PermissionsChanged { .. }, Self::Listed { .. }) => true,
+            // The accounts that see a new workspace, or a channel that appears with
+            // overrides (ADR 0310).
+            (
+                Event::PermissionsChanged {
+                    workspace_id: Some(named),
+                },
+                Self::Workspace { workspace_id }
+                | Self::Channel {
+                    workspace_id,
+                    permission: WorkspacePermission::ViewChannel,
+                    ..
+                },
+            ) => named == workspace_id,
             (
                 Event::InviteCreated { invite },
                 Self::Invite {
@@ -1895,7 +1920,17 @@ mod tests {
         assert!(server_holders.fits(&on_server));
         assert!(!server_holders.fits(&in_workspace));
         assert!(account.fits(&in_workspace) && account.fits(&on_server));
-        assert!(!workspace.fits(&in_workspace));
+        // The accounts that see a new workspace, and the accounts that see a channel that
+        // appears with overrides, are told as well (ADR 0310).
+        assert!(workspace.fits(&in_workspace));
+        assert!(!workspace.fits(&on_server));
+        let elsewhere = Audience::Workspace {
+            workspace_id: WorkspaceId::generate(),
+        };
+        assert!(!elsewhere.fits(&in_workspace));
+        assert!(channel_audience(&place, WorkspacePermission::ViewChannel).fits(&in_workspace));
+        assert!(!channel_audience(&place, WorkspacePermission::ManageChannel).fits(&in_workspace));
+        assert!(!channel_audience(&place, WorkspacePermission::ViewChannel).fits(&on_server));
 
         let channel = Channel {
             id: place.channel_id,

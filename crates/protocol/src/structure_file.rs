@@ -9,7 +9,7 @@ use crate::ids::StructureId;
 use crate::structure::{ChannelKind, present};
 
 /// The format version that this build reads and writes.
-pub const STRUCTURE_FORMAT: u32 = 1;
+pub const STRUCTURE_FORMAT: u32 = 2;
 
 /// The largest number of changes of one request. A request of this size runs in a small
 /// part of the time limit of a request (ADR 0211).
@@ -25,7 +25,7 @@ pub const MOST_CHANGES: usize = 200;
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct StructureFile {
-    /// The version of the file format: 1.
+    /// The version of the file format: 2. This tool also reads format 1.
     pub format: u32,
     #[serde(default)]
     pub server_roles: Vec<ServerRoleEntry>,
@@ -72,6 +72,9 @@ impl Deletions {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ServerRoleEntry {
+    /// Optional relative-order key: larger is higher. Numeric gaps are not significant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<i32>,
     pub id: StructureId,
     pub name: String,
     /// Absent: a new role has no permission, an existing role keeps its permissions.
@@ -101,6 +104,9 @@ pub struct WorkspaceEntry {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct RoleEntry {
+    /// Optional relative-order key: larger is higher; everyone is fixed at zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<i32>,
     pub id: StructureId,
     pub name: String,
     /// True for the role that every member holds. An entry with this mark stands for that
@@ -195,6 +201,13 @@ pub struct StructureExport {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "change", rename_all = "snake_case")]
 pub enum StructureChange {
+    ReorderServerRoles {
+        positions: Vec<StructureRolePosition>,
+    },
+    ReorderWorkspaceRoles {
+        workspace: StructureId,
+        positions: Vec<StructureRolePosition>,
+    },
     CreateServerRole {
         id: StructureId,
         name: String,
@@ -318,6 +331,8 @@ pub enum StructureChange {
 impl StructureChange {
     pub const fn name(&self) -> &'static str {
         match self {
+            Self::ReorderServerRoles { .. } => "reorder_server_roles",
+            Self::ReorderWorkspaceRoles { .. } => "reorder_workspace_roles",
             Self::CreateServerRole { .. } => "create_server_role",
             Self::UpdateServerRole { .. } => "update_server_role",
             Self::CreateWorkspace { .. } => "create_workspace",
@@ -376,6 +391,13 @@ pub struct StructureApplied {
     /// The revision of the structure after the changes.
     pub revision: String,
     pub created: Vec<CreatedEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct StructureRolePosition {
+    pub id: StructureId,
+    pub position: i32,
 }
 
 #[cfg(test)]

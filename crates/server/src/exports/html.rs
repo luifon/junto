@@ -254,9 +254,12 @@ pub fn message(message: &Message, names: &Names) -> String {
                 .map_or_else(|| actor_id.to_string(), Clone::clone);
             format!(" by {}", escape(&name))
         });
+        let duration = system
+            .duration_seconds
+            .map_or_else(String::new, |seconds| format!(", {seconds} seconds"));
         let _ = writeln!(
             out,
-            "<p class=\"system\">{}{actor}</p>",
+            "<p class=\"system\">{}{actor}{duration}</p>",
             escape(&system.action.replace('_', " "))
         );
     }
@@ -362,6 +365,7 @@ mod tests {
             last_reply: None,
             pinned: false,
             files_removed_by_retention: false,
+            reply_authors: Vec::new(),
         }
     }
 
@@ -439,6 +443,7 @@ mod tests {
             subject_id: None,
             actor_id: Some(account_id),
             recording_id: None,
+            duration_seconds: Some(125),
         });
         let page = format!(
             "{}{}{TAIL}",
@@ -453,6 +458,7 @@ mod tests {
         assert!(page.contains("&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;&quot;&amp;"));
         assert_eq!(page.matches("<a href=\"https://").count(), 1);
         assert!(page.contains("default-src 'none'"));
+        assert!(page.contains(", 125 seconds</p>"), "{page}");
     }
 
     #[test]

@@ -205,6 +205,9 @@ async fn a_role_manager_cannot_restore_a_permission_revoked_during_the_request()
     let owner = server.owner().await;
     let workspace = server.default_workspace(&owner).await;
     let manager = server.join(&owner, "Manager").await;
+    server
+        .grant_workspace(&owner, &manager, workspace.id, &[])
+        .await;
     let role_id = server
         .grant_workspace(
             &owner,

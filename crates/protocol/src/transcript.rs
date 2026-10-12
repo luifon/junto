@@ -233,6 +233,10 @@ pub struct TranscriptLinePage {
     pub lines: Vec<TranscriptLine>,
     /// Pass as `after` to read the next page. Absent on the last page.
     pub next_after: Option<u32>,
+    /// Pass as `before` to read the page before this one. Absent when the page starts at
+    /// the first line.
+    #[serde(default)]
+    pub previous_before: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -242,6 +246,13 @@ pub struct TranscriptLineQuery {
     /// Return the lines after this position.
     #[serde(default)]
     pub after: Option<u32>,
+    /// Return the lines before this position, the ones nearest to it.
+    #[serde(default)]
+    pub before: Option<u32>,
+    /// Return a page with the line at this position in its middle. At most one of `after`,
+    /// `before` and `around` is given.
+    #[serde(default)]
+    pub around: Option<u32>,
     /// The largest number of lines to return, from 1 to 500. Absent: 200.
     #[serde(default)]
     pub limit: Option<u32>,

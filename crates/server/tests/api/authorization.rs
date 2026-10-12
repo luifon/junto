@@ -626,6 +626,20 @@ async fn world() -> World {
         ),
         operation(
             Method::PATCH,
+            "/api/v1/server-roles/positions",
+            &[],
+            json!({"positions": []}),
+            &forbidden,
+        ),
+        operation(
+            Method::PATCH,
+            "/api/v1/workspaces/{workspace_id}/roles/positions",
+            &[&ws],
+            json!({"positions": []}),
+            &forbidden,
+        ),
+        operation(
+            Method::PATCH,
             "/api/v1/server-roles/{role_id}",
             &[&server_role.id],
             json!({ "permissions": ["administrator"] }),
@@ -1269,6 +1283,48 @@ async fn world() -> World {
             &forbidden,
         ),
         operation(
+            Method::DELETE,
+            "/api/v1/workspaces/{workspace_id}/notification-default",
+            &[&ws],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/notifications/read",
+            &[],
+            json!({}),
+            &own,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/messages/{message_id}/thread/follow",
+            &[&absent],
+            json!({"following":true}),
+            &unknown,
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/messages/{message_id}/thread/follow",
+            &[&absent],
+            none.clone(),
+            &unknown,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/channels/{channel_id}/threads",
+            &[&absent],
+            none.clone(),
+            &unknown,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/channels/{channel_id}/permissions",
+            &[&absent],
+            none.clone(),
+            &unknown,
+        ),
+        operation(
             Method::GET,
             "/api/v1/workspaces/{workspace_id}/file-retention",
             &[&ws],
@@ -1637,6 +1693,12 @@ fn token_reach() -> BTreeMap<(&'static str, &'static str), TokenAction> {
             "/api/v1/workspaces/{workspace_id}/roles/{role_id}",
             ManageStructure,
         ),
+        ("PATCH", "/api/v1/server-roles/positions", ManageStructure),
+        (
+            "PATCH",
+            "/api/v1/workspaces/{workspace_id}/roles/positions",
+            ManageStructure,
+        ),
         ("POST", "/api/v1/server-roles", ManageStructure),
         ("PATCH", "/api/v1/server-roles/{role_id}", ManageStructure),
         ("GET", "/api/v1/accounts", ManageMembers),
@@ -1753,6 +1815,12 @@ async fn an_access_token_is_refused_on_every_route_outside_its_reach() {
             server.access_token(&world.administrator, &others).await,
         );
     }
+    let cannot_read_positions = server
+        .access_token(
+            &world.administrator,
+            &[TokenAction::ManageStructure, TokenAction::ReadAuditLog],
+        )
+        .await;
     let unknown = "jat_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
     let before = database_state(server).await;
@@ -1778,7 +1846,14 @@ async fn an_access_token_is_refused_on_every_route_outside_its_reach() {
                 closed += 1;
             }
             Some(action) => {
-                let reply = send(server, operation, Some(lacking[action].token.expose())).await;
+                let token = if operation.method == Method::GET
+                    && operation.template == "/api/v1/server-roles"
+                {
+                    cannot_read_positions.token.expose()
+                } else {
+                    lacking[action].token.expose()
+                };
+                let reply = send(server, operation, Some(token)).await;
                 assert_eq!(
                     reply.code(),
                     ErrorCode::Forbidden,

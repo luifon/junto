@@ -121,6 +121,9 @@ pub async fn restore_channel(
             channel: record.channel.clone(),
         };
         events::publish(connection, now, &restored).await?;
+        let workspace_id = record.channel.workspace_id;
+        events::permissions_changed_by_overrides_of(connection, now, workspace_id, channel_id)
+            .await?;
         Ok(record.channel)
     })
     .map(Json)

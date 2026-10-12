@@ -153,6 +153,7 @@ pub async fn notices(app: &AppState) -> ApiResult<()> {
                     subject_id: None,
                     actor_id: None,
                     recording_id: None,
+                    duration_seconds: None,
                 };
                 let id = MessageId::generate();
                 crate::messages::system(&mut *connection, now, channel_id, id, &line, None).await?;

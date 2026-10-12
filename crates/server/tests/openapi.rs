@@ -72,10 +72,10 @@ fn the_structure_file_schema_describes_every_field_of_a_file() {
     let id = "0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e5f";
     let full: StructureFile = serde_json::from_value(serde_json::json!({
         "format": 1,
-        "server_roles": [{ "id": id, "name": "r", "permissions": ["administrator"] }],
+        "server_roles": [{ "id": id, "name": "r", "position": 1, "permissions": ["administrator"] }],
         "workspaces": [{
             "id": id, "name": "w", "default": true,
-            "roles": [{ "id": id, "name": "r", "everyone": true, "permissions": [] }],
+            "roles": [{ "id": id, "name": "r", "everyone": true, "position": 0, "permissions": [] }],
             "categories": [{ "id": id, "name": "c", "position": 1 }],
             "channels": [{ "id": id, "name": "c", "kind": "voice", "category": id,
                            "position": 1, "permanent_messages": true, "user_limit": 2,

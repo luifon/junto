@@ -151,11 +151,36 @@ fn reference(value: Option<StructureId>) -> String {
 
 /// Refuses identifiers that two entries of one kind share, and marks that two entries hold.
 fn check_file(planner: &mut Planner<'_>, file: &StructureFile) {
-    if file.format != STRUCTURE_FORMAT {
+    if file.format != 1 && file.format != STRUCTURE_FORMAT {
         planner.problem(format!(
             "the file has the format {}; this tool reads the format {STRUCTURE_FORMAT}",
             file.format
         ));
+    }
+    for positions in std::iter::once(
+        file.server_roles
+            .iter()
+            .map(|r| (r.position, false))
+            .collect::<Vec<_>>(),
+    )
+    .chain(
+        file.workspaces
+            .iter()
+            .map(|w| w.roles.iter().map(|r| (r.position, r.everyone)).collect()),
+    ) {
+        let mut seen_positions = HashSet::new();
+        for (position, everyone) in positions {
+            if let Some(position) = position
+                && ((everyone && position != 0)
+                    || (!everyone && position <= 0)
+                    || !seen_positions.insert(position))
+            {
+                planner.problem(
+                    "role positions must be distinct and positive; everyone must be zero"
+                        .to_owned(),
+                );
+            }
+        }
     }
     let mut seen: HashMap<&'static str, HashSet<StructureId>> = HashMap::new();
     let mut unique = |planner: &mut Planner<'_>, kind: &'static str, id: StructureId| {
@@ -406,6 +431,7 @@ pub fn plan(
         workspace(&mut planner, &places, entry, claimed_default);
     }
     deletions(&mut planner, &places, file);
+    role_positions(&mut planner, file);
     if planner.problems.is_empty() {
         Ok(planner.changes)
     } else {
@@ -992,4 +1018,118 @@ fn update_channel(
         );
     }
     overrides(planner, channel, Some(existing), role_names);
+}
+
+fn planned_positions(
+    entries: &[(StructureId, Option<i32>)],
+    current: &[(StructureId, Option<i32>)],
+) -> Vec<junto_protocol::structure_file::StructureRolePosition> {
+    use junto_protocol::structure_file::StructureRolePosition;
+    let new: Vec<_> = entries
+        .iter()
+        .filter(|(id, _)| !current.iter().any(|(c, _)| c == id))
+        .map(|(id, _)| *id)
+        .collect();
+    let added = i32::try_from(new.len()).unwrap_or(i32::MAX);
+    let mut ordered: Vec<_> = entries
+        .iter()
+        .filter_map(|(id, wanted)| {
+            let wanted = (*wanted)?;
+            let predicted = if let Some(index) = new.iter().position(|n| n == id) {
+                i32::try_from(new.len() - index).ok()
+            } else {
+                current
+                    .iter()
+                    .find(|(c, _)| c == id)
+                    .and_then(|(_, p)| *p)
+                    .and_then(|p| p.checked_add(added))
+            }?;
+            Some((*id, wanted, predicted))
+        })
+        .collect();
+    let mut slots: Vec<_> = ordered.iter().map(|(_, _, p)| *p).collect();
+    slots.sort_unstable();
+    ordered.sort_by_key(|(_, wanted, _)| *wanted);
+    ordered
+        .into_iter()
+        .zip(slots)
+        .filter_map(|((id, _, old), position)| {
+            (old != position).then_some(StructureRolePosition { id, position })
+        })
+        .collect()
+}
+
+fn role_positions(planner: &mut Planner<'_>, file: &StructureFile) {
+    let entries: Vec<_> = file
+        .server_roles
+        .iter()
+        .map(|r| (r.id, r.position))
+        .collect();
+    let current: Vec<_> = planner
+        .current
+        .server_roles
+        .iter()
+        .map(|r| (r.id, r.position))
+        .collect();
+    let positions = planned_positions(&entries, &current);
+    if !positions.is_empty() {
+        planner.add(
+            StructureChange::ReorderServerRoles {
+                positions: positions.clone(),
+            },
+            position_line("server roles", &positions),
+        );
+    }
+    for w in &file.workspaces {
+        let current = planner
+            .current
+            .workspaces
+            .iter()
+            .find(|c| c.id == w.id)
+            .or_else(|| {
+                if w.default {
+                    planner.current.workspaces.iter().find(|c| c.default)
+                } else {
+                    None
+                }
+            });
+        let entries: Vec<_> = w
+            .roles
+            .iter()
+            .filter(|r| !r.everyone)
+            .map(|r| (r.id, r.position))
+            .collect();
+        let stored: Vec<_> = current
+            .map(|w| {
+                w.roles
+                    .iter()
+                    .filter(|r| !r.everyone)
+                    .map(|r| (r.id, r.position))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let positions = planned_positions(&entries, &stored);
+        if !positions.is_empty() {
+            let workspace = current.map_or(w.id, |c| c.id);
+            planner.add(
+                StructureChange::ReorderWorkspaceRoles {
+                    workspace,
+                    positions: positions.clone(),
+                },
+                position_line(&format!("workspace {} roles", w.id), &positions),
+            );
+        }
+    }
+}
+
+fn position_line(
+    scope: &str,
+    positions: &[junto_protocol::structure_file::StructureRolePosition],
+) -> String {
+    let roles = positions
+        .iter()
+        .map(|p| format!("{} -> {}", p.id, p.position))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("~ {scope}: reorder {roles}")
 }

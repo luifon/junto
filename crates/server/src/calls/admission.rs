@@ -541,6 +541,9 @@ async fn apply(
             .await?;
             seen_in_room(&mut *connection, now, &call, member.account_id).await?;
             call.started_at = call.started_at.or(Some(now));
+            if matches!(call.place, CallPlace::Direct { .. }) {
+                store::direct_call_seen(&mut *connection, now, &call, member.account_id).await?;
+            }
         } else if member.absent_since.is_some() {
             sqlx::query(
                 "update call_members set absent_since = null
@@ -550,6 +553,9 @@ async fn apply(
             .bind(member.account_id)
             .execute(&mut *connection)
             .await?;
+            if matches!(call.place, CallPlace::Direct { .. }) {
+                store::direct_call_seen(&mut *connection, now, &call, member.account_id).await?;
+            }
         }
 
         let presents = call

@@ -195,14 +195,18 @@ pub async fn mentions(
         .bind(id)
         .execute(&mut *connection)
         .await?;
-    sqlx::query("insert into thread_reads(root_id,account_id,following)
-         select distinct m.thread_root,mm.account_id,true from messages m
+    sqlx::query(
+        "insert into thread_reads(root_id,account_id,following,rule_following)
+         select distinct m.thread_root,mm.account_id,true,true from messages m
          join message_mentions mm on mm.message_id=m.id
          where m.id=$1 and m.thread_root is not null and mm.account_id is not null
-         on conflict(root_id,account_id) do update set following=true,latest=excluded.latest,latest_id=excluded.latest_id")
-        .bind(id)
-        .execute(&mut *connection)
-        .await?;
+         on conflict(root_id,account_id) do update set rule_following=true,
+             following=coalesce(thread_reads.follow_setting,true),
+             latest=excluded.latest,latest_id=excluded.latest_id",
+    )
+    .bind(id)
+    .execute(&mut *connection)
+    .await?;
 
     if let MessagePlace::Channel {
         workspace_id,

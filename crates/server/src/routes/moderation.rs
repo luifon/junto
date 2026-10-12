@@ -128,6 +128,7 @@ pub async fn remove_account(
             return Err(ApiError::conflict("the account is already removed"));
         }
 
+        access.require_above_account(connection, account_id).await?;
         set_status(connection, now, account_id, AccountStatus::Removed).await?;
         store::contact_changed(connection, now, account_id).await?;
         let sessions = Sessions::OfAccount(account_id);
@@ -202,6 +203,7 @@ pub async fn ban_account(
             AccountStatus::Removed => return Err(ApiError::conflict("the account is removed")),
         }
 
+        access.require_above_account(connection, account_id).await?;
         set_status(connection, now, account_id, AccountStatus::Banned).await?;
         store::contact_changed(connection, now, account_id).await?;
         store::end_sessions(connection, &app.calls, now, account_id, SessionEnd::Banned).await?;
@@ -260,6 +262,9 @@ pub async fn unban_account(
         if locked_status(connection, account_id).await? != AccountStatus::Banned {
             return Err(ApiError::conflict("the account is not banned"));
         }
+        access
+            .require_above_restored_roles(connection, account_id)
+            .await?;
         set_status(connection, now, account_id, AccountStatus::Active).await?;
         store::contact_changed(connection, now, account_id).await?;
         audit::record(

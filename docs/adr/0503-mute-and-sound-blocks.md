@@ -26,3 +26,5 @@ A participant controls their own microphone and their own sound. A moderator als
 - A person whose block is removed is heard only if their own microphone setting is on.
 - Meeting mode uses microphone blocks, and ending it removes every microphone block in the voice channel, including one that a moderator set earlier (ADR 0505).
 - A person with "disconnect members" can remove a participant from a call. The participant is removed through LiveKit's API (ADR 0506).
+
+Role order and its action-specific exemptions are decided in ADR 0309.

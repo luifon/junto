@@ -143,7 +143,7 @@ async fn rule_20_the_export_holds_the_whole_structure_for_an_administrator() {
     assert_eq!(export.revision.len(), 32);
     assert_eq!(server.structure(&owner).await, export);
     let file = &export.structure;
-    assert_eq!(file.format, 1);
+    assert_eq!(file.format, 2);
     assert!(file.delete.is_empty());
     assert_eq!(file.server_roles.len(), 1);
     assert_eq!(file.server_roles[0].id.as_uuid(), server_role.as_uuid());
@@ -818,8 +818,8 @@ async fn rule_25_each_change_keeps_the_limits_of_its_own_route() {
     // roles less than the ceiling, and the sixth new role of one request passes it.
     let most = i64::from(server.state.config.limits.most_roles_per_workspace);
     sqlx::query(
-        "insert into workspace_roles (id, workspace_id, name, permissions, created_at)
-         select gen_random_uuid(), $1, 'filler ' || n, 0, $2
+        "insert into workspace_roles (id, workspace_id, name, permissions, created_at, position)
+         select gen_random_uuid(), $1, 'filler ' || n, 0, $2, (1000 + n)::integer
          from generate_series(1, $3) as n",
     )
     .bind(workspace.id.as_uuid())

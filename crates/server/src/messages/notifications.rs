@@ -5,13 +5,66 @@ use crate::{
     events,
 };
 use junto_protocol::{
-    discovery::{Notification, NotificationKind, NotificationSettings, ScopedNotificationSettings},
+    discovery::{
+        Notification, NotificationKind, NotificationLevel, NotificationSettings,
+        ScopedNotificationSettings,
+    },
     events::Event,
     ids::{AccountId, ChannelId, MessageId},
 };
 use sqlx::{PgConnection, Row};
 use time::OffsetDateTime;
 use uuid::Uuid;
+
+pub const fn level_name(level: NotificationLevel) -> &'static str {
+    match level {
+        NotificationLevel::All => "all",
+        NotificationLevel::Mentions => "mentions",
+        NotificationLevel::Nothing => "nothing",
+    }
+}
+
+pub fn stored_level(level: &str) -> ApiResult<NotificationLevel> {
+    match level {
+        "all" => Ok(NotificationLevel::All),
+        "mentions" => Ok(NotificationLevel::Mentions),
+        "nothing" => Ok(NotificationLevel::Nothing),
+        _ => Err(ApiError::internal(
+            &"a stored notification level is unknown",
+        )),
+    }
+}
+
+/// The notice of a direct-message call that `account_id` did not answer, for the line
+/// `id` in the conversation `place` (ADR 0518). An account that muted the conversation
+/// gets none. An account in its quiet time is no receiver of the event of the notice, as
+/// for every notice.
+pub async fn missed_call(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    id: MessageId,
+    place: Uuid,
+    account_id: AccountId,
+) -> ApiResult<()> {
+    let noticed = sqlx::query(
+        "insert into notifications (id, account_id, message_id, kind, created_at)
+         select $1, a.id, $1, 'missed_call', $3
+         from accounts a cross join lateral notification_policy(a.id, $4, $3) p
+         where a.id = $2 and a.status = 'active' and not p.muted
+         on conflict (account_id, message_id) do nothing",
+    )
+    .bind(id)
+    .bind(account_id)
+    .bind(now)
+    .bind(place)
+    .execute(&mut *connection)
+    .await?
+    .rows_affected();
+    if noticed > 0 {
+        publish(connection, now, id, &[(account_id, true)], true).await?;
+    }
+    Ok(())
+}
 
 pub async fn create(
     connection: &mut PgConnection,
@@ -25,7 +78,7 @@ pub async fn create(
         .await?;
     let candidates: Vec<AccountId> = sqlx::query_scalar("with message as materialized (select * from messages where id=$1), candidates as ( select
              unnest(mm.recipients) as id from message_mentions mm where mm.message_id=$1 union select tr.account_id
-             from thread_reads tr join message m on tr.root_id=m.thread_root where not $2 and tr.writer union select
+             from thread_reads tr join message m on tr.root_id=m.thread_root where not $2 and coalesce(tr.follow_setting,tr.writer) union select
              cv.low_account_id from conversations cv join message m on m.place_id=cv.id union select cv.high_account_id
              from conversations cv join message m on m.place_id=cv.id union select ns.account_id from
              notification_settings ns cross join message m join channels ch on ch.id=m.place_id where not $2 and
@@ -60,7 +113,7 @@ pub async fn create(
              notification_policy(a.id,m.place_id,$2) p where m.id=$1 and m.author_id is not null and not m.deleted and
              (m.readers is null or a.id=any(m.readers)) and not p.muted and (cv.id is not null or (p.level<> 'nothing'
              and ( notification_mentioned(a.id,m.id,p.roles,p.everyone) or (not $4 and m.thread_root is not null and
-             exists(select 1 from thread_reads tr where tr.root_id=m.thread_root and tr.account_id=a.id and tr.writer))
+             exists(select 1 from thread_reads tr where tr.root_id=m.thread_root and tr.account_id=a.id and coalesce(tr.follow_setting,tr.writer)))
              or (not $4 and m.thread_root is null and p.level= 'all' )))) on conflict(account_id,message_id) do update
              set kind= 'mention' ,read_at=null,created_at=excluded.created_at where excluded.kind= 'mention' and
              notifications.kind in ('message','thread') returning account_id,kind")
@@ -108,8 +161,16 @@ pub async fn visible(
 }
 
 /// The notices that the account `$1` reads at the time `$2` in the places `$3`: the source
-/// and the conditions of a statement, which adds its own conditions with `and`.
-const READABLE_NOTICES: &str = "notifications n join messages m on m.id=n.message_id left join
+/// and the conditions of a statement, which adds its own conditions with `and`. `source`
+/// names the notices as `n` and the message of each as `m`.
+fn readable_notices(source: &str) -> String {
+    format!("{source} {READABLE_CONDITIONS}")
+}
+
+/// The notices of an account with their messages, for [`readable_notices`].
+const STORED_NOTICES: &str = "notifications n join messages m on m.id=n.message_id";
+
+const READABLE_CONDITIONS: &str = "left join
              conversations cv on cv.id=m.place_id cross join lateral notification_policy($1,m.place_id,$2) p where
              n.account_id=$1 and m.place_id=any($3) and not m.deleted and (m.readers is null or $1=any(m.readers))
              and not p.muted and (cv.id is not null or p.level<> 'nothing' ) and (n.kind<> 'mention' or
@@ -117,6 +178,46 @@ const READABLE_NOTICES: &str = "notifications n join messages m on m.id=n.messag
              (cv.id is null or not exists(select 1 from direct_mutes dm where dm.account_id=$1 and
              dm.other_account_id=case when cv.low_account_id=$1 then cv.high_account_id else cv.low_account_id end
              and (dm.muted_until is null or dm.muted_until>$2)))";
+
+/// Marks the unread notices that the account reads now in `places` and that were created
+/// at or before `until` as read at `now`, in one statement. Returns their number. A notice
+/// that no list returns to the account stays as it is, so the number tells nothing of a
+/// place that the account cannot read (ADR 0412).
+pub async fn mark_all_read(
+    connection: &mut PgConnection,
+    access: &Access,
+    now: OffsetDateTime,
+    until: OffsetDateTime,
+    places: &crate::access::visibility::Places,
+) -> ApiResult<u64> {
+    Ok(sqlx::query(sqlx::AssertSqlSafe(mark_all_read_statement()))
+        .bind(access.account_id)
+        .bind(now)
+        .bind(places.ids())
+        .bind(until)
+        .execute(connection)
+        .await?
+        .rows_affected())
+}
+
+/// The statement of [`mark_all_read`]: the account `$1`, the time `$2`, the places `$3`
+/// and the bound `$4`. It reads the unread notices of the account first, through their
+/// index, and decides for each of them whether the account reads it now; an account has
+/// at most 500 notices after each maintenance run. The message of each one is read by its
+/// identifier: without the fixed order, the statement can read every message of the
+/// places first.
+pub fn mark_all_read_statement() -> String {
+    let readable = readable_notices(
+        "unread n join lateral (select * from messages where id=n.message_id offset 0) m on true",
+    );
+    format!(
+        "with unread as materialized (
+             select * from notifications
+             where account_id=$1 and read_at is null and created_at<=$4)
+         update notifications set read_at=$2 where account_id=$1 and id = any(array(
+             select n.id from {readable}))"
+    )
+}
 
 pub async fn visible_in(
     connection: &mut PgConnection,
@@ -132,22 +233,25 @@ pub async fn visible_in(
     let after: Option<(OffsetDateTime, Uuid)> = match before {
         None => None,
         Some(before) => {
-            let cursor: Option<(OffsetDateTime, Uuid)> = sqlx::query_as(sqlx::AssertSqlSafe(
-                format!("select n.created_at,n.id from {READABLE_NOTICES} and n.id=$4"),
-            ))
-            .bind(access.account_id)
-            .bind(now)
-            .bind(places.ids())
-            .bind(before)
-            .fetch_optional(&mut *connection)
-            .await?;
+            let cursor: Option<(OffsetDateTime, Uuid)> =
+                sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                    "select n.created_at,n.id from {} and n.id=$4",
+                    readable_notices(STORED_NOTICES)
+                )))
+                .bind(access.account_id)
+                .bind(now)
+                .bind(places.ids())
+                .bind(before)
+                .fetch_optional(&mut *connection)
+                .await?;
             Some(cursor.ok_or_else(|| ApiError::invalid("invalid notification cursor"))?)
         }
     };
     let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "select n.* from {READABLE_NOTICES} and ($4::uuid[] is null or n.message_id=any($4)) and
+        "select n.* from {} and ($4::uuid[] is null or n.message_id=any($4)) and
              ($5::timestamptz is null or (n.created_at,n.id)<($5,$6)) order by n.created_at desc,n.id
-             desc limit $7"
+             desc limit $7",
+        readable_notices(STORED_NOTICES)
     )))
     .bind(access.account_id)
     .bind(now)
@@ -168,6 +272,7 @@ pub async fn visible_in(
                     "mention" => NotificationKind::Mention,
                     "direct" => NotificationKind::Direct,
                     "thread" => NotificationKind::Thread,
+                    "missed_call" => NotificationKind::MissedCall,
                     _ => return Err(ApiError::invalid("invalid notice kind")),
                 },
                 created_at: row.try_get("created_at")?,

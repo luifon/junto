@@ -6,6 +6,8 @@ use crate::ids::{ServerRoleId, WorkspaceId, WorkspaceRoleId};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ServerRole {
+    #[serde(default)]
+    pub position: i32,
     pub id: ServerRoleId,
     pub name: String,
     pub permissions: Vec<ServerPermission>,
@@ -32,6 +34,8 @@ pub struct UpdateServerRole {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct WorkspaceRole {
+    #[serde(default)]
+    pub position: i32,
     pub id: WorkspaceRoleId,
     pub workspace_id: WorkspaceId,
     pub name: String,
@@ -56,4 +60,30 @@ pub struct UpdateWorkspaceRole {
     pub name: Option<String>,
     #[serde(default)]
     pub permissions: Option<Vec<WorkspacePermission>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ServerRolePosition {
+    pub role_id: ServerRoleId,
+    pub position: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct WorkspaceRolePosition {
+    pub role_id: WorkspaceRoleId,
+    pub position: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ReorderServerRoles {
+    pub positions: Vec<ServerRolePosition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ReorderWorkspaceRoles {
+    pub positions: Vec<WorkspaceRolePosition>,
 }

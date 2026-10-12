@@ -390,6 +390,9 @@ async fn a_member_cannot_grant_a_workspace_permission_they_lack() {
         .await
         .error(ErrorCode::ExceedsOwnPermissions);
 
+    let higher = server
+        .grant_workspace(&owner, &guest, workspace.id, &[])
+        .await;
     let within = create_role(
         &server,
         &manager,
@@ -439,7 +442,7 @@ async fn a_member_cannot_grant_a_workspace_permission_they_lack() {
         .find(|member| member.account_id == guest.account_id)
         .unwrap()
         .role_ids;
-    assert!(guest_roles.is_empty());
+    assert_eq!(guest_roles, &[higher]);
 }
 
 #[tokio::test]
@@ -757,6 +760,9 @@ async fn workspace_roles_need_the_manage_roles_permission() {
         .await
         .ok(StatusCode::OK);
     assert!(widened.is_everyone);
+    server
+        .grant_workspace(&owner, &guest, workspace.id, &[])
+        .await;
     server
         .post(
             &guest,

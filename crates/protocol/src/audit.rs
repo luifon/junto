@@ -90,6 +90,14 @@ pub enum AuditEvent {
         account_id: AccountId,
         device_id: DeviceId,
     },
+    ServerRolePositionChanged {
+        role_id: ServerRoleId,
+        position: i32,
+    },
+    WorkspaceRolePositionChanged {
+        role_id: WorkspaceRoleId,
+        position: i32,
+    },
     ServerRoleCreated {
         role_id: ServerRoleId,
         name: String,
@@ -244,6 +252,8 @@ pub enum AuditEvent {
     NotificationDefaultChanged {
         level: crate::discovery::NotificationLevel,
     },
+    /// An administrator removed the notification default of a workspace.
+    NotificationDefaultRemoved,
     RecordingRetentionChanged {
         days: Option<u32>,
     },
@@ -310,6 +320,8 @@ impl AuditEvent {
             Self::AccountUnbanned { .. } => "account_unbanned",
             Self::AccountRecovered { .. } => "account_recovered",
             Self::ServerRoleCreated { .. } => "server_role_created",
+            Self::ServerRolePositionChanged { .. } => "server_role_position_changed",
+            Self::WorkspaceRolePositionChanged { .. } => "workspace_role_position_changed",
             Self::ServerRoleUpdated { .. } => "server_role_updated",
             Self::ServerRoleAssigned { .. } => "server_role_assigned",
             Self::ServerRoleUnassigned { .. } => "server_role_unassigned",
@@ -343,6 +355,7 @@ impl AuditEvent {
             Self::PermanentMessageDeleted { .. } => "permanent_message_deleted",
             Self::AttachmentLimitsChanged { .. } => "attachment_limits_changed",
             Self::NotificationDefaultChanged { .. } => "notification_default_changed",
+            Self::NotificationDefaultRemoved => "notification_default_removed",
             Self::RecordingRetentionChanged { .. } => "recording_retention_changed",
             Self::RetentionChanged { .. } => "retention_changed",
             Self::ChannelArchived => "channel_archived",

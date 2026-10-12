@@ -81,6 +81,11 @@ pub async fn get(
     Ok((place, messages.pop().ok_or_else(ApiError::not_found)?))
 }
 
+/// The first authors of the replies of the thread of the message `m`: at most three, in the
+/// order of their first reply (ADR 0413).
+pub const REPLY_AUTHORS: &str = "select ra.account_id from thread_reply_authors ra
+     where ra.root_id=m.id order by ra.first_position,ra.account_id limit 3";
+
 /// Loads a history page in three statements, independent of its number of messages.
 pub async fn load_messages(
     connection: &mut PgConnection,
@@ -88,10 +93,11 @@ pub async fn load_messages(
     place: &Place,
     ids: &[MessageId],
 ) -> ApiResult<Vec<Message>> {
-    let rows = sqlx::query("select m.*,a.name as display_name, exists(select 1 from message_pins pin where pin.message_id=m.id) as
+    let rows = sqlx::query(sqlx::AssertSqlSafe(format!("select m.*,a.name as display_name, exists(select 1 from message_pins pin where pin.message_id=m.id) as
              pinned, case when exists(select 1 from messages target where target.id=m.reply_to and (target.readers is
-             null or $2=any(target.readers))) then m.reply_to end as visible_reply_to from messages m left join
-             accounts a on a.id=m.author_id where m.id=any($1) order by m.position,m.id")
+             null or $2=any(target.readers))) then m.reply_to end as visible_reply_to,
+             array({REPLY_AUTHORS}) as reply_authors from messages m left join
+             accounts a on a.id=m.author_id where m.id=any($1) order by m.position,m.id")))
         .bind(ids)
         .bind(access.account_id)
         .fetch_all(&mut *connection)
@@ -133,6 +139,7 @@ pub async fn load_messages(
                 last_reply: row.try_get("last_reply")?,
                 pinned: row.try_get("pinned")?,
                 files_removed_by_retention: row.try_get("files_removed_by_retention")?,
+                reply_authors: row.try_get("reply_authors")?,
                 reactions: reactions
                     .iter()
                     .filter(|(message, _, _, _)| *message == id)
@@ -424,7 +431,7 @@ pub(crate) async fn erase(
     .await?;
     if has_replies {
         sqlx::query("update messages set
-             document=null,system=null,author_id=null,edited_at=null,permanent=false,deleted=true,recording_id=null
+             document=null,system=null,author_id=null,edited_at=null,permanent=false,deleted=true,recording_id=null,notifies=null
              where id=$1")
             .bind(id)
             .execute(&mut *connection)
@@ -464,9 +471,13 @@ pub fn state_query() -> String {
         left join message_places floor on floor.id=p.id
         left join lateral (select position from messages m where m.place_id=p.id and m.thread_root is null
             and m.readers is null order by position desc limit 1) latest on true
-        cross join lateral (select count(*) from (select 1 from messages m where m.place_id=p.id
+        cross join lateral (select count(*) from ((select 1 from messages m where m.place_id=p.id
             and m.thread_root is null and m.position>greatest(coalesce(r.position,0),coalesce(floor.read_floor,0))
             and m.author_id is not null and m.author_id<>$2 and not m.deleted
-            order by m.position limit 100) bounded) unread
+            order by m.position limit 100)
+            union all (select 1 from messages m where m.place_id=p.id
+            and m.thread_root is null and m.position>greatest(coalesce(r.position,0),coalesce(floor.read_floor,0))
+            and m.notifies=$2 and not m.deleted
+            order by m.position limit 100) limit 100) bounded) unread
         cross join lateral (select count(*) from (select * from ({selected}) candidates limit 100) bounded) mentioned")
 }
