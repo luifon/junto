@@ -34,7 +34,7 @@ Without the four LiveKit settings the server runs, and a request to join a call 
 
 A logged-in device receives the changes of the server over one WebSocket connection (ADR 0107).
 
-1. `GET /api/v1/snapshot` returns the account, its workspaces, and the roles, categories and channels that it may see, with a cursor. It also carries the calls that the account may see, and what waits for the account in calls: invitations for it and by it, moves that name it, and its own requests to enter.
+1. `GET /api/v1/snapshot` returns the account, its workspaces, and the roles, categories and channels that it may see, with a cursor. It also carries the calls that the account may see, and what waits for the account in calls: invitations for it and by it, moves that name it, and its own requests to enter. Each workspace of the snapshot states `permissions`, the workspace permissions that the account holds there, and `channel_permissions`, one entry for each channel in which a channel override gives the account another list; a channel without an entry has the list of the workspace (ADR 0310). `GET /api/v1/channels/{channel_id}/permissions` states the list for one channel, an archived one included. A client reads what its account may do from these lists and loads a snapshot at `permissions_changed`.
 2. The device opens `GET /api/v1/events` as a WebSocket with its session token in the `Authorization` header. The server sends `hello`.
 3. The device sends `{"type": "subscribe", "level": "full", "cursor": <cursor of the snapshot>}`. The level `background` delivers control events, direct messages, mentions and call invites, with access checked at delivery.
 4. The server sends each event that the account may receive as `{"type": "event", "id": <position>, "at": <time>, "event": {...}}`, in the order of the positions. The device keeps the `id` of the last event that it applied; an event with an `id` at or below it is a repeat.
@@ -58,7 +58,7 @@ While the server does not reach LiveKit, nobody is let into a call. After the re
 
 `DELETE /api/v1/channels/{channel_id}/call/participants/{account_id}/hand` lowers the raised hand of another person: the person who runs meeting mode does this, and a moderator with `mute_members` (ADR 0516).
 
-Two accounts have a direct-message call only while they share a workspace or one of them administers the server (ADR 0307). One account rings another at most 3 times in 10 minutes and not for 5 minutes after a decline, and an account that muted the conversation or is in its quiet time is not rung; the caller gets the same events and the same count of rings in both cases (ADR 0515).
+Two accounts have a direct-message call only while they share a workspace or one of them administers the server (ADR 0307). One account rings another at most 3 times in 10 minutes and not for 5 minutes after a decline, and an account that muted the conversation or is in its quiet time is not rung; the caller gets the same events and the same count of rings in both cases (ADR 0515). A direct-message call writes system lines into the conversation of the two accounts: `direct_call_started` at the ring, `direct_call_not_answered` or `direct_call_declined` at its end, and `direct_call_ended` with `duration_seconds` after a call that both accounts were inside. A call that was not answered counts as an unread message for the account that was called and gives it a notice of the kind `missed_call`; the lines are the same for an account that muted the conversation or is in its quiet time (ADR 0518).
 
 The server reaches the API of LiveKit (`JUNTO_LIVEKIT_API_URL`) without TLS and refuses an `https://` address at the start. Put that address on a private network (ADR 0508).
 
@@ -306,18 +306,33 @@ Deleting its destination permits another fork; an archived destination keeps the
 Occupant hiding is inherited only by voice forks. Authors and named recipients follow
 threads; role/everyone mentions count as unread without following. Participants and mention
 recipients read or advance their position at `/api/v1/messages/{id}/thread/read`.
+`PUT /api/v1/messages/{id}/thread/follow` stores the choice of the caller to follow a thread or
+not, and `DELETE` removes the choice; a thread that is not followed has no unread replies and
+no thread notices, and a mention still notifies (ADR 0412). A root message carries
+`reply_authors`, the first three authors of its replies. `GET /api/v1/channels/{id}/threads`
+lists the threads of a channel that the caller follows, read ones included, the one with the
+newest reply first (ADR 0413).
 The snapshot contains at most 200 unread threads, plus `threads_more` and `threads_next`.
 Continue with `GET /api/v1/threads/unread?before=...&limit=...` (maximum 200); unread mentions
 of unfollowed threads appear with zero unread replies.
 Pin or unpin an authored channel message at
 `/api/v1/messages/{id}/pin`, and read pins at `/api/v1/channels/{id}/pins`.
-`GET /api/v1/search?q=...` searches current authorized messages and transcript lines.
+`GET /api/v1/search?q=...` searches current authorized messages and transcript lines. A hit
+states the `position` and the `thread_root` of its message, or the `start_ms` of its
+transcript line. `GET /api/v1/recordings/{id}/transcript/lines` takes `around=<line>` for the
+page with that line in its middle and `before=<line>` for the page before a line.
 
 Read notifications at `/api/v1/notifications` and mark one read with
-`PUT /api/v1/notifications/{id}/read`. Personal settings use
+`PUT /api/v1/notifications/{id}/read`. `PUT /api/v1/notifications/read` marks every notice
+that the account reads and that was created at or before `until` in one request, and the devices of the account get
+`notifications_read`. Personal settings use
 `/api/v1/notification-settings/{scope_id}`: the nil UUID names account/server defaults,
 and a workspace or channel UUID names its override. Workspace administrator defaults
-use `/api/v1/workspaces/{id}/notification-default`. Clients apply synchronized do-not-disturb
+use `/api/v1/workspaces/{id}/notification-default`: `GET` returns the level or `null` when
+none is set, `PUT` sets one and `DELETE` removes it; the snapshot carries it, and a change is
+the event `notification_default_changed` with the level. A daily quiet time states
+`start_minute`, `end_minute` and `time_zone`, the name of an IANA time zone that the database
+knows, and holds while the clock of that zone is inside the window (ADR 0412). Clients apply synchronized do-not-disturb
 settings to OS notifications; the server also suppresses notification delivery and direct-call
 invitations during quiet periods, including replay. Equal daily quiet endpoints are invalid.
 Unread state continues to update. Reading a place marks its

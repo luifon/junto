@@ -600,6 +600,28 @@ pub enum Event {
         export_id: crate::ids::ExportId,
         reason: crate::export::ExportRemoval,
     },
+    /// The account of the recipient marked its notices read: every notice of it that was
+    /// created at or before `until` and was not read is read at `read_at` (ADR 0412).
+    NotificationsRead {
+        #[serde(with = "time::serde::rfc3339")]
+        until: OffsetDateTime,
+        #[serde(with = "time::serde::rfc3339")]
+        read_at: OffsetDateTime,
+    },
+    /// The account of the recipient chose to follow a thread or not, or removed its choice.
+    /// `following` is what holds now; `follow_setting` is the choice, absent when none is
+    /// set (ADR 0412).
+    ThreadFollowChanged {
+        root_id: crate::ids::MessageId,
+        following: bool,
+        follow_setting: Option<bool>,
+    },
+    /// The notification default of a workspace was set, changed or removed. `level` is
+    /// absent when the workspace has none now.
+    NotificationDefaultChanged {
+        workspace_id: WorkspaceId,
+        level: Option<crate::discovery::NotificationLevel>,
+    },
 }
 
 impl Event {
@@ -684,6 +706,9 @@ impl Event {
         "workspace_deleted",
         "export_updated",
         "export_removed",
+        "notifications_read",
+        "thread_follow_changed",
+        "notification_default_changed",
     ];
 
     pub const fn name(&self) -> &'static str {
@@ -768,6 +793,9 @@ impl Event {
             Self::WorkspaceDeleted { .. } => "workspace_deleted",
             Self::ExportUpdated { .. } => "export_updated",
             Self::ExportRemoved { .. } => "export_removed",
+            Self::NotificationsRead { .. } => "notifications_read",
+            Self::ThreadFollowChanged { .. } => "thread_follow_changed",
+            Self::NotificationDefaultChanged { .. } => "notification_default_changed",
         }
     }
 }
@@ -1310,6 +1338,19 @@ mod tests {
             Event::ExportRemoved {
                 export_id,
                 reason: crate::export::ExportRemoval::Expired,
+            },
+            Event::NotificationsRead {
+                until: time(),
+                read_at: time(),
+            },
+            Event::ThreadFollowChanged {
+                root_id: crate::ids::MessageId::generate(),
+                following: false,
+                follow_setting: Some(false),
+            },
+            Event::NotificationDefaultChanged {
+                workspace_id,
+                level: Some(crate::discovery::NotificationLevel::All),
             },
         ]
     }

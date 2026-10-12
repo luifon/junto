@@ -384,6 +384,7 @@ async fn a_later_hidden_call_cannot_hide_lines_of_an_ended_public_call() {
             actor_id: Some(scene.ann.account_id),
             subject_id: None,
             recording_id: None,
+            duration_seconds: None,
         },
         Some(call),
     )
@@ -415,6 +416,7 @@ async fn call_line(scene: &crate::calls_support::Scene, action: &str) -> Message
             actor_id: Some(scene.ann.account_id),
             subject_id: None,
             recording_id: None,
+            duration_seconds: None,
         },
         Some(call),
     )
@@ -608,6 +610,7 @@ async fn an_account_that_left_a_hidden_call_before_its_end_reads_the_call_ended_
             actor_id: None,
             subject_id: None,
             recording_id: None,
+            duration_seconds: None,
         },
         Some(call),
     )

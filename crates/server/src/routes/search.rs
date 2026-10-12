@@ -108,9 +108,11 @@ pub async fn search(
         }
         let rows = sqlx::query("with query as (select websearch_to_tsquery( 'simple' ,$1) as q), content as ( select m.id,-1 as
              line,m.place_id,m.author_id,m.created_at,message_search_text(m.document) as text,m.search_vector as
-             vector,false as transcript from messages m where m.place_id=any($2) and not m.deleted and m.author_id is
+             vector,false as transcript,m.position as position,m.thread_root as thread_root,null::bigint as start_ms
+             from messages m where m.place_id=any($2) and not m.deleted and m.author_id is
              not null and (m.readers is null or $3=any(m.readers)) union all select
-             l.recording_id,l.line,r.channel_id,l.account_id,r.requested_at,l.search_text,l.search_vector,true from
+             l.recording_id,l.line,r.channel_id,l.account_id,r.requested_at,l.search_text,l.search_vector,true,
+             null::bigint,null::uuid,l.start_ms from
              transcript_lines l join recordings r on r.id=l.recording_id join transcripts t on t.recording_id=r.id join
              channels ch on ch.id=r.channel_id where r.channel_id=any($2) and t.state in ( 'ready' , 'partial' ) and
              reads_call(r.call_id,$3) ), hits as (select
@@ -149,6 +151,13 @@ pub async fn search(
                 created_at: row.try_get("created_at")?,
                 text: row.try_get("text")?,
                 rank,
+                position: row
+                    .try_get::<Option<i64>, _>("position")?
+                    .map(|position| position as u64),
+                thread_root: row.try_get("thread_root")?,
+                start_ms: row
+                    .try_get::<Option<i64>, _>("start_ms")?
+                    .map(|start_ms| start_ms as u64),
             });
         }
         Ok(SearchPage {

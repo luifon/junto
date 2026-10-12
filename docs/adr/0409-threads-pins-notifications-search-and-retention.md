@@ -23,7 +23,8 @@ Threads and forks:
   A reply creation or deletion sends a change notice for its root. Editing a reply uses the
   existing author and permanence rules. A thread page also lists readable fork channels.
   Reply count and latest reply are maintained when replies change, rather than counted on reads.
-- Root authors, reply authors and explicitly named recipients follow a thread. Role and
+- Root authors, reply authors and explicitly named recipients follow a thread, unless the
+  account chose otherwise (ADR 0412). Role and
   everyone mentions produce notices and unread mention counts without creating follower
   rows. Their recipients can read the thread without following it; later unnamed replies
   do not count as unread for them. `GET` and `PUT /api/v1/messages/{id}/thread/read` require
@@ -79,7 +80,8 @@ Notifications:
 - Channel mute is separate from level. A supplied expiry represents one hour, eight hours,
   or the client's next-day boundary. An absent expiry means indefinite. Expiry is evaluated
   using the server clock, without waiting for maintenance. A false mute ends it.
-- Manual do-not-disturb and a daily interval with UTC offset are synchronized account data.
+- Manual do-not-disturb and a daily interval on the clock of a time zone (ADR 0412) are
+  synchronized account data.
   Equal daily interval endpoints are invalid. The server suppresses notification, mention and call-invitation delivery while quiet,
   including replay, and creates no direct-call invitation for a quiet recipient. Durable
   notice data, message events and unread signs continue updating. Clients also apply the
@@ -90,8 +92,9 @@ Notifications:
 - Ordinary messages notify at level all. Mentions notify at all or mentions-only, subject
   to the role/everyone switches. Explicit account mentions do not use those switches.
   Thread replies notify prior writers, including the root author, unless muted or at level
-  nothing. Direct messages notify the other participant unless the conversation is muted.
-  Senders do not receive their own notices. System lines create no message notifications.
+  nothing, and by the choice of ADR 0412. Direct messages notify the other participant unless the conversation is muted.
+  Senders do not receive their own notices. System lines create no message notifications,
+  except the line of a call that was not answered (ADR 0518).
 - There is one durable notice per recipient and message. Its identifier is the message
   identifier within that account's notice collection. It contains no message text.
   `notification_changed` prompts a refresh of the caller's notices. Ordinary-message
@@ -99,7 +102,8 @@ Notifications:
   Read state is idempotent and shared across devices. `notification_settings_changed`
   refreshes policy at every connection level. A change of the own settings is told to the
   account, and a change of the default of a workspace to the accounts that see that
-  workspace. Advancing a channel, conversation or thread
+  workspace; the default of a workspace has its own event since ADR 0412. Advancing a
+  channel, conversation or thread
   read position marks its notices read in the same transaction. Maintenance keeps at most
   500 notices per account and removes notices older than 90 days in bounded batches.
   Inserts queue their recipients for cap maintenance; unchanged accounts are not scanned.

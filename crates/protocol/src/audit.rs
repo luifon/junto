@@ -244,6 +244,8 @@ pub enum AuditEvent {
     NotificationDefaultChanged {
         level: crate::discovery::NotificationLevel,
     },
+    /// An administrator removed the notification default of a workspace.
+    NotificationDefaultRemoved,
     RecordingRetentionChanged {
         days: Option<u32>,
     },
@@ -343,6 +345,7 @@ impl AuditEvent {
             Self::PermanentMessageDeleted { .. } => "permanent_message_deleted",
             Self::AttachmentLimitsChanged { .. } => "attachment_limits_changed",
             Self::NotificationDefaultChanged { .. } => "notification_default_changed",
+            Self::NotificationDefaultRemoved => "notification_default_removed",
             Self::RecordingRetentionChanged { .. } => "recording_retention_changed",
             Self::RetentionChanged { .. } => "retention_changed",
             Self::ChannelArchived => "channel_archived",

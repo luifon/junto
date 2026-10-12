@@ -101,6 +101,7 @@ pub(crate) async fn create(
         role: everyone.clone(),
     };
     events::publish(connection, now, &role).await?;
+    events::permissions_changed_in_new_workspace(connection, now, workspace_id).await?;
     store::add_members(connection, now, access.account_id, &[workspace_id]).await?;
     audit::record(
         connection,

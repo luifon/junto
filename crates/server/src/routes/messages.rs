@@ -470,37 +470,11 @@ pub async fn open_conversation(
         rate(&app, &access, &mut counted)?;
         let low = access.account_id.min(body.account_id);
         let high = access.account_id.max(body.account_id);
-        let existing: Option<ConversationId> = sqlx::query_scalar(
-            "select id from conversations where low_account_id=$1 and high_account_id=$2",
-        )
-        .bind(low)
-        .bind(high)
-        .fetch_optional(&mut *connection)
-        .await?;
-        let is_new = existing.is_none();
-        let id = if let Some(existing) = existing {
-            existing
-        } else {
-            sqlx::query(
-                "insert into conversations(id,low_account_id,high_account_id) values($1,$2,$3)",
-            )
-            .bind(id)
-            .bind(low)
-            .bind(high)
-            .execute(&mut *connection)
-            .await
-            .map_err(ApiError::concurrent)?;
-            id
-        };
-        Place::direct(connection, &access, id)
+        let (conversation, is_new) = Place::conversation_between(connection, low, high, id).await?;
+        Place::direct(connection, &access, conversation.id)
             .await?
             .ensure(connection)
             .await?;
-        let conversation = Conversation {
-            id,
-            low_account_id: low,
-            high_account_id: high,
-        };
         if is_new {
             events::publish(
                 connection,

@@ -6,7 +6,7 @@ use junto_authz::{
     Actor, ChannelScope, Decision, HeldRole, Membership, Override, Position, Reach, Request,
     RoleKey, RoleOverride, Target, WorkspaceScope, authorize,
 };
-use junto_authz::{ServerPermission, ServerPermissions};
+use junto_authz::{ServerPermission, ServerPermissions, WorkspacePermission};
 use junto_protocol::error::ErrorCode;
 use junto_protocol::ids::{
     AccessTokenId, AccountId, CategoryId, ChannelId, DeviceId, ServerRoleId, WorkspaceId,
@@ -288,6 +288,36 @@ impl Access {
             Decision::Allow => Ok(()),
             Decision::Deny(denial) => Err(denial.into()),
         }
+    }
+
+    /// The workspace permissions that the caller holds in a workspace: each permission for
+    /// which the permission function allows a request in the workspace (ADR 0310).
+    pub fn workspace_permissions(&self, scope: &WorkspaceScope) -> Vec<WorkspacePermission> {
+        WorkspacePermission::ALL
+            .iter()
+            .copied()
+            .filter(|permission| {
+                self.allows(Request::Workspace {
+                    scope,
+                    permission: *permission,
+                })
+            })
+            .collect()
+    }
+
+    /// The workspace permissions that the caller holds in a channel: each permission for
+    /// which the permission function allows a request in the channel (ADR 0310).
+    pub fn channel_permissions(&self, scope: &ChannelScope) -> Vec<WorkspacePermission> {
+        WorkspacePermission::ALL
+            .iter()
+            .copied()
+            .filter(|permission| {
+                self.allows(Request::Channel {
+                    scope,
+                    permission: *permission,
+                })
+            })
+            .collect()
     }
 
     pub fn target(&self, account_id: AccountId) -> Target {

@@ -1,11 +1,14 @@
 use serde::{Deserialize, Serialize};
 
 use crate::account::OwnAccount;
+use junto_authz::WorkspacePermission;
+
 use crate::call::{Call, CallInvitation, CallMove, ChannelCall, DirectMute, EntryRequest, OwnCall};
+use crate::discovery::NotificationLevel;
 use crate::events::Cursor;
 use crate::ids::WorkspaceRoleId;
 use crate::roles::WorkspaceRole;
-use crate::structure::{Category, Channel, Workspace};
+use crate::structure::{Category, Channel, ChannelPermissions, Workspace};
 
 /// The state that a client starts from or returns to. It contains the effect of every event
 /// up to `cursor` and of no later one, so a subscription with `cursor` continues it without a
@@ -69,4 +72,18 @@ pub struct WorkspaceState {
     pub channels: Vec<Channel>,
     /// The voice channels, of the ones the caller can see, that have a call.
     pub calls: Vec<ChannelCall>,
+    /// The workspace permissions that the caller holds in the workspace, as the permission
+    /// function decides them (ADR 0310). The caller holds the same set in every channel of
+    /// `channels` that `channel_permissions` does not list.
+    #[serde(default)]
+    pub permissions: Vec<WorkspacePermission>,
+    /// The channels of `channels` in which the caller holds another set than `permissions`,
+    /// because of a channel override. A client reads what the caller may do in a channel
+    /// from these two fields and does not derive it from roles.
+    #[serde(default)]
+    pub channel_permissions: Vec<ChannelPermissions>,
+    /// The notification level that an administrator set as the default of the workspace.
+    /// Absent: none is set, and the default of the account or `mentions` applies.
+    #[serde(default)]
+    pub notification_default: Option<NotificationLevel>,
 }

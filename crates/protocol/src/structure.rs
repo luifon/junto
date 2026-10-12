@@ -168,6 +168,16 @@ pub struct ChannelOverride {
     pub deny: Vec<WorkspacePermission>,
 }
 
+/// The workspace permissions that the caller holds in one channel that it can see: the
+/// permissions for which the permission function allows a request in the channel now
+/// (ADR 0310).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ChannelPermissions {
+    pub channel_id: ChannelId,
+    pub permissions: Vec<WorkspacePermission>,
+}
+
 /// Two empty sets remove the override.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

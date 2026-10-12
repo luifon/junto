@@ -1319,6 +1319,35 @@
       ],
       "type": "object"
     },
+    "notification_default_changed": {
+      "description": "The notification default of a workspace was set, changed or removed. `level` is\nabsent when the workspace has none now.",
+      "properties": {
+        "level": {
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/NotificationLevel"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "enum": [
+            "notification_default_changed"
+          ],
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/components/schemas/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "type"
+      ],
+      "type": "object"
+    },
     "notification_settings_changed": {
       "properties": {
         "type": {
@@ -1329,6 +1358,31 @@
         }
       },
       "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "notifications_read": {
+      "description": "The account of the recipient marked its notices read: every notice of it that was\ncreated at or before `until` and was not read is read at `read_at` (ADR 0412).",
+      "properties": {
+        "read_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "notifications_read"
+          ],
+          "type": "string"
+        },
+        "until": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "until",
+        "read_at",
         "type"
       ],
       "type": "object"
@@ -1563,6 +1617,35 @@
       },
       "required": [
         "role",
+        "type"
+      ],
+      "type": "object"
+    },
+    "thread_follow_changed": {
+      "description": "The account of the recipient chose to follow a thread or not, or removed its choice.\n`following` is what holds now; `follow_setting` is the choice, absent when none is\nset (ADR 0412).",
+      "properties": {
+        "follow_setting": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "following": {
+          "type": "boolean"
+        },
+        "root_id": {
+          "$ref": "#/components/schemas/MessageId"
+        },
+        "type": {
+          "enum": [
+            "thread_follow_changed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "root_id",
+        "following",
         "type"
       ],
       "type": "object"
@@ -4377,6 +4460,89 @@
               "type"
             ],
             "type": "object"
+          },
+          {
+            "description": "The account of the recipient marked its notices read: every notice of it that was\ncreated at or before `until` and was not read is read at `read_at` (ADR 0412).",
+            "properties": {
+              "read_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "notifications_read"
+                ],
+                "type": "string"
+              },
+              "until": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": [
+              "until",
+              "read_at",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The account of the recipient chose to follow a thread or not, or removed its choice.\n`following` is what holds now; `follow_setting` is the choice, absent when none is\nset (ADR 0412).",
+            "properties": {
+              "follow_setting": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "following": {
+                "type": "boolean"
+              },
+              "root_id": {
+                "$ref": "#/components/schemas/MessageId"
+              },
+              "type": {
+                "enum": [
+                  "thread_follow_changed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "root_id",
+              "following",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The notification default of a workspace was set, changed or removed. `level` is\nabsent when the workspace has none now.",
+            "properties": {
+              "level": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/NotificationLevel"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": {
+                "enum": [
+                  "notification_default_changed"
+                ],
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            },
+            "required": [
+              "workspace_id",
+              "type"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -4720,6 +4886,14 @@
           "timed_out",
           "refused",
           "abandoned"
+        ],
+        "type": "string"
+      },
+      "NotificationLevel": {
+        "enum": [
+          "all",
+          "mentions",
+          "nothing"
         ],
         "type": "string"
       },

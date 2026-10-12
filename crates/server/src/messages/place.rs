@@ -84,6 +84,60 @@ impl Place {
             archived: false,
         })
     }
+    /// The place of a conversation, for the work of the server itself, which asks no
+    /// permission.
+    pub fn of_conversation(conversation: &junto_protocol::message::Conversation) -> Self {
+        Self {
+            id: conversation.id.as_uuid(),
+            value: MessagePlace::Direct {
+                conversation_id: conversation.id,
+                low_account_id: conversation.low_account_id,
+                high_account_id: conversation.high_account_id,
+            },
+            scope: None,
+            archived: false,
+        }
+    }
+
+    /// The conversation of two accounts, created with the identifier `new_id` when they
+    /// have none. Returns whether it was created.
+    pub async fn conversation_between(
+        connection: &mut PgConnection,
+        low: AccountId,
+        high: AccountId,
+        new_id: ConversationId,
+    ) -> ApiResult<(junto_protocol::message::Conversation, bool)> {
+        let existing: Option<ConversationId> = sqlx::query_scalar(
+            "select id from conversations where low_account_id=$1 and high_account_id=$2",
+        )
+        .bind(low)
+        .bind(high)
+        .fetch_optional(&mut *connection)
+        .await?;
+        let created = existing.is_none();
+        let id = match existing {
+            Some(id) => id,
+            None => {
+                sqlx::query(
+                    "insert into conversations(id,low_account_id,high_account_id) values($1,$2,$3)",
+                )
+                .bind(new_id)
+                .bind(low)
+                .bind(high)
+                .execute(&mut *connection)
+                .await
+                .map_err(ApiError::concurrent)?;
+                new_id
+            }
+        };
+        let conversation = junto_protocol::message::Conversation {
+            id,
+            low_account_id: low,
+            high_account_id: high,
+        };
+        Ok((conversation, created))
+    }
+
     pub async fn conversations(
         connection: &mut PgConnection,
         access: &Access,

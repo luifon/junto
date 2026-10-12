@@ -3549,6 +3549,51 @@
         ]
       }
     },
+    "/api/v1/channels/{channel_id}/permissions": {
+      "get": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "The workspace permissions that the caller holds in one channel that it can see, an\narchived channel included (ADR 0310).",
+        "operationId": "get_channel_permissions",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelPermissions"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/channels/{channel_id}/pins": {
       "get": {
         "tags": [
@@ -3574,6 +3619,77 @@
                   "items": {
                     "$ref": "#/components/schemas/Message"
                   }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/channels/{channel_id}/threads": {
+      "get": {
+        "tags": [
+          "messages"
+        ],
+        "summary": "The threads of a channel that the caller follows, the one with the newest reply first,\nin pages. Threads without unread replies are included (ADR 0413). The caller sees the\nchannel.",
+        "operationId": "followed",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          },
+          {
+            "name": "before",
+            "in": "path",
+            "description": "The value `next` of the page before.",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "path",
+            "description": "From 1 to 200. Absent: 50.",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FollowedThreads"
                 }
               }
             }
@@ -5445,6 +5561,96 @@
         ]
       }
     },
+    "/api/v1/messages/{message_id}/thread/follow": {
+      "put": {
+        "tags": [
+          "messages"
+        ],
+        "summary": "Stores the choice of the caller to follow a thread or not (ADR 0412). The caller sees\nthe channel of the thread.",
+        "operationId": "set_follow",
+        "parameters": [
+          {
+            "name": "message_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/MessageId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetThreadFollow"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadState"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "messages"
+        ],
+        "summary": "Removes the choice of the caller for a thread. The caller then follows the thread when\nit wrote in it or was named in it.",
+        "operationId": "remove_follow",
+        "parameters": [
+          {
+            "name": "message_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/MessageId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/messages/{message_id}/thread/read": {
       "get": {
         "tags": [
@@ -5679,6 +5885,51 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/NotificationPage"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/notifications/read": {
+      "put": {
+        "tags": [
+          "messages"
+        ],
+        "summary": "Marks every notice that the caller reads now and that was created at or before `until`,\nin one request (ADR 0412). The devices of the account get one event.",
+        "operationId": "mark_all_read",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarkNotificationsRead"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationsRead"
                 }
               }
             }
@@ -6049,7 +6300,7 @@
         "tags": [
           "recordings"
         ],
-        "summary": "The lines of the transcript of a recording in the order of the timeline, in pages. Each\nline carries its newest correction and, when it was corrected, the text of the worker.\nThe caller may read the recording.",
+        "summary": "The lines of the transcript of a recording in the order of the timeline, in pages. Each\nline carries its newest correction and, when it was corrected, the text of the worker.\n`around` reads the page with one line in its middle, and `before` the page before a\nline. The caller may read the recording.",
         "operationId": "list_transcript_lines",
         "parameters": [
           {
@@ -6064,6 +6315,28 @@
             "name": "after",
             "in": "query",
             "description": "Return the lines after this position.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Return the lines before this position, the ones nearest to it.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "around",
+            "in": "query",
+            "description": "Return a page with the line at this position in its middle. At most one of `after`,\n`before` and `around` is given.",
             "required": false,
             "schema": {
               "type": "integer",
@@ -7792,6 +8065,7 @@
         "tags": [
           "messages"
         ],
+        "summary": "The notification default of a workspace. `level` is absent when none is set.",
         "operationId": "get_default",
         "parameters": [
           {
@@ -7834,6 +8108,7 @@
         "tags": [
           "messages"
         ],
+        "summary": "Sets the notification default of a workspace. The body states a level; `DELETE` on the\nsame path removes the default.",
         "operationId": "set_default",
         "parameters": [
           {
@@ -7865,6 +8140,41 @@
               }
             }
           },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "messages"
+        ],
+        "summary": "Removes the notification default of a workspace. The workspace then has none: the\ndefault of each account, or `mentions`, applies (ADR 0412).",
+        "operationId": "remove_default",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
           "default": {
             "description": "An error. The field `error.code` states which one.",
             "content": {
@@ -9824,6 +10134,21 @@
           },
           {
             "type": "object",
+            "description": "An administrator removed the notification default of a workspace.",
+            "required": [
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "notification_default_removed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
             "required": [
               "action"
             ],
@@ -10895,6 +11220,25 @@
           }
         }
       },
+      "ChannelPermissions": {
+        "type": "object",
+        "description": "The workspace permissions that the caller holds in one channel that it can see: the\npermissions for which the permission function allows a request in the channel now\n(ADR 0310).",
+        "required": [
+          "channel_id",
+          "permissions"
+        ],
+        "properties": {
+          "channel_id": {
+            "$ref": "#/components/schemas/ChannelId"
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspacePermission"
+            }
+          }
+        }
+      },
       "CheckItem": {
         "type": "object",
         "required": [
@@ -11181,22 +11525,24 @@
         "required": [
           "start_minute",
           "end_minute",
-          "utc_offset_minutes"
+          "time_zone"
         ],
         "properties": {
           "end_minute": {
             "type": "integer",
             "format": "int32",
+            "description": "The minute of the day at which it ends. An end before the start is on the next day.",
             "minimum": 0
           },
           "start_minute": {
             "type": "integer",
             "format": "int32",
+            "description": "The minute of the day at which the quiet time starts, from 0 to 1439, on the clock\nof `time_zone`.",
             "minimum": 0
           },
-          "utc_offset_minutes": {
-            "type": "integer",
-            "format": "int32"
+          "time_zone": {
+            "type": "string",
+            "description": "The name of a time zone of the IANA database, for example `Europe/Lisbon`. The\nquiet time holds while the clock of that zone is inside the window, also after a\nchange for daylight saving time (ADR 0412)."
           }
         },
         "additionalProperties": false
@@ -11585,6 +11931,32 @@
           "length_mismatch",
           "not_checked"
         ]
+      },
+      "FollowedThreads": {
+        "type": "object",
+        "description": "One page of the threads of a channel that the account follows, the one with the newest\nreply first. Threads without unread replies are included.",
+        "required": [
+          "threads",
+          "more"
+        ],
+        "properties": {
+          "more": {
+            "type": "boolean"
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `before` to read the next page. Absent on the last page."
+          },
+          "threads": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ThreadState"
+            }
+          }
+        }
       },
       "ForkThread": {
         "type": "object",
@@ -12036,6 +12408,21 @@
           "strikethrough"
         ]
       },
+      "MarkNotificationsRead": {
+        "type": "object",
+        "description": "Marks the notices of the caller read.",
+        "properties": {
+          "until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Every notice created at or before this time is marked: the `created_at` of the\nnewest notice that the person saw. Absent, or a later time: the time of the\nrequest."
+          }
+        },
+        "additionalProperties": false
+      },
       "MarkRead": {
         "type": "object",
         "required": [
@@ -12161,6 +12548,13 @@
             "items": {
               "$ref": "#/components/schemas/Reaction"
             }
+          },
+          "reply_authors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountId"
+            },
+            "description": "For the root of a thread: at most three authors of its replies, in the order of\ntheir first reply that is not deleted (ADR 0413)."
           },
           "reply_count": {
             "type": "integer",
@@ -12402,12 +12796,17 @@
       },
       "NotificationDefault": {
         "type": "object",
-        "required": [
-          "level"
-        ],
         "properties": {
           "level": {
-            "$ref": "#/components/schemas/NotificationLevel"
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/NotificationLevel",
+                "description": "Absent: the workspace has no default."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false
@@ -12418,7 +12817,8 @@
           "message",
           "mention",
           "direct",
-          "thread"
+          "thread",
+          "missed_call"
         ]
       },
       "NotificationLevel": {
@@ -12497,6 +12897,31 @@
           }
         },
         "additionalProperties": false
+      },
+      "NotificationsRead": {
+        "type": "object",
+        "description": "What a request that marks the notices of the caller read did.",
+        "required": [
+          "until",
+          "read_at",
+          "marked"
+        ],
+        "properties": {
+          "marked": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The number of notices that the request marked.",
+            "minimum": 0
+          },
+          "read_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "until": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
       },
       "OpenConversation": {
         "type": "object",
@@ -13334,6 +13759,15 @@
             "type": "string",
             "format": "uuid"
           },
+          "position": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The position of the message in its channel or conversation. Absent for a\ntranscript line.",
+            "minimum": 0
+          },
           "rank": {
             "type": "number",
             "format": "float"
@@ -13348,8 +13782,28 @@
               }
             ]
           },
+          "start_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "For a transcript line: milliseconds from the start of the timeline of the\nrecording.",
+            "minimum": 0
+          },
           "text": {
             "type": "string"
+          },
+          "thread_root": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MessageId",
+                "description": "The root of the thread that the message is a reply of."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -13711,6 +14165,19 @@
         "properties": {
           "emoji": {
             "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SetThreadFollow": {
+        "type": "object",
+        "description": "The choice of an account to follow a thread or not.",
+        "required": [
+          "following"
+        ],
+        "properties": {
+          "following": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false
@@ -14539,6 +15006,15 @@
               }
             ]
           },
+          "duration_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Present for the line `direct_call_ended`: the seconds from the moment at which both\naccounts were in the room of the call to the moment from which one of them was\nalone until its end (ADR 0518).",
+            "minimum": 0
+          },
           "recording_id": {
             "oneOf": [
               {
@@ -14593,6 +15069,17 @@
           "mentions"
         ],
         "properties": {
+          "follow_setting": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The choice of the account. Absent: none, and the account follows a thread that it\nwrote in or was named in (ADR 0412)."
+          },
+          "following": {
+            "type": "boolean",
+            "description": "Whether the account follows the thread: its replies count as unread and notify."
+          },
           "last_read": {
             "type": "integer",
             "format": "int64",
@@ -14802,6 +15289,15 @@
             ],
             "format": "int32",
             "description": "Pass as `after` to read the next page. Absent on the last page.",
+            "minimum": 0
+          },
+          "previous_before": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Pass as `before` to read the page before this one. Absent when the page starts at\nthe first line.",
             "minimum": 0
           }
         }
@@ -15290,6 +15786,13 @@
               "$ref": "#/components/schemas/Category"
             }
           },
+          "channel_permissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChannelPermissions"
+            },
+            "description": "The channels of `channels` in which the caller holds another set than `permissions`,\nbecause of a channel override. A client reads what the caller may do in a channel\nfrom these two fields and does not derive it from roles."
+          },
           "channels": {
             "type": "array",
             "items": {
@@ -15297,12 +15800,30 @@
             },
             "description": "The channels that the caller can see."
           },
+          "notification_default": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/NotificationLevel",
+                "description": "The notification level that an administrator set as the default of the workspace.\nAbsent: none is set, and the default of the account or `mentions` applies."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "own_role_ids": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/WorkspaceRoleId"
             },
             "description": "The roles of the workspace that the caller holds, without the \"everyone\" role."
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspacePermission"
+            },
+            "description": "The workspace permissions that the caller holds in the workspace, as the permission\nfunction decides them (ADR 0310). The caller holds the same set in every channel of\n`channels` that `channel_permissions` does not list."
           },
           "roles": {
             "type": "array",

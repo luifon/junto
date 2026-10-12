@@ -82,3 +82,10 @@ mod audit_permissions;
 mod audit_reads;
 mod audit_recordings;
 mod audit_snapshot;
+
+mod direct_call_lines;
+mod effective_permissions;
+mod notification_requests;
+mod plan_support;
+mod search_positions;
+mod thread_requests;

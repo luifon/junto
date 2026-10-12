@@ -1478,6 +1478,7 @@ async fn rule_d14_the_statements_of_the_purge_read_through_indexes() {
     // The rows of many accounts for the messages of one page, and the next page.
     let dependents = [
         "thread_reads_pkey",
+        "thread_reply_authors_order",
         "notifications_message",
         "message_mention_accounts_message",
         "message_mentions_notified_pkey",
@@ -1638,8 +1639,8 @@ async fn rule_d16_the_rows_of_many_accounts_and_a_long_transcript_are_removed_in
              insert into message_reactions (message_id, account_id, emoji)
              select $1, id, 'x' from people),
          followed as (
-             insert into thread_reads (root_id, account_id, following)
-             select $1, id, true from people)
+             insert into thread_reads (root_id, account_id, following, rule_following)
+             select $1, id, true, true from people)
          insert into notifications (id, account_id, message_id, kind, created_at)
          select gen_random_uuid(), id, $1, 'message', $2 from people",
     )

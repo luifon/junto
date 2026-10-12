@@ -23,6 +23,7 @@ use crate::error::{ApiError, ApiResult};
 use crate::events;
 use crate::events::hub::CallKey;
 use crate::media::{Publishing, RoomName};
+use crate::messages::direct_calls::{self, Line};
 use crate::store::Sessions;
 
 impl StoredText for ShareAudio {
@@ -122,6 +123,7 @@ pub async fn note(
             action: kind.stored().to_owned(),
             actor_id: account_id,
             recording_id: None,
+            duration_seconds: None,
             subject_id: None,
         },
         Some(call.id),
@@ -142,6 +144,15 @@ pub struct CallRow {
     /// The call shows who is inside only to the people inside. The value is the setting of
     /// the voice channel at the creation of the record of the call (ADR 0517).
     pub hides_occupants: bool,
+    /// The account whose entry made the first ring of a direct-message call (ADR 0518).
+    pub direct_caller: Option<AccountId>,
+    /// The time from which both accounts were inside a direct-message call.
+    pub direct_answered_at: Option<OffsetDateTime>,
+    /// The time from which one account is alone in a call that both were inside.
+    pub direct_alone_since: Option<OffsetDateTime>,
+    /// The call owes no missed call at its end: a ring of it ended with a line, or the
+    /// other account was inside.
+    pub direct_ring_settled: bool,
 }
 
 impl CallRow {
@@ -175,11 +186,16 @@ struct CallRecord {
     meeting_started_at: Option<OffsetDateTime>,
     meeting_presenter_gone_since: Option<OffsetDateTime>,
     hides_occupants: bool,
+    direct_caller: Option<AccountId>,
+    direct_answered_at: Option<OffsetDateTime>,
+    direct_alone_since: Option<OffsetDateTime>,
+    direct_ring_settled: bool,
 }
 
 const CALL_COLUMNS: &str = "id, room_name, workspace_id, channel_id, direct_low, direct_high, \
      started_at, locked_by, locked_at, meeting_presenter, meeting_started_at, \
-     meeting_presenter_gone_since, hides_occupants";
+     meeting_presenter_gone_since, hides_occupants, direct_caller, direct_answered_at, \
+     direct_alone_since, direct_ring_settled";
 
 fn call_row(record: CallRecord) -> ApiResult<CallRow> {
     let place = match (
@@ -215,6 +231,10 @@ fn call_row(record: CallRecord) -> ApiResult<CallRow> {
         ),
         presenter_gone_since: record.meeting_presenter_gone_since,
         hides_occupants: record.hides_occupants,
+        direct_caller: record.direct_caller,
+        direct_answered_at: record.direct_answered_at,
+        direct_alone_since: record.direct_alone_since,
+        direct_ring_settled: record.direct_ring_settled,
     })
 }
 
@@ -319,6 +339,10 @@ pub async fn call_for_entry(
         meeting: None,
         presenter_gone_since: None,
         hides_occupants,
+        direct_caller: None,
+        direct_answered_at: None,
+        direct_alone_since: None,
+        direct_ring_settled: false,
     })
 }
 
@@ -889,6 +913,18 @@ pub async fn take_out(
             reason,
         };
         events::publish(&mut *connection, now, &left).await?;
+        if matches!(call.place, CallPlace::Direct { .. }) {
+            // The time in which both accounts were in the room ends here, or when the
+            // connection of the member was lost (ADR 0518).
+            sqlx::query(
+                "update calls set direct_alone_since = coalesce(direct_alone_since, $2)
+                 where id = $1 and direct_answered_at is not null",
+            )
+            .bind(call.id)
+            .bind(member.absent_since.unwrap_or(now))
+            .execute(&mut *connection)
+            .await?;
+        }
     }
     let presents = call
         .meeting
@@ -938,6 +974,23 @@ pub async fn tell_invitation(
     let at = [invitation.place];
     for account_id in waiting.told() {
         events::tell_account_at(&mut *connection, now, account_id, &at, &resolved).await?;
+    }
+    // The ring of a direct-message call ends with a line in the conversation. The line is
+    // the same for a silent ring, so the caller reads nothing of a mute (ADR 0518).
+    if matches!(invitation.place, CallPlace::Direct { .. }) {
+        let line = match outcome {
+            InvitationOutcome::Declined => Some(Line::Declined),
+            InvitationOutcome::Expired | InvitationOutcome::Cancelled => Some(Line::NotAnswered),
+            InvitationOutcome::Accepted => None,
+        };
+        if let Some(line) = line {
+            let (caller, callee) = (invitation.invited_by, invitation.account_id);
+            direct_calls::line(&mut *connection, now, caller, callee, line).await?;
+            sqlx::query("update calls set direct_ring_settled = true where id = $1")
+                .bind(invitation.call_id)
+                .execute(connection)
+                .await?;
+        }
     }
     Ok(())
 }
@@ -1115,6 +1168,68 @@ pub async fn resolve_entries(
     Ok(resolved)
 }
 
+/// The other account of a direct-message call. `None` for a voice channel and for an account
+/// that is not one of the two.
+pub fn other_of(place: &CallPlace, account_id: AccountId) -> Option<AccountId> {
+    match *place {
+        CallPlace::Direct {
+            low_account_id,
+            high_account_id,
+        } if account_id == low_account_id => Some(high_account_id),
+        CallPlace::Direct {
+            low_account_id,
+            high_account_id,
+        } if account_id == high_account_id => Some(low_account_id),
+        _ => None,
+    }
+}
+
+/// Records the account whose entry made the ring of a direct-message call, and writes the
+/// line of the start of the call into the conversation (ADR 0518).
+pub async fn direct_call_rung(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    call: &CallRow,
+    caller: AccountId,
+    callee: AccountId,
+) -> ApiResult<()> {
+    sqlx::query("update calls set direct_caller = $2 where id = $1")
+        .bind(call.id)
+        .bind(caller)
+        .execute(&mut *connection)
+        .await?;
+    direct_calls::line(connection, now, caller, callee, Line::Started).await
+}
+
+/// Records what the admission check saw of `account_id` in the room of a direct-message
+/// call: the account is inside (ADR 0517). The other account of the ring that was inside
+/// has no missed call. When both accounts are in the room, the time that the line of the
+/// end states runs: from the first such moment to the moment from which one account was
+/// alone for good (ADR 0518). A member whose connection is lost is not in the room.
+pub async fn direct_call_seen(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    call: &CallRow,
+    account_id: AccountId,
+) -> ApiResult<()> {
+    sqlx::query(
+        "update calls c
+         set direct_ring_settled = c.direct_ring_settled or c.direct_caller is distinct from $3,
+             direct_answered_at = case when seen.both
+                 then coalesce(c.direct_answered_at, $2) else c.direct_answered_at end,
+             direct_alone_since = case when seen.both then null else c.direct_alone_since end
+         from (select count(*) >= 2 as both from call_members
+               where call_id = $1 and connected_at is not null and absent_since is null) seen
+         where c.id = $1",
+    )
+    .bind(call.id)
+    .bind(now)
+    .bind(account_id)
+    .execute(connection)
+    .await?;
+    Ok(())
+}
+
 /// Ends a call that has no member and no person on the way into it: its row is deleted, and
 /// with it its lock, its meeting, its blocks, its invitations and its requests. Returns
 /// true when the call ended.
@@ -1134,12 +1249,34 @@ pub async fn end_if_empty(
     }
     let all = "($2::uuid is null and $3::timestamptz is null)";
     let cancelled = InvitationOutcome::Cancelled;
-    resolve_invitations(&mut *connection, now, &ending, all, None, None, cancelled).await?;
+    let rings =
+        resolve_invitations(&mut *connection, now, &ending, all, None, None, cancelled).await?;
     let cancelled = EntryOutcome::Cancelled;
     resolve_entries(&mut *connection, now, &ending, all, None, None, cancelled).await?;
     if ending.place.channel_id().is_some() {
         let hides = ending.hides_occupants;
         crate::recordings::store::call_ended(&mut *connection, now, call_id, hides).await?;
+    }
+    if let Some(caller) = ending.direct_caller
+        && let Some(callee) = other_of(&ending.place, caller)
+    {
+        // A call that both accounts were in the room of ends with its duration. A call
+        // that the other account was never inside, and whose ring has no line yet, was
+        // not answered: the other account took a place and did not connect (ADR 0518).
+        let line = match ending.direct_answered_at {
+            Some(answered_at) => {
+                let until = ending.direct_alone_since.unwrap_or(now);
+                let seconds = u64::try_from((until - answered_at).whole_seconds());
+                Some(Line::Ended {
+                    seconds: seconds.unwrap_or_default(),
+                })
+            }
+            None if !ending.direct_ring_settled && rings == 0 => Some(Line::NotAnswered),
+            None => None,
+        };
+        if let Some(line) = line {
+            direct_calls::line(&mut *connection, now, caller, callee, line).await?;
+        }
     }
     if ending.started_at.is_some() {
         note(&mut *connection, now, &ending, Note::CallEnded, None).await?;

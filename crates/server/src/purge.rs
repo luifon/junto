@@ -157,11 +157,12 @@ pub const MESSAGE_PAGE: &str = "select id, position from messages
      order by position, id limit $4";
 
 /// The tables whose rows name a message and have no small limit for one message, with the
-/// column that names the message: one row for each account that follows a thread, is
-/// notified, is mentioned or reacted. The messages that answer a message are the step
+/// column that names the message: one row for each account that follows a thread, wrote a
+/// reply in it, is notified, is mentioned or reacted. The messages that answer a message are the step
 /// `reply references` of [`CHANNEL_STEPS`].
-pub const MESSAGE_DEPENDENTS: [(&str, &str); 6] = [
+pub const MESSAGE_DEPENDENTS: [(&str, &str); 7] = [
     ("thread_reads", "root_id"),
+    ("thread_reply_authors", "root_id"),
     ("notifications", "message_id"),
     ("message_mention_accounts", "message_id"),
     ("message_mentions_notified", "message_id"),

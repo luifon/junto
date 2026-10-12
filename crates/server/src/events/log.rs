@@ -135,6 +135,50 @@ pub async fn permissions_changed(
     crate::calls::store::mark_after_permission_change(connection, workspace_id).await
 }
 
+/// Records the notice for the accounts that see a channel that appears with overrides, by
+/// a fork or by a restore: an override can give an account another list of permissions in
+/// the channel than its snapshot states (ADR 0310). A channel without overrides has the
+/// list of the workspace for every account, and nothing is recorded.
+pub async fn permissions_changed_by_overrides_of(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    workspace_id: WorkspaceId,
+    channel_id: ChannelId,
+) -> ApiResult<()> {
+    let has_overrides: bool =
+        sqlx::query_scalar("select exists (select 1 from channel_overrides where channel_id = $1)")
+            .bind(channel_id)
+            .fetch_one(&mut *connection)
+            .await?;
+    if !has_overrides {
+        return Ok(());
+    }
+    let audience = Audience::Channel {
+        workspace_id,
+        channel_id,
+        permission: junto_authz::WorkspacePermission::ViewChannel,
+    };
+    let event = Event::PermissionsChanged {
+        workspace_id: Some(workspace_id),
+    };
+    record(connection, now, &audience, &event).await
+}
+
+/// Records the notice for the accounts that see a new workspace. An account that sees it
+/// without being a member, by the administrator permission, holds permissions in it that
+/// no other event states (ADR 0310).
+pub async fn permissions_changed_in_new_workspace(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    workspace_id: WorkspaceId,
+) -> ApiResult<()> {
+    let audience = Audience::Workspace { workspace_id };
+    let event = Event::PermissionsChanged {
+        workspace_id: Some(workspace_id),
+    };
+    record(connection, now, &audience, &event).await
+}
+
 /// The accounts that an event is for, selected before the change that ends the rule that
 /// names them.
 #[derive(Debug, Clone, Copy)]
