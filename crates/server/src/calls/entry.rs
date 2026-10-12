@@ -78,15 +78,15 @@ impl Entered {
         shows_requests: bool,
     ) -> ApiResult<Self> {
         let (microphone_block, sound_block) =
-            store::blocks_of(&mut *connection, &call, account_id).await?;
+            store::blocks_at_join(&mut *connection, &call, account_id).await?;
         Ok(Self {
-            publishing: store::publishing_of(&mut *connection, &call, account_id).await?,
+            publishing: store::publishing_at_join(&mut *connection, &call, account_id).await?,
             entry_requests: if shows_requests {
-                store::entry_requests(&mut *connection, now, &call).await?
+                store::entry_requests(&mut *connection, now, &call, account_id).await?
             } else {
                 Vec::new()
             },
-            call: store::view(&mut *connection, &call).await?,
+            call: store::view_for(&mut *connection, &call, account_id).await?,
             key: call.key(),
             name: store::display_name(&mut *connection, account_id).await?,
             room: call.room,
@@ -183,19 +183,23 @@ pub async fn enter(
         Some(member)
             if member.call_id == call.id
                 && member.device_id == access.device_id
-                && member.session_id == access.session_id =>
+                && member.session_id == access.session_id
+                && (member.connected_at.is_some() || now < member.usable_until) =>
         {
-            sqlx::query(
-                "update call_members set usable_until = $3
-                 where call_id = $1 and account_id = $2",
-            )
-            .bind(call.id)
-            .bind(access.account_id)
-            .bind(usable_until)
-            .execute(&mut *connection)
-            .await?;
             identity = member.identity;
             seated = true;
+        }
+        Some(member)
+            if member.call_id == call.id
+                && member.device_id == access.device_id
+                && member.session_id == access.session_id =>
+        {
+            // The seat never connected and its time has ended. The request is a new entry:
+            // a repeated request does not keep a seat that nobody sees (ADR 0517).
+            store::abandon_move_of(&mut *connection, now, access.account_id).await?;
+            let ended = LeaveReason::NeverConnected;
+            store::take_out(&mut *connection, now, &call, &member, ended).await?;
+            left = Some(ended);
         }
         Some(member) if member.call_id == call.id => {
             store::abandon_move_of(&mut *connection, now, access.account_id).await?;
@@ -328,9 +332,10 @@ async fn settle_what_waited(
 }
 
 /// Invites the other participant of a direct message into the call, unless that account is
-/// in the call or has an invitation that waits. An account that has muted the conversation
-/// is not invited, and the caller is not told. The rings of the caller for that account are
-/// limited (ADR 0515).
+/// in the call or has an invitation that waits. For an account that has muted the
+/// conversation or is in its quiet time the invitation is silent: that account is told
+/// nothing, and the caller gets what every ring gives, so that the caller cannot tell the
+/// two cases apart. The rings of the caller for that account are limited (ADR 0515).
 async fn ring(
     connection: &mut PgConnection,
     app: &AppState,
@@ -348,12 +353,11 @@ async fn ring(
     .bind(other)
     .fetch_one(&mut *connection)
     .await?;
-    if reached
-        || store::has_muted(&mut *connection, now, other, caller).await?
-        || crate::messages::notifications::quiet(connection, other, now).await?
-    {
+    if reached {
         return Ok(());
     }
+    let silent = store::has_muted(&mut *connection, now, other, caller).await?
+        || crate::messages::notifications::quiet(&mut *connection, other, now).await?;
     let limits = &app.config.limits.calls;
     store::count_ring(
         &mut *connection,
@@ -366,8 +370,9 @@ async fn ring(
     .await?;
     let expires_at = now + limits.invitation_lifetime;
     sqlx::query(
-        "insert into call_invitations (id, call_id, account_id, invited_by, created_at, expires_at)
-         values ($1, $2, $3, $4, $5, $6)",
+        "insert into call_invitations
+             (id, call_id, account_id, invited_by, created_at, expires_at, silent)
+         values ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(fresh.invitation_id)
     .bind(call.id)
@@ -375,14 +380,16 @@ async fn ring(
     .bind(caller)
     .bind(now)
     .bind(expires_at)
+    .bind(silent)
     .execute(&mut *connection)
     .await
     .map_err(ApiError::concurrent)?;
-    let row = (fresh.invitation_id, other, caller, now, expires_at);
+    let row = (fresh.invitation_id, other, caller, now, expires_at, silent);
+    let waiting = store::invitation(call, row);
     let invited = Event::CallInvited {
-        invitation: store::invitation(call, row),
+        invitation: waiting.invitation.clone(),
     };
-    for account_id in [other, caller] {
+    for account_id in waiting.told() {
         events::tell_account(&mut *connection, now, account_id, &invited).await?;
     }
     Ok(())

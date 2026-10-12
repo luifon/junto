@@ -29,13 +29,31 @@ impl Studio {
         Self::on(TestServer::start_for_calls().await).await
     }
 
+    /// Like [`Self::open`], in a voice channel that hides who is inside. The setting is made
+    /// before the call begins: a call keeps the setting that it started with (ADR 0517).
+    pub async fn hidden() -> Self {
+        Self::hidden_on(TestServer::start_for_calls().await).await
+    }
+
+    pub async fn hidden_on(server: TestServer) -> Self {
+        Self::of(server, true).await
+    }
+
     pub async fn on(server: TestServer) -> Self {
+        Self::of(server, false).await
+    }
+
+    async fn of(server: TestServer, hides_occupants: bool) -> Self {
         let scene = Scene::on(server).await;
         let (server, owner, ann, ben) = (&scene.server, &scene.owner, &scene.ann, &scene.ben);
         let record = [WorkspacePermission::RecordCalls];
         server
             .grant_workspace(owner, ann, scene.workspace_id, &record)
             .await;
+        if hides_occupants {
+            let hidden = serde_json::json!({ "hides_occupants": true });
+            server.call_settings(owner, scene.voice.id, hidden).await;
+        }
         let ann_seat = server.enter_call(ann, scene.voice.id).await;
         let ben_seat = server.enter_call(ben, scene.voice.id).await;
         server.speak(&ann_seat);
@@ -312,6 +330,7 @@ impl FakeWorker {
                 "/srv/junto/models".to_owned(),
             )],
             separate_speakers: true,
+            batch_size: None,
         }
     }
 

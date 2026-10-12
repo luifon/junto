@@ -191,6 +191,8 @@ pub const LOWER_USER_LIMIT: &str = "Lower the user limit";
 pub const RAISE_USER_LIMIT: &str = "Raise the user limit";
 pub const HIDE_OCCUPANTS: &str = "Hide who is inside";
 pub const HIDE_OCCUPANTS_HELP: &str = "Others see only “in use”.";
+pub const HIDE_OCCUPANTS_NEXT_CALL: &str =
+    "This call keeps its setting. The change holds from the next call.";
 pub const MANAGE_NO_PERMISSION: &str = "You do not have the “manage channel” permission.";
 pub const MEETING_IS_ON: &str = "Meeting mode is on";
 pub const YOU_RUN_IT: &str = " · you run it";

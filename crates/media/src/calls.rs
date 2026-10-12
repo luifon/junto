@@ -17,8 +17,8 @@ use junto_client_core::flow::FlowError;
 use junto_client_core::live::{Missed, Notice, Notices, StreamStatus};
 use junto_client_core::model::ServerModel;
 use junto_client_core::protocol::call::{
-    CallJoin, CallMove, CallPlace, LeaveReason, MicrophoneBlock, MoveOutcome, OwnCall, ShareAudio,
-    SoundBlock,
+    Call, CallJoin, CallMove, CallPlace, LeaveReason, MicrophoneBlock, MoveOutcome, OwnCall,
+    ShareAudio, SoundBlock,
 };
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::protocol::events::{Cursor, Event};
@@ -732,6 +732,18 @@ fn refusal(error: &ApiError) -> FlowError {
     }
 }
 
+/// True when the answer of a server to a request for a place does not tell the blocks of
+/// the person: the call hides who is inside, and the server has not seen the device with
+/// the identity of the place in the room, so the answer names nobody and no block
+/// (ADR 0517). The server tells the blocks with the entry of that device.
+pub(crate) fn blocks_untold(call: &Call, identity: &str) -> bool {
+    call.hides_occupants
+        && !call
+            .participants
+            .iter()
+            .any(|participant| participant.identity == identity)
+}
+
 fn media_join(answer: &CallJoin) -> MediaJoin {
     MediaJoin {
         url: answer.media_url.clone(),
@@ -756,12 +768,14 @@ fn start(
     shared.next_key += 1;
     let key = shared.next_key;
     // The state of the server lists the person only after the media connection is made.
-    // The blocks of the answer hold from the first moment (ADR 0503).
+    // The blocks of the answer hold from the first moment (ADR 0503). An answer that does
+    // not tell the blocks keeps the sound off until the server tells them.
+    let blocks_untold = blocks_untold(&answer.call, &answer.identity);
     let controls = Controls {
         muted: shared.muted,
         deafened: shared.deafened,
         microphone_blocked: answer.microphone_block.is_some(),
-        sound_blocked: answer.sound_block.is_some(),
+        sound_blocked: answer.sound_block.is_some() || blocks_untold,
     };
     let volumes = shared
         .volumes
@@ -810,6 +824,7 @@ fn start(
         controls,
         microphone_block: answer.microphone_block,
         sound_block: answer.sound_block,
+        blocks_untold,
         connected_once: false,
         interrupted_at: None,
         retry: None,
@@ -1181,6 +1196,10 @@ struct Session {
     controls: Controls,
     microphone_block: Option<MicrophoneBlock>,
     sound_block: Option<SoundBlock>,
+    /// The server has not told the blocks of the person for this place yet (see
+    /// [`blocks_untold`]). The sound stays off until it has, so that a sound block holds
+    /// from the first moment of the media connection (ADR 0503).
+    blocks_untold: bool,
     connected_once: bool,
     interrupted_at: Option<OffsetDateTime>,
     /// When the next request for a new token is due.
@@ -1491,7 +1510,7 @@ impl Session {
             muted,
             deafened,
             microphone_blocked: self.microphone_block.is_some(),
-            sound_blocked: self.sound_block.is_some(),
+            sound_blocked: self.sound_block.is_some() || self.blocks_untold,
         };
         if controls != self.controls {
             self.controls = controls;
@@ -1537,7 +1556,13 @@ impl Session {
         };
         let blocks = (own.microphone_block.clone(), own.sound_block.clone());
         let hand_raised = own.hand_raised;
+        // The state can still list the person with the place of another device of the
+        // account. The server has told the blocks of this place when it lists this one.
+        let told = own.identity == self.place.identity() && std::mem::take(&mut self.blocks_untold);
         self.take_blocks(blocks, Some(model), hand_raised);
+        if told {
+            self.apply_controls();
+        }
     }
 
     /// Uses the blocks that the server tells, from its state or with a new token.
@@ -1625,20 +1650,27 @@ impl Session {
                             self.show();
                         }
                         self.engine.reconnect(media_join(&answer));
-                        // The blocks of the answer are newer than the state when events
-                        // were missed: the same rule applies to them.
-                        let view = self.server.live().view();
-                        let hand_raised = view.model.as_deref().is_some_and(|model| {
-                            model
-                                .call_at(&self.target.place)
-                                .and_then(|call| call.participant(model.account.id))
-                                .is_some_and(|own| own.hand_raised)
-                        });
-                        self.take_blocks(
-                            (answer.microphone_block, answer.sound_block),
-                            view.model.as_deref(),
-                            hand_raised,
-                        );
+                        if blocks_untold(&answer.call, &answer.identity) {
+                            // The server gave a new place and tells its blocks with the
+                            // entry of the person. The blocks that the call holds stay.
+                            self.blocks_untold = true;
+                            self.apply_controls();
+                        } else {
+                            // The blocks of the answer are newer than the state when
+                            // events were missed: the same rule applies to them.
+                            let view = self.server.live().view();
+                            let hand_raised = view.model.as_deref().is_some_and(|model| {
+                                model
+                                    .call_at(&self.target.place)
+                                    .and_then(|call| call.participant(model.account.id))
+                                    .is_some_and(|own| own.hand_raised)
+                            });
+                            self.take_blocks(
+                                (answer.microphone_block, answer.sound_block),
+                                view.model.as_deref(),
+                                hand_raised,
+                            );
+                        }
                     }
                     Err(error) => {
                         let passes = error.is_unavailable()
@@ -2037,6 +2069,40 @@ mod tests {
             place.fate(at(7, Some(&other)), false, start),
             Fate::End(EndReason::Elsewhere)
         );
+    }
+
+    #[test]
+    fn an_answer_for_a_hidden_call_that_does_not_list_the_person_tells_no_blocks() {
+        let own = AccountId::generate();
+        let listed = |identity: &str| junto_client_core::protocol::call::CallParticipant {
+            account_id: own,
+            identity: identity.to_owned(),
+            joined_at: OffsetDateTime::UNIX_EPOCH,
+            muted: false,
+            deafened: false,
+            microphone_block: None,
+            sound_block: None,
+            hand_raised: false,
+            screen_share: None,
+        };
+        let call = |hides_occupants, participants| Call {
+            id: junto_client_core::protocol::ids::CallId::generate(),
+            place: CallPlace::direct(own, AccountId::generate()),
+            started_at: None,
+            lock: None,
+            meeting: None,
+            hides_occupants,
+            participants,
+            recording: None,
+        };
+        // A new place in a call that hides who is inside: the server names nobody.
+        assert!(blocks_untold(&call(true, Vec::new()), "ours"));
+        // The account is listed with the place of another device.
+        assert!(blocks_untold(&call(true, vec![listed("other")]), "ours"));
+        // The place of a device that the server has seen: the answer lists it.
+        assert!(!blocks_untold(&call(true, vec![listed("ours")]), "ours"));
+        // A call that shows who is inside states the blocks in every answer.
+        assert!(!blocks_untold(&call(false, Vec::new()), "ours"));
     }
 
     #[test]

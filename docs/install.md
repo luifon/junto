@@ -1,6 +1,6 @@
 # Installing a Junto server
 
-This document describes how a person with a Linux host and Docker installs a complete Junto server from this repository, and how to back it up, upgrade it and remove it. The decisions behind it are in ADR 0003 (the two forms), ADR 0004 (names and network paths), ADR 0005 (backups and upgrades), ADR 0014 (images), ADR 0015 (the Compose files), ADR 0016 (the hand-over to the transcription worker), ADR 0018 (what the server does for a backup and before a migration), ADR 0020 (the recorder container) and ADR 0021 (backup, restore and upgrade in the deployment).
+This document describes how a person with a Linux host and Docker installs a complete Junto server from this repository, and how to back it up, upgrade it and remove it. The decisions behind it are in ADR 0003 (the two forms), ADR 0004 (names and network paths), ADR 0005 (backups and upgrades), ADR 0014 (images), ADR 0015 (the Compose files), ADR 0016 (the hand-over to the transcription worker), ADR 0018 (what the server does for a backup and before a migration), ADR 0020 (the recorder container), ADR 0021 (backup, restore and upgrade in the deployment) and ADR 0022 (the database role of the server).
 
 The project publishes no built image. Every image is built on the host from this repository, or pulled from its publisher by a digest that the repository states.
 
@@ -9,7 +9,7 @@ The project publishes no built image. Every image is built on the host from this
 | Container | What it is | Image |
 |---|---|---|
 | `server` | The Junto server, with `ffmpeg`, `ffprobe` and the recording layout page | built from `deploy/images/server/` |
-| `postgres` | PostgreSQL 17 | pulled |
+| `postgres` | PostgreSQL 17, with the access rules and the role of the server from `deploy/images/postgres/` | pulled |
 | `livekit` | The media server, LiveKit 1.13.9 | pulled |
 | `redis` | Redis 7.2, which the media server and the recorder need | pulled |
 | `recorder` | The recorder, LiveKit Egress 1.15.0 | pulled |
@@ -173,7 +173,7 @@ The recorder loads the layout page of a recording from the server, at `http://se
 - A recording starts only with 13 GiB of free space on the volume of the recordings: 8 GiB for the recording above a reserve of 5 GiB (ADR 0605). A start with less is answered with `storage_low`. The health route states `storage_low` only at 5 GiB or less.
 - The files of a recording are below the volume `recordings`: `<recording>/<segment>.mp4` for the video and `<recording>/<segment>.ogg` for each audio track. A removal of the recording through the API deletes its directory.
 - When the recorder container ends during a recording, its restart rule starts it again, its start script saves the partial audio files, and the server continues the recording in new files. The recording then has the state `partly_failed`, with a video after the loss and, when the recorder had written a piece of the video before the loss, a video before it (ADR 0601).
-- When the recorder stayed stopped until a recording that it had lost was removed, its next start saves the partial audio of that recording to `rescued/<job>/` on the volume of the recordings, and nothing deletes it (ADR 0606). After such a case, and when no recording runs and every recording has a final state, delete the directories below `rescued/`: `docker compose -f <form file> exec server find /var/lib/junto/recordings/rescued -mindepth 1 -delete`.
+- When the recorder stayed stopped until a recording that it had lost was removed, its next start saves the partial audio of that recording to `rescued/<job>/` on the volume of the recordings. No recording uses that directory. The server deletes it at a maintenance pass when its last change is more than 24 hours ago (ADR 0606). A pass runs every minute and examines 50 entries below `rescued/`, and it deletes nothing while a backup holds deletions back.
 
 ## Logs and health
 
@@ -192,6 +192,15 @@ A person with the permission exports a channel or a direct conversation as one Z
 - The reservations of recordings, uploads and exports are one sum. The volumes of a host are on one file system unless the host places them elsewhere, so the three share its free space, and the guard counts them together.
 - Exports are not in a backup, and a restore deletes them: they are copies of content that the backup holds, and a person asks for an export again.
 
+## The database users
+
+PostgreSQL has two users in a deployment (ADR 0022):
+
+- `junto_server` is the role of the server. It may log in and create a database, and has no other attribute. It owns the database `junto` and every table in it. The server needs both rights for the copy before a migration (ADR 0018). Its password is `JUNTO_POSTGRES_PASSWORD`.
+- `junto` is the first user of the PostgreSQL container and has every right. It connects through the socket inside that container only: the access rules in `deploy/images/postgres/pg_hba.conf` let no other role than `junto_server` connect over the network. The scripts of `deploy/` and the `psql` commands of this document use it, as `docker compose -f <form file> exec postgres psql -U junto -d postgres`. They name the database `postgres`: the role of the server owns the database `junto` and can change what a name means in it, so the first user reads nothing there except through `deploy/images/postgres/server-role.sql`, which reads names of the system schema only.
+
+The PostgreSQL image creates the role when it creates the data directory, with `deploy/images/postgres/server-role.sql`. A deployment that an earlier release created does not have it; see "The database user of an earlier release".
+
 ## Backup
 
 `deploy/backup.sh` makes a backup while the server runs:
@@ -202,17 +211,20 @@ deploy/backup.sh one-host.yaml /srv/junto-backups/2026-10-11
 
 It runs on the host that has the data (`one-host.yaml` or `two-hosts-data.yaml`), and it needs the container `postgres` to run. Its steps (ADR 0018, ADR 0021):
 
-1. `junto-server backup-begin`: from here on the server deletes no directory of an attachment or of a recording.
-2. `pg_dump` writes the database (`database.dump`, the custom format).
-3. `junto-server backup-files` lists the directories that this copy of the database names. The script writes the ones that exist into `files.tar`, and checks that the archive holds each of them and that the backup did not end by itself during the copy.
-4. `junto-server backup-end`: the server deletes files again.
-5. The script adds a copy of `.env` (`env`), the file `left-out` and the checksums (`SHA256SUMS`).
+1. `junto-server schema-version` states the schema of the server binary, which the script writes into the file `schema`. `junto-server unnamed-files --remove` deletes the directories that no row of the database names and that were last changed more than 24 hours ago (see "Directories that the database does not name").
+2. `junto-server backup-begin`: from here on the server deletes no directory of an attachment or of a recording.
+3. `pg_dump` writes the database (`database.dump`, the custom format).
+4. `junto-server backup-files` lists the directories that this copy of the database names. The script writes the ones that exist into `files.tar`, and checks that the archive holds each of them.
+5. `junto-server backup-end`: the server deletes files again. The command fails when the backup ended by itself during the copy, and the script then writes no backup.
+6. The script adds a copy of `.env` (`env`), the file `left-out` and the checksums (`SHA256SUMS`).
 
-Nobody is interrupted. A file that a person deletes during the backup stays on the disk until step 4. A backup that ends with a failure removes what it wrote and tells the server that it ended. A backup that is ended by force holds deletions back for 24 hours at most. The server ends a backup by itself after 24 hours; a copy that takes longer fails.
+The commands of the server binary run in the container of the server while it runs, and in a container of the server image while it is stopped. The script makes no backup when that image has another schema than the database, which is the case when the image was built from another release while the server was stopped: the commands of a release are written for its own schema. Build the image in the checkout of the release that ran.
 
-`left-out` names what the list of the server names and the archive does not hold, one directory per line: `skip <directory> upload_not_complete`, `skip <directory> recording_runs` and `skip <directory> files_are_processed` for an upload or a recording that had not ended, and `absent <directory>` for a directory that is not on the disk, such as the one of a recording that failed without a file. The script prints the number of both. For a backup with every recording, wait until no recording runs.
+Nobody is interrupted. A file that a person deletes during the backup stays on the disk until step 5. A backup that ends with a failure removes what it wrote and tells the server that it ended. A backup that is ended by force holds deletions back for 24 hours at most. The server ends a backup by itself after 24 hours; a copy that takes longer fails.
 
-The exit code is 0 for a backup, and 4 for a backup that was written although the directory of a complete attachment is not on the disk: `left-out` has a line `absent attachments/<directory>` for it. That is a loss of a file on the host, not a state of the server. Every other code means that no backup was written.
+`left-out` names what the list of the server names and the archive does not hold, one directory per line: `skip <directory> upload_not_complete`, `skip <directory> recording_runs` and `skip <directory> files_are_processed` for an upload or a recording that had not ended, and `absent <directory>` for a directory that is not on the disk. The script prints the number of both. For a backup with every recording, wait until no recording runs. A recording that failed has no file and no line.
+
+The exit code is 0 for a backup, and 4 for a backup that was written although the directory of a complete attachment or of a finished recording is not on the disk: `left-out` has a line `absent attachments/<directory>` or `absent recordings/<directory>` for it. That is a loss of a file on the host, not a state of the server. Every other code means that no backup was written.
 
 `tar` can print that a file changed or went away while it was read. The server writes the parts of a running upload and the directories of a transcription run beside complete files; a complete file does not change. A backup fails when the directories hold something that is not a file or a directory, such as a link: the server writes none, and a restore refuses it.
 
@@ -222,7 +234,7 @@ Not in the backup: the exports, the certificates of the entry, the keys of the l
 
 ## Restore
 
-On a host with the repository at the release that wrote the backup:
+A backup is restored with the release that wrote it. On a host with the repository at that release:
 
 ```sh
 cp /srv/junto-backups/2026-10-11/env deploy/.env
@@ -230,18 +242,33 @@ deploy/restore.sh one-host.yaml /srv/junto-backups/2026-10-11
 (cd deploy && docker compose -f one-host.yaml up -d)
 ```
 
-`restore.sh` first verifies the checksums and refuses an archive that `backup.sh` did not write: one with a member outside the two directories, or with a link. Then it stops `server`, `worker` and `recorder`, ends a container that an earlier run of the script left, and works in two steps (ADR 0021). It needs the image of the recorder on the host, because a container of the recorder empties its temporary directory:
+`restore.sh` first verifies the checksums and refuses an archive that `backup.sh` did not write: one with a member outside the two directories, or with a link. It compares the file `schema` of the backup with the answer of `junto-server schema-version` of the server image, and refuses a backup of a newer and of an earlier schema; its message names both numbers. The image is the one that the restore then works with, the image of the service `server` by its name. It is built when it does not exist; when it was built from another release than the checkout, build it again first (`docker compose -f one-host.yaml build server`). Until here no container is stopped. Then it stops `server`, `worker` and `recorder`, ends a container that an earlier run of the script left, and works in two steps (ADR 0021). It needs the image of the recorder on the host, because a container of the recorder empties its temporary directory:
 
-1. Staging. The database user gets the password of `.env`. The dump is loaded into a new database `junto_restore`, `junto-server restored` gives that database a new epoch of the event stream, so that every client loads a new snapshot (ADR 0010), and removes its exports and its running backup, and the archive is unpacked into a staging directory of each volume. When one of these fails, the database and the files of the host are as they were; the database user has the password of `.env`.
+1. Staging. A new database `junto_restore` is created. The role `junto_server` is created when the database server does not have it, gets the password of `.env`, and becomes the owner of that database (ADR 0022). The role loads the dump. `junto-server restored` gives that database a new epoch of the event stream, so that every client loads a new snapshot (ADR 0010), and removes its exports and its running backup, and the archive is unpacked into a staging directory of each volume. When one of these fails, the database and the files of the host are as they were; the role of the server can have the password of `.env` then.
 2. Replacement. The database `junto` is deleted, the staged files take the places of the files, and `junto_restore` gets the name `junto`. What belonged to the replaced data is deleted: the exports, the transcription jobs in the spool, the partial files in the temporary directory of the recorder, and the copy of the database from before a migration.
 
 The volumes need free space for a second copy of the files, and PostgreSQL for a second copy of the database, until step 2.
 
 During step 2, after its first action, no database `junto` exists. When the script is interrupted there, the server does not start, and its log states `database "junto" does not exist`. Run the restore again: every run restores everything from the backup. A run that fails reads the state of the database server and states which of these cases holds.
 
-A release that is newer than the backup restores it when its `restored` command accepts the database of the backup, and then applies its migrations at the start. When the command does not accept it, the restore ends in step 1 with a message. Then check out the release of the backup, restore, and upgrade. A backup that was written before the server had the backup commands is such a case. A server that is older than the database does not start (ADR 0005).
+A backup of another release than the checkout is refused: the command `restored` accepts the schema of its own release only, and a server that is older than the database does not start (ADR 0005). Check out the release of the backup, restore, and upgrade. A backup that the first release with the backup commands wrote has no file `schema`. The script then learns the schema in step 1, from `junto-server restored`, and ends there with the message of the server when the release differs; nothing is replaced.
 
-The archive can hold a directory that its database does not name: an upload that ended, or a recording that was finished, between the steps 2 and 3 of the backup. After a restore such a directory stays on the disk. No route returns it.
+The archive can hold a directory that its database does not name: an upload that ended, or a recording that was finished, between the steps 3 and 4 of the backup. After the replacement the script runs `junto-server unnamed-files` and prints these directories. No route returns them. See "Directories that the database does not name".
+
+### Directories that the database does not name
+
+A restore and the way back after an upgrade can leave a directory of an attachment, of a recording or of an export that no row of the database names. `junto-server unnamed-files` lists them, and with `--remove` deletes them (ADR 0018):
+
+```sh
+docker compose -f one-host.yaml exec server junto-server unnamed-files
+docker compose -f one-host.yaml exec server junto-server unnamed-files --remove
+```
+
+- `unnamed <directory>`: no row names the directory, and its last change is more than 24 hours ago. With `--remove` the line is `removed <directory>`.
+- `skip <directory> changed_recently`: no row names the directory, and it was changed in the last 24 hours. The command does not delete it. The server writes the row of an upload before it creates the directory, and the 24 hours are a second condition that does not depend on that order: the command never deletes a directory that the server is writing. A restore gives each directory the time of its last change before the backup, so the directories of a backup that is older than one day are `unnamed` at once.
+- The command deletes nothing while a backup holds deletions back.
+
+`deploy/backup.sh` runs the removal at the start of each backup and prints what was removed. A host with regular backups needs no further step.
 
 ## Upgrade
 
@@ -255,10 +282,10 @@ The server is never updated automatically (ADR 0005). An upgrade is a new checko
    ```
 
 2. Make a backup with `deploy/backup.sh`. The server stays stopped, so the backup holds everything up to the upgrade. When the script states that directories are not in the backup, read `left-out`: for a line `skip <directory> files_are_processed`, start the server, wait until the recording is `ready`, and repeat from step 1.
-3. Check the free space for the copy of step 5: the size of the database, on the file system of the volume `postgres`. The storage guard does not count this space.
+3. Check the free space for the copy of step 6: the size of the database, on the file system of the volume `postgres`. The storage guard does not count this space.
 
    ```sh
-   docker compose -f one-host.yaml exec postgres psql -U junto -Atc "select pg_size_pretty(pg_database_size('junto'))"
+   docker compose -f one-host.yaml exec postgres psql -U junto -d postgres -Atc "select pg_size_pretty(pg_database_size('junto'))"
    ```
 
 4. Get the new release and compare `env.example` with your `.env` for new settings.
@@ -267,7 +294,8 @@ The server is never updated automatically (ADR 0005). An upgrade is a new checko
    git fetch && git checkout <new release>
    ```
 
-5. Build and start. When the release has a migration, the server first copies the database to `junto_before_<number>` on the same PostgreSQL server, then applies the migrations (ADR 0018). Its log names the copy.
+5. Only when the deployment was created by a release in which the server connected as the user `junto`: run `deploy/database-user.sh one-host.yaml` (see "The database user of an earlier release").
+6. Build and start. When the release has a migration, the server first copies the database to `junto_before_<number>` on the same PostgreSQL server, then applies the migrations (ADR 0018). Its log names the copy.
 
    ```sh
    docker compose -f one-host.yaml up -d --build
@@ -275,11 +303,27 @@ The server is never updated automatically (ADR 0005). An upgrade is a new checko
    docker compose -f one-host.yaml logs --no-log-prefix server | grep junto_before_
    ```
 
-The server is unavailable from step 1 until the build of step 5 has ended. To shorten that time, build the new images in a second checkout of the repository before step 1 (`docker compose -f one-host.yaml build`); the images get the same names, and step 5 then starts them without a build.
+The server is unavailable from step 1 until the build of step 6 has ended. To shorten that time, build the new images in a second checkout of the repository before step 1, under another project name: `docker compose -p junto-next -f one-host.yaml build`. The images then have the names `junto-next-...`, the images of the release that runs keep their names for the steps 1 and 2, and the build of step 6 takes its layers from the build cache. Remove the images `junto-next-...` afterwards.
 
 In the two-host form, upgrade the public host first when the release changes the media server or Redis; calls end while those two restart.
 
-The server keeps one copy. The next upgrade with a migration replaces it. To free the space earlier, when the new release works: `docker compose -f one-host.yaml exec postgres dropdb -U junto junto_before_<number>`.
+The server keeps one copy. The upgrade that follows a finished one replaces it. To free the space earlier, when the new release works: `docker compose -f one-host.yaml exec postgres dropdb -U junto junto_before_<number>`.
+
+### The database user of an earlier release
+
+In the first releases the server connected to PostgreSQL as `junto`, the first user of the container, which has every right and owns the database and its tables. From this release on the server connects as `junto_server` (see "The database users"). PostgreSQL does not let the first user lose its rights, so the deployment gets the new role, once, in the checkout of the new release and with the server stopped:
+
+```sh
+deploy/database-user.sh one-host.yaml
+```
+
+The script starts `postgres` with the Compose file of the checkout, creates the role `junto_server` with the password of `.env`, and makes it the owner of the database `junto`, of each copy from before a migration, and of the tables, views, sequences, routines, types and schemas that `junto` owns in them. Each database changes in one transaction. A second run changes nothing. A role that the operator gave to `junto_server`, and a right that the operator granted to it, stay.
+
+To learn whether a deployment needs the step: `docker compose -f one-host.yaml exec postgres psql -U junto -d postgres -Atc "select count(*) from pg_roles where rolname = 'junto_server'"` prints `0`.
+
+Without the step the server of the new release does not start, and its log states `password authentication failed for user "junto_server"`. `deploy/backup.sh` states the missing role and makes no backup. `deploy/restore.sh` needs no step: it creates the role for the restored database.
+
+The way back to an earlier release needs no step for the users. The Compose file of that release starts PostgreSQL without the access rules of this release, and its server connects as `junto`. `deploy/upgrade-undo.sh` gives the role that the server of its checkout connects as the password of `.env`, because a change of the secret in this release changes the password of `junto_server` only.
 
 ### When the server does not start after an upgrade
 
@@ -290,10 +334,13 @@ docker compose -f one-host.yaml stop server
 docker compose -f one-host.yaml logs --no-log-prefix --tail 20 server
 ```
 
-- `the copy of the database before the migration could not be made`: nothing was migrated. The log states the message of PostgreSQL after it. The copy needs that no other program is connected to the database `junto` (close every `psql` session), free disk space, and a database user that may create a database. The user `junto` of these Compose files is the first user of the PostgreSQL container and may. When the server connects as another database user, give that user the right: `alter role <user> createdb`. `JUNTO_MIGRATION_COPY=none` in `.env` starts the upgrade without a copy; then the backup of step 2 is the only way back.
-- `database "junto_before_<number>" already exists` after that message: a database of that name has no comment of the server, so the server does not replace it. That is the state when the server was stopped while it made the copy. The database is a whole copy from before the migration; delete it (`docker compose -f one-host.yaml exec postgres dropdb -U junto junto_before_<number>`) and start again, or go back to it by its name as described below.
+- `password authentication failed for user "junto_server"`: the deployment was created by an earlier release and does not have the role of the server, or the password of `.env` is not the one of the role. See "The database user of an earlier release" and "A changed secret".
+- `the copy of the database before the migration could not be made`: nothing was migrated. The log states the message of PostgreSQL after it. The copy needs that no other program is connected to the database `junto` (close every `psql` session), free disk space, and a role of the server that owns the database and may create one. `deploy/database-user.sh` gives the role `junto_server` both again. `JUNTO_MIGRATION_COPY=none` in `.env` starts the upgrade without a copy; then the backup of step 2 is the only way back.
+- `a database with the name junto_before_<number> exists and does not have the comment of a copy of this database`: the server did not make that database, or a version of the server before this release was stopped while it made its copy. The server does not replace it. Give it another name or delete it (`docker compose -f one-host.yaml exec postgres dropdb -U junto junto_before_<number>`), and start again.
+- `a database with the name junto_making_<number> exists, and this server did not record that it made it`: the same for the name under which the server creates its copy. A start that was stopped while it made the copy leaves such a database, and the next start deletes it when the comment of the database `junto` names it. After a way back that comment is on `junto_undone`, and the database is deleted by hand.
+- `must be owner of`: an earlier release, in which the server connected as `junto`, created a table after the role of the server got the database. Run `deploy/database-user.sh` again.
 - `a recording is starting or runs`: start the earlier release, end the recording, and repeat.
-- `database migration failed`: go back as described below, and report the message.
+- `database migration failed`: go back as described below, and report the message. The migrations before the failed one stay applied. The comment of the database then states `junto: an upgrade of this database has not finished. junto_before_<number> is the copy from before the upgrade`, and a further start keeps that copy and makes no other: `docker compose -f one-host.yaml exec postgres psql -U junto -d postgres -Atc "select shobj_description(oid, 'pg_database') from pg_database where datname = 'junto'"`.
 
 ### The way back after an upgrade
 
@@ -305,19 +352,21 @@ deploy/upgrade-undo.sh one-host.yaml
 (cd deploy && docker compose -f one-host.yaml up -d --build)
 ```
 
-`upgrade-undo.sh` runs in the checkout of the earlier release. It stops the server and the worker, builds the server image of the checkout and runs `junto-server new-event-epoch` on the copy, so that every client loads a new snapshot: the clients hold positions of events that the copy does not have (ADR 0010). Then it gives the copy the name `junto` and keeps the database that the new release changed as `junto_undone`, in one transaction. A failure before that transaction changes no name, and the script can be run again. Everything that was written after the upgrade is in `junto_undone` only. The script names the command that deletes `junto_undone`, and it changes nothing while a `junto_undone` of an earlier way back exists.
+`upgrade-undo.sh` runs in the checkout of the earlier release. It stops the server and the worker, builds the server image of the checkout, gives the database role of that server the password of `.env`, and runs `junto-server new-event-epoch` on the copy, so that every client loads a new snapshot: the clients hold positions of events that the copy does not have (ADR 0010). Then it gives the copy the name `junto` and keeps the database that the new release changed as `junto_undone`, in one transaction. A failure before that transaction changes no name, and the script can be run again. Everything that was written after the upgrade is in `junto_undone` only. The script names the command that deletes `junto_undone`, and it changes nothing while a `junto_undone` of an earlier way back exists.
 
-A checkout that is older than the script does not have it. Copy `deploy/upgrade-undo.sh` of the newer release into `deploy/` of that checkout before the script is run.
+A checkout that is older than the script does not have it, and a checkout with an earlier form of the script does not read the comment of the database. Copy `deploy/upgrade-undo.sh` of the newer release into `deploy/` of that checkout before the script is run.
 
-Without a name, the script takes the one database `junto_before_<number>` that has the comment of the server. A second argument names another one.
+Without a name, the script takes the copy that the comment of the database names. The server writes that comment before the first migration and removes it after the last one, so it is there after an upgrade that failed. Without that comment the script takes the one database `junto_before_<number>` that has the comment of the server. A second argument names another one.
 
-The copy holds the database and no file. An attachment or a recording that was deleted after the upgrade is not brought back, and the earlier release then names a file that does not exist. In that case, and when no copy with the number of the earlier schema exists, restore the backup of step 2 with the checkout of the earlier release (see "Restore").
+The copy is the database from before the first migration of the upgrade, also when the upgrade failed in a later migration and the server was started again: a start that finds an upgrade that has not finished keeps the copy and makes no other (ADR 0018).
 
-A start that follows a failed migration makes a new copy and deletes the copy before it. When a release has more than one migration and a later one fails, the copy of the second start has the schema after the first migration, and the earlier release does not start on it. Stop the server at the first failure, as described above; when the earlier release does not start on the copy, restore the backup.
+The copy holds the database and no file. An attachment or a recording that was deleted after the upgrade is not brought back, and the earlier release then names a file that does not exist. In that case, and when the copy was deleted, restore the backup of step 2 with the checkout of the earlier release (see "Restore").
+
+A directory that was written after the upgrade stays on the disk, and no row of the copy names it. When the server of the earlier checkout has the command, the script runs `junto-server unnamed-files` after the renames and prints these directories (see "Directories that the database does not name"). A release before that command prints its usage, and the directories stay.
 
 ## A changed secret
 
-- `JUNTO_POSTGRES_PASSWORD` is stored by PostgreSQL at its first start. When the line in `.env` no longer matches, the server does not start and its log states `password authentication failed for user "junto"`. To change the password, change it in the database first, then in `.env`, then run `up -d`. `psql` asks for the new value, so that it is not part of a command line: `docker compose -f <form file> exec postgres psql -U junto -c '\password junto'`. Use letters and digits only.
+- `JUNTO_POSTGRES_PASSWORD` is stored by PostgreSQL at its first start, as the password of the role `junto_server`. When the line in `.env` no longer matches, the server does not start and its log states `password authentication failed for user "junto_server"`. To change the password, change it in the database first, then in `.env`, then run `up -d`. `psql` asks for the new value, so that it is not part of a command line: `docker compose -f <form file> exec postgres psql -U junto -d postgres -c '\password junto_server'`. Use letters and digits only.
 - `JUNTO_LIVEKIT_API_KEY`, `JUNTO_LIVEKIT_API_SECRET` and `JUNTO_REDIS_PASSWORD` are read at each start. Change them in `.env` (on both hosts in the two-host form) and run `up -d`. Calls end when the media server restarts.
 
 ## Removal
@@ -336,8 +385,8 @@ Then remove the model directory, `/etc/sysctl.d/90-junto.conf`, the firewall rul
 - `one-host.yaml` and the two files of the two-host form were started on one machine, with certificates that the entry signed itself (`deploy/tests/one-host.sh`, `deploy/tests/two-hosts.sh`). They were not started on a host with a public address, and no call ran through them.
 - `worker-gpu.yaml` was checked as a rendered configuration only.
 - The address that the server sees for a request of the entry was not observed on a Linux host. `JUNTO_TRUSTED_PROXIES` names the address of the host in the container network. The setting also takes a network; the forms name one address, because the recorder and Redis are containers of the same network.
-- The backup, the restore and the upgrade were run in the local form only (`deploy/tests/backup-restore.sh`, `deploy/tests/upgrade.sh`), with recordings that the test wrote as rows and files, not with the recorder. In the one-host form and on the data host, the commands of the server binary run in the container of the server, which has a fixed address there.
-- An upgrade with more than one migration, and a restore of a backup with a newer release, were not run: the repository has one release with the backup commands.
+- The backup, the restore, the upgrade and `deploy/database-user.sh` were run in the local form only (`deploy/tests/backup-restore.sh`, `deploy/tests/upgrade.sh`), with recordings that the test wrote as rows and files, not with the recorder. In the one-host form and on the data host, the commands of the server binary run in the container of the server, which has a fixed address there.
+- The way back to a release that has the command `unnamed-files` was run with a copy that the test made by hand, because no later release exists. The scripts of an earlier checkout were not run on a deployment that has the role `junto_server`, except the server of that checkout and `upgrade-undo.sh`.
 - A recording through the recorder was made in the local form only (`deploy/tests/recording.sh`, ADR 0910), on one machine with Docker Desktop on arm64. In the one-host form and in the two-host form the recorder reaches the media server on its public name, and no recording was made there.
 - The recorder ran without a capability in the local form. It was not run on a Linux host with another seccomp or AppArmor profile (ADR 0020).
 - In the local form, `rtc.stun_servers` stopped the recorder's requests to public STUN servers of third parties. The one-host form names its TURN port in the same setting; it was not observed there (ADR 0007).

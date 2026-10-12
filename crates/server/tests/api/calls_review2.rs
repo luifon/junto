@@ -491,7 +491,13 @@ async fn a_direct_call_does_not_ring_again_and_again() {
         .await
         .empty(StatusCode::NO_CONTENT);
     ring(server, ann, ben).await.ok::<CallJoin>(StatusCode::OK);
-    assert_eq!(server.count("call_invitations").await, 0);
+    // The ring for a muted conversation is stored for the caller and silent for the
+    // account that muted (ADR 0515).
+    let silent: Vec<bool> = sqlx::query_scalar("select silent from call_invitations")
+        .fetch_all(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(silent, [true]);
     server.leave_call(ann).await;
     assert_eq!(
         rings_heard(&server.call_events(ben, &mut to_ben).await, ben),

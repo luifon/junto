@@ -173,10 +173,11 @@ async fn a_challenge_is_used_once() {
 }
 
 #[tokio::test]
-async fn a_new_challenge_replaces_the_one_before() {
+async fn a_new_challenge_replaces_the_one_before_in_the_second_half_of_its_lifetime() {
     let server = TestServer::start().await;
     let owner = server.owner().await;
     let first = server.proof(&owner.key, ChallengeOperation::Login).await;
+    server.clock.advance(Duration::seconds(31));
     let second = server.proof(&owner.key, ChallengeOperation::Login).await;
     login_with(&server, &first)
         .await

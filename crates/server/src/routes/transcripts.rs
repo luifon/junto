@@ -37,8 +37,7 @@ use crate::{read, transact};
 
 const DEFAULT_PAGE: u32 = 200;
 const LARGEST_PAGE: u32 = 500;
-/// The longest text of a correction. With every character at its longest encoding, the
-/// event of a correction stays below the bound of an event (ADR 0011).
+/// The longest text of a correction.
 const LONGEST_CORRECTION: usize = 2000;
 /// The lines that the text form of a transcript reads at one time.
 const TEXT_PAGE: i64 = 2000;
@@ -193,8 +192,8 @@ async fn tell(
     recording: &RecordingRow,
     event: &Event,
 ) -> ApiResult<()> {
-    let call_runs = store::call_runs(&mut *connection, recording.call_id).await?;
-    events::tell_of_recording(connection, now, call_runs, event).await
+    let running = store::running_call(&mut *connection, recording.call_id).await?;
+    events::tell_of_recording(connection, now, running, event).await
 }
 
 /// Corrects one line of the transcript of a recording. Every person who may read the
@@ -242,9 +241,6 @@ pub async fn correct_transcript_line(
             workspace_id: recording.workspace_id,
             channel_id: recording.channel_id,
             line: line.line,
-            text: line.text.clone(),
-            corrected_by: by,
-            corrected_at: now,
         };
         tell(connection, now, &recording, &event).await?;
         Ok(line)
@@ -287,7 +283,7 @@ pub async fn rename_transcript_speaker(
             recording_id,
             workspace_id: recording.workspace_id,
             channel_id: recording.channel_id,
-            speaker: speaker.clone(),
+            speaker: speaker.number,
         };
         tell(connection, now, &recording, &event).await?;
         Ok(speaker)

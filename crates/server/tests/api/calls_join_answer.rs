@@ -1,5 +1,5 @@
 //! What the answer to a join states about the caller, and the leave that names the identity
-//! of its place (ADR 0503, ADR 0510).
+//! of its place (ADR 0503, ADR 0510, ADR 0517).
 
 use junto_protocol::call::{BlockReason, CallJoin, MicrophoneBlock, SoundBlock};
 use junto_protocol::ids::{AccountId, ChannelId};
@@ -7,6 +7,7 @@ use junto_server::media::{TrackKind, TrackSource};
 use reqwest::StatusCode;
 use serde_json::{Value, json};
 
+use crate::calls_review2::{invite, move_to};
 use crate::calls_support::Scene;
 use crate::devices::link_second_device;
 use crate::support::{Member, TestServer};
@@ -156,6 +157,103 @@ async fn the_answer_to_a_join_states_the_block_of_meeting_mode() {
         .ok(StatusCode::OK);
     assert_eq!(blocks(&moved), (by_meeting, None));
     assert!(moved.entry_requests.is_empty());
+}
+
+/// A block names the person who set it, and the block of a meeting tells that meeting mode
+/// is on. An account that is not inside a call that hides who is inside learns neither
+/// (ADR 0517): the answer states no block until the admission check has seen the account.
+#[tokio::test]
+async fn the_answer_states_no_block_before_the_account_is_inside_a_hidden_call() {
+    let scene = Scene::start().await;
+    let (server, owner, ann, ben) = (&scene.server, &scene.owner, &scene.ann, &scene.ben);
+    let lounge = scene.voice.id;
+    let garden = server.voice(owner, scene.workspace_id, "garden").await.id;
+    server
+        .call_settings(owner, lounge, json!({ "hides_occupants": true }))
+        .await;
+    let presenter = server.enter_call(ann, lounge).await;
+    server
+        .put(
+            ann,
+            "/api/v1/call/screen-share",
+            &json!({ "audio": "none" }),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert!(server.fake().publish(
+        &presenter.room,
+        &presenter.identity,
+        TrackKind::Video,
+        TrackSource::ScreenShare
+    ));
+    server.check().await;
+    server
+        .put_empty(ann, &format!("/api/v1/channels/{lounge}/call/meeting"))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+
+    // A seat that the check has not seen has the block of the meeting, and the answer does
+    // not state it.
+    let seat = server.join_call(ben, lounge).await;
+    assert_eq!(server.count("call_microphone_blocks").await, 1);
+    assert_eq!(blocks(&seat), (None, None));
+
+    // An accepted invitation gives a seat in the same way.
+    let carl = server.join(owner, "Carl").await;
+    let invitation = invite(server, ann, lounge, &carl).await;
+    let accepted: CallJoin = server
+        .post(
+            &carl,
+            &format!("/api/v1/call/invitations/{}/acceptance", invitation.id),
+            &Value::Null,
+        )
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(server.count("call_microphone_blocks").await, 2);
+    assert_eq!(blocks(&accepted), (None, None));
+
+    // A person on the way in by a move is not inside either.
+    server.enter_call(owner, garden).await;
+    let pending = move_to(server, owner, garden, owner.account_id, lounge).await;
+    let moved: CallJoin = server
+        .post(
+            owner,
+            &format!("/api/v1/call/moves/{}/join", pending.id),
+            &Value::Null,
+        )
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(blocks(&moved), (None, None));
+    server.fake().connect(&moved.token).unwrap();
+    server.check().await;
+
+    // A moderator inside blocks the sound of the seat. The answer would name the moderator.
+    server
+        .put_empty(owner, &block_path(lounge, ben.account_id, "sound-block"))
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    assert_eq!(blocks(&server.join_call(ben, lounge).await), (None, None));
+
+    // The check sees the account. From then on the answer and the call state the blocks.
+    server.connect(seat);
+    server.check().await;
+    let held = (
+        Some(MicrophoneBlock {
+            by: ann.account_id,
+            reason: BlockReason::Meeting,
+        }),
+        Some(SoundBlock {
+            by: owner.account_id,
+        }),
+    );
+    assert_eq!(blocks(&server.join_call(ben, lounge).await), held);
+    let read = server.own_call(ben).await.call.unwrap().call;
+    let own = read
+        .participants
+        .into_iter()
+        .find(|participant| participant.account_id == ben.account_id)
+        .unwrap();
+    assert_eq!((own.microphone_block, own.sound_block), held);
 }
 
 #[tokio::test]

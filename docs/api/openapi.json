@@ -4533,7 +4533,7 @@
         "tags": [
           "joining"
         ],
-        "summary": "Every invite of the server, without its code.",
+        "summary": "The invites that the caller reads, without their codes: the invites that the caller\ncreated, and the invites whose workspaces the caller may all see.",
         "operationId": "list_invites",
         "responses": {
           "200": {
@@ -4659,7 +4659,7 @@
         "tags": [
           "joining"
         ],
-        "summary": "Cancels an invite. Its code stops working.",
+        "summary": "Cancels an invite that the caller reads. Its code stops working. An invite that the\ncaller does not read is answered as an invite that does not exist.",
         "operationId": "revoke_invite",
         "parameters": [
           {
@@ -7750,7 +7750,7 @@
         "tags": [
           "workspaces"
         ],
-        "summary": "Takes a workspace role from a member.",
+        "summary": "Takes a workspace role from a member. The member gets back what the overrides of the\nrole deny, so the caller must hold those permissions in the channels of the overrides.",
         "operationId": "unassign_workspace_role",
         "parameters": [
           {
@@ -8820,6 +8820,17 @@
                 "type": "string",
                 "enum": [
                   "invite_revoked"
+                ]
+              },
+              "invite_created_by": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/AccountId",
+                    "description": "The account that created the invite. Absent in an entry that was written before\nthe field existed."
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               },
               "invite_id": {
@@ -10253,6 +10264,10 @@
           "participants"
         ],
         "properties": {
+          "hides_occupants": {
+            "type": "boolean",
+            "description": "The call shows who is inside only to the people inside. It keeps the setting that\nits voice channel had when the call began; a later change of the channel applies to\nthe next call (ADR 0517). An account that is not inside such a call yet gets it\nwithout lock, meeting, participants and recording."
+          },
           "id": {
             "$ref": "#/components/schemas/CallId"
           },
@@ -11690,7 +11705,7 @@
               "boolean",
               "null"
             ],
-            "description": "True while the free disk space of the recordings is at or below the reserve: the\nserver starts no recording and stops the ones that run (ADR 0006). Absent on a server\nwithout a recorder, and when the free space cannot be read."
+            "description": "True while the free disk space of the recordings, of the attachments or of the\nexports is at or below the reserve: the server starts no recording, stops the ones\nthat run, and refuses new uploads and exports (ADR 0006). Absent on a server without\nsuch a directory, and when no free space can be read."
           }
         }
       },
@@ -13593,12 +13608,12 @@
         "type": "string",
         "description": "A permission that acts on the whole server. The number is the bit of the stored set.",
         "enum": [
-          "Administrator",
-          "CreateWorkspace",
-          "CreateInvites",
-          "ApproveJoinRequests",
-          "BanMembers",
-          "ViewServerAuditLog"
+          "administrator",
+          "create_workspace",
+          "create_invites",
+          "approve_join_requests",
+          "ban_members",
+          "view_server_audit_log"
         ]
       },
       "ServerRole": {
@@ -13770,6 +13785,13 @@
             },
             "description": "The invitations into calls that wait for an answer of the account."
           },
+          "call_moves": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CallMove"
+            },
+            "description": "The moves between voice channels that wait and that name the account, as the person\nwho is moved or as the person who moved (ADR 0511)."
+          },
           "cursor": {
             "$ref": "#/components/schemas/Cursor"
           },
@@ -13786,6 +13808,13 @@
               "$ref": "#/components/schemas/DirectMute"
             },
             "description": "The direct-message conversations that the account has muted."
+          },
+          "entry_requests": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EntryRequest"
+            },
+            "description": "The requests of the account to enter a voice channel that wait for an answer."
           },
           "messages": {
             "type": "array",
@@ -13815,6 +13844,13 @@
                 "type": "null"
               }
             ]
+          },
+          "sent_call_invitations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CallInvitation"
+            },
+            "description": "The invitations into calls that the account made and that wait for an answer."
           },
           "threads": {
             "type": "array",
@@ -15210,22 +15246,22 @@
         "type": "string",
         "description": "A permission inside one workspace. The number is the bit of the stored set.",
         "enum": [
-          "ViewChannel",
-          "ManageRoles",
-          "ManageChannel",
-          "ManageMessages",
-          "MentionEveryone",
-          "ManageGlossary",
-          "RecordCalls",
-          "ManageRecordings",
-          "ExportChannel",
-          "MoveMembers",
-          "MuteMembers",
-          "DeafenMembers",
-          "DisconnectMembers",
-          "LockRoom",
-          "RunMeetingMode",
-          "ViewAuditEntries"
+          "view_channel",
+          "manage_roles",
+          "manage_channel",
+          "manage_messages",
+          "mention_everyone",
+          "manage_glossary",
+          "record_calls",
+          "manage_recordings",
+          "export_channel",
+          "move_members",
+          "mute_members",
+          "deafen_members",
+          "disconnect_members",
+          "lock_room",
+          "run_meeting_mode",
+          "view_audit_entries"
         ]
       },
       "WorkspaceRole": {

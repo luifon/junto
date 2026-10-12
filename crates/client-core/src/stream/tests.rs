@@ -8,8 +8,7 @@ use std::time::Duration;
 
 use junto_protocol::account::RecoveryNotice;
 use junto_protocol::call::{
-    Call, CallInvitation, CallMove, ChannelCall, EntryRequest, MoveOutcome, OwnCallState,
-    OwnCallView,
+    Call, CallInvitation, CallMove, EntryRequest, MoveOutcome, OwnCallState, OwnCallView,
 };
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::{
@@ -152,7 +151,6 @@ struct Routes {
     snapshot: Option<Snapshot>,
     members: Vec<WorkspaceMember>,
     own_call: Option<OwnCallState>,
-    channel_call: Option<ChannelCall>,
     /// How many requests are on their way now, and the most that were at one time.
     active: usize,
     most_active: usize,
@@ -249,8 +247,6 @@ impl crate::api::Transport for Http {
                 serde_json::to_vec(&OwnCallView {
                     call: routes.own_call.clone(),
                 })
-            } else if path.ends_with("/call") {
-                serde_json::to_vec(routes.channel_call.as_ref().unwrap())
             } else {
                 panic!("the stream client asked for {path}");
             };
@@ -1109,6 +1105,7 @@ async fn the_call_of_the_account_is_read_with_its_requests_and_reported_to_the_c
             started_at: Some(time()),
             lock: None,
             meeting: None,
+            hides_occupants: false,
             participants: vec![participant(rig.scene.account_id)],
             recording: None,
         },
@@ -1545,42 +1542,33 @@ async fn a_new_session_reads_again_every_part_that_was_on_its_way() {
     rig.want(ConnectionLevel::Selected, "jst_one");
     let (peer, _, _) = rig.served().await;
     let (call_id, place) = (CallId::generate(), rig.scene.place(rig.scene.hidden));
+    let own = rig.scene.own_call(call_id, rig.scene.hidden);
     let inside = participant(AccountId::generate());
-    rig.http.routes.lock().unwrap().channel_call = Some(ChannelCall {
-        workspace_id: rig.scene.workspace_id,
-        channel_id: rig.scene.hidden,
-        in_use: true,
-        call: Some(Call {
+    rig.http.routes.lock().unwrap().own_call = Some(OwnCallState {
+        own: own.clone(),
+        call: Call {
             id: call_id,
             place,
             started_at: Some(time()),
             lock: None,
             meeting: None,
+            hides_occupants: true,
             participants: vec![inside.clone()],
             recording: None,
-        }),
+        },
+        entry_requests: Vec::new(),
     });
     let gate = rig.http.hold("/call");
+    // The account gets a place in a call: the client reads its call.
     peer.event(
         41,
-        Event::CallStarted {
-            call_id,
-            place,
-            started_at: time(),
+        Event::OwnCallChanged {
+            call: Some(own),
+            left: None,
         },
     )
     .await;
-    // The channel stops hiding who is inside: the client reads its call.
-    let mut shown = rig
-        .model()
-        .channel(rig.scene.hidden)
-        .unwrap()
-        .channel
-        .clone();
-    shown.hides_occupants = false;
-    peer.event(42, Event::ChannelUpdated { channel: shown })
-        .await;
-    rig.model_when("the events", |model| model.cursor.position == 42)
+    rig.model_when("the event", |model| model.cursor.position == 41)
         .await;
     soon("the read", async {
         while rig.http.count("/call") == 0 {
@@ -1604,6 +1592,177 @@ async fn a_new_session_reads_again_every_part_that_was_on_its_way() {
     assert_eq!(model.call_at(&place).unwrap().participants, [inside]);
     let seen = rig.http.routes.lock().unwrap().seen.clone();
     assert_eq!(seen.last().unwrap().1, "jst_two");
+}
+
+/// ADR 0517: an account with a place in a call that hides who is inside gets nothing of
+/// the call until the server has seen its device in the room. The event of its own entry
+/// is the first one of the call that it receives, and the client reads the call then.
+#[tokio::test(start_paused = true)]
+async fn the_call_of_the_account_is_read_again_when_the_server_has_seen_its_device() {
+    let mut rig = rig();
+    rig.want(ConnectionLevel::Selected, "jst_one");
+    let (peer, _, _) = rig.served().await;
+    let (call_id, place) = (CallId::generate(), rig.scene.place(rig.scene.hidden));
+    let own = rig.scene.own_call(call_id, rig.scene.hidden);
+    let answer = |participants: Vec<junto_protocol::call::CallParticipant>,
+                  entry_requests: Vec<EntryRequest>| OwnCallState {
+        own: own.clone(),
+        call: Call {
+            id: call_id,
+            place,
+            started_at: Some(time()),
+            lock: None,
+            meeting: None,
+            hides_occupants: true,
+            participants,
+            recording: None,
+        },
+        entry_requests,
+    };
+    rig.http.routes.lock().unwrap().own_call = Some(answer(Vec::new(), Vec::new()));
+    peer.event(
+        41,
+        Event::OwnCallChanged {
+            call: Some(own.clone()),
+            left: None,
+        },
+    )
+    .await;
+    let model = rig
+        .model_when("the call without its people", |model| {
+            model.call_at(&place).is_some()
+        })
+        .await;
+    let call = model.call_at(&place).unwrap();
+    assert!(call.hides_occupants && call.participants.is_empty());
+    assert_eq!(rig.http.count("/api/v1/call"), 1);
+
+    let (me, other) = (
+        participant(rig.scene.account_id),
+        participant(AccountId::generate()),
+    );
+    let request = EntryRequest {
+        id: EntryRequestId::generate(),
+        call_id,
+        place,
+        account_id: AccountId::generate(),
+        created_at: time(),
+        expires_at: time(),
+    };
+    rig.http.routes.lock().unwrap().own_call = Some(answer(
+        vec![other.clone(), me.clone()],
+        vec![request.clone()],
+    ));
+    peer.event(
+        42,
+        Event::CallParticipantJoined {
+            call_id,
+            place,
+            participant: me,
+        },
+    )
+    .await;
+    let model = rig
+        .model_when("the people inside", |model| {
+            model
+                .call_at(&place)
+                .is_some_and(|call| call.participants.len() == 2)
+        })
+        .await;
+    assert_eq!(model.entry_requests, [request]);
+    assert_eq!(rig.http.count("/api/v1/call"), 2);
+
+    // The entry of another person is told by its event and asks for no read.
+    peer.event(
+        43,
+        Event::CallParticipantJoined {
+            call_id,
+            place,
+            participant: participant(AccountId::generate()),
+        },
+    )
+    .await;
+    rig.model_when("the third person", |model| {
+        model
+            .call_at(&place)
+            .is_some_and(|call| call.participants.len() == 3)
+    })
+    .await;
+    assert_eq!(rig.http.count("/api/v1/call"), 2);
+}
+
+/// No event carries what the read of the own call gives of a call that hides who is inside
+/// (ADR 0517), so a read that failed is sent again while the account is in the call.
+#[tokio::test(start_paused = true)]
+async fn a_read_of_the_own_call_that_failed_is_sent_again_while_the_account_is_in_the_call() {
+    let mut rig = rig();
+    rig.want(ConnectionLevel::Selected, "jst_one");
+    let (peer, _, _) = rig.served().await;
+    let (call_id, place) = (CallId::generate(), rig.scene.place(rig.scene.hidden));
+    let own = rig.scene.own_call(call_id, rig.scene.hidden);
+    let inside = participant(AccountId::generate());
+    rig.http.routes.lock().unwrap().own_call = Some(OwnCallState {
+        own: own.clone(),
+        call: Call {
+            id: call_id,
+            place,
+            started_at: Some(time()),
+            lock: None,
+            meeting: None,
+            hides_occupants: true,
+            participants: vec![inside.clone()],
+            recording: None,
+        },
+        entry_requests: Vec::new(),
+    });
+    rig.http.fail("/api/v1/call", 403, "forbidden");
+    peer.event(
+        41,
+        Event::OwnCallChanged {
+            call: Some(own),
+            left: None,
+        },
+    )
+    .await;
+    let model = rig
+        .model_when("the people inside", |model| {
+            model
+                .call_at(&place)
+                .is_some_and(|call| !call.participants.is_empty())
+        })
+        .await;
+    assert_eq!(model.call_at(&place).unwrap().participants, [inside]);
+    assert_eq!(rig.http.count("/api/v1/call"), 2);
+
+    // A read that failed for a call that the account has left is not sent again.
+    rig.http.fail("/api/v1/call", 403, "forbidden");
+    peer.event(
+        42,
+        Event::CallParticipantJoined {
+            call_id,
+            place,
+            participant: participant(rig.scene.account_id),
+        },
+    )
+    .await;
+    soon("the read that fails", async {
+        while rig.http.count("/api/v1/call") < 3 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await;
+    peer.event(
+        43,
+        Event::OwnCallChanged {
+            call: None,
+            left: None,
+        },
+    )
+    .await;
+    rig.model_when("the account has left", |model| model.own_call.is_none())
+        .await;
+    tokio::time::sleep(Duration::from_secs(130)).await;
+    assert_eq!(rig.http.count("/api/v1/call"), 3);
 }
 
 #[tokio::test(start_paused = true)]

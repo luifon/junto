@@ -274,18 +274,21 @@ pub async fn mentions(
     Ok(added_recipients)
 }
 
-pub async fn is_mentioned(
+/// The messages of `ids` that mention the account now: the account is not the author, the
+/// message is not deleted, and the notification settings of the account for the place do
+/// not mute it. One statement for all of them.
+pub async fn mentioned_among(
     connection: &mut PgConnection,
     account: AccountId,
-    id: MessageId,
+    ids: &[MessageId],
     now: OffsetDateTime,
-) -> ApiResult<bool> {
-    Ok(sqlx::query_scalar("select exists(select 1 from messages m cross join lateral notification_policy($2,m.place_id,$3) p
-         where m.id=$1 and m.author_id<>$2 and not m.deleted and not p.muted and p.level<>'nothing'
-         and notification_mentioned($2,m.id,p.roles,p.everyone))")
-        .bind(id)
+) -> ApiResult<Vec<MessageId>> {
+    Ok(sqlx::query_scalar("select m.id from messages m cross join lateral notification_policy($2,m.place_id,$3) p
+         where m.id=any($1) and m.author_id<>$2 and not m.deleted and not p.muted and p.level<>'nothing'
+         and notification_mentioned($2,m.id,p.roles,p.everyone)")
+        .bind(ids)
         .bind(account)
         .bind(now)
-        .fetch_one(connection)
+        .fetch_all(connection)
         .await?)
 }

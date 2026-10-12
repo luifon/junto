@@ -1646,30 +1646,9 @@ fn token_reach() -> BTreeMap<(&'static str, &'static str), TokenAction> {
             ManageMembers,
         ),
         ("PUT", "/api/v1/accounts/{account_id}/ban", ManageMembers),
-        ("DELETE", "/api/v1/accounts/{account_id}/ban", ManageMembers),
-        (
-            "PUT",
-            "/api/v1/accounts/{account_id}/server-roles/{role_id}",
-            ManageMembers,
-        ),
-        (
-            "DELETE",
-            "/api/v1/accounts/{account_id}/server-roles/{role_id}",
-            ManageMembers,
-        ),
         (
             "PUT",
             "/api/v1/workspaces/{workspace_id}/members/{account_id}",
-            ManageMembers,
-        ),
-        (
-            "PUT",
-            "/api/v1/workspaces/{workspace_id}/members/{account_id}/roles/{role_id}",
-            ManageMembers,
-        ),
-        (
-            "DELETE",
-            "/api/v1/workspaces/{workspace_id}/members/{account_id}/roles/{role_id}",
             ManageMembers,
         ),
         ("GET", "/api/v1/invites", ManageMembers),
@@ -1736,12 +1715,19 @@ async fn the_reach_of_access_tokens_is_the_stated_list_of_documented_operations(
     for (method, path) in stated.keys() {
         let in_a_call = path.contains("/call/") && !path.ends_with("/call/settings");
         let about_content = path.contains("/messages") || path.contains("/recording");
+        // A request with a token changes no role assignment and lifts no ban (ADR 0213).
+        let assigns_a_role = path.ends_with("/server-roles/{role_id}")
+            && path.starts_with("/api/v1/accounts/")
+            || path.ends_with("/members/{account_id}/roles/{role_id}");
+        let lifts_a_ban = *method == "DELETE" && path.ends_with("/ban");
         assert!(
             !closed.iter().any(|prefix| path.starts_with(prefix))
                 && *path != "/api/v1/account"
                 && !path.ends_with("/recovery")
                 && !in_a_call
-                && !about_content,
+                && !about_content
+                && !assigns_a_role
+                && !lifts_a_ban,
             "{method} {path} is in the reach of access tokens"
         );
     }

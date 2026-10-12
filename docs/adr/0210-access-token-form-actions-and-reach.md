@@ -24,7 +24,7 @@ Actions and reach:
 - A route that needs no credential reads no `Authorization` header, of a session or of an access token: the server information, the health route, the routes of a device without a session, and the layout page (ADR 0615).
 - `read_structure` reaches the reading routes of the structure: the structure document (ADR 0211), workspaces, workspace roles, channels, overrides, server roles and members.
 - `manage_structure` reaches the routes that create and change workspaces, categories, channels, call settings of a channel, overrides, workspace roles and server roles, and the route that applies changes of the structure (ADR 0211).
-- `manage_members` reaches the list of accounts, removal, ban and unban, the assignment of server roles and workspace roles, adding a member, invites, and the decision of join requests.
+- `manage_members` reaches the list of accounts, removal and ban, adding a member, invites, and the decision of join requests. It does not reach the assignment or the removal of a server role or of a workspace role, and not the unban: a request with a token changes no role assignment and lifts no ban (ADR 0213).
 - `read_audit_log` reaches the two audit log routes.
 - No token reaches the routes of sessions, of the caller's own account and devices, of access tokens, of recovery, of messages, conversations, attachments, notifications and search, of calls, of recordings and transcripts, of the snapshot and of the event stream.
 - A token on a route of an action that it does not hold gets `forbidden`. An unknown, expired or revoked token on a route of the table gets `unauthenticated`.
@@ -52,9 +52,9 @@ Audit and events:
 ## Consequences
 
 - A token loses access when its creator loses a permission, at the next request. A creator who lost the administrator permission keeps a token that does what the creator still may do, can list and revoke it, and cannot create another.
-- A token that leaks gives no access to message content, to direct messages, to a call or to the event stream, whatever its creator may read.
+- A token that leaks reads no message content, no direct message, no call and no event stream, whatever its creator may read. A token with `manage_members` lets an account in, by an invite, by an approved join request or as a member of a further workspace. That account reads what every member of those workspaces reads, and nothing that a role or a lifted ban grants. A token that also holds `manage_structure` can change channel overrides and roles, and with them what every member reads (ADR 0213).
 - A token cannot create, list or revoke tokens, so a leaked token cannot outlive its expiry.
-- A token with `manage_members` or `manage_structure` can give a permission to an account, as its creator can. What it gave stays after the token has ended; the audit entries name the token.
+- A token with `manage_structure` can give a permission to the holders of a role, as its creator can, and a token with `manage_members` can make an account a member. No token gives a role to an account. What a token gave stays after the token has ended; the audit entries name the token.
 - A program cannot use a token for a function outside the four actions. ADR 0201 states that every function of the client is available to another program with an access token; this record limits the first set of actions to administration, and a later record widens it.
 - A token of the server owner cannot delete a channel with permanent messages, perform a recovery or assign the owner.
 - The audit log tells for each entry whether a person or a token of that person acted, and which token.

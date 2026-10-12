@@ -64,7 +64,7 @@ async fn migration_backfills_notes_and_audit_actions_in_order_without_private_de
     .execute(&server.db)
     .await
     .unwrap();
-    sqlx::raw_sql("drop table message_mention_accounts,message_mention_receivers,attachment_limits,attachment_chunks,attachments,message_mentions_notified,message_mentions,message_reactions,message_reads,messages,message_places,conversations,call_message_members,call_message_privacy cascade; drop function remember_call_message_member(),refresh_call_message_privacy(uuid),remember_hidden_call_members() cascade;")
+    sqlx::raw_sql("drop table message_mention_accounts,message_mention_receivers,attachment_limits,attachment_chunks,attachments,message_mentions_notified,message_mentions,message_reactions,message_reads,messages,message_places,conversations,call_message_members,call_message_privacy cascade; drop function remember_call_message_member(),refresh_call_message_privacy(uuid) cascade;")
         .execute(&server.db).await.unwrap();
     sqlx::raw_sql(include_str!("../../migrations/0007_messages.sql"))
         .execute(&server.db)

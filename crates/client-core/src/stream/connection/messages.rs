@@ -383,7 +383,7 @@ impl Client {
             Part::MoreThreads | Part::MoreNotices(_) => false,
             Part::Pins(channel_id) => self.messages.pins.contains_key(&channel_id),
             Part::Named(message_id) => model.names(message_id),
-            Part::Members(_) | Part::OwnCall | Part::ChannelCall(_) | Part::Admin(_) => false,
+            Part::Members(_) | Part::OwnCall | Part::Admin(_) => false,
         }
     }
 

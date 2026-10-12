@@ -58,6 +58,7 @@ async fn the_real_worker_transcribes_the_microphone_and_the_shared_sound_of_a_re
             ("JUNTO_TRANSCRIBE_DEVICE".to_owned(), "cpu".to_owned()),
         ],
         separate_speakers: true,
+        batch_size: None,
     };
     let server = TestServer::start_for_calls_with(|config| {
         config.recorder.as_mut().unwrap().transcriber = Some(settings);

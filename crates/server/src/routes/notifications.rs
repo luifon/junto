@@ -192,10 +192,11 @@ pub async fn set_default(
                 },
             )
             .await?;
+            // The default is a setting of the workspace: the accounts that see it are told.
             events::log::record(
                 connection,
                 app.now(),
-                &events::audience::Audience::ActiveAccounts,
+                &events::audience::Audience::Workspace { workspace_id: id },
                 &Event::NotificationSettingsChanged {},
             )
             .await?;

@@ -79,6 +79,8 @@ pub struct Admin {
 pub struct Caller {
     pub calls: junto_media::Calls,
     pub sound: SyntheticHost,
+    /// The server of the administrator, for the state that the calls follow.
+    pub handle: ServerHandle,
 }
 
 impl Admin {
@@ -103,7 +105,11 @@ impl Admin {
                 processing: junto_media::audio::Processing::OFF,
                 ..junto_media::engine::VoiceConfig::default()
             });
-            Caller { calls, sound }
+            Caller {
+                calls,
+                sound,
+                handle: self.handle.clone(),
+            }
         })
     }
 }

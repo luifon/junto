@@ -687,7 +687,14 @@ fn audit_details(event: &AuditEvent) -> Vec<String> {
             pair("invite", invite_id),
             pair("workspaces", listed(workspace_ids)),
         ],
-        E::InviteRevoked { invite_id } => vec![pair("invite", invite_id)],
+        E::InviteRevoked {
+            invite_id,
+            invite_created_by,
+        } => {
+            let mut pairs = vec![pair("invite", invite_id)];
+            pairs.extend(invite_created_by.map(|by| pair("invite_created_by", by)));
+            pairs
+        }
         E::AccountJoined {
             account_id,
             invite_id,

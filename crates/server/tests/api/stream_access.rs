@@ -132,33 +132,38 @@ async fn the_background_level_receives_control_events_only() {
     assert_eq!(shared.len(), 2);
 }
 
+/// ADR 0510: a background connection whose account has a seat in a call receives every
+/// event of the channel of that call. The connection reads the seat from the record.
 #[tokio::test]
 async fn an_account_in_a_call_receives_every_event_of_the_channel_of_the_call() {
-    let server = TestServer::start().await;
-    let owner = server.owner().await;
-    let member = server.join(&owner, "Member").await;
-    let workspace = server.default_workspace(&owner).await;
-    let call = server.channel(&owner, workspace.id, "call").await;
-    let other = server.channel(&owner, workspace.id, "other").await;
-    let mut background = server.subscribed(&member, Level::Background).await;
+    let scene = crate::calls_support::Scene::start().await;
+    let (server, owner, member) = (&scene.server, &scene.owner, &scene.ann);
+    let call = scene.voice.id;
+    let other = server.channel(owner, scene.workspace_id, "other").await;
+    let mut background = server.subscribed(member, Level::Background).await;
 
-    server.state.streams.calls().enter(
-        member.account_id,
-        junto_server::events::hub::CallKey::Channel(call.id),
-    );
-    rename_channel(&server, &owner, other.id, "other-2").await;
-    rename_channel(&server, &owner, call.id, "call-2").await;
-    server.category(&owner, workspace.id, "Projects", 0).await;
-    let during = server.traffic(&member, &mut background).await;
+    rename_channel(server, owner, call, "call-1").await;
+    assert!(server.traffic(member, &mut background).await.is_empty());
+
+    server.enter_call(member, call).await;
+    server.traffic(member, &mut background).await;
+    rename_channel(server, owner, other.id, "other-2").await;
+    rename_channel(server, owner, call, "call-2").await;
+    server
+        .category(owner, scene.workspace_id, "Projects", 0)
+        .await;
+    let during = server.traffic(member, &mut background).await;
     assert_eq!(types(&during), ["message_changed", "channel_updated"]);
     assert!(matches!(
         &during[1].1,
-        Event::ChannelUpdated { channel } if channel.id == call.id
+        Event::ChannelUpdated { channel } if channel.id == call
     ));
 
-    server.state.streams.calls().leave(member.account_id);
-    rename_channel(&server, &owner, call.id, "call-3").await;
-    assert!(server.traffic(&member, &mut background).await.is_empty());
+    server.leave_call(member).await;
+    server.check().await;
+    server.traffic(member, &mut background).await;
+    rename_channel(server, owner, call, "call-3").await;
+    assert!(server.traffic(member, &mut background).await.is_empty());
 }
 
 struct Private {

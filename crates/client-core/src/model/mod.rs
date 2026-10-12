@@ -97,7 +97,14 @@ pub struct CallModel {
     pub started_at: Option<OffsetDateTime>,
     pub lock: Option<CallLock>,
     pub meeting: Option<Meeting>,
-    /// The people in the call, in the order in which they joined.
+    /// The call shows who is inside only to the people inside. A call keeps the setting
+    /// that its voice channel had when the call began (ADR 0517). For a call that the
+    /// state learned of from an event, this is the setting of the channel at that event,
+    /// until an answer of the server states it.
+    pub hides_occupants: bool,
+    /// The people in the call, in the order in which they joined. Empty for the account
+    /// with a place in a call that hides who is inside, until the server has seen its
+    /// device in the room.
     pub participants: Vec<CallParticipant>,
     /// The people who speak now, as the last `call_speaking` told it (ADR 0513). A
     /// snapshot does not carry the marks, so the list is empty until the next change.
@@ -109,13 +116,14 @@ pub struct CallModel {
 }
 
 impl CallModel {
-    fn new(id: CallId, place: CallPlace) -> Self {
+    fn new(id: CallId, place: CallPlace, hides_occupants: bool) -> Self {
         Self {
             id,
             place,
             started_at: None,
             lock: None,
             meeting: None,
+            hides_occupants,
             participants: Vec::new(),
             speaking: Vec::new(),
             recording: None,
@@ -129,6 +137,7 @@ impl CallModel {
             started_at: call.started_at,
             lock: call.lock,
             meeting: call.meeting,
+            hides_occupants: call.hides_occupants,
             participants: call.participants,
             speaking: Vec::new(),
             recording: call
@@ -150,9 +159,9 @@ pub struct ChannelModel {
     pub channel: Channel,
     /// True while at least one person is in the room of the voice channel.
     pub in_use: bool,
-    /// What the account knows of the call. Absent for a voice channel that hides who is
-    /// inside while the account is outside (ADR 0514). It can be present before the call
-    /// is in use: then nobody is shown in it yet.
+    /// What the account knows of the call. Absent for a call that hides who is inside
+    /// while the account has no place in it (ADR 0514, ADR 0517). It can be present
+    /// before the call is in use: then nobody is shown in it yet.
     pub call: Option<CallModel>,
 }
 
@@ -250,6 +259,9 @@ pub struct ServerModel {
     pub invitations: Vec<CallInvitation>,
     /// The requests of people outside to enter the call that the account is in.
     pub entry_requests: Vec<EntryRequest>,
+    /// The requests of the account to enter a voice channel that wait for an answer,
+    /// from whichever device of the account they were made.
+    pub own_entry_requests: Vec<EntryRequest>,
     /// The moves that wait: of the account, and the ones that the account asked for.
     pub moves: Vec<CallMove>,
     /// The direct-message conversations that the account has muted.
@@ -317,6 +329,12 @@ impl ServerModel {
         // more (ADR 0409). A full list is taken as one that goes on.
         let notices_more = notices.len() >= SNAPSHOT_NOTICES;
         notices.truncate(MOST_NOTICES);
+        let mut invitations = snapshot.call_invitations;
+        for sent in snapshot.sent_call_invitations {
+            if !invitations.iter().any(|held| held.id == sent.id) {
+                invitations.push(sent);
+            }
+        }
         Self {
             cursor: snapshot.cursor,
             account: snapshot.account,
@@ -331,9 +349,10 @@ impl ServerModel {
                 .into_iter()
                 .map(CallModel::of)
                 .collect(),
-            invitations: snapshot.call_invitations,
+            invitations,
             entry_requests: Vec::new(),
-            moves: Vec::new(),
+            own_entry_requests: snapshot.entry_requests,
+            moves: snapshot.call_moves,
             direct_mutes: snapshot.direct_mutes,
             message_states: snapshot.messages,
             conversations,
@@ -458,21 +477,6 @@ impl ServerModel {
         let mut call = CallModel::of(loaded.call);
         call.speaking = speaking;
         self.put_call(call);
-    }
-
-    /// Puts the answer of `GET /channels/{id}/call` into the state.
-    pub(crate) fn set_channel_call(&mut self, mut shown: ChannelCall) {
-        let place = CallPlace::Channel {
-            workspace_id: shown.workspace_id,
-            channel_id: shown.channel_id,
-        };
-        if !self.shows_inside(&place) {
-            // The channel hid who is inside after the server had made the answer.
-            shown.call = None;
-        }
-        if let Some(channel) = self.channel_mut(&place) {
-            channel.set_call(shown);
-        }
     }
 
     fn put_call(&mut self, call: CallModel) {

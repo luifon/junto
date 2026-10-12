@@ -137,6 +137,8 @@ struct State {
     link: bool,
     refuses_starts: bool,
     holds_ends: bool,
+    /// A stop request does not reach the recorder and gets no answer of any kind.
+    holds_stops: bool,
     /// The jobs whose participant does not enter the room.
     without_participant: bool,
     stops: Vec<String>,
@@ -213,6 +215,7 @@ impl FakeRecorder {
                 link: true,
                 refuses_starts: false,
                 holds_ends: false,
+                holds_stops: false,
                 without_participant: false,
                 stops: Vec::new(),
                 reports: 0,
@@ -434,6 +437,13 @@ impl FakeRecorder {
         self.state().holds_ends = holds;
     }
 
+    /// While this is on, a stop request stays without an end: the recorder does not get
+    /// it, and the server gets no answer and no timeout. A test drops the pass that waits,
+    /// which is what a server process does that stops while its request is on the way.
+    pub fn hold_stops(&self, holds: bool) {
+        self.state().holds_stops = holds;
+    }
+
     pub fn report_ends(&self) {
         let mut state = self.state();
         state.holds_ends = false;
@@ -503,6 +513,9 @@ impl Recorder for FakeRecorder {
             let mut state = self.state();
             self.settle(&mut state);
             state.stops.push(job_id.to_owned());
+            if state.holds_stops {
+                return std::future::pending().boxed();
+            }
             let (link, holds) = (state.link, state.holds_ends);
             let now = self.clock.now();
             match state.jobs.iter_mut().find(|job| job.id == job_id) {

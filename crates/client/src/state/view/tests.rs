@@ -132,6 +132,9 @@ pub(super) fn scene() -> Scene {
         own_call: None,
         direct_calls: Vec::new(),
         call_invitations: Vec::new(),
+        sent_call_invitations: Vec::new(),
+        call_moves: Vec::new(),
+        entry_requests: Vec::new(),
         direct_mutes: Vec::new(),
         messages: Vec::new(),
         threads: Vec::new(),
@@ -173,6 +176,7 @@ impl Scene {
                 started_at: Some(time()),
                 lock: None,
                 meeting: None,
+                hides_occupants: false,
                 participants,
                 recording: None,
             }),
@@ -559,6 +563,31 @@ fn a_voice_channel_shows_its_people_with_their_marks_and_the_state_of_its_call()
     let state = voice(workspace, "HR");
     assert!(state.in_use && state.hidden && state.occupants.is_empty());
     assert!(!state.locked && !state.recording && !state.full);
+}
+
+/// A call keeps the setting of its start (ADR 0517). The server tells nothing of a call
+/// in use only when that call hides who is inside, so the room is shown as hidden also
+/// after the setting of its channel was turned off.
+#[test]
+fn a_call_in_use_that_the_server_does_not_show_is_hidden_whatever_its_channel_says_now() {
+    let mut scene = scene();
+    let (studio, hidden) = (scene.studio, scene.hidden);
+    scene.studio_mut().calls.push(ChannelCall {
+        workspace_id: studio,
+        channel_id: hidden,
+        in_use: true,
+        call: None,
+    });
+    for channel in &mut scene.studio_mut().channels {
+        if channel.id == hidden {
+            channel.hides_occupants = false;
+        }
+    }
+    let server = scene.server();
+    let known = Known::default();
+    let view = derive(std::slice::from_ref(&server), &Selection::default(), &known);
+    let state = voice(view.workspace().unwrap(), "HR");
+    assert!(state.in_use && state.hidden && state.occupants.is_empty());
 }
 
 #[test]
@@ -1189,6 +1218,20 @@ mod calls {
         let people = &voice(view.workspace().unwrap(), "Daily").occupants;
         assert_eq!(people.len(), 1);
         assert!(people[0].is_self);
+        // The media connection is made, and the server has not listed the person yet:
+        // the person is not inside the call for the server (ADR 0517).
+        assert_eq!(people[0].presence, Presence::Connecting);
+        let mut listed = self::scene();
+        let person = listed.own;
+        listed.call(listed.daily, vec![participant(person)]);
+        let server = listed.server();
+        let call = active(target(&server, &listed, listed.daily));
+        let view = derive(
+            std::slice::from_ref(&server),
+            &selected(&listed, listed.daily),
+            &in_call(call),
+        );
+        assert_eq!(occupant(&view, "Daily", person).presence, Presence::Here);
 
         // While the call is restored, the person is marked and the others are not.
         scene.call(scene.hidden, Vec::new());
@@ -2080,6 +2123,8 @@ mod calls {
         };
         let (shown, allowed) = room(&scene);
         assert!(shown.locked && shown.hides_occupants);
+        // The call began before the setting was turned on, and keeps its own.
+        assert!(shown.hide_waits_for_next_call);
         assert_eq!((shown.user_limit, shown.inside), (Some(8), 2));
         assert_eq!(shown.allowed, Allowed::default());
         assert_eq!(allowed, Allowed::default());

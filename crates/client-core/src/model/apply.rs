@@ -24,8 +24,6 @@ pub(crate) enum Part {
     Members(WorkspaceId),
     /// The call of the account with its requests to enter.
     OwnCall,
-    /// The call of one voice channel.
-    ChannelCall(ChannelId),
     /// The unread summary of one place.
     MessageState(PlaceId),
     /// One message of a place that a reader has open.
@@ -57,10 +55,7 @@ impl Part {
     /// arrives while the part is read is not applied to the answer; it starts the read
     /// again.
     pub(crate) const fn is_read_again(&self) -> bool {
-        !matches!(
-            self,
-            Self::Members(_) | Self::OwnCall | Self::ChannelCall(_) | Self::Admin(_)
-        )
+        !matches!(self, Self::Members(_) | Self::OwnCall | Self::Admin(_))
     }
 }
 
@@ -144,12 +139,6 @@ impl Part {
                     _ => call_of(event).is_some_and(|(call_id, _)| call_id == own.call_id),
                 }
             }
-            Self::ChannelCall(channel_id) => match event {
-                Event::RecordingRemoved { channel_id: of, .. } => of == channel_id,
-                _ => {
-                    call_of(event).is_some_and(|(_, place)| place.channel_id() == Some(*channel_id))
-                }
-            },
             Self::MessageState(place) => match event {
                 Event::MessageChanged { place: of, .. } | Event::MessageRead { place: of, .. } => {
                     PlaceId::of(of) == *place
@@ -229,30 +218,21 @@ fn place_of(recording: &Recording) -> CallPlace {
 }
 
 impl WorkspaceModel {
-    fn put_channel(&mut self, channel: &Channel, inside: bool) -> Option<Part> {
-        let mut load = None;
+    /// Puts a channel into the workspace. The call of a voice channel keeps the setting
+    /// "hides who is inside" of its start (ADR 0517), so a change of the channel changes
+    /// nothing of what the state holds of a running call.
+    fn put_channel(&mut self, channel: &Channel) {
         match self
             .channels
             .iter_mut()
             .find(|held| held.channel.id == channel.id)
         {
-            Some(held) => {
-                let was_hidden = held.channel.hides_occupants;
-                held.channel = channel.clone();
-                if channel.hides_occupants && !inside {
-                    held.call = None;
-                } else if was_hidden && !channel.hides_occupants && held.in_use && !inside {
-                    // The people inside are shown from now on, and no event tells who
-                    // they are.
-                    load = Some(Part::ChannelCall(channel.id));
-                }
-            }
+            Some(held) => held.channel = channel.clone(),
             None => self.channels.push(ChannelModel::new(channel.clone())),
         }
         by_position(&mut self.channels, |held| {
             (held.channel.position, held.channel.id.as_uuid().as_u128())
         });
-        load
     }
 }
 
@@ -374,14 +354,13 @@ impl ServerModel {
             Event::ChannelCreated { channel }
             | Event::ChannelUpdated { channel }
             | Event::ChannelRestored { channel } => {
-                let inside = self.is_inside(channel.id);
                 // A fork of a thread is a new channel (ADR 0409).
-                let mut load = match event {
+                let load = match event {
                     Event::ChannelCreated { .. } => self.thread_heads(),
                     _ => Vec::new(),
                 };
                 if let Some(workspace) = self.workspace_mut(channel.workspace_id) {
-                    load.extend(workspace.put_channel(channel, inside));
+                    workspace.put_channel(channel);
                 }
                 return Follow::loads(load);
             }
@@ -495,7 +474,7 @@ impl ServerModel {
                 place,
                 started_at,
             } => {
-                let shown = self.shows_inside(place);
+                let shown = self.shows(*call_id, place);
                 if shown && let Some(call) = self.call_mut(*call_id, place, true) {
                     call.started_at = Some(*started_at);
                 }
@@ -522,6 +501,8 @@ impl ServerModel {
                 }
                 self.invitations.retain(|held| held.call_id != *call_id);
                 self.entry_requests.retain(|held| held.call_id != *call_id);
+                self.own_entry_requests
+                    .retain(|held| held.call_id != *call_id);
             }
             Event::CallParticipantJoined {
                 call_id,
@@ -540,6 +521,16 @@ impl ServerModel {
                     // The order in which a snapshot lists the people.
                     call.participants
                         .sort_by_key(|held| (held.joined_at, held.account_id));
+                }
+                // The server has seen the device of the account in the room. From now on
+                // the account reads the call and the requests to enter; before, the
+                // server gave it neither, and nothing of a call that hides who is inside
+                // (ADR 0517).
+                if matches!(event, Event::CallParticipantJoined { .. })
+                    && participant.account_id == self.account.id
+                    && self.has_place_in(*call_id)
+                {
+                    return Follow::load(Part::OwnCall);
                 }
             }
             Event::CallParticipantLeft {
@@ -619,15 +610,25 @@ impl ServerModel {
                 }
             }
             Event::CallEntryRequested { request } => {
-                let own = self.own_call.as_ref().map(|own| own.call_id);
-                if own == Some(request.call_id) {
-                    upsert(&mut self.entry_requests, request, |held| {
-                        held.id == request.id
-                    });
+                // The event reaches the people inside and every device of the account
+                // that asked.
+                let held = if request.account_id == self.account.id {
+                    Some(&mut self.own_entry_requests)
+                } else if self.has_place_in(request.call_id) {
+                    Some(&mut self.entry_requests)
+                } else {
+                    None
+                };
+                if let Some(held) = held {
+                    upsert(held, request, |held| held.id == request.id);
                 }
             }
             Event::CallEntryResolved { request_id, .. } => {
                 self.entry_requests.retain(|held| held.id != *request_id);
+            }
+            Event::CallEntryAnswered { request_id, .. } => {
+                self.own_entry_requests
+                    .retain(|held| held.id != *request_id);
             }
             Event::CallInvited { invitation } => {
                 upsert(&mut self.invitations, invitation, |held| {
@@ -783,7 +784,6 @@ impl ServerModel {
             | Event::JoinRequestCreated { .. }
             | Event::JoinRequestDecided { .. }
             | Event::ChannelOverrideSet { .. }
-            | Event::CallEntryAnswered { .. }
             | Event::TranscriptLineCorrected { .. }
             | Event::TranscriptSpeakerRenamed { .. }
             | Event::GlossaryReplaced { .. }
@@ -878,7 +878,7 @@ impl ServerModel {
         let place = place_of(recording);
         let Some(held) = self
             .call_at(&place)
-            .filter(|call| call.id == recording.call_id && self.shows_inside(&place))
+            .filter(|call| call.id == recording.call_id && self.shows(call.id, &place))
         else {
             return;
         };
@@ -913,24 +913,40 @@ impl ServerModel {
         let gone = |place: &CallPlace| place.channel_id() == Some(channel_id);
         self.invitations.retain(|held| !gone(&held.place));
         self.entry_requests.retain(|held| !gone(&held.place));
+        self.own_entry_requests.retain(|held| !gone(&held.place));
         self.moves
             .retain(|held| !gone(&held.from) && !gone(&held.to));
     }
 
-    fn is_inside(&self, channel_id: ChannelId) -> bool {
+    /// True when the account has a place in the call `call_id`.
+    pub(super) fn has_place_in(&self, call_id: CallId) -> bool {
         self.own_call
             .as_ref()
-            .is_some_and(|own| own.place.channel_id() == Some(channel_id))
+            .is_some_and(|own| own.call_id == call_id)
     }
 
-    /// True when the account may see who is in the call at `place` (ADR 0514).
-    pub(super) fn shows_inside(&self, place: &CallPlace) -> bool {
+    /// Whether the call `call_id` at `place` hides who is inside. A call keeps the setting
+    /// of its start (ADR 0517), and the state holds it with the call. A call that the
+    /// state does not hold is a new one for it and takes the setting of its channel.
+    fn hides(&self, call_id: CallId, place: &CallPlace) -> Option<bool> {
         match place {
-            CallPlace::Channel { channel_id, .. } => self
-                .channel(*channel_id)
-                .is_some_and(|held| !held.channel.hides_occupants || self.is_inside(*channel_id)),
-            CallPlace::Direct { .. } => true,
+            CallPlace::Channel { channel_id, .. } => {
+                let channel = self.channel(*channel_id)?;
+                Some(match &channel.call {
+                    Some(call) if call.id == call_id => call.hides_occupants,
+                    _ => channel.channel.hides_occupants,
+                })
+            }
+            CallPlace::Direct { .. } => Some(false),
         }
+    }
+
+    /// True when the state holds what the events tell of the call `call_id` at `place`:
+    /// the call does not hide who is inside, or the account has a place in it (ADR 0514).
+    /// The server gives an account with a place nothing of such a call until it is inside.
+    fn shows(&self, call_id: CallId, place: &CallPlace) -> bool {
+        self.hides(call_id, place)
+            .is_some_and(|hides| !hides || self.has_place_in(call_id))
     }
 
     /// The call `call_id` at `place`. With `create`, a call that the state does not hold
@@ -942,10 +958,11 @@ impl ServerModel {
         place: &CallPlace,
         create: bool,
     ) -> Option<&mut CallModel> {
-        // An account outside a voice channel that hides who is inside holds no details of
-        // its call. The server sends it none; an event that was kept during a read is
-        // applied by the setting of now.
-        if !self.shows_inside(place) {
+        // An account without a place in a call that hides who is inside holds no details
+        // of that call. The server sends it none; an event that was kept during a read is
+        // applied by what holds now.
+        let hides = self.hides(call_id, place)?;
+        if hides && !self.has_place_in(call_id) {
             return None;
         }
         let held = self.call_at(place).is_some_and(|call| call.id == call_id);
@@ -959,14 +976,15 @@ impl ServerModel {
                     if channel.call.is_some() {
                         channel.in_use = false;
                     }
-                    channel.call = Some(CallModel::new(call_id, *place));
+                    channel.call = Some(CallModel::new(call_id, *place, hides));
                 }
                 channel.call.as_mut()
             }
             CallPlace::Direct { .. } => {
                 if !held {
                     self.direct_calls.retain(|call| call.place != *place);
-                    self.direct_calls.push(CallModel::new(call_id, *place));
+                    self.direct_calls
+                        .push(CallModel::new(call_id, *place, hides));
                 }
                 self.direct_calls.iter_mut().find(|call| call.id == call_id)
             }
@@ -975,16 +993,14 @@ impl ServerModel {
 
     /// The account is no longer in the call at `place`. It keeps of that call only what
     /// an account outside is told: nothing of a call that is not in use, and nothing of a
-    /// voice channel that hides who is inside.
+    /// call that hides who is inside.
     fn left(&mut self, place: &CallPlace) {
         match place {
             CallPlace::Channel { channel_id, .. } => {
                 let drop = self.channel(*channel_id).is_some_and(|held| {
-                    held.channel.hides_occupants
-                        || held
-                            .call
-                            .as_ref()
-                            .is_some_and(|call| call.started_at.is_none())
+                    held.call
+                        .as_ref()
+                        .is_some_and(|call| call.hides_occupants || call.started_at.is_none())
                 });
                 if drop && let Some(channel) = self.channel_mut(place) {
                     channel.call = None;

@@ -10,8 +10,12 @@
 # JUNTO_ENV_FILE names another settings file than deploy/.env. COMPOSE_PROJECT_NAME names
 # another project than the one of the form file.
 #
+# Before the backup begins, the server removes the directories that no row of the database
+# names and that were last changed more than 24 hours ago (ADR 0018).
+#
 # Exit codes: 0 for a backup; 4 for a backup that was written without the directory of a
-# complete attachment, which the file left-out names; every other code: no backup.
+# complete attachment or of a finished recording, which the file left-out names; every
+# other code: no backup.
 set -eu
 
 if [ "$#" -ne 2 ]; then
@@ -59,6 +63,12 @@ if ! runs postgres; then
     exit 1
 fi
 
+# The scripts of this release work with the role of the server (ADR 0022).
+if [ "$(compose exec -T postgres psql -U junto -d postgres -At -c "select count(*) from pg_roles where rolname = 'junto_server'" < /dev/null)" != 1 ]; then
+    echo "backup: the database server has no role junto_server. An earlier release created this deployment: run deploy/database-user.sh $form first (docs/install.md, \"The database user of an earlier release\")." >&2
+    exit 1
+fi
+
 umask 077
 if ! mkdir "$destination"; then
     echo "backup: $destination exists already or cannot be created" >&2
@@ -80,7 +90,7 @@ ended() {
     if [ -z "$written" ]; then
         [ "$code" -ne 0 ] || code=1
         rm -f "$destination/database.dump" "$destination/files.tar" "$destination/env" \
-            "$destination/left-out" "$destination/SHA256SUMS"
+            "$destination/left-out" "$destination/schema" "$destination/SHA256SUMS"
         rmdir "$destination" 2>/dev/null || true
         echo "backup: no backup was written." >&2
     fi
@@ -88,6 +98,33 @@ ended() {
 }
 trap ended EXIT
 trap 'exit 130' INT TERM
+
+# The newest migration of the server binary, which the backup states in its file "schema":
+# a restore compares it with its own binary before it stops a container (ADR 0018). It must
+# be the schema of the database. It is not when the server is stopped and its image was
+# built from another release than the one that ran; the commands of that binary are then
+# written for another schema, so no backup is made.
+in_server junto-server schema-version < /dev/null > "$destination/schema" \
+    || { echo "backup: the server binary does not state its schema. This script needs the server of its own release." >&2; exit 1; }
+if [ "$(wc -l < "$destination/schema" | tr -d ' ')" != 1 ] || ! grep -q -x -E 'schema [0-9]+' "$destination/schema"; then
+    echo "backup: the server binary printed another answer than \"schema <number>\"" >&2
+    exit 1
+fi
+of_database=$(compose exec -T postgres psql -U junto_server -d junto -At -c 'select max(version) from _sqlx_migrations where success' < /dev/null)
+if [ "schema $of_database" != "$(cat "$destination/schema")" ]; then
+    echo "backup: the image of the server has the $(cat "$destination/schema"), and the database has the schema $of_database. A backup needs the server of the release that the database has: build the image in the checkout of that release (docker compose -f $form build server)." >&2
+    exit 1
+fi
+
+# A restore and the way back from an upgrade can leave directories that no row names. The
+# server removes the ones that were last changed more than 24 hours ago; it cannot tell a
+# younger one from a directory that it writes. It removes nothing while a backup holds
+# deletions back, so this runs before the backup begins. A failure does not stop the backup.
+if ! in_server junto-server unnamed-files --remove < /dev/null > "$scratch/unnamed" 2> "$scratch/unnamed-error"; then
+    echo "backup: the server did not remove every directory that the database does not name. The backup goes on. The server stated:" >&2
+    cat "$scratch/unnamed-error" >&2
+fi
+removed=$(grep -c '^removed ' "$scratch/unnamed" || true)
 
 # Step 1: from here on the server deletes no directory of an attachment or of a recording.
 begun=$(in_server junto-server backup-begin < /dev/null)
@@ -98,7 +135,7 @@ if [ -z "$backup" ]; then
 fi
 
 # Step 2: the copy of the database. pg_dump reads one state of it.
-compose exec -T postgres pg_dump -U junto -d junto --format=custom < /dev/null > "$destination/database.dump"
+compose exec -T postgres pg_dump -U junto_server -d junto --format=custom < /dev/null > "$destination/database.dump"
 
 # Step 3: the directories that the copy of the database names. The list is made after the
 # copy. "file" lines are copied; "skip" lines are directories that are still written.
@@ -107,8 +144,8 @@ if grep -v -E '^(file (attachments|recordings)/[A-Za-z0-9_/-]+|skip [A-Za-z0-9_/
     echo "backup: the server printed a line of the list that this script does not know" >&2
     exit 1
 fi
-# A listed directory can be absent: the list names every recording that is not running,
-# also one that failed and has no file.
+# A listed directory that is absent is a lost file: the list names an attachment only while
+# it is complete or its directory exists, and a recording only when it has files.
 sed -n 's/^file //p' "$scratch/listed" > "$scratch/named"
 in_server bash -c '
     cd /var/lib/junto || exit 1
@@ -161,36 +198,36 @@ if grep -q '^[^-d]' "$scratch/listing"; then
     grep '^[^-d]' "$scratch/listing" | head -n 5 >&2
     exit 1
 fi
-# The server held deletions back for all of the copy only when the backup still runs now:
-# a backup ends by itself after 24 hours. The list is asked for again, because that command
-# fails for a backup that has ended.
-if ! in_server junto-server backup-files "$backup" < /dev/null > /dev/null 2>&1; then
-    echo "backup: the backup expired, or the server could not be asked, before the files were copied. The server may have deleted files during the copy." >&2
+
+# Step 4: the server deletes files again. The command fails for a backup that expired: a
+# backup ends by itself after 24 hours, and the server then held deletions back for a part
+# of the copy only.
+if ! in_server junto-server backup-end "$backup" < /dev/null > /dev/null 2> "$scratch/end-error"; then
+    cat "$scratch/end-error" >&2
+    if grep -q ' expired at ' "$scratch/end-error"; then
+        backup=""
+        echo "backup: the backup expired before its files were copied. The server may have deleted files during the copy." >&2
+    fi
     exit 1
 fi
-
-# Step 4: the server deletes files again.
-in_server junto-server backup-end "$backup" < /dev/null > /dev/null
 backup=""
 
 cp "$settings" "$destination/env"
 skipped=$(grep -c '^skip ' "$destination/left-out" || true)
-absent=$(grep -c '^absent ' "$destination/left-out" || true)
-lost=$(grep -c '^absent attachments/' "$destination/left-out" || true)
-(cd "$destination" && checksums database.dump files.tar env left-out > SHA256SUMS)
+lost=$(grep -c '^absent ' "$destination/left-out" || true)
+(cd "$destination" && checksums database.dump files.tar env left-out schema > SHA256SUMS)
 written=1
 
 echo "backup: written to $destination"
+if [ "$removed" -gt 0 ]; then
+    echo "backup: before the backup began, the server removed $removed directories that no row of the database names:"
+    grep '^removed ' "$scratch/unnamed"
+fi
 if [ "$skipped" -gt 0 ]; then
     echo "backup: $skipped directories are not in the backup, because an upload or a recording had not ended. The file left-out names them."
 fi
-if [ "$absent" -gt 0 ]; then
-    echo "backup: $absent directories that the database names are not on the disk. The file left-out names them."
-fi
 echo "backup: the file env holds the secrets of the deployment. Store the directory accordingly."
-# The list names an attachment only while it is complete or its directory exists, so an
-# attachment directory that is absent is a loss of data on this host.
 if [ "$lost" -gt 0 ]; then
-    echo "backup: $lost attachments that the database names as complete have no directory on the disk. The backup was written without them; this ends with the code 4." >&2
+    echo "backup: $lost directories of complete attachments or of finished recordings that the database names are not on the disk. The file left-out names them. The backup was written without them; this ends with the code 4." >&2
     exit 4
 fi

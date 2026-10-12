@@ -42,7 +42,7 @@ services:
       file: base.yaml
       service: server
     environment:
-      JUNTO_DATABASE_URL: postgres://junto:${JUNTO_POSTGRES_PASSWORD:?set JUNTO_POSTGRES_PASSWORD in deploy/.env (deploy/generate-secrets.sh)}@postgres:5432/junto
+      JUNTO_DATABASE_URL: postgres://junto_server:${JUNTO_POSTGRES_PASSWORD:?set JUNTO_POSTGRES_PASSWORD in deploy/.env (deploy/generate-secrets.sh)}@postgres:5432/junto
       JUNTO_LIVEKIT_API_KEY: ${JUNTO_LIVEKIT_API_KEY:?set JUNTO_LIVEKIT_API_KEY in deploy/.env (deploy/generate-secrets.sh)}
       JUNTO_LIVEKIT_API_SECRET: ${JUNTO_LIVEKIT_API_SECRET:?set JUNTO_LIVEKIT_API_SECRET in deploy/.env (deploy/generate-secrets.sh)}
       JUNTO_PUBLIC_ORIGINS: https://${JUNTO_SERVER_HOST:?set JUNTO_SERVER_HOST in deploy/.env}

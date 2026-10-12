@@ -40,4 +40,4 @@ Invite code:
 - A copy of the database does not contain a usable owner, invite or link code.
 - A lost invite code cannot be shown again; a new invite is created.
 - An owner code of a server without an owner that was printed and not used is valid until the next start of the server.
-- A link code has 40 bits because it is not a secret that gives access: the approval of a logged-in device names the public key (ADR 0112).
+- A link code has 40 bits because it is not a secret that gives access: the approval of a logged-in device names the public key (ADR 0112). An account tries at most 10 link codes in 10 minutes, for the lookup and the approval together (ADR 0111), so a code is not found by trying.

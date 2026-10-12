@@ -185,7 +185,12 @@ async fn a_conversation_with_an_account_that_may_call_is_muted_without_sight_of_
     ring(server, &carl, ann)
         .await
         .ok::<CallJoin>(StatusCode::OK);
-    assert_eq!(server.count("call_invitations").await, 0);
+    let silent: Vec<bool> = sqlx::query_scalar("select silent from call_invitations")
+        .fetch_all(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(silent, [true]);
+    assert!(server.snapshot(ann).await.call_invitations.is_empty());
     server.leave_call(&carl).await;
     server
         .delete(ann, &mute(carl.account_id))

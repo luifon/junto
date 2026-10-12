@@ -261,15 +261,12 @@ pub async fn permitted(
     Ok(Some(opened))
 }
 
-/// Whether the file of the export `$1` holds a recording of a call that still runs in a
-/// channel that hides who is inside, while the account `$2` is not inside.
+/// Whether the file of the export `$1` holds a recording of a call that still runs and
+/// hides who is inside, while the account `$2` is not inside (ADR 0517).
 pub const HIDDEN_RECORDING: &str = "select exists (
          select 1 from exports e
-         join calls k on k.id = e.held_call_id
-         join channels c on c.id = k.channel_id
-         where e.id = $1 and c.hides_occupants
-           and not exists (
-               select 1 from call_members m where m.call_id = k.id and m.account_id = $2))";
+         where e.id = $1 and e.held_call_id is not null
+           and not reads_call(e.held_call_id, $2))";
 
 /// Whether the file of an export holds a recording that the account may not read now
 /// (ADR 0604): a recording of a call that still runs in a channel that hides who is

@@ -44,6 +44,7 @@ Other writers:
 
 - The start of the server, the host commands (ADR 0114) and the maintenance task use the same macros.
 - Expired rows are removed by a maintenance task once per minute, not by the requests, so that a request reads and writes only the rows of its own subject. The task works in batches of at most 500 rows. Each batch is one transaction under the same limits, so the task never holds locks for long.
+- The task has several steps. A step that fails is logged with its name, and the later steps of the same pass still run, so a failure of one step does not stop the removal of other rows or the release of reserved disk space.
 
 Test hook:
 

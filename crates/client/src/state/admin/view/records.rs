@@ -909,6 +909,9 @@ mod tests {
                 own_call: None,
                 direct_calls: Vec::new(),
                 call_invitations: Vec::new(),
+                sent_call_invitations: Vec::new(),
+                call_moves: Vec::new(),
+                entry_requests: Vec::new(),
                 direct_mutes: Vec::new(),
                 messages: Vec::new(),
                 threads: Vec::new(),
@@ -1145,7 +1148,13 @@ mod tests {
                 },
                 vec!["15 January 2027", "5 uses", "“Studio”", "“Lab”"],
             ),
-            (AuditEvent::InviteRevoked { invite_id }, vec![]),
+            (
+                AuditEvent::InviteRevoked {
+                    invite_id,
+                    invite_created_by: Some(account_id),
+                },
+                vec!["Ana"],
+            ),
             (
                 AuditEvent::AccountJoined {
                     account_id,
@@ -2316,6 +2325,19 @@ mod tests {
             txt::audit_sentence(&AuditEvent::Unknown, &names),
             "An action that this version of Junto does not know"
         );
+        // An entry of a revoked invite from before the server stored the creator.
+        let revoked = |invite_created_by| AuditEvent::InviteRevoked {
+            invite_id: InviteId::generate(),
+            invite_created_by,
+        };
+        assert_eq!(
+            txt::audit_sentence(&revoked(Some(ana)), &names),
+            "An invite of the account “Ana” was revoked."
+        );
+        assert_eq!(
+            txt::audit_sentence(&revoked(None), &names),
+            "An invite was revoked."
+        );
     }
 
     #[test]
@@ -2387,6 +2409,7 @@ mod tests {
             Some(ana),
             AuditEvent::InviteRevoked {
                 invite_id: InviteId::generate(),
+                invite_created_by: None,
             },
         );
         let removal = entry(Some(bea), AuditEvent::AccountRemoved { account_id: zoe });

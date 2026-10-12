@@ -462,7 +462,9 @@ pub enum Microphone {
 pub enum Presence {
     #[default]
     Here,
-    /// This device has its place and makes its first media connection.
+    /// This device has its place, and makes its first media connection or is not listed
+    /// by the server yet: the server lists a person when it has seen the device in the
+    /// room, and the person is inside the call from then on (ADR 0517).
     Connecting,
     /// This device restores its media connection.
     Reconnecting,
@@ -644,7 +646,12 @@ pub struct RoomView {
     pub meeting_start: MeetingStart,
     pub locked: bool,
     pub user_limit: Option<u32>,
+    /// The setting of the voice channel.
     pub hides_occupants: bool,
+    /// The call of now keeps another setting than its channel has: a call keeps the
+    /// setting of its start, and the one of the channel holds for the next call
+    /// (ADR 0517).
+    pub hide_waits_for_next_call: bool,
     pub allowed: Allowed,
 }
 
@@ -1211,7 +1218,12 @@ fn voice_state(
         Some(Phase::Connected) | None => Presence::Here,
     };
     // The server lists a person after the media server has listed them (ADR 0510). The
-    // person of this device is shown from the moment the device has its place.
+    // person of this device is shown from the moment the device has its place, and as
+    // connecting until the server lists the person.
+    let unlisted = match own_presence {
+        Presence::Here => Presence::Connecting,
+        other => other,
+    };
     let own_row = |held: Option<&junto_client_core::protocol::call::MicrophoneBlock>| Occupant {
         account_id: own,
         name: name_of(own),
@@ -1229,7 +1241,7 @@ fn voice_state(
         sound_off: media.calls.deafened,
         sound_blocked: active.is_some_and(|call| call.sound_block.is_some()),
         level: Some(media.levels.own.0),
-        presence: own_presence,
+        presence: unlisted,
         volume: VOLUME_DEFAULT_PERCENT,
     };
     let entry = known
@@ -1255,7 +1267,9 @@ fn voice_state(
         return VoiceState {
             relation,
             in_use: channel.in_use,
-            hidden: channel.in_use && channel.channel.hides_occupants,
+            // The server tells nothing of a call in use only when that call hides who is
+            // inside. The setting of the channel holds for its next call (ADR 0517).
+            hidden: channel.in_use,
             entry,
             closed: refused.filter(|_| outside && channel.in_use),
             user_limit: channel.channel.user_limit,
@@ -2194,6 +2208,12 @@ fn room_view(
     });
     let voice = row.voice.as_ref();
     let allowed = allowed(workspace, model);
+    let hides = active
+        .target
+        .place
+        .channel_id()
+        .and_then(|channel_id| model.channel(channel_id))
+        .is_some_and(|channel| channel.channel.hides_occupants);
     RoomView {
         name: row.name.clone(),
         inside: voice.map_or(0, |voice| voice.occupants.len()),
@@ -2209,12 +2229,8 @@ fn room_view(
         meeting,
         locked: voice.is_some_and(|voice| voice.locked),
         user_limit: voice.and_then(|voice| voice.user_limit),
-        hides_occupants: active
-            .target
-            .place
-            .channel_id()
-            .and_then(|channel_id| model.channel(channel_id))
-            .is_some_and(|channel| channel.channel.hides_occupants),
+        hides_occupants: hides,
+        hide_waits_for_next_call: call.is_some_and(|call| call.hides_occupants != hides),
         allowed,
     }
 }

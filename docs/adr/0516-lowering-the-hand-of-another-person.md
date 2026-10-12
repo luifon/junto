@@ -11,7 +11,7 @@ A person in a call raises and lowers the own hand (ADR 0512). While meeting mode
 ## Decision
 
 - `DELETE /api/v1/channels/{channel_id}/call/participants/{account_id}/hand` lowers the hand of a person in the call of a voice channel.
-- The person who runs meeting mode in that call can do this, and a person with "mute members" in the channel, the same two as for the removal of a microphone block (ADR 0512).
+- The person who runs meeting mode in that call can do this while inside the call (ADR 0517), and a person with "mute members" in the channel, the same two as for the removal of a microphone block (ADR 0512).
 - The route is idempotent: a hand that is not raised stays as it is, and the answer is the same.
 - The change is told with `call_participant_updated`, as when the person lowers the own hand. Nothing is told when no hand was raised.
 - The audit log gets no entry and the channel no system line. ADR 0303 lists no action about hands, and a hand gives and takes no access.

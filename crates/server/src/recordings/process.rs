@@ -27,6 +27,8 @@ use crate::{read, transact};
 
 /// The directories that one sweep deletes.
 const REMOVALS_AT_ONCE: i64 = 50;
+/// The directories below `rescued/` that one sweep examines.
+pub const RESCUED_AT_ONCE: usize = 50;
 /// The part of the sound of a composite and of a microphone file that places a composite
 /// without a reported end, and how far the two can be apart (ADR 0602).
 const PLACED_BY: Duration = Duration::seconds(60);
@@ -644,6 +646,67 @@ pub async fn sweep(app: &AppState) -> ApiResult<usize> {
     Ok(deleted)
 }
 
+/// Deletes the entries below `rescued/` that are the job of no segment and were last
+/// changed longer ago than the age of the limits (ADR 0606): the audio that the start
+/// script of the recorder saved for a recording that was removed before, or for a job
+/// whose start the record never stored. One call examines at most [`RESCUED_AT_ONCE`]
+/// entries in the order of their names, and the next call continues after them. Nothing is
+/// deleted while a backup holds deletions (ADR 0018). Returns the number of entries that
+/// it deleted.
+pub async fn sweep_rescued(app: &AppState) -> ApiResult<usize> {
+    let Some(backend) = app.recordings.backend() else {
+        return Ok(0);
+    };
+    let now = app.now();
+    let (root, after) = (
+        backend.settings.directory.clone(),
+        app.recordings.rescued_after(),
+    );
+    let listed =
+        blocking(move || files::rescued_entries(&root, after.as_deref(), RESCUED_AT_ONCE)).await;
+    let entries = match listed {
+        Ok(entries) => entries,
+        Err(error) => {
+            tracing::warn!(%error, "the saved files of lost jobs cannot be listed");
+            return Ok(0);
+        }
+    };
+    let more_follow = entries.len() == RESCUED_AT_ONCE;
+    let last = entries.last().map(|(name, _)| name.clone());
+    app.recordings
+        .continue_rescued_after(last.filter(|_| more_follow));
+    let old_before = (now - app.config.limits.recordings.rescued_age).unix_timestamp();
+    let old: Vec<String> = entries
+        .into_iter()
+        .filter(|(_, changed)| *changed <= old_before)
+        .map(|(name, _)| name)
+        .collect();
+    if old.is_empty() {
+        return Ok(0);
+    }
+    let of_no_segment = read!(app.background(), |connection| {
+        // A backup that runs still copies the files (ADR 0018).
+        if crate::backup::held(connection, now).await? {
+            return Ok(Vec::new());
+        }
+        store::jobs_without_segment(connection, &old).await
+    })?;
+    let mut deleted = 0;
+    for name in of_no_segment {
+        let Some(place) = Place::rescued(&name) else {
+            continue;
+        };
+        let root = backend.settings.directory.clone();
+        match blocking(move || files::remove(&root, &place)).await {
+            Ok(()) => deleted += 1,
+            Err(error) => {
+                tracing::warn!(%error, "saved files of a job of no segment could not be deleted");
+            }
+        }
+    }
+    Ok(deleted)
+}
+
 /// Deletes the directories that wait, and runs one attempt for every recording whose files
 /// wait for their processing, one after the other. Returns the number of recordings. Tests
 /// run the processing with this, so that the order of things is fixed.
@@ -697,6 +760,7 @@ mod tests {
             requested_at: OffsetDateTime::UNIX_EPOCH,
             job_started_at: None,
             stop_delivered_at: None,
+            stop_owed: false,
             started_at: None,
             ended_at: None,
             duration_ms: None,

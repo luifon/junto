@@ -27,6 +27,7 @@ Upgrades:
 - The server does not migrate while a recording runs. It refuses to start instead, and a host command tells beforehand whether a recording runs (ADR 0608).
 - The recorder container is not stopped, restarted or upgraded while a recording runs. A restart of the recorder loses the recordings in progress, and the recorder does not resume them (ADR 0601).
 - The server refuses to start on a schema that is newer than the schema it knows.
+- The server connects to its database as a role that owns the database and may create one, which the copy before a migration needs, and that has no further right in the database server (ADR 0022).
 - The server is never updated automatically (ADR 0704).
 
 ## Consequences
@@ -34,5 +35,6 @@ Upgrades:
 - The administrator schedules the backups and stores them.
 - A file that is deleted while a backup runs stays on disk until the backup reports that it finished.
 - A recording that runs during a backup is not in that backup.
+- A backup is restored with the version of the server that wrote it, and is upgraded afterwards (ADR 0018, ADR 0021).
 - An upgrade that contains a migration, or that replaces the recorder, waits until no recording runs.
 - There is no migration to an earlier schema. An older server version does not start on a database that a newer version migrated. The way back is the copy from before the migration, or a backup (ADR 0021).

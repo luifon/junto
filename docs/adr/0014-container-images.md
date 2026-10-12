@@ -25,11 +25,11 @@ The server image:
 Pinned inputs:
 
 - Every base image, and the Dockerfile frontend, is named by tag and digest. This includes the frontend line of the worker definition, which named a tag only.
-- The Debian packages of the FFmpeg build stage of the server image come from a dated snapshot of the Debian archive.
+- The Debian packages of the FFmpeg build stage of the server image, and of the speech tooling of the worker tests (`workers/transcription/tests/speech/Dockerfile`), come from one dated snapshot of the Debian archive: the instruction that installs them removes the package sources of the base image and writes the two sources of the snapshot.
 - The images that the deployment pulls (PostgreSQL, Redis, LiveKit, LiveKit Egress, the entry) are named by tag and digest in the Compose files.
 - The link image installs four Alpine packages at stated versions.
 - `rust-toolchain.toml` states the Rust version. The server image and CI use that version.
-- `tools/check-pins.sh` fails when the Rust version, the FFmpeg release or its checksum differs between two files, when the LiveKit or PostgreSQL version of the deployment differs from the version that the tests use, when an image or a CI action is named without a digest or a commit hash, when a Python package of the speech tooling of the worker tests (`workers/transcription/tests/speech/Dockerfile`) has no version, and when a workflow installs a package with `apt-get` without a version (ADR 0905). CI runs it.
+- `tools/check-pins.sh` fails when the Rust version, the FFmpeg release or its checksum differs between two files, when the LiveKit or PostgreSQL version of the deployment differs from the version that the tests use, when an image or a CI action is named without a digest or a commit hash, when a Python package of the speech tooling of the worker tests has no version, when an instruction of the server definition or of the speech definition that names a package program or the package sources has another form than the one that removes the sources of the base image, writes the two sources of the snapshot and installs, when the snapshot is not an argument of the same build stage, when the two definitions name different snapshots, and when a workflow installs a package with `apt-get` without a version (ADR 0905). CI runs it.
 
 Other images:
 
@@ -43,7 +43,8 @@ Other images:
 - The server image has 232 MB on arm64: 43 MB of it are the two FFmpeg programs and 18 MB the server binary.
 - The server and the recorder are the same user on the volume of the recordings. A change of the user of the recorder image needs the same change of the build argument `JUNTO_UID`.
 - The FFmpeg of the server image reads what its native components read. A recording format that needs an external library needs a change of the build.
-- The compilers of the worker's build stages still come from the package archive of its base image at the time of the build (ADR 0610). Only the FFmpeg stage of the server image uses a dated snapshot.
+- The compilers of the worker's build stages still come from the package archive of its base image at the time of the build (ADR 0610). The FFmpeg stage of the server image and the speech tooling of the worker tests use a dated snapshot.
+- The Debian snapshot archive keeps every state of the archive. A build of the two definitions needs it to be reachable.
 - Alpine keeps one version of a package per release. When a pinned package of the link image is replaced, its build fails until the version in the definition is updated.
 - The `wg` tool is under GPL-2.0. The link image runs it as a separate program, and the project does not distribute the image.
 - A new Rust version is a change of `rust-toolchain.toml` and of the tag and digest in the server definition, in one commit.

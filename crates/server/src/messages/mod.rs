@@ -9,7 +9,7 @@ pub mod threads;
 pub mod transfers;
 pub mod uploads;
 
-pub use mentions::{is_mentioned, mentions};
+pub use mentions::{mentioned_among, mentions};
 pub use place::Place;
 pub use store::{
     VISIBLE, changed, get, load_messages, remove, snapshot, state, state_query, system,

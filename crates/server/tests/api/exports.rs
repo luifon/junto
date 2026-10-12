@@ -1912,7 +1912,7 @@ async fn rule_e22_a_running_download_ends_when_the_access_ends() {
         .unwrap()
         .set_len(length)
         .unwrap();
-    let interval = server.state.config.limits.exports.download_check;
+    let interval = server.state.config.limits.recordings.download_check;
     let client = reqwest::Client::new();
     let begin = || async {
         let mut response = client

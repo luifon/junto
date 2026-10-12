@@ -616,7 +616,13 @@ pub fn audit_sentence(event: &AuditEvent, names: &Names<'_>) -> String {
             },
             the_workspaces(workspace_ids, names)
         ),
-        AuditEvent::InviteRevoked { .. } => "an invite was revoked.".to_owned(),
+        // An entry from before the server stored the creator names none.
+        AuditEvent::InviteRevoked {
+            invite_created_by, ..
+        } => match invite_created_by {
+            Some(created_by) => format!("an invite of {} was revoked.", account(*created_by)),
+            None => "an invite was revoked.".to_owned(),
+        },
         AuditEvent::AccountJoined {
             account_id,
             invite_created_by,

@@ -113,8 +113,7 @@ pub async fn search(
              l.recording_id,l.line,r.channel_id,l.account_id,r.requested_at,l.search_text,l.search_vector,true from
              transcript_lines l join recordings r on r.id=l.recording_id join transcripts t on t.recording_id=r.id join
              channels ch on ch.id=r.channel_id where r.channel_id=any($2) and t.state in ( 'ready' , 'partial' ) and
-             not exists(select 1 from calls c where c.id=r.call_id and ch.hides_occupants and not exists(select 1 from
-             call_members cm where cm.call_id=c.id and cm.account_id=$3)) ), hits as (select
+             reads_call(r.call_id,$3) ), hits as (select
              content.*,ts_rank_cd(vector,q) as rank from content,query where vector @@ q and ($4::uuid is null or
              place_id=$4) and ($5::uuid is null or author_id=$5) and ($6::timestamptz is null or created_at >= $6) and
              ($7::timestamptz is null or created_at < $7)) select * from hits where (rank,id,line)<($8,$9,$10) order by

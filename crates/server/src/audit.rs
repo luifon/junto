@@ -31,11 +31,21 @@ pub async fn record(
         About::Workspace(workspace_id) => (Some(workspace_id), None),
         About::Channel(workspace_id, channel_id) => (Some(workspace_id), Some(channel_id)),
     };
+    // An entry that names a recording keeps the call of that recording, so that it is
+    // returned by the rule of the recording also when the recording is gone (ADR 0604).
+    let named_recording = match event {
+        AuditEvent::RecordingStarted { recording_id }
+        | AuditEvent::RecordingStopped { recording_id, .. }
+        | AuditEvent::RecordingRemoved { recording_id }
+        | AuditEvent::TranscriptRequested { recording_id } => Some(*recording_id),
+        _ => None,
+    };
     sqlx::query(
         "insert into audit_entries
              (id, occurred_at, actor_id, workspace_id, channel_id, action, event,
-              access_token_id)
-         values ($1, $2, $3, $4, $5, $6, $7, nullif(current_setting($8, true), '')::uuid)",
+              access_token_id, call_id)
+         values ($1, $2, $3, $4, $5, $6, $7, nullif(current_setting($8, true), '')::uuid,
+                 (select call_id from recordings where id = $9))",
     )
     .bind(AuditEntryId::generate())
     .bind(now)
@@ -45,6 +55,7 @@ pub async fn record(
     .bind(event.action())
     .bind(Json(event))
     .bind(ACCESS_TOKEN_SETTING)
+    .bind(named_recording)
     .execute(&mut *connection)
     .await?;
     if let Some(channel_id) = channel_id

@@ -845,20 +845,14 @@ fn event_details(event: &Event) -> String {
             recording_id,
             channel_id,
             line,
-            corrected_by,
             ..
-        } => format!(
-            "recording={recording_id} channel={channel_id} line={line} account={corrected_by}"
-        ),
+        } => format!("recording={recording_id} channel={channel_id} line={line}"),
         Event::TranscriptSpeakerRenamed {
             recording_id,
             channel_id,
             speaker,
             ..
-        } => format!(
-            "recording={recording_id} channel={channel_id} speaker={} account={}",
-            speaker.number, speaker.account_id
-        ),
+        } => format!("recording={recording_id} channel={channel_id} speaker={speaker}"),
         Event::GlossaryReplaced { workspace_id } => format!("workspace={workspace_id}"),
         Event::CallEntryRequested { request } => format!(
             "request={} {} account={}",

@@ -81,6 +81,7 @@ impl Disk for FakeDisk {
 /// The disk of one directory of the server, whose free space the storage guard reads.
 pub struct Space {
     disk: std::sync::Mutex<Option<std::sync::Arc<dyn Disk>>>,
+    low: std::sync::atomic::AtomicBool,
 }
 
 impl Space {
@@ -92,6 +93,7 @@ impl Space {
         });
         Self {
             disk: std::sync::Mutex::new(disk),
+            low: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -119,6 +121,42 @@ impl Space {
             }
         }
     }
+}
+
+impl Space {
+    /// Whether the free space of the directory is at or below `reserve`. A change is logged,
+    /// which is the warning for the administrators (ADR 0006); `what` names the directory in
+    /// the log record. Absent without a directory and when the space cannot be read.
+    pub fn at_reserve(&self, what: &'static str, reserve: u64) -> Option<bool> {
+        let low = at_reserve(self.free_bytes()?, reserve);
+        if self.low.swap(low, Ordering::SeqCst) != low {
+            if low {
+                tracing::warn!(
+                    reserve,
+                    directory = what,
+                    "the free disk space reached the reserve: the server refuses new files \
+                     in this directory"
+                );
+            } else {
+                tracing::info!(
+                    directory = what,
+                    "the free disk space is above the reserve again"
+                );
+            }
+        }
+        Some(low)
+    }
+}
+
+/// The state of the storage guard over several directories: low when one of them is at
+/// its reserve, not low when none is and one could be read, and absent when none could be
+/// read.
+pub fn any_at_reserve(spaces: &[Option<bool>]) -> Option<bool> {
+    spaces
+        .iter()
+        .flatten()
+        .copied()
+        .reduce(|low, other| low || other)
 }
 
 /// What reserves disk space.

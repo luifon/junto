@@ -129,6 +129,7 @@ pub async fn remove_account(
         }
 
         set_status(connection, now, account_id, AccountStatus::Removed).await?;
+        store::contact_changed(connection, now, account_id).await?;
         let sessions = Sessions::OfAccount(account_id);
         store::record_ended(connection, &app.calls, now, sessions, SessionEnd::Removed).await?;
         sqlx::query("delete from devices where account_id = $1")
@@ -202,6 +203,7 @@ pub async fn ban_account(
         }
 
         set_status(connection, now, account_id, AccountStatus::Banned).await?;
+        store::contact_changed(connection, now, account_id).await?;
         store::end_sessions(connection, &app.calls, now, account_id, SessionEnd::Banned).await?;
         crate::exports::account_ended(connection, now, account_id).await?;
         let cancelled_invite_ids: Vec<InviteId> = sqlx::query_scalar(
@@ -259,6 +261,7 @@ pub async fn unban_account(
             return Err(ApiError::conflict("the account is not banned"));
         }
         set_status(connection, now, account_id, AccountStatus::Active).await?;
+        store::contact_changed(connection, now, account_id).await?;
         audit::record(
             connection,
             now,

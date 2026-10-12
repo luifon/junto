@@ -1,6 +1,6 @@
 # Deployment files
 
-The files that install a Junto server with Docker Compose. The steps are in [`docs/install.md`](../docs/install.md); the decisions are in ADR 0003, 0004, 0014, 0015, 0016, 0018 and 0021.
+The files that install a Junto server with Docker Compose. The steps are in [`docs/install.md`](../docs/install.md); the decisions are in ADR 0003, 0004, 0014, 0015, 0016, 0018, 0021 and 0022.
 
 | Path | Content |
 |---|---|
@@ -14,11 +14,13 @@ The files that install a Junto server with Docker Compose. The steps are in [`do
 | `backup.sh` | Backup of the database, the attachments and the recordings while the server runs. |
 | `restore.sh` | Restore of such a backup. An interrupted run is followed by a second run. |
 | `upgrade-undo.sh` | The way back to the copy of the database from before a migration. |
+| `database-user.sh` | Once, for a deployment of an earlier release: gives the database to the role of the server. |
 | `entry/Caddyfile` | The entry on port 443 with three server names. |
 | `images/server/` | The server image: Dockerfile, hand-over of transcription jobs, volume owners. |
 | `images/worker/` | The loop that runs transcription jobs in the worker container. |
 | `images/recorder/` | The start script of the recorder, which saves partial files. |
 | `images/link/` | The image of the private link of form 2. |
+| `images/postgres/` | The access rules of PostgreSQL, and the file that creates the role of the server. |
 | `tests/` | Tests that need Docker and no public address. |
 
 ## Tests
@@ -30,9 +32,9 @@ docker build -f deploy/images/server/Dockerfile -t junto-server .
 deploy/tests/transcribe-handover.sh junto-server      # the hand-over scripts, with two users
 deploy/tests/recorder-start.sh junto-server           # the start script of the recorder
 deploy/tests/entry.sh                                 # the entry selects by server name
-deploy/tests/smoke.sh                                 # the local form starts and is removed
+deploy/tests/smoke.sh                                 # the local form starts, with the database role of the server
 deploy/tests/backup-restore.sh                        # backup of a running server, refused restores, an interrupted restore
-deploy/tests/upgrade.sh                               # upgrade from an earlier release, and the way back
+deploy/tests/upgrade.sh                               # upgrade from an earlier release, the database role, and the way back
 deploy/tests/one-host.sh                              # the one-host form on one machine
 deploy/tests/two-hosts.sh                             # the two-host form on one machine, as two projects
 (cd spikes/test-participant && cargo build --release)

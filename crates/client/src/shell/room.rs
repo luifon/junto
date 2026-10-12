@@ -445,7 +445,11 @@ impl Shell {
             .into_any_element(),
             option_row(
                 text::HIDE_OCCUPANTS,
-                text::HIDE_OCCUPANTS_HELP,
+                if room.hide_waits_for_next_call {
+                    text::HIDE_OCCUPANTS_NEXT_CALL
+                } else {
+                    text::HIDE_OCCUPANTS_HELP
+                },
                 Toggle::new(
                     "room-hide",
                     text::HIDE_OCCUPANTS,
