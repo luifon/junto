@@ -252,11 +252,7 @@ async fn the_time_limit_of_a_write_is_not_renewed_by_interruptions() {
 
 #[tokio::test]
 async fn two_requests_that_together_pass_a_ceiling_do_not_both_commit() {
-    let server = TestServer::start_with(|config| {
-        config.limits.most_roles_per_member = 1;
-        config.limits.most_roles_per_workspace = 4;
-    })
-    .await;
+    let server = TestServer::start().await;
     let owner = server.owner().await;
     let guest = server.join(&owner, "Guest").await;
     let workspace = server.default_workspace(&owner).await;
@@ -266,6 +262,22 @@ async fn two_requests_that_together_pass_a_ceiling_do_not_both_commit() {
     let second: WorkspaceRole = role(&server, &owner, &workspace, "second")
         .await
         .ok(StatusCode::CREATED);
+    let most_held = i64::from(server.state.config.limits.most_roles_per_member);
+    let most_roles = i64::from(server.state.config.limits.most_roles_per_workspace);
+    sqlx::query(
+        "with added as (
+             insert into workspace_roles (id, workspace_id, name, permissions, created_at, position)
+             select gen_random_uuid(), $1, 'held', 0, now(), (1000 + n)::integer
+             from generate_series(1, $3) n returning id
+         ) insert into member_roles (workspace_id, account_id, role_id)
+           select $1, $2, id from added",
+    )
+    .bind(workspace.id)
+    .bind(guest.account_id)
+    .bind(most_held - 1)
+    .execute(&server.db)
+    .await
+    .unwrap();
     let path = |role: &WorkspaceRole| {
         format!(
             "/api/v1/workspaces/{}/members/{}/roles/{}",
@@ -292,7 +304,23 @@ async fn two_requests_that_together_pass_a_ceiling_do_not_both_commit() {
         .fetch_one(&server.db)
         .await
         .unwrap();
-    assert_eq!(held_roles, 1);
+    assert_eq!(held_roles, most_held);
+    let existing: i64 =
+        sqlx::query_scalar("select count(*) from workspace_roles where workspace_id = $1")
+            .bind(workspace.id)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    sqlx::query(
+        "insert into workspace_roles (id, workspace_id, name, permissions, created_at, position)
+         select gen_random_uuid(), $1, 'filler', 0, now(), (2000 + n)::integer
+         from generate_series(1, $2) n",
+    )
+    .bind(workspace.id)
+    .bind(most_roles - existing - 1)
+    .execute(&server.db)
+    .await
+    .unwrap();
 
     server.gate().arm(0);
     let roles_path = format!("/api/v1/workspaces/{}/roles", workspace.id);
@@ -300,14 +328,16 @@ async fn two_requests_that_together_pass_a_ceiling_do_not_both_commit() {
     let held = server.post(&owner, &roles_path, &body);
     tokio::pin!(held);
     drive_until(&mut held, server.gate().arrived()).await;
-    role(&server, &owner, &workspace, "fourth")
-        .await
-        .ok::<WorkspaceRole>(StatusCode::CREATED);
+    let second_body = json!({ "name": "fourth" });
+    let second = server.post(&owner, &roles_path, &second_body);
+    tokio::pin!(second);
+    drive_until(&mut second, server.until_blocked()).await;
     server.gate().release();
-    limit_reached(&held.await);
+    held.await.ok::<WorkspaceRole>(StatusCode::CREATED);
+    limit_reached(&second.await);
     let roles: i64 = sqlx::query_scalar("select count(*) from workspace_roles")
         .fetch_one(&server.db)
         .await
         .unwrap();
-    assert_eq!(roles, 4);
+    assert_eq!(roles, most_roles);
 }

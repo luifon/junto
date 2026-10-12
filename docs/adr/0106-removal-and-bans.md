@@ -23,3 +23,9 @@ A person who moderates a server needs to end another person's access to it. An a
 - The connections of the removed or banned account receive a control event (ADR 0107).
 - A removed or banned person who is in a call is removed from it through LiveKit's API (ADR 0506).
 - An invite code that a banned account created stops working at the ban.
+
+Role order and its action-specific exemptions are decided in ADR 0309.
+
+Unban requires the actor above the account at the server level and at every workspace
+level where assigned roles return; the owner always passes role order (ADR 0309). This
+differs from Discord because Junto restores the account with its roles.

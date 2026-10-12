@@ -6687,7 +6687,7 @@
         "tags": [
           "server roles"
         ],
-        "summary": "The server roles.",
+        "summary": "The server roles, visible to administrators and holders of ban_members.\nTokens may use either read_structure or manage_members for this list.",
         "operationId": "list_server_roles",
         "responses": {
           "200": {
@@ -6745,6 +6745,43 @@
               }
             }
           },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/server-roles/positions": {
+      "patch": {
+        "tags": [
+          "server roles"
+        ],
+        "summary": "Reorders up to 250 roles in one transaction.",
+        "operationId": "reorder_server_roles",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReorderServerRoles"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
           "default": {
             "description": "An error. The field `error.code` states which one.",
             "content": {
@@ -8455,6 +8492,53 @@
         ]
       }
     },
+    "/api/v1/workspaces/{workspace_id}/roles/positions": {
+      "patch": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Reorders up to 250 roles in one transaction.",
+        "operationId": "reorder_workspace_roles",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReorderWorkspaceRoles"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/workspaces/{workspace_id}/roles/{role_id}": {
       "delete": {
         "tags": [
@@ -9325,6 +9409,52 @@
               },
               "device_id": {
                 "$ref": "#/components/schemas/DeviceId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "role_id",
+              "position",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "server_role_position_changed"
+                ]
+              },
+              "position": {
+                "type": "integer",
+                "format": "int32"
+              },
+              "role_id": {
+                "$ref": "#/components/schemas/ServerRoleId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "role_id",
+              "position",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "workspace_role_position_changed"
+                ]
+              },
+              "position": {
+                "type": "integer",
+                "format": "int32"
+              },
+              "role_id": {
+                "$ref": "#/components/schemas/WorkspaceRoleId"
               }
             }
           },
@@ -13575,6 +13705,34 @@
           }
         }
       },
+      "ReorderServerRoles": {
+        "type": "object",
+        "required": [
+          "positions"
+        ],
+        "properties": {
+          "positions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServerRolePosition"
+            }
+          }
+        }
+      },
+      "ReorderWorkspaceRoles": {
+        "type": "object",
+        "required": [
+          "positions"
+        ],
+        "properties": {
+          "positions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceRolePosition"
+            }
+          }
+        }
+      },
       "ReportCallState": {
         "type": "object",
         "description": "The device's report of the person's own microphone and sound settings.",
@@ -13684,6 +13842,14 @@
               "$ref": "#/components/schemas/WorkspacePermission"
             },
             "description": "Absent: a new role has no permission, an existing role keeps its permissions."
+          },
+          "position": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Optional relative-order key: larger is higher; everyone is fixed at zero."
           }
         },
         "additionalProperties": false
@@ -14056,6 +14222,10 @@
             "items": {
               "$ref": "#/components/schemas/ServerPermission"
             }
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32"
           }
         }
       },
@@ -14081,6 +14251,14 @@
               "$ref": "#/components/schemas/ServerPermission"
             },
             "description": "Absent: a new role has no permission, an existing role keeps its permissions."
+          },
+          "position": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Optional relative-order key: larger is higher. Numeric gaps are not significant."
           }
         },
         "additionalProperties": false
@@ -14088,6 +14266,22 @@
       "ServerRoleId": {
         "type": "string",
         "format": "uuid"
+      },
+      "ServerRolePosition": {
+        "type": "object",
+        "required": [
+          "role_id",
+          "position"
+        ],
+        "properties": {
+          "position": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "role_id": {
+            "$ref": "#/components/schemas/ServerRoleId"
+          }
+        }
       },
       "SessionCreated": {
         "type": "object",
@@ -14428,6 +14622,52 @@
       },
       "StructureChange": {
         "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "positions",
+              "change"
+            ],
+            "properties": {
+              "change": {
+                "type": "string",
+                "enum": [
+                  "reorder_server_roles"
+                ]
+              },
+              "positions": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/StructureRolePosition"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "workspace",
+              "positions",
+              "change"
+            ],
+            "properties": {
+              "change": {
+                "type": "string",
+                "enum": [
+                  "reorder_workspace_roles"
+                ]
+              },
+              "positions": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/StructureRolePosition"
+                }
+              },
+              "workspace": {
+                "$ref": "#/components/schemas/StructureId"
+              }
+            }
+          },
           {
             "type": "object",
             "required": [
@@ -14954,7 +15194,7 @@
           "format": {
             "type": "integer",
             "format": "int32",
-            "description": "The version of the file format: 1.",
+            "description": "The version of the file format: 2. This tool also reads format 1.",
             "minimum": 0
           },
           "server_roles": {
@@ -14986,6 +15226,22 @@
           "category",
           "channel"
         ]
+      },
+      "StructureRolePosition": {
+        "type": "object",
+        "required": [
+          "id",
+          "position"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/StructureId"
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
       },
       "SystemMessage": {
         "type": "object",
@@ -15753,6 +16009,10 @@
               "$ref": "#/components/schemas/WorkspacePermission"
             }
           },
+          "position": {
+            "type": "integer",
+            "format": "int32"
+          },
           "workspace_id": {
             "$ref": "#/components/schemas/WorkspaceId"
           }
@@ -15761,6 +16021,22 @@
       "WorkspaceRoleId": {
         "type": "string",
         "format": "uuid"
+      },
+      "WorkspaceRolePosition": {
+        "type": "object",
+        "required": [
+          "role_id",
+          "position"
+        ],
+        "properties": {
+          "position": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "role_id": {
+            "$ref": "#/components/schemas/WorkspaceRoleId"
+          }
+        }
       },
       "WorkspaceState": {
         "type": "object",

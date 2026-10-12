@@ -51,3 +51,9 @@ Entry identifiers:
 - An object that a file created has two identifiers: the one of its entry, in files and in the structure document, and its own, in every other route, in events and in the audit log. The answer of the changes route states both.
 - A deletion of a role, a category or a workspace runs the function of its single route (ADR 0308), with the same checks: a deletion that the route refuses ends the request, and nothing is changed.
 - A stale revision has the code `conflict`, like every state that makes a plan unusable. A program that gets `conflict` from this route computes a new plan.
+
+Role order and its action-specific exemptions are decided in ADR 0309.
+
+Role reorders are `reorder_server_roles` and `reorder_workspace_roles`, with resolved
+absolute positions inside the atomic change request. The format-2 file keys express
+relative order; the setup planner resolves them to these positions (ADR 0309).

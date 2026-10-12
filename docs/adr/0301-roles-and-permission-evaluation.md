@@ -50,3 +50,5 @@ Invitations:
 - An exception for one member in one channel requires a role that only that member has.
 - The server owner is a single position above the administrator permission. It is assigned by the first start of the server and by the server command line (ADR 0201).
 - The list of workspace permissions is not closed; later records can add to it.
+
+Role order and its action-specific exemptions are decided in ADR 0309.

@@ -261,6 +261,10 @@ pub enum Event {
         account_id: AccountId,
         previous_owner_id: Option<AccountId>,
     },
+    /// Replaces the positions of existing server roles before the following creation.
+    ServerRolePositionsShifted {
+        positions: Vec<crate::roles::ServerRolePosition>,
+    },
     ServerRoleCreated {
         role: ServerRole,
     },
@@ -324,6 +328,11 @@ pub enum Event {
         workspace_id: WorkspaceId,
         account_id: AccountId,
         role_ids: Vec<WorkspaceRoleId>,
+    },
+    /// Replaces the positions of existing non-everyone roles before creation.
+    WorkspaceRolePositionsShifted {
+        workspace_id: WorkspaceId,
+        positions: Vec<crate::roles::WorkspaceRolePosition>,
     },
     WorkspaceRoleCreated {
         role: WorkspaceRole,
@@ -638,6 +647,8 @@ impl Event {
         "account_status_changed",
         "account_server_roles_changed",
         "owner_changed",
+        "server_role_positions_shifted",
+        "workspace_role_positions_shifted",
         "server_role_created",
         "server_role_updated",
         "access_token_created",
@@ -725,6 +736,8 @@ impl Event {
             Self::AccountStatusChanged { .. } => "account_status_changed",
             Self::AccountServerRolesChanged { .. } => "account_server_roles_changed",
             Self::OwnerChanged { .. } => "owner_changed",
+            Self::ServerRolePositionsShifted { .. } => "server_role_positions_shifted",
+            Self::WorkspaceRolePositionsShifted { .. } => "workspace_role_positions_shifted",
             Self::ServerRoleCreated { .. } => "server_role_created",
             Self::ServerRoleUpdated { .. } => "server_role_updated",
             Self::AccessTokenCreated { .. } => "access_token_created",
@@ -909,6 +922,7 @@ mod tests {
             position: 0,
         };
         let workspace_role = WorkspaceRole {
+            position: 1,
             id: WorkspaceRoleId::generate(),
             workspace_id,
             name: "helpers".to_owned(),
@@ -916,6 +930,7 @@ mod tests {
             is_everyone: false,
         };
         let server_role = ServerRole {
+            position: 1,
             id: ServerRoleId::generate(),
             name: "moderators".to_owned(),
             permissions: vec![junto_authz::ServerPermission::BanMembers],
@@ -1018,6 +1033,19 @@ mod tests {
             Event::OwnerChanged {
                 account_id,
                 previous_owner_id: None,
+            },
+            Event::ServerRolePositionsShifted {
+                positions: vec![crate::roles::ServerRolePosition {
+                    role_id: server_role.id,
+                    position: 2,
+                }],
+            },
+            Event::WorkspaceRolePositionsShifted {
+                workspace_id,
+                positions: vec![crate::roles::WorkspaceRolePosition {
+                    role_id: workspace_role.id,
+                    position: 2,
+                }],
             },
             Event::ServerRoleCreated {
                 role: server_role.clone(),

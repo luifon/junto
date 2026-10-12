@@ -191,6 +191,14 @@
               "array",
               "null"
             ]
+          },
+          "position": {
+            "description": "Optional relative-order key: larger is higher; everyone is fixed at zero.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
           }
         },
         "required": [
@@ -229,6 +237,14 @@
               "array",
               "null"
             ]
+          },
+          "position": {
+            "description": "Optional relative-order key: larger is higher. Numeric gaps are not significant.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
           }
         },
         "required": [
@@ -246,7 +262,7 @@
             "description": "The entries that applying the file deletes. Nothing else is deleted."
           },
           "format": {
-            "description": "The version of the file format: 1.",
+            "description": "The version of the file format: 2. This tool also reads format 1.",
             "format": "int32",
             "minimum": 0,
             "type": "integer"

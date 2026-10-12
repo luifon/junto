@@ -312,7 +312,7 @@ fn rule_43_the_file_of_another_server_uses_the_default_workspace_and_its_everyon
 fn rule_48_a_file_that_cannot_be_applied_states_every_problem() {
     let current = server();
     let cases = [
-        (json!({ "format": 2 }), "the file has the format 2"),
+        (json!({ "format": 3 }), "the file has the format 3"),
         (
             json!({ "format": 1, "workspaces": [
                 { "id": id(1), "name": "Main" }, { "id": id(1), "name": "Again" }] }),
@@ -565,4 +565,49 @@ fn rule_53_a_file_deletes_only_what_it_lists_in_an_order_that_the_server_takes()
     );
     assert!(refused.contains("is the everyone role"), "{refused}");
     assert!(refused.contains("is the default workspace"), "{refused}");
+}
+
+#[test]
+fn role_order_positions_are_atomic_and_unchanged_roles_are_omitted() {
+    let first = "00000000-0000-7000-8000-000000000001";
+    let second = "00000000-0000-7000-8000-000000000002";
+    let third = "00000000-0000-7000-8000-000000000003";
+    let current: junto_protocol::structure_file::StructureFile = serde_json::from_value(serde_json::json!({
+        "format":1,"server_roles":[{"id":first,"name":"first","position":3},{"id":second,"name":"second","position":2},{"id":third,"name":"third","position":1}]
+    })).unwrap();
+    let mut desired = current.clone();
+    desired.server_roles[1].position = Some(1);
+    desired.server_roles[2].position = Some(2);
+    let plan = junto_setup::plan::plan(
+        &desired,
+        &current,
+        &mut junto_protocol::ids::StructureId::generate,
+    )
+    .unwrap();
+    assert_eq!(plan.len(), 1);
+    let junto_protocol::structure_file::StructureChange::ReorderServerRoles { positions } =
+        &plan[0].change
+    else {
+        panic!("expected one reorder")
+    };
+    assert_eq!(positions.len(), 2);
+    assert!(positions.iter().all(|p| p.id.to_string() != first));
+    assert!(
+        junto_setup::plan::plan(
+            &desired,
+            &desired,
+            &mut junto_protocol::ids::StructureId::generate
+        )
+        .unwrap()
+        .is_empty()
+    );
+    desired.server_roles[0].position = Some(1);
+    assert!(
+        junto_setup::plan::plan(
+            &desired,
+            &current,
+            &mut junto_protocol::ids::StructureId::generate
+        )
+        .is_err()
+    );
 }

@@ -202,6 +202,8 @@ fn documented_routes() -> OpenApiRouter<AppState> {
         .routes(routes!(moderation::remove_account))
         .routes(routes!(moderation::ban_account, moderation::unban_account))
         .routes(routes!(moderation::recover_account))
+        .routes(routes!(server_roles::reorder_server_roles))
+        .routes(routes!(workspace_roles::reorder_workspace_roles))
         .routes(routes!(
             server_roles::list_server_roles,
             server_roles::create_server_role

@@ -650,6 +650,22 @@ pub async fn apply(server: &TestServer, member: &Member, snapshot: &mut Snapshot
                     .retain(|channel| channel.id != channel_id);
             }
         }
+        Event::WorkspaceRolePositionsShifted {
+            workspace_id,
+            positions,
+        } => {
+            if let Some(index) = state(snapshot, workspace_id) {
+                for changed in positions {
+                    if let Some(role) = snapshot.workspaces[index]
+                        .roles
+                        .iter_mut()
+                        .find(|r| r.id == changed.role_id)
+                    {
+                        role.position = changed.position;
+                    }
+                }
+            }
+        }
         Event::WorkspaceRoleCreated { role } | Event::WorkspaceRoleUpdated { role } => {
             if let Some(index) = state(snapshot, role.workspace_id) {
                 upsert(

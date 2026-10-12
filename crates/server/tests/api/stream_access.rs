@@ -629,7 +629,11 @@ async fn the_events_of_the_server_reach_the_holders_of_their_permission_only() {
     );
     assert_eq!(
         types(&server.traffic(&moderator, &mut to_moderator).await),
-        ["account_server_roles_changed"]
+        [
+            "server_role_positions_shifted",
+            "server_role_created",
+            "account_server_roles_changed"
+        ]
     );
     assert_eq!(
         types(&server.traffic(&owner, &mut to_owner).await),
@@ -638,6 +642,7 @@ async fn the_events_of_the_server_reach_the_holders_of_their_permission_only() {
             "join_request_created",
             "join_request_decided",
             "invite_revoked",
+            "server_role_positions_shifted",
             "server_role_created",
             "account_server_roles_changed",
         ]

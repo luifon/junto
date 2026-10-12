@@ -382,3 +382,39 @@ A deletion of a channel or of a workspace changes rows of the structure in its r
 content (messages, attachments, recordings, exports) is removed afterwards by one task, in
 transactions of at most 500 rows (ADR 0017). The tests run it with
 `junto_server::purge::run_once`, the exports with `junto_server::exports::run_once`.
+
+
+## Role order
+
+Roles carry a `position`; larger values are higher, and everyone stays at zero.
+The owner stands above all roles. Server actions compare server roles. In a workspace,
+administrators compare their highest administrator-granting server roles above workspace
+roles; other people use only that workspace's roles. Other server permissions give no
+workspace position. Bans, removals and restored roles on unban require a strictly higher
+position; administrator does not bypass this check. Role management compares the role,
+not the recipient. Voice moderation, moves and content moderation keep ADR 0309's exemptions.
+
+`PATCH /api/v1/server-roles/positions` and
+`PATCH /api/v1/workspaces/{workspace_id}/roles/positions` take
+`{"positions":[{"role_id":"<uuid>","position":1}]}`. At most 250 named roles move
+atomically, to distinct positions from 1 through 1,000,000. Both old and new positions
+must be below the actor, and collisions with unnamed roles are refused. Everyone cannot
+move. The routes require `manage_structure` for tokens and use the creator's current
+position. Taking an unknown role returns `not_found` after visibility checks.
+
+Role lists, role-created/updated events and workspace snapshot roles carry positions.
+Holders of `ban_members` can read server roles and receive their events; tokens may use
+`read_structure` or `manage_members` for that list. A reorder writes position audit entries
+and permission-change notices. Creation writes one audit entry and at most three events
+under the 250-role ceiling:
+`server_role_positions_shifted` or `workspace_role_positions_shifted` carries the changed
+roles in chunks of at most 128 `positions` (each `role_id` and absolute `position`), then
+the usual created
+event adds the new role at one. The workspace event also names `workspace_id`.
+The shift emits no permission-change notices because the relative order is unchanged.
+
+Structure format 2 exports optional relative-order keys. Setup sorts positioned roles
+into their existing slots after creations and deletions, preserving unnamed/unpositioned
+roles. New unpositioned roles remain at the bottom. Old exports tolerate later client
+creations, and repeated apply changes nothing. Format 1 files remain readable; old tools
+must be upgraded before reading format 2 exports.
