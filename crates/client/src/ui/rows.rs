@@ -15,6 +15,7 @@ use crate::assets::Icon;
 use crate::theme::{theme, u};
 
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
+type MenuHandler = std::rc::Rc<dyn Fn(&mut Window, &mut App) + 'static>;
 
 /// One workspace of a server, in the server book or in the menu of a collapsed server.
 #[derive(IntoElement)]
@@ -245,6 +246,9 @@ pub struct ChannelRow {
     muted: bool,
     /// Why the row cannot be used.
     unavailable: Option<SharedString>,
+    /// The menu of the row is open.
+    open: bool,
+    on_menu: Option<MenuHandler>,
 }
 
 impl ChannelRow {
@@ -262,7 +266,22 @@ impl ChannelRow {
             nested: false,
             muted: false,
             unavailable: None,
+            open: false,
+            on_menu: None,
         }
+    }
+
+    /// The menu of the row is open: the row is drawn as the one that the menu is about.
+    pub fn open(mut self, open: bool) -> Self {
+        self.open = open;
+        self
+    }
+
+    /// The row opens a menu about its place: with a right click, and from the keyboard
+    /// with the Menu key, or Shift and F10. Enter and Space select the row.
+    pub fn on_menu(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_menu = Some(std::rc::Rc::new(handler));
+        self
     }
 
     /// The row cannot be used: it takes no click, and tells the reason.
@@ -429,6 +448,27 @@ impl RenderOnce for ChannelRow {
                         row.on_click(move |event, window, cx| handler(event, window, cx))
                     })
             })
+            .when(self.open && !self.selected, |row| {
+                row.bg(Hsla::from(colors.limestone_hover))
+            })
+            .when_some(self.on_menu, |row, open| {
+                let (by_click, by_key) = (open.clone(), open);
+                row.on_mouse_down(gpui::MouseButton::Right, move |_, window, cx| {
+                    by_click(window, cx);
+                })
+                .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
+                    let keys = &event.keystroke;
+                    let opens = match keys.key.as_str() {
+                        "menu" => true,
+                        "f10" => keys.modifiers.shift,
+                        _ => false,
+                    };
+                    if opens {
+                        by_key(window, cx);
+                        cx.stop_propagation();
+                    }
+                })
+            })
             .child(match self.avatar {
                 Some(seed) => Mosaic::new(MosaicKind::Small, seed, 16.0)
                     .radius(2.0)
@@ -506,8 +546,6 @@ pub struct OccupantRow {
     open: bool,
     on_menu: Option<MenuHandler>,
 }
-
-type MenuHandler = std::rc::Rc<dyn Fn(&mut Window, &mut App) + 'static>;
 
 impl OccupantRow {
     pub fn new(id: impl Into<ElementId>, name: impl Into<SharedString>, seed: u128) -> Self {

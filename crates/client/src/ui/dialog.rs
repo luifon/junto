@@ -82,6 +82,8 @@ impl RenderOnce for Dialog {
             })
             .w(u(metrics.dialog_width))
             .max_w_full()
+            // A dialog that is taller than the window scrolls its content.
+            .max_h_full()
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -102,8 +104,12 @@ impl RenderOnce for Dialog {
             .child(header)
             .child(
                 div()
+                    .id("dialog-content")
                     .flex()
                     .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
                     .pt(u(14.0))
                     .px(u(16.0))
                     .pb(u(16.0))

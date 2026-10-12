@@ -38,6 +38,7 @@ impl Shell {
             .update(cx, |field, cx| field.set_value(name, window, cx));
         self.name_error = None;
         self.name_saved = false;
+        self.show_quiet_times(window, cx);
         self.open_layer(Layer::Settings, window, cx);
     }
 
@@ -129,6 +130,11 @@ impl Shell {
             )
         };
         let selected = theme::SCALES.iter().position(|option| *option == scale);
+        let quiet = self
+            .view
+            .as_ref()
+            .map(|view| view.quiet.clone())
+            .unwrap_or_default();
         Dialog::new(text::SETTINGS, self.layer_focus())
             .selector("settings-dialog")
             .on_close(Self::handler(cx, |this, window, cx| {
@@ -220,6 +226,8 @@ impl Shell {
             })
             .child(div().mt(u(16.0)).child(group_label(text::VOICE, &theme)))
             .children(self.render_voice_settings(&theme, cx))
+            .child(div().mt(u(16.0)).child(group_label(text::QUIET, &theme)))
+            .children(self.render_quiet_settings(&quiet, &theme, cx))
             .child(
                 div()
                     .mt(u(16.0))

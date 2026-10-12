@@ -60,6 +60,8 @@ pub struct FileBody {
     /// True when the body starts at the byte that was asked for. False when it is the
     /// whole file.
     pub partial: bool,
+    /// The first byte of the range that the answer states, when it states one.
+    pub starts_at: Option<u64>,
     pub body: BodyStream,
 }
 
@@ -246,6 +248,7 @@ impl ServerApi {
             .await?;
         Ok(FileBody {
             partial: opened.status == 206,
+            starts_at: opened.range_start,
             body: opened.body,
         })
     }

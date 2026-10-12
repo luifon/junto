@@ -73,9 +73,15 @@ use junto_media::share::{
 };
 use time::OffsetDateTime;
 
+#[path = "junto-screens/discovery.rs"]
+mod discovery;
+#[path = "junto-screens/frames.rs"]
+mod frames;
 /// The window of the design: 1440 by 900 pixels at 100 %.
 #[path = "junto-screens/messages.rs"]
 mod messages;
+#[path = "junto-screens/recorded.rs"]
+mod recorded;
 #[path = "junto-screens/threads.rs"]
 mod threads;
 
@@ -495,6 +501,9 @@ impl Screen {
 
 type Prepare = Box<dyn FnOnce(&mut Shell, &mut gpui::Window, &mut gpui::Context<Shell>)>;
 
+/// An open window with its shell and the state of the application.
+type Opened = (gpui::WindowHandle<Root>, Entity<Shell>, Entity<AppState>);
+
 impl Studio {
     fn new(out: PathBuf) -> Result<Self, String> {
         let scratch = std::env::temp_dir().join(format!("junto-screens-{}", std::process::id()));
@@ -529,6 +538,42 @@ impl Studio {
         prepare: Prepare,
         ready: impl Fn(&Shell) -> bool,
     ) -> Result<(), String> {
+        let name = screen.name;
+        let (window, shell, _) = self.open(screen, prepare)?;
+        let started = Instant::now();
+        loop {
+            self.cx.run_until_parked();
+            if self.cx.update(|cx| ready(shell.read(cx))) {
+                break;
+            }
+            if started.elapsed() > Duration::from_secs(10) {
+                return Err(format!("{name}: the screen did not reach its state"));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // Two frames: the first lays the layers out, the second draws what they opened.
+        for _ in 0..2 {
+            self.cx
+                .update_window(window.into(), |_, window, _| window.refresh())
+                .map_err(|error| format!("{error:#}"))?;
+            self.cx.run_until_parked();
+        }
+        let image = self
+            .cx
+            .capture_screenshot(window.into())
+            .map_err(|error| format!("{name}: {error:#}"))?;
+        let file = self.out.join(format!("{name}.png"));
+        image.save(&file).map_err(|error| error.to_string())?;
+        println!("{}", file.display());
+        self.cx
+            .update_window(window.into(), |_, window, _| window.remove_window())
+            .map_err(|error| format!("{error:#}"))?;
+        self.cx.run_until_parked();
+        Ok(())
+    }
+
+    /// Opens the window of one screen on a data directory of its own.
+    fn open(&mut self, screen: Screen, prepare: Prepare) -> Result<Opened, String> {
         self.drawn += 1;
         let data_dir = self.scratch.join(format!("data-{}", self.drawn));
         let mut options = ClientOptions::new(data_dir);
@@ -565,6 +610,7 @@ impl Studio {
             state
         });
         let scale = screen.scale;
+        let held = state.clone();
         let built: std::rc::Rc<std::cell::RefCell<Option<Entity<Shell>>>> = std::rc::Rc::default();
         let slot = built.clone();
         let window = self
@@ -584,39 +630,7 @@ impl Studio {
             .borrow_mut()
             .take()
             .ok_or("the window was not built")?;
-        let started = Instant::now();
-        loop {
-            self.cx.run_until_parked();
-            if self.cx.update(|cx| ready(shell.read(cx))) {
-                break;
-            }
-            if started.elapsed() > Duration::from_secs(10) {
-                return Err(format!(
-                    "{}: the screen did not reach its state",
-                    screen.name
-                ));
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        // Two frames: the first lays the layers out, the second draws what they opened.
-        for _ in 0..2 {
-            self.cx
-                .update_window(window.into(), |_, window, _| window.refresh())
-                .map_err(|error| format!("{error:#}"))?;
-            self.cx.run_until_parked();
-        }
-        let image = self
-            .cx
-            .capture_screenshot(window.into())
-            .map_err(|error| format!("{}: {error:#}", screen.name))?;
-        let file = self.out.join(format!("{}.png", screen.name));
-        image.save(&file).map_err(|error| error.to_string())?;
-        println!("{}", file.display());
-        self.cx
-            .update_window(window.into(), |_, window, _| window.remove_window())
-            .map_err(|error| format!("{error:#}"))?;
-        self.cx.run_until_parked();
-        Ok(())
+        Ok((window, shell, held))
     }
 }
 
@@ -2670,12 +2684,18 @@ fn run(out: &Path) -> Result<(), String> {
         Some("rules") => draw_rules(&mut studio),
         Some("messages") => messages::draw(&mut studio),
         Some("threads") => threads::draw(&mut studio),
+        Some("discovery") => discovery::draw(&mut studio),
+        Some("recorded") => recorded::draw(&mut studio),
+        // Not a picture: the time of a frame with 10,000 loaded messages.
+        Some("frames") => frames::measure(&mut studio),
         _ => draw_all(&mut studio)
             .and_then(|()| draw_calls(&mut studio))
             .and_then(|()| draw_shares(&mut studio))
             .and_then(|()| draw_rules(&mut studio))
             .and_then(|()| messages::draw(&mut studio))
             .and_then(|()| threads::draw(&mut studio))
+            .and_then(|()| discovery::draw(&mut studio))
+            .and_then(|()| recorded::draw(&mut studio))
             .and_then(|()| draw_components(&mut studio)),
     };
     let scratch = studio.scratch.clone();

@@ -169,6 +169,8 @@ pub type BodyStream =
 pub struct OpenedResponse {
     pub status: u16,
     pub retry_after: Option<Duration>,
+    /// The first byte of the range that the answer states, when it states one.
+    pub range_start: Option<u64>,
     pub body: BodyStream,
 }
 
@@ -195,6 +197,7 @@ pub trait Transport: Send + Sync + 'static {
             Ok(OpenedResponse {
                 status: response.status,
                 retry_after: response.retry_after,
+                range_start: None,
                 body: Box::pin(futures_util::stream::once(async move { Ok(body) })),
             })
         })
@@ -285,6 +288,11 @@ impl Transport for ReqwestTransport {
             let response = builder.send().await.map_err(failure)?;
             let status = response.status().as_u16();
             let retry_after = retry_after_of(&response);
+            let range_start = response
+                .headers()
+                .get(reqwest::header::CONTENT_RANGE)
+                .and_then(|value| value.to_str().ok())
+                .and_then(range_start_of);
             let body = futures_util::stream::unfold(Some(response), |response| async move {
                 let mut response = response?;
                 match response.chunk().await {
@@ -296,10 +304,18 @@ impl Transport for ReqwestTransport {
             Ok(OpenedResponse {
                 status,
                 retry_after,
+                range_start,
                 body: Box::pin(body),
             })
         })
     }
+}
+
+/// The first byte of a `Content-Range` header, as in `bytes 100-199/200`.
+pub(crate) fn range_start_of(value: &str) -> Option<u64> {
+    let range = value.trim().strip_prefix("bytes")?.trim_start();
+    let (start, _) = range.split_once('-')?;
+    start.trim().parse().ok()
 }
 
 fn retry_after_of(response: &reqwest::Response) -> Option<Duration> {

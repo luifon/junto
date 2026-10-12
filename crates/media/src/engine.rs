@@ -42,6 +42,7 @@ use crate::permission::{MicrophoneAccess, MicrophonePermission};
 use crate::share::picture::PictureFrame;
 use crate::share::{CaptureError, CaptureRequest, ScreenCapture};
 
+mod order;
 mod share;
 #[cfg(feature = "test-support")]
 pub(crate) mod statistics;

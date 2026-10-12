@@ -37,23 +37,40 @@ fn video(stat: &RtcStats) -> bool {
     }
 }
 
-async fn connection(label: &str, calls: &Calls) {
+async fn connection(label: &str, calls: &Calls) -> Vec<String> {
+    let mut lines = Vec::new();
     // Diagnostics must still finish if the failed connection no longer answers.
     match tokio::time::timeout(Duration::from_secs(5), calls.statistics()).await {
         Ok(Ok(stats)) => {
             for stat in stats.publisher_stats.iter().filter(|stat| video(stat)) {
-                eprintln!("{label} publisher: {stat:?}");
+                lines.push(format!("{label} publisher: {stat:?}"));
             }
             for stat in stats.subscriber_stats.iter().filter(|stat| video(stat)) {
-                eprintln!("{label} subscriber: {stat:?}");
+                lines.push(format!("{label} subscriber: {stat:?}"));
             }
         }
-        Ok(Err(error)) => eprintln!("{label} statistics unavailable: {error}"),
-        Err(_) => eprintln!("{label} statistics did not answer within five seconds"),
+        Ok(Err(error)) => lines.push(format!("{label} statistics unavailable: {error}")),
+        Err(_) => lines.push(format!("{label} statistics did not answer within five seconds")),
     }
+    lines
 }
 
-pub async fn frame_rate(sender: &Person, receiver: &Person, pictures: usize) {
+#[derive(Debug)]
+pub struct Snapshot {
+    unix_ms: u128,
+    share_age: Duration,
+    sender: Vec<String>,
+    receiver: Vec<String>,
+}
+
+pub async fn snapshot(sender: &Person, receiver: &Person, share_started: tokio::time::Instant) -> Snapshot {
+    let unix_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis();
+    let share_age = share_started.elapsed();
+    let (sender, receiver) = tokio::join!(connection("sender", &sender.calls), connection("receiver", &receiver.calls));
+    Snapshot { unix_ms, share_age, sender, receiver }
+}
+
+pub fn frame_rate(receiver: &Person, pictures: usize, before: &Snapshot, after: &Snapshot) {
     let at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -80,8 +97,8 @@ pub async fn frame_rate(sender: &Person, receiver: &Person, pictures: usize) {
         "selected share and received layers: {:?}",
         view.call.as_ref().map(|call| (&call.watched, &call.shares))
     );
-    tokio::join!(
-        connection("sender", &sender.calls),
-        connection("receiver", &receiver.calls)
-    );
+    for (label, snapshot) in [("before", before), ("after", after)] {
+        eprintln!("{label}: unix_ms={}, share_age={:?}", snapshot.unix_ms, snapshot.share_age);
+        for line in snapshot.sender.iter().chain(&snapshot.receiver) { eprintln!("{label} {line}"); }
+    }
 }

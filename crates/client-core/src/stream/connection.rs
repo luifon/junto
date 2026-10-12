@@ -6,6 +6,7 @@
 //! reading the connection while they run.
 
 mod messages;
+mod recordings;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
@@ -19,8 +20,10 @@ use junto_protocol::events::{
 };
 use junto_protocol::ids::WorkspaceId;
 use junto_protocol::message::{AttachmentLimits, Message, MessageState, ThreadPage, UnreadThreads};
+use junto_protocol::recording::RecordingDetail;
 use junto_protocol::snapshot::Snapshot;
 use junto_protocol::structure::WorkspaceMember;
+use junto_protocol::transcript::Transcript;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::AbortHandle;
 use tokio::time::Instant;
@@ -33,7 +36,7 @@ use crate::api::{
 };
 use crate::events::{ConnectionLevel, StreamTarget};
 use crate::live::{Command, LiveView, LoadError, Notice, Shared, StreamFault, StreamStatus};
-use crate::model::{Follow, Loadable, Part, ServerModel};
+use crate::model::{Follow, LinesRead, Loadable, Part, ServerModel};
 
 const MINUTE: Duration = Duration::from_secs(60);
 /// How many frames that wait are applied before the readers get the new state.
@@ -65,6 +68,8 @@ enum Payload {
     ThreadHead(Box<ThreadPage>),
     Pins(Vec<Message>),
     Notices(NotificationPage),
+    Recording(Box<(RecordingDetail, Transcript)>),
+    Lines(LinesRead),
 }
 
 struct Loaded {
@@ -255,6 +260,8 @@ struct Client {
     /// What the client does for the messages (ADR 0721).
     messages: messages::Work,
     done: mpsc::UnboundedSender<messages::Done>,
+    /// What the client does for the recordings that a reader has open.
+    recordings: recordings::Work,
 }
 
 /// Runs the stream client of one server until `desired` is closed.
@@ -301,6 +308,7 @@ pub(crate) async fn run(
         applied_bytes: 0,
         messages: messages::Work::default(),
         done,
+        recordings: recordings::Work::default(),
     };
     let first = desired.borrow_and_update().clone();
     client.retarget(first);
@@ -443,6 +451,7 @@ impl Client {
         self.wanted_members.clear();
         self.waiting_for_members.clear();
         self.forget_messages();
+        self.forget_recordings();
         self.halted = false;
         self.fault = None;
         self.snapshot_retry_at = None;
@@ -904,6 +913,19 @@ impl Client {
             model.set_pins_reading(channel_id, None);
             self.model_changed = true;
         }
+        if let (Load::Part(Part::Recording(recording_id)), Some(model)) = (load, &mut self.model) {
+            model.set_recording_reading(recording_id);
+            self.model_changed = true;
+        }
+        let lines = match load {
+            Load::Part(Part::TranscriptLines(recording_id)) => {
+                let Some(ask) = self.lines_ask(recording_id) else {
+                    return;
+                };
+                Some(ask)
+            }
+            _ => None,
+        };
         let Some(target) = &self.target else {
             return;
         };
@@ -988,6 +1010,17 @@ impl Client {
                     .message(message_id)
                     .await
                     .map(|message| Payload::Message(Box::new(message))),
+                Load::Part(Part::Recording(recording_id)) => {
+                    recordings::read_recording(&api, recording_id)
+                        .await
+                        .map(|read| Payload::Recording(Box::new(read)))
+                }
+                Load::Part(Part::TranscriptLines(recording_id)) => match lines {
+                    Some(ask) => recordings::read_lines(&api, recording_id, ask)
+                        .await
+                        .map(Payload::Lines),
+                    None => Err(ApiError::Stopped),
+                },
             };
             let _ = loaded.send(Loaded { ticket, result });
         });
@@ -1122,6 +1155,7 @@ impl Client {
             self.start(Load::Part(Part::OwnCall));
         }
         self.carry_messages(before.as_ref());
+        self.carry_recordings(before.as_ref());
         self.untold.push(Notice::Reloaded { cursor });
     }
 
@@ -1163,6 +1197,9 @@ impl Client {
                         .push(reply),
                 }
             }
+            command @ (Command::OpenRecording { .. }
+            | Command::ReleaseRecording(_)
+            | Command::MoreTranscriptLines(_)) => self.recording_command(command),
             Command::ReleaseMembers(workspace_id) => {
                 self.wanted_members.remove(&workspace_id);
                 self.waiting_for_members.remove(&workspace_id);

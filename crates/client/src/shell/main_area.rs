@@ -53,15 +53,28 @@ impl Shell {
             .zip(channel)
             .and_then(|(workspace, channel)| Some((channel, workspace.call.as_ref()?)));
         let members_open = self.members_open && workspace.is_some() && call.is_none();
-        // The side panel shows one thing: a thread, the pinned messages, or the members.
+        let server_id = view.selected.as_ref().map(|server| server.id);
+        // The side panel shows one thing: a thread, the pinned messages, the notices of
+        // the server, a search, or the members.
         let side_of = |this: &mut Self,
                        shown: &WorkspaceView,
                        window: &mut Window,
                        cx: &mut Context<Self>| {
-            match (&shown.thread, &shown.pins) {
-                (Some(thread), _) => Some(this.render_thread_panel(thread, window, cx)),
-                (None, Some(pins)) => {
+            if let (None, None, Some(transcript), Some(server_id)) =
+                (&shown.thread, &shown.pins, &shown.transcript, server_id)
+            {
+                return Some(this.render_transcript_panel(server_id, transcript, cx));
+            }
+            match (&shown.thread, &shown.pins, &shown.notices, &shown.search) {
+                (Some(thread), ..) => Some(this.render_thread_panel(thread, window, cx)),
+                (None, Some(pins), ..) => {
                     Some(this.render_pins_panel(pins, shown.feed.as_ref(), window, cx))
+                }
+                (None, None, Some(notices), _) => {
+                    server_id.map(|server_id| this.render_notices_panel(server_id, notices, cx))
+                }
+                (None, None, None, Some(search)) => {
+                    Some(this.render_search_panel(search, window, cx))
                 }
                 _ => members_open.then(|| this.render_members(shown, &theme, cx)),
             }
@@ -110,6 +123,9 @@ impl Shell {
         let in_call = call.is_some();
         let thread_open = workspace.is_some_and(|workspace| workspace.thread.is_some());
         let pins_open = workspace.is_some_and(|workspace| workspace.pins.is_some());
+        let notices_open = workspace.is_some_and(|workspace| workspace.notices.is_some());
+        let transcript_open = workspace.is_some_and(|workspace| workspace.transcript.is_some());
+        let search_open = workspace.is_some_and(|workspace| workspace.search.is_some());
         let split = div()
             .relative()
             .flex()
@@ -135,6 +151,13 @@ impl Shell {
                                 this.state.update(cx, |state, cx| state.close_thread(cx));
                             } else if pins_open {
                                 this.state.update(cx, |state, cx| state.close_pins(cx));
+                            } else if transcript_open {
+                                this.state
+                                    .update(cx, |state, cx| state.close_transcript(cx));
+                            } else if notices_open {
+                                this.state.update(cx, |state, cx| state.close_notices(cx));
+                            } else if search_open {
+                                this.state.update(cx, |state, cx| state.hide_search(cx));
                             } else {
                                 this.members_open = false;
                             }
@@ -353,11 +376,17 @@ impl Shell {
                                 this.state.update(cx, |state, cx| {
                                     state.close_thread(cx);
                                     state.close_pins(cx);
+                                    state.close_notices(cx);
+                                    state.hide_search(cx);
+                                    state.close_transcript(cx);
                                 });
                             }
                             cx.notify();
                         })),
                 )
+            })
+            .when(view.workspace().is_some() && call.is_none(), |header| {
+                header.child(self.render_search_field(cx))
             })
     }
 

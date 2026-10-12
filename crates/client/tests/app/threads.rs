@@ -201,8 +201,11 @@ fn a_person_answers_in_a_thread_and_sees_what_is_new_in_it(cx: &mut TestAppConte
         })
     });
     assert!(window.shows_named(format!("thread-unread:{root_id}")));
-    // The mention of the thread counts in the sign of its channel.
-    assert!(window.channels().iter().any(|row| row.unread.mentions == 1));
+    // The mention of the thread counts in the sign of its channel. The summary of the
+    // channel arrives by itself, after the entry of the thread or before it.
+    window.until("the mention in the sign of the channel", |window| {
+        window.channels().iter().any(|row| row.unread.mentions == 1)
+    });
 
     // The entry of the channel column opens the thread again, with both replies.
     window.click_named(format!("thread-row:{root_id}"));

@@ -189,6 +189,7 @@ impl AppState {
         conversation_id: ConversationId,
         cx: &mut Context<Self>,
     ) {
+        self.end_jump();
         self.navigations += 1;
         self.selection.server = Some(server_id);
         self.selection

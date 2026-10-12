@@ -34,6 +34,7 @@ use crate::version::SupportedVersions;
 
 mod discovery;
 mod messages;
+mod recordings;
 
 const PATIENCE: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -166,6 +167,8 @@ struct Routes {
     /// The messages of the one place that the tests of messages use, as the server holds
     /// them, and what the stream client did with them.
     chat: messages::Chat,
+    /// The recordings and the transcripts that the played server holds.
+    tape: recordings::Tape,
 }
 
 /// The routes that the stream client reads.
@@ -238,6 +241,9 @@ impl crate::api::Transport for Http {
                 });
             }
             if let Some(answer) = routes.chat.answer(&request) {
+                return answer;
+            }
+            if let Some(answer) = routes.tape.answer(&request) {
                 return answer;
             }
             let body = if path.ends_with("/snapshot") {

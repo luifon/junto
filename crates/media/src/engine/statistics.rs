@@ -1,4 +1,4 @@
-//! Statistics queried after a live test fails, without sampling its measured interval.
+//! Test statistics sampled at the boundaries of a measured interval.
 
 use std::time::Duration;
 

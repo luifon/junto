@@ -10,11 +10,14 @@
 mod apply;
 mod discovery;
 mod messages;
+mod recordings;
 
 #[cfg(test)]
 mod discovery_tests;
 #[cfg(test)]
 pub(crate) mod message_tests;
+#[cfg(test)]
+pub(crate) mod recording_tests;
 #[cfg(test)]
 pub(crate) mod tests;
 
@@ -48,6 +51,10 @@ pub use messages::{
     MOST_LOADED, PendingFile, PendingMessage, PlaceId, ReadFailure, Reading, SendFailure,
     SendState, Timeline,
 };
+pub use recordings::{
+    LINES_PAGE, MOST_LINES, MOST_SEGMENTS, MOST_SPEAKERS, OpenRecording, TranscriptLines,
+};
+pub(crate) use recordings::{LinesAsk, LinesRead};
 
 /// How many notices a snapshot carries at most (ADR 0409).
 const SNAPSHOT_NOTICES: usize = 50;
@@ -278,6 +285,9 @@ pub struct ServerModel {
     pub named: Vec<(MessageId, Named)>,
     /// The pin lists of the channels that a reader has open.
     pub pins: Vec<PinList>,
+    /// The recordings that a reader has open, each with its segments, its transcript and
+    /// the transcript lines that were read.
+    pub recordings: Vec<Arc<OpenRecording>>,
     /// The highest position of each place that an event named since the snapshot.
     pub(crate) seen_positions: std::collections::BTreeMap<PlaceId, u64>,
 }
@@ -340,6 +350,7 @@ impl ServerModel {
             notification_settings: snapshot.notification_settings,
             named: Vec::new(),
             pins: Vec::new(),
+            recordings: Vec::new(),
             seen_positions: std::collections::BTreeMap::new(),
         }
     }

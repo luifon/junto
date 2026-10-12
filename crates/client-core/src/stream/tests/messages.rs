@@ -48,7 +48,10 @@ pub(super) struct Chat {
     pub(super) muted: bool,
 }
 
-fn json<T: serde::Serialize>(status: u16, body: &T) -> Result<HttpResponse, TransportError> {
+pub(super) fn json<T: serde::Serialize>(
+    status: u16,
+    body: &T,
+) -> Result<HttpResponse, TransportError> {
     Ok(HttpResponse {
         status,
         retry_after: None,
@@ -56,7 +59,7 @@ fn json<T: serde::Serialize>(status: u16, body: &T) -> Result<HttpResponse, Tran
     })
 }
 
-fn not_found() -> Result<HttpResponse, TransportError> {
+pub(super) fn not_found() -> Result<HttpResponse, TransportError> {
     Ok(HttpResponse {
         status: 404,
         retry_after: None,

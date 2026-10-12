@@ -5,6 +5,8 @@
 //! name, its length is bounded by what the message states, and its bytes are compared with
 //! the hash of the message before the file gets its name.
 
+mod recordings;
+
 use std::future::Future;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -19,11 +21,15 @@ use junto_protocol::message::{Attachment, Document, StartUpload};
 use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 
-use crate::api::{ApiError, CHUNK_BYTES, ErrorCategory, ServerApi};
+use crate::api::{ApiError, CHUNK_BYTES, ErrorCategory, FileBody, ServerApi};
 use crate::flow::machine::lock;
 use crate::live::{Command, LiveServer};
 use crate::model::{PendingFile, PlaceId};
 use crate::runtime::Runtime;
+
+pub use recordings::{
+    RecordingDownload, TRANSCRIPT_TEXT_MAX_BYTES, segment_file_name, transcript_file_name,
+};
 
 /// The first wait after a request without an answer. Each further wait is twice as long.
 const FIRST_WAIT: Duration = Duration::from_secs(1);
@@ -48,6 +54,9 @@ pub enum TransferFailure {
     Refused { code: ErrorCode, status: u16 },
     /// The device is not logged in any more, or the client ends.
     Stopped,
+    /// The server ended its answer before the file was complete, several times in a
+    /// row.
+    Interrupted,
 }
 
 impl TransferFailure {
@@ -73,6 +82,9 @@ impl From<std::io::Error> for TransferFailure {
 fn passes(error: &ApiError) -> bool {
     error.is_unavailable() || error.category() == Some(ErrorCategory::Limited)
 }
+
+/// How many answers in a row may add nothing to a file before its download ends.
+const IDLE_TRIES: u8 = 5;
 
 struct Waits {
     next: Duration,
@@ -499,34 +511,59 @@ impl Download {
     pub fn finished(
         &self,
     ) -> impl Future<Output = Result<PathBuf, TransferFailure>> + Send + 'static + use<> {
-        let mut watch = self.watch();
-        async move {
-            let ended = watch
-                .wait_for(|progress| {
-                    matches!(
-                        progress.stage,
-                        DownloadStage::Saved(_)
-                            | DownloadStage::Failed(_)
-                            | DownloadStage::Cancelled
-                    )
-                })
-                .await
-                .map(|progress| progress.stage.clone());
-            match ended {
-                Ok(DownloadStage::Saved(path)) => Ok(path),
-                Ok(DownloadStage::Failed(failure)) => Err(failure),
-                _ => Err(TransferFailure::Stopped),
-            }
-        }
+        finished(self.watch())
     }
 }
 
-/// The path of the unfinished file of a download in `directory`.
-fn part_path(directory: &Path, attachment: &Attachment) -> PathBuf {
+/// Waits for the end of a download and returns the file.
+async fn finished(
+    mut watch: watch::Receiver<DownloadProgress>,
+) -> Result<PathBuf, TransferFailure> {
+    let ended = watch
+        .wait_for(|progress| {
+            matches!(
+                progress.stage,
+                DownloadStage::Saved(_) | DownloadStage::Failed(_) | DownloadStage::Cancelled
+            )
+        })
+        .await
+        .map(|progress| progress.stage.clone());
+    match ended {
+        Ok(DownloadStage::Saved(path)) => Ok(path),
+        Ok(DownloadStage::Failed(failure)) => Err(failure),
+        _ => Err(TransferFailure::Stopped),
+    }
+}
+
+/// How long a file is that a download saves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Length {
+    /// The server states the length. A download that was cut continues in its unfinished
+    /// file.
+    Exactly(u64),
+    /// The server makes the file for each request and states no length. The client reads
+    /// at most this many bytes, from the start at every try.
+    AtMost(u64),
+}
+
+/// A file of the server that a download saves.
+struct Wanted {
+    /// The name of the saved file, as [`local_name`] gives it.
+    name: String,
+    /// The path of the unfinished file.
+    part: PathBuf,
+    length: Length,
+    /// The SHA-256 hash of the file, when the server states one.
+    sha256: Option<String>,
+}
+
+/// The path of the unfinished file of a download in `directory`: the name of the saved
+/// file and the identifier of what is saved.
+fn part_file(directory: &Path, name: &str, id: uuid::Uuid) -> PathBuf {
     directory.join(format!(
         "{}.{}{PART_ENDING}",
-        shorten(&local_name(&attachment.name), 120),
-        attachment.id.as_uuid().simple()
+        shorten(name, 120),
+        id.simple()
     ))
 }
 
@@ -563,18 +600,29 @@ fn settle(part: &Path, directory: &Path, name: &str) -> std::io::Result<PathBuf>
     Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists))
 }
 
-async fn download(
-    api: &ServerApi,
-    attachment: &Attachment,
+/// Receives a file into its unfinished file and gives it its name in `directory`. `open`
+/// asks the server for the file from a byte on.
+async fn save<Open, Opened>(
+    wanted: &Wanted,
+    open: &Open,
     directory: &Path,
     shared: &DownloadShared,
-) -> Result<PathBuf, TransferFailure> {
-    let part = part_path(directory, attachment);
-    let result = receive(api, attachment, &part, shared).await;
+) -> Result<PathBuf, TransferFailure>
+where
+    Open: Fn(u64) -> Opened,
+    Opened: Future<Output = Result<FileBody, ApiError>>,
+{
+    let part = &wanted.part;
+    let result = match wanted.length {
+        Length::Exactly(bytes) => {
+            receive(bytes, wanted.sha256.as_deref(), open, part, shared).await
+        }
+        Length::AtMost(most) => receive_whole(most, open, part, shared).await,
+    };
     match result {
         Ok(file) => {
             let (part, directory) = (part.clone(), directory.to_path_buf());
-            let name = local_name(&attachment.name);
+            let name = wanted.name.clone();
             // The file stays locked until it has its name.
             blocking(move || {
                 let settled = settle(&part, &directory, &name);
@@ -584,13 +632,30 @@ async fn download(
             .await
         }
         Err(failure) => {
-            // A part that a cut connection left stays for the next try. A file that is
-            // not the file of the message does not.
-            if failure == TransferFailure::Corrupt && shared.opened.load(Ordering::Relaxed) {
-                let _ = std::fs::remove_file(&part);
+            // A part that a cut connection left stays for the next try. A part that no
+            // later try can continue does not: its bytes are not the file that the
+            // server states, or the server has no such file or no byte after them.
+            let ended = match failure {
+                TransferFailure::Corrupt | TransferFailure::Interrupted => true,
+                TransferFailure::Refused { status, .. } => matches!(status, 404 | 410 | 416),
+                _ => false,
+            };
+            if ended && shared.opened.load(Ordering::Relaxed) {
+                discard_part(part);
             }
             Err(failure)
         }
+    }
+}
+
+/// Deletes an unfinished file that no later try can continue. The file is locked for the
+/// deletion: a file that another download holds at that moment stays.
+fn discard_part(part: &Path) {
+    let Ok(file) = std::fs::OpenOptions::new().read(true).open(part) else {
+        return;
+    };
+    if file.try_lock().is_ok() {
+        let _ = std::fs::remove_file(part);
     }
 }
 
@@ -642,24 +707,34 @@ fn open_part(part: &Path, bytes: u64) -> std::io::Result<(std::fs::File, u64)> {
     Ok((file, held.len()))
 }
 
-/// Receives the bytes of an attachment into its unfinished file and compares them with
-/// the attachment. Returns the file, which is locked while it is open.
-async fn receive(
-    api: &ServerApi,
-    attachment: &Attachment,
+/// Receives the `bytes` bytes of a file into its unfinished file, from the byte after the
+/// ones that the file holds, and compares the file with the stated length, and with the
+/// hash when the server states one. Returns the file, which is locked while it is open.
+async fn receive<Open, Opened>(
+    bytes: u64,
+    sha256: Option<&str>,
+    open: &Open,
     part: &Path,
     shared: &DownloadShared,
-) -> Result<std::fs::File, TransferFailure> {
-    let bytes = attachment.bytes;
+) -> Result<std::fs::File, TransferFailure>
+where
+    Open: Fn(u64) -> Opened,
+    Opened: Future<Output = Result<FileBody, ApiError>>,
+{
     let opened = part.to_path_buf();
     let (mut file, mut received) = blocking(move || open_part(&opened, bytes)).await?;
     shared.opened.store(true, Ordering::Relaxed);
     let mut waits = Waits::new();
+    // The answers in a row after which the file holds no more bytes than it held at
+    // most before. A server that answers without the file, or that starts the file again
+    // at every answer, does not make the client ask without an end (ADR 0714).
+    let mut idle = 0u8;
+    let mut most = received;
     while received < bytes {
         shared.progress.send_modify(|progress| {
             progress.received = received;
         });
-        let opened = match api.attachment_file(attachment.id, received).await {
+        let opened = match open(received).await {
             Ok(opened) => opened,
             Err(error) if passes(&error) => {
                 shared
@@ -670,6 +745,11 @@ async fn receive(
             }
             Err(error) => return Err(TransferFailure::of(&error)),
         };
+        // A part of the file that starts at another byte than the one that was asked
+        // for is not the rest of the file.
+        if opened.partial && opened.starts_at.is_some_and(|at| at != received) {
+            return Err(TransferFailure::Corrupt);
+        }
         if !opened.partial && received > 0 {
             // The answer is the whole file: what is held is replaced.
             file.set_len(0)?;
@@ -696,6 +776,11 @@ async fn receive(
                 progress.interrupted = false;
             });
         }
+        idle = if received > most { 0 } else { idle + 1 };
+        most = most.max(received);
+        if received < bytes && idle >= IDLE_TRIES {
+            return Err(TransferFailure::Interrupted);
+        }
         if let Some(error) = cut {
             shared
                 .progress
@@ -712,16 +797,99 @@ async fn receive(
         progress.interrupted = false;
         progress.stage = DownloadStage::Checking;
     });
-    let (file, length, sha256) = blocking(move || {
+    let stated = sha256.map(str::to_owned);
+    let hashed = stated.is_some();
+    let (file, length, measured) = blocking(move || {
+        if !hashed {
+            let length = file.metadata()?.len();
+            return Ok((file, length, None));
+        }
         file.seek(SeekFrom::Start(0))?;
         let (length, sha256) = measure(&mut file)?;
-        Ok((file, length, sha256))
+        Ok((file, length, Some(sha256)))
     })
     .await?;
-    if length != bytes || sha256 != attachment.sha256 {
+    if length != bytes || measured != stated {
         return Err(TransferFailure::Corrupt);
     }
     Ok(file)
+}
+
+/// Receives a file without a stated length into its unfinished file: at most `most`
+/// bytes, from the first byte at every try. What an earlier try left is not kept, because
+/// the server makes the file for each request. Returns the file, which is locked while it
+/// is open.
+async fn receive_whole<Open, Opened>(
+    most: u64,
+    open: &Open,
+    part: &Path,
+    shared: &DownloadShared,
+) -> Result<std::fs::File, TransferFailure>
+where
+    Open: Fn(u64) -> Opened,
+    Opened: Future<Output = Result<FileBody, ApiError>>,
+{
+    let opened = part.to_path_buf();
+    let (mut file, _) = blocking(move || open_part(&opened, most)).await?;
+    shared.opened.store(true, Ordering::Relaxed);
+    let mut waits = Waits::new();
+    // The answers in a row that were cut. Each try reads the file from its start, so a
+    // connection that is cut at every try never completes it.
+    let mut cuts = 0u8;
+    loop {
+        file.set_len(0)?;
+        let mut received = 0u64;
+        shared
+            .progress
+            .send_modify(|progress| progress.received = received);
+        let opened = match open(0).await {
+            Ok(opened) => opened,
+            Err(error) if passes(&error) => {
+                shared
+                    .progress
+                    .send_modify(|progress| progress.interrupted = true);
+                waits.wait(&error).await;
+                continue;
+            }
+            Err(error) => return Err(TransferFailure::of(&error)),
+        };
+        let mut body = opened.body;
+        let mut cut = None;
+        while let Some(chunk) = body.next().await {
+            let chunk = match chunk {
+                Ok(chunk) => chunk,
+                Err(error) => {
+                    cut = Some(ApiError::Unreachable(error));
+                    break;
+                }
+            };
+            if received + chunk.len() as u64 > most {
+                return Err(TransferFailure::Corrupt);
+            }
+            file.write_all(&chunk)?;
+            received += chunk.len() as u64;
+            shared.progress.send_modify(|progress| {
+                progress.received = received;
+                progress.interrupted = false;
+            });
+        }
+        let Some(error) = cut else {
+            file.flush()?;
+            shared.progress.send_modify(|progress| {
+                progress.bytes = received;
+                progress.stage = DownloadStage::Checking;
+            });
+            return Ok(file);
+        };
+        cuts += 1;
+        if cuts >= IDLE_TRIES {
+            return Err(TransferFailure::Interrupted);
+        }
+        shared
+            .progress
+            .send_modify(|progress| progress.interrupted = true);
+        waits.wait(&error).await;
+    }
 }
 
 /// Reads a whole file of a message into memory: a picture that the window draws. A file
@@ -902,32 +1070,62 @@ impl Transfers {
     /// name of the attachment, or that name with a number when a file has it. Nothing is
     /// replaced.
     pub fn download(&self, attachment: &Attachment, directory: PathBuf) -> Download {
+        let name = local_name(&attachment.name);
+        let wanted = Wanted {
+            part: part_file(&directory, &name, attachment.id.as_uuid()),
+            name,
+            length: Length::Exactly(attachment.bytes),
+            sha256: Some(attachment.sha256.clone()),
+        };
+        let (api, attachment_id) = (self.api.clone(), attachment.id);
+        let open = move |from| {
+            let api = api.clone();
+            async move { api.attachment_file(attachment_id, from).await }
+        };
+        Download {
+            attachment_id,
+            shared: self.start_download(wanted, directory, open),
+        }
+    }
+
+    /// Starts a download into `directory`. It runs until the file is saved, the download
+    /// fails or it is cancelled, also when the returned value is dropped.
+    fn start_download<Open, Opened>(
+        &self,
+        wanted: Wanted,
+        directory: PathBuf,
+        open: Open,
+    ) -> Arc<DownloadShared>
+    where
+        Open: Fn(u64) -> Opened + Send + Sync + 'static,
+        Opened: Future<Output = Result<FileBody, ApiError>> + Send + 'static,
+    {
         let shared = Arc::new(DownloadShared {
             progress: watch::Sender::new(DownloadProgress {
                 stage: DownloadStage::Receiving,
                 received: 0,
-                bytes: attachment.bytes,
+                bytes: match wanted.length {
+                    Length::Exactly(bytes) => bytes,
+                    Length::AtMost(_) => 0,
+                },
                 interrupted: false,
             }),
             cancelled: watch::Sender::new(false),
             opened: AtomicBool::new(false),
         });
-        let handle = Download {
-            attachment_id: attachment.id,
-            shared: shared.clone(),
-        };
-        let (api, attachment) = (self.api.clone(), attachment.clone());
+        let task = shared.clone();
         drop(self.runtime.run(async move {
+            let shared = task;
             let mut cancelled = shared.cancelled.subscribe();
             let stage = tokio::select! {
-                result = download(&api, &attachment, &directory, &shared) => match result {
+                result = save(&wanted, &open, &directory, &shared) => match result {
                     Ok(path) => DownloadStage::Saved(path),
                     Err(failure) => DownloadStage::Failed(failure),
                 },
                 _ = cancelled.wait_for(|cancelled| *cancelled) => {
                     // The unfinished file of another download of the same file stays.
                     if shared.opened.load(Ordering::Relaxed) {
-                        let _ = std::fs::remove_file(part_path(&directory, &attachment));
+                        let _ = std::fs::remove_file(&wanted.part);
                     }
                     DownloadStage::Cancelled
                 }
@@ -937,7 +1135,7 @@ impl Transfers {
                 progress.interrupted = false;
             });
         }));
-        handle
+        shared
     }
 
     /// Reads a picture of a message into memory, at most [`PICTURE_MAX_BYTES`].

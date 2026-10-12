@@ -25,6 +25,14 @@ use crate::secret::SecretToken;
 
 /// How many reads of single messages are on their way at one time.
 const MESSAGE_READS: usize = 4;
+/// How many reads of recordings and of pages of transcript lines are on their way at one
+/// time. A window that opens a channel asks for every recording that it shows.
+const RECORDING_READS: usize = 4;
+
+/// True for a read that belongs to a recording.
+fn of_a_recording(part: &Part) -> bool {
+    matches!(part, Part::Recording(_) | Part::TranscriptLines(_))
+}
 /// The messages of the page that a place opens with, and of a page before or after.
 const PAGE: u32 = 50;
 /// The messages before the read position that a place with unread messages opens with.
@@ -297,6 +305,15 @@ impl Work {
         self.wanted.keys().copied().collect()
     }
 
+    /// Forgets the reads that wait for another try, for the parts that `of` names.
+    pub(super) fn drop_queued(&mut self, of: impl Fn(&Part) -> bool) {
+        self.queue.retain(|part| !of(part));
+    }
+
+    pub(super) fn drop_retries(&mut self, of: impl Fn(&Part) -> bool) {
+        self.retries.retain(|(part, _, _)| !of(part));
+    }
+
     /// The next moment at which a read position, a retry or a search is due, of the
     /// moments after the last step. What was due at that step was started in it, or waits
     /// for the answer to a request, and that answer wakes the task. A moment that has
@@ -378,6 +395,9 @@ impl Client {
             Part::MoreThreads | Part::MoreNotices(_) => false,
             Part::Pins(channel_id) => self.messages.pins.contains_key(&channel_id),
             Part::Named(message_id) => model.names(message_id),
+            Part::Recording(recording_id) | Part::TranscriptLines(recording_id) => {
+                self.recordings.wants(recording_id)
+            }
             Part::Members(_) | Part::OwnCall | Part::ChannelCall(_) => false,
         }
     }
@@ -389,7 +409,9 @@ impl Client {
         if self.pending.iter().any(|pending| pending.load == load) {
             return;
         }
-        if let Part::Message(..) | Part::Named(_) = part {
+        if let Part::Message(..) | Part::Named(_) | Part::Recording(_) | Part::TranscriptLines(_) =
+            part
+        {
             if !self.messages.queue.contains(&part) {
                 self.messages.queue.push_back(part);
             }
@@ -423,26 +445,45 @@ impl Client {
         }
     }
 
-    /// Starts the reads of single messages that wait, up to the bound.
+    /// Starts the reads that wait, up to the bound of their kind: the reads of single
+    /// messages, and the reads of recordings.
     pub(super) fn pump_message_reads(&mut self) {
         loop {
-            let flying = self
-                .pending
-                .iter()
-                .filter(|pending| {
-                    matches!(pending.load, Load::Part(Part::Message(..) | Part::Named(_)))
-                })
-                .count();
-            if flying >= MESSAGE_READS || self.halted || self.not_before.is_some() {
+            if self.halted || self.not_before.is_some() {
                 return;
             }
-            let Some(part) = self.messages.queue.pop_front() else {
+            let flying = |recording: bool| {
+                self.pending
+                    .iter()
+                    .filter(|pending| match &pending.load {
+                        Load::Part(part @ (Part::Message(..) | Part::Named(_))) => {
+                            !recording && !of_a_recording(part)
+                        }
+                        Load::Part(part) => recording && of_a_recording(part),
+                        _ => false,
+                    })
+                    .count()
+            };
+            let room = [
+                flying(false) < MESSAGE_READS,
+                flying(true) < RECORDING_READS,
+            ];
+            // The first read that waits and whose kind has room.
+            let next = self
+                .messages
+                .queue
+                .iter()
+                .position(|part| room[usize::from(of_a_recording(part))]);
+            let Some(part) = next.and_then(|index| self.messages.queue.remove(index)) else {
                 return;
             };
             let wanted = self.model.as_ref().is_some_and(|model| match part {
                 Part::Message(place, message_id) => model.wants_message(place, message_id, None),
                 Part::Named(message_id) => {
                     model.names(message_id) && model.named(message_id).is_none()
+                }
+                Part::Recording(recording_id) | Part::TranscriptLines(recording_id) => {
+                    self.recordings.wants(recording_id)
                 }
                 _ => false,
             });
@@ -630,6 +671,17 @@ impl Client {
             (Part::MoreNotices(before), Payload::Notices(page)) => {
                 model.add_notices(before, page);
             }
+            (Part::Recording(recording_id), Payload::Recording(read)) => {
+                let (detail, transcript) = *read;
+                if !model.set_recording(recording_id, detail, transcript) {
+                    self.messages.retries.retain(|(held, _, _)| *held != part);
+                    self.recording_answered_wrongly(recording_id);
+                    return;
+                }
+            }
+            (Part::TranscriptLines(recording_id), Payload::Lines(read)) => {
+                model.add_transcript_lines(recording_id, read);
+            }
             _ => return,
         }
         let reads = model.replay_reads(part, kept.iter().map(std::sync::Arc::as_ref));
@@ -638,6 +690,7 @@ impl Client {
         match part {
             Part::Messages(place, _) => self.answer_opening(place, || Ok(())),
             Part::Pins(channel_id) => self.answer_pins(channel_id, || Ok(())),
+            Part::Recording(recording_id) => self.answer_recording(recording_id, || Ok(())),
             _ => {}
         }
         for read in reads {
@@ -662,9 +715,11 @@ impl Client {
         // read of a summary has no last try.
         let again = transient(&error)
             && match part {
-                Part::Messages(..) | Part::Pins(_) | Part::MoreThreads | Part::MoreNotices(_) => {
-                    false
-                }
+                Part::Messages(..)
+                | Part::Pins(_)
+                | Part::MoreThreads
+                | Part::MoreNotices(_)
+                | Part::TranscriptLines(_) => false,
                 // No reader can ask for these lists, and no event tells a change a
                 // second time.
                 Part::MessageState(_) | Part::UnreadThreads | Part::Notices => true,
@@ -677,6 +732,11 @@ impl Client {
                 tries.saturating_add(1).min(READ_TRIES),
                 Instant::now() + wait,
             ));
+            if let Part::Recording(recording_id) = part {
+                // The reader of a recording is told of the first failure, and the state
+                // tells it until a read succeeds.
+                self.recording_unread(recording_id, error);
+            }
             return;
         }
         let Some(model) = &mut self.model else {
@@ -735,6 +795,11 @@ impl Client {
                 self.model_changed = true;
                 let error = std::sync::Arc::new(error);
                 self.answer_pins(channel_id, || Err(LoadError::Request(error.clone())));
+            }
+            Part::Recording(recording_id) => self.recording_unread(recording_id, error),
+            Part::TranscriptLines(recording_id) => {
+                model.fail_transcript_lines(recording_id, ReadFailure::of(&error));
+                self.model_changed = true;
             }
             _ => {}
         }
@@ -924,7 +989,11 @@ impl Client {
                     self.read(Part::MoreNotices(last));
                 }
             }
-            Command::LoadMembers { .. } | Command::ReleaseMembers(_) => {}
+            Command::LoadMembers { .. }
+            | Command::ReleaseMembers(_)
+            | Command::OpenRecording { .. }
+            | Command::ReleaseRecording(_)
+            | Command::MoreTranscriptLines(_) => {}
         }
     }
 

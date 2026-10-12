@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use junto_protocol::call::{BlockReason, CallParticipant, CallPlace, MicrophoneBlock};
 use junto_protocol::events::Event;
-use junto_protocol::ids::{CallId, ChannelId, MessageId, WorkspaceId};
+use junto_protocol::ids::{CallId, ChannelId, MessageId, RecordingId, WorkspaceId};
 use junto_protocol::message::MessagePlace;
 use junto_protocol::recording::Recording;
 use junto_protocol::structure::Channel;
@@ -47,6 +47,10 @@ pub(crate) enum Part {
     MoreNotices(uuid::Uuid),
     /// A message that a list of the state names by its identifier.
     Named(MessageId),
+    /// A recording that a reader has open, with its segments and its transcript.
+    Recording(RecordingId),
+    /// Lines of the transcript of a recording that a reader has open.
+    TranscriptLines(RecordingId),
 }
 
 impl Part {
@@ -188,6 +192,27 @@ impl Part {
             Self::Named(message_id) => {
                 matches!(event, Event::MessageChanged { message_id: of, .. } if of == message_id)
             }
+            Self::Recording(recording_id) => match event {
+                Event::RecordingStarted { recording } | Event::RecordingUpdated { recording } => {
+                    recording.id == *recording_id
+                }
+                Event::RecordingRemoved {
+                    recording_id: of, ..
+                }
+                | Event::TranscriptSpeakerRenamed {
+                    recording_id: of, ..
+                } => of == recording_id,
+                // The answer tells the channel of the recording. A change of a channel
+                // can change what the account may read of its recordings (ADR 0604).
+                Event::ChannelDeleted { .. } | Event::ChannelUpdated { .. } => true,
+                _ => false,
+            },
+            Self::TranscriptLines(recording_id) => matches!(
+                event,
+                Event::TranscriptLineCorrected { recording_id: of, .. }
+                    | Event::RecordingRemoved { recording_id: of, .. }
+                    if of == recording_id
+            ),
             // A page after the loaded ones is added only while the list before it is the
             // one that the request continued; no event changes its answer.
             Self::MoreThreads | Self::MoreNotices(_) => false,
@@ -367,6 +392,22 @@ impl ServerModel {
                 if let Some(workspace) = self.workspace_mut(channel.workspace_id) {
                     load.extend(workspace.put_channel(channel, inside));
                 }
+                // A channel that hides who is inside gives a recording of its running
+                // call only to the people inside (ADR 0604). The event does not tell
+                // what the account may read now: the open recordings of the channel are
+                // read again.
+                if matches!(event, Event::ChannelUpdated { .. }) {
+                    load.extend(
+                        self.recordings
+                            .iter()
+                            .filter(|open| {
+                                open.detail
+                                    .loaded()
+                                    .is_some_and(|detail| detail.recording.channel_id == channel.id)
+                            })
+                            .map(|open| Part::Recording(open.id)),
+                    );
+                }
                 return Follow::loads(load);
             }
             Event::ChannelDeleted {
@@ -382,6 +423,7 @@ impl ServerModel {
                         .retain(|channel| channel.channel.id != *channel_id);
                 }
                 self.forget_place(PlaceId::Channel(*channel_id));
+                self.lose_recordings_of(*channel_id);
                 let gone = |place: &CallPlace| place.channel_id() == Some(*channel_id);
                 self.invitations.retain(|held| !gone(&held.place));
                 self.entry_requests.retain(|held| !gone(&held.place));
@@ -496,6 +538,9 @@ impl ServerModel {
             }
             Event::RecordingStarted { recording } | Event::RecordingUpdated { recording } => {
                 self.put_recording(recording);
+                if self.update_open_recording(recording) {
+                    return Follow::load(Part::Recording(recording.id));
+                }
             }
             Event::RecordingRemoved {
                 recording_id,
@@ -517,6 +562,26 @@ impl ServerModel {
                 {
                     call.recording = None;
                 }
+                self.lose_recording(*recording_id);
+            }
+            // The two events of a transcript change what a reader has open, without a
+            // request (ADR 0607).
+            Event::TranscriptLineCorrected {
+                recording_id,
+                line,
+                text,
+                corrected_by,
+                corrected_at,
+                ..
+            } => {
+                self.correct_line(*recording_id, *line, text, *corrected_by, *corrected_at);
+            }
+            Event::TranscriptSpeakerRenamed {
+                recording_id,
+                speaker,
+                ..
+            } => {
+                self.rename_speaker(*recording_id, speaker);
             }
             Event::CallEntryRequested { request } => {
                 let own = self.own_call.as_ref().map(|own| own.call_id);
@@ -676,8 +741,6 @@ impl ServerModel {
             | Event::JoinRequestDecided { .. }
             | Event::ChannelOverrideSet { .. }
             | Event::CallEntryAnswered { .. }
-            | Event::TranscriptLineCorrected { .. }
-            | Event::TranscriptSpeakerRenamed { .. }
             | Event::GlossaryReplaced { .. }
             | Event::RetentionChanged { .. } => {}
         }

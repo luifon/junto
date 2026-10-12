@@ -24,6 +24,7 @@ use junto_client_core::transfers::{DownloadStage, UploadStage};
 use super::{EmojiTarget, Layer, Pane, Shell};
 use crate::assets::Icon;
 use crate::compose;
+use crate::highlight::{self, Token};
 use crate::state::feed::{
     Feed, FeedRow, MessageRow, Names, Quote, QuoteText, SystemKind, SystemRow, WaitingRow,
     can_send_again,
@@ -52,6 +53,8 @@ pub(crate) struct FeedList {
     /// The last frame of the window drew the list. The list of a call is not drawn while
     /// its panel shows the members or the settings.
     pub(crate) drawn: bool,
+    /// The message that the list went to last, from a notice or a search result.
+    target: Option<(MessageId, u64)>,
 }
 
 impl FeedList {
@@ -67,7 +70,34 @@ impl FeedList {
             list: ListState::new(0, alignment, px(800.0)),
             rows: Arc::default(),
             drawn: false,
+            target: None,
         }
+    }
+
+    /// Goes to the message that the person asked for, once the rows hold it. The list
+    /// then stays there and does not follow new messages.
+    fn show_target(&mut self, jump: Option<(MessageId, u64)>) {
+        let Some((message_id, _)) = jump else {
+            self.target = None;
+            return;
+        };
+        // Each jump moves the list once: the person can scroll away afterwards.
+        if self.target == jump {
+            return;
+        }
+        let index = self
+            .rows
+            .iter()
+            .position(|row| matches!(row, FeedRow::Message(row) if row.message.id == message_id));
+        let Some(index) = index else {
+            return;
+        };
+        self.target = jump;
+        self.list.set_follow_mode(FollowMode::Normal);
+        self.list.scroll_to(ListOffset {
+            item_ix: index.saturating_sub(1),
+            offset_in_item: px(0.0),
+        });
     }
 
     /// Takes the rows of the feed that is shown now. The rows that did not change keep
@@ -75,6 +105,7 @@ impl FeedList {
     fn take(&mut self, feed: Option<&Feed>) {
         let key = feed.map(|feed| (feed.server_id, feed.place));
         let rows = feed.map(|feed| feed.rows.clone()).unwrap_or_default();
+        let jump = feed.and_then(|feed| feed.target);
         let first = key != self.key || (self.rows.is_empty() && !rows.is_empty());
         if first {
             self.key = key;
@@ -88,9 +119,11 @@ impl FeedList {
                 });
             }
             self.rows = rows;
+            self.show_target(jump);
             return;
         }
         if Arc::ptr_eq(&self.rows, &rows) {
+            self.show_target(jump);
             return;
         }
         let (old, new) = (&self.rows, &rows);
@@ -110,6 +143,7 @@ impl FeedList {
             self.list.splice(prefix..old_end, new_end - prefix);
         }
         self.rows = rows;
+        self.show_target(jump);
     }
 
     /// True while the list shows the end of its rows and follows new ones.
@@ -378,8 +412,74 @@ fn paragraph(content: &[Inline], names: &Names, theme: &Theme, id: usize) -> Any
         .into_any_element()
 }
 
-fn code_block(code: &str, language: Option<&str>, theme: &Theme) -> AnyElement {
+/// How many code blocks the window holds with their tokens.
+const MOST_CODE_BLOCKS: usize = 256;
+
+/// The tokens of one code block.
+type Tokens = Arc<Vec<(Range<usize>, Token)>>;
+
+/// The tokens of the code blocks that the window drew, by the text and the language of
+/// each block. A list draws its rows many times, and the tokens of a text do not change.
+#[derive(Default)]
+pub(crate) struct CodeTokens {
+    /// By the rules of the language, then by the text.
+    held: HashMap<&'static str, HashMap<String, Tokens>>,
+    blocks: usize,
+}
+
+impl CodeTokens {
+    fn of(&mut self, code: &str, language: Option<&str>) -> Tokens {
+        // A block without a language that has rules, and a block above the bound of
+        // the highlighter, has no tokens and is not held.
+        let Some(rules) = language.and_then(highlight::rules_of) else {
+            return Tokens::default();
+        };
+        if code.len() > highlight::MOST_BYTES {
+            return Tokens::default();
+        }
+        if let Some(held) = self.held.get(rules).and_then(|held| held.get(code)) {
+            return held.clone();
+        }
+        if self.blocks >= MOST_CODE_BLOCKS {
+            self.held.clear();
+            self.blocks = 0;
+        }
+        let tokens = Arc::new(highlight::tokens(code, language));
+        self.held
+            .entry(rules)
+            .or_default()
+            .insert(code.to_owned(), tokens.clone());
+        self.blocks += 1;
+        tokens
+    }
+}
+
+fn code_block(
+    code: &str,
+    language: Option<&str>,
+    tokens: &[(Range<usize>, Token)],
+    theme: &Theme,
+) -> AnyElement {
     let colors = theme.colors;
+    let colour = |token: Token| match token {
+        Token::Keyword => colors.code_keyword,
+        Token::Type => colors.code_type,
+        Token::Function => colors.code_function,
+        Token::Value => colors.code_value,
+        Token::Comment => colors.code_comment,
+    };
+    let highlights: Vec<(Range<usize>, HighlightStyle)> = tokens
+        .iter()
+        .map(|(range, token)| {
+            (
+                range.clone(),
+                HighlightStyle {
+                    color: Some(colour(*token).into()),
+                    ..HighlightStyle::default()
+                },
+            )
+        })
+        .collect();
     div()
         .relative()
         .flex_none()
@@ -399,7 +499,7 @@ fn code_block(code: &str, language: Option<&str>, theme: &Theme) -> AnyElement {
         .text_size(u(13.0))
         .line_height(u(19.0))
         .ink(colors.code_text)
-        .child(SharedString::from(code.to_owned()))
+        .child(StyledText::new(code.to_owned()).with_highlights(highlights))
         .when_some(language, |block, language| {
             block.child(
                 div()
@@ -491,7 +591,7 @@ impl Shell {
             .and_then(|rows| rows.iter().find_map(FeedRow::position));
         let near_start = event.visible_range.start <= PAGE_MARGIN;
         let near_end = event.visible_range.end + PAGE_MARGIN >= event.count;
-        self.state.update(cx, |state, _| {
+        self.state.update(cx, |state, cx| {
             if near_start && feed.more_before && !feed.reading.older {
                 state.read_older(server_id, place);
             }
@@ -499,8 +599,25 @@ impl Shell {
                 state.read_newer(server_id, place);
             }
             state.set_anchor(server_id, place, if at_end { None } else { first_position });
+            // The cards of the recordings around the new place are read.
+            if pane == Pane::Main {
+                state.follow_shown_recordings(cx);
+            }
         });
         self.feed_seen(pane, Some(&feed), window, cx);
+        cx.notify();
+    }
+
+    /// Moves the list of a pane to one of its rows. The tool that measures the time of a
+    /// frame uses it.
+    #[cfg(feature = "test-support")]
+    pub fn show_feed_row(&mut self, pane: Pane, row: usize, cx: &mut Context<Self>) {
+        let list = &self.list(pane).list;
+        list.set_follow_mode(FollowMode::Normal);
+        list.scroll_to(ListOffset {
+            item_ix: row,
+            offset_in_item: px(0.0),
+        });
         cx.notify();
     }
 
@@ -624,7 +741,10 @@ impl Shell {
                 let empty = !rows.iter().any(|row| {
                     matches!(
                         row,
-                        FeedRow::Message(_) | FeedRow::System(_) | FeedRow::Waiting(_)
+                        FeedRow::Message(_)
+                            | FeedRow::System(_)
+                            | FeedRow::Recording(_)
+                            | FeedRow::Waiting(_)
                     )
                 });
                 if empty && !feed.more_before && !feed.more_after {
@@ -883,6 +1003,7 @@ impl Shell {
                 )
                 .into_any_element(),
             FeedRow::System(row) => system_line(row, &theme),
+            FeedRow::Recording(row) => self.render_recording_card(index, row, cx),
             FeedRow::Message(row) => {
                 let shape = if compact {
                     MessageShape::Compact
@@ -984,7 +1105,8 @@ impl Shell {
                         .into_any_element(),
                 ),
                 Block::Code { text, language } => {
-                    blocks.push(code_block(text, language.as_deref(), theme));
+                    let tokens = self.code_tokens.of(text, language.as_deref());
+                    blocks.push(code_block(text, language.as_deref(), &tokens, theme));
                 }
                 Block::List { ordered, items } => {
                     for (number, item) in items.iter().enumerate() {
@@ -1849,6 +1971,8 @@ impl Shell {
             .when(row.mentions_own, |frame| {
                 frame.bg(Hsla::from(colors.mention_wash))
             })
+            // The message that the person went to from a notice or a search result.
+            .when(row.target, |frame| frame.bg(Hsla::from(colors.target_wash)))
             .when(!bare, |frame| {
                 frame.hover(move |style| style.bg(Hsla::from(colors.row_hover)))
             })

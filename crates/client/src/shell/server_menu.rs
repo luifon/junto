@@ -74,6 +74,43 @@ impl Shell {
                             .child(server.address.clone()),
                     ),
             );
+        // The notification settings of the server and of the shown workspace, for a
+        // server that shows its lists.
+        let workspace_id = view.workspace().map(|workspace| workspace.id);
+        let mut notifications: Vec<gpui::AnyElement> = Vec::new();
+        if server.status.shows_content() {
+            notifications.push(menu_separator(cx).into_any_element());
+            notifications.push(
+                MenuItem::new("server-notifications", text::SERVER_NOTIFICATIONS)
+                    .icon(Icon::Bell)
+                    .selector("server-notifications")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_notify_settings(
+                            server_id,
+                            junto_client_core::api::SettingsScope::Account,
+                            window,
+                            cx,
+                        );
+                    }))
+                    .into_any_element(),
+            );
+        }
+        if let Some(workspace_id) = workspace_id {
+            notifications.push(
+                MenuItem::new("workspace-notifications", text::WORKSPACE_NOTIFICATIONS)
+                    .icon(Icon::Bell)
+                    .selector("workspace-notifications")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_notify_settings(
+                            server_id,
+                            junto_client_core::api::SettingsScope::Workspace(workspace_id),
+                            window,
+                            cx,
+                        );
+                    }))
+                    .into_any_element(),
+            );
+        }
         div()
             .absolute()
             .left(u(self.rail_width + 8.0))
@@ -97,6 +134,7 @@ impl Shell {
                                 });
                             })),
                     )
+                    .children(notifications)
                     .child(menu_separator(cx))
                     .child(
                         MenuItem::new("remove-server", text::REMOVE_SERVER)

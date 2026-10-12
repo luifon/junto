@@ -7,11 +7,19 @@
 
 pub mod feed;
 mod messages;
+pub mod notices;
+mod notifying;
+pub mod recorded;
+mod recorded_work;
 pub mod recording;
+pub mod search;
+mod searching;
 mod threads;
 pub mod view;
 
 pub use messages::AttachRefusal;
+pub use notifying::MentionSwitch;
+pub use recorded_work::RecordedFile;
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -28,11 +36,11 @@ use junto_client_core::protocol::call::CallPlace;
 use junto_client_core::protocol::call::{EntryOutcome, InvitationOutcome, UpdateCallSettings};
 use junto_client_core::protocol::events::Event;
 use junto_client_core::protocol::ids::{
-    AccountId, AttachmentId, CallInvitationId, ChannelId, EntryRequestId, MessageId, RecoveryId,
-    ServerId, WorkspaceId,
+    AccountId, AttachmentId, CallInvitationId, ChannelId, EntryRequestId, MessageId, RecordingId,
+    RecoveryId, ServerId, WorkspaceId,
 };
 use junto_client_core::settings::InterfaceSettings;
-use junto_client_core::transfers::{Download, Upload};
+use junto_client_core::transfers::{Download, RecordingDownload, Upload};
 use junto_client_core::voice::{InputMode, ShareResolution, TalkKey, VoiceSettings};
 use junto_client_core::{Client, ServerHandle};
 use junto_media::audio::{DeviceId, Processing, level};
@@ -317,9 +325,56 @@ pub struct AppState {
     anchors: HashMap<(ServerId, PlaceId), Option<u64>>,
     /// The read position of each place that the client core was asked to set.
     marked: HashMap<(ServerId, PlaceId), u64>,
+    /// The recordings that the window shows, with the task that opens each in the
+    /// client core.
+    open_recordings: HashMap<(ServerId, RecordingId), Task<()>>,
+    /// The downloads of the files of recordings.
+    recording_downloads: HashMap<(ServerId, RecordingId, RecordedFile), RecordingDownload>,
+    /// The number of the download of each file that the window follows, and the number
+    /// of the last download.
+    recording_download_numbers: HashMap<(ServerId, RecordingId, RecordedFile), u64>,
+    download_asks: u64,
+    /// The downloads whose file is opened when it is saved.
+    opening: HashSet<(ServerId, RecordingId, RecordedFile)>,
+    /// A saved file is opened with the application of the system for it.
+    opens_files: bool,
+    /// The files that a start without the applications of the system would have opened.
+    kept_opened: Vec<std::path::PathBuf>,
+    /// The number of the last request of a search. An answer to an earlier request is
+    /// not used.
+    search_asks: u64,
+    /// The continuation of the search of the window, for its next page.
+    search_next: Option<String>,
+    /// The jump to a message that waits until the client core holds the list of its
+    /// place.
+    jump: Option<notices::Jump>,
+    /// The notifications of the system.
+    notifier: std::rc::Rc<dyn crate::notify::SystemNotifier>,
+    /// The notifier of a start without the notifications of the system.
+    kept: crate::notify::KeptNotifier,
+    /// The window is the active window of the system.
+    window_active: bool,
+    /// What was seen of the notices and the invitations of each server.
+    seen: HashMap<ServerId, notices::Seen>,
+    /// The number of the last read of the message of a search result. The answer of an
+    /// earlier read leads nowhere.
+    result_asks: u64,
+    /// How many reads of the message of a search result have ended.
+    result_answers: u64,
+    /// How often the state of each server was replaced.
+    reloads: HashMap<ServerId, u64>,
+    /// The read marks of notices that wait until the marks before them were sent.
+    marks_waiting: HashMap<ServerId, Vec<uuid::Uuid>>,
+    /// The read marks of notices that are on their way.
+    marks_sending: HashMap<ServerId, Vec<uuid::Uuid>>,
+    /// The number of the last read or change of the level of a workspace.
+    default_asks: HashMap<(ServerId, WorkspaceId), u64>,
     /// The servers that the view is derived from in place of the client core.
     #[cfg(feature = "test-support")]
     fixture: Option<Vec<ServerSnapshot>>,
+    /// The time that the view is derived for in place of the time of the system.
+    #[cfg(feature = "test-support")]
+    clock_fixture: Option<time::OffsetDateTime>,
     _changes: Task<()>,
     _retry: Task<()>,
     _media: [Task<()>; 3],
@@ -443,6 +498,7 @@ impl AppState {
             },
             ..Known::default()
         };
+        let kept = crate::notify::KeptNotifier::default();
         let mut state = Self {
             client,
             calls,
@@ -483,8 +539,30 @@ impl AppState {
             message_asks: 0,
             anchors: HashMap::new(),
             marked: HashMap::new(),
+            open_recordings: HashMap::new(),
+            recording_downloads: HashMap::new(),
+            recording_download_numbers: HashMap::new(),
+            download_asks: 0,
+            opening: HashSet::new(),
+            opens_files: false,
+            kept_opened: Vec::new(),
+            search_asks: 0,
+            search_next: None,
+            jump: None,
+            notifier: std::rc::Rc::new(kept.clone()),
+            kept,
+            window_active: false,
+            seen: HashMap::new(),
+            result_asks: 0,
+            result_answers: 0,
+            reloads: HashMap::new(),
+            marks_waiting: HashMap::new(),
+            marks_sending: HashMap::new(),
+            default_asks: HashMap::new(),
             #[cfg(feature = "test-support")]
             fixture: None,
+            #[cfg(feature = "test-support")]
+            clock_fixture: None,
             _changes: follow,
             _retry: retry,
             _media: [follow_calls, follow_levels, clock],
@@ -1069,14 +1147,27 @@ impl AppState {
         self.changed(cx);
     }
 
+    /// The state of a server was replaced, or the reader of its changes fell behind and
+    /// can have missed that: every message can have changed meanwhile, and the state
+    /// holds every change of the settings that the server took.
+    fn reloaded(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
+        *self.reloads.entry(server_id).or_default() += 1;
+        self.forget_sent_settings(server_id);
+        self.forget_quotes(server_id, None, cx);
+        self.read_default_after_reload(server_id, cx);
+        self.search_after_reload(server_id, cx);
+        self.changed(cx);
+    }
+
     /// One change of the state of a server, told by itself. The state of a server holds
     /// a recording only while it runs; how it ended is told here (ADR 0719).
     fn noticed(&mut self, server_id: ServerId, notice: &Notice, cx: &mut Context<Self>) {
         let event = match notice {
             Notice::Event { event, .. } => event,
-            // The state was replaced: every message can have changed meanwhile.
+            // The state was replaced: every message can have changed meanwhile, and the
+            // state holds every change of the settings that the server took.
             Notice::Reloaded { .. } => {
-                self.forget_quotes(server_id, None, cx);
+                self.reloaded(server_id, cx);
                 return;
             }
             Notice::Ended { .. } => return,
@@ -1218,6 +1309,7 @@ impl AppState {
             return;
         };
         let target = call.target;
+        self.end_jump();
         self.navigations += 1;
         self.selection.server = Some(target.server_id);
         if let CallPlace::Channel {
@@ -1492,12 +1584,11 @@ impl AppState {
                 let mut notices = server.live().notices();
                 cx.spawn(async move |this, cx| {
                     while let Some(notice) = notices.next().await {
-                        // A reader that fell behind missed single changes; the state
-                        // holds their effect. A quoted message is not in the state: every
-                        // one of them can have changed.
+                        // A reader that fell behind missed single changes, and can have
+                        // missed that the state was replaced.
                         let told = this.update(cx, |this, cx| match &notice {
                             Ok(notice) => this.noticed(id, notice, cx),
-                            Err(_) => this.forget_quotes(id, None, cx),
+                            Err(_) => this.reloaded(id, cx),
                         });
                         if told.is_err() {
                             break;
@@ -1526,12 +1617,16 @@ impl AppState {
             }
         }
 
-        self.known.today = Some(
-            self.known
-                .zone
-                .local(time::OffsetDateTime::now_utc())
-                .date(),
-        );
+        #[cfg(feature = "test-support")]
+        let now = self
+            .clock_fixture
+            .unwrap_or_else(time::OffsetDateTime::now_utc);
+        #[cfg(not(feature = "test-support"))]
+        let now = time::OffsetDateTime::now_utc();
+        self.known.clock = Some(now);
+        self.known.today = Some(self.known.zone.local(now).date());
+        let snapshots = self.snapshots();
+        self.settle_sent_settings(&snapshots);
         let view = self.view();
         let shown = view.shown();
         if shown.server != self.shown.server {
@@ -1556,9 +1651,34 @@ impl AppState {
         if self.selection.pins.is_some() && shown.pins.is_none() {
             self.selection.pins = None;
         }
+        // The transcript of the side panel belongs to the shown voice channel. It stays
+        // under a thread and under the pinned messages.
+        if self
+            .selection
+            .transcript
+            .is_some_and(|(server_id, channel_id, _)| {
+                shown.server != Some(server_id) || shown.channel != Some(channel_id)
+            })
+        {
+            self.selection.transcript = None;
+            self.known.transcript_line = None;
+        }
+        // The notices belong to a server: they close when another server is shown. They
+        // stay under a thread and under the pinned messages.
+        if self.selection.notices.is_some() && self.selection.notices != shown.server {
+            self.selection.notices = None;
+        }
+        if self.selection.notify.is_some() && view.notify.is_none() {
+            self.selection.notify = None;
+        }
+        self.end_search_of_other_server(shown.server);
+        self.drop_lost_search_filter(&snapshots, cx);
         self.shown = shown;
         self.ask_missing_names(&view, cx);
         self.follow_places(shown, cx);
+        self.follow_recordings(shown, cx);
+        self.follow_jump(shown);
+        self.tell_alerts(&snapshots, shown, cx);
         self.ask_missing_quotes(shown, cx);
         self.end_uploads_of_other_accounts();
         self.drop_sent_uploads();
@@ -1684,6 +1804,7 @@ impl AppState {
     }
 
     pub fn select_server(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
+        self.end_jump();
         self.navigations += 1;
         self.selection.server = Some(server_id);
         self.changed(cx);
@@ -1695,6 +1816,7 @@ impl AppState {
         workspace_id: WorkspaceId,
         cx: &mut Context<Self>,
     ) {
+        self.end_jump();
         self.navigations += 1;
         self.selection.server = Some(server_id);
         self.selection.workspaces.insert(server_id, workspace_id);
@@ -1707,6 +1829,7 @@ impl AppState {
         channel_id: ChannelId,
         cx: &mut Context<Self>,
     ) {
+        self.end_jump();
         self.navigations += 1;
         self.selection.channels.insert(workspace_id, channel_id);
         // The channel takes the place of a direct conversation that the server showed.

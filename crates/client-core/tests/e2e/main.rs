@@ -5,6 +5,8 @@
 
 mod calls_live;
 mod messages;
+mod recording_server;
+mod recordings;
 mod stream;
 mod support;
 mod threads;
