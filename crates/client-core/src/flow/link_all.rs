@@ -27,7 +27,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use zeroize::Zeroizing;
 
-use super::access::{AccessAction, AccessState, ActionKind, Notice};
+use super::access::{AccessAction, AccessState, Notice};
 use super::add_server::{AddServerAction, AddServerState};
 use super::approve_link::{Approval, approve, device_with_key};
 use super::machine::{Machine, Outcome};
@@ -575,16 +575,15 @@ impl LinkDeviceFlow {
                     .ok_or(FlowError::UnknownServer)?
             }
         };
-        handle.connect().await?;
-        let view = handle.access();
-        if matches!(view.state, AccessState::LoggedIn { .. }) {
+        // The person asked for this. A check that the client runs by itself on the same
+        // server at this moment is waited for (ADR 0712). The flow of the server refuses
+        // the request for a link in a state that does not accept it.
+        handle.connect_when_free().await?;
+        if matches!(handle.access().state, AccessState::LoggedIn { .. }) {
             return Ok(LinkProgress::Linked);
         }
-        if !view.actions.contains(&ActionKind::RequestLink) {
-            return Err(FlowError::NotAvailable);
-        }
         handle
-            .dispatch(AccessAction::RequestLink {
+            .dispatch_when_free(AccessAction::RequestLink {
                 device_name: device_name.to_owned(),
             })
             .await?;
@@ -595,7 +594,7 @@ impl LinkDeviceFlow {
         let Some(handle) = self.client.server(server_id) else {
             return LinkProgress::Failed(FlowError::UnknownServer);
         };
-        if let Err(error) = handle.dispatch(AccessAction::Check).await {
+        if let Err(error) = handle.dispatch_when_free(AccessAction::Check).await {
             return LinkProgress::Failed(error);
         }
         match handle.access().state {

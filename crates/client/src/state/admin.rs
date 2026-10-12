@@ -4,6 +4,7 @@
 
 mod overrides;
 mod people;
+pub(crate) mod recordings;
 mod records;
 mod structure;
 pub mod view;
@@ -22,6 +23,7 @@ use junto_client_core::protocol::ids::{
 
 use junto_client_core::protocol::secret::{AccessToken, InviteCode};
 
+pub use recordings::RecordingList;
 pub use records::{AuditLog, AuditScope, ExportFiles};
 pub use view::AdminView;
 
@@ -43,6 +45,8 @@ pub enum AdminPage {
     Archive,
     /// The members of the shown workspace.
     Members,
+    /// The recordings of the shown workspace that the account can see (ADR 0784).
+    Recordings,
     /// The exports of the person.
     Exports,
 }
@@ -177,6 +181,8 @@ pub struct AdminState {
     pub(crate) audit: records::AuditLog,
     /// The files of exports that the person saves, and those that were saved.
     pub(crate) exports: records::ExportFiles,
+    /// The recordings of a workspace that the page has read.
+    pub(crate) recordings: recordings::RecordingList,
 }
 
 /// The request that an answer belongs to.
@@ -205,6 +211,9 @@ impl AdminState {
             self.ask = None;
             self.made = None;
             self.session += 1;
+            // The list of the recordings belongs to its page. A late answer finds no
+            // list that waits for it.
+            self.recordings = recordings::RecordingList::default();
         }
         if self.open.map(|held| held.server_id()) != Some(open.server_id()) {
             self.audit = records::AuditLog::default();
@@ -220,6 +229,7 @@ impl AdminState {
         self.ask = None;
         self.made = None;
         self.audit = records::AuditLog::default();
+        self.recordings = recordings::RecordingList::default();
     }
 
     /// Binds the open layer to the account that its server shows now. A layer that was

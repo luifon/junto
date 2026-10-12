@@ -25,8 +25,8 @@ use crate::state::view::{CallPanel, ChannelRow, Microphone, ShareCard, ShareStag
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Button, ButtonKind, Dialog, Mosaic, MosaicKind, Notice, PersonTile, ScrollArea, Segmented,
-    StyleExt, dialog_footer, focus_ring, focus_ring_inside, icon, tooltip,
+    Button, ButtonKind, Dialog, Notice, PersonTile, ScrollArea, Segmented, StyleExt, dialog_footer,
+    focus_ring, focus_ring_inside, icon, tooltip,
 };
 
 /// The kinds of sound that a share can have (ADR 0502).
@@ -758,6 +758,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme.colors;
+        let faces = self.shown_faces();
         let watched = stage.watched();
         let several = stage.shares.len() > 1;
         let title_of = |share: &ShareCard| text::share_title(share, share.id == ShareId::Own);
@@ -839,12 +840,8 @@ impl Shell {
                                     .line_height(u(19.0))
                                     .ink(colors.bone)
                                     .child(
-                                        Mosaic::new(
-                                            MosaicKind::Large,
-                                            share.account_id.as_uuid().as_u128(),
-                                            16.0,
-                                        )
-                                        .radius(2.0),
+                                        super::people::avatar(&faces, share.account_id, 16.0)
+                                            .radius(2.0),
                                     )
                                     .child(title),
                             )
@@ -970,14 +967,7 @@ impl Shell {
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .ink(colors.bone)
                 .whitespace_nowrap()
-                .child(
-                    Mosaic::new(
-                        MosaicKind::Large,
-                        share.account_id.as_uuid().as_u128(),
-                        18.0,
-                    )
-                    .radius(2.0),
-                )
+                .child(super::people::avatar(&faces, share.account_id, 18.0).radius(2.0))
                 .child(
                     div()
                         .flex_none()
@@ -1100,6 +1090,7 @@ impl Shell {
                         occupant.account_id.as_uuid().as_u128(),
                         label,
                     )
+                    .picture(faces.image(occupant.account_id))
                     .in_strip()
                     .speaking(matches!(
                         occupant.microphone,
@@ -1115,12 +1106,7 @@ impl Shell {
             let (strong, rest) = text::people_hidden(people.len());
             let line = format!("{strong}{rest}");
             let avatars = people.iter().take(3).map(|occupant| {
-                Mosaic::new(
-                    MosaicKind::Large,
-                    occupant.account_id.as_uuid().as_u128(),
-                    20.0,
-                )
-                .radius(2.0)
+                super::people::avatar(&faces, occupant.account_id, 20.0).radius(2.0)
             });
             div()
                 .id("people-hidden")

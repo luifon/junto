@@ -173,7 +173,7 @@ fn a_direct_conversation_is_shown_in_place_of_a_channel() {
     let server = server("Acme Studio", Some(model), logged_in(scene.own, Vec::new()));
     // The name of a person who is no member of the shown workspace was read by itself.
     let mut known = Known::default();
-    known.names.insert((server.id, ana), "Ana".to_owned());
+    known.people.read_name(server.id, ana, "Ana");
 
     // Without a selection the channel is shown, and the conversations are listed: the
     // one with a known name first.

@@ -6,6 +6,7 @@
 mod admin;
 mod calls_live;
 mod messages;
+mod recordings;
 mod stream;
 mod support;
 mod threads;

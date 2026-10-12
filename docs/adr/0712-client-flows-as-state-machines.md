@@ -21,6 +21,7 @@ Contract of every flow:
 - An action runs as a task of the client (ADR 0715). It runs to its end when the interface drops its future. If the task itself stops, the flow returns to its state with the reason `stopped` and accepts actions again.
 - Text that the user typed is checked before any request: a name has 1 to 64 characters and no control character, as on the server.
 - The reason of a failure holds no secret. It names the error code of the server, or the cause of a failed connection, and holds no text of the server, with one exception.
+- A refusal because a limit is reached keeps its code beside the wait that the server names. An interface states a full list of waiting join requests or device links (ADR 0111, ADR 0112) with a sentence of its own, apart from a limit on attempts.
 - The exception is a refusal with a code that the client does not know. The client has no text of its own for it, so the reason holds the status of the response and the message of the server, cut to 200 characters without control characters (ADR 0209, ADR 0714). An interface shows the message as a quotation of the server.
 - The helper that waits for a decision goes on after such a refusal with a status of 500 or above, and waits for the stated time after one with the status 429, as it does for the known codes of those groups.
 

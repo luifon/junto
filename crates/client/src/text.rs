@@ -20,7 +20,10 @@ use crate::state::view::{
     CallNotice, Closed, RecordingFault, RecordingProblem, ShareCard, SoundWarning,
 };
 
+pub mod account;
 pub mod admin;
+pub mod book;
+pub mod people;
 
 pub const APP_NAME: &str = "Junto";
 pub const QUIT: &str = "Quit Junto";
@@ -1105,7 +1108,13 @@ pub fn flow_error(error: &FlowError) -> String {
             }
         },
         FlowError::Unavailable => "The server failed or its answer was lost. Try again.".to_owned(),
-        FlowError::Limited { retry_after } => match retry_after {
+        // A ceiling of the server has a sentence of its own; a limit on attempts names
+        // the wait (ADR 0111, ADR 0112).
+        FlowError::Limited {
+            code: code @ (ErrorCode::JoinRequestsFull | ErrorCode::DeviceLinksFull),
+            ..
+        } => refusal(*code),
+        FlowError::Limited { retry_after, .. } => match retry_after {
             Some(wait) => format!(
                 "The server limits attempts. Try again in {} seconds.",
                 wait.as_secs().max(1)
@@ -1188,6 +1197,15 @@ pub fn refusal(code: ErrorCode) -> String {
             "The key of this device already belongs to an account on the server."
         }
         ErrorCode::JoinRequestPending => "A request of this device already waits on the server.",
+        ErrorCode::JoinRequestsFull => {
+            "The server holds as many waiting requests for access as it allows. Try again \
+             later, or ask an administrator for an invite code."
+        }
+        ErrorCode::DeviceLinksFull => {
+            "The server holds as many waiting device links as it allows. Try again in a few \
+             minutes."
+        }
+        ErrorCode::RateLimited => "The server limits attempts. Try again later.",
         ErrorCode::AccountBanned => "The account of this device is banned on the server.",
         ErrorCode::UnknownDevice => "The server does not know the key of this device.",
         ErrorCode::LinkCodeInvalid => "The server does not know this link code, or it expired.",
@@ -1683,8 +1701,12 @@ mod tests {
             transport(TransportErrorKind::Interrupted),
             transport(TransportErrorKind::TooLarge),
             FlowError::Unavailable,
-            FlowError::Limited { retry_after: None },
             FlowError::Limited {
+                code: ErrorCode::RateLimited,
+                retry_after: None,
+            },
+            FlowError::Limited {
+                code: ErrorCode::RateLimited,
                 retry_after: Some(Duration::from_secs(30)),
             },
             FlowError::UnknownCode {
@@ -1790,8 +1812,37 @@ mod tests {
             (ErrorCode::InviteRevoked, "new one"),
             (ErrorCode::OwnerCodeInvalid, "owner code"),
             (ErrorCode::OwnerAlreadyClaimed, "invite code"),
+            (ErrorCode::KeyAlreadyRegistered, "already belongs"),
+            (ErrorCode::JoinRequestPending, "already waits"),
+            (ErrorCode::JoinRequestsFull, "invite code"),
+            (ErrorCode::DeviceLinksFull, "few minutes"),
+            (ErrorCode::RateLimited, "Try again later"),
+            (ErrorCode::AccountBanned, "banned"),
+            (ErrorCode::LinkCodeInvalid, "link code"),
         ] {
             assert!(refusal(code).contains(word), "{code:?}");
+        }
+        // The server tells how long a limit on attempts lasts (ADR 0111): the sentence
+        // names the wait.
+        assert_eq!(
+            flow_error(&FlowError::Limited {
+                code: ErrorCode::RateLimited,
+                retry_after: Some(Duration::from_secs(42)),
+            }),
+            "The server limits attempts. Try again in 42 seconds."
+        );
+        // A ceiling of the server reaches a flow with its code and has its own sentence.
+        assert_eq!(
+            flow_error(&FlowError::refused(ErrorCode::RateLimited)),
+            "The server limits attempts. Try again later."
+        );
+        for code in [ErrorCode::JoinRequestsFull, ErrorCode::DeviceLinksFull] {
+            assert_eq!(
+                flow_error(&FlowError::refused(code)),
+                refusal(code),
+                "{code:?}"
+            );
+            assert!(!refusal(code).contains("refused the request"), "{code:?}");
         }
         // A code without a sentence of its own is named as the server writes it.
         assert_eq!(

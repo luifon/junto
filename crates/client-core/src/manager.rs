@@ -49,6 +49,7 @@ use crate::storage::StorageError;
 use crate::stream::{
     Desired, Environment, Host, ReqwestStreamTransport, StreamPolicy, StreamTransport, Streams,
 };
+use crate::updates::{UpdateCheck, UpdateSource, Version};
 use crate::version::{ApiVersion, Incompatibility, SupportedVersions};
 use crate::voice::VoiceStore;
 
@@ -64,6 +65,11 @@ pub struct ClientOptions {
     /// streams start.
     pub stream_transport: Option<Arc<dyn StreamTransport>>,
     pub stream: StreamPolicy,
+    /// Where the client learns of a newer build (ADR 0704). Without a source the client
+    /// never asks.
+    pub update_source: Option<Arc<dyn UpdateSource>>,
+    /// The version of the build that runs, which a release is compared with.
+    pub build: Version,
 }
 
 impl ClientOptions {
@@ -77,6 +83,8 @@ impl ClientOptions {
             runtime: None,
             stream_transport: None,
             stream: StreamPolicy::default(),
+            update_source: None,
+            build: Version::THIS_BUILD,
         }
     }
 }
@@ -119,6 +127,7 @@ pub(crate) struct Core {
     pub(crate) versions: SupportedVersions,
     pub(crate) policy: RetryPolicy,
     pub(crate) runtime: Runtime,
+    updates: UpdateCheck,
     stream_transport: Option<Arc<dyn StreamTransport>>,
     stream_policy: StreamPolicy,
     /// Runs between the snapshot and the write of a save. Only tests set it, to fix the
@@ -138,7 +147,12 @@ impl Core {
 
 pub(crate) struct Inner {
     pub(crate) core: Arc<Core>,
+    /// In the order of the server book: the order of the file at the start, a new server
+    /// at the end as in the book, and the order that the book returns after a move.
     servers: Mutex<Vec<Arc<Server>>>,
+    /// Held from the move of an entry in the book to the new order of `servers`, so that
+    /// two moves give `servers` the order of the later one.
+    moving: Mutex<()>,
 }
 
 impl Inner {
@@ -177,6 +191,14 @@ impl Client {
             Some(runtime) => runtime,
             None => Runtime::current_or_new()?,
         };
+        let changes = watch::Sender::new(0);
+        let told = changes.clone();
+        let updates = UpdateCheck::with_notice(
+            options.build,
+            options.update_source,
+            runtime.clone(),
+            move || told.send_modify(|generation| *generation += 1),
+        );
         let core = Arc::new(Core {
             profile,
             data_dir,
@@ -186,13 +208,14 @@ impl Client {
             versions: options.versions,
             policy: options.retry,
             runtime,
+            updates,
             stream_transport: options.stream_transport,
             stream_policy: options.stream,
             #[cfg(test)]
             before_write: Mutex::new(None),
             selected: Mutex::new(None),
             streams: Mutex::new(None),
-            changes: watch::Sender::new(0),
+            changes,
         });
         let servers = entries
             .into_iter()
@@ -202,6 +225,7 @@ impl Client {
             inner: Arc::new(Inner {
                 core,
                 servers: Mutex::new(servers),
+                moving: Mutex::new(()),
             }),
         })
     }
@@ -223,6 +247,12 @@ impl Client {
     /// The sound settings of this installation (ADR 0710).
     pub fn voice(&self) -> VoiceStore {
         VoiceStore::new(self.inner.core.data_dir.clone())
+    }
+
+    /// Whether a newer build of the client exists (ADR 0704). Its periodic check starts
+    /// with the event streams. A change of its state is a change of the client.
+    pub fn updates(&self) -> &UpdateCheck {
+        &self.inner.core.updates
     }
 
     /// The saved servers in the order of the server book.
@@ -309,6 +339,46 @@ impl Client {
         removed.map(|_| ())
     }
 
+    /// Moves a server to `position` of the list that [`Client::servers`] gives, in the
+    /// server book and in that list. A position past the end is the end. The book can hold
+    /// servers that another program added and that this client does not show: the server
+    /// is put directly before the server that follows it in the list of this client, and
+    /// at the end of the book when none follows. A server that the book does not hold any
+    /// more is "not saved" and nothing moves.
+    pub fn move_server(&self, server_id: ServerId, position: usize) -> Result<(), BookError> {
+        let _moving = lock(&self.inner.moving);
+        let (key, following) = {
+            let servers = lock(&self.inner.servers);
+            let moved = servers
+                .iter()
+                .find(|server| server.id == server_id)
+                .ok_or(BookError::NotSaved { server_id })?;
+            let following: Vec<EntryKey> = servers
+                .iter()
+                .filter(|server| server.id != server_id)
+                .skip(position)
+                .map(|server| server.key)
+                .collect();
+            (moved.key, following)
+        };
+        let order = self.inner.core.book.reorder(key, |others| {
+            following
+                .iter()
+                .find_map(|next| others.iter().position(|entry| entry.key() == *next))
+                .unwrap_or(others.len())
+        })?;
+        // A server that the book does not hold any more keeps its place after the others.
+        let place = |server: &Arc<Server>| {
+            order
+                .iter()
+                .position(|key| *key == server.key)
+                .unwrap_or(usize::MAX)
+        };
+        lock(&self.inner.servers).sort_by_key(place);
+        self.inner.core.notify();
+        Ok(())
+    }
+
     /// The server that the interface shows. It gets every event; the others get the
     /// background events (ADR 0107).
     pub fn select(&self, server_id: Option<ServerId>) {
@@ -324,10 +394,11 @@ impl Client {
     }
 
     /// Starts the event streams: from now on every saved server has the connection that
-    /// its level asks for (ADR 0107), and [`ServerHandle::live`] gives its state. A second
-    /// call changes nothing.
+    /// its level asks for (ADR 0107), and [`ServerHandle::live`] gives its state. The
+    /// periodic update check starts too (ADR 0704). A second call changes nothing.
     pub fn start_event_streams(&self) -> Result<(), TransportError> {
         let core = &self.inner.core;
+        core.updates.start();
         {
             let mut streams = lock(&core.streams);
             if streams.is_some() {
@@ -554,6 +625,19 @@ impl ServerHandle {
         async move { work.await? }
     }
 
+    /// Contacts the server as [`ServerHandle::connect`] does, after an action or a renewal
+    /// of the session that runs now has ended.
+    pub fn connect_when_free(
+        &self,
+    ) -> impl Future<Output = Result<(), FlowError>> + Send + 'static + use<> {
+        let kind = if matches!(self.access().state, AccessState::LoggedOut { .. }) {
+            AccessAction::LogIn
+        } else {
+            AccessAction::Check
+        };
+        self.dispatch_when_free(kind)
+    }
+
     /// Logs out, after an action or a renewal of the session that runs now has ended.
     /// `dispatch` refuses a second action while one runs (ADR 0712); a program that ends
     /// uses this, so that a session that the running action creates is ended too. Without
@@ -616,7 +700,7 @@ impl ServerHandle {
                         },
                     ) => {}
                     Err(
-                        FlowError::Limited { retry_after }
+                        FlowError::Limited { retry_after, .. }
                         | FlowError::UnknownCode {
                             category: ErrorCategory::Limited,
                             retry_after,

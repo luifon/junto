@@ -22,6 +22,7 @@ use crate::flow::link_all::{
     ApproveDevicesState, LinkDeviceAction, LinkDeviceActionKind, LinkDeviceFlow, LinkDeviceState,
     LinkProgress, LinkRequest, LinkRequestText,
 };
+use crate::updates::{CHECK_INTERVAL, FakeSource, Release, UpdateState};
 
 /// What waits at a suspended host: every request, or those whose path ends with a text.
 type Suspension = (Option<String>, watch::Sender<bool>);
@@ -3657,4 +3658,169 @@ async fn an_avatar_that_is_no_image_or_too_large_is_not_given_to_the_interface()
         handle.api().avatar(account_id).await,
         Err(ApiError::InvalidResponse { status: 200, reason }) if reason.contains("too large")
     ));
+}
+
+fn shown(client: &Client) -> Vec<ServerId> {
+    client.servers().iter().map(ServerHandle::id).collect()
+}
+
+/// True when the client told a change since `changes` was made or last asked.
+async fn told(changes: &mut Changes) -> bool {
+    tokio::time::timeout(Duration::from_secs(1), changes.changed())
+        .await
+        .unwrap_or(false)
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_server_is_moved_in_the_book_and_the_list_of_the_client_follows() {
+    let network = Arc::new(Network::default());
+    for name in ["acme", "globex", "initech"] {
+        network.host(name);
+    }
+    let device = device(&network);
+    let acme = device.add("acme").await;
+    let globex = device.add("globex").await;
+    let initech = device.add("initech").await;
+    initech.dispatch(claim()).await.unwrap();
+    let (a, b, c) = (acme.id(), globex.id(), initech.id());
+    assert_eq!(shown(&device.client), [a, b, c]);
+    let mut changes = device.client.changes();
+    assert!(!told(&mut changes).await);
+
+    device.client.move_server(c, 0).unwrap();
+    assert_eq!(shown(&device.client), [c, a, b]);
+    assert!(told(&mut changes).await);
+    assert_eq!(shown(&device.reopened(&network)), [c, a, b]);
+
+    device.client.move_server(c, 1).unwrap();
+    assert_eq!(shown(&device.client), [a, c, b]);
+    assert!(told(&mut changes).await);
+    for past_the_end in [2, 3, usize::MAX] {
+        device.client.move_server(a, past_the_end).unwrap();
+        assert_eq!(shown(&device.client), [c, b, a]);
+    }
+    assert_eq!(shown(&device.reopened(&network)), [c, b, a]);
+
+    // The moved server is the same object: its session and its entry stay.
+    logged_in(&initech);
+    initech.api().own_account().await.unwrap();
+    assert_eq!(device.client.server(c).unwrap().entry(), initech.entry());
+    globex
+        .set_connection_mode(ConnectionMode::WhenSelected)
+        .unwrap();
+    let reopened = device.reopened(&network);
+    assert_eq!(shown(&reopened), [c, b, a]);
+    assert_eq!(
+        reopened.server(b).unwrap().entry().connection_mode,
+        ConnectionMode::WhenSelected
+    );
+
+    let unknown = ServerId::generate();
+    assert!(matches!(
+        device.client.move_server(unknown, 0),
+        Err(BookError::NotSaved { server_id }) if server_id == unknown
+    ));
+    assert_eq!(shown(&device.client), [c, b, a]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_move_counts_the_servers_of_this_client_and_keeps_those_of_another_program() {
+    let network = Arc::new(Network::default());
+    for name in ["acme", "globex", "hooli"] {
+        network.host(name);
+    }
+    let device = device(&network);
+    let a = device.add("acme").await.id();
+    let other = device.reopened(&network);
+    let n = add(&other, "hooli").await.id();
+    let b = device.add("globex").await.id();
+    assert_eq!(shown(&device.client), [a, b]);
+    assert_eq!(shown(&device.reopened(&network)), [a, n, b]);
+
+    // One place down in the list of this client is behind the server that this client
+    // shows there, also when the book holds another server in between.
+    device.client.move_server(a, 1).unwrap();
+    assert_eq!(shown(&device.client), [b, a]);
+    assert_eq!(shown(&device.reopened(&network)), [n, b, a]);
+
+    device.client.move_server(a, 0).unwrap();
+    assert_eq!(shown(&device.client), [a, b]);
+    assert_eq!(shown(&device.reopened(&network)), [n, a, b]);
+
+    // A server that another program removed is not moved, and the others keep their order.
+    other.remove_server(a).unwrap();
+    assert!(matches!(
+        device.client.move_server(a, 1),
+        Err(BookError::NotSaved { server_id }) if server_id == a
+    ));
+    assert_eq!(shown(&device.client), [a, b]);
+    assert_eq!(shown(&device.reopened(&network)), [n, b]);
+    // No server that the book holds follows in the list of this client: the end of the book.
+    device.client.move_server(b, 0).unwrap();
+    assert_eq!(shown(&device.client), [b, a]);
+    assert_eq!(shown(&device.reopened(&network)), [n, b]);
+}
+
+fn offered(version: &str) -> Release {
+    let page = format!("https://junto.example.test/releases/{version}");
+    Release::new(Version::parse(version).unwrap(), Some(&page))
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_client_without_an_update_source_never_asks_for_a_release() {
+    let network = Arc::new(Network::default());
+    let device = device(&network);
+    let updates = device.client.updates();
+    assert!(!updates.has_source());
+    assert_eq!(updates.build(), Version::THIS_BUILD);
+    device.client.start_event_streams().unwrap();
+    updates.start();
+    assert_eq!(updates.check().await, UpdateState::NotChecked);
+    tokio::time::advance(CHECK_INTERVAL * 2).await;
+    assert_eq!(updates.state(), UpdateState::NotChecked);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_update_check_starts_with_the_event_streams_and_ends_with_the_client() {
+    let network = Arc::new(Network::default());
+    let source = FakeSource::new(Ok(offered("0.4.0")));
+    let directory = tempfile::tempdir().unwrap();
+    let mut options = ClientOptions::new(directory.path().join("junto"));
+    options.transport = Some(network.clone());
+    options.update_source = Some(source.clone());
+    options.build = Version::new(0, 3, 1);
+    let client = Client::open(options).unwrap();
+    assert_eq!(client.updates().build(), Version::new(0, 3, 1));
+    assert_eq!(client.updates().state(), UpdateState::NotChecked);
+    for _ in 0..32 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(source.checks(), 0);
+
+    // The answer of the check is a change of the client.
+    let mut changes = client.changes();
+    let started = tokio::time::Instant::now();
+    client.start_event_streams().unwrap();
+    client.start_event_streams().unwrap();
+    assert!(told(&mut changes).await);
+    let available = UpdateState::Available(offered("0.4.0"));
+    assert_eq!(client.updates().state(), available);
+    assert_eq!(started.elapsed(), Duration::ZERO);
+    assert_eq!(source.checks(), 1);
+
+    source.set(Ok(offered("0.3.1")));
+    source.wait_for_checks(2).await;
+    assert_eq!(started.elapsed(), CHECK_INTERVAL);
+    assert!(told(&mut changes).await);
+    assert_eq!(client.updates().state(), UpdateState::Current);
+    assert_eq!(source.checks(), 2);
+
+    drop(client);
+    assert!(!changes.changed().await);
+    tokio::time::advance(CHECK_INTERVAL * 3).await;
+    for _ in 0..32 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(source.checks(), 2);
+    assert_eq!(Arc::strong_count(&source), 1);
 }

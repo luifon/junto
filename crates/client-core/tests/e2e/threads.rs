@@ -74,7 +74,7 @@ async fn open(handle: &ServerHandle, place: PlaceId) {
 
 /// Stores a finished recording of a voice channel with one transcript line, as the server
 /// holds it after the transcription.
-async fn seed_transcript(scene: &Pair, voice: ChannelId, text: &str) -> uuid::Uuid {
+pub async fn seed_transcript(scene: &Pair, voice: ChannelId, text: &str) -> uuid::Uuid {
     use sqlx::ConnectOptions;
     use std::str::FromStr;
     let options = sqlx::postgres::PgConnectOptions::from_str(&scene.server.database_url).unwrap();

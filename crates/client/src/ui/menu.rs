@@ -156,6 +156,7 @@ pub struct MenuItem {
     icon: Option<Icon>,
     end_icon: Option<Icon>,
     trailing: Option<SharedString>,
+    disabled: bool,
     selector: Option<&'static str>,
     on_click: Option<ClickHandler>,
 }
@@ -170,9 +171,17 @@ impl MenuItem {
             icon: None,
             end_icon: None,
             trailing: None,
+            disabled: false,
             selector: None,
             on_click: None,
         }
+    }
+
+    /// An item that does nothing now. It stays a stop of the keyboard, so that the focus
+    /// does not leave an item that an action disabled; its second line says why.
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
     }
 
     pub fn icon(mut self, icon: Icon) -> Self {
@@ -237,14 +246,17 @@ impl RenderOnce for MenuItem {
             .py(u(5.0))
             .px(u(12.0))
             .line_height(u(19.0))
-            .cursor_pointer()
             .focusable()
             .tab_stop(true)
-            .hover(move |style| style.bg(Hsla::from(colors.limestone_lo)))
             .focus(move |style| style.bg(Hsla::from(colors.limestone_lo)))
             .focus_visible(move |style| style.shadow(ring))
-            .when_some(self.on_click, |item, handler| {
-                item.on_click(move |event, window, cx| handler(event, window, cx))
+            .when(self.disabled, |item| item.cursor_not_allowed())
+            .when(!self.disabled, |item| {
+                item.cursor_pointer()
+                    .hover(move |style| style.bg(Hsla::from(colors.limestone_lo)))
+                    .when_some(self.on_click, |item, handler| {
+                        item.on_click(move |event, window, cx| handler(event, window, cx))
+                    })
             })
             .when_some(self.icon, |item, shown| {
                 item.child(div().mt(u(2.0)).child(icon(shown, 15.0, colors.ink_2)))
@@ -256,6 +268,7 @@ impl RenderOnce for MenuItem {
                     .child(
                         div()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .when(self.disabled, |title| title.ink(colors.ink_3))
                             .child(self.title),
                     )
                     .when_some(self.detail, |column, detail| {

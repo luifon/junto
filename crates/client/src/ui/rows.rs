@@ -8,7 +8,7 @@ use gpui::{
 };
 
 use super::{
-    Badge, Meter, Mosaic, MosaicKind, RecordingMark, StyleExt, focus_ring_inside, icon,
+    Avatar, Badge, Meter, Mosaic, MosaicKind, RecordingMark, StyleExt, focus_ring_inside, icon,
     selection_mark, tooltip, unread_dot,
 };
 use crate::assets::Icon;
@@ -241,6 +241,7 @@ pub struct ChannelRow {
     on_click: Option<ClickHandler>,
     /// The seed of the avatar that stands in place of the icon.
     avatar: Option<u128>,
+    picture: Option<std::sync::Arc<gpui::RenderImage>>,
     nested: bool,
     muted: bool,
     /// Why the row cannot be used.
@@ -259,6 +260,7 @@ impl ChannelRow {
             selector: None,
             on_click: None,
             avatar: None,
+            picture: None,
             nested: false,
             muted: false,
             unavailable: None,
@@ -279,6 +281,12 @@ impl ChannelRow {
     /// The row of a person: the avatar of the person stands in place of the icon.
     pub fn avatar(mut self, seed: u128) -> Self {
         self.avatar = Some(seed);
+        self
+    }
+
+    /// The image of the avatar of the person of the row, when the window holds it.
+    pub fn picture(mut self, picture: Option<std::sync::Arc<gpui::RenderImage>>) -> Self {
+        self.picture = picture;
         self
     }
 
@@ -430,8 +438,10 @@ impl RenderOnce for ChannelRow {
                     })
             })
             .child(match self.avatar {
-                Some(seed) => Mosaic::new(MosaicKind::Small, seed, 16.0)
+                Some(seed) => Avatar::new(seed, 16.0)
+                    .small_pattern()
                     .radius(2.0)
+                    .image(self.picture)
                     .into_any_element(),
                 None => icon(
                     self.icon,
@@ -500,6 +510,7 @@ pub struct OccupantRow {
     id: ElementId,
     name: SharedString,
     seed: u128,
+    picture: Option<std::sync::Arc<gpui::RenderImage>>,
     marks: Vec<OccupantMark>,
     selector: Option<SharedString>,
     /// The menu of the person is open.
@@ -515,11 +526,18 @@ impl OccupantRow {
             id: id.into(),
             name: name.into(),
             seed,
+            picture: None,
             marks: Vec::new(),
             selector: None,
             open: false,
             on_menu: None,
         }
+    }
+
+    /// The image of the avatar of the person, when the window holds it.
+    pub fn picture(mut self, picture: Option<std::sync::Arc<gpui::RenderImage>>) -> Self {
+        self.picture = picture;
+        self
     }
 
     pub fn marks(mut self, marks: Vec<OccupantMark>) -> Self {
@@ -630,7 +648,7 @@ impl RenderOnce for OccupantRow {
                         }
                     })
             })
-            .child(Mosaic::new(MosaicKind::Large, self.seed, 20.0).radius(2.0))
+            .child(Avatar::new(self.seed, 20.0).radius(2.0).image(self.picture))
             .child(div().flex_1().min_w_0().truncate().child(self.name))
             .child(
                 div()

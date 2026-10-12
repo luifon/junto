@@ -420,6 +420,10 @@ impl Shell {
                     .min_w_0()
                     .items_center()
                     .gap(u(8.0))
+                    .child(
+                        crate::shell::people::avatar(&self.faces(server_id), account_id, 26.0)
+                            .radius(2.0),
+                    )
                     .child(line_text(
                         row.name.clone(),
                         Some(txt::account_detail(&row.roles, row.created).into()),
@@ -593,6 +597,7 @@ impl Shell {
         self.settle_people(view, window, cx);
         let theme = theme(cx);
         let server_id = view.server_id;
+        let faces = self.faces(server_id);
         let workspace_id = page.workspace_id;
         let mut column = div().flex().flex_col().child(page_title(
             text::admin::page_name(AdminPage::Members),
@@ -634,8 +639,11 @@ impl Shell {
                 for row in rows {
                     let roles =
                         (!row.roles.is_empty()).then(|| SharedString::from(row.roles.join(", ")));
-                    let mut content =
-                        line(&theme).child(line_text(row.name.clone(), roles, &theme));
+                    let mut content = line(&theme)
+                        .child(
+                            crate::shell::people::avatar(&faces, row.account_id, 26.0).radius(2.0),
+                        )
+                        .child(line_text(row.name.clone(), roles, &theme));
                     if row.is_self {
                         content = content.child(Chip::new(txt::YOU));
                     }
@@ -685,6 +693,10 @@ impl Shell {
                             let account_id = row.account_id;
                             let what = AskKind::AddMember(account_id);
                             let content = line(&theme)
+                                .child(
+                                    crate::shell::people::avatar(&faces, account_id, 26.0)
+                                        .radius(2.0),
+                                )
                                 .child(line_text(row.name.clone(), None, &theme))
                                 .child(row_action(
                                     ("member-add", account_id.as_uuid().as_u128() as u64),

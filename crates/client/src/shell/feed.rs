@@ -28,12 +28,13 @@ use crate::state::feed::{
     Feed, FeedRow, MessageRow, Names, Quote, QuoteText, SystemKind, SystemRow, WaitingRow,
     can_send_again,
 };
+use crate::state::people::ServerFaces;
 use crate::state::view::{DraftFile, ShellView, WorkspaceView};
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Button, ButtonKind, Menu, MenuItem, Mosaic, MosaicKind, Notice, StatePanel, StyleExt,
-    focus_ring_inside, icon, ledge, tooltip,
+    Avatar, Button, ButtonKind, Menu, MenuItem, Notice, StatePanel, StyleExt, focus_ring_inside,
+    icon, ledge, tooltip,
 };
 
 /// The widest picture of a message, and the tallest, in design pixels.
@@ -901,7 +902,7 @@ impl Shell {
 
     /// The line above a reply: the small avatar, the name and the start of the message
     /// that the reply answers.
-    fn reply_line(quote: &Quote, theme: &Theme) -> AnyElement {
+    fn reply_line(quote: &Quote, faces: &ServerFaces, theme: &Theme) -> AnyElement {
         let colors = theme.colors;
         let (sentence, known): (SharedString, bool) = match &quote.text {
             QuoteText::Text(text) => (text.clone().into(), true),
@@ -933,9 +934,7 @@ impl Shell {
                     .border_color(Hsla::from(colors.rule)),
             )
             .when_some(quote.author_id, |line, author_id| {
-                line.child(
-                    Mosaic::new(MosaicKind::Large, author_id.as_uuid().as_u128(), 14.0).radius(2.0),
-                )
+                line.child(super::people::avatar(faces, author_id, 14.0).radius(2.0))
             })
             .when_some(quote.author.clone(), |line, author| {
                 line.child(
@@ -1629,6 +1628,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let colors = theme.colors;
+        let faces = self.faces(feed.server_id);
         let mark = row.thread.as_ref()?;
         let channel_id = crate::state::feed::channel_of(feed.place)?;
         let (server_id, message_id) = (feed.server_id, row.message.id);
@@ -1692,7 +1692,8 @@ impl Shell {
                             let seed = last
                                 .author_id
                                 .map_or(0, |author| author.as_uuid().as_u128());
-                            chip.child(Mosaic::new(MosaicKind::Large, seed, 18.0).radius(2.0))
+                            let picture = last.author_id.and_then(|author| faces.image(author));
+                            chip.child(Avatar::new(seed, 18.0).radius(2.0).image(picture))
                         })
                         .child(
                             div()
@@ -1759,6 +1760,8 @@ impl Shell {
         let seed = message
             .author_id
             .map_or(0, |author| author.as_uuid().as_u128());
+        let faces = self.faces(feed.server_id);
+        let picture = message.author_id.and_then(|author| faces.image(author));
         let body: Vec<AnyElement> = if message.deleted {
             vec![
                 div()
@@ -1886,7 +1889,7 @@ impl Shell {
             .children(
                 row.reply
                     .as_ref()
-                    .map(|quote| Self::reply_line(quote, &theme)),
+                    .map(|quote| Self::reply_line(quote, &faces, &theme)),
             )
             .child(
                 div()
@@ -1898,7 +1901,7 @@ impl Shell {
                         div()
                             .flex_none()
                             .mt(u(2.0))
-                            .child(Mosaic::new(MosaicKind::Large, seed, 34.0))
+                            .child(Avatar::new(seed, 34.0).image(picture))
                             .into_any_element()
                     })
                     .child(
@@ -1931,11 +1934,10 @@ impl Shell {
         let pending = &row.pending;
         let (server_id, id) = (feed.server_id, pending.id);
         let side = if compact { 14.0 } else { 16.0 };
-        let own = self
-            .view
-            .as_ref()
-            .and_then(|view| view.person.account_id)
-            .map_or(0, |account| account.as_uuid().as_u128());
+        let faces = self.faces(server_id);
+        let person = self.view.as_ref().and_then(|view| view.person.account_id);
+        let own = person.map_or(0, |account| account.as_uuid().as_u128());
+        let picture = person.and_then(|account| faces.image(account));
         let uploads = self
             .view
             .as_ref()
@@ -1991,7 +1993,7 @@ impl Shell {
             .children(
                 row.reply
                     .as_ref()
-                    .map(|quote| Self::reply_line(quote, &theme)),
+                    .map(|quote| Self::reply_line(quote, &faces, &theme)),
             )
             .child(
                 div()
@@ -2003,7 +2005,7 @@ impl Shell {
                         div()
                             .flex_none()
                             .mt(u(2.0))
-                            .child(Mosaic::new(MosaicKind::Large, own, 34.0))
+                            .child(Avatar::new(own, 34.0).image(picture))
                             .into_any_element()
                     })
                     .child(

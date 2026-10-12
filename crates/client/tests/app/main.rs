@@ -16,12 +16,16 @@
 #[path = "../../../client-core/tests/e2e/support.rs"]
 mod support;
 
+mod account;
 mod admin;
 mod admin_pages;
 mod calls;
 mod flows;
 mod harness;
+mod linking;
 mod live;
 mod messages;
+mod people;
+mod servers;
 mod states;
 mod threads;

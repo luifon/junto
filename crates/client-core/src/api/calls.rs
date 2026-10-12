@@ -7,8 +7,12 @@ use junto_protocol::call::{
     InviteToCall, MoveParticipant, MuteDirectConversation, OwnCallView, ReportCallState,
     ReportScreenShare, ReportSpeaking, ShareAudio, UpdateCallSettings,
 };
-use junto_protocol::ids::{AccountId, CallInvitationId, CallMoveId, ChannelId, EntryRequestId};
-use junto_protocol::recording::{Recording, StartRecording};
+use junto_protocol::ids::{
+    AccountId, CallInvitationId, CallMoveId, ChannelId, EntryRequestId, RecordingId, WorkspaceId,
+};
+use junto_protocol::recording::{
+    Recording, RecordingDetail, RecordingPage, RecordingQuery, StartRecording,
+};
 use junto_protocol::snapshot::Snapshot;
 use junto_protocol::structure::Channel;
 use time::OffsetDateTime;
@@ -144,6 +148,29 @@ impl ServerApi {
     pub async fn stop_recording(&self, channel_id: ChannelId) -> Result<(), ApiError> {
         let path = format!("/channels/{channel_id}/call/recording");
         self.act(Method::Delete, path).await
+    }
+
+    /// One page of the recordings of a workspace that the account may see, newest first
+    /// (ADR 0604). `next_before` of a page is the `before` of the page that follows it.
+    pub async fn recordings(
+        &self,
+        workspace_id: WorkspaceId,
+        query: &RecordingQuery,
+    ) -> Result<RecordingPage, ApiError> {
+        let mut pairs = Vec::new();
+        if let Some(before) = query.before {
+            pairs.push(("before", before.to_string()));
+        }
+        if let Some(limit) = query.limit {
+            pairs.push(("limit", limit.to_string()));
+        }
+        let path = format!("/workspaces/{workspace_id}/recordings");
+        read_json(&self.call(Method::Get, path, pairs, None).await?)
+    }
+
+    /// One recording with its segments.
+    pub async fn recording(&self, recording_id: RecordingId) -> Result<RecordingDetail, ApiError> {
+        self.get(format!("/recordings/{recording_id}")).await
     }
 
     // Requests to enter a locked or full voice channel.
@@ -339,4 +366,144 @@ impl ServerApi {
 
 fn participant(channel_id: ChannelId, account_id: AccountId, end: &str) -> String {
     format!("/channels/{channel_id}/call/participants/{account_id}{end}")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use junto_protocol::ids::{CallId, ServerId};
+    use junto_protocol::recording::RecordingState;
+    use junto_protocol::transcript::TranscriptState;
+
+    use super::*;
+    use crate::address::ServerAddress;
+    use crate::api::transport::{HttpRequest, HttpResponse, Transport, TransportFuture};
+    use crate::api::{ApiClient, RetryPolicy};
+    use crate::secret::SecretToken;
+    use crate::version::SupportedVersions;
+
+    /// Answers every request with one body and keeps the requests.
+    struct Recorded {
+        body: Vec<u8>,
+        seen: Mutex<Vec<HttpRequest>>,
+    }
+
+    impl Transport for Recorded {
+        fn send(&self, request: HttpRequest) -> TransportFuture {
+            self.seen.lock().unwrap().push(request);
+            let body = self.body.clone();
+            Box::pin(async move {
+                Ok(HttpResponse {
+                    status: 200,
+                    retry_after: None,
+                    body: body.into(),
+                })
+            })
+        }
+    }
+
+    impl Recorded {
+        /// The method, the path and the query of the one request that arrived.
+        fn request(&self) -> (Method, String, Option<String>) {
+            let seen = self.seen.lock().unwrap();
+            assert_eq!(seen.len(), 1, "{seen:?}");
+            assert!(seen[0].bearer.is_some());
+            assert!(seen[0].body.is_none());
+            let url = &seen[0].url;
+            (
+                seen[0].method,
+                url.path().to_owned(),
+                url.query().map(str::to_owned),
+            )
+        }
+    }
+
+    /// A server that answers every request with `answer`.
+    fn server<A: serde::Serialize>(answer: &A) -> (Arc<Recorded>, ServerApi) {
+        let transport = Arc::new(Recorded {
+            body: serde_json::to_vec(answer).unwrap(),
+            seen: Mutex::default(),
+        });
+        let api = ApiClient::new(
+            transport.clone(),
+            ServerAddress::parse("chat.example.test").unwrap(),
+            ServerId::generate(),
+            SupportedVersions::THIS_BUILD.negotiate(&[1]).unwrap(),
+            RetryPolicy::default(),
+        )
+        .with_token(SecretToken::new("jst_test".to_owned()));
+        (transport, api)
+    }
+
+    fn recording(workspace_id: WorkspaceId) -> Recording {
+        let at = OffsetDateTime::from_unix_timestamp(1_900_000_000).unwrap();
+        Recording {
+            id: RecordingId::generate(),
+            workspace_id,
+            channel_id: ChannelId::generate(),
+            call_id: CallId::generate(),
+            state: RecordingState::Ready,
+            started_by: AccountId::generate(),
+            requested_at: at,
+            recording_since: Some(at),
+            stop: None,
+            ended_at: Some(at),
+            failure: None,
+            language: "auto".to_owned(),
+            segments: 2,
+            failed_segments: 0,
+            bytes: Some(4096),
+            timeline_started_at: Some(at),
+            transcript: TranscriptState::Ready,
+            transcript_lines: 3,
+        }
+    }
+
+    #[tokio::test]
+    async fn the_recordings_of_a_workspace_are_read_by_the_page_that_is_asked_for() {
+        let workspace_id = WorkspaceId::generate();
+        let newest = recording(workspace_id);
+        let page = RecordingPage {
+            recordings: vec![newest.clone()],
+            next_before: Some(newest.id),
+        };
+        let path = format!("/api/v1/workspaces/{workspace_id}/recordings");
+
+        let (seen, api) = server(&page);
+        let all = RecordingQuery::default();
+        assert_eq!(api.recordings(workspace_id, &all).await.unwrap(), page);
+        assert_eq!(seen.request(), (Method::Get, path.clone(), None));
+
+        let (seen, api) = server(&page);
+        let older = RecordingQuery {
+            before: Some(newest.id),
+            limit: Some(200),
+        };
+        assert_eq!(api.recordings(workspace_id, &older).await.unwrap(), page);
+        let query = format!("before={}&limit=200", newest.id);
+        assert_eq!(seen.request(), (Method::Get, path.clone(), Some(query)));
+
+        let (seen, api) = server(&page);
+        let few = RecordingQuery {
+            before: None,
+            limit: Some(1),
+        };
+        api.recordings(workspace_id, &few).await.unwrap();
+        let query = Some("limit=1".to_owned());
+        assert_eq!(seen.request(), (Method::Get, path, query));
+    }
+
+    #[tokio::test]
+    async fn one_recording_is_read_with_its_segments() {
+        let detail = RecordingDetail {
+            recording: recording(WorkspaceId::generate()),
+            segments: Vec::new(),
+        };
+        let recording_id = detail.recording.id;
+        let (seen, api) = server(&detail);
+        assert_eq!(api.recording(recording_id).await.unwrap(), detail);
+        let path = format!("/api/v1/recordings/{recording_id}");
+        assert_eq!(seen.request(), (Method::Get, path, None));
+    }
 }

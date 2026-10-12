@@ -16,8 +16,8 @@ use crate::state::view::{
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Band, BandKind, Button, ButtonKind, CategoryHeader, ChannelRow, ChannelState, Mosaic,
-    MosaicKind, OccupantMark, OccupantRow, ScrollArea, StyleExt, icon, tooltip,
+    Avatar, Band, BandKind, Button, ButtonKind, CategoryHeader, ChannelRow, ChannelState,
+    OccupantMark, OccupantRow, ScrollArea, StyleExt, icon, tooltip,
 };
 
 /// The lit segments of the meter of a person who speaks in a call that this device is not
@@ -183,6 +183,7 @@ impl Shell {
 
         div()
             .id("channel-column")
+            .debug_selector(|| "channel-column".to_owned())
             .relative()
             .flex()
             .flex_col()
@@ -226,6 +227,7 @@ impl Shell {
             .when_some(view.controls.warning.as_ref(), |column, warning| {
                 column.child(self.render_sound_warning(warning, &theme, cx))
             })
+            .children(self.render_update_notice(view, &theme, cx))
             .child(self.render_profile_strip(view, &theme, cx))
     }
 
@@ -240,6 +242,7 @@ impl Shell {
         let colors = theme.colors;
         let workspace_id = workspace.id;
         let server_id = view.selected.as_ref().map(|server| server.id);
+        let faces = self.shown_faces();
         // The person whose menu is open, and the menu.
         let open_menu = match &self.layer {
             Layer::PersonMenu(open) => view
@@ -354,6 +357,7 @@ impl Shell {
                         occupant_name(occupant),
                         account_id.as_uuid().as_u128(),
                     )
+                    .picture(faces.image(account_id))
                     .marks(occupant_marks(occupant))
                     .selector(format!("occupant:{account_id}"))
                     .open(menu.is_some());
@@ -407,6 +411,7 @@ impl Shell {
                 .into();
             let row = ChannelRow::new(("direct", index), Icon::People, name)
                 .avatar(direct.account_id.as_uuid().as_u128())
+                .picture(faces.image(direct.account_id))
                 .selected(direct.selected)
                 .unread(unread_sign(direct.unread))
                 .muted(direct.unread.muted)
@@ -453,8 +458,15 @@ impl Shell {
             .person
             .account_id
             .map_or_else(|| name_seed(&view.person.name), |id| id.as_uuid().as_u128());
+        // An account shows its avatar on the selected server. Without an account the
+        // person is shown as the profile preset describes them.
+        let picture = match view.person.account_id {
+            Some(account_id) => self.shown_faces().image(account_id),
+            None => view.preset_picture.clone(),
+        };
         div()
             .id("profile-strip")
+            .debug_selector(|| "profile-strip".to_owned())
             .flex()
             .flex_none()
             .items_center()
@@ -465,7 +477,7 @@ impl Shell {
             .bg(Hsla::from(colors.limestone_lo))
             .border_t_1()
             .border_color(Hsla::from(colors.rule))
-            .child(Mosaic::new(MosaicKind::Large, seed, 30.0))
+            .child(Avatar::new(seed, 30.0).image(picture))
             .child(
                 div()
                     .id("profile-name")
@@ -535,7 +547,7 @@ impl Shell {
 }
 
 /// The seed of the avatar of a person who has no account yet: from the name.
-fn name_seed(name: &str) -> u128 {
+pub(crate) fn name_seed(name: &str) -> u128 {
     name.bytes().fold(0x6a75_6e74_6f00_u128, |seed, byte| {
         seed.rotate_left(8) ^ u128::from(byte)
     })

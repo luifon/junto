@@ -1,6 +1,10 @@
 //! The local profile preset: the name and the avatar that a new server account starts from
 //! (ADR 0105, ADR 0710).
 
+use std::fs::File;
+use std::io;
+use std::path::Path;
+
 use junto_protocol::account::ImageType;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -99,6 +103,40 @@ pub fn check_avatar(image: &[u8]) -> Result<ImageType, InvalidAvatar> {
     } else {
         Err(InvalidAvatar::Unsupported)
     }
+}
+
+/// Opens a file that a person chose in a window. A link at the end of the path is not
+/// followed, and the open of a pipe or of a device does not wait for its other side.
+#[cfg(unix)]
+fn open_chosen(path: &Path) -> io::Result<File> {
+    use rustix::fs::{Mode, OFlags};
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    Ok(File::from(rustix::fs::open(path, flags, Mode::empty())?))
+}
+
+/// This system has no such flags of an open. The kind of the opened file is still checked.
+#[cfg(not(unix))]
+fn open_chosen(path: &Path) -> io::Result<File> {
+    File::open(path)
+}
+
+/// Reads a file that a person chose as an avatar in a window. Only a regular file is
+/// read, and its kind is read from the opened file, so the file cannot be exchanged
+/// between the check and the read. One byte more than an avatar can have is read at
+/// most, so that a larger file is refused by [`check_avatar`] and not held in memory.
+pub fn read_avatar_file(path: &Path) -> io::Result<Vec<u8>> {
+    use std::io::Read as _;
+    let file = open_chosen(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the file is not a regular file",
+        ));
+    }
+    let mut image = Vec::new();
+    file.take(AVATAR_MAX_BYTES as u64 + 1)
+        .read_to_end(&mut image)?;
+    Ok(image)
 }
 
 /// The SHA-256 hash of an image in lower-case hexadecimal, as the server describes an
@@ -406,5 +444,47 @@ mod tests {
             store.load(),
             Err(StorageError::NewerFormat { found: 9, .. })
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_avatar_file_is_a_regular_file_and_is_read_up_to_one_byte_beyond_the_bound() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("picture.png");
+        fs::write(&file, PNG).unwrap();
+        assert_eq!(read_avatar_file(&file).unwrap(), PNG);
+        let mut large = PNG.to_vec();
+        large.resize(4 * AVATAR_MAX_BYTES, 0);
+        fs::write(&file, &large).unwrap();
+        assert_eq!(read_avatar_file(&file).unwrap().len(), AVATAR_MAX_BYTES + 1);
+
+        // A link is not followed, also when it names a regular file.
+        let link = directory.path().join("link.png");
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        assert!(read_avatar_file(&link).is_err());
+        assert!(read_avatar_file(directory.path()).is_err());
+        assert!(read_avatar_file(&directory.path().join("absent.png")).is_err());
+
+        // A pipe that nobody writes to is refused, and its open does not wait.
+        let pipe = directory.path().join("pipe.png");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&pipe)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let (tell, told) = std::sync::mpsc::channel();
+        let reader = {
+            let pipe = pipe.clone();
+            std::thread::spawn(move || {
+                let _ = tell.send(read_avatar_file(&pipe).map_err(|error| error.kind()));
+            })
+        };
+        let read = told.recv_timeout(std::time::Duration::from_secs(5)).ok();
+        if read.is_none() {
+            // The open of the reader waits for a writer: this one lets the thread end.
+            drop(fs::OpenOptions::new().write(true).open(&pipe));
+        }
+        reader.join().unwrap();
+        assert_eq!(read, Some(Err(io::ErrorKind::InvalidInput)));
     }
 }

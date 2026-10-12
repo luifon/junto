@@ -51,4 +51,4 @@ Pictures of the screens:
 - The width of the scroll bar and of a border does not follow the scale.
 - The drawing of a screen can be compared with the design on a machine without a display. The window controls of the operating system are not in such a picture.
 - An avatar is not the avatar of the design for the same name: the design drew fixed patterns, and the product derives them.
-- An image that an account has set as its avatar is not shown yet; the generated avatar stands in its place until the avatar images are built.
+- An image that an account has set as its avatar is shown in place of the generated avatar when the window holds it (ADR 0783).

@@ -3,13 +3,17 @@
 //! [`AppState::view`] gives and holds only what belongs to the window itself: which layer
 //! is open, the text of its fields, and where the keyboard focus returns to.
 
+pub mod account;
 pub mod admin;
+mod book;
 pub mod call;
 mod channels;
 mod composer;
 mod feed;
 mod join;
+pub mod linking;
 mod main_area;
+mod people;
 mod rail;
 pub mod room;
 mod server_menu;
@@ -65,6 +69,11 @@ pub(crate) enum Layer {
     /// The administration of a server, or the settings of a channel. The state of the
     /// application holds which page is open.
     Admin,
+    /// The profile and the devices of the account on a server (ADR 0781). The state of
+    /// the application holds which page is open.
+    Account,
+    /// The link of a device on all servers (ADR 0782).
+    LinkAll,
 }
 
 /// What the emoji of the picker is for.
@@ -224,6 +233,12 @@ pub struct Shell {
     pub(crate) fork_name: Entity<InputState>,
     /// The fields and the open forms of the administration.
     pub(crate) admin: admin::AdminUi,
+    /// The fields and the open form of the account layer.
+    pub(crate) account: account::AccountUi,
+    /// The fields of the link on all servers.
+    pub(crate) linking: linking::LinkingUi,
+    /// What the window holds of the update notice (ADR 0780).
+    pub(crate) book: book::BookUi,
     /// What the window drew last. A test reads the data of the window from it, and not
     /// from the client core, which can be ahead of the window.
     #[cfg(feature = "test-support")]
@@ -253,6 +268,9 @@ impl Shell {
                 this.feed_scrolled(Pane::Thread, event, window, cx);
             }));
         let (admin, admin_subscriptions) = admin::AdminUi::new(window, cx);
+        let (account, account_subscriptions) = account::AccountUi::new(window, cx);
+        let (linking, linking_subscriptions) = linking::LinkingUi::new(window, cx);
+        let book = book::BookUi::new(window, cx);
         let mut subscriptions = vec![
             Self::observe_composer(Pane::Main, &composer.input, window, cx),
             Self::observe_composer(Pane::Thread, &thread_composer.input, window, cx),
@@ -345,6 +363,8 @@ impl Shell {
             }),
         ];
         subscriptions.extend(admin_subscriptions);
+        subscriptions.extend(account_subscriptions);
+        subscriptions.extend(linking_subscriptions);
         let mut shell = Self {
             state,
             focus: cx.focus_handle(),
@@ -394,6 +414,9 @@ impl Shell {
             pins_scroll: ScrollHandle::new(),
             fork_name,
             admin,
+            account,
+            linking,
+            book,
             #[cfg(feature = "test-support")]
             drawn: None,
             _subscriptions: subscriptions,
@@ -629,6 +652,16 @@ impl Shell {
             // A code or a token that the layer showed is gone with it.
             self.reset_admin_ui(window, cx);
             self.state.update(cx, |state, cx| state.close_admin(cx));
+        }
+        if matches!(self.layer, Layer::Account) {
+            // The link code that the layer held is gone with it.
+            self.reset_account_ui(window, cx);
+            self.state.update(cx, |state, cx| state.close_account(cx));
+        }
+        if matches!(self.layer, Layer::LinkAll) {
+            // The request with its link codes is gone with the layer.
+            self.reset_linking_ui(window, cx);
+            self.state.update(cx, |state, cx| state.close_link_all(cx));
         }
         self.layer = Layer::None;
         self.return_focus_to_content(window, cx);
@@ -933,7 +966,9 @@ impl Shell {
             // The server shows no content any more, or the channel of the open
             // settings is gone.
             Layer::Admin => self.state.read(cx).admin_view().is_none(),
-            Layer::None | Layer::Welcome | Layer::Settings => false,
+            // The server left the server book, or it shows no account or another one.
+            Layer::Account => self.state.read(cx).account_view().is_none(),
+            Layer::None | Layer::Welcome | Layer::Settings | Layer::LinkAll => false,
         };
         if stale {
             self.close_layer(window, cx);
@@ -967,6 +1002,8 @@ impl Shell {
                 .into_any_element(),
             Layer::SharePicker(_) => self.render_share_picker(window, cx),
             Layer::Admin => self.render_admin(window, cx),
+            Layer::Account => self.render_account(window, cx),
+            Layer::LinkAll => self.render_link_all(window, cx),
         }
     }
 }

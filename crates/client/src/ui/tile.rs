@@ -6,7 +6,7 @@ use gpui::{
     SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
 };
 
-use super::{Meter, Mosaic, MosaicKind, StyleExt, icon};
+use super::{Avatar, Meter, StyleExt, icon};
 use crate::assets::Icon;
 use crate::theme::{theme, u};
 
@@ -33,6 +33,7 @@ pub struct PersonTile {
     id: ElementId,
     name: SharedString,
     seed: u128,
+    picture: Option<std::sync::Arc<gpui::RenderImage>>,
     speaking: bool,
     marks: Vec<TileMark>,
     label: SharedString,
@@ -52,12 +53,19 @@ impl PersonTile {
             id: id.into(),
             name: name.into(),
             seed,
+            picture: None,
             speaking: false,
             marks: Vec::new(),
             label: label.into(),
             selector: None,
             in_strip: false,
         }
+    }
+
+    /// The image of the avatar of the person, when the window holds it.
+    pub fn picture(mut self, picture: Option<std::sync::Arc<gpui::RenderImage>>) -> Self {
+        self.picture = picture;
+        self
     }
 
     /// The tile of the strip under a share: the size of the design.
@@ -134,7 +142,7 @@ impl RenderOnce for PersonTile {
             .child(
                 div()
                     .mb(u(16.0))
-                    .child(Mosaic::new(MosaicKind::Large, self.seed, avatar)),
+                    .child(Avatar::new(self.seed, avatar).image(self.picture)),
             )
             .child(
                 div()

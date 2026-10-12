@@ -372,7 +372,7 @@ fn account_name(
                 .find(|member| member.account_id == account_id)
                 .map(|member| member.name.clone())
         })
-        .or_else(|| known.names.get(&(server_id, account_id)).cloned())
+        .or_else(|| known.people.name(server_id, account_id))
 }
 
 fn invite_state(invite: &Invite, known: &Known) -> InviteState {
@@ -1168,13 +1168,11 @@ mod tests {
             Loadable::Loaded(vec![member(in_lab, "Bea", Vec::new())]),
         );
         let mut known = known();
-        known
-            .names
-            .insert((scene.server_id, read_alone), "Caio".to_owned());
+        known.people.read_name(scene.server_id, read_alone, "Caio");
         // A name that was read for another server is not the name of this account.
         known
-            .names
-            .insert((ServerId::generate(), unknown), "Dora".to_owned());
+            .people
+            .read_name(ServerId::generate(), unknown, "Dora");
         let page = invites(scene.server_id, &model, &known, &AdminState::default());
         let creators: Vec<(AccountId, Option<&str>)> = page
             .invites

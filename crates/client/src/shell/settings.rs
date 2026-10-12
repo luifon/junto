@@ -116,7 +116,7 @@ impl Shell {
 
     pub(crate) fn render_settings(
         &mut self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = theme(cx);
@@ -130,6 +130,7 @@ impl Shell {
         };
         let selected = theme::SCALES.iter().position(|option| *option == scale);
         Dialog::new(text::SETTINGS, self.layer_focus())
+            .scroll(self.settings_scroll())
             .selector("settings-dialog")
             .on_close(Self::handler(cx, |this, window, cx| {
                 this.close_layer(window, cx);
@@ -170,6 +171,7 @@ impl Shell {
                         .child(Notice::error(error).selector("name-error")),
                 )
             })
+            .children(self.render_preset_picture(&theme, cx))
             .child(
                 div()
                     .mt(u(16.0))
@@ -220,6 +222,7 @@ impl Shell {
             })
             .child(div().mt(u(16.0)).child(group_label(text::VOICE, &theme)))
             .children(self.render_voice_settings(&theme, cx))
+            .children(self.render_devices_settings(&theme, cx))
             .child(
                 div()
                     .mt(u(16.0))
@@ -234,6 +237,7 @@ impl Shell {
                     .child(data_dir),
             )
             .child(help(text::DATA_DIRECTORY_HELP, &theme))
+            .children(self.render_version_settings(&theme, window, cx))
     }
 
     /// The sound settings that hold for every call: when the microphone is sent, and the

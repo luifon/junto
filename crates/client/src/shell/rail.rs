@@ -275,7 +275,7 @@ impl Shell {
         let head = div()
             .id(("server", index))
             .role(Role::ListItem)
-            .aria_label(row.name.clone())
+            .aria_label(super::book::head_label(row))
             .aria_selected(row.selected)
             .debug_selector(move || format!("server-{index}"))
             .relative()
@@ -317,7 +317,9 @@ impl Shell {
                             .child(row.name.clone()),
                     )
                     .child(line),
-            );
+            )
+            // What the server holds unread that no row of a workspace shows.
+            .children(super::book::head_sign(row, index, cx));
         let workspaces = row
             .workspaces
             .iter()

@@ -513,7 +513,7 @@ fn a_voice_channel_shows_its_people_with_their_marks_and_the_state_of_its_call()
     }
     let server = server("Acme Studio", Some(model), logged_in(own, Vec::new()));
     let mut known = Known::default();
-    known.names.insert((server.id, carla), "Carla".to_owned());
+    known.people.read_name(server.id, carla, "Carla");
     let view = derive(std::slice::from_ref(&server), &Selection::default(), &known);
     let workspace = view.workspace().unwrap();
 
@@ -2021,8 +2021,8 @@ mod calls {
         let mut own_call = active(target(&server, &scene, daily));
         own_call.share = running_share();
         let mut known = in_call(own_call);
-        known.names.insert((server.id, ana), "Ana".to_owned());
-        known.names.insert((server.id, ben), "Ben".to_owned());
+        known.people.read_name(server.id, ana, "Ana");
+        known.people.read_name(server.id, ben, "Ben");
         // The presenter's own microphone setting does not make a prompt.
         known.media.calls.muted = true;
         let view = derive(
@@ -2065,7 +2065,7 @@ mod calls {
             call.microphone_block = held.then(|| meeting_block(ana)).flatten();
             let mut known = in_call(call);
             known.media.calls.muted = muted;
-            known.names.insert((server.id, ana), "Ana".to_owned());
+            known.people.read_name(server.id, ana, "Ana");
             derive(
                 std::slice::from_ref(&server),
                 &selected(scene, channel),
@@ -2301,7 +2301,7 @@ mod calls {
         scene.snapshot.call_invitations = vec![incoming.clone()];
         let server = scene.server();
         let mut known = Known::default();
-        known.names.insert((server.id, ana), "Ana".to_owned());
+        known.people.read_name(server.id, ana, "Ana");
         let view = derive(std::slice::from_ref(&server), &Selection::default(), &known);
         assert_eq!(
             view.invitations,
@@ -2408,7 +2408,7 @@ mod calls {
             } else {
                 Known::default()
             };
-            known.names.insert((server.id, ben), "Ben".to_owned());
+            known.people.read_name(server.id, ben, "Ben");
             known.media.voice.set_volume(server.id, ben, 140);
             let view = derive(std::slice::from_ref(&server), &Selection::default(), &known);
             view.person_menu(channel_id, account_id)

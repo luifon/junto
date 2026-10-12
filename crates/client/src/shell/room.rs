@@ -24,9 +24,8 @@ use crate::state::view::{
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Button, ButtonKind, Field, FieldKind, Menu, MenuItem, Mosaic, MosaicKind, Notice, SectionLabel,
-    Stepper, StyleExt, Toggle, VolumeSlider, float_shadow, icon, ledge, menu_label, menu_separator,
-    tooltip,
+    Button, ButtonKind, Field, FieldKind, Menu, MenuItem, Notice, SectionLabel, Stepper, StyleExt,
+    Toggle, VolumeSlider, float_shadow, icon, ledge, menu_label, menu_separator, tooltip,
 };
 
 /// The largest user limit of a voice channel (ADR 0514).
@@ -222,6 +221,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme.colors;
+        let faces = self.shown_faces();
         let line = if meeting.by_self {
             format!("{}{}", text::MEETING_IS_ON, text::YOU_RUN_IT)
         } else {
@@ -252,14 +252,7 @@ impl Shell {
                     let more = meeting.hands.len() - 1;
                     Some(
                         request
-                            .child(
-                                Mosaic::new(
-                                    MosaicKind::Large,
-                                    account_id.as_uuid().as_u128(),
-                                    22.0,
-                                )
-                                .radius(2.0),
-                            )
+                            .child(super::people::avatar(&faces, account_id, 22.0).radius(2.0))
                             .child(
                                 div()
                                     .id("meeting-hand")
@@ -583,6 +576,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme.colors;
+        let faces = self.shown_faces();
         let wanted = self.invite_find.read(cx).value().trim().to_lowercase();
         let listed: Vec<&OutsideMember> = panel
             .outside
@@ -649,10 +643,7 @@ impl Shell {
                     .when(index > 0, |row| {
                         row.border_t_1().border_color(Hsla::from(colors.rule_soft))
                     })
-                    .child(
-                        Mosaic::new(MosaicKind::Large, account_id.as_uuid().as_u128(), 26.0)
-                            .radius(2.0),
-                    )
+                    .child(super::people::avatar(&faces, account_id, 26.0).radius(2.0))
                     .child(
                         div()
                             .flex_1()
@@ -956,7 +947,7 @@ impl Shell {
             .mb(u(4.0))
             .border_b_1()
             .border_color(Hsla::from(colors.rule_soft))
-            .child(Mosaic::new(MosaicKind::Large, account_id.as_uuid().as_u128(), 26.0).radius(2.0))
+            .child(super::people::avatar(&self.faces(menu.server_id), account_id, 26.0).radius(2.0))
             .child(
                 div()
                     .flex_1()

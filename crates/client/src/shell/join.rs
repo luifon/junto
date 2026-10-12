@@ -41,6 +41,8 @@ pub(crate) enum Target {
 pub(crate) enum Running {
     Joining,
     Requesting,
+    /// A link code for this device is asked for.
+    Linking,
     Saving,
     Discarding,
 }
@@ -114,6 +116,8 @@ enum Body {
     Waiting {
         name: String,
     },
+    /// This device waits for its link: the code and the key of this device.
+    LinkWait(ServerId, crate::state::linking::LinkWait),
     /// Another state of a saved server, as a sentence.
     Statement(&'static str, String),
 }
@@ -191,6 +195,19 @@ impl Shell {
         self.run_access(
             Running::Requesting,
             AccessAction::RequestAccess { name },
+            window,
+            cx,
+        );
+    }
+
+    /// The third way in: this device asks for a link code that a logged-in device of the
+    /// account approves (ADR 0112). A second request replaces the code of the first.
+    pub(crate) fn request_link_in_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.run_access(
+            Running::Linking,
+            AccessAction::RequestLink {
+                device_name: text::device_name(),
+            },
             window,
             cx,
         );
@@ -371,9 +388,13 @@ impl Shell {
                     ServerStatus::WaitingForApproval { name } => {
                         Body::Waiting { name: name.clone() }
                     }
-                    ServerStatus::NoAccount(_) | ServerStatus::WaitingForLink { .. } => {
-                        Body::Paths { found: false }
+                    ServerStatus::WaitingForLink { .. } => {
+                        match self.state.read(cx).link_wait(*server_id) {
+                            Some(wait) => Body::LinkWait(*server_id, wait),
+                            None => Body::Paths { found: false },
+                        }
                     }
+                    ServerStatus::NoAccount(_) => Body::Paths { found: false },
                     ServerStatus::Banned => {
                         Body::Statement(text::BANNED_TITLE, text::BANNED.to_owned())
                     }
@@ -412,7 +433,11 @@ impl Shell {
                 this.close_layer(window, cx);
             }))
             .child(server_card(card, found, &theme))
-            .child(div().mt(u(10.0)).child(Notice::new(text::OPERATOR_NOTICE)));
+            .child(
+                div()
+                    .mt(u(10.0))
+                    .child(Notice::new(text::OPERATOR_NOTICE).selector("operator-notice")),
+            );
         if let Some(error) = error {
             dialog = dialog.child(
                 div()
@@ -478,6 +503,35 @@ impl Shell {
                             &theme,
                         )),
                 );
+                dialog = dialog.child(self.render_link_way(
+                    busy,
+                    running == Some(Running::Linking),
+                    &theme,
+                    cx,
+                ));
+            }
+            Body::LinkWait(server_id, wait) => {
+                let [cancel, new_code] = self.link_wait_actions(server_id, busy, cx);
+                dialog = dialog
+                    .child(
+                        div()
+                            .mt(u(12.0))
+                            .child(crate::shell::linking::link_wait_block(&wait, false, &theme)),
+                    )
+                    .child(dialog_footer([
+                        cancel.into_any_element(),
+                        new_code.into_any_element(),
+                        Button::new("close-join")
+                            .kind(ButtonKind::Primary)
+                            .label(text::CLOSE)
+                            .selector("close-join")
+                            .h(u(30.0))
+                            .px(u(12.0))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.close_layer(window, cx);
+                            }))
+                            .into_any_element(),
+                    ]));
             }
             Body::Incompatible(reason) => {
                 let (title, detail) = text::incompatibility(reason);
