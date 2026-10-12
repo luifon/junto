@@ -63,4 +63,4 @@ Unread signs:
 - The menu of a message opens at the start of its text. Before this record it opened at the left edge of the list and lay over the channel column.
 - A person in a call reads the threads of the chat of that voice channel after the call.
 - Window tests against the real server cover a reply in the panel with the count and the unread sign, the refusal of a fork for a missing permission, for a name and for a second fork, and its success, a pin from the list and from the menu with its refusal, a direct conversation from a member, and the marker of permanent messages.
-- The notice list, the levels and quiet times, the system notifications, the search panel, the card of a recording, syntax colours and the day mark are not part of this record.
+- The notice list, the levels and quiet times and the system notifications are in ADR 0742, the search panel in ADR 0743, and the card of a recording in ADR 0744.

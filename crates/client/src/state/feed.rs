@@ -6,14 +6,17 @@
 //! of the first unread message, messages with what belongs to them, system lines, and the
 //! messages that wait. The drawing code holds no rule about a message.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use junto_client_core::transfers::DownloadProgress;
+
+use super::recorded::{self, RecordingCard};
 use junto_client_core::model::{
     PendingMessage, PlaceId, ReadFailure, Reading, SendState, ServerModel, Timeline,
 };
 use junto_client_core::protocol::ids::{
-    AccountId, ChannelId, MessageId, ServerId, WorkspaceRoleId,
+    AccountId, ChannelId, MessageId, RecordingId, RecordingSegmentId, ServerId, WorkspaceRoleId,
 };
 use junto_client_core::protocol::message::{
     AttachmentLimits, Block, Document, Inline, Message, SystemMessage,
@@ -141,6 +144,8 @@ pub struct MessageRow {
     pub can_thread: bool,
     /// The thread under the message, when it has replies.
     pub thread: Option<ThreadMark>,
+    /// The person went to this message from a notice or a search result.
+    pub target: bool,
 }
 
 impl PartialEq for MessageRow {
@@ -157,6 +162,7 @@ impl PartialEq for MessageRow {
             && self.can_pin == other.can_pin
             && self.can_thread == other.can_thread
             && self.thread == other.thread
+            && self.target == other.target
     }
 }
 
@@ -168,6 +174,30 @@ pub struct SystemRow {
     pub time: String,
     pub kind: SystemKind,
     pub parts: Vec<Part>,
+}
+
+/// A finished recording in the chat of its voice channel (ADR 0744).
+#[derive(Debug, Clone)]
+pub struct RecordingRow {
+    /// The system message that posted the recording.
+    pub message: Arc<Message>,
+    pub time: String,
+    pub card: RecordingCard,
+}
+
+/// What the cards of the recordings of a list read beside the state of the server.
+pub struct Cards<'a> {
+    /// The name of the voice channel of the list.
+    pub channel: &'a str,
+    pub channel_id: ChannelId,
+    /// The names of the accounts of the server that the client holds.
+    pub accounts: &'a HashMap<AccountId, String>,
+    /// The roles of the person allow the removal of a recording.
+    pub may_remove: bool,
+    pub downloads: &'a HashMap<(ServerId, RecordingSegmentId), DownloadProgress>,
+    pub texts: &'a HashMap<(ServerId, RecordingId), DownloadProgress>,
+    pub removing: &'a HashSet<(ServerId, RecordingId)>,
+    pub refused: &'a HashMap<(ServerId, RecordingId), String>,
 }
 
 #[derive(Debug, Clone)]
@@ -192,6 +222,8 @@ pub enum FeedRow {
     Unread,
     Message(MessageRow),
     System(SystemRow),
+    /// The card of a finished recording, in place of the system line that posted it.
+    Recording(RecordingRow),
     Waiting(WaitingRow),
     /// The history has messages after the last loaded one.
     Later {
@@ -212,6 +244,11 @@ impl PartialEq for FeedRow {
                     && one.parts == other.parts
                     && one.time == other.time
             }
+            (Self::Recording(one), Self::Recording(other)) => {
+                Arc::ptr_eq(&one.message, &other.message)
+                    && one.time == other.time
+                    && one.card == other.card
+            }
             (Self::Waiting(one), Self::Waiting(other)) => {
                 Arc::ptr_eq(&one.pending, &other.pending)
                     && one.grouped == other.grouped
@@ -230,6 +267,7 @@ impl FeedRow {
         match self {
             Self::Message(row) => Some(row.message.position),
             Self::System(row) => Some(row.message.position),
+            Self::Recording(row) => Some(row.message.position),
             _ => None,
         }
     }
@@ -261,6 +299,9 @@ pub struct Feed {
     /// The date of the derivation in the zone of the list. A day separator of another
     /// year names its year.
     pub today: Option<Date>,
+    /// The message that the person went to, with the number of that jump. A second jump
+    /// to the same message has another number, and the list goes there again.
+    pub target: Option<(MessageId, u64)>,
 }
 
 impl Feed {
@@ -292,12 +333,17 @@ pub struct Source<'a> {
     pub may_manage: bool,
     /// The thread that the side panel shows.
     pub open_thread: Option<MessageId>,
+    /// The message that the person went to from a notice or a search result, with the
+    /// number of that jump.
+    pub target: Option<(MessageId, u64)>,
     /// The list offers the thread of a message. The chat of the call of this device does
     /// not: its side panel is the panel of the call.
     pub threads: bool,
     pub quoted: &'a HashMap<(ServerId, MessageId), Quoted>,
     pub zone: Zone,
     pub today: Option<Date>,
+    /// The list shows a finished recording as a card. Absent: as a system line.
+    pub cards: Option<&'a Cards<'a>>,
 }
 
 fn clock(at: OffsetDateTime) -> String {
@@ -589,6 +635,9 @@ pub fn message_row<'a>(
         thread: has_thread
             .then(|| thread_mark(source, message, loaded))
             .flatten(),
+        target: source
+            .target
+            .is_some_and(|(message_id, _)| message_id == message.id),
         message: message.clone(),
     }
 }
@@ -644,6 +693,37 @@ pub fn derive(source: &Source<'_>) -> Feed {
             group = None;
         }
         if let (None, Some(system)) = (message.author_id, &message.system) {
+            // The post of a finished recording is its card (view G of the design).
+            let recording = system
+                .recording_id
+                .filter(|_| system.action == "recording_ready")
+                .zip(source.cards);
+            if let Some((recording_id, cards)) = recording {
+                rows.push(FeedRow::Recording(RecordingRow {
+                    message: message.clone(),
+                    time: clock(local),
+                    card: recorded::card(&recorded::CardSource {
+                        server_id: source.server_id,
+                        recording_id,
+                        open: source.model.recording(recording_id).map(Arc::as_ref),
+                        channel: cards.channel,
+                        channel_id: cards.channel_id,
+                        names: cards.accounts,
+                        zone: source.zone,
+                        today: source.today,
+                        may_remove: cards.may_remove,
+                        downloads: cards.downloads,
+                        texts: cards.texts,
+                        removing: cards.removing.contains(&(source.server_id, recording_id)),
+                        refused: cards
+                            .refused
+                            .get(&(source.server_id, recording_id))
+                            .map(String::as_str),
+                    }),
+                }));
+                group = None;
+                continue;
+            }
             let (kind, parts) = system_parts(system, names);
             rows.push(FeedRow::System(SystemRow {
                 message: message.clone(),
@@ -726,6 +806,7 @@ pub fn derive(source: &Source<'_>) -> Feed {
         limits: source.model.attachment_limits.clone(),
         names: source.names.clone(),
         today: source.today,
+        target: source.target,
     }
 }
 
@@ -933,10 +1014,12 @@ mod tests {
                 own_roles: &[self.role],
                 may_manage,
                 open_thread: None,
+                target: None,
                 threads: true,
                 quoted: &self.quoted,
                 zone: Zone::Fixed(UtcOffset::UTC),
                 today: Some(morning().date()),
+                cards: None,
             })
         }
     }
@@ -971,10 +1054,12 @@ mod tests {
                 own_roles: &[],
                 may_manage: false,
                 open_thread,
+                target: None,
                 threads,
                 quoted: &scene.quoted,
                 zone: Zone::Fixed(UtcOffset::UTC),
                 today: None,
+                cards: None,
             });
             feed.rows
                 .iter()
@@ -1016,6 +1101,7 @@ mod tests {
                 FeedRow::Message(row) if row.grouped => 'g',
                 FeedRow::Message(_) => 'M',
                 FeedRow::System(_) => 's',
+                FeedRow::Recording(_) => 'R',
                 FeedRow::Waiting(row) if row.grouped => 'w',
                 FeedRow::Waiting(_) => 'W',
             })
@@ -1066,10 +1152,12 @@ mod tests {
             own_roles: &[],
             may_manage: true,
             open_thread: None,
+            target: None,
             threads: true,
             quoted: &scene.quoted,
             zone: Zone::Fixed(UtcOffset::from_hms(14, 55, 0).unwrap()),
             today: None,
+            cards: None,
         });
         assert_eq!(shape(&east), "SDMgDMMMMMg");
         let FeedRow::Message(row) = &east.rows[2] else {
@@ -1284,6 +1372,67 @@ mod tests {
             panic!("no marker");
         };
         assert!(marker.message.deleted && !marker.can_delete && !marker.grouped);
+    }
+
+    #[test]
+    fn the_post_of_a_finished_recording_is_a_card_where_the_list_shows_cards() {
+        let scene = scene();
+        let recording_id = RecordingId::generate();
+        let mut post = scene.message(1, scene.ana, 0, "");
+        post.author_id = None;
+        post.author_name = None;
+        post.document = None;
+        post.system = Some(SystemMessage {
+            action: "recording_ready".to_owned(),
+            subject_id: None,
+            actor_id: None,
+            recording_id: Some(recording_id),
+        });
+        let mut started = post.clone();
+        started.id = MessageId::generate();
+        started.system.as_mut().unwrap().action = "recording_started".to_owned();
+        let timeline = scene.timeline(vec![started, post]);
+        // A list without cards, such as the chat of the call of this device, shows the
+        // line.
+        assert_eq!(shape(&scene.feed(&timeline, false)), "SDss");
+
+        let (downloads, texts) = (HashMap::new(), HashMap::new());
+        let (removing, refused) = (HashSet::new(), HashMap::new());
+        let cards = Cards {
+            channel: "Daily",
+            channel_id: ChannelId::generate(),
+            accounts: &scene.names.accounts,
+            may_remove: true,
+            downloads: &downloads,
+            texts: &texts,
+            removing: &removing,
+            refused: &refused,
+        };
+        let feed = derive(&Source {
+            server_id: scene.server_id,
+            model: &scene.model,
+            timeline: &timeline,
+            names: scene.names.clone(),
+            own_roles: &[],
+            may_manage: false,
+            open_thread: None,
+            target: None,
+            threads: true,
+            quoted: &scene.quoted,
+            zone: Zone::Fixed(UtcOffset::UTC),
+            today: None,
+            cards: Some(&cards),
+        });
+        // The line of the start stays a line, and the post of the files is the card.
+        assert_eq!(shape(&feed), "SDsR");
+        let FeedRow::Recording(row) = &feed.rows[3] else {
+            panic!("the post is a card");
+        };
+        assert_eq!(row.card.recording_id, recording_id);
+        assert!(row.card.may_remove);
+        // The client core holds no such recording yet.
+        assert_eq!(row.card.state, recorded::CardState::Reading);
+        assert_eq!(feed.rows[3].position(), Some(1));
     }
 
     #[test]

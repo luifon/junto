@@ -19,14 +19,18 @@ use uuid::Uuid;
 use crate::messages::{count, message_lines, plain};
 use crate::{Arguments, Client, Failure, end_session, failed, logged_in, shown, usage};
 
-fn word<'a>(words: &'a [String], position: usize, what: &str) -> Result<&'a str, Failure> {
+pub(crate) fn word<'a>(
+    words: &'a [String],
+    position: usize,
+    what: &str,
+) -> Result<&'a str, Failure> {
     words
         .get(position)
         .map(String::as_str)
         .ok_or_else(|| usage(format!("{what} is missing")))
 }
 
-fn identifier<T: std::str::FromStr>(
+pub(crate) fn identifier<T: std::str::FromStr>(
     words: &[String],
     position: usize,
     what: &str,

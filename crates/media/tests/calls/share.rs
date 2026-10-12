@@ -150,6 +150,35 @@ impl Person {
         .await;
     }
 
+    /// Waits until the picture of the share of a person arrives with this width and keeps
+    /// it for a second. A width that the picture has only on its way to another one does
+    /// not end the wait.
+    async fn until_width_stays(&self, of: junto_client_core::protocol::ids::AccountId, width: u32) {
+        let started = tokio::time::Instant::now();
+        loop {
+            self.until_width(of, width).await;
+            let mut views = self.calls.watch();
+            let other = views.wait_for(|view| {
+                !view.call.as_ref().is_some_and(|call| {
+                    call.shares.iter().any(|share| {
+                        share.account_id == of && share.size.is_some_and(|size| size.0 == width)
+                    })
+                })
+            });
+            if tokio::time::timeout(Duration::from_secs(1), other)
+                .await
+                .is_err()
+            {
+                return;
+            }
+            assert!(
+                started.elapsed() < PATIENCE,
+                "after {PATIENCE:?} the picture does not keep the width {width}; the view is {:?}",
+                self.calls.view()
+            );
+        }
+    }
+
     /// Waits for half a second of sound that was all played after this call, and returns
     /// the level of a tone in it.
     async fn hears_afresh(&self, hz: f32) -> f32 {
@@ -381,17 +410,27 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
     assert_eq!(picture.frame.source.0 * 3, picture.frame.source.1 * 4);
     // The share is sent at the frame rate that its sharer chose, 30 pictures per second.
     // The defaults of the call library send a picture of 800 pixels at 5 per second: in
-    // three seconds 15 pictures arrive with them.
+    // three seconds 15 pictures arrive with them, at any load. A busy processor lowers
+    // the frame rate for a time (ADR 0737), so the count is taken again until it holds.
     let mut pictures = cal.calls.main_picture();
-    pictures.borrow_and_update();
-    let mut arrived = 0;
-    let counted = tokio::time::timeout(Duration::from_secs(3), async {
-        while pictures.changed().await.is_ok() {
-            arrived += 1;
+    let started = tokio::time::Instant::now();
+    loop {
+        pictures.borrow_and_update();
+        let mut arrived = 0;
+        let counted = tokio::time::timeout(Duration::from_secs(3), async {
+            while pictures.changed().await.is_ok() {
+                arrived += 1;
+            }
+        });
+        let _ = counted.await;
+        if arrived >= 36 {
+            break;
         }
-    });
-    let _ = counted.await;
-    assert!(arrived >= 36, "{arrived} pictures in three seconds");
+        assert!(
+            started.elapsed() < PATIENCE,
+            "after {PATIENCE:?} still {arrived} pictures in three seconds"
+        );
+    }
     cal.until_heard_tone(PLAYER.0).await;
     cal.until_silent_tone(SYSTEM.0).await;
 
@@ -448,6 +487,50 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
         })
     })
     .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn the_last_size_of_the_drawing_decides_the_layer_of_the_watched_share() {
+    let _media = MEDIA_SERVER.read().await;
+    let (ann, ben) = (Person::new(440.0), Person::new(880.0));
+    let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+    let ben_at = room.member(&ann_at, &ben, "Ben").await;
+    let _ = &ben_at;
+    let ann_id = account(&ann_at);
+    for person in [&ann, &ben] {
+        person.enter(room.target).await;
+        // The voices are closed. A sharer that also sends a voice did not get the layer
+        // of the full size back after its estimate of the upload rate fell (ADR 0737,
+        // open), and this test is about the order of the requests.
+        person.calls.set_muted(true);
+    }
+    ann.calls.start_share(screen(SoundChoice::None));
+    ann.until_sharing().await;
+    ben.until_width(ann_id, 1280).await;
+
+    // The interface tells several sizes one after the other without a pause, as it does
+    // while the person changes the size of the window. The media server sends the layer
+    // of the last size, and goes on sending it.
+    const SMALL: (u32, u32) = (320, 240);
+    const LARGE: (u32, u32) = (1280, 800);
+    for _ in 0..6 {
+        for (sizes, layer) in [([SMALL, LARGE, SMALL], 640), ([LARGE, SMALL, LARGE], 1280)] {
+            for (width, height) in sizes {
+                ben.calls.set_view_size(width, height);
+            }
+            ben.until_width_stays(ann_id, layer).await;
+        }
+    }
+
+    // A change of the volume of the share and a new size at the same moment: the volume
+    // asks the media server for nothing, so the new size is the last request.
+    for (size, layer) in [(SMALL, 640), (LARGE, 1280), (SMALL, 640)] {
+        ben.calls.set_share_volume(0.5);
+        ben.calls.set_share_volume(1.0);
+        ben.calls.set_view_size(size.0, size.1);
+        ben.until_width_stays(ann_id, layer).await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

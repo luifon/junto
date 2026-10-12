@@ -59,6 +59,10 @@ dirs = "5"
 emojis = "0.8"
 # The address of a link is checked as the server checks it.
 url = "2"
+# The tokens of a code block, for its syntax colours (ADR 0740).
+synoptic = "2.2"
+# The identifiers of notices and of the scopes of notification settings (ADR 0409).
+uuid = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -71,7 +75,8 @@ workspace = true
 
 [dev-dependencies]
 junto-client = { path = ".", features = ["test-support"] }
+# The server inside the test process, for the tests that need its recorder in memory.
+junto-server = { path = "../server" }
 sqlx = { workspace = true }
 tempfile = "3"
 tokio = { workspace = true, features = ["io-util"] }
-uuid = { workspace = true }

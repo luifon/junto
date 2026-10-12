@@ -9,8 +9,11 @@ mod composer;
 mod feed;
 mod join;
 mod main_area;
+mod notices;
 mod rail;
+mod recorded;
 pub mod room;
+mod search;
 mod server_menu;
 mod settings;
 pub mod share;
@@ -30,6 +33,7 @@ use junto_client_core::protocol::ids::{AccountId, ServerId};
 use junto_client_core::voice::{InputMode, TalkKey};
 
 use call::{CallTab, DeviceKind, VolumeControl};
+pub use search::FilterKind;
 
 use crate::state::AppState;
 use crate::state::view::ShellView;
@@ -61,6 +65,18 @@ pub(crate) enum Layer {
     Emoji(EmojiTarget),
     /// The dialog that forks the thread of the side panel into a channel.
     Fork(threads::ForkDialog),
+    /// The menu of a channel, at its row.
+    ChannelMenu(junto_client_core::protocol::ids::ChannelId),
+    /// The menu of a direct conversation, at its row.
+    DirectMenu(junto_client_core::protocol::ids::ConversationId),
+    /// The dialog of the notification settings of a scope.
+    Notify,
+    /// The list of the choices of a filter of the search, under its box.
+    SearchFilter(FilterKind),
+    /// The list of the files of a recording, at its card.
+    RecordingFiles(junto_client_core::protocol::ids::RecordingId),
+    /// The question before a recording is removed.
+    ConfirmRemoveRecording(ServerId, junto_client_core::protocol::ids::RecordingId),
 }
 
 /// What the emoji of the picker is for.
@@ -125,6 +141,8 @@ pub enum Open {
     MemberPicker,
     /// The settings of the room, at the end of the Settings pane of the call.
     RoomSettings,
+    /// The list of the choices of a filter of the search.
+    SearchFilter(FilterKind),
 }
 
 /// How long the menu of a collapsed server stays after the pointer has left it, so that
@@ -211,6 +229,8 @@ pub struct Shell {
     /// The list of the messages of the shown channel.
     pub(crate) feed: feed::FeedList,
     pub(crate) message_pictures: feed::MessagePictures,
+    /// The tokens of the code blocks that the window drew.
+    pub(crate) code_tokens: feed::CodeTokens,
     pub(crate) composer: composer::Composer,
     /// The list and the composer of the thread of the side panel.
     pub(crate) thread_feed: feed::FeedList,
@@ -218,6 +238,23 @@ pub struct Shell {
     pub(crate) pins_scroll: ScrollHandle,
     /// The name of the channel that a thread is forked into.
     pub(crate) fork_name: Entity<InputState>,
+    // Notices, quiet times and the search.
+    pub(crate) notices_scroll: ScrollHandle,
+    pub(crate) search_scroll: ScrollHandle,
+    pub(crate) transcript_list: recorded::TranscriptList,
+    /// The press of the pointer that closed the list of the files of a recording was on
+    /// its button: the click that follows does not open the list again.
+    pub(crate) recording_files_closed_by_press: bool,
+    /// The text of the search field of the header.
+    pub(crate) search_field: Entity<InputState>,
+    /// The press of the pointer that closed the list of a filter was on the box of that
+    /// list: the click that follows does not open the list again.
+    pub(crate) filter_closed_by_press: bool,
+    /// The two times of the daily quiet time, as the settings show them.
+    pub(crate) quiet_from: Entity<InputState>,
+    pub(crate) quiet_until: Entity<InputState>,
+    /// The two typed times are no time span.
+    pub(crate) quiet_refused: bool,
     /// What the window drew last. A test reads the data of the window from it, and not
     /// from the client core, which can be ahead of the window.
     #[cfg(feature = "test-support")]
@@ -235,6 +272,9 @@ impl Shell {
         let composer = composer::Composer::new(window, cx);
         let thread_composer = composer::Composer::new(window, cx);
         let fork_name = Field::state(text::FORK_NAME, window, cx);
+        let search_field = Field::state(text::SEARCH, window, cx);
+        let quiet_from = Field::state(text::QUIET_FROM, window, cx);
+        let quiet_until = Field::state(text::QUIET_UNTIL, window, cx);
         let feed = feed::FeedList::new(Pane::Main);
         feed.list
             .set_scroll_handler(cx.listener(|this, event, window, cx| {
@@ -258,6 +298,23 @@ impl Shell {
                     FieldEvent::Submitted => this.submit_fork(window, cx),
                 },
             ),
+            Field::observe(
+                &search_field,
+                window,
+                cx,
+                |this: &mut Self, event, window, cx| match event {
+                    FieldEvent::Changed => cx.notify(),
+                    FieldEvent::Submitted => this.submit_search(window, cx),
+                },
+            ),
+            Field::observe(&quiet_from, window, cx, |this: &mut Self, _, _, cx| {
+                this.quiet_refused = false;
+                cx.notify();
+            }),
+            Field::observe(&quiet_until, window, cx, |this: &mut Self, _, _, cx| {
+                this.quiet_refused = false;
+                cx.notify();
+            }),
             // The emoji of the picker follow the text that they are searched for.
             Field::observe(
                 &composer.emoji_find,
@@ -270,6 +327,11 @@ impl Shell {
             // A key that is held when the window loses the focus is not seen when it is
             // released: push-to-talk ends with the focus (ADR 0507).
             cx.observe_window_activation(window, |this, window, cx| {
+                // The rules of a system notification read whether the person looks at
+                // the window (ADR 0742).
+                let active = window.is_window_active();
+                this.state
+                    .update(cx, |state, cx| state.set_window_active(active, cx));
                 if !window.is_window_active() {
                     this.set_talking(false, cx);
                 } else if let Some(view) = this.view.clone() {
@@ -293,6 +355,14 @@ impl Shell {
                     .is_none_or(|workspace| workspace.call.is_none())
                 {
                     this.invite_open = false;
+                }
+                // A search that ended empties its field.
+                let searched = this
+                    .view
+                    .as_ref()
+                    .is_some_and(|view| view.search_text.is_some());
+                if searched && view.search_text.is_none() {
+                    this.type_search("", window, cx);
                 }
                 this.view = Some(view.clone());
                 this.feed_changed(&view, window, cx);
@@ -380,16 +450,30 @@ impl Shell {
             join_results: 0,
             feed,
             message_pictures: feed::MessagePictures::default(),
+            code_tokens: feed::CodeTokens::default(),
             composer,
             thread_feed,
             thread_composer,
             pins_scroll: ScrollHandle::new(),
             fork_name,
+            notices_scroll: ScrollHandle::new(),
+            search_scroll: ScrollHandle::new(),
+            transcript_list: recorded::TranscriptList::new(),
+            recording_files_closed_by_press: false,
+            search_field,
+            filter_closed_by_press: false,
+            quiet_from,
+            quiet_until,
+            quiet_refused: false,
             #[cfg(feature = "test-support")]
             drawn: None,
             _subscriptions: subscriptions,
         };
         shell.follow_pictures(cx);
+        let active = window.is_window_active();
+        shell
+            .state
+            .update(cx, |state, cx| state.set_window_active(active, cx));
         if shell.state.read(cx).preset_name().is_empty() {
             shell.open_layer(Layer::Welcome, window, cx);
             shell.focus_field(&shell.name.clone(), window, cx);
@@ -589,6 +673,9 @@ impl Shell {
                 self.call_panel_open = true;
                 self.show_call_tab(CallTab::Settings, cx);
                 self.call_settings_scroll.scroll_to_bottom();
+            }
+            Open::SearchFilter(kind) => {
+                self.open_layer(Layer::SearchFilter(kind), window, cx);
             }
             Open::MemberPicker => {
                 self.call_panel_open = true;
@@ -838,6 +925,8 @@ impl Render for Shell {
                     this.device_menu_closed_by_press = false;
                     this.recording_details_closed_by_press = false;
                     this.invite_closed_by_press = false;
+                    this.filter_closed_by_press = false;
+                    this.recording_files_closed_by_press = false;
                 }),
             )
             // Escape closes the details of a recording and the list of the members who
@@ -916,6 +1005,36 @@ impl Shell {
                     .is_none_or(|workspace| workspace.thread.is_none())
                     || Self::fork_is_done(dialog, view)
             }
+            // The channel or the conversation of the menu is no longer listed.
+            Layer::ChannelMenu(channel_id) => view.workspace().is_none_or(|workspace| {
+                !workspace
+                    .sections
+                    .iter()
+                    .flat_map(|section| &section.rows)
+                    .any(|row| row.id == *channel_id)
+            }),
+            Layer::DirectMenu(conversation_id) => view.workspace().is_none_or(|workspace| {
+                !workspace
+                    .directs
+                    .iter()
+                    .any(|row| row.id == *conversation_id)
+            }),
+            // The scope of the dialog is gone.
+            Layer::Notify => view.notify.is_none(),
+            Layer::SearchFilter(_) => view
+                .workspace()
+                .is_none_or(|workspace| workspace.search.is_none()),
+            // The card of the recording is no longer among the shown rows.
+            Layer::RecordingFiles(recording_id)
+            | Layer::ConfirmRemoveRecording(_, recording_id) => !view
+                .workspace()
+                .and_then(|workspace| workspace.feed.as_ref())
+                .is_some_and(|feed| {
+                    feed.rows.iter().any(|row| {
+                        matches!(row, crate::state::feed::FeedRow::Recording(row)
+                                if row.card.recording_id == *recording_id)
+                    })
+                }),
             Layer::None | Layer::Welcome | Layer::Settings => false,
         };
         if stale {
@@ -932,9 +1051,18 @@ impl Shell {
         match &self.layer {
             // The list of devices is drawn at its box, in the panel of the call, and the
             // menu of a person at the row of the person.
-            Layer::None | Layer::DeviceMenu(_) | Layer::PersonMenu(_) | Layer::MessageMenu(_) => {
-                div().into_any_element()
+            Layer::None
+            | Layer::DeviceMenu(_)
+            | Layer::PersonMenu(_)
+            | Layer::MessageMenu(_)
+            | Layer::ChannelMenu(_)
+            | Layer::DirectMenu(_)
+            | Layer::SearchFilter(_)
+            | Layer::RecordingFiles(_) => div().into_any_element(),
+            Layer::ConfirmRemoveRecording(server_id, recording_id) => {
+                self.render_confirm_remove_recording(*server_id, *recording_id, cx)
             }
+            Layer::Notify => self.render_notify_dialog(view, cx),
             Layer::ConfirmDelete(message_id) => self.render_confirm_delete(*message_id, window, cx),
             Layer::Emoji(_) => self.render_emoji_picker(window, cx),
             Layer::Fork(_) => self.render_fork_dialog(view, window, cx),

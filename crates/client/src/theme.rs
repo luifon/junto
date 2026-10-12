@@ -100,8 +100,16 @@ pub struct Colors {
     pub code_wash: Rgba,
     /// The text of a code block, on basalt.
     pub code_text: Rgba,
+    /// The five colours of the tokens of a code block.
+    pub code_keyword: Rgba,
+    pub code_type: Rgba,
+    pub code_function: Rgba,
+    pub code_value: Rgba,
+    pub code_comment: Rgba,
     /// The ground of a message that mentions the person.
     pub mention_wash: Rgba,
+    /// The ground of the message that the person went to from a list.
+    pub target_wash: Rgba,
     /// The ground of a message under the pointer.
     pub row_hover: Rgba,
     /// Text and icons on terracotta.
@@ -348,7 +356,13 @@ impl Theme {
                 terracotta_wash_rule: hex(0xC98A6B),
                 code_wash: hex(0xE5D9C1),
                 code_text: hex(0xEADFCB),
+                code_keyword: hex(0xEB9A75),
+                code_type: hex(0xE0BF72),
+                code_function: hex(0xBFCF85),
+                code_value: hex(0xE8BE9B),
+                code_comment: hex(0xA39581),
                 mention_wash: hex_alpha(0xB4532F, 0.09),
+                target_wash: hex_alpha(0xC79A45, 0.22),
                 row_hover: hex_alpha(0x2A221B, 0.04),
                 on_terracotta: hex(0xFFF4E4),
                 cypress: hex(0x2F4B3C),

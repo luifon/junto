@@ -13,6 +13,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 #[allow(dead_code)]
+#[path = "../../../client-core/tests/e2e/recording_server.rs"]
+mod recording_server;
+#[allow(dead_code)]
 #[path = "../../../client-core/tests/e2e/support.rs"]
 mod support;
 
@@ -21,5 +24,8 @@ mod flows;
 mod harness;
 mod live;
 mod messages;
+mod notices;
+mod recordings;
+mod search;
 mod states;
 mod threads;

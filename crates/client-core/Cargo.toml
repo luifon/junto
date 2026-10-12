@@ -52,6 +52,8 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
+# The server inside the test process, for the tests that need its recorder in memory.
+junto-server = { path = "../server" }
 sqlx = { workspace = true }
 tempfile = "3"
 tokio = { workspace = true, features = ["io-util", "test-util"] }

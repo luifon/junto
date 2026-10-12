@@ -545,9 +545,10 @@ fn the_keyboard_reaches_the_menus_and_the_dialogs(cx: &mut TestAppContext) {
     window.click("channel-title");
     assert!(!window.shows("server-menu"));
 
-    // The second item opens the question, and Escape answers it with "no".
+    // The last item, after the two for the notification settings, opens the question,
+    // and Escape answers it with "no".
     window.click("server-menu-button");
-    window.press("down down enter");
+    window.press("down down down down enter");
     assert!(window.shows("confirm-remove"));
     window.press("escape");
     assert!(!window.shows("confirm-remove"));

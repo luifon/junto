@@ -247,7 +247,13 @@ impl Shell {
                 .map(|menu| (menu, open.moving)),
             _ => None,
         };
-        let mut rows: Vec<AnyElement> = Vec::new();
+        // The channel and the conversation whose menu is open.
+        let (channel_menu, direct_menu) = match &self.layer {
+            Layer::ChannelMenu(channel_id) => (Some(*channel_id), None),
+            Layer::DirectMenu(conversation_id) => (None, Some(*conversation_id)),
+            _ => (None, None),
+        };
+        let mut rows: Vec<AnyElement> = vec![self.render_notices_row(workspace, cx)];
         let mut channel_index = 0usize;
         for (position, section) in workspace.sections.iter().enumerate() {
             let title: SharedString = match &section.title {
@@ -275,7 +281,11 @@ impl Shell {
                 )
                 .selected(channel.selected)
                 .unread(unread_sign(channel.unread))
-                .muted(channel.unread.muted)
+                .muted(channel.unread.muted || channel.mute.is_on())
+                .open(channel_menu == Some(channel_id))
+                .on_menu(Self::handler(cx, move |this, window, cx| {
+                    this.open_channel_menu(channel_id, window, cx);
+                }))
                 .states(
                     channel
                         .voice
@@ -288,14 +298,28 @@ impl Shell {
                         state.select_channel(workspace_id, channel_id, cx);
                     });
                 }));
+                let menu =
+                    server_id
+                        .filter(|_| channel_menu == Some(channel_id))
+                        .map(|server_id| {
+                            self.render_channel_menu(
+                                server_id,
+                                channel_id,
+                                &channel.name,
+                                &channel.mute,
+                                cx,
+                            )
+                        });
                 rows.push(
                     div()
+                        .relative()
                         .flex_none()
                         .when(after_occupants, |wrapper| wrapper.mt(u(4.0)))
                         // The identifier and not the name: a name comes from the server
                         // and need not be the only one.
                         .debug_selector(move || format!("channel-row:{channel_id}"))
                         .child(row)
+                        .children(menu)
                         .into_any_element(),
                 );
                 // The threads of the channel that hold something unread, and the thread
@@ -383,7 +407,7 @@ impl Shell {
                 }
             }
         }
-        if rows.is_empty() {
+        if channel_index == 0 {
             rows.push(
                 div()
                     .px(u(14.0))
@@ -409,7 +433,11 @@ impl Shell {
                 .avatar(direct.account_id.as_uuid().as_u128())
                 .selected(direct.selected)
                 .unread(unread_sign(direct.unread))
-                .muted(direct.unread.muted)
+                .muted(direct.unread.muted || direct.mute.is_on())
+                .open(direct_menu == Some(conversation_id))
+                .on_menu(Self::handler(cx, move |this, window, cx| {
+                    this.open_direct_menu(conversation_id, window, cx);
+                }))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     let Some(server_id) = server_id else {
                         return;
@@ -418,11 +446,19 @@ impl Shell {
                         state.select_conversation(server_id, conversation_id, cx);
                     });
                 }));
+            let menu = server_id
+                .filter(|_| direct_menu == Some(conversation_id))
+                .map(|server_id| {
+                    let name = direct.name.as_deref().unwrap_or(text::UNKNOWN_PERSON);
+                    self.render_direct_menu(server_id, direct.account_id, name, &direct.mute, cx)
+                });
             rows.push(
                 div()
+                    .relative()
                     .flex_none()
                     .debug_selector(move || format!("direct-row:{conversation_id}"))
                     .child(row)
+                    .children(menu)
                     .into_any_element(),
             );
         }

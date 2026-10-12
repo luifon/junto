@@ -24,10 +24,10 @@ List:
 - Within 4 rows of an end the next page is read. The window tells the client core where the list stands, for a reload (ADR 0721).
 - The list follows new messages while it shows its end. A button leads to the end when the list is elsewhere.
 - Formatted text is one text layout per block with runs: bold, italic, struck, inline code in the fixed-width face on its ground, links, and mentions on the terracotta ground. The italic faces of the text font are carried in the binary. A link opens in the application of the system for its address. The window draws a link only for an address that the composer accepts: HTTP, HTTPS or mailto, without a user name. A server is not trusted with what this device opens (ADR 0714), so the check of the server (ADR 0408) is not relied on, and another address is drawn as text.
-- A code block is drawn on basalt with its language, without syntax colours.
+- A code block is drawn on basalt with its language. A block that names a language gets syntax colours for five kinds of token: keywords, types, functions, values (strings, numbers, constants) and comments. The tokens come from the library `synoptic`, which works with regular expressions and carries its rules for about thirty languages. The window gives it no block above 32 KiB or above 1,000 lines, takes a panic of the library as "no tokens", and takes no token of a block that the library does not give back as it was written. A pass after the library removes a keyword, a type or a function name that lies inside a longer word, and marks a capitalised name as a type in the languages that write types so. The window holds the tokens of up to 256 blocks that it drew, by the rules of their language and their text, and drops all of them when a further block arrives.
 - A check box of an own message takes a click and sends an edit (ADR 0401).
 - A file that the server marked as a picture (PNG, JPEG or WebP up to 1,024 pixels per side) is drawn inline at the size that its message states, so the row has its height before the picture has arrived. The picture is decoded away from the window with limits of 1,024 pixels per side. The window holds 48 decoded pictures. Every other file is a row with its name, its size and the state of its download.
-- A download goes to the download directory of the person under a name that no file has, and the row then offers "Show in folder". No file is opened by the application.
+- A download goes to the download directory of the person under a name that no file has, and the row then offers "Show in folder". No file of a message is opened by the application.
 
 Actions of a message:
 
@@ -65,11 +65,11 @@ Places:
 ## Consequences
 
 - The composer shows marks while the person types, not formatted text.
-- Code blocks have no syntax colours until a highlighter is added.
+- The syntax colours follow regular expressions and no grammar: a name is coloured by its form, not by its meaning. A language that the library does not know, and a block without a language, stay without colours.
 - A picture above the bounds of the server for pictures is a file row.
 - The name of a channel in a text is plain text: the document of the server has no channel reference.
-- The derivation of 10,000 loaded messages takes about 10 milliseconds in a debug build; the list draws the rows in view and a margin of 800 pixels.
+- The list draws the rows in view and a margin of 800 pixels, so the time of a frame does not grow with the loaded messages: measured with the window code and the renderer without a display in a release build on the development machine, a frame without a change and a frame after a scroll of 40 rows take 2.6 to 2.8 milliseconds with 50 and with 10,000 loaded messages (longest 4.8). A frame after a new message derives the rows again and takes 5.3 milliseconds with 50 messages and 9.1 milliseconds with 10,000 (longest 9.9). A debug build is about ten times slower. `junto-screens` repeats the measurement (`JUNTO_SCREENS_ONLY=frames`).
 - A system line of an action that this build does not know is drawn as a line without detail.
-- A finished recording is a system line in the chat of its voice channel. Its card with the video, the downloads and the transcript (view G) is not built yet.
+- A finished recording is a card in the chat of its voice channel (ADR 0744).
 - Direct conversations, threads and pins are in the window as ADR 0741 states.
 - New direct dependencies of the desktop client: `chrono` for the time zone of the system, `dirs` for the download directory, `emojis` in the version of the server, and `url` for the check of a link. All four were in the lock file already.

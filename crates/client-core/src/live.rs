@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use junto_protocol::account::RecoveryNotice;
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::{Cursor, EndReason, Event, Level};
-use junto_protocol::ids::{AttachmentId, ChannelId, MessageId, WorkspaceId};
+use junto_protocol::ids::{AttachmentId, ChannelId, MessageId, RecordingId, WorkspaceId};
 use junto_protocol::message::{Document, Message};
 use time::OffsetDateTime;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
@@ -151,6 +151,13 @@ pub(crate) enum Command {
     MoreThreads,
     /// The page of notices after the loaded ones.
     MoreNotices,
+    OpenRecording {
+        recording_id: RecordingId,
+        reply: oneshot::Sender<Result<(), LoadError>>,
+    },
+    ReleaseRecording(RecordingId),
+    /// The lines of the transcript of an open recording after the loaded ones.
+    MoreTranscriptLines(RecordingId),
 }
 
 /// What the stream client of one server and its readers share.
@@ -404,6 +411,48 @@ impl LiveServer {
     /// Reads the page of notices after the loaded ones.
     pub fn read_more_notices(&self) {
         self.shared.send(Command::MoreNotices);
+    }
+}
+
+impl LiveServer {
+    /// Asks for a recording with its segments and its transcript. Both are read, appear
+    /// in the state, and follow the events from then on: `recording_updated` reads them
+    /// again, a rename of a speaker changes the held label, and `recording_removed` marks
+    /// the recording as gone. After a reload of the state the client reads them again by
+    /// itself. The future ends when the recording is in the state or the read failed;
+    /// the state then tells why, or that the server has no such recording for the
+    /// account. Each call needs one [`LiveServer::release_recording`]. A call for a
+    /// recording whose last read failed reads it again.
+    pub fn open_recording(
+        &self,
+        recording_id: RecordingId,
+    ) -> impl Future<Output = Result<(), LoadError>> + Send + 'static + use<> {
+        let (reply, answer) = oneshot::channel();
+        let sent = self.shared.send(Command::OpenRecording {
+            recording_id,
+            reply,
+        });
+        async move {
+            if !sent {
+                return Err(LoadError::Off);
+            }
+            answer.await.unwrap_or(Err(LoadError::Off))
+        }
+    }
+
+    /// States that a reader needs a recording no longer. When no reader is left, the
+    /// state drops it.
+    pub fn release_recording(&self, recording_id: RecordingId) {
+        self.shared.send(Command::ReleaseRecording(recording_id));
+    }
+
+    /// Reads the next page of the lines of the transcript of an open recording: the first
+    /// page when none is loaded, and else the page after the last loaded line, while the
+    /// state says that there are more. Lines that a reload of the state marked as not
+    /// current are read again from the first one. A correction changes a loaded line
+    /// without a request.
+    pub fn read_transcript_lines(&self, recording_id: RecordingId) {
+        self.shared.send(Command::MoreTranscriptLines(recording_id));
     }
 }
 

@@ -1,8 +1,8 @@
 # junto-client
 
-The Junto desktop application: a gpui window on `junto-client-core` and `junto-media`. The binary is `junto`. The design decisions are in [`docs/adr/`](../../docs/adr/README.md): ADR 0730 describes this crate, ADR 0731 its theme and components, ADR 0732 joining a server in the window, ADR 0733 the media engine, ADR 0734 the call of a client, ADR 0735 the screens of a voice call, ADR 0736 the screen capture, ADR 0737 shares in the media engine, ADR 0738 the screens of a share and of a recording, ADR 0739 the rules of a call, ADR 0740 the message list and the composer, and ADR 0741 the thread panel, pins, permanent messages and direct conversations.
+The Junto desktop application: a gpui window on `junto-client-core` and `junto-media`. The binary is `junto`. The design decisions are in [`docs/adr/`](../../docs/adr/README.md): ADR 0730 describes this crate, ADR 0731 its theme and components, ADR 0732 joining a server in the window, ADR 0733 the media engine, ADR 0734 the call of a client, ADR 0735 the screens of a voice call, ADR 0736 the screen capture, ADR 0737 shares in the media engine, ADR 0738 the screens of a share and of a recording, ADR 0739 the rules of a call, ADR 0740 the message list and the composer, ADR 0741 the thread panel, pins, permanent messages and direct conversations, ADR 0742 the notices, the notification settings and the system notifications, ADR 0743 the search, and ADR 0744 the card of a recording and the transcript.
 
-This version shows the servers of the server book, their workspaces and channels, the people in voice channels, and the state of each server. It joins a server with a code or a request for access, and it holds a voice call in a voice channel: microphone, sound, mute, a volume per person, levels, push-to-talk and the choice of the sound devices. In a call a person shares a screen or a window with its sound, watches the shares of the others, starts and stops a recording, and uses the rules of the room: meeting mode with raised hands, the lock, the user limit, requests to enter, invitations, the menu of a person with blocks, removal and move. A person reads and writes messages in a text channel, in the chat of a voice channel and in a direct conversation: formatted text, replies, mentions, reactions, files, edits and deletions, with unread signs in the channel list. A person answers in the thread of a message, forks a thread into a channel, and pins messages. It has no list of notices, no notification settings, no system notifications, no search, no camera and no direct-message calls. It is built and tested on macOS and builds for Linux, where the screen capture is not built yet; Windows is not supported yet.
+This version shows the servers of the server book, their workspaces and channels, the people in voice channels, and the state of each server. It joins a server with a code or a request for access, and it holds a voice call in a voice channel: microphone, sound, mute, a volume per person, levels, push-to-talk and the choice of the sound devices. In a call a person shares a screen or a window with its sound, watches the shares of the others, starts and stops a recording, and uses the rules of the room: meeting mode with raised hands, the lock, the user limit, requests to enter, invitations, the menu of a person with blocks, removal and move. A person reads and writes messages in a text channel, in the chat of a voice channel and in a direct conversation: formatted text, replies, mentions, reactions, files, edits and deletions, with unread signs in the channel list. A person answers in the thread of a message, forks a thread into a channel, and pins messages. The application lists the notices of a person, takes the notification level of a server, a workspace and a channel, the mute of a place and the quiet times, and shows notifications of the system. It searches messages and transcripts. A finished recording is a card in the chat of its voice channel, with its files and its transcript. It has no camera, no direct-message calls, no list of the recordings of a workspace, and no correction of a transcript. It is built and tested on macOS and builds for Linux, where the screen capture is not built yet; Windows is not supported yet.
 
 ## Run it locally
 
@@ -90,6 +90,17 @@ JUNTO_DATA_DIR=/tmp/junto-first cargo run -p junto-client-core --bin junto-cli -
 JUNTO_DATA_DIR=/tmp/junto-first cargo run -p junto-client-core --bin junto-cli -- search "retention spec"
 ```
 
+## Notifications and search between two instances
+
+Start two instances as above. The first one is the owner, the second one a member.
+
+- **Notices.** Write a message in the second instance that mentions the first person. The channel column of the first instance counts it at "Notifications"; the entry opens the list in the side panel. A row shows the place, the author and the start of the text, and a press on it shows the message in its channel and marks the notice as read. "Mark all as read" reads the list.
+- **Level.** A right click on a channel (or the Menu key, or Shift and F10, while its row has the focus) opens its menu: "Notification settings…" has the level ("default", "all messages", "mentions only", "nothing") and the two switches for mentions of a role and of everyone. The menu of the server (the control beside the name of the workspace) has the same dialog for the server and for the workspace. An administrator of the server sets the level of a workspace for its members there.
+- **Mute.** The menu of a channel mutes it for one hour, for eight hours, until tomorrow, or until it is turned off. The row of a direct conversation has the same menu.
+- **Quiet times.** The settings (the gear beside the name) have "Do not disturb" and the daily quiet time. Both are stored on every server on which the instance has a session.
+- **System notifications.** The application shows a notification of the system for a notice while its window is not the active one, or shows another place. On macOS that needs an application bundle, which the build does not make yet: an instance from `cargo run` shows none, and the list of the notices is where they are read.
+- **Search.** Type words into the field of the header and press Enter. The side panel lists the messages and the lines of transcripts that hold the words, with filters for a channel, an author and a time span. A press on a message result shows the message in its place, and a press on a transcript result opens the transcript of its recording.
+
 ## A call on one machine
 
 A call needs a media server. Start the development server with one:
@@ -151,6 +162,26 @@ Both instances are on one server; the one that claimed the server is its owner a
 
 The header of the voice channel of the call has "Record" for a person whose roles hold "record calls". A new server gives that permission to no role: the owner sees the button, and a member sees it disabled with the reason. The development server of `tools/dev-server.sh` has no recorder, so "Record" there answers with the notice that the server has no recorder. With a recorder the header shows "REC" with the time, "visible to everyone" and "Stop", and a recording that fails shows "Recording failed" with "Details".
 
+A finished recording is a card in the chat of its voice channel, for every person who reads that chat and is not in the call on this device:
+
+- **Card.** The channel and the day, the times, the length, the person who started the recording, the number of microphone files, the state of the transcript, and the first lines of the transcript with the speaker of each line. A recording that the server still works on, that lost a part, or that saved nothing says so.
+- **Open.** "Open" saves the video to the download directory and gives it to the video player of the system. The application has no player.
+- **Download.** "Download" lists the video, the audio file of each person and the transcript as text. A saved file is listed in the card with the control that shows it in its folder. A download continues after a cut connection.
+- **Transcript.** "Show all" opens the transcript in the side panel, with "Show more lines" for a long one.
+- **Remove.** "Remove" is active for a person whose roles hold "manage recordings", and asks first.
+
+The same routes from a terminal:
+
+```sh
+JUNTO_DATA_DIR=/tmp/junto-first cargo run -p junto-client-core --bin junto-cli -- recordings list <workspace id>
+JUNTO_DATA_DIR=/tmp/junto-first cargo run -p junto-client-core --bin junto-cli -- recordings lines <recording id>
+JUNTO_DATA_DIR=/tmp/junto-first cargo run -p junto-client-core --bin junto-cli -- recordings show <recording id>
+JUNTO_DATA_DIR=/tmp/junto-first cargo run -p junto-client-core --bin junto-cli -- \
+    recordings download <recording id> <segment id> --to /tmp/junto-files
+```
+
+`junto-cli` without arguments lists the other actions of `recordings`, with the correction of a line and the name of a speaker.
+
 ## Options
 
 | Option | Meaning |
@@ -167,7 +198,9 @@ The variable `JUNTO_LOG_LEVEL` sets the level of the log on standard error (`war
 tools/with-test-postgres.sh tools/serial.sh cargo test -p junto-client
 ```
 
-The tests in `tests/app` open the window code on gpui's test platform, with a client on a data directory of its own, against the server binary of this checkout. They click what is drawn and read what the window shows. A second client without a window is the administrator of the server. `tests/app/messages.rs` writes, answers, edits and deletes messages, reacts, sends and saves a file, follows the unread signs, follows a quoted message that changes, and checks that the text of one account is not shown to the next account of the server. `tests/app/threads.rs` answers in a thread and follows its count and its unread sign, asks for a fork with each refusal and with success, pins and unpins a message, writes in a direct conversation, and checks the marker of permanent messages.
+The tests in `tests/app` open the window code on gpui's test platform, with a client on a data directory of its own, against the server binary of this checkout. They click what is drawn and read what the window shows. A second client without a window is the administrator of the server. `tests/app/messages.rs` writes, answers, edits and deletes messages, reacts, sends and saves a file, follows the unread signs, follows a quoted message that changes, and checks that the text of one account is not shown to the next account of the server. `tests/app/threads.rs` answers in a thread and follows its count and its unread sign, asks for a fork with each refusal and with success, pins and unpins a message, writes in a direct conversation, and checks the marker of permanent messages. `tests/app/notices.rs` follows a mention to its notice and to the notification that the system would get, with the rules for an active window and for a quiet time, jumps from a notice to its message, marks all as read, sets the level and the mute of a channel, and checks that the notices of a channel leave the list with the access to it. `tests/app/search.rs` finds messages and a line of a transcript, uses the filters, jumps to a result, reads a further page, and checks that the results of a channel leave the panel with the access to it. No test shows a notification of the system: the tests give the application an interface that keeps what it was told.
+
+`tests/app/recordings.rs` runs the server of this checkout inside the test process with its recorder in memory, because the server binary has no such recorder. It makes a recording, lets the server process the files with `ffmpeg` and `ffprobe` (both must be installed), and checks the card, the saved files against the files of the server, the transcript, the result of a search, and the removal.
 
 No test opens a microphone, plays a sound or captures a screen: the microphone of each client is a tone, its output is a sink that measures what would be played, and its screen capture is a picture of two colours with a tone on each channel. No test causes a permission question of the system. The tests of a call need a LiveKit server and are ignored in the plain run:
 
@@ -190,6 +223,8 @@ The calls to ScreenCaptureKit are not run by a test. The parts of the macOS capt
 cargo run -p junto-client --features test-support --bin junto-screens -- <directory>
 ```
 
+The variable `JUNTO_SCREENS_ONLY` limits the run to one set: `shares`, `rules`, `messages`, `threads`, `discovery` (notices, notification settings, search) or `recorded` (the card of a recording and the transcript). The set `frames` writes no picture: it draws the window with 50 and with 10,000 messages and prints the time of a frame without a change, after a scroll, and after a new message (ADR 0740). Run it with `--release` for times that say something about the application.
+
 ## Layout of the crate
 
 | Path | Content |
@@ -201,5 +236,8 @@ cargo run -p junto-client --features test-support --bin junto-screens -- <direct
 | `src/state/` | The state of the application over the client core, and the derivation of what the window shows. |
 | `src/compose.rs` | The marks of the composer and the document of a message, in both directions, and the limits of a document. |
 | `src/state/feed.rs` | The derivation of the rows of a message list. |
-| `src/shell/` | The main window. `call.rs` draws the call, `share.rs` the dialog and the stage of a share, `room.rs` the rules of the room of a call, `feed.rs` the message list, and `composer.rs` the composer with its pickers. |
+| `src/state/notices.rs`, `src/state/search.rs`, `src/state/recorded.rs` | The derivation of the notices with the notification settings and the system notifications, of the search panel, and of the card of a recording with its transcript. |
+| `src/notify.rs` | The interface to the notifications of the system. |
+| `src/highlight.rs` | The syntax colours of a code block. |
+| `src/shell/` | The main window. `call.rs` draws the call, `share.rs` the dialog and the stage of a share, `room.rs` the rules of the room of a call, `feed.rs` the message list, `composer.rs` the composer with its pickers, `notices.rs` the notices and the notification settings, `search.rs` the search, and `recorded.rs` the card of a recording and the transcript. |
 | `src/bin/junto-screens.rs`, `src/bin/junto-screens/` | The tool that draws the screens. |

@@ -63,7 +63,21 @@ pub fn init(cx: &mut App) -> gpui::Result<()> {
 /// The state of the application over an opened client, with the sound devices of the
 /// machine.
 pub fn state(client: Client, start: WindowStart, cx: &mut App) -> Entity<AppState> {
-    state_with_media(client, start, MediaOptions::system(), cx)
+    let state = state_with_media(client, start, MediaOptions::system(), cx);
+    // The notifications of the system, and the press on one of them. Only this start
+    // shows them: a test and the screen tool keep what they would show (ADR 0742).
+    state.update(cx, |state, _| {
+        state.set_notifier(std::rc::Rc::new(crate::notify::PlatformNotifier));
+        state.set_opens_files(true);
+    });
+    let held = state.downgrade();
+    cx.on_system_notification_response(move |response, cx| {
+        if let Some(state) = held.upgrade() {
+            cx.activate(true);
+            state.update(cx, |state, cx| state.alert_pressed(&response.tag, cx));
+        }
+    });
+    state
 }
 
 /// The state of the application with these sound devices. A test gives devices that exist

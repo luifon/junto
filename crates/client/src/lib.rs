@@ -7,6 +7,8 @@
 pub mod app;
 pub mod assets;
 pub mod compose;
+pub mod highlight;
+pub mod notify;
 pub mod shell;
 pub mod state;
 pub mod text;

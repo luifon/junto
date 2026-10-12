@@ -1,0 +1,376 @@
+//! Search in the window against the real server (ADR 0743, view H of the design): a query
+//! finds messages and a line of a transcript, the filters narrow it, a result leads to its
+//! message, a further page is read, and a result of a channel that the person can no
+//! longer read leaves the panel.
+
+use std::str::FromStr;
+
+use gpui::TestAppContext;
+use junto_client::state::notices::MuteFor;
+use junto_client::state::notices::Whereabouts;
+use junto_client::state::search::{DateFilter, Filters, ResultTarget, SearchPanel, SearchShown};
+use junto_client::text;
+use junto_client_core::protocol::WorkspacePermission;
+use junto_client_core::protocol::ids::{AccountId, ChannelId, WorkspaceId};
+use junto_client_core::protocol::structure::{ChannelKind, SetChannelOverride};
+use sqlx::ConnectOptions;
+
+use crate::harness::{Window, World, member};
+use crate::messages::document;
+use crate::support::TestServer;
+
+/// Stores a finished recording of a voice channel with one transcript line, as the server
+/// holds it after the transcription.
+async fn seed_transcript(
+    server: &TestServer,
+    workspace_id: WorkspaceId,
+    voice: ChannelId,
+    speaker: AccountId,
+    text: &str,
+) -> uuid::Uuid {
+    let options = sqlx::postgres::PgConnectOptions::from_str(&server.database_url).unwrap();
+    let mut connection = options.connect().await.unwrap();
+    let recording = uuid::Uuid::now_v7();
+    let segment = uuid::Uuid::now_v7();
+    sqlx::query(
+        "insert into recordings
+             (id, workspace_id, channel_id, call_id, room_name, state, started_by, language,
+              requested_at, recording_since, stop_reason, stop_requested_at, ended_at,
+              processed_at)
+         values ($1, $2, $3, gen_random_uuid(), $4, 'ready', $5, 'auto', now(), now(),
+                 'call_ended', now(), now(), now())",
+    )
+    .bind(recording)
+    .bind(workspace_id.as_uuid())
+    .bind(voice.as_uuid())
+    .bind(format!("jr-{}-{}", "0".repeat(12), recording.simple()))
+    .bind(speaker.as_uuid())
+    .execute(&mut connection)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into recording_segments
+             (id, recording_id, source, state, job_id, job_started_at, requested_path,
+              requested_at)
+         values ($1, $2, 'composite', 'ended', $3, now(), 'seeded/composite.mp4', now())",
+    )
+    .bind(segment)
+    .bind(recording)
+    .bind(format!("seeded-{}", segment.simple()))
+    .execute(&mut connection)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into transcripts (recording_id, state, requested_at, finished_at, lines)
+         values ($1, 'ready', now(), now(), 1)",
+    )
+    .bind(recording)
+    .execute(&mut connection)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into transcript_lines
+             (recording_id, line, start_ms, end_ms, segment_id, source, account_id, text, language)
+         values ($1, 0, 0, 500, $2, 'microphone', $3, $4, 'en')",
+    )
+    .bind(recording)
+    .bind(segment)
+    .bind(speaker.as_uuid())
+    .bind(text)
+    .execute(&mut connection)
+    .await
+    .unwrap();
+    recording
+}
+
+impl Window {
+    fn search_panel(&mut self) -> Option<SearchPanel> {
+        self.view().workspace()?.search.clone()
+    }
+
+    /// Types a search text into the field of the header and sends it with Enter.
+    fn search_for(&mut self, text: &str) {
+        self.in_shell(|shell, window, cx| {
+            shell.type_search(text, window, cx);
+            shell.focus_search(window, cx);
+        });
+        self.press("enter");
+    }
+
+    /// Waits for the answer of the search that runs.
+    #[track_caller]
+    fn until_searched(&mut self) -> SearchPanel {
+        self.until("the search has its answer", |window| {
+            window
+                .search_panel()
+                .is_some_and(|panel| panel.state != SearchShown::Searching && !panel.reading_more)
+        });
+        self.search_panel().unwrap()
+    }
+}
+
+#[gpui::test]
+fn a_search_finds_messages_and_a_transcript_line_and_leads_to_a_message(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    window.until("the messages of the text channel are read", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let general = window.selected_channel();
+    let workspace_id = window.view().workspace().unwrap().id;
+    let own = window.own_account();
+    let voice = window
+        .channels()
+        .into_iter()
+        .find(|row| row.kind == ChannelKind::Voice)
+        .unwrap();
+    let random = admin.text_channel(&world, &mut window, "random");
+    let first = admin.send(&world, general, document("the quartz retention spec"));
+    admin.send(&world, general, document("nothing of that kind"));
+    admin.send(&world, random, document("quartz again, in another channel"));
+    window.until_message("nothing of that kind");
+    world.run(seed_transcript(
+        &server,
+        workspace_id,
+        voice.id,
+        own,
+        "we said quartz aloud",
+    ));
+
+    // No search runs: the header has the field, and no panel is shown.
+    assert!(window.shows("search-field") && !window.shows("search-panel"));
+    assert!(window.search_panel().is_none());
+
+    // A query finds the two messages and the line of the transcript.
+    window.search_for("quartz");
+    let panel = window.until_searched();
+    assert!(window.shows("search-panel") && window.shows("search-results"));
+    assert_eq!(panel.state, SearchShown::Results);
+    assert_eq!((panel.messages.len(), panel.transcripts.len()), (2, 1));
+    assert!(!panel.more);
+    let in_general = panel
+        .messages
+        .iter()
+        .find(|row| row.target == ResultTarget::Message(first.id))
+        .unwrap();
+    assert_eq!(in_general.author, "Ada");
+    assert_eq!(in_general.text, "the quartz retention spec");
+    assert_eq!(&in_general.text[in_general.marks[0].clone()], "quartz");
+    let line = &panel.transcripts[0];
+    assert_eq!(
+        line.place,
+        Whereabouts::Channel {
+            name: voice.name.clone(),
+            kind: ChannelKind::Voice
+        }
+    );
+    assert_eq!(
+        (line.author.as_str(), line.text.as_str()),
+        ("Luca", "we said quartz aloud")
+    );
+
+    // The filter for a channel narrows the search to it, and the filter for an author to
+    // the messages of that person.
+    window.click("search-channel");
+    assert!(window.shows("search-filter-menu"));
+    window.click_named(format!("search-channel:{random}"));
+    let panel = window.until_searched();
+    assert_eq!((panel.messages.len(), panel.transcripts.len()), (1, 0));
+    assert_eq!(panel.channel.as_ref().unwrap().0, random);
+    window.in_shell(|shell, _, cx| {
+        shell.set_search_filters(
+            Filters {
+                channel: None,
+                author: Some(own),
+                date: DateFilter::Today,
+            },
+            cx,
+        );
+    });
+    let panel = window.until_searched();
+    assert_eq!((panel.messages.len(), panel.transcripts.len()), (0, 1));
+    window.in_shell(|shell, _, cx| shell.set_search_filters(Filters::default(), cx));
+    let panel = window.until_searched();
+    assert_eq!(panel.messages.len(), 2);
+
+    // A result leads to its message: the channel is shown, and the list marks the message.
+    window.click_channel("random");
+    window.until("the other channel is shown", |window| {
+        window.selected_channel() == random
+    });
+    window.click_named(format!("search-result:{}", first.id));
+    window.until("the message of the result is shown", |window| {
+        window.selected_channel() == general
+            && window
+                .messages()
+                .iter()
+                .any(|row| row.message.id == first.id && row.target)
+    });
+    // The results stay beside the channel.
+    assert!(window.shows("search-panel"));
+
+    // The person presses a result and goes to another channel before the message of the
+    // result is read: the window stays in that channel.
+    window.click_channel("random");
+    window.until("the other channel is shown again", |window| {
+        window.selected_channel() == random
+    });
+    let state = window.state.clone();
+    let answers = |window: &mut Window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.result_answers())
+    };
+    let before = answers(&mut window);
+    window.cx.update(|_, cx| {
+        state.update(cx, |state, cx| {
+            state.go_to_result(first.id, cx);
+            state.select_channel(workspace_id, random, cx);
+        });
+    });
+    // The read of the message of the result has ended, and the window stays.
+    window.until("the answer for the result", |window| {
+        answers(window) > before
+    });
+    window.cx.run_until_parked();
+    assert_eq!(window.selected_channel(), random);
+
+    // The result of the transcript shows the voice channel of its recording.
+    window.click("search-transcript-0");
+    window.until("the voice channel is shown", |window| {
+        window.selected_channel() == voice.id
+    });
+
+    // A query that finds nothing says so, and a text that is too long is not sent.
+    window.search_for("zirconium");
+    let panel = window.until_searched();
+    assert_eq!(panel.state, SearchShown::Nothing);
+    assert!(window.shows("search-nothing") && !window.shows("search-results"));
+    window.search_for(&"long ".repeat(300));
+    let panel = window.until_searched();
+    assert_eq!(
+        panel.state,
+        SearchShown::Refused(text::SEARCH_TEXT_TOO_LONG.to_owned())
+    );
+    assert!(window.shows("search-refused"));
+
+    // The close control ends the search and empties the field.
+    window.click("close-search");
+    assert!(!window.shows("search-panel"));
+    assert_eq!(window.in_shell(|shell, _, cx| shell.search_text(cx)), "");
+}
+
+#[gpui::test]
+fn a_search_reads_a_further_page_and_loses_the_results_of_a_hidden_channel(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    window.until("the messages of the text channel are read", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let general = window.selected_channel();
+    let random = admin.text_channel(&world, &mut window, "random");
+    for number in 0..52 {
+        admin.send(&world, general, document(&format!("paged entry {number}")));
+    }
+    admin.send(&world, random, document("paged entry elsewhere"));
+    window.until_message("paged entry 51");
+
+    // The first page has 50 results, and the panel offers the next one.
+    window.search_for("paged");
+    let panel = window.until_searched();
+    assert_eq!(panel.messages.len(), 50);
+    assert!(panel.more);
+    // The control stands after the 50 results.
+    window.in_shell(|shell, _, cx| shell.show_end_of_results(cx));
+    assert!(window.shows("more-results"));
+    window.click("more-results");
+    let panel = window.until_searched();
+    assert_eq!(panel.messages.len(), 53);
+    assert!(!panel.more && !window.shows("more-results"));
+
+    // The administrator hides the first channel from the role of every member: its
+    // results leave the panel, and the one of the other channel stays.
+    let api = admin.handle.api();
+    let workspace_id = window.view().workspace().unwrap().id;
+    let roles = world.run(api.workspace_roles(workspace_id)).unwrap();
+    let everyone = roles.iter().find(|role| role.is_everyone).unwrap().id;
+    let hide = SetChannelOverride {
+        allow: Vec::new(),
+        deny: vec![WorkspacePermission::ViewChannel],
+    };
+    world
+        .run(api.set_channel_override(general, everyone, &hide))
+        .unwrap();
+    window.until("the results of the hidden channel are gone", |window| {
+        window.search_panel().is_some_and(|panel| {
+            panel.messages.len() == 1 && panel.messages[0].text == "paged entry elsewhere"
+        })
+    });
+    // A new search of the same text answers in the same way.
+    window.search_for("paged");
+    let panel = window.until_searched();
+    assert_eq!(panel.messages.len(), 1);
+}
+
+#[gpui::test]
+fn a_reload_of_the_state_reads_the_search_again_and_leaves_the_side_panel(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    window.until("the messages of the text channel are read", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let general = window.selected_channel();
+    let server_id = window.view().selected.unwrap().id;
+    for number in 0..52 {
+        admin.send(&world, general, document(&format!("paged entry {number}")));
+    }
+    window.until_message("paged entry 51");
+    let reloads = |window: &mut Window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.reloads_of(server_id))
+    };
+    let mute = |window: &mut Window, length: Option<MuteFor>| {
+        let before = reloads(window);
+        let state = window.state.clone();
+        window.cx.update(|_, cx| {
+            state.update(cx, |state, cx| {
+                state.set_channel_mute(server_id, general, length, cx);
+            });
+        });
+        // A change of the notification settings replaces the state (ADR 0722).
+        window.until("the state was replaced", |window| reloads(window) > before);
+    };
+
+    // The notices lie over a search. The state is replaced: the notices stay, and the
+    // search does not return into the side panel.
+    window.search_for("paged");
+    assert_eq!(window.until_searched().messages.len(), 50);
+    window.click("notices-row");
+    assert!(window.shows("notices-panel") && !window.shows("search-panel"));
+    mute(&mut window, Some(MuteFor::OneHour));
+    assert!(window.shows("notices-panel") && !window.shows("search-panel"));
+    window.click("close-notices");
+
+    // A search that the side panel shows is read again from its first page.
+    window.search_for("paged");
+    assert_eq!(window.until_searched().messages.len(), 50);
+    window.in_shell(|shell, _, cx| shell.show_end_of_results(cx));
+    window.click("more-results");
+    assert_eq!(window.until_searched().messages.len(), 52);
+    mute(&mut window, None);
+    window.until("the first page was read again", |window| {
+        window.search_panel().is_some_and(|panel| {
+            panel.state == SearchShown::Results && panel.messages.len() == 50 && panel.more
+        })
+    });
+    assert!(window.shows("search-panel"));
+}

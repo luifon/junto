@@ -1637,6 +1637,10 @@ pub fn transfer_failure(failure: junto_client_core::transfers::TransferFailure) 
             code => refusal(code),
         },
         TransferFailure::Stopped => "The transfer was stopped.".to_owned(),
+        TransferFailure::Interrupted => {
+            "The server ended its answer before the file was complete, several times in a row."
+                .to_owned()
+        }
     }
 }
 
@@ -1652,6 +1656,579 @@ fn sentence(reason: &str) -> String {
         text.push('.');
     }
     text
+}
+
+// Notices, notification settings and system notifications (ADR 0742).
+pub const NOTIFICATIONS: &str = "Notifications";
+pub const SHOW_NOTIFICATIONS: &str = "Show your notifications on this server";
+pub const CLOSE_NOTIFICATIONS: &str = "Close the notifications";
+pub const MARK_ALL_READ: &str = "Mark all as read";
+pub const MARKING_ALL_READ: &str = "Marking…";
+pub const NO_NOTICES_TITLE: &str = "No notifications";
+pub const NO_NOTICES: &str =
+    "A mention, a direct message, and a reply in a thread that you wrote in are listed here.";
+pub const NOTICES_READING: &str = "Reading the notifications…";
+pub const NOTICE_NOT_READ: &str = "The message of this notification could not be read.";
+pub const SHOW_OLDER: &str = "Show older";
+pub const TODAY: &str = "Today";
+pub const YESTERDAY: &str = "Yesterday";
+pub const NOTICE_UNREAD: &str = "not read";
+
+/// A date in words: `Today`, `Yesterday`, or as a day separator shows it.
+pub fn day_or_today(date: time::Date, today: Option<time::Date>) -> String {
+    match today {
+        Some(today) if today == date => TODAY.to_owned(),
+        Some(today) if today.previous_day() == Some(date) => YESTERDAY.to_owned(),
+        _ => day(date, today),
+    }
+}
+
+/// A moment as the end of a mute is told: the time of day, and the day when it is not
+/// `today`.
+pub fn time_and_day(local: time::OffsetDateTime, today: Option<time::Date>) -> String {
+    let clock = format!("{:02}:{:02}", local.hour(), local.minute());
+    match today {
+        Some(today) if today == local.date() => clock,
+        Some(today) if today.next_day() == Some(local.date()) => format!("{clock} tomorrow"),
+        _ => format!("{clock}, {}", day(local.date(), today)),
+    }
+}
+
+/// What a notice is, as the small text beside its author.
+pub fn notice_kind(kind: junto_client_core::protocol::discovery::NotificationKind) -> &'static str {
+    use junto_client_core::protocol::discovery::NotificationKind;
+    match kind {
+        NotificationKind::Mention => "mentioned you",
+        NotificationKind::Direct => "direct message",
+        NotificationKind::Thread => "replied in a thread",
+        NotificationKind::Message => "new message",
+    }
+}
+
+/// The name of the place of a message, as a row and a system notification write it.
+pub fn place_name(place: &crate::state::notices::Whereabouts) -> String {
+    use crate::state::notices::Whereabouts;
+    match place {
+        Whereabouts::Channel { name, .. } => name.clone(),
+        Whereabouts::Direct { name } => name.clone().unwrap_or_else(|| UNKNOWN_PERSON.to_owned()),
+        Whereabouts::Unknown => String::new(),
+    }
+}
+
+pub const ALERT_WITHOUT_TEXT: &str = "New notification";
+
+/// The title of the system notification of a notice. It names the server when the device
+/// has more than one.
+pub fn alert_title(
+    kind: junto_client_core::protocol::discovery::NotificationKind,
+    author: &str,
+    place: &crate::state::notices::Whereabouts,
+    server: Option<&str>,
+) -> String {
+    use crate::state::notices::Whereabouts;
+    use junto_client_core::protocol::discovery::NotificationKind;
+    let title = match (kind, place) {
+        (_, Whereabouts::Direct { .. } | Whereabouts::Unknown) => author.to_owned(),
+        (NotificationKind::Mention, Whereabouts::Channel { name, .. }) => {
+            format!("{author} mentioned you in {name}")
+        }
+        (NotificationKind::Thread, Whereabouts::Channel { name, .. }) => {
+            format!("{author} replied in a thread in {name}")
+        }
+        (
+            NotificationKind::Message | NotificationKind::Direct,
+            Whereabouts::Channel { name, .. },
+        ) => {
+            format!("{author} in {name}")
+        }
+    };
+    match server {
+        Some(server) => format!("{title} · {server}"),
+        None => title,
+    }
+}
+
+/// The title of the system notification of an invitation into a call.
+pub fn invitation_alert(by: Option<&str>, channel: Option<&str>) -> String {
+    invitation(by, channel)
+}
+
+pub const NOTIFICATION_SETTINGS: &str = "Notification settings";
+pub const NOTIFICATION_SETTINGS_ITEM: &str = "Notification settings…";
+
+/// The title of the dialog of the notification settings of a scope.
+pub fn notifications_of(scope: junto_client_core::api::SettingsScope, name: &str) -> String {
+    use junto_client_core::api::SettingsScope;
+    match scope {
+        SettingsScope::Account | SettingsScope::Workspace(_) => format!("Notifications of {name}"),
+        SettingsScope::Channel(_) => format!("Notifications of #{name}"),
+    }
+}
+
+pub const NOTIFY_LEVEL: &str = "Notify me about";
+pub const LEVEL_DEFAULT: &str = "Default";
+pub const LEVEL_ALL: &str = "All messages";
+pub const LEVEL_MENTIONS: &str = "Mentions only";
+pub const LEVEL_NOTHING: &str = "Nothing";
+pub const LEVEL_SERVER_HELP: &str = "The level of every channel of this server that has no level of its own, and of its workspace. A direct message always notifies.";
+pub const LEVEL_WORKSPACE_HELP: &str =
+    "The level of every channel of this workspace that has no level of its own.";
+pub const LEVEL_CHANNEL_HELP: &str = "A mention of you always counts as a mention. A reply in a thread that you wrote in notifies you unless the level is \"Nothing\".";
+pub const LEVEL_DEFAULT_UNKNOWN: &str = "Default: the level of the workspace, then of the server.";
+
+pub fn level_name(
+    level: junto_client_core::protocol::discovery::NotificationLevel,
+) -> &'static str {
+    use junto_client_core::protocol::discovery::NotificationLevel;
+    match level {
+        NotificationLevel::All => LEVEL_ALL,
+        NotificationLevel::Mentions => LEVEL_MENTIONS,
+        NotificationLevel::Nothing => LEVEL_NOTHING,
+    }
+}
+
+/// What "Default" means for a scope now.
+pub fn level_default_now(
+    level: junto_client_core::protocol::discovery::NotificationLevel,
+) -> String {
+    format!("Default now: {}.", level_name(level).to_lowercase())
+}
+
+pub const WORKSPACE_DEFAULT: &str = "For every member";
+pub const WORKSPACE_DEFAULT_HELP: &str =
+    "The level of a member who chose none. Only an administrator of the server can change it.";
+pub const WORKSPACE_DEFAULT_READING: &str = "Reading the level of the workspace…";
+pub const WORKSPACE_DEFAULT_FAILED: &str = "The level of the workspace could not be read.";
+pub const MUTE: &str = "Mute";
+pub const MUTE_HELP: &str = "A muted channel sends no notification and shows no unread sign.";
+pub const MUTE_CHANNEL: &str = "Mute channel";
+pub const MUTE_CONVERSATION: &str = "Mute conversation";
+pub const MUTED_UNTIL_OFF: &str = "Muted until you turn it off";
+
+pub fn muted_until(time: &str) -> String {
+    format!("Muted until {time}")
+}
+
+pub fn mute_for(length: crate::state::notices::MuteFor) -> &'static str {
+    use crate::state::notices::MuteFor;
+    match length {
+        MuteFor::OneHour => "For 1 hour",
+        MuteFor::EightHours => "For 8 hours",
+        MuteFor::UntilTomorrow => "Until tomorrow",
+        MuteFor::UntilTurnedOff => "Until I turn it off",
+    }
+}
+
+/// The mute of a place in words. Absent for a place that is not muted.
+pub fn mute_state(mute: &crate::state::notices::Mute) -> Option<String> {
+    use crate::state::notices::Mute;
+    match mute {
+        Mute::Off => None,
+        Mute::Until(time) => Some(muted_until(time)),
+        Mute::UntilTurnedOff => Some(MUTED_UNTIL_OFF.to_owned()),
+    }
+}
+
+pub const ROLE_MENTIONS: &str = "Mentions of my roles";
+pub const ROLE_MENTIONS_HELP: &str =
+    "Off: a mention of one of your roles in this channel is no mention of you.";
+pub const EVERYONE_MENTIONS: &str = "Mentions of everyone";
+pub const EVERYONE_MENTIONS_HELP: &str =
+    "Off: a mention of everyone in this channel is no mention of you.";
+pub const CHANNEL_MENU: &str = "Channel menu";
+pub const CONVERSATION_MENU: &str = "Conversation menu";
+pub const SERVER_NOTIFICATIONS: &str = "Notifications of this server…";
+pub const WORKSPACE_NOTIFICATIONS: &str = "Notifications of this workspace…";
+
+pub const NOTICES_IN_CALL: &str = "The notifications are shown outside the view of your call.";
+
+pub fn unread_notices(count: usize) -> String {
+    if count == 1 {
+        "1 not read".to_owned()
+    } else {
+        format!("{} not read", unread_count(count as u64))
+    }
+}
+
+// Search (ADR 0743).
+pub const SEARCH: &str = "Search";
+pub const SEARCH_FIELD: &str = "Search this server";
+pub const CLOSE_SEARCH: &str = "Close the search";
+pub const SEARCHING: &str = "Searching…";
+pub const SEARCH_NOTHING_TITLE: &str = "No result";
+pub const SEARCH_NOTHING: &str = "No message and no transcript line that you can read holds these words. The search compares whole words.";
+pub const SEARCH_FAILED_TITLE: &str = "The search got no answer";
+pub const SEARCH_REFUSED_TITLE: &str = "The server did not take the search";
+pub const SEARCH_TEXT_REFUSED: &str = "The server does not accept this search text.";
+pub const SEARCH_TEXT_TOO_LONG: &str = "A search text has at most 1,024 bytes.";
+pub const RESULT_GONE: &str = "The message is gone, or you can no longer read it.";
+pub const SEARCH_AGAIN: &str = "Search again";
+pub const SHOW_MORE_RESULTS: &str = "Show more results";
+pub const READING_MORE_RESULTS: &str = "Reading more…";
+pub const SEARCH_MESSAGES: &str = "Messages";
+pub const SEARCH_TRANSCRIPTS: &str = "Transcripts";
+pub const FILTER_CHANNEL: &str = "Channel";
+pub const FILTER_AUTHOR: &str = "Author";
+pub const FILTER_DATE: &str = "Date";
+pub const FILTER_ALL_CHANNELS: &str = "All";
+pub const FILTER_ANYONE: &str = "Anyone";
+pub const OPEN_TRANSCRIPT: &str = "Open transcript";
+pub const RECORDING_RESULT: &str = "recording";
+
+pub fn date_filter(filter: crate::state::search::DateFilter) -> &'static str {
+    use crate::state::search::DateFilter;
+    match filter {
+        DateFilter::AnyTime => "Any time",
+        DateFilter::Today => "Today",
+        DateFilter::Last7Days => "Last 7 days",
+        DateFilter::Last30Days => "Last 30 days",
+    }
+}
+
+/// The count of the results of a search with its text, beside the title of the panel.
+pub fn results_for(count: usize, more: bool, query: &str) -> String {
+    let shown: String = if query.chars().count() > 24 {
+        format!("{}…", query.chars().take(24).collect::<String>())
+    } else {
+        query.to_owned()
+    };
+    let count = match (count, more) {
+        (1, false) => "1 result".to_owned(),
+        (count, false) => format!("{count} results"),
+        (count, true) => format!("{count}+ results"),
+    };
+    format!("{count} for “{shown}”")
+}
+
+/// The line of a transcript as a result names it. The first line is line 1.
+pub fn transcript_line(line: u32) -> String {
+    format!("line {}", u64::from(line) + 1)
+}
+
+// Recordings in the chat of a voice channel (ADR 0744).
+pub const RECORDING_REMOVE_NOT_ALLOWED: &str = "Your roles do not allow you to remove a recording. A person with \"manage recordings\" can remove it.";
+pub const RECORDING_REMOVE_TOO_EARLY: &str =
+    "The server still works on this recording. It can be removed when its files are ready.";
+
+pub const RECORDING: &str = "Recording";
+pub const RECORDING_READING: &str = "Reading the recording…";
+pub const RECORDING_NOT_READ: &str = "The recording could not be read.";
+pub const RECORDING_GONE_TITLE: &str = "No recording";
+pub const RECORDING_GONE: &str = "This recording was removed, or you cannot read it now.";
+pub const RECORDING_VIDEO: &str = "Video of the call";
+pub const RECORDING_TRANSCRIPT_TEXT: &str = "Transcript as text";
+pub const RECORDING_FILES: &str = "Save the files of this recording";
+pub const FILE_FAILED_CHECK: &str = "Failed the check of the server";
+pub const OPEN: &str = "Open";
+pub const OPEN_RECORDING: &str =
+    "Save the video and play it with the video player of this computer";
+pub const REMOVE_RECORDING: &str = "Remove this recording with its files and its transcript";
+pub const RECORDING_REMOVING: &str = "Removing…";
+pub const RECORDING_REMOVE_NEEDS_PERMISSION: &str =
+    "Removing a recording needs the permission \"manage recordings\".";
+pub const REMOVE_RECORDING_TITLE: &str = "Remove this recording?";
+pub const REMOVE_RECORDING_CONFIRM: &str = "The server deletes the video, the audio files and the transcript for everyone. This cannot be undone.";
+pub const TRANSCRIPT: &str = "Transcript";
+pub const CLOSE_TRANSCRIPT: &str = "Close the transcript";
+pub const TRANSCRIPT_READING: &str = "Reading the transcript…";
+pub const TRANSCRIPT_LINES_FAILED: &str = "The lines of the transcript could not be read.";
+pub const SHOW_ALL: &str = "Show all";
+pub const SHOW_MORE_LINES: &str = "Show more lines";
+pub const LINE_MICROPHONE: &str = "Microphone";
+pub const LINE_CORRECTED: &str = "corrected";
+
+pub fn recording_of(channel: &str) -> String {
+    format!("Recording of {channel}")
+}
+
+pub fn recording_title(channel: &str, day: &str) -> String {
+    format!("{channel} · {day}")
+}
+
+pub fn recording_microphone(person: Option<&str>) -> String {
+    format!("Microphone of {}", person.unwrap_or(UNKNOWN_PERSON))
+}
+
+pub fn recording_share_sound(person: Option<&str>) -> String {
+    format!("Shared sound of {}", person.unwrap_or(UNKNOWN_PERSON))
+}
+
+pub fn shared_audio_of(person: &str) -> String {
+    format!("Shared audio · screen of {person}")
+}
+
+pub fn was_speaker(label: &str) -> String {
+    format!("was {label}")
+}
+
+/// The bytes of a download whose length the server does not state.
+pub fn received(bytes: u64) -> String {
+    format!("{} received", file_size(bytes))
+}
+
+/// The length of a recording on its picture, as `39:40` or `1:02:03`.
+pub fn media_length(length: std::time::Duration) -> String {
+    let seconds = length.as_secs();
+    if seconds >= 3_600 {
+        format!(
+            "{}:{:02}:{:02}",
+            seconds / 3_600,
+            seconds / 60 % 60,
+            seconds % 60
+        )
+    } else {
+        format!("{:02}:{:02}", seconds / 60, seconds % 60)
+    }
+}
+
+/// The times, the length and the person who started a recording, on one line.
+pub fn recording_span(detail: &crate::state::recorded::CardDetail) -> String {
+    let mut parts = Vec::new();
+    if let Some((from, until)) = &detail.span {
+        parts.push(format!("{from} – {until}"));
+    }
+    if let Some(length) = detail.length {
+        let seconds = length.as_secs();
+        parts.push(match (seconds / 3_600, seconds / 60 % 60, seconds % 60) {
+            (0, 0, seconds) => format!("{seconds} s"),
+            (0, minutes, seconds) => format!("{minutes} min {seconds} s"),
+            (hours, minutes, _) => format!("{hours} h {minutes} min"),
+        });
+    }
+    if let Some(name) = &detail.started_by {
+        parts.push(format!("started by {name}"));
+    }
+    parts.join(" · ")
+}
+
+/// The files of a recording on one line: the video with its size, the audio files, and
+/// the bytes of all of them.
+pub fn recording_files(detail: &crate::state::recorded::CardDetail) -> String {
+    let plural = |count: usize, one: &str, many: &str| {
+        if count == 1 {
+            format!("1 {one}")
+        } else {
+            format!("{count} {many}")
+        }
+    };
+    let mut parts = Vec::new();
+    match (detail.video, detail.picture) {
+        (Some(_), Some((width, height))) => parts.push(format!("Video {width} × {height}")),
+        (Some(_), None) => parts.push("Video".to_owned()),
+        (None, _) => parts.push("No video".to_owned()),
+    }
+    if detail.microphones > 0 {
+        parts.push(plural(
+            detail.microphones,
+            "microphone track",
+            "microphone tracks",
+        ));
+    }
+    if detail.share_sounds > 0 {
+        parts.push(plural(
+            detail.share_sounds,
+            "track of shared sound",
+            "tracks of shared sound",
+        ));
+    }
+    if let Some(bytes) = detail.bytes {
+        parts.push(file_size(bytes));
+    }
+    parts.join(" · ")
+}
+
+/// What a card states about the job of its recording, and whether that is a failure.
+/// Absent for a recording whose every file was saved.
+pub fn recording_job(job: crate::state::recorded::JobShown) -> Option<(String, bool)> {
+    use crate::state::recorded::JobShown;
+    use junto_client_core::protocol::recording::RecordingFailure;
+    Some(match job {
+        JobShown::Ready => return None,
+        JobShown::Starting => ("The recorder starts.".to_owned(), false),
+        JobShown::Recording => ("The call is being recorded.".to_owned(), false),
+        JobShown::Processing => (
+            "The server checks the files and joins the video.".to_owned(),
+            false,
+        ),
+        JobShown::PartlyFailed { failed, segments } => (
+            if failed == 0 {
+                "A part of this recording was not saved: a file is missing or failed its check."
+                    .to_owned()
+            } else {
+                format!(
+                    "A part of this recording was not saved: {failed} of {segments} files failed."
+                )
+            },
+            true,
+        ),
+        JobShown::Failed(reason) => (
+            match reason {
+                Some(RecordingFailure::RecorderUnavailable) => {
+                    "Nothing was recorded: no recorder took the recording."
+                }
+                Some(RecordingFailure::NothingRecorded) => {
+                    "Nothing was recorded: every file ended empty."
+                }
+                Some(RecordingFailure::FilesMissing) => {
+                    "Nothing was saved: the server found no file of this recording."
+                }
+                Some(RecordingFailure::Unknown) | None => "Nothing of this recording was saved.",
+            }
+            .to_owned(),
+            true,
+        ),
+    })
+}
+
+/// The state of a transcript beside the title of its recording.
+pub fn transcript_state(
+    state: junto_client_core::protocol::transcript::TranscriptState,
+    failure: Option<junto_client_core::protocol::transcript::TranscriptFailure>,
+) -> String {
+    use junto_client_core::protocol::transcript::{TranscriptFailure, TranscriptState};
+    match state {
+        TranscriptState::None => "no transcript".to_owned(),
+        TranscriptState::Waiting => "transcript waits for the worker".to_owned(),
+        TranscriptState::Running => "transcript is being written".to_owned(),
+        TranscriptState::Ready => "transcript ready".to_owned(),
+        TranscriptState::Partial => "transcript covers a part of the sound".to_owned(),
+        TranscriptState::Failed => format!(
+            "transcript failed: {}",
+            match failure {
+                Some(TranscriptFailure::WorkerFailed) => "the worker ended with an error",
+                Some(TranscriptFailure::JobRefused) => "the worker refused the job",
+                Some(TranscriptFailure::WorkerNotReady) => "the worker is not ready",
+                Some(TranscriptFailure::TimeLimit) => "the worker took too long",
+                Some(TranscriptFailure::TranscriptInvalid) =>
+                    "the worker wrote no valid transcript",
+                Some(TranscriptFailure::Interrupted) => "the server stopped during the work",
+                Some(TranscriptFailure::Unknown) | None => "the server gives no known reason",
+            }
+        ),
+    }
+}
+
+pub fn lines(count: u32) -> String {
+    if count == 1 {
+        "1 line".to_owned()
+    } else {
+        format!("{count} lines")
+    }
+}
+
+pub fn lines_shown(shown: usize, total: u32) -> String {
+    format!("{shown} of {} shown", lines(total))
+}
+
+/// The language of a transcript as its chip states it.
+pub fn transcript_language(code: &str) -> String {
+    let name = match code {
+        "auto" => "detected for each line",
+        "en" => "English",
+        "pt" => "Portuguese",
+        "es" => "Spanish",
+        "de" => "German",
+        "fr" => "French",
+        "it" => "Italian",
+        "nl" => "Dutch",
+        "ja" => "Japanese",
+        "zh" => "Chinese",
+        other => other,
+    };
+    format!("Language: {name}")
+}
+
+/// A time from the start of a recording, as `00:11:02`.
+pub fn clock_of(milliseconds: u64) -> String {
+    let seconds = milliseconds / 1_000;
+    format!(
+        "{:02}:{:02}:{:02}",
+        seconds / 3_600,
+        seconds / 60 % 60,
+        seconds % 60
+    )
+}
+
+/// The label of a voice in shared sound that has no name.
+pub fn speaker_label(number: u32) -> String {
+    format!("Speaker {number}")
+}
+
+/// The name under which a file of a recording is saved, without its ending. `earlier`
+/// counts the files of the same kind and person before it.
+pub fn recording_file(
+    stamp: &str,
+    kind: crate::state::recorded::FileKind,
+    person: Option<&str>,
+    earlier: usize,
+) -> String {
+    use crate::state::recorded::FileKind;
+    let number = if earlier == 0 {
+        String::new()
+    } else {
+        format!(" {}", earlier + 1)
+    };
+    let person = person.unwrap_or(UNKNOWN_PERSON);
+    match kind {
+        FileKind::Video => format!("{stamp} video{number}"),
+        FileKind::Microphone => format!("{stamp} microphone {person}{number}"),
+        FileKind::ShareSound => format!("{stamp} shared sound {person}{number}"),
+    }
+}
+
+/// What the check of the server found wrong with a file of a recording.
+pub fn file_problems(problems: &[junto_client_core::protocol::recording::FileProblem]) -> String {
+    use junto_client_core::protocol::recording::FileProblem;
+    let mut named: Vec<&str> = problems
+        .iter()
+        .map(|problem| match problem {
+            FileProblem::Unreadable => "the file cannot be read as media",
+            FileProblem::StreamMissing => "the sound or the picture is absent",
+            FileProblem::StreamShort => "the sound or the picture is shorter than the file",
+            FileProblem::TimestampHole => "a part of the time is missing",
+            FileProblem::SoundMissing => "the video is silent where a microphone has sound",
+            FileProblem::PictureBlank => "the picture is dark or of one colour",
+            FileProblem::LengthMismatch => "the length differs from what the recorder told",
+            FileProblem::NotChecked => "the server could not check the file",
+            FileProblem::Unknown => "the server found a problem that this version does not know",
+        })
+        .collect();
+    named.dedup();
+    if named.is_empty() {
+        "The check of the server failed.".to_owned()
+    } else {
+        let mut sentence = named.join("; ");
+        if let Some(first) = sentence.get(..1) {
+            sentence = format!("{}{}.", first.to_uppercase(), &sentence[1..]);
+        }
+        sentence
+    }
+}
+
+// Quiet times.
+pub const QUIET: &str = "Quiet times";
+pub const DO_NOT_DISTURB: &str = "Do not disturb";
+pub const DO_NOT_DISTURB_HELP: &str =
+    "No notification of the system is shown. Unread signs still follow new messages.";
+pub const DAILY_QUIET: &str = "Daily quiet time";
+pub const DAILY_QUIET_HELP: &str = "The same as \"do not disturb\", every day between the two times. The times keep the distance from UTC of the day on which they were set.";
+pub const QUIET_FROM: &str = "From";
+pub const QUIET_UNTIL: &str = "Until";
+pub const QUIET_SET: &str = "Set";
+pub const QUIET_TIME_REFUSED: &str =
+    "Write each time as hours and minutes, such as 22:00, and use two different times.";
+pub const QUIET_DIFFERS: &str =
+    "Your servers hold different values. A change here sets all of them.";
+pub const QUIET_NO_SERVER: &str =
+    "Quiet times are stored on your servers. This device has a session on none.";
+pub const QUIET_NOW: &str = "Quiet now";
+pub const QUIET_NO_STATE: &str =
+    "The device has no connection to this server now. Nothing was changed there.";
+pub const QUIET_OTHER_CHANGE: &str =
+    "Another change of these settings is on its way. Nothing was changed there.";
+
+pub fn quiet_failed(server: &str, reason: &str) -> String {
+    format!("{server} did not take the change. {reason}")
 }
 
 #[cfg(test)]

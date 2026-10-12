@@ -10,7 +10,9 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use junto_client_core::protocol::call::ShareAudio;
 use junto_client_core::protocol::ids::AccountId;
-use livekit::options::{AudioEncoding, TrackPublishOptions, VideoEncoding, VideoPreset};
+use livekit::options::{
+    AudioEncoding, DegradationPreference, TrackPublishOptions, VideoEncoding, VideoPreset,
+};
 use livekit::prelude::{
     LocalAudioTrack, LocalTrack, LocalTrackPublication, LocalVideoTrack, RemoteAudioTrack,
     RemoteTrackPublication, RemoteVideoTrack, TrackSid, TrackSource,
@@ -28,6 +30,7 @@ use tokio::sync::{Notify, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
+use super::order::in_order;
 use super::{Actor, Internal, PUBLISH_LIMIT, PUBLISH_RETRY, Publication, account_of};
 use crate::audio::playout::{MAX_GAIN, SourceHandle};
 use crate::audio::{Format, PLAYOUT_CHANNELS, SAMPLE_RATE};
@@ -118,6 +121,19 @@ pub(super) fn picture_encodings(size: (u32, u32), frame_rate: u32) -> (VideoEnco
             f64::from(low_rate),
         ),
     )
+}
+
+/// How the picture track of a share is published.
+pub(super) fn picture_options(size: (u32, u32), frame_rate: u32) -> TrackPublishOptions {
+    let (encoding, low_layer) = picture_encodings(size, frame_rate);
+    TrackPublishOptions {
+        source: TrackSource::Screenshare,
+        video_encoding: Some(encoding),
+        simulcast_layers: Some(vec![low_layer]),
+        // Text stays readable: a busy processor lowers the frame rate, not the size.
+        degradation_preference: Some(DegradationPreference::MaintainResolution),
+        ..TrackPublishOptions::default()
+    }
 }
 
 /// A share in the call of this device.
@@ -446,9 +462,25 @@ pub(super) struct RemotePicture {
     kind: Option<ShareKind>,
     frame_rate: Option<u32>,
     size: Option<(u32, u32)>,
+    /// The size of the drawing that the media server was asked for last.
+    asked: Option<(u32, u32)>,
     /// The order in which the shares were seen.
     order: u64,
     task: JoinHandle<()>,
+}
+
+impl RemotePicture {
+    /// Asks the media server for the layer of a drawn size, when the size is another one
+    /// than the last. The requests of all shares reach the media server in the order in
+    /// which they are made here.
+    fn ask(&mut self, size: (u32, u32)) {
+        if self.asked == Some(size) {
+            return;
+        }
+        self.asked = Some(size);
+        let publication = self.publication.clone();
+        in_order(move || publication.update_video_dimensions(TrackDimension(size.0, size.1)));
+    }
 }
 
 impl Drop for RemotePicture {
@@ -602,7 +634,8 @@ impl Actor {
                 }
                 other
             });
-            self.sync_watched(now);
+            self.sync_sizes(now);
+            self.sync_volumes(now);
         }
         let share = self.share_state();
         self.change(|state| {
@@ -612,23 +645,22 @@ impl Actor {
         });
     }
 
-    /// Asks the media server for the picture of each share at the size of its drawing,
-    /// and gives the sound of the watched share its volume. The sound of every other share
-    /// is received and has no volume in the mix: a change of what the media server sends
+    /// Asks the media server for the picture of each share at the size of its drawing: the
+    /// watched share at the size of the interface, every other share at the size of its
+    /// small picture.
+    fn sync_sizes(&mut self, watched: Option<ShareId>) {
+        let view_size = self.view_size;
+        for picture in self.remote_pictures.values_mut() {
+            let is_watched = watched == Some(ShareId::Of(picture.account_id));
+            picture.ask(if is_watched { view_size } else { SMALL_PICTURE });
+        }
+    }
+
+    /// Gives the sound of the watched share its volume. The sound of every other share is
+    /// received and has no volume in the mix: a change of what the media server sends
     /// would have to be kept in order with the changes before it, and a share sound is a
     /// small part of what a share costs.
-    fn sync_watched(&self, watched: Option<ShareId>) {
-        for picture in self.remote_pictures.values() {
-            let is_watched = watched == Some(ShareId::Of(picture.account_id));
-            let (width, height) = if is_watched {
-                self.view_size
-            } else {
-                SMALL_PICTURE
-            };
-            picture
-                .publication
-                .update_video_dimensions(TrackDimension(width, height));
-        }
+    fn sync_volumes(&self, watched: Option<ShareId>) {
         for sound in self.remote_sounds.values() {
             let is_watched = watched == Some(ShareId::Of(sound.account_id));
             sound
@@ -652,7 +684,7 @@ impl Actor {
 
     pub(super) fn set_share_volume(&mut self, gain: f32) {
         self.share_volume = gain.clamp(0.0, MAX_GAIN);
-        self.sync_watched(self.view.borrow().watched);
+        self.sync_volumes(self.view.borrow().watched);
     }
 
     /// The picture track of the share of another person arrived.
@@ -685,12 +717,14 @@ impl Actor {
                 kind: stated.map(|(kind, _)| kind),
                 frame_rate: stated.map(|(_, rate)| rate),
                 size: None,
+                asked: None,
                 order: self.share_order,
                 task,
             },
         );
         self.tell_shares();
-        self.sync_watched(self.view.borrow().watched);
+        let watched = self.view.borrow().watched;
+        self.sync_sizes(watched);
     }
 
     /// The sound track of the share of another person is received.
@@ -719,7 +753,7 @@ impl Actor {
                 task,
             },
         );
-        self.sync_watched(self.view.borrow().watched);
+        self.sync_volumes(self.view.borrow().watched);
     }
 
     /// A track of another person ended. Returns whether it belonged to a share.
@@ -902,16 +936,10 @@ impl Actor {
             share.request.quality.frame_rate,
         );
         let track = LocalVideoTrack::create_video_track(&name, RtcVideoSource::Native(source));
-        let (encoding, low_layer) = picture_encodings(
+        let options = picture_options(
             (stream.width, stream.height),
             share.request.quality.frame_rate,
         );
-        let options = TrackPublishOptions {
-            source: TrackSource::Screenshare,
-            video_encoding: Some(encoding),
-            simulcast_layers: Some(vec![low_layer]),
-            ..TrackPublishOptions::default()
-        };
         share.stream = Some(stream);
         share.picture = Publication::Publishing;
         let (participant, internal) = (room.local_participant(), self.internal.clone());
@@ -1276,6 +1304,20 @@ mod tests {
         assert_eq!(main.max_framerate, 60.0);
         assert!(main.max_bitrate > picture_encodings((1280, 720), 30).0.max_bitrate);
         assert_eq!(picture_encodings((7680, 4320), 60).0.max_bitrate, 8_000_000);
+    }
+
+    #[test]
+    fn a_busy_processor_lowers_the_frame_rate_of_a_share_and_keeps_its_size() {
+        let options = picture_options((1920, 1080), 30);
+        assert_eq!(options.source, TrackSource::Screenshare);
+        // The client states the rule itself and does not use the default of the call
+        // library for a screen share.
+        assert_eq!(
+            options.degradation_preference,
+            Some(DegradationPreference::MaintainResolution)
+        );
+        assert!(options.simulcast);
+        assert_eq!(options.simulcast_layers.map(|layers| layers.len()), Some(1));
     }
 
     #[test]

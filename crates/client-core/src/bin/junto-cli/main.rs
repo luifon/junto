@@ -4,6 +4,7 @@
 mod discovery;
 mod live;
 mod messages;
+mod recordings;
 mod secret_input;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -87,6 +88,9 @@ commands:
   threads <action> [arguments] send one request of the thread routes
   pins <action> [arguments]    send one request of the pin routes
   notices <action> [arguments] send one request of the notice and notification routes
+  recordings <action> [arguments]
+                               send one request of the routes of recordings and of
+                               their transcripts
   search <text>                search the messages and transcript lines that the account
                                can read; the text takes words, a phrase in quotation
                                marks, `or`, and a minus before a word
@@ -170,6 +174,29 @@ actions of notices:
 
 A scope is account, workspace:<id> or channel:<id>. A time is written as
 2026-01-31T00:00:00Z.
+
+actions of recordings:
+  list <workspace> [--before <recording>] [--limit <n>]
+                               the recordings of a workspace, the newest first
+  show <recording>             the recording with its segments and their files
+  remove <recording>           delete the recording with its files and its transcript
+  transcript <recording>       the state of the transcript, its speakers and the result
+                               for each audio segment
+  request-transcript <recording>
+                               ask for the transcript again, when there is none or it
+                               failed
+  lines <recording> [--after <line>] [--limit <n>]
+                               one page of the lines of the transcript
+  text <recording> [--to <directory>]
+                               the transcript as text; with --to it is saved as a file
+                               under a name that no file has
+  correct <recording> <line> --text <text>
+  rename-speaker <recording> <number> --name <name>
+                               name the voice with the label `Speaker <number>`
+  download <recording> <segment> [--to <directory>]
+                               save the file of a segment under a name that no file has,
+                               in the directory of the tool without --to; a download
+                               that was cut continues in its unfinished file
 
 An action that joins a call prints the token for the media server only with --show-token.
 A place in a call belongs to the session that asked for it, and every command ends its
@@ -548,6 +575,7 @@ async fn run(arguments: Arguments) -> Result<(), Failure> {
         "threads" | "pins" | "notices" | "search" => {
             discovery::run(&client, command, &arguments).await
         }
+        "recordings" => recordings::run(&client, &arguments).await,
         other => Err(usage(format!("unknown command {other}"))),
     }
 }

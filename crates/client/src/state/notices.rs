@@ -1,0 +1,1058 @@
+//! The notices of a server, the notification settings of the account, and the rules of a
+//! system notification (ADR 0742).
+//!
+//! Everything here is derived without side effects from the state of a server (ADR 0730).
+//! A notice names a message and a kind; its place and its text come from the message that
+//! the client core read for it (ADR 0722).
+
+use std::collections::HashMap;
+
+use junto_client_core::api::SettingsScope;
+use junto_client_core::model::{Named, PlaceId, ServerModel};
+use junto_client_core::protocol::discovery::{
+    DailyQuiet, NotificationKind, NotificationLevel, NotificationSettings,
+};
+use junto_client_core::protocol::ids::{
+    AccountId, CallInvitationId, ChannelId, MessageId, ServerId, WorkspaceId,
+};
+use junto_client_core::protocol::message::{Message, MessagePlace};
+use junto_client_core::protocol::structure::ChannelKind;
+use time::OffsetDateTime;
+use uuid::Uuid;
+
+use super::feed::{self, Names, Zone};
+use super::view::{Known, Shown};
+use crate::text;
+
+/// The characters of a message that a notice, a search result and a system notification
+/// show.
+pub const EXCERPT_CHARACTERS: usize = 160;
+
+/// Where the window goes for a message: its place, and the thread of a reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Jump {
+    pub server_id: ServerId,
+    /// The workspace of the channel. Absent for a direct conversation.
+    pub workspace_id: Option<WorkspaceId>,
+    /// The channel or the direct conversation of the message.
+    pub place: PlaceId,
+    /// The root of the thread, for a reply of a thread.
+    pub thread_root: Option<MessageId>,
+    pub message_id: MessageId,
+    pub position: u64,
+}
+
+impl Jump {
+    /// The jump to a message of a server.
+    pub fn to(server_id: ServerId, message: &Message) -> Self {
+        Self {
+            server_id,
+            workspace_id: match message.place {
+                MessagePlace::Channel { workspace_id, .. } => Some(workspace_id),
+                MessagePlace::Direct { .. } => None,
+            },
+            place: PlaceId::of(&message.place),
+            thread_root: message.thread_root,
+            message_id: message.id,
+            position: message.position,
+        }
+    }
+}
+
+/// The place of a message as a row names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Whereabouts {
+    Channel {
+        name: String,
+        kind: ChannelKind,
+    },
+    /// A direct conversation, by the name of the other person.
+    Direct {
+        name: Option<String>,
+    },
+    /// The state holds no such place.
+    Unknown,
+}
+
+/// One notice of the account, as the list shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoticeRow {
+    pub id: Uuid,
+    pub kind: NotificationKind,
+    pub read: bool,
+    pub place: Whereabouts,
+    /// The day of the message in words.
+    pub day: String,
+    /// The time of day of the message.
+    pub time: String,
+    pub author_id: Option<AccountId>,
+    pub author: String,
+    pub text: String,
+    /// Where the row leads. Absent when the message could not be read.
+    pub jump: Option<Jump>,
+}
+
+/// The notices of the shown server, as the side panel lists them.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NoticesPanel {
+    pub rows: Vec<NoticeRow>,
+    /// The notices of the list that the person has not read.
+    pub unread: usize,
+    /// The server may hold more notices after the listed ones.
+    pub more: bool,
+    /// The messages of some notices are not read yet.
+    pub reading: bool,
+    /// "Mark all as read" runs.
+    pub marking: bool,
+    /// Why the last mark did not reach the server.
+    pub failed: Option<String>,
+}
+
+/// The names of the accounts of a server that the client holds: the members of the
+/// workspaces that were read, the names that were read alone, and the account itself.
+pub fn account_names(
+    server_id: ServerId,
+    model: &ServerModel,
+    known: &Known,
+) -> HashMap<AccountId, String> {
+    let mut names: HashMap<AccountId, String> = known
+        .names
+        .iter()
+        .filter(|((server, _), _)| *server == server_id)
+        .map(|((_, account_id), name)| (*account_id, name.clone()))
+        .collect();
+    for workspace in &model.workspaces {
+        if let Some(members) = workspace.members.loaded() {
+            names.extend(
+                members
+                    .iter()
+                    .map(|member| (member.account_id, member.name.clone())),
+            );
+        }
+    }
+    names.insert(model.account.id, model.account.name.clone());
+    names
+}
+
+/// The names that the text of a message of this place can mention.
+fn names_of(
+    place: &MessagePlace,
+    model: &ServerModel,
+    accounts: &HashMap<AccountId, String>,
+) -> Names {
+    let roles = match place {
+        MessagePlace::Channel { workspace_id, .. } => model
+            .workspace(*workspace_id)
+            .map(|workspace| {
+                workspace
+                    .roles
+                    .iter()
+                    .map(|role| (role.id, role.name.clone()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        MessagePlace::Direct { .. } => HashMap::new(),
+    };
+    Names {
+        accounts: accounts.clone(),
+        roles,
+    }
+}
+
+/// The place of a message as the state names it now.
+pub fn whereabouts(
+    place: &MessagePlace,
+    model: &ServerModel,
+    accounts: &HashMap<AccountId, String>,
+) -> Whereabouts {
+    match place {
+        MessagePlace::Channel { channel_id, .. } => match model.channel(*channel_id) {
+            Some(channel) => Whereabouts::Channel {
+                name: channel.channel.name.clone(),
+                kind: channel.channel.kind,
+            },
+            None => Whereabouts::Unknown,
+        },
+        MessagePlace::Direct {
+            conversation_id,
+            low_account_id,
+            high_account_id,
+        } => {
+            if !model
+                .conversations
+                .iter()
+                .any(|held| held.id == *conversation_id)
+            {
+                return Whereabouts::Unknown;
+            }
+            let other = if *low_account_id == model.account.id {
+                *high_account_id
+            } else {
+                *low_account_id
+            };
+            Whereabouts::Direct {
+                name: accounts.get(&other).cloned(),
+            }
+        }
+    }
+}
+
+/// The text of a message on one line: its words, or the name of its first file.
+pub fn excerpt(message: &Message, names: &Names) -> String {
+    let words = message
+        .document
+        .as_ref()
+        .map(|document| feed::plain_text(document, names, EXCERPT_CHARACTERS))
+        .unwrap_or_default();
+    if !words.is_empty() {
+        return words;
+    }
+    message
+        .attachments
+        .first()
+        .map(|file| file.name.clone())
+        .unwrap_or_default()
+}
+
+fn author_of(message: &Message, accounts: &HashMap<AccountId, String>) -> String {
+    message
+        .author_name
+        .clone()
+        .or_else(|| message.author_id.and_then(|id| accounts.get(&id).cloned()))
+        .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned())
+}
+
+/// The notices of a server as the side panel lists them, the newest first. A notice whose
+/// message the server no longer has for the account is not listed, and a notice whose
+/// place the state does not hold is not listed either.
+pub fn notices_panel(server_id: ServerId, model: &ServerModel, known: &Known) -> NoticesPanel {
+    let accounts = account_names(server_id, model, known);
+    let mut rows = Vec::with_capacity(model.notices.len());
+    let mut reading = false;
+    // The names for the mentions of a text, once for each workspace of the notices.
+    let mut names: HashMap<Option<WorkspaceId>, Names> = HashMap::new();
+    for notice in &model.notices {
+        let row = match model.named(notice.message_id) {
+            Some(Named::Read(message)) => {
+                let place = whereabouts(&message.place, model, &accounts);
+                if place == Whereabouts::Unknown {
+                    continue;
+                }
+                let local = known.zone.local(message.created_at);
+                NoticeRow {
+                    id: notice.id,
+                    kind: notice.kind,
+                    read: notice.read_at.is_some(),
+                    place,
+                    day: text::day_or_today(local.date(), known.today),
+                    time: format!("{:02}:{:02}", local.hour(), local.minute()),
+                    author_id: message.author_id,
+                    author: author_of(message, &accounts),
+                    text: excerpt(
+                        message,
+                        names
+                            .entry(match message.place {
+                                MessagePlace::Channel { workspace_id, .. } => Some(workspace_id),
+                                MessagePlace::Direct { .. } => None,
+                            })
+                            .or_insert_with(|| names_of(&message.place, model, &accounts)),
+                    ),
+                    jump: Some(Jump::to(server_id, message)),
+                }
+            }
+            Some(Named::Gone) => continue,
+            Some(Named::Failed) => {
+                let local = known.zone.local(notice.created_at);
+                NoticeRow {
+                    id: notice.id,
+                    kind: notice.kind,
+                    read: notice.read_at.is_some(),
+                    place: Whereabouts::Unknown,
+                    day: text::day_or_today(local.date(), known.today),
+                    time: format!("{:02}:{:02}", local.hour(), local.minute()),
+                    author_id: None,
+                    author: String::new(),
+                    text: text::NOTICE_NOT_READ.to_owned(),
+                    jump: None,
+                }
+            }
+            None => {
+                reading = true;
+                continue;
+            }
+        };
+        rows.push(row);
+    }
+    NoticesPanel {
+        unread: rows.iter().filter(|row| !row.read).count(),
+        rows,
+        more: model.notices_more,
+        reading,
+        marking: known.notices_marking.contains(&server_id),
+        failed: known.notices_failed.get(&server_id).cloned(),
+    }
+}
+
+/// How many notices of a server the person has not read. A notice whose message is gone
+/// does not count.
+pub fn unread_notices(model: &ServerModel) -> usize {
+    model
+        .unread_notices()
+        .filter(|notice| !matches!(model.named(notice.message_id), Some(Named::Gone)))
+        .count()
+}
+
+// Notification settings.
+
+/// The level of a scope: what the account stored, and what holds without it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LevelView {
+    /// Absent: the scope takes the level of the scope above it.
+    pub stored: Option<NotificationLevel>,
+    /// The level that holds while nothing is stored. Absent when the client cannot tell
+    /// it: the server does not tell whether a workspace has a default of its
+    /// administrators.
+    pub inherited: Option<NotificationLevel>,
+}
+
+/// How long a mute lasts (ADR 0404).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MuteFor {
+    OneHour,
+    EightHours,
+    /// Until the next day begins in the time zone of the person.
+    UntilTomorrow,
+    UntilTurnedOff,
+}
+
+impl MuteFor {
+    pub const ALL: [Self; 4] = [
+        Self::OneHour,
+        Self::EightHours,
+        Self::UntilTomorrow,
+        Self::UntilTurnedOff,
+    ];
+
+    /// The end of a mute that starts at `now`. Absent: it lasts until it is turned off.
+    pub fn until(self, now: OffsetDateTime, zone: Zone) -> Option<OffsetDateTime> {
+        match self {
+            Self::OneHour => Some(now + time::Duration::hours(1)),
+            Self::EightHours => Some(now + time::Duration::hours(8)),
+            Self::UntilTomorrow => {
+                let local = zone.local(now);
+                let midnight = local.replace_time(time::Time::MIDNIGHT) + time::Duration::days(1);
+                Some(midnight.to_offset(time::UtcOffset::UTC))
+            }
+            Self::UntilTurnedOff => None,
+        }
+    }
+}
+
+/// The mute of a place as the person set it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Mute {
+    #[default]
+    Off,
+    /// Until this time, in words.
+    Until(String),
+    UntilTurnedOff,
+}
+
+impl Mute {
+    pub const fn is_on(&self) -> bool {
+        !matches!(self, Self::Off)
+    }
+
+    fn of(muted: bool, until: Option<OffsetDateTime>, known: &Known) -> Self {
+        match (muted, until, known.clock) {
+            (false, _, _) => Self::Off,
+            (true, None, _) => Self::UntilTurnedOff,
+            (true, Some(until), Some(now)) if until <= now => Self::Off,
+            (true, Some(until), _) => {
+                let local = known.zone.local(until);
+                Self::Until(text::time_and_day(local, known.today))
+            }
+        }
+    }
+
+    /// The mute that the account stored for a channel.
+    pub fn of_channel(channel_id: ChannelId, model: &ServerModel, known: &Known) -> Self {
+        match model.notification_settings(SettingsScope::Channel(channel_id)) {
+            Some(settings) => Self::of(settings.mute, settings.muted_until, known),
+            None => Self::Off,
+        }
+    }
+
+    /// The mute of the direct conversation with an account (ADR 0515).
+    pub fn of_direct(account_id: AccountId, model: &ServerModel, known: &Known) -> Self {
+        match model
+            .direct_mutes
+            .iter()
+            .find(|mute| mute.account_id == account_id)
+        {
+            Some(mute) => Self::of(true, mute.until, known),
+            None => Self::Off,
+        }
+    }
+}
+
+/// What the dialog of a channel shows beside its level.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelNotify {
+    pub mute: Mute,
+    /// A mention of a role of the person counts as a mention.
+    pub role_mentions: bool,
+    /// A mention of everyone counts as a mention.
+    pub everyone_mentions: bool,
+}
+
+/// The level that the administrators set for the members of a workspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefaultRead {
+    Reading,
+    Read(NotificationLevel),
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkspaceDefault {
+    pub level: DefaultRead,
+    /// The account administers the server and can set the level.
+    pub may_set: bool,
+}
+
+/// The notification settings of one scope, as their dialog shows them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotifyPanel {
+    pub server_id: ServerId,
+    pub scope: SettingsScope,
+    /// The name of the server, of the workspace or of the channel.
+    pub name: String,
+    pub level: LevelView,
+    /// Present for a channel.
+    pub channel: Option<ChannelNotify>,
+    /// Present for a workspace.
+    pub workspace_default: Option<WorkspaceDefault>,
+    /// A change is on its way to the server.
+    pub busy: bool,
+    /// Why the server did not take the last change.
+    pub refused: Option<String>,
+}
+
+/// The settings that the account stored for a scope, with a change that the server took
+/// and the state does not hold yet.
+pub fn stored_settings(
+    server_id: ServerId,
+    scope: SettingsScope,
+    model: &ServerModel,
+    known: &Known,
+) -> NotificationSettings {
+    known
+        .notify_sent
+        .get(&(server_id, scope.id()))
+        .cloned()
+        .or_else(|| model.notification_settings(scope).cloned())
+        .unwrap_or_default()
+}
+
+/// The level that the administrators set for a workspace, when the client can tell that
+/// they set one. The route answers "mentions only" for a workspace without a stored level
+/// too, so only the two other levels are known to be stored.
+fn known_default(
+    server_id: ServerId,
+    workspace_id: WorkspaceId,
+    known: &Known,
+) -> Option<Option<NotificationLevel>> {
+    match known.workspace_defaults.get(&(server_id, workspace_id)) {
+        Some(DefaultRead::Read(NotificationLevel::Mentions)) => Some(None),
+        Some(DefaultRead::Read(level)) => Some(Some(*level)),
+        Some(DefaultRead::Reading | DefaultRead::Failed) | None => None,
+    }
+}
+
+/// The level that holds for a scope while the account stored none for it (ADR 0409): the
+/// level of the workspace for a channel, then the level of the administrators, then the
+/// level of the account on the server, then "mentions only".
+fn inherited_level(
+    server_id: ServerId,
+    scope: SettingsScope,
+    model: &ServerModel,
+    known: &Known,
+) -> Option<NotificationLevel> {
+    let stored = |scope| stored_settings(server_id, scope, model, known).level;
+    let account = stored(SettingsScope::Account).unwrap_or(NotificationLevel::Mentions);
+    let below_workspace = |workspace_id| match known_default(server_id, workspace_id, known)? {
+        Some(level) => Some(level),
+        // "Mentions only" is the level of the administrators, or no level is stored: the
+        // two cases give the same level only when the account has that level too.
+        None => (account == NotificationLevel::Mentions).then_some(account),
+    };
+    match scope {
+        SettingsScope::Account => Some(NotificationLevel::Mentions),
+        SettingsScope::Workspace(workspace_id) => below_workspace(workspace_id),
+        SettingsScope::Channel(channel_id) => {
+            let workspace_id = model.channel(channel_id)?.channel.workspace_id;
+            match stored(SettingsScope::Workspace(workspace_id)) {
+                Some(level) => Some(level),
+                None => below_workspace(workspace_id),
+            }
+        }
+    }
+}
+
+/// The settings of a scope as their dialog shows them. Absent when the state does not
+/// hold the workspace or the channel.
+pub fn notify_panel(
+    server_id: ServerId,
+    server_name: &str,
+    scope: SettingsScope,
+    model: &ServerModel,
+    known: &Known,
+) -> Option<NotifyPanel> {
+    let settings = stored_settings(server_id, scope, model, known);
+    let (name, channel, workspace_default) = match scope {
+        SettingsScope::Account => (server_name.to_owned(), None, None),
+        SettingsScope::Workspace(workspace_id) => {
+            let workspace = model.workspace(workspace_id)?;
+            let level = known
+                .workspace_defaults
+                .get(&(server_id, workspace_id))
+                .copied()
+                .unwrap_or(DefaultRead::Reading);
+            (
+                workspace.workspace.name.clone(),
+                None,
+                Some(WorkspaceDefault {
+                    level,
+                    may_set: model.is_administrator(),
+                }),
+            )
+        }
+        SettingsScope::Channel(channel_id) => {
+            let channel = model.channel(channel_id)?;
+            (
+                channel.channel.name.clone(),
+                Some(ChannelNotify {
+                    mute: Mute::of(settings.mute, settings.muted_until, known),
+                    role_mentions: settings.role_mentions.unwrap_or(true),
+                    everyone_mentions: settings.everyone_mentions.unwrap_or(true),
+                }),
+                None,
+            )
+        }
+    };
+    let key = (server_id, scope.id());
+    Some(NotifyPanel {
+        server_id,
+        scope,
+        name,
+        level: LevelView {
+            stored: settings.level,
+            inherited: inherited_level(server_id, scope, model, known),
+        },
+        channel,
+        workspace_default,
+        busy: known.notify_busy.contains(&key),
+        refused: known
+            .notify_refused
+            .as_ref()
+            .filter(|(server, scope_id, _)| (*server, *scope_id) == key)
+            .map(|(_, _, reason)| reason.clone()),
+    })
+}
+
+// Quiet times.
+
+/// "Do not disturb" and the daily quiet time of the application. Each is data of the
+/// account on one server (ADR 0409); the application shows and sets them for every server
+/// on which the device has a session (ADR 0404).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct QuietView {
+    /// Absent: the device has a session on no server.
+    pub do_not_disturb: Option<Agreement<bool>>,
+    pub daily: Option<Agreement<Option<DailyQuiet>>>,
+    /// The account of the shown server is in its quiet time now.
+    pub quiet_now: bool,
+    pub busy: bool,
+    /// The servers that did not take the last change, by name, with the reason.
+    pub failed: Vec<(String, String)>,
+}
+
+/// A value that every server holds alike, or that differs between them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Agreement<T> {
+    All(T),
+    Differs,
+}
+
+fn agreement<T: PartialEq + Clone>(values: &[T]) -> Option<Agreement<T>> {
+    let first = values.first()?;
+    Some(if values.iter().all(|value| value == first) {
+        Agreement::All(first.clone())
+    } else {
+        Agreement::Differs
+    })
+}
+
+/// The quiet times as the settings show them. `servers` are the servers on which the
+/// device has a session and whose state it holds; `names` are the names of every saved
+/// server, for a server that did not take a change.
+pub fn quiet_view(
+    servers: &[(ServerId, &str, &ServerModel)],
+    names: &[(ServerId, &str)],
+    shown: Option<ServerId>,
+    known: &Known,
+) -> QuietView {
+    let account = |server_id: ServerId, model: &ServerModel| {
+        stored_settings(server_id, SettingsScope::Account, model, known)
+    };
+    let dnd: Vec<bool> = servers
+        .iter()
+        .map(|(server_id, _, model)| account(*server_id, model).do_not_disturb)
+        .collect();
+    let daily: Vec<Option<DailyQuiet>> = servers
+        .iter()
+        .map(|(server_id, _, model)| account(*server_id, model).daily_quiet)
+        .collect();
+    QuietView {
+        do_not_disturb: agreement(&dnd),
+        daily: agreement(&daily),
+        quiet_now: known.clock.is_some_and(|now| {
+            servers
+                .iter()
+                .any(|(server_id, _, model)| Some(*server_id) == shown && model.is_quiet(now))
+        }),
+        busy: known.quiet_busy,
+        failed: known
+            .quiet_failed
+            .iter()
+            .filter_map(|(server_id, reason)| {
+                let (_, name) = names.iter().find(|(held, _)| held == server_id)?;
+                Some(((*name).to_owned(), reason.clone()))
+            })
+            .collect(),
+    }
+}
+
+/// The minutes of a day of a time that a person typed as `22:00` or `7:30`.
+pub fn parse_clock(text: &str) -> Option<u16> {
+    let (hours, minutes) = text.trim().split_once(':')?;
+    let digits = |part: &str| part.bytes().all(|byte| byte.is_ascii_digit());
+    if !(1..=2).contains(&hours.len()) || minutes.len() != 2 || !digits(hours) || !digits(minutes) {
+        return None;
+    }
+    let (hours, minutes) = (hours.parse::<u16>().ok()?, minutes.parse::<u16>().ok()?);
+    (hours < 24 && minutes < 60).then_some(hours * 60 + minutes)
+}
+
+/// The minutes of a day as a clock shows them.
+pub fn clock_text(minutes: u16) -> String {
+    format!("{:02}:{:02}", minutes / 60, minutes % 60)
+}
+
+// System notifications.
+
+/// A notification of the operating system.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Alert {
+    /// The name of the notification for the system. A later one with the same tag
+    /// replaces it, and a press on it is told with the tag.
+    pub tag: String,
+    pub title: String,
+    pub body: String,
+}
+
+/// How many system notifications one server shows at most within [`ALERT_SPAN`].
+pub const MOST_ALERTS: usize = 3;
+/// The time in which one server shows at most [`MOST_ALERTS`].
+pub const ALERT_SPAN: time::Duration = time::Duration::seconds(10);
+/// The longest title of a system notification in characters.
+pub const ALERT_TITLE_CHARACTERS: usize = 120;
+/// How many new notices wait for the read of their message at most.
+const MOST_WAITING: usize = 32;
+/// How many shown system notifications the application remembers, to take one away when
+/// its notice was read elsewhere.
+const MOST_SHOWN: usize = 64;
+
+/// What the application remembers of the notices and the invitations of one server, to
+/// tell which are new.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Seen {
+    /// The first state of the server in this run was seen.
+    started: bool,
+    /// The newest notice that was seen, by its time and its identifier.
+    newest: Option<(OffsetDateTime, Uuid)>,
+    /// The new notices whose message is not read yet.
+    waiting: Vec<Uuid>,
+    /// The notices that have a system notification.
+    shown: Vec<ShownAlert>,
+    /// The invitations that were seen.
+    invitations: Vec<CallInvitationId>,
+    /// "Do not disturb" was on in the state that was seen last.
+    do_not_disturb: bool,
+    /// When the last system notifications of this server were shown.
+    recent: Vec<OffsetDateTime>,
+}
+
+/// A system notification of a notice that is shown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ShownAlert {
+    notice_id: Uuid,
+    tag: String,
+    /// The place of the message, when the message was read. The notification is taken
+    /// away with that place also while the state does not hold the message.
+    place: Option<MessagePlace>,
+    /// The way to the message, for a press on the notification.
+    jump: Option<Jump>,
+}
+
+impl Seen {
+    /// What a press on a system notification of this server leads to, while the
+    /// notification is shown.
+    pub fn target(&self, server_id: ServerId, tag: &str) -> Option<AlertTarget> {
+        if let Some(shown) = self.shown.iter().find(|shown| shown.tag == tag) {
+            return Some(AlertTarget::Notice {
+                server_id,
+                notice_id: shown.notice_id,
+                jump: shown.jump,
+            });
+        }
+        self.invitations
+            .iter()
+            .any(|invitation_id| invitation_tag(server_id, *invitation_id) == tag)
+            .then_some(AlertTarget::Invitation(server_id))
+    }
+
+    /// The tags of the system notifications of this server that can be on screen.
+    pub fn tags(&self, server_id: ServerId) -> Vec<String> {
+        let notices = self.shown.iter().map(|shown| shown.tag.clone());
+        let invitations = self
+            .invitations
+            .iter()
+            .map(|invitation_id| invitation_tag(server_id, *invitation_id));
+        notices.chain(invitations).collect()
+    }
+}
+
+/// What the rules of a system notification read beside the state of the server.
+pub struct AlertScene<'a> {
+    pub server_id: ServerId,
+    pub server_name: &'a str,
+    /// The device has more than one saved server: a notification names its server.
+    pub several_servers: bool,
+    pub model: &'a ServerModel,
+    pub known: &'a Known,
+    pub now: OffsetDateTime,
+    /// The window is the active window of the system.
+    pub active: bool,
+    /// What the window shows.
+    pub shown: Shown,
+}
+
+/// The system notifications to show and the tags to take away after a change.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Alerts {
+    pub show: Vec<(Alert, AlertTarget)>,
+    pub dismiss: Vec<String>,
+}
+
+/// What a press on a system notification leads to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlertTarget {
+    /// A notice, with the way to its message when the message could be read.
+    Notice {
+        server_id: ServerId,
+        notice_id: Uuid,
+        jump: Option<Jump>,
+    },
+    /// The server of an invitation into a call.
+    Invitation(ServerId),
+}
+
+pub fn notice_tag(server_id: ServerId, notice_id: Uuid) -> String {
+    format!("notice:{server_id}:{notice_id}")
+}
+
+pub fn invitation_tag(server_id: ServerId, invitation_id: CallInvitationId) -> String {
+    format!("invitation:{server_id}:{invitation_id}")
+}
+
+/// A text of a server as a system notification takes it: one line without control
+/// characters, of at most `most` characters.
+fn one_line(text: &str, most: usize) -> String {
+    let mut line: String = text
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .take(most)
+        .collect();
+    if text.chars().nth(most).is_some() {
+        line.pop();
+        line.push('…');
+    }
+    line
+}
+
+/// True when the state of the server holds the place of a message.
+fn place_held(place: &MessagePlace, model: &ServerModel) -> bool {
+    match place {
+        MessagePlace::Channel { channel_id, .. } => model.channel(*channel_id).is_some(),
+        MessagePlace::Direct {
+            conversation_id, ..
+        } => model
+            .conversations
+            .iter()
+            .any(|held| held.id == *conversation_id),
+    }
+}
+
+/// True when the window shows the place of a message to a person who looks at it.
+fn in_view(scene: &AlertScene<'_>, message: &Message) -> bool {
+    if !scene.active || scene.shown.server != Some(scene.server_id) {
+        return false;
+    }
+    let place = PlaceId::of(&message.place);
+    match message.thread_root {
+        Some(root_id) => {
+            scene.shown.thread.map(|(_, root)| root) == Some(root_id)
+                && scene.shown.place() == Some(place)
+        }
+        None => scene.shown.place() == Some(place),
+    }
+}
+
+/// True when the person muted the place of a message.
+fn muted(scene: &AlertScene<'_>, message: &Message) -> bool {
+    let model = scene.model;
+    match message.place {
+        MessagePlace::Channel { channel_id, .. } => {
+            model
+                .message_state(PlaceId::Channel(channel_id))
+                .is_some_and(|state| state.muted)
+                || Mute::of_channel(channel_id, model, scene.known).is_on()
+        }
+        MessagePlace::Direct {
+            low_account_id,
+            high_account_id,
+            ..
+        } => {
+            let other = if low_account_id == model.account.id {
+                high_account_id
+            } else {
+                low_account_id
+            };
+            Mute::of_direct(other, model, scene.known).is_on()
+        }
+    }
+}
+
+/// The rules of a system notification (ADR 0742), applied to the state of one server
+/// after a change.
+///
+/// A notice gets a system notification when it appeared after the first state of its
+/// server in this run, is unread and newer than every notice seen before, the account is
+/// not in its quiet time, the person did not mute its place, and an active window does not
+/// show its place. A notice of a quiet time is not shown later: the server tells no notice
+/// in a quiet time, so the client learns of those notices when the quiet time has ended.
+/// The notices of the state in which "do not disturb" ended are not shown, and neither is
+/// a notice that was made inside the daily quiet time. An invitation into a call gets a
+/// system notification unless the account is quiet or the window is active. One server
+/// shows at most [`MOST_ALERTS`] within [`ALERT_SPAN`]; what passes that bound is not
+/// shown later.
+pub fn alerts(seen: &mut Seen, scene: &AlertScene<'_>) -> Alerts {
+    let model = scene.model;
+    let mut alerts = Alerts::default();
+    let key = |notice: &junto_client_core::protocol::discovery::Notification| {
+        (notice.created_at, notice.id)
+    };
+    let newest = model.notices.iter().map(key).max();
+    let invitations: Vec<CallInvitationId> = model
+        .incoming_invitations()
+        .map(|invitation| invitation.id)
+        .collect();
+    let do_not_disturb = model
+        .notification_settings(SettingsScope::Account)
+        .is_some_and(|settings| settings.do_not_disturb);
+    // The notices of the first state of a server are not new. An invitation of that
+    // state waits for an answer now, and follows its rule.
+    let first = !seen.started;
+    if first {
+        seen.started = true;
+        seen.newest = newest;
+        seen.do_not_disturb = do_not_disturb;
+    }
+    let quiet = model.is_quiet(scene.now);
+    let held_back = seen.do_not_disturb && !do_not_disturb;
+    seen.do_not_disturb = do_not_disturb;
+    seen.recent
+        .retain(|at| *at <= scene.now && scene.now - *at < ALERT_SPAN);
+
+    // A system notification is taken away when its notice was read or is gone, when its
+    // message is gone or deleted, and when the state no longer holds the place of its
+    // message. The place is the one of the message as the state holds it, or the one
+    // that the message had when the notification was shown.
+    seen.shown.retain(|shown| {
+        let stays = model
+            .notices
+            .iter()
+            .find(|notice| notice.id == shown.notice_id && notice.read_at.is_none())
+            .is_some_and(|notice| {
+                let place = match model.named(notice.message_id) {
+                    Some(Named::Gone) => return false,
+                    Some(Named::Read(message)) if message.deleted => return false,
+                    Some(Named::Read(message)) => Some(&message.place),
+                    Some(Named::Failed) | None => shown.place.as_ref(),
+                };
+                place.is_none_or(|place| place_held(place, model))
+            });
+        if !stays {
+            alerts.dismiss.push(shown.tag.clone());
+        }
+        stays
+    });
+
+    // The names are needed only when something can be shown.
+    let accounts = std::cell::OnceCell::new();
+    let accounts = || accounts.get_or_init(|| account_names(scene.server_id, model, scene.known));
+    let server = scene.several_servers.then_some(scene.server_name);
+
+    // The invitations into a call (ADR 0404). They come before the notices of the same
+    // change.
+    for held in std::mem::take(&mut seen.invitations) {
+        if invitations.contains(&held) {
+            seen.invitations.push(held);
+        } else {
+            alerts.dismiss.push(invitation_tag(scene.server_id, held));
+        }
+    }
+    for invitation in model.incoming_invitations() {
+        if seen.invitations.contains(&invitation.id) {
+            continue;
+        }
+        if seen.invitations.len() >= MOST_SHOWN {
+            break;
+        }
+        seen.invitations.push(invitation.id);
+        if quiet || scene.active || seen.recent.len() >= MOST_ALERTS {
+            continue;
+        }
+        let by = accounts().get(&invitation.invited_by).map(String::as_str);
+        let channel = invitation
+            .place
+            .channel_id()
+            .and_then(|channel_id| model.channel(channel_id))
+            .map(|channel| channel.channel.name.as_str());
+        seen.recent.push(scene.now);
+        alerts.show.push((
+            Alert {
+                tag: invitation_tag(scene.server_id, invitation.id),
+                title: one_line(&text::invitation_alert(by, channel), ALERT_TITLE_CHARACTERS),
+                body: one_line(server.unwrap_or_default(), EXCERPT_CHARACTERS),
+            },
+            AlertTarget::Invitation(scene.server_id),
+        ));
+    }
+
+    if first {
+        return alerts;
+    }
+    let mut candidates: Vec<Uuid> = std::mem::take(&mut seen.waiting);
+    for notice in model.notices.iter().rev() {
+        if notice.read_at.is_none()
+            && seen.newest.is_none_or(|newest| key(notice) > newest)
+            && !candidates.contains(&notice.id)
+        {
+            candidates.push(notice.id);
+        }
+    }
+    seen.newest = seen.newest.max(newest);
+    for notice_id in candidates {
+        let Some(notice) = model
+            .notices
+            .iter()
+            .find(|notice| notice.id == notice_id && notice.read_at.is_none())
+        else {
+            continue;
+        };
+        if quiet || held_back || model.is_quiet(notice.created_at) {
+            continue;
+        }
+        let tag = notice_tag(scene.server_id, notice.id);
+        let (title, body, jump, place) = match model.named(notice.message_id) {
+            None => {
+                if seen.waiting.len() < MOST_WAITING {
+                    seen.waiting.push(notice_id);
+                }
+                continue;
+            }
+            Some(Named::Gone) => continue,
+            Some(Named::Failed) => (
+                scene.server_name.to_owned(),
+                text::ALERT_WITHOUT_TEXT.to_owned(),
+                None,
+                None,
+            ),
+            Some(Named::Read(message)) => {
+                if message.deleted || muted(scene, message) || in_view(scene, message) {
+                    continue;
+                }
+                let place = whereabouts(&message.place, model, accounts());
+                if place == Whereabouts::Unknown {
+                    continue;
+                }
+                let author = author_of(message, accounts());
+                (
+                    text::alert_title(notice.kind, &author, &place, server),
+                    excerpt(message, &names_of(&message.place, model, accounts())),
+                    Some(Jump::to(scene.server_id, message)),
+                    Some(message.place),
+                )
+            }
+        };
+        // A notice above the bound of the time span is in the list only.
+        if seen.recent.len() >= MOST_ALERTS {
+            continue;
+        }
+        seen.recent.push(scene.now);
+        seen.shown.push(ShownAlert {
+            notice_id: notice.id,
+            tag: tag.clone(),
+            place,
+            jump,
+        });
+        alerts.show.push((
+            Alert {
+                tag,
+                title: one_line(&title, ALERT_TITLE_CHARACTERS),
+                body: one_line(&body, EXCERPT_CHARACTERS),
+            },
+            AlertTarget::Notice {
+                server_id: scene.server_id,
+                notice_id: notice.id,
+                jump,
+            },
+        ));
+    }
+    // A notice that still waits for its message when the bound of the time span is
+    // reached gets no system notification later.
+    if seen.recent.len() >= MOST_ALERTS {
+        seen.waiting.clear();
+    }
+    // The application remembers a bounded number of shown notifications. One that it
+    // forgets is taken away, because nothing would take it away later.
+    if seen.shown.len() > MOST_SHOWN {
+        let excess = seen.shown.len() - MOST_SHOWN;
+        alerts
+            .dismiss
+            .extend(seen.shown.drain(..excess).map(|shown| shown.tag));
+    }
+    alerts
+}
+
+#[cfg(test)]
+mod tests;

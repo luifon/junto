@@ -2117,6 +2117,7 @@ mod calls {
                 deafen: true,
                 disconnect: true,
                 move_members: true,
+                manage_recordings: true,
             }
         );
     }

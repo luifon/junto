@@ -4,21 +4,25 @@
 //! each saved server and what the person has selected, and returns plain data that the
 //! drawing code turns into elements. The drawing code holds no rule about a server.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+use junto_client_core::api::SettingsScope;
 use junto_client_core::flow::FlowError;
 use junto_client_core::flow::access::{AccessState, ActionKind, Notice};
 use junto_client_core::live::{StreamFault, StreamStatus};
-use junto_client_core::model::{ChannelModel, Loadable, PlaceId, ServerModel, WorkspaceModel};
+use junto_client_core::model::{
+    ChannelModel, Loadable, OpenRecording, PlaceId, ServerModel, WorkspaceModel,
+};
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::account::RecoveryNotice;
 use junto_client_core::protocol::call::{BlockReason, CallPlace, LeaveReason, ShareAudio};
+use junto_client_core::protocol::discovery::NotificationSettings;
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::protocol::ids::{
     AccountId, AttachmentId, CallId, CallInvitationId, ChannelId, ConversationId, EntryRequestId,
-    MessageId, ServerId, WorkspaceId, WorkspaceRoleId,
+    MessageId, RecordingId, RecordingSegmentId, ServerId, WorkspaceId, WorkspaceRoleId,
 };
 use junto_client_core::protocol::recording::{
     Recording, RecordingFailure, RecordingState, RecordingStopReason,
@@ -34,8 +38,12 @@ use junto_media::engine::{MicrophoneState, OutputState, ShareId, ShareState};
 use junto_media::permission::MicrophoneAccess;
 use junto_media::share::{CaptureError, ShareKind};
 use time::OffsetDateTime;
+use uuid::Uuid;
 
 use super::feed::{self, Feed, MessageRow, Names, Quoted, Zone};
+use super::notices::{DefaultRead, Mute, NoticesPanel, NotifyPanel, QuietView};
+use super::recorded::TranscriptShown;
+use super::search::SearchPanel;
 
 /// What the client core holds of one saved server at one moment.
 #[derive(Debug, Clone)]
@@ -97,6 +105,13 @@ pub struct Selection {
     pub thread: Option<(ServerId, ChannelId, MessageId)>,
     /// The channel whose pinned messages the side panel shows.
     pub pins: Option<(ServerId, ChannelId)>,
+    /// The recording whose transcript the side panel shows, with its server and its
+    /// voice channel.
+    pub transcript: Option<(ServerId, ChannelId, RecordingId)>,
+    /// The server whose notices the side panel shows.
+    pub notices: Option<ServerId>,
+    /// The scope whose notification settings the dialog shows.
+    pub notify: Option<(ServerId, SettingsScope)>,
 }
 
 /// The levels of the call that this device is in, as the meters show them.
@@ -168,6 +183,43 @@ pub struct Known {
     /// The account whose direct conversation the server was asked for, while the answer
     /// is on its way.
     pub conversation_asked: Option<(ServerId, AccountId)>,
+    /// The time of the derivation, for the end of a mute and for a quiet time.
+    pub clock: Option<OffsetDateTime>,
+    /// The servers whose notices are being marked as read, one after the other.
+    pub notices_marking: HashSet<ServerId>,
+    /// Why the last mark of a notice did not reach its server.
+    pub notices_failed: HashMap<ServerId, String>,
+    /// The scopes whose notification settings are on their way to their server.
+    pub notify_busy: HashSet<(ServerId, Uuid)>,
+    /// The notification settings that a server took and that its state does not hold
+    /// yet, by their scope.
+    pub notify_sent: HashMap<(ServerId, Uuid), NotificationSettings>,
+    /// Why a server did not take the last notification settings of a scope.
+    pub notify_refused: Option<(ServerId, Uuid, String)>,
+    /// The level that the administrators set for the members of a workspace, as it was
+    /// read for the dialog of the notification settings.
+    pub workspace_defaults: HashMap<(ServerId, WorkspaceId), DefaultRead>,
+    /// The message that the person went to from a notice or a search result, with its
+    /// server. Its list marks it.
+    pub target: Option<(ServerId, MessageId, u64)>,
+    /// The search of the window.
+    pub search: Option<super::search::Search>,
+    /// The files of recordings that the person saves, and those that were saved.
+    pub segment_downloads: HashMap<(ServerId, RecordingSegmentId), DownloadProgress>,
+    /// The transcripts that the person saves as text.
+    pub text_downloads: HashMap<(ServerId, RecordingId), DownloadProgress>,
+    /// The recordings whose removal is on its way.
+    pub recordings_removing: HashSet<(ServerId, RecordingId)>,
+    /// Why the server did not do what the person asked for with a recording.
+    pub recording_refused: HashMap<(ServerId, RecordingId), String>,
+    /// The line that the transcript of the side panel was opened at.
+    pub transcript_line: Option<u32>,
+    /// The number of the last opening of a transcript at a line.
+    pub transcript_jump: u64,
+    /// A change of "do not disturb" or of the daily quiet time is on its way.
+    pub quiet_busy: bool,
+    /// The servers that did not take the last change of the quiet times, with the reason.
+    pub quiet_failed: Vec<(ServerId, String)>,
 }
 
 /// Where the fork of a thread stands that the person asked for.
@@ -268,6 +320,8 @@ pub struct DirectRow {
     pub name: Option<String>,
     pub selected: bool,
     pub unread: Unread,
+    /// The mute of the conversation as the person set it (ADR 0515).
+    pub mute: Mute,
 }
 
 /// The thread that the side panel shows (ADR 0403).
@@ -366,7 +420,7 @@ impl ServerStatus {
 /// The state of a server as the account of the session sees it. The event stream follows
 /// the access flow with a delay (ADR 0718): for that time it can still hold the state of
 /// the account before, or of a session that has ended. That state is not shown.
-fn shown_model(server: &ServerSnapshot) -> Option<&ServerModel> {
+pub(super) fn shown_model(server: &ServerSnapshot) -> Option<&ServerModel> {
     match &server.access {
         AccessState::LoggedIn { account_id, .. } => server
             .model
@@ -543,6 +597,8 @@ pub struct ChannelRow {
     pub permanent: bool,
     /// The unread threads of the channel, and the thread that the side panel shows.
     pub threads: Vec<ThreadEntry>,
+    /// The mute of the channel as the person set it.
+    pub mute: Mute,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -619,6 +675,8 @@ pub struct Allowed {
     pub deafen: bool,
     pub disconnect: bool,
     pub move_members: bool,
+    /// Remove a recording with its files and its transcript.
+    pub manage_recordings: bool,
 }
 
 /// Whether the person can turn meeting mode on in the call of this device (ADR 0512).
@@ -838,6 +896,45 @@ pub struct WorkspaceView {
     /// The account whose direct conversation the server was asked for, while the answer
     /// is on its way.
     pub conversation_asked: Option<AccountId>,
+    /// The notices of the server that the side panel shows.
+    pub notices: Option<NoticesPanel>,
+    /// The notices of the server that the person has not read.
+    pub unread_notices: usize,
+    /// The search that the side panel shows.
+    pub search: Option<SearchPanel>,
+    /// The transcript of a recording that the side panel shows.
+    pub transcript: Option<TranscriptPanel>,
+}
+
+/// The transcript of one recording of the shown voice channel, as the side panel shows it
+/// (ADR 0744).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranscriptPanel {
+    pub recording_id: RecordingId,
+    /// The name of the voice channel.
+    pub channel: String,
+    pub state: TranscriptPanelState,
+    /// The line that the panel was opened at.
+    pub line: Option<u32>,
+    /// The number of the opening of the panel at a line. The list goes to the line once
+    /// for each number.
+    pub jump: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TranscriptPanelState {
+    Reading,
+    Failed,
+    /// The server has no such recording for the account.
+    Gone,
+    Shown {
+        transcript: TranscriptShown,
+        /// The recording with the lines that were read. The panel derives a line when it
+        /// draws it.
+        open: Arc<OpenRecording>,
+        /// The names of the accounts, for the speakers.
+        names: Arc<HashMap<AccountId, String>>,
+    },
 }
 
 /// The menu of a person in a voice channel (ADR 0739): what the person of this device can
@@ -1050,6 +1147,12 @@ pub struct ShellView {
     pub entry_prompts: Vec<EntryPrompt>,
     /// The files of messages that the person saves, and those that were saved.
     pub downloads: Arc<HashMap<(ServerId, AttachmentId), DownloadProgress>>,
+    /// The notification settings that the dialog shows.
+    pub notify: Option<NotifyPanel>,
+    /// "Do not disturb" and the daily quiet time of the application.
+    pub quiet: QuietView,
+    /// The text of the search of the shown server, while it has one.
+    pub search_text: Option<String>,
 }
 
 impl ShellView {
@@ -1073,6 +1176,10 @@ pub struct Shown {
     pub thread: Option<(ChannelId, MessageId)>,
     /// The channel whose pinned messages the side panel shows.
     pub pins: Option<ChannelId>,
+    /// The side panel shows the notices of the server.
+    pub notices: bool,
+    /// The recording whose transcript the side panel shows.
+    pub transcript: Option<RecordingId>,
 }
 
 impl Shown {
@@ -1110,6 +1217,10 @@ impl ShellView {
             pins: workspace
                 .and_then(|workspace| workspace.pins.as_ref())
                 .map(|pins| pins.channel_id),
+            notices: workspace.is_some_and(|workspace| workspace.notices.is_some()),
+            transcript: workspace
+                .and_then(|workspace| workspace.transcript.as_ref())
+                .map(|transcript| transcript.recording_id),
         }
     }
 }
@@ -1356,6 +1467,7 @@ fn channel_row(
         unread: Unread::of(model, PlaceId::Channel(channel.channel.id)),
         permanent: channel.channel.permanent_messages,
         threads: Vec::new(),
+        mute: Mute::of_channel(channel.channel.id, model, known),
     }
 }
 
@@ -1535,6 +1647,7 @@ fn directs(
                 name: name_of(server_id, other, workspace, model, known),
                 selected: selected == Some(conversation.id),
                 unread: Unread::of(model, PlaceId::Direct(conversation.id)),
+                mute: Mute::of_direct(other, model, known),
             }
         })
         .collect();
@@ -1624,6 +1737,20 @@ fn workspace_view(
         .or(channel.as_ref().map(|row| PlaceId::Channel(row.id)));
     // A direct conversation has no workspace: no role of one counts in it (ADR 0302).
     let direct = conversation.is_some();
+    let accounts = super::notices::account_names(server_id, model, known);
+    let cards = channel
+        .as_ref()
+        .filter(|row| row.kind == ChannelKind::Voice && call.is_none())
+        .map(|row| feed::Cards {
+            channel: row.name.as_str(),
+            channel_id: row.id,
+            accounts: &accounts,
+            may_remove: allowed.manage_recordings,
+            downloads: &known.segment_downloads,
+            texts: &known.text_downloads,
+            removing: &known.recordings_removing,
+            refused: &known.recording_refused,
+        });
     let source = |timeline| feed::Source {
         server_id,
         model,
@@ -1632,10 +1759,15 @@ fn workspace_view(
         own_roles: if direct { &[] } else { &workspace.own_role_ids },
         may_manage: allowed.manage_messages && !direct,
         open_thread: open_thread.map(|(_, root_id)| root_id),
+        target: known
+            .target
+            .filter(|(of, _, _)| *of == server_id)
+            .map(|(_, message_id, number)| (message_id, number)),
         threads: call.is_none(),
         quoted: &known.quoted,
         zone: known.zone,
         today: known.today,
+        cards: cards.as_ref(),
     };
     let feed = place
         .and_then(|place| model.timeline(place))
@@ -1719,6 +1851,49 @@ fn workspace_view(
                 names: names.clone(),
             }
         });
+    // The transcript of a recording of the shown voice channel.
+    let transcript = selection
+        .transcript
+        .filter(|(of, channel_id, _)| *of == server_id && Some(*channel_id) == shown)
+        .filter(|_| thread.is_none() && pins.is_none() && call.is_none())
+        .zip(channel.as_ref())
+        .map(|((_, _, recording_id), row)| TranscriptPanel {
+            recording_id,
+            channel: row.name.clone(),
+            state: match model.recording(recording_id) {
+                None => TranscriptPanelState::Reading,
+                Some(open) if open.gone => TranscriptPanelState::Gone,
+                // A recording of another channel than the shown one is not shown
+                // (ADR 0714).
+                Some(open)
+                    if open
+                        .detail
+                        .loaded()
+                        .is_some_and(|detail| detail.recording.channel_id != row.id) =>
+                {
+                    TranscriptPanelState::Gone
+                }
+                Some(open) => match (&open.transcript, open.failed) {
+                    (Loadable::Loaded(_), _) => TranscriptPanelState::Shown {
+                        transcript: super::recorded::transcript(open, &accounts),
+                        open: open.clone(),
+                        names: Arc::new(accounts.clone()),
+                    },
+                    (_, Some(_)) => TranscriptPanelState::Failed,
+                    _ => TranscriptPanelState::Reading,
+                },
+            },
+            line: known.transcript_line,
+            jump: known.transcript_jump,
+        });
+    // The notices of the server lie under a thread, under the pinned messages and under
+    // a transcript, and the call of this device has its own panel.
+    let notices = selection
+        .notices
+        .filter(|of| *of == server_id)
+        .filter(|_| thread.is_none() && pins.is_none() && transcript.is_none() && call.is_none())
+        .map(|_| super::notices::notices_panel(server_id, model, known));
+    let (no_thread, no_pins, in_call) = (thread.is_none(), pins.is_none(), call.is_some());
     WorkspaceView {
         id: workspace.workspace.id,
         name: workspace.workspace.name.clone(),
@@ -1749,6 +1924,12 @@ fn workspace_view(
             .conversation_asked
             .filter(|(server, _)| *server == server_id)
             .map(|(_, account_id)| account_id),
+        search: super::search::search_panel(server_id, workspace, model, known).filter(|_| {
+            no_thread && no_pins && transcript.is_none() && notices.is_none() && !in_call
+        }),
+        transcript,
+        notices,
+        unread_notices: super::notices::unread_notices(model),
     }
 }
 
@@ -2070,6 +2251,7 @@ fn allowed(workspace: &WorkspaceModel, model: &ServerModel) -> Allowed {
         deafen: may(WorkspacePermission::DeafenMembers),
         disconnect: may(WorkspacePermission::DisconnectMembers),
         move_members: may(WorkspacePermission::MoveMembers),
+        manage_recordings: may(WorkspacePermission::ManageRecordings),
     }
 }
 
@@ -2432,6 +2614,27 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
         invitations: invitations(servers, known),
         entry_prompts: entry_prompts(servers, known),
         downloads: Arc::new(known.downloads.clone()),
+        notify: selection.notify.and_then(|(server_id, scope)| {
+            let server = servers.iter().find(|server| server.id == server_id)?;
+            let model = shown_model(server).filter(|_| status(server).shows_content())?;
+            super::notices::notify_panel(server_id, &server.name, scope, model, known)
+        }),
+        quiet: {
+            let with_session: Vec<(ServerId, &str, &ServerModel)> = servers
+                .iter()
+                .filter_map(|server| Some((server.id, server.name.as_str(), shown_model(server)?)))
+                .collect();
+            let names: Vec<(ServerId, &str)> = servers
+                .iter()
+                .map(|server| (server.id, server.name.as_str()))
+                .collect();
+            super::notices::quiet_view(&with_session, &names, selected_id, known)
+        },
+        search_text: known
+            .search
+            .as_ref()
+            .filter(|search| Some(search.server_id) == selected_id)
+            .map(|search| search.text.clone()),
         share_notice: known
             .media
             .calls

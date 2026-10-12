@@ -52,6 +52,8 @@ macro_rules! icons {
 }
 
 icons! {
+    Bell => "bell",
+    BellOff => "belloff",
     Camera => "cam",
     Chat => "thread",
     Check => "check",
@@ -88,6 +90,7 @@ icons! {
     PhonesOff => "phonesoff",
     Picture => "img",
     Pin => "pin",
+    Play => "play",
     Plus => "plus",
     Quote => "quote",
     Record => "recd",
