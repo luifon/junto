@@ -71,12 +71,14 @@ pub fn state(client: Client, start: WindowStart, cx: &mut App) -> Entity<AppStat
         state.set_opens_files(true);
     });
     let held = state.downgrade();
-    cx.on_system_notification_response(move |response, cx| {
-        if let Some(state) = held.upgrade() {
-            cx.activate(true);
-            state.update(cx, |state, cx| state.alert_pressed(&response.tag, cx));
-        }
-    });
+    if crate::notify::PlatformNotifier::available() {
+        cx.on_system_notification_response(move |response, cx| {
+            if let Some(state) = held.upgrade() {
+                cx.activate(true);
+                state.update(cx, |state, cx| state.alert_pressed(&response.tag, cx));
+            }
+        });
+    }
     state
 }
 
@@ -136,6 +138,11 @@ pub fn open_main_window(
         },
         move |window, cx| {
             window.set_rem_size(theme::rem_size(scale));
+            let held = state.clone();
+            window.on_window_should_close(cx, move |_, cx| {
+                held.update(cx, |state, cx| state.return_call(cx));
+                true
+            });
             let shell = cx.new(|cx| Shell::new(state, window, cx));
             cx.new(|cx| Root::new(shell, window, cx))
         },

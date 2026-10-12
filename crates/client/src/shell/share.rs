@@ -152,10 +152,15 @@ impl Shell {
         let follow_main = cx.spawn(async move |this, cx| {
             while main.changed().await.is_ok() {
                 let picture = main.borrow_and_update().clone();
-                let shown = picture
-                    .and_then(|picture| Some((picture.share, render_image(&picture.frame)?)));
                 if this
-                    .update(cx, |this, cx| this.show_main(shown, cx))
+                    .update(cx, |this, cx| {
+                        if this.draws_call(cx) {
+                            let shown = picture.and_then(|picture| {
+                                Some((picture.share, render_image(&picture.frame)?))
+                            });
+                            this.show_main(shown, cx);
+                        }
+                    })
                     .is_err()
                 {
                     break;
@@ -167,7 +172,11 @@ impl Shell {
             while small.changed().await.is_ok() {
                 let pictures = small.borrow_and_update().clone();
                 if this
-                    .update(cx, |this, cx| this.show_small(&pictures, cx))
+                    .update(cx, |this, cx| {
+                        if this.draws_call(cx) {
+                            this.show_small(&pictures, cx);
+                        }
+                    })
                     .is_err()
                 {
                     break;
@@ -186,7 +195,9 @@ impl Shell {
                 let pictures = cameras.borrow_and_update().clone();
                 if this
                     .update(cx, |this, cx| {
-                        this.show_cameras(&pictures, cx);
+                        if this.draws_call(cx) {
+                            this.show_cameras(&pictures, cx);
+                        }
                     })
                     .is_err()
                 {
@@ -198,6 +209,30 @@ impl Shell {
             }
         });
         self.picture_tasks = vec![follow_main, follow_small, follow_cameras];
+    }
+
+    pub(crate) fn refresh_picture_owner(&mut self, cx: &mut Context<Self>) {
+        let drawing = self.draws_call(cx);
+        if self.drawing_call == drawing {
+            return;
+        }
+        self.drawing_call = drawing;
+        let calls = self.state.read(cx).calls().clone();
+        let (main, small, cameras) = if drawing {
+            let main = calls.main_picture().borrow().clone();
+            let small = calls.small_pictures().borrow().clone();
+            let cameras = calls.camera_pictures().borrow().clone();
+            (
+                main.and_then(|picture| Some((picture.share, render_image(&picture.frame)?))),
+                small,
+                cameras,
+            )
+        } else {
+            (None, HashMap::new(), HashMap::new())
+        };
+        self.show_main(main, cx);
+        self.show_small(&small, cx);
+        self.show_cameras(&cameras, cx);
     }
 
     pub(crate) fn show_main(
@@ -1113,7 +1148,10 @@ impl Shell {
 
         // The setting affects only the tiles; the member list stays complete.
         let people = occupants(channel);
-        let hidden = panel.hide_without_video;
+        let hidden = panel.hide_without_video
+            && people
+                .iter()
+                .any(|person| self.camera_image(person).is_some());
         let tiles: Vec<AnyElement> = {
             people
                 .iter()
@@ -1134,6 +1172,7 @@ impl Shell {
                     )
                     .in_strip()
                     .sidebar(self.detached)
+                    .camera_view(self.camera_request(occupant, cx))
                     .picture(self.camera_image(occupant))
                     .speaking(matches!(
                         occupant.microphone,
@@ -1145,21 +1184,29 @@ impl Shell {
                 })
                 .collect()
         };
-        let hidden_count = people
+        let ids: Vec<_> = people.iter().map(|person| person.account_id).collect();
+        let cameras: Vec<_> = people
             .iter()
-            .filter(|person| hidden && self.camera_image(person).is_none())
-            .count();
+            .filter(|person| self.camera_image(person).is_some())
+            .map(|person| person.account_id)
+            .collect();
+        let hidden_ids = super::camera::hidden_people(&ids, &cameras, hidden);
+        let hidden_count = hidden_ids.len();
         let hidden_note = (hidden_count > 0).then(|| {
             let (strong, rest) = text::people_hidden(hidden_count);
             let line = format!("{strong}{rest}");
-            let avatars = people.iter().take(3).map(|occupant| {
-                Mosaic::new(
-                    MosaicKind::Large,
-                    occupant.account_id.as_uuid().as_u128(),
-                    20.0,
-                )
-                .radius(2.0)
-            });
+            let avatars = people
+                .iter()
+                .filter(|person| hidden_ids.contains(&person.account_id))
+                .take(3)
+                .map(|occupant| {
+                    Mosaic::new(
+                        MosaicKind::Large,
+                        occupant.account_id.as_uuid().as_u128(),
+                        20.0,
+                    )
+                    .radius(2.0)
+                });
             div()
                 .id("people-hidden")
                 .role(Role::Status)

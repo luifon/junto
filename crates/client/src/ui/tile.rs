@@ -32,6 +32,7 @@ pub const STRIP_TILE_SIZE: (f32, f32) = (148.0, 84.0);
 #[derive(IntoElement)]
 pub struct PersonTile {
     picture: Option<CameraPicture>,
+    camera_view: Option<(junto_media::calls::Calls, junto_media::engine::ShareId)>,
     id: ElementId,
     name: SharedString,
     seed: u128,
@@ -54,6 +55,7 @@ impl PersonTile {
     ) -> Self {
         Self {
             picture: None,
+            camera_view: None,
             id: id.into(),
             name: name.into(),
             seed,
@@ -65,6 +67,14 @@ impl PersonTile {
             focused: false,
             sidebar: false,
         }
+    }
+
+    pub fn camera_view(
+        mut self,
+        view: Option<(junto_media::calls::Calls, junto_media::engine::ShareId)>,
+    ) -> Self {
+        self.camera_view = view;
+        self
     }
 
     pub fn sidebar(mut self, sidebar: bool) -> Self {
@@ -105,7 +115,7 @@ impl PersonTile {
 }
 
 impl RenderOnce for PersonTile {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = theme(cx);
         let colors = theme.colors;
         let (size, avatar) = if self.sidebar {
@@ -117,6 +127,16 @@ impl RenderOnce for PersonTile {
         } else {
             (TILE_SIZE, 51.0)
         };
+        if let Some((calls, id)) = self.camera_view {
+            let scale = f32::from(window.rem_size()) / 16.0 * window.scale_factor();
+            calls.set_camera_view(
+                id,
+                (
+                    (size.0 * scale).ceil() as u32,
+                    (size.1 * scale).ceil() as u32,
+                ),
+            );
+        }
         let marks = self.marks.into_iter().map(|mark| match mark {
             TileMark::MicrophoneOff => {
                 icon(Icon::MicrophoneOff, 13.0, colors.plate_warning).into_any_element()

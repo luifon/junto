@@ -9,6 +9,8 @@ pub struct CameraFrame {
     pub mirrored: bool,
     planes: I420Buffer,
     pixels: OnceLock<Option<PictureFrame>>,
+    #[cfg(target_os = "macos")]
+    surface: OnceLock<Option<Surface>>,
 }
 impl std::fmt::Debug for CameraFrame {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -34,6 +36,8 @@ impl CameraFrame {
             mirrored,
             planes,
             pixels: OnceLock::new(),
+            #[cfg(target_os = "macos")]
+            surface: OnceLock::new(),
         })
     }
     pub fn picture(&self) -> Option<&PictureFrame> {
@@ -53,6 +57,20 @@ impl CameraFrame {
     }
     #[cfg(target_os = "macos")]
     pub fn surface(&self) -> Option<core_video::pixel_buffer::CVPixelBuffer> {
-        super::surface::convert(&self.planes, self.mirrored)
+        self.surface
+            .get_or_init(|| super::surface::convert(&self.planes, self.mirrored).map(Surface))
+            .as_ref()
+            .map(|surface| surface.0.clone())
     }
 }
+
+#[cfg(target_os = "macos")]
+struct Surface(core_video::pixel_buffer::CVPixelBuffer);
+// The buffer owns its planes and is never written after conversion. Core Video retains
+// and releases it atomically; readers only hand it to the renderer.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+unsafe impl Send for Surface {}
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+unsafe impl Sync for Surface {}

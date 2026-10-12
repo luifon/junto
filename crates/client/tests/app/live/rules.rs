@@ -859,3 +859,163 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
         .until("the call has ended", |window| window.view().call.is_none());
     scene.world.run(calls.leave());
 }
+
+#[gpui::test]
+#[ignore = "needs PostgreSQL and LiveKit"]
+fn dragging_a_person_invites_or_moves_and_the_keyboard_reaches_the_same_actions(
+    cx: &mut TestAppContext,
+) {
+    let mut scene = scene(cx);
+    scene.join_in_the_window();
+    let destination = scene.voice;
+    let source = scene
+        .window
+        .channels()
+        .into_iter()
+        .find(|row| row.kind == ChannelKind::Voice && row.id != destination)
+        .unwrap()
+        .id;
+    let CallPlace::Channel { workspace_id, .. } = scene.target.place else {
+        unreachable!()
+    };
+    let source_target = CallTarget {
+        server_id: scene.target.server_id,
+        place: CallPlace::Channel {
+            workspace_id,
+            channel_id: source,
+        },
+    };
+    enter(&scene.world, &scene.caller, source_target);
+    let person = scene.ada;
+    scene
+        .window
+        .until("the other channel has the person", |window| {
+            window.shows_named(format!("occupant:{person}"))
+        });
+    let drag = |window: &mut Window, destination: ChannelId| {
+        let from = window
+            .cx
+            .debug_bounds(crate::harness::selector(format!("occupant:{person}")))
+            .unwrap()
+            .center();
+        let to = window
+            .cx
+            .debug_bounds(crate::harness::selector(format!(
+                "channel-row:{destination}"
+            )))
+            .unwrap()
+            .center();
+        window
+            .cx
+            .simulate_mouse_down(from, gpui::MouseButton::Left, gpui::Modifiers::none());
+        window.cx.simulate_mouse_move(
+            from + gpui::point(gpui::px(12.0), gpui::px(0.0)),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        assert!(
+            window.cx.update(|_, cx| cx.has_active_drag()),
+            "the pointer movement starts a person drag"
+        );
+        window
+            .cx
+            .simulate_mouse_move(to, gpui::MouseButton::Left, gpui::Modifiers::none());
+        window
+            .cx
+            .simulate_mouse_up(to, gpui::MouseButton::Left, gpui::Modifiers::none());
+        window.cx.run_until_parked();
+        assert!(
+            !window.cx.update(|_, cx| cx.has_active_drag()),
+            "the drop consumes the person drag"
+        );
+        assert_eq!(
+            window
+                .state
+                .read_with(&window.cx, |state, _| state.pending().call_refused.clone()),
+            None
+        );
+    };
+    assert_eq!(
+        scene.window.view().person_drop(
+            junto_client::state::person_drop::PersonDrag {
+                server_id: scene.target.server_id,
+                channel_id: source,
+                account_id: person
+            },
+            destination
+        ),
+        Some(junto_client::state::person_drop::PersonDrop::Invite)
+    );
+    drag(&mut scene.window, destination);
+    let invitation = scene.invitation_for_ada();
+    assert_eq!(invitation.place, scene.target.place);
+    scene
+        .world
+        .run(
+            scene
+                .admin
+                .handle
+                .api()
+                .refuse_call_invitation(invitation.id),
+        )
+        .unwrap();
+    scene.window.until("the invitation is resolved", |window| {
+        window.shows("call-told")
+    });
+    scene.window.click("dismiss-call-told");
+
+    scene.window.click_named(format!("occupant:{person}"));
+    scene.window.press("shift-f10");
+    assert!(scene.window.shows("menu-invite"));
+    scene.window.press("down enter");
+    let invitation = scene.invitation_for_ada();
+    assert_eq!(invitation.place, scene.target.place);
+    scene
+        .world
+        .run(
+            scene
+                .admin
+                .handle
+                .api()
+                .refuse_call_invitation(invitation.id),
+        )
+        .unwrap();
+    scene
+        .window
+        .until("keyboard invitation is resolved", |window| {
+            window.shows("call-told")
+        });
+    scene.window.click("dismiss-call-told");
+
+    scene.allow_everyone(&[WorkspacePermission::MoveMembers]);
+    scene.window.until("the move permission arrived", |window| {
+        window.view().workspace().unwrap().allowed.move_members
+    });
+    drag(&mut scene.window, destination);
+    scene.window.until("the drop moved the person", |_| {
+        scene
+            .caller
+            .calls
+            .view()
+            .call
+            .is_some_and(|call| call.target == scene.target && call.phase == Phase::Connected)
+    });
+    scene.window.click_named(format!("occupant:{person}"));
+    scene.window.press("shift-f10");
+    assert!(scene.window.shows("menu-move"));
+    scene.window.press("down enter");
+    assert!(scene.window.shows("menu-back"));
+    scene.window.press("down down enter");
+    scene
+        .window
+        .until("the keyboard moved the person back", |_| {
+            scene
+                .caller
+                .calls
+                .view()
+                .call
+                .is_some_and(|call| call.target == source_target && call.phase == Phase::Connected)
+        });
+    scene.world.run(scene.caller.calls.leave());
+    scene.window.click("leave-call");
+}

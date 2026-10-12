@@ -789,6 +789,15 @@ pub fn call_notice(notice: &CallNotice) -> String {
             .unwrap_or_else(|| A_VOICE_CHANNEL.to_owned())
     };
     match notice {
+        CallNotice::DirectJoinFailed { error } => format!("The direct call could not start. {}", flow_error(error)),
+        CallNotice::DirectEnded { reason } => match reason {
+            EndReason::Server(Some(LeaveReason::AccessEnded)) => "The direct call ended because your account no longer has access.".to_owned(),
+            EndReason::Server(Some(LeaveReason::Disconnected)) => "A moderator removed you from the direct call.".to_owned(),
+            EndReason::Server(Some(LeaveReason::ConnectionLost | LeaveReason::NeverConnected)) => "The direct call ended because this device lost its media connection.".to_owned(),
+            EndReason::Elsewhere => "This device left the direct call because your account entered a call on another device.".to_owned(),
+            EndReason::Refused(error) => format!("The direct call could not reconnect. {}", flow_error(error)),
+            EndReason::Server(_) => "The direct call ended for this device.".to_owned(),
+        },
         CallNotice::JoinFailed { channel, error } => {
             let channel = named(channel);
             match error {
@@ -2257,6 +2266,8 @@ pub const CAMERA_FAILED: &str = "The camera stopped. Choose a camera or try agai
 pub const DIRECT_CALL_ENDED: &str = "Call ended";
 
 pub const CAMERA_RESTRICTED: &str = "Camera access is restricted by this system.";
+
+pub const NOTIFICATIONS_NEED_BUNDLE: &str = "System notifications are unavailable in this start. Open the installed application to enable them.";
 
 #[cfg(test)]
 mod tests {

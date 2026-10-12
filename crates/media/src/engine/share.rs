@@ -10,9 +10,7 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use junto_client_core::protocol::call::ShareAudio;
 use junto_client_core::protocol::ids::AccountId;
-use livekit::options::{
-    AudioEncoding, DegradationPreference, TrackPublishOptions, VideoEncoding, VideoPreset,
-};
+use livekit::options::{AudioEncoding, DegradationPreference, TrackPublishOptions, VideoEncoding};
 use livekit::prelude::{
     LocalAudioTrack, LocalTrack, LocalTrackPublication, LocalVideoTrack, RemoteAudioTrack,
     RemoteTrackPublication, RemoteVideoTrack, TrackSid, TrackSource,
@@ -101,36 +99,22 @@ fn picture_bitrate(size: (u32, u32), frame_rate: u32) -> u64 {
     (at_30 * u64::from(30 + frame_rate.min(60)) / 60).clamp(150_000, 8_000_000)
 }
 
-/// How the picture track of a share is encoded: the layer of the full size at the frame
-/// rate that the sharer chose, and one layer of half the size at no more than 15 pictures
-/// per second. The defaults of the call library send a share of less than 1920 pixels at
-/// 15 or 5 pictures per second, whatever the capture gives.
-pub(super) fn picture_encodings(size: (u32, u32), frame_rate: u32) -> (VideoEncoding, VideoPreset) {
+/// The full-resolution encoding keeps the chosen cadence within the publication cap.
+pub(super) fn picture_encoding(size: (u32, u32), frame_rate: u32) -> VideoEncoding {
     let frame_rate = frame_rate.clamp(1, 60);
-    let low_rate = frame_rate.min(15);
-    let low = (size.0 / 2, size.1 / 2);
-    (
-        VideoEncoding {
-            max_bitrate: picture_bitrate(size, frame_rate),
-            max_framerate: f64::from(frame_rate),
-        },
-        VideoPreset::new(
-            low.0,
-            low.1,
-            picture_bitrate(low, low_rate),
-            f64::from(low_rate),
-        ),
-    )
+    VideoEncoding {
+        max_bitrate: picture_bitrate(size, frame_rate),
+        max_framerate: f64::from(frame_rate),
+    }
 }
 
-/// How the picture track of a share is published.
+/// A lower simulcast layer would permit bandwidth adaptation to replace readable text.
 pub(super) fn picture_options(size: (u32, u32), frame_rate: u32) -> TrackPublishOptions {
-    let (encoding, low_layer) = picture_encodings(size, frame_rate);
     TrackPublishOptions {
         source: TrackSource::Screenshare,
-        video_encoding: Some(encoding),
-        simulcast_layers: Some(vec![low_layer]),
-        // Text stays readable: a busy processor lowers the frame rate, not the size.
+        video_encoding: Some(picture_encoding(size, frame_rate)),
+        simulcast: false,
+        simulcast_layers: None,
         degradation_preference: Some(DegradationPreference::MaintainResolution),
         ..TrackPublishOptions::default()
     }
@@ -1278,32 +1262,21 @@ mod tests {
     }
 
     #[test]
-    fn the_picture_track_is_encoded_at_the_chosen_frame_rate_with_one_lower_layer() {
-        let (main, low) = picture_encodings((1920, 1080), 30);
+    fn the_picture_track_is_encoded_at_the_chosen_frame_rate_and_bitrate_cap() {
+        let main = picture_encoding((1920, 1080), 30);
         assert_eq!((main.max_bitrate, main.max_framerate), (3_000_000, 30.0));
-        assert_eq!((low.width, low.height), (960, 540));
-        assert_eq!(low.encoding.max_framerate, 15.0);
-        // A window of 800 pixels at 30 pictures per second is sent at 30, not at the 5 of
-        // the defaults of the call library.
-        let (main, low) = picture_encodings((800, 600), 30);
+        let main = picture_encoding((800, 600), 30);
         assert_eq!(main.max_framerate, 30.0);
         assert!(
             (500_000..1_000_000).contains(&main.max_bitrate),
             "{}",
             main.max_bitrate
         );
-        assert_eq!((low.width, low.height), (400, 300));
-        assert!(low.encoding.max_bitrate >= 150_000 && low.encoding.max_bitrate < main.max_bitrate);
-        // The frame rates of the settings, and a bound for a very large source.
-        assert_eq!(picture_encodings((1280, 720), 15).0.max_framerate, 15.0);
-        assert_eq!(
-            picture_encodings((1280, 720), 15).1.encoding.max_framerate,
-            15.0
-        );
-        let (main, _) = picture_encodings((1280, 720), 60);
+        assert_eq!(picture_encoding((1280, 720), 15).max_framerate, 15.0);
+        let main = picture_encoding((1280, 720), 60);
         assert_eq!(main.max_framerate, 60.0);
-        assert!(main.max_bitrate > picture_encodings((1280, 720), 30).0.max_bitrate);
-        assert_eq!(picture_encodings((7680, 4320), 60).0.max_bitrate, 8_000_000);
+        assert!(main.max_bitrate > picture_encoding((1280, 720), 30).max_bitrate);
+        assert_eq!(picture_encoding((7680, 4320), 60).max_bitrate, 8_000_000);
     }
 
     #[test]
@@ -1316,8 +1289,21 @@ mod tests {
             options.degradation_preference,
             Some(DegradationPreference::MaintainResolution)
         );
-        assert!(options.simulcast);
-        assert_eq!(options.simulcast_layers.map(|layers| layers.len()), Some(1));
+        assert!(!options.simulcast);
+        assert!(options.simulcast_layers.is_none());
+    }
+
+    #[test]
+    fn a_share_has_no_lower_resolution_layer_when_bandwidth_falls() {
+        for size in [(800, 600), (1280, 720), (1920, 1080)] {
+            let encodings = livekit::options::compute_video_encodings(
+                size.0,
+                size.1,
+                &picture_options(size, 30),
+            );
+            assert_eq!(encodings.len(), 1);
+            assert_eq!(encodings[0].scale_resolution_down_by, Some(1.0));
+        }
     }
 
     #[test]

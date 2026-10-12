@@ -74,8 +74,10 @@ impl Drop for RemoteCamera {
 impl Actor {
     pub(super) fn start_camera(&mut self, device: Option<String>) {
         self.end_camera(None);
-        if !self.joined() || !self.may_send(1) {
-            self.change(|s| s.camera = CameraState::Failed(CameraError::Blocked));
+        if let Some(error) =
+            start_error(self.connection() == Connection::Connected, self.may_send(1))
+        {
+            self.change(|s| s.camera = CameraState::Failed(error));
             return;
         }
         self.camera_generation += 1;
@@ -137,9 +139,45 @@ impl Actor {
             }
             None => return,
         };
+        camera.stream = Some(stream);
+        self.publish_camera();
+    }
+    pub(super) fn pause_camera(&mut self) {
+        if let Some(camera) = &mut self.camera {
+            *camera
+                .sink
+                .source
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = None;
+            camera.publication = Publication::None;
+            camera.returning = None;
+            self.change(|s| s.camera = CameraState::Starting);
+        }
+    }
+    pub(super) fn publish_camera(&mut self) {
+        if self.room.is_none() {
+            return;
+        }
+        if !self.may_send(1) {
+            if self.camera.is_some() {
+                self.end_camera(Some(CameraError::Blocked));
+            }
+            return;
+        }
         let Some(room) = &self.room else {
             return;
         };
+        let Some(camera) = self.camera.as_mut() else {
+            return;
+        };
+        if !matches!(camera.publication, Publication::None) {
+            return;
+        }
+        let Some(stream) = &camera.stream else {
+            return;
+        };
+        let generation = camera.generation;
+        let attempt = self.attempt;
         let source = NativeVideoSource::new(
             VideoResolution {
                 width: stream.width,
@@ -161,7 +199,6 @@ impl Actor {
         {
             source.capture_frame(&VideoFrame::new(VideoRotation::VideoRotation0, frame));
         }
-        camera.stream = Some(stream);
         camera.publication = Publication::Publishing;
         let track = LocalVideoTrack::create_video_track("camera", RtcVideoSource::Native(source));
         let options = TrackPublishOptions {
@@ -188,14 +225,18 @@ impl Actor {
                 Ok(Err(error)) => Err(error.to_string()),
                 Err(_) => Err("camera publication timed out".to_owned()),
             };
-            let _ = internal.send(Internal::CameraPublished(generation, result));
+            let _ = internal.send(Internal::CameraPublished(generation, attempt, result));
         });
     }
     pub(super) fn camera_published(
         &mut self,
         generation: u64,
+        attempt: u64,
         result: Result<LocalTrackPublication, String>,
     ) {
+        if attempt != self.attempt {
+            return;
+        }
         match (
             self.camera.as_mut().filter(|c| c.generation == generation),
             result,
@@ -312,18 +353,38 @@ impl Actor {
         let mut accounts: Vec<_> = self.remote_cameras.values().map(|c| c.account).collect();
         accounts.sort();
         accounts.dedup();
-        let size = if accounts.len() > 1 {
+        self.apply_camera_views();
+        self.change(|s| s.cameras = accounts);
+    }
+    pub(super) fn set_camera_views(&mut self, views: HashMap<ShareId, (u32, u32)>) {
+        self.camera_pictures
+            .send_modify(|pictures| pictures.retain(|id, _| views.contains_key(id)));
+        self.camera_views = Some(views);
+        if let Some(camera) = &mut self.camera {
+            camera.seen = None;
+        }
+        self.apply_camera_views();
+        self.draw_cameras();
+    }
+    fn apply_camera_views(&self) {
+        let default = if self.remote_cameras.len() > 1 {
             (640, 360)
         } else {
             (1280, 720)
         };
         for camera in self.remote_cameras.values() {
+            let requested = match &self.camera_views {
+                Some(views) => views.get(&ShareId::Of(camera.account)).copied(),
+                None => Some(default),
+            };
             let publication = camera.publication.clone();
             order::in_order(move || {
-                publication.update_video_dimensions(TrackDimension(size.0, size.1))
+                publication.set_enabled(requested.is_some());
+                if let Some(size) = requested {
+                    publication.update_video_dimensions(TrackDimension(size.0, size.1));
+                }
             });
         }
-        self.change(|s| s.cameras = accounts);
     }
     pub(super) fn draw_cameras(&mut self) {
         let size = if self.remote_cameras.len() > 1 {
@@ -332,7 +393,13 @@ impl Actor {
             (1280, 720)
         };
         let mut changed = Vec::new();
-        if let Some(camera) = &mut self.camera {
+        let own_size = match &self.camera_views {
+            Some(views) => views.get(&ShareId::Own).copied(),
+            None => Some((640, 360)),
+        };
+        if let Some(camera) = &mut self.camera
+            && let Some(own_size) = own_size
+        {
             let frame = camera
                 .sink
                 .last
@@ -345,13 +412,20 @@ impl Actor {
                     .as_ref()
                     .is_none_or(|old| !Arc::ptr_eq(old, &frame))
             {
-                if let Some(picture) = CameraFrame::new(frame.as_ref(), true, (640, 360)) {
+                if let Some(picture) = CameraFrame::new(frame.as_ref(), true, own_size) {
                     changed.push((ShareId::Own, Arc::new(picture)));
                 }
                 camera.seen = Some(frame);
             }
         }
         for camera in self.remote_cameras.values_mut() {
+            let size = match &self.camera_views {
+                Some(views) => match views.get(&ShareId::Of(camera.account)) {
+                    Some(size) => *size,
+                    None => continue,
+                },
+                None => size,
+            };
             if camera.frames.has_changed().unwrap_or(false)
                 && let Some(frame) = camera.frames.borrow_and_update().clone()
                 && let Some(picture) = CameraFrame::new(frame.buffer.as_ref(), false, size)
@@ -362,5 +436,25 @@ impl Actor {
         if !changed.is_empty() {
             self.camera_pictures.send_modify(|p| p.extend(changed));
         }
+    }
+}
+
+fn start_error(connected: bool, allowed: bool) -> Option<CameraError> {
+    if !connected {
+        Some(CameraError::NotConnected)
+    } else {
+        (!allowed).then_some(CameraError::Blocked)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn a_camera_waiting_for_connection_does_not_claim_a_server_block() {
+        assert_ne!(start_error(false, true), Some(CameraError::Blocked));
+        assert!(start_error(false, true).is_some());
+        assert_eq!(start_error(true, false), Some(CameraError::Blocked));
+        assert_eq!(start_error(true, true), None);
     }
 }

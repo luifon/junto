@@ -2265,6 +2265,7 @@ mod calls {
             view.invitations,
             [Invited {
                 id: incoming.id,
+                caller: incoming.invited_by,
                 target: target(&server, &scene, daily),
                 by: Some("Ana".to_owned()),
                 channel: Some("Daily".to_owned()),
@@ -2340,6 +2341,114 @@ mod calls {
                 invitation: Some(outgoing.id),
             }]
         );
+    }
+
+    #[test]
+    fn detached_title_names_the_call_and_its_server() {
+        let scene = scene();
+        let server = scene.server();
+        let known = in_call(active(target(&server, &scene, scene.daily)));
+        let view = derive(std::slice::from_ref(&server), &Selection::default(), &known);
+        assert_eq!(view.call_title(), "Daily · Acme Studio");
+    }
+
+    #[test]
+    fn renewed_identity_and_moderator_moves_keep_the_detached_window() {
+        let scene = scene();
+        let server = scene.server();
+        let before = active(target(&server, &scene, scene.daily));
+        let mut after = before.clone();
+        after.identity = "renewed-seat".to_owned();
+        assert_eq!(
+            crate::state::call_window::call_transition(Some(&before), Some(&after)),
+            (false, false)
+        );
+        after.target = target(&server, &scene, scene.hidden);
+        assert_eq!(
+            crate::state::call_window::call_transition(Some(&before), Some(&after)),
+            (false, true)
+        );
+        assert_eq!(
+            crate::state::call_window::call_transition(Some(&before), None),
+            (true, false)
+        );
+    }
+
+    #[test]
+    fn a_person_drop_chooses_invite_or_move_from_current_permissions() {
+        use crate::state::person_drop::{PersonDrag, PersonDrop};
+        let mut scene = scene();
+        let (own, daily, other_room) = (scene.own, scene.daily, scene.hidden);
+        scene
+            .studio_mut()
+            .channels
+            .iter_mut()
+            .find(|c| c.id == other_room)
+            .unwrap()
+            .hides_occupants = false;
+        let other = AccountId::generate();
+        scene.call(daily, vec![participant(own)]);
+        scene.call(other_room, vec![participant(other)]);
+        for may_move in [false, true] {
+            scene.snapshot.account.is_owner = may_move;
+            let server = scene.server();
+            let known = in_call(active(target(&server, &scene, daily)));
+            let view = derive(std::slice::from_ref(&server), &Selection::default(), &known);
+            let person = PersonDrag {
+                server_id: server.id,
+                channel_id: other_room,
+                account_id: other,
+            };
+            assert_eq!(
+                view.person_drop(person, daily),
+                Some(if may_move {
+                    PersonDrop::Move
+                } else {
+                    PersonDrop::Invite
+                })
+            );
+            assert_eq!(view.person_drop(person, other_room), None);
+            assert_eq!(view.person_drop(person, scene.general), None);
+            assert_eq!(
+                view.person_drop(
+                    PersonDrag {
+                        server_id: ServerId::generate(),
+                        ..person
+                    },
+                    daily
+                ),
+                None
+            );
+            assert_eq!(
+                view.person_drop(
+                    PersonDrag {
+                        account_id: own,
+                        ..person
+                    },
+                    daily
+                ),
+                None
+            );
+            assert_eq!(
+                view.person_drop(
+                    PersonDrag {
+                        account_id: AccountId::generate(),
+                        ..person
+                    },
+                    daily
+                ),
+                None
+            );
+            let outside = derive(
+                std::slice::from_ref(&server),
+                &Selection::default(),
+                &Known::default(),
+            );
+            assert_eq!(
+                outside.person_drop(person, daily),
+                may_move.then_some(PersonDrop::Move)
+            );
+        }
     }
 
     #[test]
@@ -2456,9 +2565,60 @@ fn direct_call_refusals_name_the_direct_call() {
             },
         });
         let notice = call_notice(&[], &known).unwrap();
-        assert!(
-            matches!(&notice, CallNotice::JoinFailed { channel: Some(name), .. } if name == crate::text::DIRECT_CALL)
-        );
+        assert!(matches!(&notice, CallNotice::DirectJoinFailed { .. }));
         assert!(!crate::text::call_notice(&notice).contains(crate::text::A_VOICE_CHANNEL));
+    }
+}
+
+#[test]
+fn a_direct_invitation_names_the_caller_without_a_cached_name() {
+    use junto_client_core::protocol::{call::CallInvitation, ids::CallInvitationId};
+    let mut scene = scene();
+    let caller = AccountId::generate();
+    scene.snapshot.call_invitations.push(CallInvitation {
+        id: CallInvitationId::generate(),
+        call_id: CallId::generate(),
+        place: CallPlace::direct(scene.own, caller),
+        account_id: scene.own,
+        invited_by: caller,
+        created_at: time(),
+        expires_at: time() + time::Duration::seconds(60),
+    });
+    let mut model = scene.model();
+    Arc::make_mut(&mut model.workspaces[1]).members = Loadable::Loaded(vec![WorkspaceMember {
+        account_id: caller,
+        name: "Ana".to_owned(),
+        role_ids: Vec::new(),
+    }]);
+    let server = server("Acme Studio", Some(model), logged_in(scene.own, Vec::new()));
+    let view = derive_one(&server);
+    assert_eq!(view.invitations.len(), 1);
+    assert_eq!(view.invitations[0].by.as_deref(), Some("Ana"));
+}
+
+#[test]
+fn direct_call_end_notices_do_not_describe_a_voice_channel() {
+    use junto_client_core::protocol::call::LeaveReason;
+    use junto_media::calls::{EndReason, Outcome};
+    let scene = scene();
+    let server = scene.server();
+    let target = CallTarget {
+        server_id: server.id,
+        place: CallPlace::direct(scene.own, AccountId::generate()),
+    };
+    for reason in [
+        EndReason::Server(Some(LeaveReason::AccessEnded)),
+        EndReason::Server(Some(LeaveReason::Disconnected)),
+        EndReason::Server(Some(LeaveReason::ConnectionLost)),
+        EndReason::Server(Some(LeaveReason::NeverConnected)),
+        EndReason::Elsewhere,
+        EndReason::Refused(FlowError::NotAvailable),
+    ] {
+        let mut known = Known::default();
+        known.media.calls.outcome = Some(Outcome::Ended { target, reason });
+        let view = derive(std::slice::from_ref(&server), &Selection::default(), &known);
+        let line = crate::text::call_notice(view.call_notice.as_ref().unwrap());
+        assert!(!line.contains("voice channel"), "{line}");
+        assert!(!line.contains("in Direct call"), "{line}");
     }
 }

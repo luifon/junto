@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CallWindowSettings {
+    pub display: Option<uuid::Uuid>,
     pub x: Option<i32>,
     pub y: Option<i32>,
     pub width: u32,
@@ -16,6 +17,7 @@ pub struct CallWindowSettings {
 impl Default for CallWindowSettings {
     fn default() -> Self {
         Self {
+            display: None,
             x: None,
             y: None,
             width: 680,
@@ -98,6 +100,7 @@ mod tests {
         let store = CallWindowStore::new(dir.clone());
         assert_eq!(store.load().unwrap(), CallWindowSettings::default());
         let choice = CallWindowSettings {
+            display: None,
             x: Some(-700),
             y: Some(40),
             width: 960,
@@ -107,6 +110,24 @@ mod tests {
         store.save(choice).unwrap();
         assert_eq!(CallWindowStore::new(dir).load().unwrap(), choice);
     }
+    #[test]
+    fn call_window_settings_keep_the_display_with_its_relative_position() {
+        let display = uuid::Uuid::new_v4();
+        let choice: CallWindowSettings = serde_json::from_value(serde_json::json!({
+            "display": display, "x": 80, "y": 40, "width": 960, "height": 600,
+            "keep_on_top": true
+        }))
+        .unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let dir = DataDir::open(temp.path().join("data")).unwrap();
+        let store = CallWindowStore::new(dir);
+        store.save(choice).unwrap();
+        let saved = serde_json::to_value(store.load().unwrap()).unwrap();
+        assert_eq!(saved["display"], serde_json::json!(display));
+        assert_eq!(saved["x"], 80);
+        assert_eq!(saved["y"], 40);
+    }
+
     #[test]
     fn call_window_settings_bound_sizes_and_preserve_newer_files() {
         let temp = tempfile::tempdir().unwrap();

@@ -22,6 +22,20 @@ fn pictures() -> HashMap<ShareId, Arc<CameraFrame>> {
 pub(super) fn draw(studio: &mut Studio) -> Result<(), String> {
     for (name, focus, hide, detached, phase) in [
         ("camera-grid", false, false, false, Phase::Connected),
+        (
+            "camera-no-video-hidden",
+            false,
+            true,
+            false,
+            Phase::Connected,
+        ),
+        (
+            "call-connecting-cameras",
+            false,
+            false,
+            false,
+            Phase::Connecting,
+        ),
         ("camera-speaker", true, false, false, Phase::Connected),
         (
             "camera-hide-without-video",
@@ -42,7 +56,10 @@ pub(super) fn draw(studio: &mut Studio) -> Result<(), String> {
     ] {
         let mut media = in_call(phase);
         media.voice.hide_people_without_video = hide;
-        if let Some(call) = &mut media.calls.call {
+        if let Some(call) = &mut media.calls.call
+            && name != "camera-no-video-hidden"
+            && phase != Phase::Connecting
+        {
             call.camera = CameraState::Running;
             call.cameras = vec![person("Ana"), person("Carla")];
         }
@@ -52,7 +69,16 @@ pub(super) fn draw(studio: &mut Studio) -> Result<(), String> {
         }
         studio.draw(screen, move |shell, window, cx| {
             show_daily(shell, window, cx);
-            shell.show_cameras_fixture(pictures(), focus, detached, cx);
+            shell.show_cameras_fixture(
+                if name == "camera-no-video-hidden" {
+                    HashMap::new()
+                } else {
+                    pictures()
+                },
+                focus,
+                detached,
+                cx,
+            );
         })?;
     }
     let carla = ShareId::Of(person("Carla"));
@@ -84,6 +110,8 @@ pub(super) fn draw(studio: &mut Studio) -> Result<(), String> {
         ("camera-disconnected", CameraError::DeviceGone),
         ("camera-interrupted", CameraError::Interrupted),
         ("camera-unavailable", CameraError::Unsupported),
+        ("camera-blocked", CameraError::Blocked),
+        ("camera-not-connected", CameraError::NotConnected),
     ] {
         let mut media = in_call(Phase::Connected);
         if let Some(call) = &mut media.calls.call {

@@ -13,6 +13,7 @@ struct State {
     colours: (Colour, Colour),
     delay: Duration,
     starts: usize,
+    device_reads: usize,
     active: Vec<Weak<AtomicBool>>,
 }
 
@@ -37,6 +38,7 @@ impl SyntheticCamera {
                 colours: ((200, 30, 30), (30, 30, 200)),
                 delay: Duration::ZERO,
                 starts: 0,
+                device_reads: 0,
                 active: Vec::new(),
             })),
         }
@@ -55,6 +57,9 @@ impl SyntheticCamera {
     }
     pub fn set_start_delay(&self, delay: Duration) {
         self.lock().delay = delay;
+    }
+    pub fn device_reads(&self) -> usize {
+        self.lock().device_reads
     }
     pub fn started(&self) -> usize {
         self.lock().starts
@@ -85,7 +90,9 @@ impl CameraCapture for SyntheticCamera {
         })
     }
     fn devices(&self) -> Result<Vec<CameraDevice>, CameraError> {
-        Ok(self.lock().devices.clone())
+        let mut state = self.lock();
+        state.device_reads += 1;
+        Ok(state.devices.clone())
     }
     fn start(
         &self,

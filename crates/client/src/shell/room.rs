@@ -1216,6 +1216,13 @@ impl Shell {
         let mut notices = Vec::new();
         for (index, invited) in view.invitations.iter().enumerate() {
             let (accepted, declined) = (invited.clone(), invited.clone());
+            if matches!(
+                invited.target.place,
+                junto_client_core::protocol::call::CallPlace::Direct { .. }
+            ) {
+                notices.push(self.render_incoming_direct(invited, index, cx));
+                continue;
+            }
             notices.push(wrap(
                 Notice::new(text::invitation(
                     invited.by.as_deref(),

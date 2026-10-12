@@ -11,6 +11,10 @@ impl RingPlayer {
     pub fn new(host: Arc<dyn AudioHost>) -> Self {
         Self { host, stream: None }
     }
+    pub fn is_ringing(&self) -> bool {
+        self.stream.is_some()
+    }
+
     pub fn set_ringing(
         &mut self,
         ringing: bool,

@@ -2,7 +2,7 @@
 
 The Junto desktop application: a gpui window on `junto-client-core` and `junto-media`. The binary is `junto`. The design decisions are in [`docs/adr/`](../../docs/adr/README.md): ADR 0730 describes this crate, ADR 0731 its theme and components, ADR 0732 joining a server in the window, ADR 0733 the media engine, ADR 0734 the call of a client, ADR 0735 the screens of a voice call, ADR 0736 the screen capture, ADR 0737 shares in the media engine, ADR 0738 the screens of a share and of a recording, ADR 0739 the rules of a call, ADR 0740 the message list and the composer, ADR 0741 the thread panel, pins, permanent messages and direct conversations, ADR 0742 the notices, the notification settings and the system notifications, ADR 0743 the search, and ADR 0744 the card of a recording and the transcript.
 
-This version shows the servers of the server book, their workspaces and channels, the people in voice channels, and the state of each server. It joins a server with a code or a request for access, and it holds a voice call in a voice channel: microphone, sound, mute, a volume per person, levels, push-to-talk and the choice of the sound devices. In a call a person shares a screen or a window with its sound, watches the shares of the others, starts and stops a recording, and uses the rules of the room: meeting mode with raised hands, the lock, the user limit, requests to enter, invitations, the menu of a person with blocks, removal and move. A person reads and writes messages in a text channel, in the chat of a voice channel and in a direct conversation: formatted text, replies, mentions, reactions, files, edits and deletions, with unread signs in the channel list. A person answers in the thread of a message, forks a thread into a channel, and pins messages. The application lists the notices of a person, takes the notification level of a server, a workspace and a channel, the mute of a place and the quiet times, and shows notifications of the system. It searches messages and transcripts. A finished recording is a card in the chat of its voice channel, with its files and its transcript. It has no camera, no direct-message calls, no list of the recordings of a workspace, and no correction of a transcript. It is built and tested on macOS and builds for Linux, where the screen capture is not built yet; Windows is not supported yet.
+This version shows the servers of the server book, their workspaces and channels, the people in voice channels, and the state of each server. It joins a server with a code or a request for access, and it holds a voice call in a voice channel: microphone, sound, mute, a volume per person, levels, push-to-talk and the choice of the sound devices. In a call a person shares a screen or a window with its sound, watches the shares of the others, starts and stops a recording, and uses the rules of the room: meeting mode with raised hands, the lock, the user limit, requests to enter, invitations, the menu of a person with blocks, removal and move. A person reads and writes messages in a text channel, in the chat of a voice channel and in a direct conversation: formatted text, replies, mentions, reactions, files, edits and deletions, with unread signs in the channel list. A person answers in the thread of a message, forks a thread into a channel, and pins messages. The application lists the notices of a person, takes the notification level of a server, a workspace and a channel, the mute of a place and the quiet times, and shows notifications of the system. It searches messages and transcripts. A finished recording is a card in the chat of its voice channel, with its files and its transcript. It supports cameras, direct-message calls and a detached call window. It has no list of the recordings of a workspace and no correction of a transcript. It is built and tested on macOS and builds for Linux, where the screen capture is not built yet; Windows is not supported yet.
 
 ## Run it locally
 
@@ -127,6 +127,14 @@ Two instances on one machine share one microphone and one output:
 
 Echo cancellation, noise suppression, automatic gain and push-to-talk are in the app settings (the gear beside the name). Push-to-talk sends the microphone while the Option or the Control key is held and the window has the focus.
 
+## Cameras and the detached window
+
+The camera button starts and stops the chosen camera. The Settings tab of a voice call chooses the camera and stores the choice for calls. Permission is requested only after the person starts a camera. Refused permission, a restricted system, a disconnected device and interrupted capture have separate notices. The local preview is mirrored; pictures sent to other people are not. Clicking a camera tile focuses it, and the view setting can hide people without video.
+
+Detach opens the current call in another window. Return or closing that window puts it back; Leave ends the call. Pin stores the always-on-top choice, and Fullscreen changes the call window. Its windowed position and size are stored in `call-window.json`. Native always-on-top behavior on Linux requires the platform integration described in ADR 0772.
+
+The generated camera tests check received frame colors, capture shutdown, reconnect and independence from microphone blocks. The detached-window tests exercise controls and shared call ownership on the test platform. These tests do not open a camera or verify native window stacking or a permission dialog.
+
 ## Sharing a window with sound between two instances
 
 Both instances are in one call (see above). In the first instance:
@@ -189,6 +197,7 @@ JUNTO_DATA_DIR=/tmp/junto-first cargo run -p junto-client-core --bin junto-cli -
 | `--data-dir <directory>` | The data directory. Default: the variable `JUNTO_DATA_DIR`, then the directory of the user (ADR 0710). |
 | `--scale <percent>` | The interface scale of this start, from 90 to 150. The stored setting stays. |
 | `--no-activate` | Open the window without bringing it to the front. |
+| `--check-startup` | Exit successfully after the first completed window frame; also disables activation. |
 
 The variable `JUNTO_LOG_LEVEL` sets the level of the log on standard error (`warn` by default).
 
@@ -202,7 +211,7 @@ The tests in `tests/app` open the window code on gpui's test platform, with a cl
 
 `tests/app/recordings.rs` runs the server of this checkout inside the test process with its recorder in memory, because the server binary has no such recorder. It makes a recording, lets the server process the files with `ffmpeg` and `ffprobe` (both must be installed), and checks the card, the saved files against the files of the server, the transcript, the result of a search, and the removal.
 
-No test opens a microphone, plays a sound or captures a screen: the microphone of each client is a tone, its output is a sink that measures what would be played, and its screen capture is a picture of two colours with a tone on each channel. No test causes a permission question of the system. The tests of a call need a LiveKit server and are ignored in the plain run:
+No test opens a microphone or camera, plays a sound or captures a screen: the microphone of each client is a tone, its output is a sink that measures what would be played, and its screen capture is a picture of two colours with a tone on each channel. No test causes a permission question of the system. The tests of a call need a LiveKit server and are ignored in the plain run:
 
 ```sh
 tools/with-test-postgres.sh tools/with-test-livekit.sh tools/serial.sh \
@@ -211,7 +220,7 @@ tools/with-test-postgres.sh tools/with-test-livekit.sh tools/serial.sh \
     cargo test -p junto-media --test calls -- --ignored
 ```
 
-The first command runs the window against a real server and a real media server: a call, a share, the request for a recording, the read position of the chat of a call, and the rules of a room (a locked, full and hidden room with the request to enter, meeting mode as participant and as presenter, invitations, and the menu of a person with the blocks, a move and a removal). The second command runs the tests of the media engine: two clients that hear each other, mute, a microphone block, the devices, the microphone permission, one call over two servers, a leave while a join or a new token is on its way, the return of a call after the media server was restarted, and the shares: a share with its picture and its sound, two shares and the choice of the viewer, the layer that the media server sends for a drawn size, a share that ends by itself, the blocks of the server, a move between voice channels, and a person whom the presenter of meeting mode allows to speak.
+The first command runs the window against a real server and a real media server: a call, a share, the request for a recording, the read position of the chat of a call, and the rules of a room (a locked, full and hidden room with the request to enter, meeting mode as participant and as presenter, invitations, and the menu of a person with the blocks, a move and a removal). The second command runs the tests of the media engine: two clients that hear each other, mute, a microphone block, the devices, the microphone permission, one call over two servers, a leave while a join or a new token is on its way, the return of a call after the media server was restarted, and the shares: a share with its picture and its sound, two shares and the choice of the viewer, full-resolution share reception and the conversion bounds of the final drawing size, a share that ends by itself, the blocks of the server, a move between voice channels, and a person whom the presenter of meeting mode allows to speak.
 
 The calls to ScreenCaptureKit are not run by a test. The parts of the macOS capture that decide something (which application is Junto, which windows are listed, how a sound buffer is read) are functions with tests; the first real share is a test by a person.
 
@@ -223,7 +232,7 @@ The calls to ScreenCaptureKit are not run by a test. The parts of the macOS capt
 cargo run -p junto-client --features test-support --bin junto-screens -- <directory>
 ```
 
-The variable `JUNTO_SCREENS_ONLY` limits the run to one set: `shares`, `rules`, `messages`, `threads`, `discovery` (notices, notification settings, search) or `recorded` (the card of a recording and the transcript). The set `frames` writes no picture: it draws the window with 50 and with 10,000 messages and prints the time of a frame without a change, after a scroll, and after a new message (ADR 0740). Run it with `--release` for times that say something about the application.
+The variable `JUNTO_SCREENS_ONLY` limits the run to one set: `shares`, `rules`, `messages`, `threads`, `discovery` (notices, notification settings, search) `recorded` (the card of a recording and the transcript), or `cameras` (camera states, direct calls and the detached window). The set `frames` writes no picture: it draws the window with 50 and with 10,000 messages and prints the time of a frame without a change, after a scroll, and after a new message (ADR 0740). Run it with `--release` for times that say something about the application.
 
 ## Layout of the crate
 
@@ -241,3 +250,18 @@ The variable `JUNTO_SCREENS_ONLY` limits the run to one set: `shares`, `rules`, 
 | `src/highlight.rs` | The syntax colours of a code block. |
 | `src/shell/` | The main window. `call.rs` draws the call, `share.rs` the dialog and the stage of a share, `room.rs` the rules of the room of a call, `feed.rs` the message list, `composer.rs` the composer with its pickers, `notices.rs` the notices and the notification settings, `search.rs` the search, and `recorded.rs` the card of a recording and the transcript. |
 | `src/bin/junto-screens.rs`, `src/bin/junto-screens/` | The tool that draws the screens. |
+
+
+## Call movement and startup checks
+
+Drag another person from a voice channel onto a voice channel. With the move permission, this requests a move; otherwise the destination must be the current call and the action sends an invitation. The drop is checked against the current state. The server decides access and permission in both places, and a refusal is shown without changing the source call. Focus a person and press Shift+F10 for the same Invite or Move to actions, then use arrow keys and Enter.
+
+The detached call follows token renewal and moderator moves. Its title includes the call and server. Closing the main window also closes the detached window; Return keeps the call connected. Window placement is stored against the display UUID, with consecutive changes coalesced into the latest placement.
+
+A bare macOS executable does not register system notifications: these require an application bundle. Settings explains their unavailability. Permission usage descriptions remain embedded for camera and microphone actions. A native startup check uses an empty data directory and exits after a completed frame:
+
+```sh
+tools/serial.sh sh tools/check-client-start.sh <empty-data-directory>
+```
+
+This check opens a native window without activation. It is separate from the headless window tier and does not verify camera hardware, permission dialogs, native fullscreen or window ordering.

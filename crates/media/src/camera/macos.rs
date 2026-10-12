@@ -9,12 +9,13 @@ use std::time::Duration;
 use block2::RcBlock;
 use dispatch2::DispatchQueue;
 use livekit::webrtc::video_frame::native::NativeBuffer;
-use objc2::rc::Retained;
+use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{AnyObject, Bool, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, define_class, msg_send};
 use objc2_av_foundation::{
     AVAuthorizationStatus, AVCaptureConnection, AVCaptureDevice, AVCaptureDeviceInput,
-    AVCaptureOutput, AVCaptureSession, AVCaptureSessionPreset1280x720, AVCaptureVideoDataOutput,
+    AVCaptureOutput, AVCaptureSession, AVCaptureSessionPreset352x288,
+    AVCaptureSessionPreset640x480, AVCaptureSessionPreset1280x720, AVCaptureVideoDataOutput,
     AVCaptureVideoDataOutputSampleBufferDelegate, AVMediaTypeVideo,
 };
 use objc2_core_foundation::CFRetained;
@@ -77,7 +78,7 @@ impl CameraCapture for SystemCamera {
 
     fn devices(&self) -> Result<Vec<CameraDevice>, CameraError> {
         // SAFETY: enumeration opens no device and asks no permission.
-        unsafe {
+        autoreleasepool(|_| unsafe {
             let video = AVMediaTypeVideo.ok_or(CameraError::Unsupported)?;
             #[allow(deprecated)]
             let devices = AVCaptureDevice::devicesWithMediaType(video);
@@ -89,7 +90,7 @@ impl CameraCapture for SystemCamera {
                     name: device.localizedName().to_string(),
                 })
                 .collect())
-        }
+        })
     }
 
     fn start(
@@ -111,12 +112,12 @@ impl CameraCapture for SystemCamera {
                     // SAFETY: all session operations are on this thread. The delegate is
                     // retained until the session and its serial delivery queue have stopped.
                     unsafe {
-                        match Session::open(&device.id, sink.clone()) {
+                        match autoreleasepool(|_| Session::open(&device.id, sink.clone())) {
                             Err(error) => {
                                 let _ = ready.send(Err(error));
                             }
                             Ok(session) => {
-                                if ready.send(Ok(())).is_err() {
+                                if ready.send(Ok(session.size)).is_err() {
                                     return;
                                 }
                                 loop {
@@ -124,17 +125,19 @@ impl CameraCapture for SystemCamera {
                                         Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                                         Err(mpsc::RecvTimeoutError::Timeout) => {}
                                     }
-                                    let failure = if !session.device.isConnected() {
-                                        Some(CameraError::DeviceGone)
-                                    } else if access_now_denied() {
-                                        Some(CameraError::NoPermission(access()))
-                                    } else if !session.session.isRunning()
-                                        || session.session.isInterrupted()
-                                    {
-                                        Some(CameraError::Interrupted)
-                                    } else {
-                                        None
-                                    };
+                                    let failure = autoreleasepool(|_| {
+                                        if !session.device.isConnected() {
+                                            Some(CameraError::DeviceGone)
+                                        } else if access_now_denied() {
+                                            Some(CameraError::NoPermission(access()))
+                                        } else if !session.session.isRunning()
+                                            || session.session.isInterrupted()
+                                        {
+                                            Some(CameraError::Interrupted)
+                                        } else {
+                                            None
+                                        }
+                                    });
                                     if let Some(error) = failure {
                                         drop(session);
                                         sink.ended(error);
@@ -150,10 +153,10 @@ impl CameraCapture for SystemCamera {
                 stop,
                 thread: Some(thread),
             };
-            result
+            let (width, height) = result
                 .await
                 .map_err(|_| CameraError::Failed("capture stopped before starting".into()))??;
-            Ok(CaptureStream::new(1280, 720, stream))
+            Ok(CaptureStream::new(width, height, stream))
         })
     }
 }
@@ -169,9 +172,8 @@ struct Running {
 impl Drop for Running {
     fn drop(&mut self) {
         let _ = self.stop.send(());
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+        // The capture thread owns shutdown; dropping a stream must not block the call.
+        self.thread.take();
     }
 }
 
@@ -204,6 +206,7 @@ define_class!(
 );
 
 struct Session {
+    size: (u32, u32),
     session: Retained<AVCaptureSession>,
     device: Retained<AVCaptureDevice>,
     output: Retained<AVCaptureVideoDataOutput>,
@@ -219,19 +222,20 @@ impl Session {
             let input = AVCaptureDeviceInput::deviceInputWithDevice_error(&device)
                 .map_err(|error| CameraError::Failed(error.localizedDescription().to_string()))?;
             let session = AVCaptureSession::new();
-            let preset = AVCaptureSessionPreset1280x720;
             if !session.canAddInput(&input) {
-                return Err(CameraError::Failed(
-                    "camera does not support 720p capture".into(),
-                ));
+                return Err(CameraError::Failed("camera input is unavailable".into()));
             }
             session.addInput(&input);
-            if !session.canSetSessionPreset(preset) {
-                return Err(CameraError::Failed(
-                    "camera does not support 720p capture".into(),
-                ));
-            }
-            session.setSessionPreset(preset);
+            let preset = |size| match size {
+                (1280, 720) => AVCaptureSessionPreset1280x720,
+                (640, 480) => AVCaptureSessionPreset640x480,
+                _ => AVCaptureSessionPreset352x288,
+            };
+            let size = super::format::choose(|size| session.canSetSessionPreset(preset(size)))
+                .ok_or_else(|| {
+                    CameraError::Failed("camera has no supported capture size".into())
+                })?;
+            session.setSessionPreset(preset(size));
             let output = AVCaptureVideoDataOutput::new();
             output.setAlwaysDiscardsLateVideoFrames(true);
             let key = NSString::from_str("PixelFormatType");
@@ -257,6 +261,7 @@ impl Session {
                 connection.setVideoMirrored(false);
             }
             let held = Self {
+                size,
                 session,
                 device,
                 output,
@@ -274,10 +279,10 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         // SAFETY: shutdown runs on the owning thread, outside the delivery queue.
-        unsafe {
+        autoreleasepool(|_| unsafe {
             self.session.stopRunning();
             self.output.setSampleBufferDelegate_queue(None, None);
-        }
+        });
         self.queue.exec_sync(|| {});
     }
 }

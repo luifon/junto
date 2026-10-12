@@ -1,5 +1,7 @@
 use super::*;
+mod writes;
 use junto_client_core::call_window::{CallWindowSettings, CallWindowStore};
+pub(super) use writes::Writes;
 impl AppState {
     pub fn window_talking(&mut self, window: gpui::EntityId, talking: bool) {
         if talking {
@@ -37,9 +39,32 @@ impl AppState {
     pub fn save_call_window(&mut self, settings: CallWindowSettings, cx: &mut Context<Self>) {
         self.call_window_settings = settings;
         let store = CallWindowStore::new(self.client.data_dir().clone());
+        let writes = self.call_window_writes.clone();
+        if !writes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(settings)
+        {
+            return;
+        }
         Self::queue_write(
             cx,
-            move || store.save(settings),
+            move || {
+                let mut result = Ok(());
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                    let next = writes
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take();
+                    let Some(next) = next else {
+                        return result;
+                    };
+                    if let Err(error) = store.save(next) {
+                        result = Err(error);
+                    }
+                }
+            },
             |_, result, _| {
                 if let Err(error) = result {
                     tracing::warn!(%error, "the call window settings were not stored");
@@ -78,6 +103,19 @@ impl AppState {
         } else {
             known
         };
-        view::derive(&self.snapshots(), &selection, &known)
+        self.direct
+            .filter_view(view::derive(&self.snapshots(), &selection, &known))
     }
+}
+
+pub(super) fn call_transition(
+    before: Option<&junto_media::calls::ActiveCall>,
+    after: Option<&junto_media::calls::ActiveCall>,
+) -> (bool, bool) {
+    let before = before.map(|call| call.target);
+    let after = after.map(|call| call.target);
+    (
+        before.is_some() && after.is_none(),
+        after.is_some() && before != after,
+    )
 }

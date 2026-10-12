@@ -234,3 +234,100 @@ async fn camera_returns_after_full_reconnect_without_reopening_capture() {
     one.calls.leave().await;
     two.calls.leave().await;
 }
+
+#[tokio::test]
+#[ignore = "needs PostgreSQL and LiveKit"]
+async fn camera_returns_after_connection_loss_without_reopening_capture() {
+    let _media = MEDIA_SERVER.read().await;
+    let one = Person::new(440.0);
+    let two = Person::new(880.0);
+    let (room, owner) = Room::new("Camera reconnect", &one, "One").await;
+    let _peer = room.member(&owner, &two, "Two").await;
+    one.enter(room.target).await;
+    two.enter(room.target).await;
+    one.calls.start_camera(None);
+    picture(
+        &two,
+        ShareId::Of(account(&owner)),
+        (220, 30, 30),
+        (30, 50, 210),
+    )
+    .await;
+    one.calls.simulate_connection_loss();
+    two.until("remote camera was withdrawn", |view| {
+        view.call
+            .as_ref()
+            .is_some_and(|call| call.cameras.is_empty())
+    })
+    .await;
+    two.until("remote camera returned", |view| {
+        view.call
+            .as_ref()
+            .is_some_and(|call| call.cameras.len() == 1)
+    })
+    .await;
+    one.camera.set_colours((30, 160, 60), (210, 190, 40));
+    picture(
+        &two,
+        ShareId::Of(account(&owner)),
+        (30, 160, 60),
+        (210, 190, 40),
+    )
+    .await;
+    one.until("camera runs after reconnect", |view| {
+        view.call.as_ref().is_some_and(|call| {
+            call.camera == CameraState::Running
+                && call.phase == junto_media::calls::Phase::Connected
+        })
+    })
+    .await;
+    assert_eq!(one.camera.active(), 1);
+    assert_eq!(one.camera.started(), 1);
+    one.calls.leave().await;
+    two.calls.leave().await;
+}
+
+#[tokio::test]
+#[ignore = "needs PostgreSQL and LiveKit"]
+async fn camera_frames_follow_the_visible_tile_size_and_stop_when_hidden() {
+    let _media = MEDIA_SERVER.read().await;
+    let one = Person::new(440.0);
+    let two = Person::new(880.0);
+    let (room, owner) = Room::new("Visible camera sizes", &one, "One").await;
+    room.member(&owner, &two, "Two").await;
+    one.enter(room.target).await;
+    two.enter(room.target).await;
+    one.calls.start_camera(None);
+    let id = ShareId::Of(account(&owner));
+    picture(&two, id, (200, 30, 30), (30, 30, 200)).await;
+    two.calls
+        .set_camera_views([(id, (192, 120))].into_iter().collect());
+    let mut frames = two.calls.camera_pictures();
+    tokio::time::timeout(
+        PATIENCE,
+        frames.wait_for(|frames| {
+            frames
+                .get(&id)
+                .is_some_and(|frame| frame.width <= 192 && frame.height <= 120)
+        }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    two.calls.set_camera_views(Default::default());
+    tokio::time::timeout(PATIENCE, frames.wait_for(|frames| frames.is_empty()))
+        .await
+        .unwrap()
+        .unwrap();
+    two.calls
+        .set_camera_views([(id, (640, 360))].into_iter().collect());
+    tokio::time::timeout(
+        PATIENCE,
+        frames.wait_for(|frames| frames.get(&id).is_some_and(|frame| frame.width >= 480)),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    one.calls.leave().await;
+    two.calls.leave().await;
+}

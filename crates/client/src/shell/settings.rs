@@ -226,6 +226,12 @@ impl Shell {
             })
             .child(div().mt(u(16.0)).child(group_label(text::VOICE, &theme)))
             .children(self.render_voice_settings(&theme, cx))
+            .when_some(
+                self.state.read(cx).notifications_unavailable(),
+                |dialog, reason| {
+                    dialog.child(Notice::new(reason).selector("notifications-unavailable"))
+                },
+            )
             .child(div().mt(u(16.0)).child(group_label(text::QUIET, &theme)))
             .children(self.render_quiet_settings(&quiet, &theme, cx))
             .child(

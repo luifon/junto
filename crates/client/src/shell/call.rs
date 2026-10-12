@@ -341,6 +341,7 @@ impl Shell {
         channel: &ChannelRow,
         panel: &CallPanel,
         theme: &Theme,
+        cx: &gpui::App,
     ) -> AnyElement {
         let colors = theme.colors;
         let people = occupants(channel);
@@ -404,12 +405,12 @@ impl Shell {
                 .child(sentence)
         };
         let body = match panel.phase {
-            Phase::Connecting => viewport.child(waiting(
+            Phase::Connecting => viewport.justify_center().child(waiting(
                 text::CONNECTING_TO_CALL,
                 text::CONNECTING_TO_CALL_HELP.to_owned(),
                 "call-connecting",
             )),
-            Phase::Reconnecting => viewport.child(waiting(
+            Phase::Reconnecting => viewport.justify_center().child(waiting(
                 text::CALL_RECONNECTING,
                 text::connection_dropped(panel.interrupted_at, &channel.name),
                 "call-lost",
@@ -456,6 +457,7 @@ impl Shell {
                             |tile| tile.in_strip(),
                         )
                         .focused(focus == Some(occupant.account_id))
+                        .camera_view(self.camera_request(occupant, cx))
                         .picture(self.camera_image(occupant))
                         .speaking(matches!(
                             occupant.microphone,
@@ -464,27 +466,50 @@ impl Shell {
                         .marks(marks)
                         .selector(format!("call-tile:{}", occupant.account_id))
                     });
-                viewport
-                    .child(
-                        div()
-                            .id("call-people")
-                            .role(Role::List)
-                            .aria_label(text::IN_THE_CALL)
-                            .debug_selector(|| "call-people".to_owned())
-                            .flex()
-                            .flex_wrap()
-                            .justify_center()
-                            .content_center()
-                            .when(focus.is_some(), |people| people.content_start())
-                            .gap(u(8.0))
-                            .w_full()
-                            .flex_none()
-                            .min_h_full()
-                            .children(tiles),
-                    )
-                    .when(people.len() < 2, |viewport| {
-                        viewport.child(div().mt(u(14.0)).child(note(text::ALONE_IN_CALL)))
-                    })
+                viewport.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_none()
+                        .min_h_full()
+                        .justify_center()
+                        .items_center()
+                        .w_full()
+                        .child(
+                            div()
+                                .id("call-people")
+                                .role(Role::List)
+                                .aria_label(text::IN_THE_CALL)
+                                .debug_selector(|| "call-people".to_owned())
+                                .flex()
+                                .flex_wrap()
+                                .justify_center()
+                                .content_center()
+                                .when(focus.is_some(), |people| people.content_start())
+                                .gap(u(8.0))
+                                .w_full()
+                                .flex_none()
+                                .children(tiles),
+                        )
+                        .when(people.len() < 2, |viewport| {
+                            viewport.child(
+                                div()
+                                    .debug_selector(|| "alone-in-call".to_owned())
+                                    .mt(u(14.0))
+                                    .child(note(text::ALONE_IN_CALL)),
+                            )
+                        })
+                        .when(visible.len() < people.len(), |viewport| {
+                            let (strong, rest) = text::people_hidden(people.len() - visible.len());
+                            viewport.child(
+                                div()
+                                    .mt(u(14.0))
+                                    .ink(colors.bone_2)
+                                    .typeface(theme.types.small, theme)
+                                    .child(format!("{strong}{rest}")),
+                            )
+                        }),
+                )
             }
         };
         div()
@@ -718,7 +743,7 @@ impl Shell {
                     30.0,
                 )))
         };
-        let name_line = |name: SharedString, is_self: bool| {
+        let name_line = |name: SharedString, is_self: bool, camera: Option<AccountId>| {
             div()
                 .flex()
                 .items_center()
@@ -733,6 +758,15 @@ impl Shell {
                         .ink(colors.ink)
                         .child(name),
                 )
+                .when_some(camera, |line, account| {
+                    line.child(
+                        div()
+                            .id(format!("member-camera:{account}"))
+                            .debug_selector(move || format!("member-camera:{account}"))
+                            .tooltip(tooltip(text::CAMERA))
+                            .child(icon(Icon::Camera, 14.0, colors.ink_2)),
+                    )
+                })
                 .when(is_self, |line| {
                     line.child(
                         div()
@@ -797,9 +831,14 @@ impl Shell {
                             .flex_1()
                             .min_w_0()
                             .child(
-                                name_line(name, occupant.is_self)
-                                    .child(div().flex_1())
-                                    .child(div().flex().flex_none().items_center().child(mark)),
+                                name_line(
+                                    name,
+                                    occupant.is_self,
+                                    self.camera_request(occupant, cx)
+                                        .map(|_| occupant.account_id),
+                                )
+                                .child(div().flex_1())
+                                .child(div().flex().flex_none().items_center().child(mark)),
                             )
                             .child(state_line(member_states(occupant)))
                             .children(volume),
@@ -817,7 +856,7 @@ impl Shell {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .child(name_line(member.name.clone().into(), false))
+                    .child(name_line(member.name.clone().into(), false, None))
                     .when_some(member.place.as_ref(), |column, place| {
                         column.child(state_line(vec![(
                             Icon::Speaker,
@@ -991,9 +1030,12 @@ impl Shell {
                 .ink(colors.ink_2)
                 .child(sentence)
         };
-        let shown = |choices: &[DeviceChoice]| -> SharedString {
+        let shown = |kind: DeviceKind, choices: &[DeviceChoice]| -> SharedString {
             let chosen = choices.iter().find(|choice| choice.selected);
             match chosen {
+                Some(choice) if choice.id.is_none() && kind == DeviceKind::Camera => {
+                    super::camera::default_name().into()
+                }
                 Some(choice) if choice.id.is_none() => text::system_default(&choice.name).into(),
                 Some(choice) if choice.name.is_empty() => text::DEVICE_NOT_CONNECTED.into(),
                 Some(choice) => choice.name.clone().into(),
@@ -1028,7 +1070,7 @@ impl Shell {
                     div()
                         .relative()
                         .child(
-                            SelectBox::new(selector, label, shown(choices))
+                            SelectBox::new(selector, label, shown(kind, choices))
                                 .selector(selector)
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.open_device_menu(kind, window, cx);
@@ -1172,6 +1214,7 @@ impl Shell {
             .map(|(index, choice)| {
                 let id = choice.id.clone();
                 let name: SharedString = match (&choice.id, choice.name.is_empty()) {
+                    (None, _) if kind == DeviceKind::Camera => super::camera::default_name().into(),
                     (None, _) => text::system_default(&choice.name).into(),
                     (Some(_), true) => text::DEVICE_NOT_CONNECTED.into(),
                     (Some(_), false) => choice.name.clone().into(),
@@ -1410,15 +1453,37 @@ impl Shell {
                         .tooltip(text::CAMERA)
                         .accessible_label(text::CAMERA)
                         .selector("call-camera")
+                        .disabled(self.state.read(cx).media_calls().call.is_none_or(|call| {
+                            call.phase != junto_media::calls::Phase::Connected
+                                && !matches!(
+                                    call.camera,
+                                    junto_media::camera::CameraState::Starting
+                                        | junto_media::camera::CameraState::Running
+                                )
+                        }))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.state.update(cx, |state, cx| state.toggle_camera(cx))
                         })),
                 )
                 .child(
                     Button::new("camera-focus")
-                        .icon(Icon::Expand)
-                        .tooltip(text::FOCUS_SPEAKER)
-                        .accessible_label(text::FOCUS_SPEAKER)
+                        .kind(if self.camera_focus {
+                            ButtonKind::CallOn
+                        } else {
+                            ButtonKind::Call
+                        })
+                        .icon(Icon::People)
+                        .selector("camera-focus")
+                        .tooltip(if self.camera_focus {
+                            "Show camera grid"
+                        } else {
+                            text::FOCUS_SPEAKER
+                        })
+                        .accessible_label(if self.camera_focus {
+                            "Show camera grid"
+                        } else {
+                            text::FOCUS_SPEAKER
+                        })
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.camera_focus = !this.camera_focus;
                             cx.notify();
@@ -1430,7 +1495,7 @@ impl Shell {
                     |row| {
                         row.child(
                             Button::new("detach-call")
-                                .icon(Icon::Expand)
+                                .icon(Icon::Detach)
                                 .accessible_label(text::DETACH_CALL)
                                 .tooltip(text::DETACH_CALL)
                                 .selector("detach-call")
@@ -1462,7 +1527,32 @@ impl Shell {
                     .media_calls()
                     .call
                     .and_then(|call| super::camera::failure(&call.camera))
-                    .map(|line| crate::ui::Notice::new(line).selector("camera-failed")),
+                    .map(|line| {
+                        crate::ui::Notice::new(line)
+                            .selector("camera-failed")
+                            .stacked()
+                            .action(
+                                div()
+                                    .flex()
+                                    .gap(u(6.0))
+                                    .child(
+                                        Button::new("camera-settings")
+                                            .label(text::SETTINGS)
+                                            .selector("camera-settings")
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.open_settings(window, cx)
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new("camera-dismiss")
+                                            .label(text::DISMISS)
+                                            .selector("camera-dismiss")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.state.read(cx).calls().stop_camera();
+                                            })),
+                                    ),
+                            )
+                    }),
             )
             .into_any_element()
     }
@@ -1570,7 +1660,7 @@ impl Shell {
                 Some(shares) if panel.phase == Phase::Connected => {
                     self.render_share_stage(channel, panel, shares, &theme, cx)
                 }
-                _ => self.render_stage(channel, panel, &theme),
+                _ => self.render_stage(channel, panel, &theme, cx),
             }
         };
         let side = (!narrow || self.call_panel_open)

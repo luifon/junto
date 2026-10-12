@@ -26,10 +26,10 @@ pub fn open(state: Entity<AppState>, cx: &mut App) {
         .map(|(x, y)| point(px(x as f32), px(y as f32)));
     let display = displays
         .iter()
-        .find(|display| origin.is_some_and(|origin| display.bounds().contains(&origin)))
+        .find(|display| saved.display.is_some() && display.uuid().ok() == saved.display)
         .or_else(|| displays.first());
     let mut bounds = Bounds::centered(
-        None,
+        display.map(|display| display.id()),
         size(px(saved.width as f32), px(saved.height as f32)),
         cx,
     );
@@ -37,7 +37,9 @@ pub fn open(state: Entity<AppState>, cx: &mut App) {
         let screen = display.bounds();
         bounds.size.width = bounds.size.width.min(screen.size.width);
         bounds.size.height = bounds.size.height.min(screen.size.height);
-        if let Some(origin) = origin.filter(|origin| screen.contains(origin)) {
+        if let Some(origin) =
+            origin.filter(|_| display.uuid().ok() == saved.display && saved.display.is_some())
+        {
             bounds.origin = origin;
         }
         bounds.origin.x = bounds.origin.x.clamp(
@@ -50,14 +52,10 @@ pub fn open(state: Entity<AppState>, cx: &mut App) {
         );
     }
     let held = state.clone();
-    let title = state
-        .read(cx)
-        .call_view()
-        .call
-        .and_then(|call| call.name)
-        .unwrap_or_else(|| text::IN_CALL.to_owned());
+    let title = state.read(cx).call_view().call_title();
     let result = cx.open_window(
         WindowOptions {
+            display_id: display.map(|display| display.id()),
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: Some(size(px(480.0), px(320.0))),
             kind: if saved.keep_on_top {
@@ -84,6 +82,7 @@ pub fn open(state: Entity<AppState>, cx: &mut App) {
                     move |this, window, cx| {
                         if let WindowBounds::Windowed(bounds) = window.window_bounds() {
                             let settings = CallWindowSettings {
+                                display: window.display(cx).and_then(|display| display.uuid().ok()),
                                 x: Some(f32::from(bounds.origin.x) as i32),
                                 y: Some(f32::from(bounds.origin.y) as i32),
                                 width: f32::from(bounds.size.width) as u32,
@@ -114,8 +113,14 @@ impl Shell {
             .icon(crate::assets::Icon::Collapse)
             .tooltip(text::RETURN_CALL)
             .selector("return-call")
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.state.update(cx, |state, cx| state.return_call(cx))
+            .on_click(cx.listener(|this, _, window, cx| {
+                if this.detached {
+                    this.state
+                        .update(cx, |state, cx| state.closed_call_window(cx));
+                    window.remove_window();
+                } else {
+                    this.state.update(cx, |state, cx| state.return_call(cx));
+                }
             }))
     }
     pub(crate) fn render_detached(
@@ -126,7 +131,12 @@ impl Shell {
         window.set_rem_size(crate::theme::rem_size(
             self.state.read(cx).settings().scale_percent,
         ));
-        let view = self.state.read(cx).call_view();
+        let Some(view) = self.view.clone() else {
+            return div().into_any_element();
+        };
+        window.set_window_title(&view.call_title());
+        self.refresh_picture_owner(cx);
+        self.sync_camera_visibility(cx);
         let theme = theme(cx);
         let mut body = div()
             .relative()
@@ -187,8 +197,10 @@ impl Shell {
             && let (Some(channel), Some(panel)) = (&workspace.channel, &workspace.call)
         {
             body = body.child(match &panel.stage {
-                Some(shares) => self.render_share_stage(channel, panel, shares, &theme, cx),
-                None => self.render_stage(channel, panel, &theme),
+                Some(shares) if share_visible(panel.phase) => {
+                    self.render_share_stage(channel, panel, shares, &theme, cx)
+                }
+                _ => self.render_stage(channel, panel, &theme, cx),
             });
         } else if let Some(call) = self.state.read(cx).media_calls().call
             && let junto_client_core::protocol::call::CallPlace::Direct {
@@ -281,5 +293,21 @@ impl Shell {
             }),
         )
         .into_any_element()
+    }
+}
+
+fn share_visible(phase: junto_media::calls::Phase) -> bool {
+    phase == junto_media::calls::Phase::Connected
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn a_detached_reconnecting_call_does_not_show_its_retained_share() {
+        use junto_media::calls::Phase;
+        assert!(share_visible(Phase::Connected));
+        assert!(!share_visible(Phase::Reconnecting));
+        assert!(!share_visible(Phase::Connecting));
     }
 }

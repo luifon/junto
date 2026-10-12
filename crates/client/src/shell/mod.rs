@@ -13,6 +13,7 @@ mod feed;
 mod join;
 mod main_area;
 mod notices;
+mod person_drag;
 mod rail;
 mod recorded;
 pub mod room;
@@ -197,6 +198,7 @@ pub struct Shell {
     /// The pictures of the shares of the call, as images of the window.
     pub(crate) pictures: share::ShownPictures,
     pub(crate) cameras: camera::ShownCameras,
+    drawing_call: bool,
     pub(crate) picture_tasks: Vec<Task<()>>,
     /// The number of dialogs of a share that this window has opened.
     pub(crate) share_reads: u64,
@@ -468,6 +470,7 @@ impl Shell {
             focused_camera: std::cell::Cell::new(None),
             pictures: share::ShownPictures::default(),
             cameras: HashMap::new(),
+            drawing_call: false,
             picture_tasks: Vec::new(),
             share_reads: 0,
             share_volume: None,
@@ -926,6 +929,8 @@ impl Render for Shell {
             self.drawn = Some(view.clone());
         }
         window.set_rem_size(theme::rem_size(settings.scale_percent));
+        self.refresh_picture_owner(cx);
+        self.sync_camera_visibility(cx);
         // The frame sets this again when it draws the list of messages.
         self.feed.drawn = false;
         let theme = theme(cx);

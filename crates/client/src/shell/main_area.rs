@@ -464,7 +464,11 @@ impl Shell {
                 .truncate()
                 .typeface(theme.types.small, theme)
                 .text_size(u(13.0))
-                .ink(colors.ink_2)
+                .ink(if self.detached {
+                    colors.bone_2
+                } else {
+                    colors.ink_2
+                })
                 .child(sentence)
                 .into_any_element()
         };

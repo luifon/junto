@@ -9,6 +9,7 @@ pub mod feed;
 mod messages;
 pub mod notices;
 mod notifying;
+pub mod person_drop;
 pub mod recorded;
 mod recorded_work;
 pub mod recording;
@@ -250,12 +251,14 @@ pub struct AppState {
     talking_windows: HashSet<gpui::EntityId>,
     call_window: Option<gpui::WindowHandle<gpui_base::Root>>,
     call_window_settings: junto_client_core::call_window::CallWindowSettings,
+    call_window_writes: std::sync::Arc<std::sync::Mutex<call_window::Writes>>,
     direct: direct::DirectCalls,
     ringer: junto_media::audio::ring::RingPlayer,
     client: Client,
     calls: Calls,
     /// Why the sound settings are not in their file.
     voice_failed: Option<String>,
+    camera_devices: Vec<junto_media::camera::CameraDevice>,
     /// What is told about the recording of the call of this device.
     recording: recording::RecordingTold,
     /// The media snapshot that the view is derived from in place of the calls.
@@ -451,8 +454,9 @@ impl AppState {
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
                 let told = this.update(cx, |this, cx| {
-                    this.reconcile_direct();
-                    if this.direct.ringing() {
+                    let was_ringing = this.direct.ringing();
+                    this.reconcile_direct(cx);
+                    if was_ringing || this.direct.ringing() {
                         cx.notify();
                     }
                     if this.known.media.calls.call.is_some() {
@@ -517,11 +521,13 @@ impl AppState {
             talking_windows: HashSet::new(),
             call_window: None,
             call_window_settings,
+            call_window_writes: Default::default(),
             direct: direct::DirectCalls::default(),
             ringer,
             client,
             calls,
             voice_failed: None,
+            camera_devices: Vec::new(),
             recording: recording::RecordingTold::default(),
             #[cfg(feature = "test-support")]
             media_fixture: None,
@@ -618,12 +624,9 @@ impl AppState {
         let view = self.calls.view();
         // A call is known by the identity that the server gave the device for it. The
         // view can pass from one call to the next without a moment in no call.
-        let before = self.call_identity();
         let now = view.call.as_ref().map(|call| call.identity.clone());
-        let (ended, entered) = (
-            before.is_some() && before != now,
-            now.is_some() && before != now,
-        );
+        let (ended, entered) =
+            call_window::call_transition(self.known.media.calls.call.as_ref(), view.call.as_ref());
         self.known.media.now = view.call.as_ref().map(|_| time::OffsetDateTime::now_utc());
         self.recording.in_call(now.as_deref());
         self.show_recording();
@@ -1041,6 +1044,12 @@ impl AppState {
 
     pub fn decline_invitation(&mut self, invited: &view::Invited, cx: &mut Context<Self>) {
         let invitation_id = invited.id;
+        self.direct.resolve(
+            invited.target.server_id,
+            invitation_id,
+            InvitationOutcome::Declined,
+        );
+        self.reconcile_direct(cx);
         self.ask(invited.target.server_id, cx, move |api| async move {
             api.refuse_call_invitation(invitation_id).await
         });
@@ -1195,6 +1204,11 @@ impl AppState {
 
     /// One change of the state of a server, told by itself. The state of a server holds
     /// a recording only while it runs; how it ended is told here (ADR 0719).
+    #[cfg(feature = "test-support")]
+    pub fn notice_fixture(&mut self, server_id: ServerId, notice: &Notice, cx: &mut Context<Self>) {
+        self.noticed(server_id, notice, cx);
+    }
+
     fn noticed(&mut self, server_id: ServerId, notice: &Notice, cx: &mut Context<Self>) {
         let event = match notice {
             Notice::Event { event, .. } => event,
@@ -1220,17 +1234,36 @@ impl AppState {
             .and_then(|server| server.live().view().model)
             .and_then(|model| model.own_call.as_ref().map(|own| own.call_id));
         match event.as_ref() {
+            Event::CallMoveResolved { outcome, .. } => {
+                use junto_client_core::protocol::call::MoveOutcome;
+                let told = match outcome {
+                    MoveOutcome::Completed => None,
+                    MoveOutcome::TimedOut => {
+                        Some("The move timed out. The person remains in the original call.")
+                    }
+                    MoveOutcome::Refused => Some(
+                        "The device could not join the destination. The person remains in the original call.",
+                    ),
+                    MoveOutcome::Abandoned => {
+                        Some("The move was cancelled because the call or its permissions changed.")
+                    }
+                };
+                if let Some(told) = told {
+                    self.pending.call_told = Some(told.to_owned());
+                    cx.notify();
+                }
+            }
             Event::CallEnded { call_id, .. } => {
                 self.direct.ended(server_id, *call_id);
-                self.reconcile_direct();
+                self.reconcile_direct(cx);
                 cx.notify();
             }
             Event::CallInvited { invitation } => {
                 if let Some(own) = self.client.server(server_id).and_then(|s| s.account()) {
                     self.direct
-                        .see(server_id, own, invitation, time::OffsetDateTime::now_utc());
+                        .see(server_id, own, invitation, std::time::Instant::now());
                 }
-                self.reconcile_direct();
+                self.reconcile_direct(cx);
                 cx.notify();
             }
             Event::RecordingStarted { .. } | Event::RecordingUpdated { .. } => {
@@ -1279,7 +1312,7 @@ impl AppState {
                 if outgoing_ended {
                     self.leave_call(cx);
                 }
-                self.reconcile_direct();
+                self.reconcile_direct(cx);
                 cx.notify();
                 let made = self.made_invitations.remove(&(server_id, *invitation_id));
                 let told = match outcome {
@@ -1300,17 +1333,22 @@ impl AppState {
     /// thread: the list of a system can take a moment.
     pub fn refresh_devices(&mut self, cx: &mut Context<Self>) {
         let calls = self.calls.clone();
-        let reading = cx
-            .background_executor()
-            .spawn(async move { (calls.devices(), calls.microphone_access()) });
+        let reading = cx.background_executor().spawn(async move {
+            (
+                calls.devices(),
+                calls.microphone_access(),
+                calls.camera_devices(),
+            )
+        });
         cx.spawn(async move |this, cx| {
-            let (devices, access) = reading.await;
+            let (devices, access, cameras) = reading.await;
             let _ = this.update(cx, |this, cx| {
                 match devices {
                     Ok(devices) => this.known.media.devices = devices,
                     Err(error) => tracing::warn!(%error, "the sound devices were not read"),
                 }
                 this.known.media.access = Some(access);
+                this.camera_devices = cameras.unwrap_or_default();
                 cx.notify();
             });
         })
@@ -1526,6 +1564,10 @@ impl AppState {
     }
 
     /// Why a setting that the window shows is not in the file.
+    pub fn notifications_unavailable(&self) -> Option<&'static str> {
+        self.notifier.unavailable_reason()
+    }
+
     pub fn settings_error(&self) -> Option<&str> {
         [Setting::Scale, Setting::ServerBook]
             .iter()
@@ -1579,9 +1621,17 @@ impl AppState {
                 media: media.clone(),
                 ..self.known.clone()
             };
-            return view::derive(&self.snapshots(), &self.selection, &known);
+            return self.direct.filter_view(view::derive(
+                &self.snapshots(),
+                &self.selection,
+                &known,
+            ));
         }
-        view::derive(&self.snapshots(), &self.selection, &self.known)
+        self.direct.filter_view(view::derive(
+            &self.snapshots(),
+            &self.selection,
+            &self.known,
+        ))
     }
 
     /// Draws this state of the calls in place of the calls of the client. The screen tool
@@ -1645,7 +1695,7 @@ impl AppState {
     /// Runs after every change of the client core and of an event stream: starts and ends
     /// the work that depends on what exists and on what is shown, and draws again.
     fn changed(&mut self, cx: &mut Context<Self>) {
-        self.reconcile_direct();
+        self.reconcile_direct(cx);
         let servers = self.client.servers();
         let ids: HashSet<ServerId> = servers.iter().map(ServerHandle::id).collect();
         self.watchers.retain(|id, _| ids.contains(id));
@@ -1803,48 +1853,47 @@ impl AppState {
     /// list of the workspace has no name there. The name is read once from the profile
     /// route.
     fn ask_missing_names(&mut self, view: &ShellView, cx: &mut Context<Self>) {
-        let (Some(selected), Some(workspace)) = (&view.selected, view.workspace()) else {
-            return;
-        };
-        if !matches!(workspace.members, view::Members::Loaded(_)) {
-            return;
-        }
-        let server_id = selected.id;
-        let Some(server) = self.client.server(server_id) else {
-            return;
-        };
-        let missing: Vec<AccountId> = workspace
-            .sections
+        let mut missing: Vec<(ServerId, AccountId)> = view
+            .invitations
             .iter()
-            .flat_map(|section| section.rows.iter())
-            .filter_map(|row| row.voice.as_ref())
-            .flat_map(|voice| voice.occupants.iter())
-            .filter(|occupant| occupant.name.is_none())
-            .map(|occupant| occupant.account_id)
-            // The other person of a direct conversation can be a member of another
-            // workspace, or an administrator of the server (ADR 0307).
-            .chain(
+            .filter(|invited| invited.by.is_none())
+            .map(|invited| (invited.target.server_id, invited.caller))
+            .collect();
+        if let (Some(selected), Some(workspace)) = (&view.selected, view.workspace())
+            && matches!(workspace.members, view::Members::Loaded(_))
+        {
+            missing.extend(
+                workspace
+                    .sections
+                    .iter()
+                    .flat_map(|section| &section.rows)
+                    .filter_map(|row| row.voice.as_ref())
+                    .flat_map(|voice| &voice.occupants)
+                    .filter(|occupant| occupant.name.is_none())
+                    .map(|occupant| (selected.id, occupant.account_id)),
+            );
+            missing.extend(
                 workspace
                     .directs
                     .iter()
                     .filter(|row| row.name.is_none())
-                    .map(|row| row.account_id),
-            )
-            .filter(|account_id| {
-                let read = self
-                    .asked_names
-                    .entry((server_id, *account_id))
-                    .or_insert(NameRead::Unanswered(0));
-                match *read {
-                    NameRead::Unanswered(tries) if tries < NAME_TRIES => {
-                        *read = NameRead::Asking(tries + 1);
-                        true
-                    }
-                    NameRead::Unanswered(_) | NameRead::Asking(_) | NameRead::Settled => false,
+                    .map(|row| (selected.id, row.account_id)),
+            );
+        }
+        for (server_id, account_id) in missing {
+            let Some(server) = self.client.server(server_id) else {
+                continue;
+            };
+            let read = self
+                .asked_names
+                .entry((server_id, account_id))
+                .or_insert(NameRead::Unanswered(0));
+            match *read {
+                NameRead::Unanswered(tries) if tries < NAME_TRIES => {
+                    *read = NameRead::Asking(tries + 1)
                 }
-            })
-            .collect();
-        for account_id in missing {
+                _ => continue,
+            }
             let api = server.api();
             cx.spawn(async move |this, cx| {
                 let read = api.profile(account_id).await;

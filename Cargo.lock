@@ -3811,6 +3811,7 @@ dependencies = [
  "junto-client-core",
  "junto-media",
  "junto-server",
+ "objc2-foundation 0.3.2",
  "serde",
  "serde_json",
  "sqlx",

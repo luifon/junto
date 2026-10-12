@@ -161,6 +161,7 @@ pub struct Notice {
     text: SharedString,
     icon: Option<Icon>,
     action: Option<AnyElement>,
+    stacked: bool,
     selector: Option<&'static str>,
 }
 
@@ -171,6 +172,7 @@ impl Notice {
             text: text.into(),
             icon: None,
             action: None,
+            stacked: false,
             selector: None,
         }
     }
@@ -181,6 +183,7 @@ impl Notice {
             text: text.into(),
             icon: Some(Icon::Warning),
             action: None,
+            stacked: false,
             selector: None,
         }
     }
@@ -192,6 +195,11 @@ impl Notice {
 
     pub fn action(mut self, element: impl IntoElement) -> Self {
         self.action = Some(element.into_any_element());
+        self
+    }
+
+    pub fn stacked(mut self) -> Self {
+        self.stacked = true;
         self
     }
 
@@ -233,6 +241,7 @@ impl RenderOnce for Notice {
             })
             .flex()
             .flex_none()
+            .when(self.stacked, |notice| notice.flex_col())
             .items_start()
             .gap(u(8.0))
             .py(u(8.0))
@@ -260,7 +269,12 @@ impl RenderOnce for Notice {
             .when_some(self.icon, |notice, shown| {
                 notice.child(div().mt(u(2.0)).child(icon(shown, 15.0, mark)))
             })
-            .child(div().flex_1().min_w_0().child(self.text))
+            .child(
+                div()
+                    .when(!self.stacked, |label| label.flex_1())
+                    .min_w_0()
+                    .child(self.text),
+            )
             .children(self.action)
     }
 }

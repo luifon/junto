@@ -45,11 +45,11 @@ impl AppState {
             name: String::new(),
             selected: chosen.is_none(),
         }];
-        for device in self.calls.camera_devices().unwrap_or_default() {
+        for device in &self.camera_devices {
             choices.push(view::DeviceChoice {
                 selected: chosen.as_ref() == Some(&device.id),
-                id: Some(device.id),
-                name: device.name,
+                id: Some(device.id.clone()),
+                name: device.name.clone(),
             });
         }
         if let Some(id) = chosen

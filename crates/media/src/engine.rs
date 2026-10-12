@@ -225,10 +225,13 @@ enum Command {
     Watch(Option<ShareId>),
     ShareVolume(f32),
     ViewSize(u32, u32),
+    CameraViews(HashMap<ShareId, (u32, u32)>),
     /// Makes the call library connect anew and publish its tracks again, as it does by
     /// itself after some interruptions.
     #[cfg(feature = "test-support")]
     SimulateFullReconnect,
+    #[cfg(feature = "test-support")]
+    SimulateConnectionLoss,
     Close(oneshot::Sender<()>),
 }
 
@@ -237,7 +240,7 @@ type Events = mpsc::UnboundedReceiver<RoomEvent>;
 enum Internal {
     CameraStarted(u64),
     CameraEnded(u64, crate::camera::CameraError),
-    CameraPublished(u64, Result<LocalTrackPublication, String>),
+    CameraPublished(u64, u64, Result<LocalTrackPublication, String>),
     CameraDue(u64, TrackSid),
     Connected(u64, Result<(Room, Events), String>),
     Permission(MicrophoneAccess),
@@ -325,6 +328,7 @@ impl Engine {
         let actor = Actor {
             camera: None,
             camera_generation: 0,
+            camera_views: None,
             remote_cameras: HashMap::new(),
             camera_pictures,
             runtime: runtime.clone(),
@@ -412,6 +416,10 @@ impl Engine {
     }
 
     /// The size in pixels inside which the interface draws the watched share.
+    pub fn set_camera_views(&self, views: HashMap<ShareId, (u32, u32)>) {
+        let _ = self.commands.send(Command::CameraViews(views));
+    }
+
     pub fn set_view_size(&self, width: u32, height: u32) {
         let _ = self.commands.send(Command::ViewSize(width, height));
     }
@@ -420,6 +428,10 @@ impl Engine {
     #[cfg(feature = "test-support")]
     pub fn simulate_full_reconnect(&self) {
         let _ = self.commands.send(Command::SimulateFullReconnect);
+    }
+    #[cfg(feature = "test-support")]
+    pub fn simulate_connection_loss(&self) {
+        let _ = self.commands.send(Command::SimulateConnectionLoss);
     }
 
     pub fn state(&self) -> watch::Receiver<EngineState> {
@@ -520,6 +532,7 @@ impl Drop for Remote {
 struct Actor {
     camera: Option<OwnCamera>,
     camera_generation: u64,
+    camera_views: Option<HashMap<ShareId, (u32, u32)>>,
     remote_cameras: HashMap<TrackSid, RemoteCamera>,
     camera_pictures: watch::Sender<HashMap<ShareId, Arc<crate::camera::CameraFrame>>>,
     runtime: tokio::runtime::Handle,
@@ -703,7 +716,8 @@ impl Actor {
                 self.sync_gate();
             }
             Command::Reconnect(join) => {
-                self.leave(events).await;
+                self.pause_camera();
+                self.reset_connection(events).await;
                 self.connect(join);
             }
             Command::RetryMicrophone => {
@@ -717,6 +731,9 @@ impl Actor {
             Command::Watch(choice) => self.set_watch(choice),
             Command::ShareVolume(gain) => self.set_share_volume(gain),
             Command::ViewSize(width, height) => self.set_view_size(width, height),
+            Command::CameraViews(views) => self.set_camera_views(views),
+            #[cfg(feature = "test-support")]
+            Command::SimulateConnectionLoss => self.lost(Lost::Failed, events).await,
             #[cfg(feature = "test-support")]
             Command::SimulateFullReconnect => {
                 if let Some(room) = &self.room {
@@ -735,8 +752,8 @@ impl Actor {
         match message {
             Internal::CameraStarted(generation) => self.camera_started(generation),
             Internal::CameraEnded(generation, error) => self.camera_ended(generation, error),
-            Internal::CameraPublished(generation, result) => {
-                self.camera_published(generation, result)
+            Internal::CameraPublished(generation, attempt, result) => {
+                self.camera_published(generation, attempt, result)
             }
             Internal::CameraDue(generation, sid) => self.camera_due(generation, sid),
             Internal::Connected(attempt, result) => {
@@ -753,6 +770,7 @@ impl Actor {
                         self.change(|state| state.connection = Connection::Connected);
                         self.open_playout();
                         self.sync_microphone();
+                        self.publish_camera();
                     }
                     Err(error) => {
                         tracing::warn!(%error, "the media connection of the call was not made");
@@ -979,19 +997,22 @@ impl Actor {
 
     /// The connection ended. The devices close, and the engine waits for a new token.
     async fn lost(&mut self, lost: Lost, events: &mut Option<Events>) {
-        self.leave(events).await;
+        self.pause_camera();
+        self.reset_connection(events).await;
         self.change(|state| state.connection = Connection::Lost(lost));
     }
 
     /// Leaves the room, if there is one, and closes the devices.
     async fn leave(&mut self, events: &mut Option<Events>) {
+        self.end_camera(None);
+        self.reset_connection(events).await;
+    }
+
+    async fn reset_connection(&mut self, events: &mut Option<Events>) {
         self.attempt += 1;
         // A share does not outlive the connection that carried it (ADR 0737).
         if self.share.is_some() {
             self.end_share(Some(CaptureError::Interrupted));
-        }
-        if self.camera.is_some() {
-            self.end_camera(Some(crate::camera::CameraError::Interrupted));
         }
         self.remote_cameras.clear();
         self.camera_pictures.send_replace(HashMap::new());

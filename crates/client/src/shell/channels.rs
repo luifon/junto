@@ -2,13 +2,14 @@
 //! the people in its voice channels, and the profile strip of the person.
 
 use gpui::{
-    AnyElement, Context, Hsla, InteractiveElement, IntoElement, ParentElement, Role, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
+    AnyElement, AppContext as _, Context, Hsla, InteractiveElement, IntoElement, ParentElement,
+    Role, SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
 };
 use junto_client_core::protocol::structure::ChannelKind;
 
 use super::{Layer, Shell};
 use crate::assets::Icon;
+use crate::state::person_drop::PersonDrag;
 use crate::state::view::{
     Content, Microphone, MicrophoneButton, Occupant, Presence, SectionTitle, ServerStatus,
     ShellView, VoiceState, WorkspaceView,
@@ -310,10 +311,36 @@ impl Shell {
                                 cx,
                             )
                         });
+                let held = self.state.clone();
+                let hover = self.state.clone();
                 rows.push(
                     div()
+                        .id(("channel-drop", index))
                         .relative()
                         .flex_none()
+                        .can_drop(move |value, _, cx| {
+                            value.downcast_ref::<PersonDrag>().is_some_and(|person| {
+                                held.read(cx)
+                                    .view()
+                                    .person_drop(*person, channel_id)
+                                    .is_some()
+                            })
+                        })
+                        .drag_over::<PersonDrag>(move |style, person, _, cx| {
+                            if hover
+                                .read(cx)
+                                .view()
+                                .person_drop(*person, channel_id)
+                                .is_some()
+                            {
+                                style.bg(Hsla::from(colors.limestone_hover))
+                            } else {
+                                style
+                            }
+                        })
+                        .on_drop(cx.listener(move |this, person: &PersonDrag, _, cx| {
+                            this.drop_person(*person, channel_id, cx)
+                        }))
                         .when(after_occupants, |wrapper| wrapper.mt(u(4.0)))
                         // The identifier and not the name: a name comes from the server
                         // and need not be the only one.
@@ -390,10 +417,26 @@ impl Shell {
                             this.open_person_menu(channel_id, account_id, window, cx);
                         }))
                     };
+                    let dragged =
+                        (!occupant.is_self)
+                            .then_some(server_id)
+                            .flatten()
+                            .map(|server_id| PersonDrag {
+                                server_id,
+                                channel_id,
+                                account_id,
+                            });
+                    let name = occupant_name(occupant);
                     rows.push(
                         div()
+                            .id(("person-drag", index * 1000 + seat))
                             .relative()
                             .flex_none()
+                            .when_some(dragged, |row, person| {
+                                row.on_drag(person, move |_, _, _, cx| {
+                                    cx.new(|_| super::person_drag::DragLabel(name.clone()))
+                                })
+                            })
                             .child(row)
                             .children(menu)
                             .into_any_element(),

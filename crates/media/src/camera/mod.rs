@@ -6,7 +6,10 @@ use livekit::webrtc::video_frame::VideoBuffer;
 
 use crate::share::{CaptureStream, Pending};
 
-#[cfg(all(target_os = "macos", not(test)))]
+#[cfg(any(test, all(target_os = "macos", not(feature = "test-support"))))]
+mod format;
+
+#[cfg(all(target_os = "macos", not(any(test, feature = "test-support"))))]
 #[allow(unsafe_code)]
 mod macos;
 #[cfg(any(test, feature = "test-support"))]
@@ -40,6 +43,8 @@ pub enum CameraError {
     Interrupted,
     #[error("the server does not allow camera publication")]
     Blocked,
+    #[error("the call is not connected yet")]
+    NotConnected,
 }
 
 pub trait CameraSink: Send + Sync + 'static {
@@ -98,8 +103,14 @@ impl CameraCapture for NoCamera {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub fn system() -> Arc<NoCamera> {
+    Arc::new(NoCamera)
+}
+
+#[cfg(not(any(test, feature = "test-support")))]
 pub fn system() -> Arc<dyn CameraCapture> {
-    #[cfg(all(target_os = "macos", not(test)))]
+    #[cfg(all(target_os = "macos", not(any(test, feature = "test-support"))))]
     {
         Arc::new(macos::SystemCamera)
     }

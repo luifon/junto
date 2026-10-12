@@ -145,6 +145,7 @@ pub struct Window {
     /// The screen capture of the application: a picture and a tone that the program
     /// makes. No test captures a screen.
     pub capture: SyntheticCapture,
+    pub camera: junto_media::camera::synthetic::SyntheticCamera,
 }
 
 /// The frequency of the tone that the microphone of a window gives.
@@ -177,8 +178,9 @@ pub fn open_with(cx: &mut TestAppContext, data_dir: &Path, scale: Option<u32>) -
     };
     let sound = SyntheticHost::with_tone(WINDOW_TONE_HZ);
     let capture = SyntheticCapture::new();
+    let camera = junto_media::camera::synthetic::SyntheticCamera::new();
     let media = MediaOptions {
-        camera: std::sync::Arc::new(junto_media::camera::synthetic::SyntheticCamera::new()),
+        camera: std::sync::Arc::new(camera.clone()),
         host: std::sync::Arc::new(sound.clone()),
         permission: std::sync::Arc::new(FixedPermission::allowed()),
         capture: std::sync::Arc::new(capture.clone()),
@@ -200,6 +202,7 @@ pub fn open_with(cx: &mut TestAppContext, data_dir: &Path, scale: Option<u32>) -
     });
     let shell = built.borrow_mut().take().unwrap();
     let window = Window {
+        camera,
         cx: VisualTestContext::from_window(window.into(), cx),
         shell,
         state,
@@ -460,7 +463,7 @@ impl Window {
 
 /// gpui finds a drawn element by a name that lives as long as the program. A test builds
 /// few names, so each one is kept until the test process ends.
-fn selector(name: String) -> &'static str {
+pub(crate) fn selector(name: String) -> &'static str {
     Box::leak(name.into_boxed_str())
 }
 

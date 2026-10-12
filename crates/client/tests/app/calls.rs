@@ -162,3 +162,76 @@ fn the_sound_settings_of_the_application_are_kept_over_a_restart(cx: &mut TestAp
     window.click("app-settings");
     assert!(window.shows("talk-key-1"));
 }
+
+#[gpui::test]
+fn drawing_camera_choices_does_not_enumerate_hardware(cx: &mut gpui::TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let window = crate::harness::open(cx, &directory.path().join("client"));
+    let before = window.camera.device_reads();
+    for _ in 0..4 {
+        window.state.read_with(&window.cx, |state, _| {
+            let _ = state.camera_choices();
+        });
+    }
+    assert_eq!(window.camera.device_reads(), before);
+}
+
+#[gpui::test]
+fn each_unsuccessful_move_outcome_is_shown_and_dismissible(cx: &mut gpui::TestAppContext) {
+    use junto_client_core::protocol::{
+        call::MoveOutcome,
+        events::Event,
+        ids::{CallMoveId, ServerId},
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let mut window = crate::harness::open(cx, &directory.path().join("client"));
+    for (outcome, expected) in [
+        (MoveOutcome::Completed, None),
+        (
+            MoveOutcome::TimedOut,
+            Some("The move timed out. The person remains in the original call."),
+        ),
+        (
+            MoveOutcome::Refused,
+            Some(
+                "The device could not join the destination. The person remains in the original call.",
+            ),
+        ),
+        (
+            MoveOutcome::Abandoned,
+            Some("The move was cancelled because the call or its permissions changed."),
+        ),
+    ] {
+        let notice = junto_client_core::live::Notice::Event {
+            id: 1,
+            at: time::OffsetDateTime::now_utc(),
+            event: std::sync::Arc::new(Event::CallMoveResolved {
+                move_id: CallMoveId::generate(),
+                outcome,
+            }),
+        };
+        window.state.update(&mut window.cx, |state, cx| {
+            state.notice_fixture(ServerId::generate(), &notice, cx)
+        });
+        assert_eq!(
+            window
+                .state
+                .read_with(&window.cx, |state, _| state.pending().call_told.clone())
+                .as_deref(),
+            expected
+        );
+        assert!(
+            window
+                .state
+                .read_with(&window.cx, |state, _| state.calls().view().call.is_none())
+        );
+        window
+            .state
+            .update(&mut window.cx, |state, cx| state.dismiss_call_told(cx));
+        assert!(
+            window
+                .state
+                .read_with(&window.cx, |state, _| state.pending().call_told.is_none())
+        );
+    }
+}

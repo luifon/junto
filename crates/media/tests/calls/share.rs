@@ -449,13 +449,11 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
     .await;
     cal.calls.set_share_volume(1.0);
 
-    // The media server sends each share in the layer of the size at which it is drawn:
-    // the share that Cal does not watch arrives in the small layer, and the watched one
-    // in the size of its source, until Cal draws it small.
-    cal.until_width(ann_id, 640).await;
+    // Full-resolution publication preserves text even when a share is drawn small.
+    cal.until_width(ann_id, 1280).await;
     cal.until_width(ben_id, 800).await;
     cal.calls.set_view_size(320, 240);
-    cal.until_width(ben_id, 400).await;
+    cal.until_width(ben_id, 800).await;
     cal.calls.set_view_size(1280, 800);
     cal.until_width(ben_id, 800).await;
 
@@ -491,7 +489,7 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
-async fn the_last_size_of_the_drawing_decides_the_layer_of_the_watched_share() {
+async fn the_last_size_decides_drawing_bounds_while_the_share_keeps_full_resolution() {
     let _media = MEDIA_SERVER.read().await;
     let (ann, ben) = (Person::new(440.0), Person::new(880.0));
     let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
@@ -500,36 +498,57 @@ async fn the_last_size_of_the_drawing_decides_the_layer_of_the_watched_share() {
     let ann_id = account(&ann_at);
     for person in [&ann, &ben] {
         person.enter(room.target).await;
-        // The voices are closed. A sharer that also sends a voice did not get the layer
-        // of the full size back after its estimate of the upload rate fell (ADR 0737,
-        // open), and this test is about the order of the requests.
-        person.calls.set_muted(true);
+        person.calls.set_muted(false);
     }
     ann.calls.start_share(screen(SoundChoice::None));
     ann.until_sharing().await;
     ben.until_width(ann_id, 1280).await;
 
-    // The interface tells several sizes one after the other without a pause, as it does
-    // while the person changes the size of the window. The media server sends the layer
-    // of the last size, and goes on sending it.
+    ben.until_heard(&ann).await;
+    ann.until_heard(&ben).await;
+    // Drawing size follows the last request; the received stream remains full size.
     const SMALL: (u32, u32) = (320, 240);
     const LARGE: (u32, u32) = (1280, 800);
     for _ in 0..6 {
-        for (sizes, layer) in [([SMALL, LARGE, SMALL], 640), ([LARGE, SMALL, LARGE], 1280)] {
+        for (sizes, drawn) in [([SMALL, LARGE, SMALL], 320), ([LARGE, SMALL, LARGE], 1280)] {
             for (width, height) in sizes {
                 ben.calls.set_view_size(width, height);
             }
-            ben.until_width_stays(ann_id, layer).await;
+            ben.until_width_stays(ann_id, 1280).await;
+            let mut pictures = ben.calls.main_picture();
+            tokio::time::timeout(
+                PATIENCE,
+                pictures.wait_for(|picture| {
+                    picture
+                        .as_ref()
+                        .is_some_and(|picture| picture.frame.width == drawn)
+                }),
+            )
+            .await
+            .unwrap()
+            .unwrap();
         }
     }
 
     // A change of the volume of the share and a new size at the same moment: the volume
     // asks the media server for nothing, so the new size is the last request.
-    for (size, layer) in [(SMALL, 640), (LARGE, 1280), (SMALL, 640)] {
+    for (size, drawn) in [(SMALL, 320), (LARGE, 1280), (SMALL, 320)] {
         ben.calls.set_share_volume(0.5);
         ben.calls.set_share_volume(1.0);
         ben.calls.set_view_size(size.0, size.1);
-        ben.until_width_stays(ann_id, layer).await;
+        ben.until_width_stays(ann_id, 1280).await;
+        let mut pictures = ben.calls.main_picture();
+        tokio::time::timeout(
+            PATIENCE,
+            pictures.wait_for(|picture| {
+                picture
+                    .as_ref()
+                    .is_some_and(|picture| picture.frame.width == drawn)
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
     }
 }
 

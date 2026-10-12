@@ -4,7 +4,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         println!("cargo:rustc-link-arg=-ObjC");
         let info = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?)
-            .join("resources/macos/Info.plist");
+            .join("resources/macos/Usage.plist");
         println!("cargo:rerun-if-changed={}", info.display());
         println!(
             "cargo:rustc-link-arg-bin=junto=-Wl,-sectcreate,__TEXT,__info_plist,{}",

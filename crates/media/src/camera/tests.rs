@@ -135,3 +135,51 @@ fn camera_surface_uses_the_full_range_nv12_format_of_the_renderer() {
     );
     assert_eq!((surface.get_width(), surface.get_height()), (64, 36));
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_camera_frame_reuses_its_native_surface() {
+    use core_foundation::base::TCFType;
+    let pixels = crate::share::synthetic::two_colours(64, 36, (200, 30, 30), (30, 30, 200));
+    let frame = CameraFrame::new(&pixels, false, (64, 36)).unwrap();
+    let first = frame.surface().unwrap();
+    let second = frame.surface().unwrap();
+    assert_eq!(first.as_concrete_TypeRef(), second.as_concrete_TypeRef());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[allow(unsafe_code)]
+fn native_camera_surface_mirrors_only_the_preview_pixels() {
+    fn sample(
+        buffer: &core_video::pixel_buffer::CVPixelBuffer,
+        x: usize,
+        y: usize,
+    ) -> (u8, u8, u8) {
+        assert_eq!(buffer.lock_base_address(0), 0);
+        let pixel = unsafe {
+            let luma = buffer.get_base_address_of_plane(0).cast::<u8>();
+            let chroma = buffer.get_base_address_of_plane(1).cast::<u8>();
+            let uv = y / 2 * buffer.get_bytes_per_row_of_plane(1) + x / 2 * 2;
+            (
+                *luma.add(y * buffer.get_bytes_per_row_of_plane(0) + x),
+                *chroma.add(uv),
+                *chroma.add(uv + 1),
+            )
+        };
+        assert_eq!(buffer.unlock_base_address(0), 0);
+        pixel
+    }
+    let pixels = crate::share::synthetic::two_colours(64, 36, (200, 30, 30), (30, 30, 200));
+    let remote = CameraFrame::new(&pixels, false, (64, 36))
+        .unwrap()
+        .surface()
+        .unwrap();
+    let preview = CameraFrame::new(&pixels, true, (64, 36))
+        .unwrap()
+        .surface()
+        .unwrap();
+    assert_ne!(sample(&remote, 4, 12), sample(&remote, 59, 12));
+    assert_eq!(sample(&preview, 4, 12), sample(&remote, 59, 12));
+    assert_eq!(sample(&preview, 59, 12), sample(&remote, 4, 12));
+}

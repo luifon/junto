@@ -23,6 +23,7 @@ options:
                            JUNTO_DATA_DIR, then the directory of the user.
   --scale <percent>        the interface scale of this start, from 90 to 150
   --no-activate            open the window without bringing it to the front
+  --check-startup          exit after rendering the first window frame
   --version                print the version
   --help                   print this text
 
@@ -31,6 +32,7 @@ The variable JUNTO_LOG_LEVEL sets the level of the log on standard error (defaul
 struct Arguments {
     data_dir: Option<PathBuf>,
     start: WindowStart,
+    check_startup: bool,
 }
 
 enum Parsed {
@@ -42,6 +44,7 @@ fn parse(mut values: impl Iterator<Item = String>) -> Result<Parsed, String> {
     let mut arguments = Arguments {
         data_dir: None,
         start: WindowStart::default(),
+        check_startup: false,
     };
     while let Some(flag) = values.next() {
         match flag.as_str() {
@@ -57,6 +60,10 @@ fn parse(mut values: impl Iterator<Item = String>) -> Result<Parsed, String> {
                 arguments.start.scale_percent = Some(percent);
             }
             "--no-activate" => arguments.start.activate = false,
+            "--check-startup" => {
+                arguments.check_startup = true;
+                arguments.start.activate = false;
+            }
             "--version" => return Ok(Parsed::Print(env!("CARGO_PKG_VERSION").to_owned())),
             "--help" | "-h" => return Ok(Parsed::Print(USAGE.to_owned())),
             other => return Err(format!("unknown argument: {other}")),
@@ -119,6 +126,9 @@ fn main() -> ExitCode {
         }
     };
     let start = arguments.start;
+    let check_startup = arguments.check_startup;
+    let started = std::rc::Rc::new(std::cell::Cell::new(false));
+    let reached = started.clone();
     gpui_platform::application()
         .with_assets(Assets)
         .run(move |cx| {
@@ -128,12 +138,32 @@ fn main() -> ExitCode {
                 return;
             }
             let state = app::state(client, start, cx);
-            if let Err(error) = app::open_main_window(state, start, cx) {
-                eprintln!("junto cannot open its window: {error:#}");
-                cx.quit();
+            match app::open_main_window(state, start, cx) {
+                Ok(window) if check_startup => {
+                    let _ = window.update(cx, |_, window, _| {
+                        // Frame callbacks run before drawing. The second callback proves
+                        // that the preceding frame completed layout and presentation.
+                        window.on_next_frame(move |window, _| {
+                            window.on_next_frame(move |_, cx| {
+                                reached.set(true);
+                                println!("Junto first frame rendered");
+                                cx.quit();
+                            });
+                        });
+                    });
+                }
+                Ok(_) => reached.set(true),
+                Err(error) => {
+                    eprintln!("junto cannot open its window: {error:#}");
+                    cx.quit();
+                }
             }
         });
-    ExitCode::SUCCESS
+    if started.get() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
 }
 
 #[cfg(test)]

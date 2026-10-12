@@ -50,6 +50,24 @@ fn detaching_and_returning_keep_the_call(cx: &mut TestAppContext) {
             .state
             .read_with(&window.cx, |state, _| state.is_call_detached())
     });
+    assert_eq!(cx.windows().len(), 1);
+    let main = window.cx.update(|window, _| window.window_handle());
+    window.click("detach-call");
+    let handle = cx
+        .windows()
+        .into_iter()
+        .find(|handle| *handle != main)
+        .unwrap();
+    let mut detached = gpui::VisualTestContext::from_window(handle, cx);
+    detached.run_until_parked();
+    let returning = detached.debug_bounds("return-call").unwrap().center();
+    detached.simulate_click(returning, Modifiers::none());
+    window.until("the detached Return button closes its window", |window| {
+        !window
+            .state
+            .read_with(&window.cx, |state, _| state.is_call_detached())
+    });
+    assert_eq!(cx.windows().len(), 1);
     assert!(window.shows("call-stage"));
     assert_eq!(
         before,
@@ -223,4 +241,48 @@ fn push_to_talk_follows_both_windows(cx: &mut TestAppContext) {
     );
     window.click("leave-call");
     world.run(caller.calls.leave());
+}
+
+#[gpui::test]
+#[ignore = "needs PostgreSQL and LiveKit"]
+fn closing_the_main_window_also_closes_its_detached_call(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server_with_media("Main window close");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
+    voice_channel(&world, &admin, &mut window, ROOM);
+    window.click_channel(ROOM);
+    window.click("join-call");
+    window.until("connected", |window| {
+        window
+            .view()
+            .call
+            .is_some_and(|call| call.phase == Phase::Connected)
+    });
+    let handle = cx
+        .update(|cx| {
+            junto_client::app::open_main_window(
+                window.state.clone(),
+                junto_client::app::WindowStart {
+                    activate: false,
+                    ..Default::default()
+                },
+                cx,
+            )
+        })
+        .unwrap();
+    window.cx.update(|window, _| window.remove_window());
+    let mut main = gpui::VisualTestContext::from_window(handle.into(), cx);
+    main.run_until_parked();
+    let detach = main.debug_bounds("detach-call").unwrap().center();
+    main.simulate_click(detach, Modifiers::none());
+    main.run_until_parked();
+    assert_eq!(cx.windows().len(), 2);
+    assert!(main.simulate_close());
+    main.update(|window, _| window.remove_window());
+    cx.run_until_parked();
+    assert!(
+        cx.windows().is_empty(),
+        "no orphaned call window remains after closing the application"
+    );
 }

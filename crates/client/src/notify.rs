@@ -14,6 +14,10 @@ use crate::state::notices::Alert;
 
 /// Shows and takes away notifications of the operating system.
 pub trait SystemNotifier: 'static {
+    fn unavailable_reason(&self) -> Option<&'static str> {
+        None
+    }
+
     fn show(&self, alert: &Alert, cx: &mut App);
 
     /// Takes away the notification with this tag, when the system still shows it.
@@ -25,8 +29,31 @@ pub trait SystemNotifier: 'static {
 /// the permission at the first one (ADR 0701).
 pub struct PlatformNotifier;
 
+impl PlatformNotifier {
+    pub fn available() -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            let bundle = objc2_foundation::NSBundle::mainBundle();
+            bundle.bundleIdentifier().is_some()
+                && std::path::Path::new(&bundle.bundlePath().to_string())
+                    .extension()
+                    .is_some_and(|extension| extension == "app")
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            true
+        }
+    }
+}
+
 impl SystemNotifier for PlatformNotifier {
+    fn unavailable_reason(&self) -> Option<&'static str> {
+        (!Self::available()).then_some(crate::text::NOTIFICATIONS_NEED_BUNDLE)
+    }
     fn show(&self, alert: &Alert, cx: &mut App) {
+        if !Self::available() {
+            return;
+        }
         cx.show_system_notification(SystemNotification {
             tag: alert.tag.clone().into(),
             title: alert.title.clone().into(),
@@ -36,6 +63,9 @@ impl SystemNotifier for PlatformNotifier {
     }
 
     fn dismiss(&self, tag: &str, cx: &mut App) {
+        if !Self::available() {
+            return;
+        }
         cx.dismiss_system_notification(tag);
     }
 }

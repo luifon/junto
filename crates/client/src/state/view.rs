@@ -962,8 +962,24 @@ pub struct PersonMenu {
 }
 
 impl ShellView {
-    /// The menu of a person in a voice channel of the workspace that is shown. Absent for
-    /// the person of this device, and for a person who is no longer there.
+    /// The call and server named by the detached window.
+    pub fn call_title(&self) -> String {
+        let name = self
+            .call
+            .as_ref()
+            .and_then(|call| call.name.as_deref())
+            .unwrap_or(crate::text::IN_CALL);
+        match self.call.as_ref().and_then(|call| {
+            self.servers
+                .iter()
+                .find(|server| server.id == call.server_id)
+        }) {
+            Some(server) => format!("{name} · {}", server.name),
+            None => name.to_owned(),
+        }
+    }
+
+    /// The available actions for another person still in the selected workspace.
     pub fn person_menu(&self, channel_id: ChannelId, account_id: AccountId) -> Option<PersonMenu> {
         let server_id = self.selected.as_ref()?.id;
         let workspace = self.workspace()?;
@@ -1110,6 +1126,7 @@ pub struct CallStrip {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Invited {
     pub id: CallInvitationId,
+    pub caller: AccountId,
     pub target: CallTarget,
     pub by: Option<String>,
     /// The name of the voice channel. Absent for a direct-message call.
@@ -1119,6 +1136,12 @@ pub struct Invited {
 /// How the last join or call ended, when the person did not end it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CallNotice {
+    DirectJoinFailed {
+        error: FlowError,
+    },
+    DirectEnded {
+        reason: EndReason,
+    },
     JoinFailed {
         channel: Option<String>,
         error: FlowError,
@@ -1128,7 +1151,9 @@ pub enum CallNotice {
         reason: EndReason,
     },
     /// A person with "move members" moved the person into this voice channel.
-    Moved { channel: Option<String> },
+    Moved {
+        channel: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2343,6 +2368,11 @@ fn invitations(servers: &[ServerSnapshot], known: &Known) -> Vec<Invited> {
                     name_of(server.id, invitation.invited_by, workspace, model, known)
                 })
                 .or_else(|| {
+                    model.workspaces.iter().find_map(|workspace| {
+                        name_of(server.id, invitation.invited_by, workspace, model, known)
+                    })
+                })
+                .or_else(|| {
                     known
                         .names
                         .get(&(server.id, invitation.invited_by))
@@ -2350,6 +2380,7 @@ fn invitations(servers: &[ServerSnapshot], known: &Known) -> Vec<Invited> {
                 });
             waiting.push(Invited {
                 id: invitation.id,
+                caller: invitation.invited_by,
                 target,
                 by,
                 channel: channel_of(servers, &target),
@@ -2396,9 +2427,6 @@ fn entry_prompts(servers: &[ServerSnapshot], known: &Known) -> Vec<EntryPrompt> 
 
 /// The name of the voice channel of a call, from the state of its server.
 fn channel_of(servers: &[ServerSnapshot], target: &CallTarget) -> Option<String> {
-    if matches!(target.place, CallPlace::Direct { .. }) {
-        return Some(crate::text::DIRECT_CALL.to_owned());
-    }
     let server = servers
         .iter()
         .find(|server| server.id == target.server_id)?;
@@ -2485,13 +2513,13 @@ fn call_strip(servers: &[ServerSnapshot], known: &Known, shown: Shown) -> Option
                     low_account_id
                 }
             })?;
-            Some(
-                known
-                    .names
-                    .get(&(active.target.server_id, other))
-                    .cloned()
-                    .unwrap_or_else(|| crate::text::DIRECT_CALL.to_owned()),
-            )
+            model
+                .and_then(|model| {
+                    model.workspaces.iter().find_map(|workspace| {
+                        name_of(active.target.server_id, other, workspace, model, known)
+                    })
+                })
+                .or_else(|| known.names.get(&(active.target.server_id, other)).cloned())
         }),
         phase: active.phase,
         elapsed: started_at.zip(known.media.now).map(|(started_at, now)| {
@@ -2517,6 +2545,13 @@ fn call_strip(servers: &[ServerSnapshot], known: &Known, shown: Shown) -> Option
 
 fn call_notice(servers: &[ServerSnapshot], known: &Known) -> Option<CallNotice> {
     match known.media.calls.outcome.as_ref()? {
+        Outcome::JoinFailed { target, error }
+            if matches!(target.place, CallPlace::Direct { .. }) =>
+        {
+            Some(CallNotice::DirectJoinFailed {
+                error: error.clone(),
+            })
+        }
         Outcome::JoinFailed { target, error } => Some(CallNotice::JoinFailed {
             channel: channel_of(servers, target),
             error: error.clone(),
@@ -2527,6 +2562,11 @@ fn call_notice(servers: &[ServerSnapshot], known: &Known) -> Option<CallNotice> 
             reason: EndReason::Server(Some(LeaveReason::Left | LeaveReason::Switched)),
             ..
         } => None,
+        Outcome::Ended { target, reason } if matches!(target.place, CallPlace::Direct { .. }) => {
+            Some(CallNotice::DirectEnded {
+                reason: reason.clone(),
+            })
+        }
         Outcome::Ended { target, reason } => Some(CallNotice::Ended {
             channel: channel_of(servers, target),
             reason: reason.clone(),

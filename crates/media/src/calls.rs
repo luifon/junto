@@ -229,8 +229,11 @@ enum SessionCommand {
     Watch(Option<ShareId>),
     ShareVolume(f32),
     ViewSize(u32, u32),
+    CameraViews(HashMap<ShareId, (u32, u32)>),
     #[cfg(feature = "test-support")]
     SimulateFullReconnect,
+    #[cfg(feature = "test-support")]
+    SimulateConnectionLoss,
     /// Ends the call on this device. Who ends it gets the identity of the place and tells
     /// the server.
     End {
@@ -262,6 +265,7 @@ struct Shared {
     share_volume: Option<f32>,
     /// The size in pixels inside which the interface draws the watched share.
     view_size: Option<(u32, u32)>,
+    camera_views: Option<HashMap<ShareId, (u32, u32)>>,
     joining: Option<Joining>,
     next_key: u64,
     active: Option<ActiveHandle>,
@@ -490,10 +494,39 @@ impl Calls {
         }
     }
 
-    /// Makes the call library of the call of this device connect anew, for a test.
+    /// The camera pictures currently drawn by the interface and their pixel bounds.
+    /// An empty map suspends remote video until a drawing window asks for it again.
+    pub fn set_camera_views(&self, views: HashMap<ShareId, (u32, u32)>) {
+        let mut shared = self.inner.shared();
+        if shared.camera_views.as_ref() != Some(&views) {
+            shared.camera_views = Some(views.clone());
+            drop(shared);
+            self.inner.tell(SessionCommand::CameraViews(views));
+        }
+    }
+
+    /// Reports the actual pixel size of one camera tile in the drawing window.
+    pub fn set_camera_view(&self, id: ShareId, size: (u32, u32)) {
+        let mut views = self.inner.shared().camera_views.clone().unwrap_or_default();
+        if views.insert(id, size) != Some(size) {
+            self.set_camera_views(views);
+        }
+    }
+
+    /// Removes requests for cameras which the drawing window no longer shows.
+    pub fn retain_camera_views(&self, visible: &[ShareId]) {
+        let mut views = self.inner.shared().camera_views.clone().unwrap_or_default();
+        views.retain(|id, _| visible.contains(id));
+        self.set_camera_views(views);
+    }
+
     #[cfg(feature = "test-support")]
     pub fn simulate_full_reconnect(&self) {
         self.inner.tell(SessionCommand::SimulateFullReconnect);
+    }
+    #[cfg(feature = "test-support")]
+    pub fn simulate_connection_loss(&self) {
+        self.inner.tell(SessionCommand::SimulateConnectionLoss);
     }
 
     /// The picture of the watched share of the call of this device.
@@ -814,6 +847,9 @@ fn start(
             volume: shared.share_volume.unwrap_or(1.0),
         },
     );
+    if let Some(views) = &shared.camera_views {
+        engine.set_camera_views(views.clone());
+    }
     if shared.talking {
         engine.set_talking(true);
     }
@@ -1511,8 +1547,11 @@ impl Session {
             SessionCommand::Watch(choice) => self.engine.watch(choice),
             SessionCommand::ShareVolume(gain) => self.engine.set_share_volume(gain),
             SessionCommand::ViewSize(width, height) => self.engine.set_view_size(width, height),
+            SessionCommand::CameraViews(views) => self.engine.set_camera_views(views),
             #[cfg(feature = "test-support")]
             SessionCommand::SimulateFullReconnect => self.engine.simulate_full_reconnect(),
+            #[cfg(feature = "test-support")]
+            SessionCommand::SimulateConnectionLoss => self.engine.simulate_connection_loss(),
             // The loop takes this command itself.
             SessionCommand::End { .. } => {}
         }

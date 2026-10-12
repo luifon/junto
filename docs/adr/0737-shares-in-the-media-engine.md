@@ -14,6 +14,8 @@ ADR 0502 decides that several people can share at once, that each viewer picks t
 
 ## Decision
 
+The two-layer publication policy below is superseded by ADR 0773. Capture ownership, audio and ordered viewer requests remain as described here.
+
 The share of this device:
 
 - The picture is one video track with the source "screen share", sent with VP8 in two layers: the full size at the frame rate that the sharer chose, and half the size at no more than 15 pictures per second. The bitrate is 3 Mbit/s for 1920 by 1080 at 30 pictures per second, in proportion to the pixels and, for half of it, to the frame rate, between 150 kbit/s and 8 Mbit/s. The defaults of the call library are not used: they send a share of less than 1920 pixels at 15 or at 5 pictures per second. When the processor of the sharer is busy, the call library lowers the frame rate and keeps the size of the picture: the client states the degradation preference "maintain resolution" itself and does not rely on the default of the call library for a screen share. The sound is one audio track with the source "screen share audio": 48 kHz, two channels, 128 kbit/s, no processing, no silence suppression and no redundant copy.
