@@ -1,7 +1,7 @@
 #!/bin/sh
 # Fails when a version that two files state differs between them, or when an image, a CI
-# action or a package that a workflow installs is not pinned (ADR 0014, ADR 0905). Run from
-# any directory.
+# action, a Debian package of an image definition or a package that a workflow installs is
+# not pinned (ADR 0014, ADR 0905). Run from any directory.
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -66,6 +66,35 @@ for file in "$server" "$worker" "$speech" deploy/images/link/Dockerfile; do
         fail "$file names an image without a digest"
     else
         echo "ok    every base image of $file has a digest"
+    fi
+done
+
+# A Debian package is pinned by the dated snapshot of the archive that it comes from
+# (ADR 0014). In these two definitions, an instruction that names a package program has
+# one form only, so that this rule reads all of it: it removes the package sources of the
+# base image, writes the two sources of the snapshot, and installs packages by their names
+# without a further option. The snapshot is an argument of the same build stage. An
+# instruction that names the configuration of the package program in another way fails.
+same "Debian snapshot of the server image and of the speech image" \
+    "$(argument "$server" DEBIAN_SNAPSHOT)" "$(argument "$speech" DEBIAN_SNAPSHOT)"
+for file in "$server" "$speech"; do
+    unpinned=$(awk '
+        { instruction = instruction $0 }
+        /\\$/ { sub(/\\$/, "", instruction); next }
+        { gsub(/[ \t]+/, " ", instruction); print instruction; instruction = "" }
+    ' "$file" | awk '
+        /^FROM / { dated = 0 }
+        /^ARG DEBIAN_SNAPSHOT=[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z$/ { dated = 1 }
+        /^ARG DEBIAN_SNAPSHOT/ { next }
+        tolower($0) !~ /(apt|dpkg|sources\.list)/ { next }
+        dated && /^RUN rm -f \/etc\/apt\/sources\.list\.d\/\* && echo "deb \[check-valid-until=no\] http:\/\/snapshot\.debian\.org\/archive\/debian\/\$\{DEBIAN_SNAPSHOT\} [a-z]+ main" > \/etc\/apt\/sources\.list && echo "deb \[check-valid-until=no\] http:\/\/snapshot\.debian\.org\/archive\/debian-security\/\$\{DEBIAN_SNAPSHOT\} [a-z]+-security main" >> \/etc\/apt\/sources\.list && apt-get update && apt-get install -y --no-install-recommends( [a-z0-9][a-z0-9.+-]*)+ && rm -rf \/var\/lib\/apt\/lists\/\*$/ { next }
+        { print }
+    ')
+    if [ -n "$unpinned" ]; then
+        echo "$unpinned"
+        fail "$file installs a Debian package in another form than from the dated snapshot of its build stage"
+    else
+        echo "ok    every Debian package of $file comes from the dated snapshot of its build stage"
     fi
 done
 

@@ -76,7 +76,7 @@ Copy before a migration:
 - Every other database of such a name stays. When one of them has the name under which this start creates its copy, the start stops with a message that names it: the server did not record that it made that database, so it does not delete it.
 - A database that has the name of the new copy and not the comment of a copy of this database is not a copy that this server made. It stays, and the server does not start.
 - PostgreSQL cuts a database name after 63 bytes. When the name of the copy would be longer, no copy is made and the server does not start.
-- When the copy cannot be made, the server does not start and migrates nothing. PostgreSQL copies only a database that no other program is connected to, and the database user must be allowed to create a database.
+- When the copy cannot be made, the server does not start and migrates nothing. PostgreSQL copies only a database that no other program is connected to, and the database user must own the database and be allowed to create one. The role of the server in a deployment has both and no further right (ADR 0022).
 - While a recording is starting or runs, no copy is made and the server does not start (ADR 0608).
 - `JUNTO_MIGRATION_COPY=none` turns the copy off. The default is `database`.
 - The first start on an empty database copies nothing.
@@ -87,12 +87,13 @@ Newer schema:
 
 ## Consequences
 
-- A backup needs no stop of the server. The script of the deployment calls `backup-begin`, copies the database, calls `backup-files`, copies the directories of its `file` lines, and calls `backup-end` (ADR 0021). When `backup-end` fails, the backup did not hold deletions back until its end, and the script discards it.
+- A backup needs no stop of the server. The script of the deployment calls `backup-begin`, copies the database, calls `backup-files`, copies the directories of its `file` lines, and calls `backup-end` (ADR 0021). When `backup-end` fails, the backup did not hold deletions back until its end, and the script discards it. A `file` line whose directory is absent is a lost file, and the script ends with a code of its own for it.
+- `deploy/backup.sh` stores the line of `schema-version` as the file `schema` of a backup, and `deploy/restore.sh` refuses a backup whose line differs from the line of its own server binary, before it stops a container (ADR 0021).
 - The way back after a failed upgrade is: stop the server, rename the database, rename the copy to the name of the database, start the earlier version. `deploy/upgrade-undo.sh` does the renames (ADR 0021). The copy holds no file: a file that the newer version deleted is not brought back.
 - The copy doubles the disk space of the database until the upgrade after a finished one replaces it. A server that is started again after a failed migration makes no further copy.
 - The comment of a database whose upgrade did not finish states that and names the copy; a list of the databases with their comments shows it.
 - When the copy of an unfinished upgrade was deleted, the upgrade is finished without a copy.
-- A directory that no row names stays on the disk until `unnamed-files --remove` runs at least 24 hours after its last change. After a restore of a recent backup, and after the way back from an upgrade, a first run lists such directories as `skip` lines.
+- A directory that no row names stays on the disk until `unnamed-files --remove` runs at least 24 hours after its last change. After a restore of a recent backup, and after the way back from an upgrade, a first run lists such directories as `skip` lines. `deploy/restore.sh` and `deploy/upgrade-undo.sh` run the command without `--remove` and print its lines, and `deploy/backup.sh` runs it with `--remove` before `backup-begin` (ADR 0021).
 - A backup that never reports its end holds deletions back for 24 hours at most.
 - A restored database can name an upload or a recording that was not complete when the copy was made. The upload expires, and the controller of recordings ends a recording without a recorder (ADR 0604).
 - A second server process on the same database prevents the copy, and with it the migration. An upgrade stops every server process first.

@@ -22,7 +22,7 @@ Files:
 Settings and secrets:
 
 - Every setting is a line of `deploy/.env`, which git ignores. `deploy/env.example` explains each one and sets no secret.
-- The secrets are the PostgreSQL password, the key and the secret of the media server, and the Redis password. `deploy/generate-secrets.sh` prints them with random values of letters and digits.
+- The secrets are the PostgreSQL password, the key and the secret of the media server, and the Redis password. `deploy/generate-secrets.sh` prints them with random values of letters and digits. The PostgreSQL password is the password of the role of the server, which is not the first user of PostgreSQL (ADR 0022).
 - No secret has a default. A form reads each of its required settings in the form `${NAME:?message}`, so Compose stops and names the variable when one is missing.
 - A secret consists of letters and digits, because it is written into a database URL, a Redis configuration and YAML bodies. The containers of PostgreSQL, Redis and the media server check this before they start their program and stop with a message that names the setting.
 - The public key of the other end of the link is the one setting without a default that Compose does not require: the command that creates the key of a host runs before the key of the other host exists. The link container stops with a message while it is missing.

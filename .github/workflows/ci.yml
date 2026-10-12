@@ -202,6 +202,7 @@ jobs:
           --severity=warning
           tools/serial.sh tools/check-pins.sh tools/with-test-postgres.sh tools/with-test-livekit.sh
           deploy/generate-secrets.sh deploy/backup.sh deploy/restore.sh deploy/upgrade-undo.sh
+          deploy/database-user.sh
           deploy/images/server/junto-transcribe-handover
           deploy/images/server/junto-volumes deploy/images/worker/junto-worker-loop
           deploy/images/recorder/start.sh deploy/images/link/entrypoint.sh

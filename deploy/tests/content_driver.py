@@ -3,7 +3,7 @@
 
 usage: content_driver.py <step> --project <name> --env-file <file> --compose-file <file>
            --origin <http://127.0.0.1:port> --state <file> [--count <n>] [--stop-file <file>]
-           [--backup <directory>] [--set <key>=<number>]
+           [--backup <directory>] [--restore-log <file>] [--set <key>=<number>]
 
 Steps of deploy/tests/backup-restore.sh:
   prepare   an owner, three channels with messages and attachments, three recordings; one
@@ -14,7 +14,8 @@ Steps of deploy/tests/backup-restore.sh:
             waits before it deletes their directories
   released  after the backup: those directories leave the disk
   verify    in the restored deployment: every message, attachment and recording directory
-            that the database names is present, and nothing of what was deleted before
+            that the database names is present, and nothing of what was deleted before; the
+            restore listed the directories of the archive that the database does not name
 
 Steps of deploy/tests/upgrade.sh:
   seed      an owner and one channel with messages and attachments
@@ -324,10 +325,10 @@ def step_released(arguments: argparse.Namespace, deployment: Deployment, state: 
     check("the archive holds the directories of what was deleted after the copy of the database", set(held) <= members)
     check("the archive holds no directory of what was deleted before the backup", not set(before) & members)
     left_out = Path(arguments.backup, "left-out").read_text().splitlines()
-    absent = f"absent recordings/{state['failed_recording']}"
-    others = [line for line in left_out if line != absent and not re.fullmatch(r"skip attachments/[0-9a-f-]{36} upload_not_complete", line)]
-    check("the file left-out names the recording that has no directory", left_out.count(absent) == 1, left_out[:3])
-    check("its other lines are uploads that had not ended", others == [], others[:3])
+    failed = [line for line in left_out if state["failed_recording"] in line]
+    others = [line for line in left_out if not re.fullmatch(r"skip attachments/[0-9a-f-]{36} upload_not_complete", line)]
+    check("the file left-out has no line for the recording that failed and has no file", failed == [], failed)
+    check("its lines are uploads that had not ended", others == [], others[:3])
     wait_for("the server deleted those directories after the backup", lambda: not deployment.present(held), DELETION_SECONDS)
     check("after the backup the server deleted those directories", True)
 
@@ -389,6 +390,32 @@ def step_verify(arguments: argparse.Namespace, deployment: Deployment, state: St
         found = deployment.checksums(f"recordings/{recordings[name]['id']}") if deployment.present([f"recordings/{recordings[name]['id']}"]) else {}
         check(f"recording {name}: its files have the bytes of the backup", found == recordings[name]["files"], sorted(found))
 
+    # The directories of the archive that the restored database does not name: uploads that
+    # ended between the copy of the database and the list of the files. The restore states
+    # them as the server lists them.
+    listing = subprocess.run(["tar", "-tf", f"{arguments.backup}/files.tar"], capture_output=True, text=True, check=True)
+    archived = {"/".join(parts[:2]) for parts in (name.rstrip("/").split("/") for name in listing.stdout.splitlines()) if len(parts) >= 2}
+    rows = {f"attachments/{line}" for line in deployment.sql("select distinct storage_id from attachments")}
+    rows |= {f"recordings/{line}" for line in deployment.sql("select id::text from recordings union select split_part(path, '/', 1) from file_removals")}
+    expected = sorted(archived - rows)
+    stated = re.findall(r"^(?:unnamed|skip) ((?:attachments|recordings)/[0-9a-f-]{36})(?: changed_recently)?$", Path(arguments.restore_log).read_text(), re.M)
+    check(
+        f"the restore listed the {len(expected)} directories of the archive that the restored database does not name",
+        sorted(stated) == expected and len(expected) > 0,
+        (len(stated), len(expected)),
+    )
+    check("each of those directories is on the disk", sorted(deployment.present(expected)) == expected)
+
+    # tar restores the time of the last change of a directory, so the 24 hours of the server
+    # are counted from before the backup.
+    kept = state["directories"]["kept"]
+    times = deployment.inside(f"cd {FILES} && stat -c %Y " + " ".join(kept)).split()
+    check(
+        "a restored directory has the time of its last change from before the backup",
+        len(times) == len(kept) and all(int(changed) < state["backup_started"] for changed in times),
+        times,
+    )
+
     check("the restored database holds no backup", deployment.sql("select count(*) from backups") == ["0"])
     check("the directory of the exports is empty", deployment.inside(f"ls -A {FILES}/exports").strip() == "")
     after = send(owner, channels["kept"], "after-the-restore")
@@ -441,6 +468,7 @@ def main() -> int:
     parser.add_argument("--count", type=int, default=3)
     parser.add_argument("--stop-file", default="")
     parser.add_argument("--backup", default="")
+    parser.add_argument("--restore-log", default="")
     parser.add_argument("--set", action="append", default=[], metavar="KEY=NUMBER")
     arguments = parser.parse_args()
     # A step saves the state when it changed it. "write" runs beside other steps and never

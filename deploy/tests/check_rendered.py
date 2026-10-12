@@ -140,6 +140,28 @@ def check(form: str, project: dict) -> list[str]:
                 problems.append(f"server: {directory} is not a volume")
         if server.get("environment", {}).get("JUNTO_MIGRATION_COPY") != "database":
             problems.append("server: the copy before a migration is not on by default")
+    # The server connects as its own role, and the access rules of PostgreSQL let no other
+    # role connect over the network (ADR 0022).
+    if "postgres" in services and "server" in services:
+        postgres = services["postgres"]
+        first_user = postgres.get("environment", {}).get("POSTGRES_USER")
+        address = services["server"].get("environment", {}).get("JUNTO_DATABASE_URL", "")
+        if not address.startswith("postgres://junto_server:") or first_user in (None, "junto_server"):
+            problems.append("server: does not connect as the role junto_server, or that role is the first user of PostgreSQL")
+        files = {volume.get("target"): volume for volume in postgres.get("volumes", []) if volume.get("type") == "bind"}
+        for target in ("/etc/junto/pg_hba.conf", "/docker-entrypoint-initdb.d/junto-server-role.sql"):
+            if not files.get(target, {}).get("read_only"):
+                problems.append(f"postgres: {target} is not a file of the repository that the container cannot write")
+        started = [line.strip() for line in "\n".join(postgres.get("command") or []).splitlines() if "docker-entrypoint.sh" in line]
+        if started != ["exec docker-entrypoint.sh postgres -c hba_file=/etc/junto/pg_hba.conf"]:
+            problems.append(f"postgres: does not start with the access rules of the repository and no other: {started}")
+        rules = files.get("/etc/junto/pg_hba.conf", {}).get("source")
+        if rules:
+            with open(rules, encoding="utf-8") as file:
+                lines = [line.split() for line in file if line.strip() and not line.lstrip().startswith("#")]
+            over_network = [line for line in lines if line[0] != "local"]
+            if over_network != [["host", "all", "junto_server", "all", "scram-sha-256"]]:
+                problems.append(f"postgres: the access rules for the network are {over_network}")
     # init sets the owner of every directory that a container without root rights gets as
     # a volume: it mounts the same volume at the same place and names that place with an
     # owner that is not root.

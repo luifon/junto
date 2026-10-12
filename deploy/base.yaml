@@ -51,6 +51,9 @@ services:
     image: postgres:17.11-alpine3.24@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
     user: "70:70"
     read_only: true
+    # "junto" is the first user of the data directory. It has every right and connects
+    # through the socket of the container only. The server connects as "junto_server",
+    # which owns the database and may create one, and has the password (ADR 0022).
     environment:
       POSTGRES_USER: junto
       POSTGRES_DB: junto
@@ -64,9 +67,12 @@ services:
             echo "JUNTO_POSTGRES_PASSWORD must consist of letters and digits (deploy/generate-secrets.sh)" >&2
             exit 1 ;;
         esac
-        exec docker-entrypoint.sh postgres
+        exec docker-entrypoint.sh postgres -c hba_file=/etc/junto/pg_hba.conf
     volumes:
       - postgres:/var/lib/postgresql/data
+      - ./images/postgres/pg_hba.conf:/etc/junto/pg_hba.conf:ro
+      # The PostgreSQL image runs this file once, when it creates the data directory.
+      - ./images/postgres/server-role.sql:/docker-entrypoint-initdb.d/junto-server-role.sql:ro
     tmpfs:
       - /var/run/postgresql:uid=70,gid=70,mode=0755
       - /tmp

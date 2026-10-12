@@ -83,6 +83,39 @@ else
     exit 1
 fi
 
+# The database users (ADR 0022).
+expect() {
+    if [ "$2" = "$3" ]; then
+        echo "ok    $1"
+    else
+        echo "FAIL  $1: got \"$2\", expected \"$3\""
+        exit 1
+    fi
+}
+sql() {
+    compose exec -T postgres psql -U junto -d junto -At -c "$1" < /dev/null
+}
+# A login over the network of the container, with the password of the settings.
+over_network() {
+    compose exec -T postgres sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$(hostname)" -U "$1" -d junto -At -c "select current_user" 2>&1' sh "$1" < /dev/null || true
+}
+expect "the role of the server may log in and create a database, has no other attribute and is in no other role" \
+    "$(sql "select rolcanlogin, rolcreatedb, rolsuper, rolcreaterole, rolreplication, rolbypassrls, (select count(*) from pg_auth_members where member = r.oid) from pg_roles r where rolname = 'junto_server'")" \
+    "t|t|f|f|f|f|0"
+expect "the role of the server owns the database" "$(sql "select datdba::regrole from pg_database where datname = 'junto'")" "junto_server"
+expect "the role of the server owns every table, sequence and routine of the database" \
+    "$(sql "select (select count(*) from pg_class where relnamespace = 'public'::regnamespace and relowner = r) > 0, (select count(*) from pg_class where relnamespace = 'public'::regnamespace and relowner <> r) + (select count(*) from pg_proc where pronamespace = 'public'::regnamespace and proowner <> r) from (select 'junto_server'::regrole::oid as r) role")" \
+    "t|0"
+expect "the server is connected as that role" \
+    "$(sql "select string_agg(distinct usename, ' ') from pg_stat_activity where datname = 'junto' and backend_type = 'client backend' and pid <> pg_backend_pid()")" \
+    "junto_server"
+expect "PostgreSQL reads the access rules of the repository" "$(sql 'show hba_file')" "/etc/junto/pg_hba.conf"
+expect "the role of the server logs in over the network with the password" "$(over_network junto_server)" "junto_server"
+case "$(over_network junto)" in
+    *"no pg_hba.conf entry"*) echo "ok    the first user of the database server has no path over the network" ;;
+    *) echo "FAIL  the first user of the database server over the network: $(over_network junto)"; exit 1 ;;
+esac
+
 for service in postgres server redis livekit recorder worker; do
     state=$(compose ps --format '{{.State}}' "$service")
     if [ "$state" = running ]; then
