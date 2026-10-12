@@ -47,6 +47,10 @@ objc2-core-audio-types = { version = "0.3.2", default-features = false, features
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGDirectDisplay", "CGWindow"] }
 
+# Initialize the native call library's PipeWire symbols before the sound host uses them.
+[build-dependencies]
+cc = "1"
+
 [dev-dependencies]
 junto-media = { path = ".", features = ["test-support"] }
 sqlx = { workspace = true }
@@ -55,8 +59,8 @@ tokio = { workspace = true, features = ["io-util", "test-util"] }
 url = "2"
 uuid = { workspace = true }
 
-# The workspace forbids unsafe code. This crate denies it and allows it in the two modules
-# that call macOS: the microphone permission and the screen capture.
+# The workspace forbids unsafe code. This crate denies it and allows it only in modules
+# that call the platform APIs: macOS permissions and capture, and Linux audio initialization.
 [lints.rust]
 unsafe_code = "deny"
 

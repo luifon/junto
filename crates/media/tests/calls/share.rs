@@ -305,7 +305,8 @@ async fn a_share_with_sound_arrives_with_its_picture_and_its_sound() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
 async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_with_its_sharer() {
-    let _media = MEDIA_SERVER.read().await;
+    // The frame-rate assertion needs the encoder budget without competing test rooms.
+    let _media = MEDIA_SERVER.write().await;
     let (ann, ben, cal) = (Person::new(440.0), Person::new(880.0), Person::new(1320.0));
     let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
     let ben_at = room.member(&ann_at, &ben, "Ben").await;
@@ -391,6 +392,9 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
         }
     });
     let _ = counted.await;
+    if arrived < 36 {
+        crate::statistics::frame_rate(&ben, &cal, arrived).await;
+    }
     assert!(arrived >= 36, "{arrived} pictures in three seconds");
     cal.until_heard_tone(PLAYER.0).await;
     cal.until_silent_tone(SYSTEM.0).await;

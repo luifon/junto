@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+case "$*" in
+    'stop --time 1 junto-linux1-livekit') action=stop ;;
+    'start junto-linux1-livekit') action=start ;;
+    *) echo 'Only restarting the test LiveKit server is allowed' >&2; exit 2 ;;
+esac
+exec curl --fail --silent --show-error --max-time 40 -X POST "http://control:8080/$action"

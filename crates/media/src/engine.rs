@@ -43,6 +43,8 @@ use crate::share::picture::PictureFrame;
 use crate::share::{CaptureError, CaptureRequest, ScreenCapture};
 
 mod share;
+#[cfg(feature = "test-support")]
+pub(crate) mod statistics;
 
 pub use share::{
     DEFAULT_VIEW, MainPicture, SMALL_PICTURE, SeenShare, ShareId, ShareInfo, ShareState, watched,
@@ -221,6 +223,8 @@ enum Command {
     /// itself after some interruptions.
     #[cfg(feature = "test-support")]
     SimulateFullReconnect,
+    #[cfg(feature = "test-support")]
+    Statistics(statistics::Reply),
     Close(oneshot::Sender<()>),
 }
 
@@ -675,6 +679,8 @@ impl Actor {
             Command::Watch(choice) => self.set_watch(choice),
             Command::ShareVolume(gain) => self.set_share_volume(gain),
             Command::ViewSize(width, height) => self.set_view_size(width, height),
+            #[cfg(feature = "test-support")]
+            Command::Statistics(reply) => self.statistics(reply).await,
             #[cfg(feature = "test-support")]
             Command::SimulateFullReconnect => {
                 if let Some(room) = &self.room {

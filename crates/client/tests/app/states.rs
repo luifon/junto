@@ -74,6 +74,9 @@ fn a_ban_a_removal_and_a_forgotten_account_show_their_states(cx: &mut TestAppCon
     window.close();
     let mut window = open(cx, directory.path());
     window.until("the ban is shown again", |window| window.shows("banned"));
+    window.until("the startup check has finished", |window| {
+        window.view().selected.is_some_and(|server| !server.busy)
+    });
 
     // "Check again" finds the unban, and the account is the same.
     world.run(api.unban_account(account_id)).unwrap();

@@ -413,7 +413,6 @@ async fn more_events_than_the_replay_bound_while_cut_load_a_snapshot() {
         model.channel(renamed.id).is_some()
     })
     .await;
-    let mut told = member.live().notices();
 
     proxy.block_streams(true);
     proxy.cut_streams();
@@ -421,6 +420,8 @@ async fn more_events_than_the_replay_bound_while_cut_load_a_snapshot() {
         matches!(view.status, StreamStatus::Interrupted(_))
     })
     .await;
+    // The model is published before its notices; exclude notices from before the cut.
+    let mut told = member.live().notices();
     // The server replays at most 1000 events that the account may receive (ADR 0207).
     let api = owner.api();
     for round in 0..1005 {

@@ -96,7 +96,7 @@ impl MediaOptions {
     /// The devices, the permission and the screen capture of the machine.
     pub fn system() -> Self {
         Self {
-            host: Arc::new(crate::audio::cpal_host::CpalHost::new()),
+            host: crate::audio::system(),
             permission: Arc::new(crate::permission::SystemPermission),
             capture: crate::share::system(),
             timing: CallTiming::default(),
@@ -225,6 +225,8 @@ enum SessionCommand {
     ViewSize(u32, u32),
     #[cfg(feature = "test-support")]
     SimulateFullReconnect,
+    #[cfg(feature = "test-support")]
+    Statistics(crate::engine::statistics::Reply),
     /// Ends the call on this device. Who ends it gets the identity of the place and tells
     /// the server.
     End {
@@ -486,6 +488,21 @@ impl Calls {
     #[cfg(feature = "test-support")]
     pub fn simulate_full_reconnect(&self) {
         self.inner.tell(SessionCommand::SimulateFullReconnect);
+    }
+
+    /// Queries the connection statistics for a failed live test.
+    #[cfg(feature = "test-support")]
+    pub fn statistics(
+        &self,
+    ) -> impl Future<Output = Result<livekit::rtc_engine::SessionStats, String>> + Send + 'static
+    {
+        let (reply, stats) = oneshot::channel();
+        self.inner.tell(SessionCommand::Statistics(reply));
+        async move {
+            stats
+                .await
+                .unwrap_or_else(|_| Err("the call ended before its statistics answered".to_owned()))
+        }
     }
 
     /// The picture of the watched share of the call of this device.
@@ -1475,6 +1492,8 @@ impl Session {
             SessionCommand::Watch(choice) => self.engine.watch(choice),
             SessionCommand::ShareVolume(gain) => self.engine.set_share_volume(gain),
             SessionCommand::ViewSize(width, height) => self.engine.set_view_size(width, height),
+            #[cfg(feature = "test-support")]
+            SessionCommand::Statistics(reply) => self.engine.statistics(reply),
             #[cfg(feature = "test-support")]
             SessionCommand::SimulateFullReconnect => self.engine.simulate_full_reconnect(),
             // The loop takes this command itself.

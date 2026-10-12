@@ -63,10 +63,7 @@ impl CpalHost {
 
 #[cfg(target_os = "linux")]
 fn host() -> cpal::Host {
-    cpal::host_from_id(cpal::HostId::PipeWire).unwrap_or_else(|error| {
-        tracing::warn!(%error, "PipeWire is not available; the default sound host is used");
-        cpal::default_host()
-    })
+    super::linux::host()
 }
 
 #[cfg(not(target_os = "linux"))]

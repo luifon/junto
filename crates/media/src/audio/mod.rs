@@ -9,6 +9,9 @@ pub mod capture;
 pub mod cpal_host;
 pub mod host;
 pub mod level;
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+mod linux;
 pub mod playout;
 pub mod processing;
 pub mod rate;
@@ -17,6 +20,17 @@ pub mod synthetic;
 
 pub use host::{AudioError, AudioHost, DeviceId, DeviceInfo, Devices, Format, OpenStream};
 pub use processing::Processing;
+
+pub(crate) fn system() -> std::sync::Arc<dyn AudioHost> {
+    #[cfg(target_os = "linux")]
+    {
+        std::sync::Arc::new(linux::PipeWireHost)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        std::sync::Arc::new(cpal_host::CpalHost::new())
+    }
+}
 
 /// The sample rate of the pipeline.
 pub const SAMPLE_RATE: u32 = 48_000;
