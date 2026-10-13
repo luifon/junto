@@ -5,7 +5,10 @@ use junto_authz::{Request, RoleRank, ServerPermission, ServerPermissions};
 use junto_protocol::audit::AuditEvent;
 use junto_protocol::events::Event;
 use junto_protocol::ids::{AccountId, ServerRoleId};
-use junto_protocol::roles::{CreateServerRole, ServerRole, UpdateServerRole};
+use junto_protocol::roles::{
+    ChangeServerRolePermission, CreateServerRole, ListedServerRole, RoleActions, ServerRole,
+    UpdateServerRole,
+};
 use sqlx::PgConnection;
 use time::OffsetDateTime;
 
@@ -34,6 +37,39 @@ async fn locked_role(
     Ok((name, db::server_permissions(bits)?, position))
 }
 
+async fn require_role_action(
+    connection: &mut PgConnection,
+    access: &Access,
+    permissions: ServerPermissions,
+    position: i32,
+    assigning: bool,
+) -> ApiResult<()> {
+    decide_role_action(
+        access,
+        access.rank(connection, None).await?,
+        permissions,
+        position,
+        assigning,
+    )
+}
+
+fn decide_role_action(
+    access: &Access,
+    rank: RoleRank,
+    permissions: ServerPermissions,
+    position: i32,
+    assigning: bool,
+) -> ApiResult<()> {
+    access.require(Request::ManageServerRoles {
+        granting: if assigning {
+            permissions
+        } else {
+            ServerPermissions::EMPTY
+        },
+    })?;
+    Access::require_rank(rank, RoleRank::Server(position))
+}
+
 /// The server roles, visible to administrators and holders of ban_members.
 /// Tokens may use either read_structure or manage_members for this list.
 #[utoipa::path(
@@ -41,12 +77,12 @@ async fn locked_role(
     path = "/api/v1/server-roles",
     tag = "server roles",
     security(("session" = [])),
-    responses((status = 200, body = [ServerRole]), ApiError)
+    responses((status = 200, body = [ListedServerRole]), ApiError)
 )]
 pub async fn list_server_roles(
     State(app): State<AppState>,
     bearer: Bearer,
-) -> ApiResult<Json<Vec<ServerRole>>> {
+) -> ApiResult<Json<Vec<ListedServerRole>>> {
     let now = app.now();
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
@@ -56,16 +92,42 @@ pub async fn list_server_roles(
         )
         .fetch_all(&mut *connection)
         .await?;
-        rows.into_iter()
-            .map(|(id, name, bits, position)| {
-                Ok(ServerRole {
+        let rank = access.rank(connection, None).await?;
+        let mut roles = Vec::with_capacity(rows.len());
+        for (id, name, bits, position) in rows {
+            let permissions = db::server_permissions(bits)?;
+            let assign = crate::role_order::permitted(decide_role_action(
+                &access,
+                rank,
+                permissions,
+                position,
+                true,
+            ))?;
+            let remove = crate::role_order::permitted(decide_role_action(
+                &access,
+                rank,
+                permissions,
+                position,
+                false,
+            ))?;
+            let actions = RoleActions {
+                may_assign: access.token_id.is_none() && assign,
+                may_remove: access.token_id.is_none() && remove,
+                may_delete: access.permits_token_action(
+                    junto_protocol::access_token::TokenAction::ManageStructure,
+                ) && remove,
+            };
+            roles.push(ListedServerRole {
+                role: ServerRole {
                     position,
                     id,
                     name,
-                    permissions: db::server_list(db::server_permissions(bits)?),
-                })
-            })
-            .collect()
+                    permissions: db::server_list(permissions),
+                },
+                actions,
+            });
+        }
+        Ok(roles)
     })
     .map(Json)
 }
@@ -218,9 +280,12 @@ pub(crate) async fn update(
     let role = ServerRole {
         position,
         id: role_id,
-        name: new_name.unwrap_or(old_name),
+        name: new_name.unwrap_or_else(|| old_name.clone()),
         permissions: db::server_list(permissions),
     };
+    if role.name == old_name && permissions == old_permissions {
+        return Ok(role);
+    }
     sqlx::query("update server_roles set name = $2, permissions = $3 where id = $1")
         .bind(role_id)
         .bind(&role.name)
@@ -283,10 +348,7 @@ pub(crate) async fn delete(
         granting: ServerPermissions::EMPTY,
     })?;
     let (name, permissions, position) = locked_role(connection, role_id).await?;
-    Access::require_rank(
-        access.rank(connection, None).await?,
-        RoleRank::Server(position),
-    )?;
+    require_role_action(connection, access, permissions, position, false).await?;
     if administers(permissions) {
         store::contact_changed_for_holders(connection, now, role_id).await?;
     }
@@ -379,13 +441,7 @@ pub async fn assign_server_role(
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::Server(ServerPermission::Administrator))?;
         let (_, permissions, position) = locked_role(connection, role_id).await?;
-        Access::require_rank(
-            access.rank(connection, None).await?,
-            RoleRank::Server(position),
-        )?;
-        access.require(Request::ManageServerRoles {
-            granting: permissions,
-        })?;
+        require_role_action(connection, &access, permissions, position, true).await?;
         require_active_account(connection, account_id).await?;
 
         let inserted = sqlx::query(
@@ -443,11 +499,8 @@ pub async fn unassign_server_role(
         access.require(Request::ManageServerRoles {
             granting: ServerPermissions::EMPTY,
         })?;
-        let (_, _, position) = locked_role(connection, role_id).await?;
-        Access::require_rank(
-            access.rank(connection, None).await?,
-            RoleRank::Server(position),
-        )?;
+        let (_, permissions, position) = locked_role(connection, role_id).await?;
+        require_role_action(connection, &access, permissions, position, false).await?;
         let deleted =
             sqlx::query("delete from account_server_roles where account_id = $1 and role_id = $2")
                 .bind(account_id)
@@ -501,4 +554,30 @@ pub async fn reorder_server_roles(
         crate::role_order::reorder(connection, &access, now, None, &positions).await
     })?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Changes one permission without replacing concurrent changes to other permissions.
+#[utoipa::path(patch,path="/api/v1/server-roles/{role_id}/permissions",tag="server roles",
+    params(("role_id"=ServerRoleId,Path)),request_body=ChangeServerRolePermission,
+    security(("session"=[])),responses((status=200,body=ServerRole),ApiError))]
+pub async fn change_permission(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath(role_id): ApiPath<ServerRoleId>,
+    ApiJson(body): ApiJson<ChangeServerRolePermission>,
+) -> ApiResult<Json<ServerRole>> {
+    let now = app.now();
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        access.require(Request::Server(ServerPermission::Administrator))?;
+        let (_, permissions, _) = locked_role(connection, role_id).await?;
+        let bit: ServerPermissions = [body.permission].into_iter().collect();
+        let permissions = if body.enabled {
+            permissions.union(bit)
+        } else {
+            permissions.difference(bit)
+        };
+        update(connection, &access, now, role_id, None, Some(permissions)).await
+    })
+    .map(Json)
 }

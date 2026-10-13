@@ -138,8 +138,9 @@ pub async fn queue_an_event_and_block_its_read(
 
 /// Like [`queue_an_event_and_block_its_read`], with the lock on `table`. The removal of a
 /// role reads the channel overrides of the role (ADR 0304), so a test that takes a role
-/// while the read waits locks the state of the log, which a delivery reads after it has
-/// taken its snapshot and which no request reads.
+/// while the read waits locks notification_receivers, which delivery reads after taking
+/// its snapshot. The role change can commit under this lock, but its receipt also waits
+/// for the lock to end.
 async fn queue_an_event_and_block_its_read_of(
     world: &Private,
     table: &str,
@@ -162,19 +163,35 @@ async fn a_batch_that_was_read_from_an_old_snapshot_is_discarded() {
     let (server, owner) = (&world.server, &world.owner);
     let mut stream = server.subscribed(&world.insider, Level::Full).await;
 
-    let lock = queue_an_event_and_block_its_read_of(&world, "event_stream").await;
+    let lock = queue_an_event_and_block_its_read_of(&world, "notification_receivers").await;
 
-    assign(
-        server,
-        owner,
-        &world.workspace,
-        &world.insider,
-        &world.team,
-        false,
-    )
+    let removal_path = format!(
+        "/api/v1/workspaces/{}/members/{}/roles/{}",
+        world.workspace.id, world.insider.account_id, world.team.id
+    );
+    let mut removal = Box::pin(server.delete(owner, &removal_path));
+    crate::support::drive_until(&mut removal, async {
+        loop {
+            let held: bool = sqlx::query_scalar(
+                "select exists(select 1 from member_roles
+                 where workspace_id=$1 and account_id=$2 and role_id=$3)",
+            )
+            .bind(world.workspace.id)
+            .bind(world.insider.account_id)
+            .bind(world.team.id)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+            if !held {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
     .await;
     tokio::time::sleep(Duration::from_millis(2_500)).await;
     lock.rollback().await.unwrap();
+    removal.await.empty(StatusCode::NO_CONTENT);
 
     let received = server.traffic(&world.insider, &mut stream).await;
     assert_eq!(

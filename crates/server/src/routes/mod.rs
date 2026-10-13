@@ -36,6 +36,7 @@ pub mod invites;
 pub mod layout;
 pub mod messages;
 pub mod moderation;
+pub mod moderation_notices;
 pub mod notifications;
 pub mod pins;
 pub mod recordings;
@@ -325,13 +326,43 @@ fn documented_routes() -> OpenApiRouter<AppState> {
         .routes(routes!(glossary::get_glossary, glossary::set_glossary))
         .routes(routes!(audit_log::get_server_audit_log))
         .routes(routes!(audit_log::get_workspace_audit_log))
+        .routes(routes!(moderation_notices::list))
+        .routes(routes!(moderation_notices::prove))
+        .routes(routes!(server_roles::change_permission))
+        .routes(routes!(workspace_roles::change_permission))
         .routes(routes!(snapshot::get_snapshot))
         .routes(routes!(stream::open_event_stream))
 }
 
 /// The OpenAPI document of every route that [`router`] serves.
 pub fn openapi() -> utoipa::openapi::OpenApi {
-    documented_routes().into_openapi()
+    let mut document = documented_routes().into_openapi();
+    for item in document.paths.paths.values_mut() {
+        for operation in [
+            &mut item.get,
+            &mut item.post,
+            &mut item.put,
+            &mut item.patch,
+            &mut item.delete,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            for (status, response) in &mut operation.responses.responses {
+                if status.starts_with('2')
+                    && let utoipa::openapi::RefOr::T(response) = response
+                {
+                    let mut header = utoipa::openapi::header::Header::default();
+                    header.description = Some("May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor.".into());
+                    response.headers.insert(
+                        junto_protocol::events::EVENT_CURSOR_HEADER.into(),
+                        header.into(),
+                    );
+                }
+            }
+        }
+    }
+    document
 }
 
 pub fn router(state: AppState) -> Router {
@@ -346,6 +377,10 @@ pub fn router(state: AppState) -> Router {
         .fallback(unknown_path)
         .method_not_allowed_fallback(wrong_method)
         .layer(middleware::from_fn_with_state(state.clone(), whole_body))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::receipts::middleware,
+        ))
         .layer(middleware::from_fn_with_state(state.clone(), time_limit))
         .layer(middleware::from_fn_with_state(state.clone(), call_changes))
         .layer(

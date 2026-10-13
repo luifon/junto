@@ -248,7 +248,7 @@ async fn workspace_removal_ends_the_call_and_contact() {
         .ok(StatusCode::OK);
     assert!(audit.entries.iter().any(|entry| matches!(
         &entry.event,
-        AuditEvent::WorkspaceMemberRemoved { account_id, reason }
+        AuditEvent::WorkspaceMemberRemoved { account_id, reason, .. }
             if *account_id == ann.account_id && reason.as_deref() == Some("Workspace boundary")
     )));
     let stored: Vec<String> =

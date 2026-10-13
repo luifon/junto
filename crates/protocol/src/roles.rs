@@ -87,3 +87,49 @@ pub struct ReorderServerRoles {
 pub struct ReorderWorkspaceRoles {
     pub positions: Vec<WorkspaceRolePosition>,
 }
+
+/// Role-level authority; target membership and assignment-count limits still apply.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct RoleActions {
+    #[serde(default)]
+    pub may_assign: bool,
+    #[serde(default)]
+    pub may_remove: bool,
+    #[serde(default)]
+    pub may_delete: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ListedServerRole {
+    #[serde(flatten)]
+    pub role: ServerRole,
+    #[serde(flatten)]
+    pub actions: RoleActions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ListedWorkspaceRole {
+    #[serde(flatten)]
+    pub role: WorkspaceRole,
+    #[serde(flatten)]
+    pub actions: RoleActions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ChangeServerRolePermission {
+    pub permission: ServerPermission,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ChangeWorkspaceRolePermission {
+    pub permission: WorkspacePermission,
+    pub enabled: bool,
+}

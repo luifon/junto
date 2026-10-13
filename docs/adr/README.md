@@ -58,6 +58,7 @@ Status values:
 | [0117](0117-public-origins-in-the-signed-challenge.md) | The signed challenge names the public origin of the server | Accepted | A device signs the origin that it connected to, and a server accepts a proof only for one of its configured public origins, so a challenge that another server relays gives that server no session; loopback origins serve local development only. |
 | [0118](0118-recovery-notices-until-acknowledged.md) | A recovery notice stays until its device acknowledges it | Accepted | A login removes no notice; a device reads its notices and acknowledges each one, and the reason of an ended stream is one of them. |
 | [0119](0119-account-profile-and-avatar.md) | Account profile: display name and avatar | Accepted | An account sets its name and an avatar of at most 256 KiB and 1024 by 1024 pixels, a still PNG, JPEG or WebP recognized by its bytes and stored in the database; a profile is served to the account, to fellow members and to moderators. |
+| [0120](0120-private-moderation-notices.md) | Private moderation notices and their retention | Accepted | Private reasons and retained device readers for 30 days; own snapshots and an opaque device proof, without restoring access. |
 
 ## 0201–0299 API and automation
 
@@ -76,6 +77,7 @@ Status values:
 | [0211](0211-structure-document-revision-and-changes.md) | Structure document, its revision, entry identifiers and the changes route | Accepted | One route returns the whole structure with a revision that is a hash of the document; one route applies up to 200 changes in one transaction through the functions of the single routes, and answers `conflict` for another revision; an entry that a file creates keeps the identifier of the file beside the identifier that the server generates. |
 | [0212](0212-setup-tool-file-format-and-commands.md) | Setup tool: file format, matching of entries and commands | Accepted | The crate `junto-setup`; file format 1 with a generated JSON Schema, optional fields that keep their values and explicit deletions per kind; entries are matched by identifier, the default workspace and the everyone roles by their marks; `plan` sends one reading request; the token is never an argument and is sent over `https` or to a loopback address. |
 | [0213](0213-what-a-request-with-an-access-token-can-give.md) | What a request with an access token can give to an account | Accepted | A request with a token changes no role assignment and lifts no ban: the four routes that give or take a role and the unban route are in the reach of no action; `manage_members` lets an account in as a member without roles; `manage_structure` changes roles and overrides and with them what the holders of a role read; no token reads content. |
+| [0214](0214-event-cursors-in-change-responses.md) | Event cursors in change responses | Accepted | One response header states the exact last committed event cursor, or null, across mutation routes. |
 
 ## 0301–0399 Permissions and moderation
 
@@ -91,6 +93,7 @@ Status values:
 | [0308](0308-deletion-of-roles-categories-and-workspaces.md) | Deletion of roles, categories and workspaces | Accepted | Routes with the grant rule for the denies of a deleted role; the channels of a deleted category stay; a workspace is deleted by an administrator, by the owner only with permanent messages, never the default one, and its row stays; the events for former holders and members are delivered from a stored list. |
 | [0309](0309-role-order.md) | Role order | Accepted | Ranked moderation and role management compare highest roles; positions, reorder, migration and action-specific exemptions. |
 | [0310](0310-permissions-of-the-account-in-the-snapshot.md) | The permissions of the account in the snapshot | Accepted | Each workspace of the snapshot states the workspace permissions of the account and one entry for each channel in which an override changes them; every list is made by the permission function; one route states the list of one channel, an archived one included; `permissions_changed` keeps them current, also after a fork and a restore. |
+| [0311](0311-role-action-flags-and-permission-changes.md) | Role action flags and single-permission changes | Accepted | Shared checks compute role and unban flags; one-bit role updates preserve concurrency; reorder accepts positive i32 positions. |
 
 ## 0401–0499 Text
 

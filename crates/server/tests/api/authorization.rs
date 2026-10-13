@@ -653,6 +653,27 @@ async fn world() -> World {
             &forbidden,
         ),
         operation(
+            Method::GET,
+            "/api/v1/account/moderation-notices",
+            &[],
+            none.clone(),
+            &own,
+        ),
+        operation(
+            Method::PATCH,
+            "/api/v1/server-roles/{role_id}/permissions",
+            &[&server_role.id],
+            json!({"permission":"administrator","enabled":true}),
+            &forbidden,
+        ),
+        operation(
+            Method::PATCH,
+            "/api/v1/workspaces/{workspace_id}/roles/{role_id}/permissions",
+            &[&ws, &role.id],
+            json!({"permission":"manage_roles","enabled":true}),
+            &forbidden,
+        ),
+        operation(
             Method::PATCH,
             "/api/v1/server-roles/{role_id}",
             &[&server_role.id],
@@ -1743,6 +1764,16 @@ fn token_reach() -> BTreeMap<(&'static str, &'static str), TokenAction> {
         ),
         ("POST", "/api/v1/server-roles", ManageStructure),
         ("PATCH", "/api/v1/server-roles/{role_id}", ManageStructure),
+        (
+            "PATCH",
+            "/api/v1/server-roles/{role_id}/permissions",
+            ManageStructure,
+        ),
+        (
+            "PATCH",
+            "/api/v1/workspaces/{workspace_id}/roles/{role_id}/permissions",
+            ManageStructure,
+        ),
         ("GET", "/api/v1/accounts", ManageMembers),
         (
             "POST",

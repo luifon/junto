@@ -95,6 +95,11 @@ async fn a_server_with_a_recorder_does_not_start_without_ffmpeg() {
 /// The newest migration of the database of `server` is forgotten: the database then has
 /// the schema of the version before.
 async fn forget_the_newest_migration(server: &crate::support::TestServer) -> i64 {
+    // Undo the objects of the unreleased last migration as well as its bookkeeping.
+    sqlx::raw_sql("drop table moderation_notice_devices; drop table moderation_notices")
+        .execute(&server.db)
+        .await
+        .unwrap();
     sqlx::query(
         "delete from _sqlx_migrations
          where version = (select max(version) from _sqlx_migrations)",
@@ -587,4 +592,176 @@ async fn the_server_does_not_start_on_a_newer_schema() {
         panic!("the server started on a newer schema");
     };
     assert!(error.to_string().contains("newer version of the server"));
+}
+
+#[tokio::test]
+async fn an_interrupted_first_start_resumes_without_a_copy_with_an_old_connection() {
+    use junto_server::bootstrap::{MigrationCopy, copy_before};
+    use sqlx::{ConnectOptions, Connection};
+    let name = format!("junto_initial_{}", uuid::Uuid::new_v4().simple());
+    maintain(&[format!("create database {name}")]).await;
+    let admin: sqlx::postgres::PgConnectOptions =
+        crate::support::unused_database_url().parse().unwrap();
+    let options = admin.database(&name);
+    maintain(&[format!("comment on database {name} is 'operator comment'")]).await;
+    let migrations = &bootstrap::MIGRATIONS;
+    copy_before(&options, MigrationCopy::Database, migrations)
+        .await
+        .unwrap();
+    assert!(
+        comment_of(&name)
+            .await
+            .unwrap()
+            .starts_with("junto: initial installation")
+    );
+    let mut first = options.connect().await.unwrap();
+    // Apply the first migration, then end this start before the second migration. Its
+    // connection remains present just as an ended process's pending statement can.
+    let one = sqlx::migrate::Migrator {
+        migrations: std::borrow::Cow::Owned(vec![migrations.iter().next().unwrap().clone()]),
+        ..sqlx::migrate::Migrator::DEFAULT
+    };
+    one.run(&mut first).await.unwrap();
+    let resumed = copy_before(&options, MigrationCopy::Database, migrations).await;
+    assert!(
+        resumed.is_ok(),
+        "interrupted initial installation must not copy: {resumed:?}"
+    );
+    let limits = crate::support::test_config().limits;
+    let next = junto_server::database::Database::connect(
+        options.clone(),
+        2,
+        &limits.database,
+        &limits.stream.pool(),
+    )
+    .await
+    .unwrap();
+    let started = bootstrap::start(&next, "Server", time::OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    assert!(started.owner_code.is_some());
+    assert_eq!(comment_of(&name).await.as_deref(), Some("operator comment"));
+    assert!(databases_from(format!("{name}_before_")).await.is_empty());
+    next.close().await;
+    first.close().await.unwrap();
+    delete_databases(&[name]).await;
+}
+
+#[tokio::test]
+async fn a_needed_copy_waits_for_an_ended_servers_connection() {
+    use junto_server::bootstrap::{MigrationCopied, MigrationCopy, copy_before_migration};
+    use sqlx::{ConnectOptions, Connection};
+    let mut server = crate::support::TestServer::start().await;
+    let options = options_of(&server);
+    forget_the_newest_migration(&server).await;
+    server.stop().await;
+    server.state.database.close().await;
+    let old = options.connect().await.unwrap();
+    let copying = copy_before_migration(&options, MigrationCopy::Database);
+    let disconnect = async {
+        tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+        old.close().await.unwrap();
+    };
+    let (copied, ()) = tokio::join!(copying, disconnect);
+    let MigrationCopied::Made(name) =
+        copied.expect("copy retries after PostgreSQL's first five-second wait")
+    else {
+        panic!("no copy")
+    };
+    delete_databases(&[name]).await;
+}
+
+#[tokio::test]
+async fn a_mark_on_a_database_with_data_does_not_skip_the_copy() {
+    use junto_server::bootstrap::{MigrationCopied, MigrationCopy, copy_before_migration};
+    let mut server = crate::support::TestServer::start().await;
+    let owner = server.owner().await;
+    server.join(&owner, "Stored member").await;
+    forget_the_newest_migration(&server).await;
+    let name = name_of(&server).await;
+    let options = options_of(&server);
+    server.stop().await;
+    server.state.database.close().await;
+    maintain(&[format!("comment on database {name} is 'junto: initial installation of this database has not finished\\noperator comment'").replace("\\n", "\n")]).await;
+    let result = copy_before_migration(&options, MigrationCopy::Database)
+        .await
+        .unwrap();
+    let MigrationCopied::Made(copy) = result else {
+        panic!("installed data needs a copy: {result:?}");
+    };
+    assert!(
+        !comment_of(&name)
+            .await
+            .unwrap()
+            .contains("initial installation")
+    );
+    assert!(
+        comment_of(&name)
+            .await
+            .unwrap()
+            .ends_with("operator comment")
+    );
+    delete_databases(&[copy]).await;
+}
+
+#[test]
+fn an_unrelated_copy_failure_does_not_claim_a_busy_source_retry() {
+    let message =
+        StartError::MigrationCopy("permission denied to create database".into()).to_string();
+    assert!(!message.contains("30 seconds"));
+    assert!(!message.contains("Stop the old server"));
+    assert!(message.contains("Nothing was migrated"));
+}
+
+#[tokio::test]
+async fn initial_installation_continuation_is_reported() {
+    use junto_server::bootstrap::{MigrationCopy, copy_before_migration};
+    let name = format!("junto_initial_{}", uuid::Uuid::new_v4().simple());
+    maintain(&[format!("create database {name}")]).await;
+    let admin: sqlx::postgres::PgConnectOptions =
+        crate::support::unused_database_url().parse().unwrap();
+    let options = admin.database(&name);
+    copy_before_migration(&options, MigrationCopy::Database)
+        .await
+        .unwrap();
+    let continued = copy_before_migration(&options, MigrationCopy::Database)
+        .await
+        .unwrap();
+    delete_databases(&[name]).await;
+    assert_eq!(
+        format!("{continued:?}"),
+        "Initial",
+        "the host needs a distinct continuation result to log"
+    );
+}
+
+#[tokio::test]
+async fn a_copy_that_stays_blocked_ends_with_the_instruction() {
+    use junto_server::bootstrap::{MigrationCopy, copy_before_with_retry};
+    use sqlx::{ConnectOptions, Connection};
+    let mut server = crate::support::TestServer::start().await;
+    let options = options_of(&server);
+    forget_the_newest_migration(&server).await;
+    server.stop().await;
+    server.state.database.close().await;
+    let old = options.connect().await.unwrap();
+    let started = std::time::Instant::now();
+    let result = copy_before_with_retry(
+        &options,
+        MigrationCopy::Database,
+        &bootstrap::MIGRATIONS,
+        std::time::Duration::from_secs(1),
+    )
+    .await;
+    old.close().await.unwrap();
+    let error = result.unwrap_err();
+    assert!(matches!(error, StartError::MigrationCopy(_)));
+    let message = error.to_string();
+    assert!(message.contains("Stop the old server"), "{message}");
+    assert!(message.contains("Nothing was migrated"), "{message}");
+    assert!(message.contains("retry window of 1 seconds"), "{message}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "one-second retry window plus PostgreSQL's five-second attempt must end"
+    );
 }

@@ -22,8 +22,8 @@ Server identifier:
 
 Challenge:
 
-- A device asks for a challenge with its public key and an operation. The operations are `login`, `claim_owner`, `join`, `request_to_join`, `join_request_status` and `link_device`.
-- The response carries the challenge identifier, the server identifier, the operation, the account identifier (absent when the key belongs to no account), the public key, the nonce and the expiry time in whole seconds.
+- A device asks for a challenge with its public key and an operation. The operations are `login`, `claim_owner`, `join`, `request_to_join`, `join_request_status`, `link_device` and `moderation_notices` (ADR 0120).
+- The response carries the challenge identifier, the server identifier, the operation, the account identifier (present only for login), the public key, the nonce and the expiry time in whole seconds.
 - The device signs these bytes, built by the client from the fields:
 
   ```
@@ -42,7 +42,7 @@ Challenge:
 - The origin is not a field of the challenge. The device takes it from the address that it connected to, and the server accepts only one of its own public origins (ADR 0117).
 - A request that needs proof carries the challenge identifier, the origin that the device signed, and the signature. The server reads the public key from the stored challenge.
 - A challenge lives 60 seconds.
-- The server stores one challenge per public key and operation, so at most 6 per key.
+- The server stores one challenge per public key and operation, so at most 7 per key.
 - A request for a key and an operation whose stored challenge is unused and has at least half of its lifetime left gets that same challenge again. Otherwise a new challenge replaces the stored one.
 - Reason: a public key is not a secret. With a replacement at every request, a party that knows the key of a device ends each challenge of that key before the device answers it, and the logins of the device fail. A challenge is not a secret either: only the holder of the private key can answer it. A device answers within seconds, so a challenge is never replaced while a device still answers it in the first half of its lifetime, and no device gets a challenge that is about to expire.
 - The server marks a challenge as used in the transaction of the operation that the challenge authorizes (ADR 0009). When that transaction commits, the challenge is used, and a second request with it gets `challenge_invalid`.
@@ -68,7 +68,7 @@ Failed attempts:
 - A party that sends wrong signatures for the key of another person does not affect that person.
 - The count of wrong signatures is held in the memory of the server process and is cleared by a restart.
 - The response to a `login` challenge request shows whether a public key is registered and whether its account is banned.
-- An address can hold at most 6 stored challenges per key that it names, each for 60 seconds, and can name new keys only at the rate of the challenge limit.
+- An address can hold at most 7 stored challenges per key that it names, each for 60 seconds, and can name new keys only at the rate of the challenge limit.
 - The table of challenges holds at most about 10 000 unexpired rows, whatever the number of addresses and keys. A party with enough addresses can fill that number; then no device gets a challenge until places expire, which takes at most 60 seconds per place.
 - A signed request that failed without a commit can be repeated unchanged. A request with a wrong signature can also be repeated with another signature for the same challenge; this gives no advantage, because a signature cannot be guessed.
 - An account-less operation costs two requests: one for the challenge and one for the operation.

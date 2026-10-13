@@ -216,6 +216,9 @@ async fn serve(config: Config) -> Result<(), Failure> {
     use junto_server::bootstrap::MigrationCopied;
     match junto_server::bootstrap::copy_before_migration(&options, config.migration_copy).await? {
         MigrationCopied::Nothing => {}
+        MigrationCopied::Initial => tracing::info!(
+            "continuing the first installation without a migration copy: no installed server state exists"
+        ),
         MigrationCopied::Made(copy) => tracing::info!(
             database = %copy,
             "this version changes the database; a copy of the database was made before"

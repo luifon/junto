@@ -68,6 +68,7 @@ stored_text!(ChallengeOperation {
     RequestToJoin => "request_to_join",
     JoinRequestStatus => "join_request_status",
     LinkDevice => "link_device",
+    ModerationNotices => "moderation_notices",
 });
 
 pub fn server_permissions(bits: i64) -> ApiResult<ServerPermissions> {

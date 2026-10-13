@@ -85,6 +85,26 @@ Newer schema:
 
 - A database that holds a migration that this version does not know stops the start with an error that names the migration.
 
+### Interrupted initial installation
+
+Before any initial migration the server commits the database-comment line
+`junto: initial installation of this database has not finished`, preserving the operator's
+comment below it. The same start lock protects writing and clearing this marker. A later
+start continues without a copy only when that marker is present and `server_state` is
+absent or contains no row. The bootstrap writes that row only after migrations, before the
+server serves requests, so an installed row is evidence that the database must be preserved.
+A marker on a database with installed state is cleared with a warning and the ordinary
+copy rule applies. A valid continuation is logged and may proceed while some initial schema
+or a connection of the ended start remains present. Completion clears the marker after all migrations, preserving the
+operator's comment. An unfinished upgrade retains its distinct marker and original copy.
+
+A required copy retries PostgreSQL's busy-source error for a 30-second retry window;
+the final PostgreSQL connection wait can add up to five seconds. Other errors fail
+immediately and do not claim that the busy-source retry ran. No connection is terminated
+by the server. Exhaustion of the busy-source window instructs the operator to stop the old
+server, close other database sessions, and restart after their statements finish; the explicit no-copy setting remains available. This wait precedes migrations.
+
+
 ## Consequences
 
 - A backup needs no stop of the server. The script of the deployment calls `backup-begin`, copies the database, calls `backup-files`, copies the directories of its `file` lines, and calls `backup-end` (ADR 0021). When `backup-end` fails, the backup did not hold deletions back until its end, and the script discards it. A `file` line whose directory is absent is a lost file, and the script ends with a code of its own for it.

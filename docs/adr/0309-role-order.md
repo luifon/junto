@@ -34,7 +34,8 @@ roles, and other server roles contribute no position.
   token prohibition of ADR 0213 apply.
 - A created role and each directly edited, deleted or reordered role must remain
   strictly below the actor. A new role is inserted at the bottom above everyone; existing
-  roles move up one without changing their relative order, in one update. A creation
+  roles move up one without changing their relative order, in one update. At the integer
+  limit they are compacted to consecutive positions above the new role instead (ADR 0311). A creation
   writes one audit entry and, under the 250-role ceiling, at most three events:
   positions-shifted events of at most 128 positions each before the created event. Each
   carries absolute positions of existing non-everyone roles, so applying it after a fresh
@@ -78,7 +79,7 @@ roles, and other server roles contribute no position.
 - New servers have at most 250 server roles, matching the workspace ceiling. Existing
   servers above that ceiling retain their roles and can delete or reorder them, but cannot
   create more until below it. A reorder changes at most 250 named roles, with positive
-  distinct positions no larger than 1,000,000, in one transaction; unnamed roles keep their position, and a
+  distinct signed-32-bit positions (ADR 0311), in one transaction; unnamed roles keep their position, and a
   collision with one is `invalid_request`. Both old and new positions must be below the
   actor's highest role, evaluated before the reorder; a reorder cannot raise the actor's highest role.
 - `PATCH /api/v1/server-roles/positions` and `PATCH

@@ -3,7 +3,8 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use junto_authz::{OwnerAction, Request, ServerPermission};
 use junto_protocol::account::{
-    AccountStatus, AccountSummary, DeviceOrigin, ModerationReason, RecoverAccount, RecoveryNotice,
+    AccountStatus, AccountSummary, DeviceOrigin, ListedAccount, ModerationReason, RecoverAccount,
+    RecoveryNotice,
 };
 use junto_protocol::audit::AuditEvent;
 use junto_protocol::events::Event;
@@ -38,12 +39,12 @@ type AccountRow = (
     path = "/api/v1/accounts",
     tag = "moderation",
     security(("session" = [])),
-    responses((status = 200, body = [AccountSummary]), ApiError)
+    responses((status = 200, body = [ListedAccount]), ApiError)
 )]
 pub async fn list_accounts(
     State(app): State<AppState>,
     bearer: Bearer,
-) -> ApiResult<Json<Vec<AccountSummary>>> {
+) -> ApiResult<Json<Vec<ListedAccount>>> {
     let now = app.now();
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
@@ -59,20 +60,31 @@ pub async fn list_accounts(
         )
         .fetch_all(&mut *connection)
         .await?;
-        rows.into_iter()
-            .map(
-                |(id, name, status, is_owner, server_role_ids, created_at)| {
-                    Ok(AccountSummary {
-                        id,
-                        name,
-                        status: AccountStatus::read(&status)?,
-                        is_owner,
-                        server_role_ids,
-                        created_at,
-                    })
+        let banned: Vec<_> = rows
+            .iter()
+            .filter(|row| row.2 == "banned")
+            .map(|row| row.0)
+            .collect();
+        let ranks = crate::access::RestoredRanks::load(connection, &access, &banned).await?;
+        let mut accounts = Vec::with_capacity(rows.len());
+        for (id, name, status, is_owner, server_role_ids, created_at) in rows {
+            let status = AccountStatus::read(&status)?;
+            let may_unban = status == AccountStatus::Banned
+                && access.token_id.is_none()
+                && crate::role_order::permitted(decide_unban(&access, &ranks, id))?;
+            accounts.push(ListedAccount {
+                account: AccountSummary {
+                    id,
+                    name,
+                    status,
+                    is_owner,
+                    server_role_ids,
+                    created_at,
                 },
-            )
-            .collect()
+                may_unban,
+            });
+        }
+        Ok(accounts)
     })
     .map(Json)
 }
@@ -120,7 +132,7 @@ pub async fn remove_account(
     ApiPath(account_id): ApiPath<AccountId>,
     body: axum::body::Bytes,
 ) -> ApiResult<StatusCode> {
-    let reason = moderation_reason(&body)?;
+    let (reason, recipient_message) = moderation_reason(&body)?;
     let now = app.now();
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
@@ -132,6 +144,15 @@ pub async fn remove_account(
         }
 
         access.require_above_account(connection, account_id).await?;
+        super::moderation_notices::record(
+            connection,
+            now,
+            account_id,
+            None,
+            junto_protocol::account::ModerationNoticeKind::ServerRemoved,
+            recipient_message.as_deref(),
+        )
+        .await?;
         set_status(connection, now, account_id, AccountStatus::Removed).await?;
         store::contact_changed(connection, now, account_id).await?;
         let sessions = Sessions::OfAccount(account_id);
@@ -174,6 +195,7 @@ pub async fn remove_account(
             &AuditEvent::AccountRemoved {
                 account_id,
                 reason: reason.clone(),
+                recipient_message: recipient_message.clone(),
             },
         )
         .await
@@ -197,7 +219,7 @@ pub async fn ban_account(
     ApiPath(account_id): ApiPath<AccountId>,
     body: axum::body::Bytes,
 ) -> ApiResult<StatusCode> {
-    let reason = moderation_reason(&body)?;
+    let (reason, recipient_message) = moderation_reason(&body)?;
     let now = app.now();
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
@@ -213,6 +235,15 @@ pub async fn ban_account(
         }
 
         access.require_above_account(connection, account_id).await?;
+        super::moderation_notices::record(
+            connection,
+            now,
+            account_id,
+            None,
+            junto_protocol::account::ModerationNoticeKind::Banned,
+            recipient_message.as_deref(),
+        )
+        .await?;
         set_status(connection, now, account_id, AccountStatus::Banned).await?;
         store::contact_changed(connection, now, account_id).await?;
         store::end_sessions(connection, &app.calls, now, account_id, SessionEnd::Banned).await?;
@@ -240,6 +271,7 @@ pub async fn ban_account(
             About::Server,
             &AuditEvent::AccountBanned {
                 reason: reason.clone(),
+                recipient_message: recipient_message.clone(),
                 account_id,
                 cancelled_invite_ids,
             },
@@ -247,6 +279,26 @@ pub async fn ban_account(
         .await
     })?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn require_unban(
+    connection: &mut PgConnection,
+    access: &Access,
+    account_id: AccountId,
+) -> ApiResult<()> {
+    let ranks = crate::access::RestoredRanks::load(connection, access, &[account_id]).await?;
+    decide_unban(access, &ranks, account_id)
+}
+
+fn decide_unban(
+    access: &Access,
+    ranks: &crate::access::RestoredRanks,
+    account_id: AccountId,
+) -> ApiResult<()> {
+    access.require(Request::Moderate {
+        target: access.target(account_id),
+    })?;
+    ranks.require(access, account_id)
 }
 
 /// Lifts the ban of an account. The invites that the ban cancelled stay cancelled.
@@ -272,9 +324,7 @@ pub async fn unban_account(
         if locked_status(connection, account_id).await? != AccountStatus::Banned {
             return Err(ApiError::conflict("the account is not banned"));
         }
-        access
-            .require_above_restored_roles(connection, account_id)
-            .await?;
+        require_unban(connection, &access, account_id).await?;
         set_status(connection, now, account_id, AccountStatus::Active).await?;
         store::contact_changed(connection, now, account_id).await?;
         audit::record(
@@ -344,7 +394,7 @@ pub async fn recover_account(
     Ok((StatusCode::CREATED, Json(notice)))
 }
 
-pub(crate) fn moderation_reason(body: &[u8]) -> ApiResult<Option<String>> {
+pub(crate) fn moderation_reason(body: &[u8]) -> ApiResult<(Option<String>, Option<String>)> {
     let request = if body.is_empty() {
         ModerationReason::default()
     } else {
@@ -357,11 +407,17 @@ pub(crate) fn moderation_reason(body: &[u8]) -> ApiResult<Option<String>> {
             .map_err(|_| ApiError::invalid("expected an optional moderation reason"))?
             .unwrap_or_default()
     };
-    let reason = request.reason.as_deref().unwrap_or_default().trim();
-    if reason.chars().count() > 1000 || reason.chars().any(char::is_control) {
-        return Err(ApiError::invalid(
-            "reason must have at most 1000 characters and no controls",
-        ));
+    fn text(field: &str, value: Option<String>) -> ApiResult<Option<String>> {
+        let value = value.as_deref().unwrap_or_default().trim();
+        if value.chars().count() > 1000 || value.chars().any(char::is_control) {
+            return Err(ApiError::invalid(format!(
+                "{field} must have at most 1000 characters and no controls"
+            )));
+        }
+        Ok((!value.is_empty()).then(|| value.to_owned()))
     }
-    Ok((!reason.is_empty()).then(|| reason.to_owned()))
+    Ok((
+        text("reason", request.reason)?,
+        text("recipient_message", request.recipient_message)?,
+    ))
 }

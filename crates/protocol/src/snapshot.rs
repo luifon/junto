@@ -87,3 +87,15 @@ pub struct WorkspaceState {
     #[serde(default)]
     pub notification_default: Option<NotificationLevel>,
 }
+
+/// The snapshot with the newest private moderation notices of its account.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct SnapshotResponse {
+    #[serde(flatten)]
+    pub snapshot: Snapshot,
+    #[serde(default)]
+    pub moderation_notices: Vec<crate::account::ModerationNotice>,
+    #[serde(default)]
+    pub moderation_notices_next: Option<uuid::Uuid>,
+}

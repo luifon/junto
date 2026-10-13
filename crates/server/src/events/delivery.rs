@@ -234,6 +234,19 @@ fn selected_classes(level: Level, in_call: Option<CallKey>) -> Vec<&'static str>
     classes.into_iter().map(StoredText::stored).collect()
 }
 
+/// Every query binds the recipient account at $2 and the selected classes at $3.
+fn addressed_query(before: &'static str, after: &'static str) -> sqlx::AssertSqlSafe<String> {
+    sqlx::AssertSqlSafe(format!(
+        "{before}
+         and audience->>'to' is distinct from 'suppressed'
+         and (audience->>'to' is distinct from 'notification' or exists (
+             select 1 from notification_receivers nr where nr.event_id=events.id and nr.account_id=$2))
+         and (audience_account_id is null or audience_account_id=$2)
+         and class=any($3)
+         {after}"
+    ))
+}
+
 fn decide(
     access: &Access,
     standing: &Standing,
@@ -351,19 +364,14 @@ pub async fn subscribe(
         }
         let mut waiting = 0;
         loop {
-            let rows: Vec<CountedRow> = sqlx::query_as(
+            let rows: Vec<CountedRow> = sqlx::query_as(addressed_query(
                 "select position, class,
                         case when octet_length(audience::text) <= $5 then audience end
                  from events
-                 where position > $1
-                   and audience->>'to' is distinct from 'suppressed'
-                   and (audience->>'to' is distinct from 'notification' or exists (
-                       select 1 from notification_receivers nr where nr.event_id=events.id and nr.account_id=$2))
-                   and (audience_account_id is null or audience_account_id = $2)
-                   and class = any($3)
-                 order by position
+                 where position > $1",
+                "order by position
                  limit $4",
-            )
+            ))
             .bind(after)
             .bind(access.account_id)
             .bind(&classes)
@@ -413,6 +421,69 @@ type EventRow = (
     i64,
 );
 
+/// The last event in this committed transaction that the account may receive at full level.
+/// The caller supplies one read transaction so access, the epoch and all batches agree.
+pub(crate) async fn last_receivable(
+    connection: &mut PgConnection,
+    account: AccountId,
+    first: i64,
+    last: i64,
+    now: OffsetDateTime,
+) -> ApiResult<Option<Cursor>> {
+    let Some(access) = Access::of_account(connection, account).await? else {
+        return Ok(None);
+    };
+    let log = log::state(connection).await?;
+    if first <= log.trimmed_through {
+        return Err(ApiError::internal(
+            &"request events were trimmed before its receipt was read",
+        ));
+    }
+    let classes = selected_classes(Level::Full, None);
+    let mut through = last;
+    loop {
+        let rows: Vec<EventRow> = sqlx::query_as(addressed_query(
+"select position, recorded_at, class,
+                    case when octet_length(audience::text) <= $5 then audience end,
+                    case when octet_length(audience::text) <= $5 and octet_length(payload::text) <= $6 then payload end,
+                    0::bigint
+             from events where position >= $1 and position <= $4",
+"order by position desc limit 64",
+)).bind(first).bind(account).bind(&classes).bind(through)
+            .bind(STORED_AUDIENCE_BYTES).bind(STORED_PAYLOAD_BYTES)
+            .fetch_all(&mut *connection).await?;
+        let Some(oldest) = rows.last() else {
+            return Ok(None);
+        };
+        through = oldest.0 - 1;
+        let candidates: Vec<Candidate> = rows
+            .into_iter()
+            .map(
+                |(position, recorded_at, class, audience, payload, _)| Candidate {
+                    position,
+                    recorded_at,
+                    class: Class::from_stored(&class),
+                    audience: parsed(audience),
+                    event: parsed(payload),
+                },
+            )
+            .collect();
+        let standing = Standing::load(connection, &access, &candidates, now).await?;
+        for candidate in candidates {
+            match decide(&access, &standing, Level::Full, None, candidate)? {
+                Decision::Deliver(delivery) => return Ok(Some(log.cursor(delivery.position)?)),
+                Decision::Hidden => {}
+                Decision::Unsendable => {
+                    return Err(ApiError::internal(&"a request event cannot be delivered"));
+                }
+            }
+        }
+        if through < first {
+            return Ok(None);
+        }
+    }
+}
+
 /// Reads the next events after the position of a subscription and keeps the ones that the
 /// account may receive now. A batch has at most `most` rows and a budget of bytes, and a part
 /// of a row above its largest size is not loaded.
@@ -440,7 +511,7 @@ pub async fn next_batch(
         if subscription.position < log.trimmed_through {
             return Ok(Batch::Resync(ResyncReason::TooFarBehind));
         }
-        let rows: Vec<EventRow> = sqlx::query_as(
+        let rows: Vec<EventRow> = sqlx::query_as(addressed_query(
             "select position, recorded_at, class,
                     case when audience_bytes <= $6 then audience end,
                     case when audience_bytes <= $6 and payload_bytes <= $7 then payload end,
@@ -454,19 +525,14 @@ pub async fn next_batch(
                             octet_length(audience::text) as audience_bytes,
                             octet_length(payload::text) as payload_bytes
                      from events
-                     where position > $1
-                       and audience->>'to' is distinct from 'suppressed'
-                   and (audience->>'to' is distinct from 'notification' or exists (
-                       select 1 from notification_receivers nr where nr.event_id=events.id and nr.account_id=$2))
-                   and (audience_account_id is null or audience_account_id = $2)
-                       and class = any($3)
-                     order by position
+                     where position > $1",
+            "order by position
                      limit $4
                  ) as addressed
              ) as sized
              where bytes_through - least(audience_bytes, $6) - least(payload_bytes, $7) < $5
              order by position",
-        )
+        ))
         .bind(subscription.position)
         .bind(access.account_id)
         .bind(&classes)

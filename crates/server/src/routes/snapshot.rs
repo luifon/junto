@@ -3,7 +3,7 @@ use axum::extract::State;
 use junto_authz::Request;
 use junto_protocol::call::{CallMove, ChannelCall, EntryRequest};
 use junto_protocol::ids::{CallId, ChannelId, WorkspaceId};
-use junto_protocol::snapshot::{Snapshot, WorkspaceState};
+use junto_protocol::snapshot::{Snapshot, SnapshotResponse, WorkspaceState};
 use junto_protocol::structure::Workspace;
 use sqlx::PgConnection;
 use time::OffsetDateTime;
@@ -99,12 +99,12 @@ async fn own_entry_requests(
     path = "/api/v1/snapshot",
     tag = "events",
     security(("session" = [])),
-    responses((status = 200, body = Snapshot), ApiError)
+    responses((status = 200, body = SnapshotResponse), ApiError)
 )]
 pub async fn get_snapshot(
     State(app): State<AppState>,
     bearer: Bearer,
-) -> ApiResult<Json<Snapshot>> {
+) -> ApiResult<Json<SnapshotResponse>> {
     let now = app.now();
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
@@ -236,7 +236,10 @@ pub async fn get_snapshot(
             200,
         )
         .await?;
-        Ok(Snapshot {
+        let notices =
+            super::moderation_notices::page(connection, now, Some(access.account_id), None, None)
+                .await?;
+        let snapshot = Snapshot {
             cursor: log.cursor(log.head)?,
             account,
             workspaces,
@@ -259,6 +262,11 @@ pub async fn get_snapshot(
                 connection, &access, &allowed,
             )
             .await?,
+        };
+        Ok(SnapshotResponse {
+            snapshot,
+            moderation_notices: notices.notices,
+            moderation_notices_next: notices.next_before,
         })
     })
     .map(Json)

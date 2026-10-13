@@ -157,18 +157,17 @@ impl AppState {
         }))
     }
 
-    pub async fn begin(
+    pub async fn acquire_for_transaction(
         &self,
-        mode: Mode,
         attempt: &Attempt,
-    ) -> Result<Transaction<'static, Postgres>, sqlx::Error> {
-        self.database.begin(mode, attempt).await
+    ) -> Result<sqlx::pool::PoolConnection<Postgres>, sqlx::Error> {
+        self.database.acquire_for_transaction(attempt).await
     }
 
     pub async fn finish<T>(
         &self,
         mode: Mode,
-        transaction: Transaction<'static, Postgres>,
+        transaction: Transaction<'_, Postgres>,
         outcome: ApiResult<T>,
         attempt: &mut Attempt,
     ) -> Step<ApiResult<T>> {
@@ -205,18 +204,17 @@ impl AppState {
 pub struct Background<'a>(&'a AppState);
 
 impl Background<'_> {
-    pub async fn begin(
+    pub async fn acquire_for_transaction(
         &self,
-        mode: Mode,
         attempt: &Attempt,
-    ) -> Result<Transaction<'static, Postgres>, sqlx::Error> {
-        self.0.database.begin(mode, attempt).await
+    ) -> Result<sqlx::pool::PoolConnection<Postgres>, sqlx::Error> {
+        self.0.database.acquire_for_transaction(attempt).await
     }
 
     pub async fn finish<T>(
         &self,
         mode: Mode,
-        transaction: Transaction<'static, Postgres>,
+        transaction: Transaction<'_, Postgres>,
         outcome: ApiResult<T>,
         attempt: &mut Attempt,
     ) -> Step<ApiResult<T>> {
@@ -230,18 +228,17 @@ impl Background<'_> {
 pub struct Unattended<'a>(&'a AppState);
 
 impl Unattended<'_> {
-    pub async fn begin(
+    pub async fn acquire_for_transaction(
         &self,
-        mode: Mode,
         attempt: &Attempt,
-    ) -> Result<Transaction<'static, Postgres>, sqlx::Error> {
-        self.0.database.begin_stream(mode, attempt).await
+    ) -> Result<sqlx::pool::PoolConnection<Postgres>, sqlx::Error> {
+        self.0.database.acquire_for_stream(attempt).await
     }
 
     pub async fn finish<T>(
         &self,
         mode: Mode,
-        transaction: Transaction<'static, Postgres>,
+        transaction: Transaction<'_, Postgres>,
         outcome: ApiResult<T>,
         attempt: &mut Attempt,
     ) -> Step<ApiResult<T>> {

@@ -9,7 +9,10 @@ use junto_authz::{
 use junto_protocol::audit::AuditEvent;
 use junto_protocol::events::Event;
 use junto_protocol::ids::{AccountId, ChannelId, WorkspaceId, WorkspaceRoleId};
-use junto_protocol::roles::{CreateWorkspaceRole, UpdateWorkspaceRole, WorkspaceRole};
+use junto_protocol::roles::{
+    ChangeWorkspaceRolePermission, CreateWorkspaceRole, ListedWorkspaceRole, RoleActions,
+    UpdateWorkspaceRole, WorkspaceRole,
+};
 use sqlx::PgConnection;
 use time::OffsetDateTime;
 
@@ -62,19 +65,45 @@ async fn locked_role(
     tag = "workspaces",
     params(("workspace_id" = WorkspaceId, Path)),
     security(("session" = [])),
-    responses((status = 200, body = [WorkspaceRole]), ApiError)
+    responses((status = 200, body = [ListedWorkspaceRole]), ApiError)
 )]
 pub async fn list_workspace_roles(
     State(app): State<AppState>,
     bearer: Bearer,
     ApiPath(workspace_id): ApiPath<WorkspaceId>,
-) -> ApiResult<Json<Vec<WorkspaceRole>>> {
+) -> ApiResult<Json<Vec<ListedWorkspaceRole>>> {
     let now = app.now();
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         let scope = access.workspace(connection, workspace_id).await?;
         access.require(Request::ViewWorkspace(&scope))?;
-        roles_of(connection, workspace_id).await
+        let checks = if access.allows(Request::Workspace {
+            scope: &scope,
+            permission: WorkspacePermission::ManageRoles,
+        }) {
+            Some(RoleChecks::load(connection, &access, workspace_id, &scope).await?)
+        } else {
+            None
+        };
+        let mut roles = Vec::new();
+        for role in roles_of(connection, workspace_id).await? {
+            let (assign, remove) = match checks.as_ref().filter(|_| !role.is_everyone) {
+                Some(checks) => (
+                    crate::role_order::permitted(checks.require(&access, &scope, &role, true))?,
+                    crate::role_order::permitted(checks.require(&access, &scope, &role, false))?,
+                ),
+                None => (false, false),
+            };
+            let actions = RoleActions {
+                may_assign: access.token_id.is_none() && assign,
+                may_remove: access.token_id.is_none() && remove,
+                may_delete: access.permits_token_action(
+                    junto_protocol::access_token::TokenAction::ManageStructure,
+                ) && remove,
+            };
+            roles.push(ListedWorkspaceRole { role, actions });
+        }
+        Ok(roles)
     })
     .map(Json)
 }
@@ -298,10 +327,13 @@ pub(crate) async fn update(
         position: stored.position,
         id: role_id,
         workspace_id,
-        name: new_name.unwrap_or(stored.name),
+        name: new_name.unwrap_or_else(|| stored.name.clone()),
         permissions: db::workspace_list(permissions),
         is_everyone: stored.is_everyone,
     };
+    if role.name == stored.name && permissions == stored.permissions {
+        return Ok(role);
+    }
     sqlx::query("update workspace_roles set name = $2, permissions = $3 where id = $1")
         .bind(role_id)
         .bind(&role.name)
@@ -356,45 +388,6 @@ pub async fn delete_workspace_role(
 /// deletion of the role or by its removal from one member: the managing permission and, in
 /// each channel, the permissions that an override of the role denies there. A holder gets
 /// those permissions back, so the change adds them (ADR 0304).
-async fn require_may_lift_denies(
-    connection: &mut PgConnection,
-    access: &Access,
-    workspace_id: WorkspaceId,
-    scope: &WorkspaceScope,
-    role_id: WorkspaceRoleId,
-) -> ApiResult<()> {
-    let denied_in: HashMap<ChannelId, i64> = sqlx::query_as(
-        "select channel_id, deny from channel_overrides where role_id = $1 and deny <> 0",
-    )
-    .bind(role_id)
-    .fetch_all(&mut *connection)
-    .await?
-    .into_iter()
-    .collect();
-    let denied_channels: Vec<ChannelId> = denied_in.keys().copied().collect();
-    let channels = if denied_channels.is_empty() {
-        Vec::new()
-    } else {
-        access
-            .named_channels(connection, workspace_id, scope, &denied_channels)
-            .await?
-    };
-    let mut in_channels = Vec::new();
-    for (record, channel_scope) in &channels {
-        if let Some(deny) = denied_in.get(&record.channel.id) {
-            in_channels.push(ChannelGrant {
-                scope: channel_scope,
-                granting: stored_override(0, *deny)?.granted_by_change_to(Override::NONE),
-            });
-        }
-    }
-    access.require(Request::ManageWorkspaceRoles {
-        scope,
-        granting: WorkspacePermissions::EMPTY,
-        in_channels: &in_channels,
-    })
-}
-
 /// Deletes a workspace role with its assignments and its overrides. The removal of an
 /// override that denies a permission can add that permission to a holder of the role, so
 /// the caller must hold, in each channel, what the role is denied there (ADR 0304).
@@ -410,16 +403,19 @@ pub(crate) async fn delete(
         permission: WorkspacePermission::ManageRoles,
     })?;
     let stored = locked_role(connection, workspace_id, role_id).await?;
-    Access::require_rank(
-        access.rank(connection, Some(workspace_id)).await?,
-        junto_authz::RoleRank::Workspace(stored.position),
-    )?;
+    require_role_action(
+        connection,
+        access,
+        &scope,
+        &stored.description(workspace_id, role_id),
+        false,
+    )
+    .await?;
     if stored.is_everyone {
         return Err(ApiError::conflict(
             "every member holds the everyone role; it is not deleted",
         ));
     }
-    require_may_lift_denies(connection, access, workspace_id, &scope, role_id).await?;
 
     let holders = events::Receivers::WorkspaceRoleHolders(role_id);
     let holders =
@@ -454,6 +450,106 @@ pub(crate) async fn delete(
     events::publish(connection, now, &deleted).await
 }
 
+async fn require_role_action(
+    connection: &mut PgConnection,
+    access: &Access,
+    scope: &WorkspaceScope,
+    role: &WorkspaceRole,
+    assigning: bool,
+) -> ApiResult<()> {
+    RoleChecks::load(connection, access, role.workspace_id, scope)
+        .await?
+        .require(access, scope, role, assigning)
+}
+
+struct RoleChecks {
+    rank: junto_authz::RoleRank,
+    channels: Vec<(crate::access::ChannelRecord, junto_authz::ChannelScope)>,
+    overrides: HashMap<WorkspaceRoleId, HashMap<ChannelId, Override>>,
+}
+
+impl RoleChecks {
+    async fn load(
+        connection: &mut PgConnection,
+        access: &Access,
+        workspace: WorkspaceId,
+        scope: &WorkspaceScope,
+    ) -> ApiResult<Self> {
+        let rank = access.rank(connection, Some(workspace)).await?;
+        let (channels, rows) = access
+            .workspace_channels_and_overrides(connection, workspace, scope)
+            .await?;
+        let mut overrides: HashMap<WorkspaceRoleId, HashMap<ChannelId, Override>> = HashMap::new();
+        for (channel, role, _, allow, deny) in rows {
+            overrides
+                .entry(role)
+                .or_default()
+                .insert(channel, stored_override(allow, deny)?);
+        }
+        Ok(Self {
+            rank,
+            channels,
+            overrides,
+        })
+    }
+
+    fn require(
+        &self,
+        access: &Access,
+        scope: &WorkspaceScope,
+        role: &WorkspaceRole,
+        assigning: bool,
+    ) -> ApiResult<()> {
+        access.require(Request::Workspace {
+            scope,
+            permission: WorkspacePermission::ManageRoles,
+        })?;
+        Access::require_rank(self.rank, junto_authz::RoleRank::Workspace(role.position))?;
+        let mut in_channels = Vec::new();
+        for (record, channel_scope) in &self.channels {
+            if let Some(overrides) = self
+                .overrides
+                .get(&role.id)
+                .and_then(|rows| rows.get(&record.channel.id))
+            {
+                let granting = if assigning {
+                    overrides.allow()
+                } else {
+                    overrides.granted_by_change_to(Override::NONE)
+                };
+                if granting != WorkspacePermissions::EMPTY {
+                    in_channels.push(ChannelGrant {
+                        scope: channel_scope,
+                        granting,
+                    });
+                }
+            }
+        }
+        access.require(Request::ManageWorkspaceRoles {
+            scope,
+            granting: if assigning {
+                role.permissions.iter().copied().collect()
+            } else {
+                WorkspacePermissions::EMPTY
+            },
+            in_channels: &in_channels,
+        })
+    }
+}
+
+impl StoredRole {
+    fn description(&self, workspace_id: WorkspaceId, id: WorkspaceRoleId) -> WorkspaceRole {
+        WorkspaceRole {
+            position: self.position,
+            id,
+            workspace_id,
+            name: self.name.clone(),
+            permissions: db::workspace_list(self.permissions),
+            is_everyone: self.is_everyone,
+        }
+    }
+}
+
 /// Gives a workspace role to a member of the workspace.
 #[utoipa::path(
     put,
@@ -485,35 +581,14 @@ pub async fn assign_workspace_role(
             permission: WorkspacePermission::ManageRoles,
         })?;
         let stored = locked_role(connection, workspace_id, role_id).await?;
-        Access::require_rank(
-            access.rank(connection, Some(workspace_id)).await?,
-            junto_authz::RoleRank::Workspace(stored.position),
-        )?;
-        let allowed_in: HashMap<ChannelId, i64> = sqlx::query_as(
-            "select channel_id, allow from channel_overrides where role_id = $1 and allow <> 0",
+        require_role_action(
+            connection,
+            &access,
+            &scope,
+            &stored.description(workspace_id, role_id),
+            true,
         )
-        .bind(role_id)
-        .fetch_all(&mut *connection)
-        .await?
-        .into_iter()
-        .collect();
-        let channels = access
-            .workspace_channels(connection, workspace_id, &scope)
-            .await?;
-        let mut in_channels = Vec::new();
-        for (record, channel_scope) in &channels {
-            if let Some(allow) = allowed_in.get(&record.channel.id) {
-                in_channels.push(ChannelGrant {
-                    scope: channel_scope,
-                    granting: db::workspace_permissions(*allow)?,
-                });
-            }
-        }
-        access.require(Request::ManageWorkspaceRoles {
-            scope: &scope,
-            granting: stored.permissions,
-            in_channels: &in_channels,
-        })?;
+        .await?;
         if stored.is_everyone {
             return Err(ApiError::conflict(
                 "every member holds the everyone role; it is not assigned",
@@ -596,12 +671,19 @@ pub async fn unassign_workspace_role(
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         let scope = access.workspace(connection, workspace_id).await?;
-        require_may_lift_denies(connection, &access, workspace_id, &scope, role_id).await?;
+        access.require(Request::Workspace {
+            scope: &scope,
+            permission: WorkspacePermission::ManageRoles,
+        })?;
         let stored = locked_role(connection, workspace_id, role_id).await?;
-        Access::require_rank(
-            access.rank(connection, Some(workspace_id)).await?,
-            junto_authz::RoleRank::Workspace(stored.position),
-        )?;
+        require_role_action(
+            connection,
+            &access,
+            &scope,
+            &stored.description(workspace_id, role_id),
+            false,
+        )
+        .await?;
         if stored.is_everyone {
             return Err(ApiError::conflict("the everyone role is not assigned"));
         }
@@ -661,4 +743,42 @@ pub async fn reorder_workspace_roles(
         crate::role_order::reorder(connection, &access, now, Some(workspace_id), &positions).await
     })?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Changes one permission while preserving concurrent changes to other permissions.
+#[utoipa::path(patch,path="/api/v1/workspaces/{workspace_id}/roles/{role_id}/permissions",tag="workspaces",
+    params(("workspace_id"=WorkspaceId,Path),("role_id"=WorkspaceRoleId,Path)),request_body=ChangeWorkspaceRolePermission,
+    security(("session"=[])),responses((status=200,body=WorkspaceRole),ApiError))]
+pub async fn change_permission(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath((workspace_id, role_id)): ApiPath<(WorkspaceId, WorkspaceRoleId)>,
+    ApiJson(body): ApiJson<ChangeWorkspaceRolePermission>,
+) -> ApiResult<Json<WorkspaceRole>> {
+    let now = app.now();
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        let scope = access.workspace(connection, workspace_id).await?;
+        access.require(Request::Workspace {
+            scope: &scope,
+            permission: WorkspacePermission::ManageRoles,
+        })?;
+        let stored = locked_role(connection, workspace_id, role_id).await?;
+        let bit: WorkspacePermissions = [body.permission].into_iter().collect();
+        let permissions = if body.enabled {
+            stored.permissions.union(bit)
+        } else {
+            stored.permissions.difference(bit)
+        };
+        update(
+            connection,
+            &access,
+            now,
+            (workspace_id, role_id),
+            None,
+            Some(permissions),
+        )
+        .await
+    })
+    .map(Json)
 }

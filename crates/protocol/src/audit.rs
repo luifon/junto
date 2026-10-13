@@ -85,12 +85,18 @@ pub enum AuditEvent {
         #[serde(default)]
         reason: Option<String>,
         account_id: AccountId,
+        /// The optional text sent to the person affected, retained with the private audit.
+        #[serde(default)]
+        recipient_message: Option<String>,
     },
     AccountBanned {
         #[serde(default)]
         reason: Option<String>,
         account_id: AccountId,
         cancelled_invite_ids: Vec<InviteId>,
+        /// The optional text sent to the person affected, retained with the private audit.
+        #[serde(default)]
+        recipient_message: Option<String>,
     },
     AccountUnbanned {
         account_id: AccountId,
@@ -168,6 +174,9 @@ pub enum AuditEvent {
     WorkspaceMemberRemoved {
         account_id: AccountId,
         reason: Option<String>,
+        /// The optional text sent to the person affected, retained with the private audit.
+        #[serde(default)]
+        recipient_message: Option<String>,
     },
     /// An administrator added an existing account to the workspace.
     WorkspaceMemberAdded {
@@ -467,6 +476,7 @@ mod tests {
             AuditEvent::OwnerClaimed { account_id },
             AuditEvent::AccountBanned {
                 reason: None,
+                recipient_message: None,
                 account_id,
                 cancelled_invite_ids: vec![InviteId::generate()],
             },

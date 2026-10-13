@@ -152,6 +152,13 @@ pub async fn create_device(
     .await;
     match inserted {
         Ok(_) => {
+            sqlx::query(
+                "delete from moderation_notice_devices where public_key=$1 and account_id<>$2",
+            )
+            .bind(public_key.as_bytes().as_slice())
+            .bind(account_id)
+            .execute(&mut *connection)
+            .await?;
             let added = Event::DeviceAdded {
                 device_id: id,
                 name: name.to_owned(),
