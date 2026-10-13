@@ -216,7 +216,7 @@ async fn rule_29_dnd_schedule_synchronizes_without_suppressing_unread() {
     let reader = server.join(&owner, "Reader").await;
     let channel = channel(&server, &owner, "text").await;
     let cursor = server.snapshot(&reader).await.cursor;
-    settings(&server,&reader,uuid::Uuid::nil(),json!({"do_not_disturb":true,"daily_quiet":{"start_minute":1320,"end_minute":480,"utc_offset_minutes":-180}})).await;
+    settings(&server,&reader,uuid::Uuid::nil(),json!({"do_not_disturb":true,"daily_quiet":{"start_minute":1320,"end_minute":480,"time_zone":"America/Sao_Paulo"}})).await;
     mention(&server, &owner, &channel, &reader).await;
     let snapshot = server.snapshot(&reader).await;
     assert!(snapshot.notification_settings[0].settings.do_not_disturb);
@@ -249,7 +249,7 @@ async fn rule_29_dnd_schedule_synchronizes_without_suppressing_unread() {
         .put(
             &reader,
             &format!("/api/v1/notification-settings/{}", uuid::Uuid::nil()),
-            &json!({"daily_quiet":{"start_minute":1440,"end_minute":1,"utc_offset_minutes":0}}),
+            &json!({"daily_quiet":{"start_minute":1440,"end_minute":1,"time_zone":"UTC"}}),
         )
         .await
         .error(ErrorCode::InvalidRequest);
@@ -829,7 +829,7 @@ async fn fix_scheduled_dnd_suppresses_direct_notices_and_call_invites_until_it_e
     let minute =
         (u16::from(server.clock.now().hour()) * 60 + u16::from(server.clock.now().minute()) + 120)
             % 1440;
-    settings(server,reader,uuid::Uuid::nil(),json!({"daily_quiet":{"start_minute":(minute+1439)%1440,"end_minute":(minute+1)%1440,"utc_offset_minutes":120}})).await;
+    settings(server,reader,uuid::Uuid::nil(),json!({"daily_quiet":{"start_minute":(minute+1439)%1440,"end_minute":(minute+1)%1440,"time_zone":"Etc/GMT-2"}})).await;
     let conversation: Conversation = server
         .post(
             sender,
@@ -931,7 +931,7 @@ async fn round2_equal_quiet_endpoints_are_refused() {
         .put(
             &owner,
             &format!("/api/v1/notification-settings/{}", uuid::Uuid::nil()),
-            &json!({"daily_quiet":{"start_minute":600,"end_minute":600,"utc_offset_minutes":0}}),
+            &json!({"daily_quiet":{"start_minute":600,"end_minute":600,"time_zone":"UTC"}}),
         )
         .await
         .error(ErrorCode::InvalidRequest);

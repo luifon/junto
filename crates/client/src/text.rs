@@ -23,6 +23,7 @@ use crate::state::view::{
 pub mod account;
 pub mod admin;
 pub mod book;
+pub mod followed;
 pub mod people;
 
 pub const APP_NAME: &str = "Junto";
@@ -32,6 +33,13 @@ pub const QUIT: &str = "Quit Junto";
 pub const SERVER_BOOK: &str = "Server book";
 pub const COLLAPSE_SERVER_BOOK: &str = "Collapse the server book to icons";
 pub const EXPAND_SERVER_BOOK: &str = "Expand the server book";
+
+/// The name of the image of the logo of a server (ADR 0101). The name is text of the
+/// server.
+pub fn logo_of(server: &str) -> String {
+    format!("Logo of {server}")
+}
+
 pub const ADD_SERVER: &str = "Add server";
 pub const ADD_SERVER_BY_ADDRESS: &str = "Add server by address";
 pub const ADDRESS_PLACEHOLDER: &str = "host:port";
@@ -1231,6 +1239,9 @@ pub fn refusal(code: ErrorCode) -> String {
         }
         ErrorCode::NotFound => "The server does not know what was asked for.",
         ErrorCode::Conflict => "The request does not fit the present state of the server.",
+        ErrorCode::LastDevice => {
+            "This is the only device of the account. The last device cannot be removed."
+        }
         ErrorCode::LimitReached => "A limit of the server is reached.",
         ErrorCode::InvalidRequest => "The server did not accept the request.",
         ErrorCode::ImageTooLarge => "The image is larger than the server stores.",
@@ -1560,8 +1571,43 @@ pub fn system_line(action: &str) -> (crate::state::feed::SystemKind, &'static st
         "channel_restored" => (Plain, "{actor} restored this channel"),
         "channel_deletion_due" => (Plain, "The server deletes this archived channel in 7 days"),
         "export_requested" => (Plain, "{actor} asked for an export of this channel"),
+        // The lines of a call between the two accounts of a direct conversation
+        // (ADR 0518). The actor of the first two is the caller.
+        "direct_call_started" => (Start, "{actor} started a call"),
+        "direct_call_not_answered" => (Plain, "{subject} did not answer the call of {actor}"),
+        "direct_call_declined" => (Plain, "{actor} declined the call"),
+        "direct_call_ended" => (Plain, "The call ended{duration}"),
         _ => (Plain, "An event that this version of Junto does not know"),
     }
+}
+
+/// The length of a call as a system line states it after "The call ended": ` after 4
+/// minutes 12 seconds`. Nothing for a line without a length.
+pub fn call_length(seconds: Option<u64>) -> String {
+    let Some(seconds) = seconds else {
+        return String::new();
+    };
+    let count = |number: u64, one: &str, many: &str| match number {
+        1 => format!("1 {one}"),
+        number => format!("{number} {many}"),
+    };
+    let (hours, minutes, rest) = (seconds / 3600, seconds % 3600 / 60, seconds % 60);
+    let length = if hours > 0 {
+        format!(
+            "{} {}",
+            count(hours, "hour", "hours"),
+            count(minutes, "minute", "minutes")
+        )
+    } else if minutes > 0 {
+        format!(
+            "{} {}",
+            count(minutes, "minute", "minutes"),
+            count(rest, "second", "seconds")
+        )
+    } else {
+        count(rest, "second", "seconds")
+    };
+    format!(" after {length}")
 }
 
 /// Why a document is not sent as it is.
@@ -1739,6 +1785,7 @@ pub fn notice_kind(kind: junto_client_core::protocol::discovery::NotificationKin
         NotificationKind::Direct => "direct message",
         NotificationKind::Thread => "replied in a thread",
         NotificationKind::Message => "new message",
+        NotificationKind::MissedCall => "missed call",
     }
 }
 
@@ -1773,7 +1820,7 @@ pub fn alert_title(
             format!("{author} replied in a thread in {name}")
         }
         (
-            NotificationKind::Message | NotificationKind::Direct,
+            NotificationKind::Message | NotificationKind::Direct | NotificationKind::MissedCall,
             Whereabouts::Channel { name, .. },
         ) => {
             format!("{author} in {name}")
@@ -2437,6 +2484,7 @@ mod tests {
             (ErrorCode::RateLimited, "Try again later"),
             (ErrorCode::AccountBanned, "banned"),
             (ErrorCode::LinkCodeInvalid, "link code"),
+            (ErrorCode::LastDevice, "last device"),
         ] {
             assert!(refusal(code).contains(word), "{code:?}");
         }

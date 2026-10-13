@@ -783,6 +783,22 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/ModerationReason"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
         "responses": {
           "204": {},
           "default": {
@@ -955,6 +971,22 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/ModerationReason"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
         "responses": {
           "204": {},
           "default": {
@@ -1449,9 +1481,56 @@
         "operationId": "get_server_audit_log",
         "parameters": [
           {
+            "name": "action",
+            "in": "query",
+            "description": "Exact action name. Unknown action names match no entries.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "actor_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/AccountId"
+            }
+          },
+          {
+            "name": "target_id",
+            "in": "query",
+            "description": "An identifier named by the event or its workspace, channel or call scope.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Inclusive start of the time interval.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "Exclusive end of the time interval.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
             "name": "before",
             "in": "query",
-            "description": "Return entries older than this one.",
+            "description": "Continue before this entry; time-filtered pages order by occurrence time then identifier.",
             "required": false,
             "schema": {
               "$ref": "#/components/schemas/AuditEntryId"
@@ -3558,6 +3637,112 @@
             "session": []
           }
         ]
+      },
+      "patch": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "Changes one permission of a channel override with the grant ceiling on its delta.",
+        "operationId": "change_channel_override",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          },
+          {
+            "name": "role_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceRoleId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangeChannelOverride"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelOverride"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/channels/{channel_id}/permissions": {
+      "get": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "The workspace permissions that the caller holds in one channel that it can see, an\narchived channel included (ADR 0310).",
+        "operationId": "get_channel_permissions",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelPermissions"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
       }
     },
     "/api/v1/channels/{channel_id}/pins": {
@@ -3585,6 +3770,77 @@
                   "items": {
                     "$ref": "#/components/schemas/Message"
                   }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/channels/{channel_id}/threads": {
+      "get": {
+        "tags": [
+          "messages"
+        ],
+        "summary": "The threads of a channel that the caller follows, the one with the newest reply first,\nin pages. Threads without unread replies are included (ADR 0413). The caller sees the\nchannel.",
+        "operationId": "followed",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          },
+          {
+            "name": "before",
+            "in": "path",
+            "description": "The value `next` of the page before.",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "path",
+            "description": "From 1 to 200. Absent: 50.",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FollowedThreads"
                 }
               }
             }
@@ -5456,6 +5712,96 @@
         ]
       }
     },
+    "/api/v1/messages/{message_id}/thread/follow": {
+      "put": {
+        "tags": [
+          "messages"
+        ],
+        "summary": "Stores the choice of the caller to follow a thread or not (ADR 0412). The caller sees\nthe channel of the thread.",
+        "operationId": "set_follow",
+        "parameters": [
+          {
+            "name": "message_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/MessageId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetThreadFollow"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadState"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "messages"
+        ],
+        "summary": "Removes the choice of the caller for a thread. The caller then follows the thread when\nit wrote in it or was named in it.",
+        "operationId": "remove_follow",
+        "parameters": [
+          {
+            "name": "message_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/MessageId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/messages/{message_id}/thread/read": {
       "get": {
         "tags": [
@@ -5690,6 +6036,51 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/NotificationPage"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/notifications/read": {
+      "put": {
+        "tags": [
+          "messages"
+        ],
+        "summary": "Marks every notice that the caller reads now and that was created at or before `until`,\nin one request (ADR 0412). The devices of the account get one event.",
+        "operationId": "mark_all_read",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarkNotificationsRead"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationsRead"
                 }
               }
             }
@@ -6060,7 +6451,7 @@
         "tags": [
           "recordings"
         ],
-        "summary": "The lines of the transcript of a recording in the order of the timeline, in pages. Each\nline carries its newest correction and, when it was corrected, the text of the worker.\nThe caller may read the recording.",
+        "summary": "The lines of the transcript of a recording in the order of the timeline, in pages. Each\nline carries its newest correction and, when it was corrected, the text of the worker.\n`around` reads the page with one line in its middle, and `before` the page before a\nline. The caller may read the recording.",
         "operationId": "list_transcript_lines",
         "parameters": [
           {
@@ -6075,6 +6466,28 @@
             "name": "after",
             "in": "query",
             "description": "Return the lines after this position.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Return the lines before this position, the ones nearest to it.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "around",
+            "in": "query",
+            "description": "Return a page with the line at this position in its middle. At most one of `after`,\n`before` and `around` is given.",
             "required": false,
             "schema": {
               "type": "integer",
@@ -6425,7 +6838,7 @@
         "tags": [
           "server roles"
         ],
-        "summary": "The server roles.",
+        "summary": "The server roles, visible to administrators and holders of ban_members.\nTokens may use either read_structure or manage_members for this list.",
         "operationId": "list_server_roles",
         "responses": {
           "200": {
@@ -6483,6 +6896,43 @@
               }
             }
           },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/server-roles/positions": {
+      "patch": {
+        "tags": [
+          "server roles"
+        ],
+        "summary": "Reorders up to 250 roles in one transaction.",
+        "operationId": "reorder_server_roles",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReorderServerRoles"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
           "default": {
             "description": "An error. The field `error.code` states which one.",
             "content": {
@@ -6573,6 +7023,133 @@
               }
             }
           },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/server/logo": {
+      "get": {
+        "tags": [
+          "server"
+        ],
+        "summary": "The public image advertised by the server information route.",
+        "operationId": "get_logo",
+        "responses": {
+          "200": {
+            "content": {
+              "image/png": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "image/webp": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The current image matches If-None-Match"
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "server"
+        ],
+        "summary": "Sets the public logo. The caller is a server administrator with a session.",
+        "operationId": "set_logo",
+        "requestBody": {
+          "content": {
+            "image/jpeg": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "image/png": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "image/webp": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Avatar"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "server"
+        ],
+        "summary": "Removes the public logo. An absent logo is unchanged.",
+        "operationId": "remove_logo",
+        "responses": {
+          "204": {},
           "default": {
             "description": "An error. The field `error.code` states which one.",
             "content": {
@@ -7100,9 +7677,56 @@
             }
           },
           {
+            "name": "action",
+            "in": "query",
+            "description": "Exact action name. Unknown action names match no entries.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "actor_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/AccountId"
+            }
+          },
+          {
+            "name": "target_id",
+            "in": "query",
+            "description": "An identifier named by the event or its workspace, channel or call scope.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Inclusive start of the time interval.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "Exclusive end of the time interval.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
             "name": "before",
             "in": "query",
-            "description": "Return entries older than this one.",
+            "description": "Continue before this entry; time-filtered pages order by occurrence time then identifier.",
             "required": false,
             "schema": {
               "$ref": "#/components/schemas/AuditEntryId"
@@ -7694,6 +8318,67 @@
         ]
       }
     },
+    "/api/v1/workspaces/{workspace_id}/members/{account_id}/removal": {
+      "post": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Removes one workspace membership and its roles. Server access and other memberships stay.",
+        "operationId": "remove_member",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          },
+          {
+            "name": "account_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/AccountId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/ModerationReason"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/workspaces/{workspace_id}/members/{account_id}/roles/{role_id}": {
       "put": {
         "tags": [
@@ -7803,6 +8488,7 @@
         "tags": [
           "messages"
         ],
+        "summary": "The notification default of a workspace. `level` is absent when none is set.",
         "operationId": "get_default",
         "parameters": [
           {
@@ -7845,6 +8531,7 @@
         "tags": [
           "messages"
         ],
+        "summary": "Sets the notification default of a workspace. The body states a level; `DELETE` on the\nsame path removes the default.",
         "operationId": "set_default",
         "parameters": [
           {
@@ -7876,6 +8563,41 @@
               }
             }
           },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "messages"
+        ],
+        "summary": "Removes the notification default of a workspace. The workspace then has none: the\ndefault of each account, or `mentions`, applies (ADR 0412).",
+        "operationId": "remove_default",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
           "default": {
             "description": "An error. The field `error.code` states which one.",
             "content": {
@@ -8138,6 +8860,53 @@
               }
             }
           },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/roles/positions": {
+      "patch": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Reorders up to 250 roles in one transaction.",
+        "operationId": "reorder_workspace_roles",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReorderWorkspaceRoles"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
           "default": {
             "description": "An error. The field `error.code` states which one.",
             "content": {
@@ -8813,6 +9582,32 @@
             "type": "object",
             "required": [
               "invite_id",
+              "invite_created_by",
+              "removed_workspace_id",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "invite_workspaces_changed"
+                ]
+              },
+              "invite_created_by": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "invite_id": {
+                "$ref": "#/components/schemas/InviteId"
+              },
+              "removed_workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "invite_id",
               "action"
             ],
             "properties": {
@@ -8961,6 +9756,12 @@
                 "enum": [
                   "account_removed"
                 ]
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             }
           },
@@ -8986,6 +9787,12 @@
                 "items": {
                   "$ref": "#/components/schemas/InviteId"
                 }
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             }
           },
@@ -9026,6 +9833,52 @@
               },
               "device_id": {
                 "$ref": "#/components/schemas/DeviceId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "role_id",
+              "position",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "server_role_position_changed"
+                ]
+              },
+              "position": {
+                "type": "integer",
+                "format": "int32"
+              },
+              "role_id": {
+                "$ref": "#/components/schemas/ServerRoleId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "role_id",
+              "position",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "workspace_role_position_changed"
+                ]
+              },
+              "position": {
+                "type": "integer",
+                "format": "int32"
+              },
+              "role_id": {
+                "$ref": "#/components/schemas/WorkspaceRoleId"
               }
             }
           },
@@ -9332,6 +10185,31 @@
               },
               "role_id": {
                 "$ref": "#/components/schemas/WorkspaceRoleId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "An administrator removed an account from the workspace.",
+            "required": [
+              "account_id",
+              "action"
+            ],
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "workspace_member_removed"
+                ]
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             }
           },
@@ -9774,6 +10652,30 @@
           {
             "type": "object",
             "required": [
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "server_logo_changed"
+                ]
+              },
+              "logo": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/Avatar"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
               "bytes_per_file",
               "files_per_message",
               "action"
@@ -9830,6 +10732,21 @@
               },
               "level": {
                 "$ref": "#/components/schemas/NotificationLevel"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "An administrator removed the notification default of a workspace.",
+            "required": [
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "notification_default_removed"
+                ]
               }
             }
           },
@@ -10507,6 +11424,17 @@
           "account_id": {
             "$ref": "#/components/schemas/AccountId"
           },
+          "avatar": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Avatar",
+                "description": "Metadata of the avatar, without its image bytes."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "deafened": {
             "type": "boolean",
             "description": "The person's own sound setting, as their client reports it."
@@ -10723,6 +11651,23 @@
           "link_device"
         ]
       },
+      "ChangeChannelOverride": {
+        "type": "object",
+        "description": "Changes exactly one permission, preserving every other bit of the override.",
+        "required": [
+          "permission",
+          "state"
+        ],
+        "properties": {
+          "permission": {
+            "$ref": "#/components/schemas/WorkspacePermission"
+          },
+          "state": {
+            "$ref": "#/components/schemas/OverrideState"
+          }
+        },
+        "additionalProperties": false
+      },
       "Channel": {
         "type": "object",
         "required": [
@@ -10936,6 +11881,25 @@
           },
           "role_id": {
             "$ref": "#/components/schemas/WorkspaceRoleId"
+          }
+        }
+      },
+      "ChannelPermissions": {
+        "type": "object",
+        "description": "The workspace permissions that the caller holds in one channel that it can see: the\npermissions for which the permission function allows a request in the channel now\n(ADR 0310).",
+        "required": [
+          "channel_id",
+          "permissions"
+        ],
+        "properties": {
+          "channel_id": {
+            "$ref": "#/components/schemas/ChannelId"
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspacePermission"
+            }
           }
         }
       },
@@ -11225,22 +12189,24 @@
         "required": [
           "start_minute",
           "end_minute",
-          "utc_offset_minutes"
+          "time_zone"
         ],
         "properties": {
           "end_minute": {
             "type": "integer",
             "format": "int32",
+            "description": "The minute of the day at which it ends. An end before the start is on the next day.",
             "minimum": 0
           },
           "start_minute": {
             "type": "integer",
             "format": "int32",
+            "description": "The minute of the day at which the quiet time starts, from 0 to 1439, on the clock\nof `time_zone`.",
             "minimum": 0
           },
-          "utc_offset_minutes": {
-            "type": "integer",
-            "format": "int32"
+          "time_zone": {
+            "type": "string",
+            "description": "The name of a time zone of the IANA database, for example `Europe/Lisbon`. The\nquiet time holds while the clock of that zone is inside the window, also after a\nchange for daylight saving time (ADR 0412)."
           }
         },
         "additionalProperties": false
@@ -11476,6 +12442,7 @@
           "exceeds_own_permissions",
           "not_found",
           "conflict",
+          "last_device",
           "limit_reached",
           "key_already_registered",
           "owner_already_claimed",
@@ -11629,6 +12596,32 @@
           "length_mismatch",
           "not_checked"
         ]
+      },
+      "FollowedThreads": {
+        "type": "object",
+        "description": "One page of the threads of a channel that the account follows, the one with the newest\nreply first. Threads without unread replies are included.",
+        "required": [
+          "threads",
+          "more"
+        ],
+        "properties": {
+          "more": {
+            "type": "boolean"
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `before` to read the next page. Absent on the last page."
+          },
+          "threads": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ThreadState"
+            }
+          }
+        }
       },
       "ForkThread": {
         "type": "object",
@@ -11866,6 +12859,13 @@
           "created_by": {
             "$ref": "#/components/schemas/AccountId"
           },
+          "created_by_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Current creator name in a list; the name at creation in an event."
+          },
           "expires_at": {
             "type": "string",
             "format": "date-time"
@@ -12080,6 +13080,21 @@
           "strikethrough"
         ]
       },
+      "MarkNotificationsRead": {
+        "type": "object",
+        "description": "Marks the notices of the caller read.",
+        "properties": {
+          "until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Every notice created at or before this time is marked: the `created_at` of the\nnewest notice that the person saw. Absent, or a later time: the time of the\nrequest."
+          }
+        },
+        "additionalProperties": false
+      },
       "MarkRead": {
         "type": "object",
         "required": [
@@ -12205,6 +13220,13 @@
             "items": {
               "$ref": "#/components/schemas/Reaction"
             }
+          },
+          "reply_authors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountId"
+            },
+            "description": "For the root of a thread: at most three authors of its replies, in the order of\ntheir first reply that is not deleted (ADR 0413)."
           },
           "reply_count": {
             "type": "integer",
@@ -12381,6 +13403,20 @@
           }
         }
       },
+      "ModerationReason": {
+        "type": "object",
+        "description": "An optional explanation retained in the moderation audit entry.",
+        "properties": {
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "At most 1000 characters without control characters. Empty means no reason."
+          }
+        },
+        "additionalProperties": false
+      },
       "MoveParticipant": {
         "type": "object",
         "required": [
@@ -12446,12 +13482,17 @@
       },
       "NotificationDefault": {
         "type": "object",
-        "required": [
-          "level"
-        ],
         "properties": {
           "level": {
-            "$ref": "#/components/schemas/NotificationLevel"
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/NotificationLevel",
+                "description": "Absent: the workspace has no default."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false
@@ -12462,7 +13503,8 @@
           "message",
           "mention",
           "direct",
-          "thread"
+          "thread",
+          "missed_call"
         ]
       },
       "NotificationLevel": {
@@ -12542,6 +13584,31 @@
         },
         "additionalProperties": false
       },
+      "NotificationsRead": {
+        "type": "object",
+        "description": "What a request that marks the notices of the caller read did.",
+        "required": [
+          "until",
+          "read_at",
+          "marked"
+        ],
+        "properties": {
+          "marked": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The number of notices that the request marked.",
+            "minimum": 0
+          },
+          "read_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "until": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
       "OpenConversation": {
         "type": "object",
         "required": [
@@ -12582,6 +13649,14 @@
           }
         },
         "additionalProperties": false
+      },
+      "OverrideState": {
+        "type": "string",
+        "enum": [
+          "allow",
+          "deny",
+          "inherit"
+        ]
       },
       "OwnAccount": {
         "type": "object",
@@ -12651,6 +13726,13 @@
           "device_id": {
             "$ref": "#/components/schemas/DeviceId"
           },
+          "hides_occupants": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The retained hide setting, or unknown when an older server omitted it."
+          },
           "identity": {
             "type": "string"
           },
@@ -12675,6 +13757,13 @@
             "items": {
               "$ref": "#/components/schemas/EntryRequest"
             }
+          },
+          "inside": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "True after admission has observed this seat. Absent means not stated by the server (ADR 0517)."
           },
           "own": {
             "$ref": "#/components/schemas/OwnCall"
@@ -13205,6 +14294,34 @@
           }
         }
       },
+      "ReorderServerRoles": {
+        "type": "object",
+        "required": [
+          "positions"
+        ],
+        "properties": {
+          "positions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServerRolePosition"
+            }
+          }
+        }
+      },
+      "ReorderWorkspaceRoles": {
+        "type": "object",
+        "required": [
+          "positions"
+        ],
+        "properties": {
+          "positions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceRolePosition"
+            }
+          }
+        }
+      },
       "ReportCallState": {
         "type": "object",
         "description": "The device's report of the person's own microphone and sound settings.",
@@ -13314,6 +14431,14 @@
               "$ref": "#/components/schemas/WorkspacePermission"
             },
             "description": "Absent: a new role has no permission, an existing role keeps its permissions."
+          },
+          "position": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Optional relative-order key: larger is higher; everyone is fixed at zero."
           }
         },
         "additionalProperties": false
@@ -13389,6 +14514,15 @@
             "type": "string",
             "format": "uuid"
           },
+          "position": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The position of the message in its channel or conversation. Absent for a\ntranscript line.",
+            "minimum": 0
+          },
           "rank": {
             "type": "number",
             "format": "float"
@@ -13403,8 +14537,28 @@
               }
             ]
           },
+          "start_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "For a transcript line: milliseconds from the start of the timeline of the\nrecording.",
+            "minimum": 0
+          },
           "text": {
             "type": "string"
+          },
+          "thread_root": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MessageId",
+                "description": "The root of the thread that the message is a reply of."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -13657,6 +14811,10 @@
             "items": {
               "$ref": "#/components/schemas/ServerPermission"
             }
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32"
           }
         }
       },
@@ -13682,6 +14840,14 @@
               "$ref": "#/components/schemas/ServerPermission"
             },
             "description": "Absent: a new role has no permission, an existing role keeps its permissions."
+          },
+          "position": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Optional relative-order key: larger is higher. Numeric gaps are not significant."
           }
         },
         "additionalProperties": false
@@ -13689,6 +14855,22 @@
       "ServerRoleId": {
         "type": "string",
         "format": "uuid"
+      },
+      "ServerRolePosition": {
+        "type": "object",
+        "required": [
+          "role_id",
+          "position"
+        ],
+        "properties": {
+          "position": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "role_id": {
+            "$ref": "#/components/schemas/ServerRoleId"
+          }
+        }
       },
       "SessionCreated": {
         "type": "object",
@@ -13766,6 +14948,19 @@
         "properties": {
           "emoji": {
             "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SetThreadFollow": {
+        "type": "object",
+        "description": "The choice of an account to follow a thread or not.",
+        "required": [
+          "following"
+        ],
+        "properties": {
+          "following": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false
@@ -14016,6 +15211,52 @@
       },
       "StructureChange": {
         "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "positions",
+              "change"
+            ],
+            "properties": {
+              "change": {
+                "type": "string",
+                "enum": [
+                  "reorder_server_roles"
+                ]
+              },
+              "positions": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/StructureRolePosition"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "workspace",
+              "positions",
+              "change"
+            ],
+            "properties": {
+              "change": {
+                "type": "string",
+                "enum": [
+                  "reorder_workspace_roles"
+                ]
+              },
+              "positions": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/StructureRolePosition"
+                }
+              },
+              "workspace": {
+                "$ref": "#/components/schemas/StructureId"
+              }
+            }
+          },
           {
             "type": "object",
             "required": [
@@ -14542,7 +15783,7 @@
           "format": {
             "type": "integer",
             "format": "int32",
-            "description": "The version of the file format: 1.",
+            "description": "The version of the file format: 2. This tool also reads format 1.",
             "minimum": 0
           },
           "server_roles": {
@@ -14575,6 +15816,22 @@
           "channel"
         ]
       },
+      "StructureRolePosition": {
+        "type": "object",
+        "required": [
+          "id",
+          "position"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/StructureId"
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
       "SystemMessage": {
         "type": "object",
         "required": [
@@ -14593,6 +15850,15 @@
                 "type": "null"
               }
             ]
+          },
+          "duration_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Present for the line `direct_call_ended`: the seconds from the moment at which both\naccounts were in the room of the call to the moment from which one of them was\nalone until its end (ADR 0518).",
+            "minimum": 0
           },
           "recording_id": {
             "oneOf": [
@@ -14648,6 +15914,17 @@
           "mentions"
         ],
         "properties": {
+          "follow_setting": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The choice of the account. Absent: none, and the account follows a thread that it\nwrote in or was named in (ADR 0412)."
+          },
+          "following": {
+            "type": "boolean",
+            "description": "Whether the account follows the thread: its replies count as unread and notify."
+          },
           "last_read": {
             "type": "integer",
             "format": "int64",
@@ -14857,6 +16134,15 @@
             ],
             "format": "int32",
             "description": "Pass as `after` to read the next page. Absent on the last page.",
+            "minimum": 0
+          },
+          "previous_before": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Pass as `before` to read the page before this one. Absent when the page starts at\nthe first line.",
             "minimum": 0
           }
         }
@@ -15253,6 +16539,17 @@
           "account_id": {
             "$ref": "#/components/schemas/AccountId"
           },
+          "avatar": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Avatar",
+                "description": "Metadata of the avatar, without its image bytes."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "name": {
             "type": "string"
           },
@@ -15312,6 +16609,10 @@
               "$ref": "#/components/schemas/WorkspacePermission"
             }
           },
+          "position": {
+            "type": "integer",
+            "format": "int32"
+          },
           "workspace_id": {
             "$ref": "#/components/schemas/WorkspaceId"
           }
@@ -15320,6 +16621,22 @@
       "WorkspaceRoleId": {
         "type": "string",
         "format": "uuid"
+      },
+      "WorkspaceRolePosition": {
+        "type": "object",
+        "required": [
+          "role_id",
+          "position"
+        ],
+        "properties": {
+          "position": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "role_id": {
+            "$ref": "#/components/schemas/WorkspaceRoleId"
+          }
+        }
       },
       "WorkspaceState": {
         "type": "object",
@@ -15345,6 +16662,13 @@
               "$ref": "#/components/schemas/Category"
             }
           },
+          "channel_permissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChannelPermissions"
+            },
+            "description": "The channels of `channels` in which the caller holds another set than `permissions`,\nbecause of a channel override. A client reads what the caller may do in a channel\nfrom these two fields and does not derive it from roles."
+          },
           "channels": {
             "type": "array",
             "items": {
@@ -15352,12 +16676,30 @@
             },
             "description": "The channels that the caller can see."
           },
+          "notification_default": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/NotificationLevel",
+                "description": "The notification level that an administrator set as the default of the workspace.\nAbsent: none is set, and the default of the account or `mentions` applies."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "own_role_ids": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/WorkspaceRoleId"
             },
             "description": "The roles of the workspace that the caller holds, without the \"everyone\" role."
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspacePermission"
+            },
+            "description": "The workspace permissions that the caller holds in the workspace, as the permission\nfunction decides them (ADR 0310). The caller holds the same set in every channel of\n`channels` that `channel_permissions` does not list."
           },
           "roles": {
             "type": "array",

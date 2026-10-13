@@ -1,4 +1,5 @@
 //! Text messages, current mentions and resumable attachment storage (ADR 0408).
+pub mod direct_calls;
 pub mod document;
 mod mentions;
 pub mod notifications;
@@ -12,7 +13,8 @@ pub mod uploads;
 pub use mentions::{mentioned_among, mentions};
 pub use place::Place;
 pub use store::{
-    VISIBLE, changed, get, load_messages, remove, snapshot, state, state_query, system,
+    REPLY_AUTHORS, VISIBLE, changed, changed_at, get, load_messages, remove, snapshot, state,
+    state_query, system,
 };
 
 pub(crate) use store::erase;

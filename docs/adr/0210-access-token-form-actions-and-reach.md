@@ -33,7 +33,7 @@ Whose permissions:
 
 - Creating a token needs the administrator permission and a session.
 - A request with a token is decided as a request of the account that created the token, with the roles that this account has in the transaction of the request (ADR 0009). The account must be active.
-- A token does not carry the position of the server owner. A token of the server owner acts with the administrator permission. The actions that only the owner does (ADR 0301) need a session of the owner.
+- A token does not carry the owner-only permissions of the server owner. A token of the server owner acts with the administrator permission, but carries the owner rank for role-order comparisons (ADR 0309). The actions that only the owner does (ADR 0301) need a session of the owner.
 - An account holds at most 100 tokens. A further creation gets `limit_reached` (ADR 0306). A token that has expired counts until the maintenance task has deleted it.
 
 Listing and revocation:
@@ -61,3 +61,11 @@ Audit and events:
 - A request with a token costs one lookup of the token and one statement that sets the setting, besides the reads of every request.
 - A new action needs a migration that widens the check of the stored set, as a new permission does (ADR 0304).
 - An administrator sees and revokes the tokens of other administrators and does not see the tokens themselves.
+
+Role order and its action-specific exemptions are decided in ADR 0309.
+
+For role-order decisions, `GET /api/v1/server-roles` accepts either `read_structure` or
+`manage_members`; both still require the creator to hold `ban_members` or administrator.
+This exception grants no access to the complete structure document (ADR 0309).
+
+Workspace membership removal requires a session because it deletes the account’s workspace role assignments (ADR 0213). Role definition changes stay within manage_structure and its rank and grant checks.

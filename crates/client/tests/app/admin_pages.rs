@@ -19,7 +19,7 @@ use junto_client::state::admin::view::records::{
     TOKEN_EXPIRY_DAYS, TokenLine,
 };
 use junto_client::state::admin::view::{ChannelPageView, Listed, Scope, ServerPage};
-use junto_client::state::admin::{AuditScope, Made};
+use junto_client::state::admin::{AuditFilter, AuditPeriod, AuditScope, Made};
 use junto_client::state::view::Members;
 use junto_client::text::admin::records::{audit_head, token_action_selector};
 use junto_client_core::ServerHandle;
@@ -32,7 +32,7 @@ use junto_client_core::live::{LiveView, StreamStatus};
 use junto_client_core::model::{AdminPart, PlaceId, ServerModel};
 use junto_client_core::protocol::access_token::TokenAction;
 use junto_client_core::protocol::account::AccountStatus;
-use junto_client_core::protocol::audit::AuditQuery;
+use junto_client_core::protocol::audit::{AuditEvent, AuditFilterQuery};
 use junto_client_core::protocol::ids::{
     AccessTokenId, AccountId, ChannelId, ExportId, InviteId, JoinRequestId, WorkspaceId,
 };
@@ -65,14 +65,14 @@ macro_rules! server_page {
 
 /// The name of the element of one row. gpui finds a drawn element by a name that lives as
 /// long as the program, and a test builds few names.
-fn sel(prefix: &str, of: impl std::fmt::Display) -> &'static str {
+pub(crate) fn sel(prefix: &str, of: impl std::fmt::Display) -> &'static str {
     Box::leak(format!("{prefix}-{of}").into_boxed_str())
 }
 
 /// Opens the application on a new data directory and claims the server with its owner
 /// code. Returns the window, and the client of the window for the requests that the owner
 /// makes through the API.
-fn owner_window(
+pub(crate) fn owner_window(
     cx: &mut TestAppContext,
     server: &TestServer,
 ) -> (tempfile::TempDir, Window, ServerHandle) {
@@ -88,7 +88,11 @@ fn owner_window(
 }
 
 /// An invite for one use. No workspace: the default workspace.
-fn invite(world: &World, inviter: &ServerHandle, workspace_ids: Vec<WorkspaceId>) -> InviteCode {
+pub(crate) fn invite(
+    world: &World,
+    inviter: &ServerHandle,
+    workspace_ids: Vec<WorkspaceId>,
+) -> InviteCode {
     let invite = CreateInvite {
         workspace_ids,
         ..CreateInvite::default()
@@ -101,7 +105,7 @@ fn invite(world: &World, inviter: &ServerHandle, workspace_ids: Vec<WorkspaceId>
 
 /// A device without a window that joins the server with an invite code. Its event stream
 /// runs, so its state follows the server.
-fn joined(
+pub(crate) fn joined(
     world: &World,
     server: &TestServer,
     code: &InviteCode,
@@ -185,7 +189,7 @@ fn grant_workspace(
         .unwrap();
 }
 
-fn default_workspace(world: &World, handle: &ServerHandle) -> WorkspaceId {
+pub(crate) fn default_workspace(world: &World, handle: &ServerHandle) -> WorkspaceId {
     world
         .run(handle.api().workspaces())
         .unwrap()
@@ -195,7 +199,7 @@ fn default_workspace(world: &World, handle: &ServerHandle) -> WorkspaceId {
         .id
 }
 
-fn text_channel(
+pub(crate) fn text_channel(
     world: &World,
     handle: &ServerHandle,
     workspace_id: WorkspaceId,
@@ -214,7 +218,7 @@ fn text_channel(
 }
 
 /// Waits until the event stream of a client without a window is in a state.
-fn until_stream(
+pub(crate) fn until_stream(
     world: &World,
     handle: &ServerHandle,
     what: &str,
@@ -230,7 +234,7 @@ fn until_stream(
 }
 
 /// The state of a client without a window, once it holds what `holds` asks for.
-fn until_model(
+pub(crate) fn until_model(
     world: &World,
     handle: &ServerHandle,
     what: &str,
@@ -243,7 +247,7 @@ fn until_model(
 
 /// Waits until the window gives a value, and returns it.
 #[track_caller]
-fn awaited<T>(
+pub(crate) fn awaited<T>(
     window: &mut Window,
     what: &str,
     mut read: impl FnMut(&mut Window) -> Option<T>,
@@ -259,7 +263,7 @@ fn awaited<T>(
 /// Clicks an element of the open page of the administration when it is drawn inside the
 /// visible part of the page. An element outside that part is brought nearer with the
 /// wheel, as a person does, and is not clicked. True when the element was clicked.
-fn try_click(window: &mut Window, selector: &'static str) -> bool {
+pub(crate) fn try_click(window: &mut Window, selector: &'static str) -> bool {
     window.cx.run_until_parked();
     let (Some(page), Some(element)) = (
         window.cx.debug_bounds("admin-page"),
@@ -287,7 +291,7 @@ fn try_click(window: &mut Window, selector: &'static str) -> bool {
 /// element that is not drawn now, and the page is scrolled to an element below its
 /// visible part.
 #[track_caller]
-fn click_in_page(window: &mut Window, selector: &'static str) {
+pub(crate) fn click_in_page(window: &mut Window, selector: &'static str) {
     window.until(&format!("{selector} is drawn and is clicked"), |window| {
         try_click(window, selector)
     });
@@ -295,7 +299,11 @@ fn click_in_page(window: &mut Window, selector: &'static str) {
 
 /// Clicks a row of the list of pages until `open` holds for the window.
 #[track_caller]
-fn open_page(window: &mut Window, row: &'static str, mut open: impl FnMut(&mut Window) -> bool) {
+pub(crate) fn open_page(
+    window: &mut Window,
+    row: &'static str,
+    mut open: impl FnMut(&mut Window) -> bool,
+) {
     window.until(&format!("the page of {row} is open"), |window| {
         if open(window) {
             return true;
@@ -333,7 +341,7 @@ fn open_channel_settings(window: &mut Window, name: &str, channel_id: ChannelId)
 }
 
 /// True when no request of the open page is on its way and none was refused.
-fn idle(window: &mut Window) -> bool {
+pub(crate) fn idle(window: &mut Window) -> bool {
     window.admin().is_some_and(|view| view.ask.is_none())
 }
 
@@ -346,7 +354,7 @@ fn knows_member(window: &mut Window, name: &str) -> bool {
     )
 }
 
-fn account(window: &mut Window, account_id: AccountId) -> Option<AccountLine> {
+pub(crate) fn account(window: &mut Window, account_id: AccountId) -> Option<AccountLine> {
     server_page!(window, People)?
         .accounts
         .loaded()?
@@ -554,6 +562,10 @@ fn the_owner_bans_unbans_and_removes_a_member_on_the_people_page(cx: &mut TestAp
     click_in_page(&mut window, sel("account-ban", bruno));
     assert!(window.shows("account-confirm") && window.shows("account-cancel"));
     assert_eq!(on_server(bruno), Some(AccountStatus::Active));
+    // The question takes a reason, which the audit entry of the ban keeps.
+    assert!(window.shows("moderation-reason-field"));
+    let reason = "Advertisements in every channel";
+    window.in_shell(|shell, window, cx| shell.type_reason(&format!("  {reason} "), window, cx));
     click_in_page(&mut window, "account-confirm");
     let banned = awaited(&mut window, "the row shows the ban", |window| {
         account(window, bruno)
@@ -564,6 +576,23 @@ fn the_owner_bans_unbans_and_removes_a_member_on_the_people_page(cx: &mut TestAp
         (Ok(()), Err(Blocked::Banned), Ok(()))
     );
     assert!(!window.shows(sel("account-ban", bruno)) && !window.shows("account-confirm"));
+    let entry_of = |action: &str| {
+        let query = AuditFilterQuery {
+            action: Some(action.to_owned()),
+            ..AuditFilterQuery::default()
+        };
+        let log = world.run(owner.api().server_audit_log(&query)).unwrap();
+        assert_eq!(log.entries.len(), 1, "{action}");
+        log.entries.into_iter().next().unwrap().event
+    };
+    assert_eq!(
+        entry_of("account_banned"),
+        AuditEvent::AccountBanned {
+            reason: Some(reason.to_owned()),
+            account_id: bruno,
+            cancelled_invite_ids: Vec::new(),
+        }
+    );
 
     // The ban ends the session of the member.
     until_stream(
@@ -603,6 +632,8 @@ fn the_owner_bans_unbans_and_removes_a_member_on_the_people_page(cx: &mut TestAp
     click_in_page(&mut window, sel("account-remove", bruno));
     assert!(window.shows("account-confirm"));
     assert_eq!(on_server(bruno), Some(AccountStatus::Active));
+    // The reason of the ban belonged to its question: this question starts without one.
+    assert!(window.shows("moderation-reason-field"));
     click_in_page(&mut window, "account-confirm");
     let removed = awaited(&mut window, "the row shows the removal", |window| {
         account(window, bruno)
@@ -624,6 +655,13 @@ fn the_owner_bans_unbans_and_removes_a_member_on_the_people_page(cx: &mut TestAp
         );
     }
     assert_eq!(on_server(bruno), Some(AccountStatus::Removed));
+    assert_eq!(
+        entry_of("account_removed"),
+        AuditEvent::AccountRemoved {
+            reason: None,
+            account_id: bruno,
+        }
+    );
 }
 
 #[gpui::test]
@@ -1156,7 +1194,7 @@ fn the_owner_creates_an_access_token_uses_it_and_revokes_it(cx: &mut TestAppCont
     // A request with the token works on a route of its action, and on no other route.
     let with_token = with_access_token(&world, &server, &secret);
     let log = world
-        .run(with_token.server_audit_log(&AuditQuery::default()))
+        .run(with_token.server_audit_log(&AuditFilterQuery::default()))
         .unwrap();
     assert!(!log.entries.is_empty());
     let refused = world.run(with_token.workspaces()).unwrap_err();
@@ -1175,7 +1213,7 @@ fn the_owner_creates_an_access_token_uses_it_and_revokes_it(cx: &mut TestAppCont
         window.shows("no-tokens") && !window.shows(token_row)
     });
     let ended = world
-        .run(with_token.server_audit_log(&AuditQuery::default()))
+        .run(with_token.server_audit_log(&AuditFilterQuery::default()))
         .unwrap_err();
     assert_eq!(ended.category(), Some(ErrorCategory::SessionEnded));
 }
@@ -1299,7 +1337,10 @@ fn the_audit_log_names_what_was_done_filters_by_group_and_loads_older_entries(
         };
         world.run(api.create_category(default, &category)).unwrap();
     }
-    world.run(api.ban_account(bruno)).unwrap();
+    let reason = "Sent the same advertisement to every channel";
+    world
+        .run(api.ban_account_with_reason(bruno, Some(reason)))
+        .unwrap();
 
     // The page shows the log of the server first: the ban, with the name of the member.
     window.open_administration();
@@ -1322,8 +1363,8 @@ fn the_audit_log_names_what_was_done_filters_by_group_and_loads_older_entries(
     let scopes: Vec<AuditScope> = page.scopes.iter().map(|choice| choice.scope).collect();
     assert_eq!(scopes, [AuditScope::Server, AuditScope::Workspace(default)]);
     assert_eq!(
-        (page.rows.len(), page.group, page.older),
-        (page.loaded, None, false)
+        (page.rows.len(), page.filter, page.older),
+        (page.loaded, AuditFilter::default(), false)
     );
     let banned = page
         .rows
@@ -1335,6 +1376,9 @@ fn the_audit_log_names_what_was_done_filters_by_group_and_loads_older_entries(
         &banned.actor,
         Actor::Account { name: Some(name), .. } if name == "Ada"
     ));
+    // The entry of the ban states the reason that the administrator gave.
+    assert_eq!(banned.reason.as_deref(), Some(reason));
+    assert!(window.shows(sel("audit-reason", banned.id)));
     let banned_row = sel("audit-row", banned.id);
     assert!(window.shows(banned_row));
     for row in &page.rows {
@@ -1346,45 +1390,83 @@ fn the_audit_log_names_what_was_done_filters_by_group_and_loads_older_entries(
         }
     }
 
-    // The filter by group shows the actions of one group, and the count line states how
-    // many of the loaded entries are shown.
-    let members = 1 + AuditGroup::ALL
-        .iter()
-        .position(|group| *group == AuditGroup::Members)
-        .unwrap();
+    // The filter by action: the server returns the entries of that action only, so the
+    // page holds fewer entries than before, and each of them is a ban.
     let other = page
         .rows
         .iter()
         .find(|row| row.group != AuditGroup::Members)
         .unwrap();
     let other_row = sel("audit-row", other.id);
-    click_in_page(&mut window, sel("audit-group", members));
-    let filtered = awaited(
-        &mut window,
-        "the page shows the actions about members",
-        |window| {
-            server_page!(window, AuditLog).filter(|page| {
-                page.group == Some(AuditGroup::Members)
-                    && window.shows(banned_row)
-                    && !window.shows(other_row)
-            })
-        },
-    );
-    assert_eq!(filtered.loaded, page.loaded);
-    assert!(!filtered.rows.is_empty() && filtered.rows.len() < filtered.loaded);
+    click_in_page(&mut window, "audit-action");
+    window.until("the actions of the first group are offered", |window| {
+        window.shows("audit-action-account_banned")
+    });
+    click_in_page(&mut window, "audit-action-account_banned");
+    let filtered = awaited(&mut window, "the server returned the bans", |window| {
+        server_page!(window, AuditLog).filter(|page| {
+            page.filter.action == Some("account_banned")
+                && page.state == AuditRead::Loaded
+                && window.shows(banned_row)
+                && !window.shows(other_row)
+        })
+    });
+    assert!(filtered.loaded < page.loaded);
+    assert_eq!(filtered.rows.len(), filtered.loaded);
     assert!(
         filtered
             .rows
             .iter()
-            .all(|row| row.group == AuditGroup::Members)
+            .all(|row| row.sentence.contains("banned"))
     );
-    assert!(filtered.rows.iter().any(|row| row.id == banned.id));
-    assert!(window.shows("audit-count"));
-    click_in_page(&mut window, "audit-group-0");
+    assert!(window.shows("audit-filtered") && window.shows("audit-count"));
+    assert!(!window.shows("audit-actions"));
+
+    // The filter by the person concerned names the banned account; the filter by the
+    // person who acted with an account that did nothing leaves no entry.
+    click_in_page(&mut window, "audit-about");
+    click_in_page(&mut window, sel("audit-about", bruno));
+    awaited(&mut window, "the entries about the member", |window| {
+        server_page!(window, AuditLog).filter(|page| {
+            page.filter.about == Some(bruno)
+                && page.state == AuditRead::Loaded
+                && page.rows.iter().any(|row| row.id == banned.id)
+        })
+    });
+    click_in_page(&mut window, "audit-actor");
+    click_in_page(&mut window, sel("audit-actor", bruno));
+    awaited(&mut window, "no entry passes the filters", |window| {
+        server_page!(window, AuditLog).filter(|page| {
+            page.filter.actor == Some(bruno)
+                && page.state == AuditRead::Loaded
+                && page.loaded == 0
+                && window.shows("audit-none-pass")
+        })
+    });
+    let total = page.loaded;
+    click_in_page(&mut window, "audit-clear");
     awaited(&mut window, "the page shows every action again", |window| {
         server_page!(window, AuditLog).filter(|page| {
-            page.group.is_none() && page.rows.len() == page.loaded && window.shows(other_row)
+            !page.filter.is_set()
+                && page.state == AuditRead::Loaded
+                && page.loaded == total
+                && window.shows(other_row)
         })
+    });
+
+    // A period that ends before the first entry of the server holds nothing; the last
+    // 24 hours hold every entry of this test.
+    click_in_page(&mut window, "audit-period-1");
+    let recent = awaited(&mut window, "the entries of the last 24 hours", |window| {
+        server_page!(window, AuditLog).filter(|page| {
+            page.filter.period == AuditPeriod::Day && page.state == AuditRead::Loaded
+        })
+    });
+    assert_eq!(recent.loaded, total);
+    click_in_page(&mut window, "audit-period-0");
+    awaited(&mut window, "the page shows every time again", |window| {
+        server_page!(window, AuditLog)
+            .filter(|page| !page.filter.is_set() && page.state == AuditRead::Loaded)
     });
 
     // The log of the workspace holds more entries than one read gives: the newest 50 are

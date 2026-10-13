@@ -28,6 +28,9 @@ pub struct UpdateWorkspace {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct WorkspaceMember {
+    /// Metadata of the avatar, without its image bytes.
+    #[serde(default)]
+    pub avatar: Option<crate::account::Avatar>,
     pub account_id: AccountId,
     pub name: String,
     pub role_ids: Vec<WorkspaceRoleId>,
@@ -168,6 +171,16 @@ pub struct ChannelOverride {
     pub deny: Vec<WorkspacePermission>,
 }
 
+/// The workspace permissions that the caller holds in one channel that it can see: the
+/// permissions for which the permission function allows a request in the channel now
+/// (ADR 0310).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ChannelPermissions {
+    pub channel_id: ChannelId,
+    pub permissions: Vec<WorkspacePermission>,
+}
+
 /// Two empty sets remove the override.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -176,6 +189,24 @@ pub struct SetChannelOverride {
     pub allow: Vec<WorkspacePermission>,
     #[serde(default)]
     pub deny: Vec<WorkspacePermission>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum OverrideState {
+    Allow,
+    Deny,
+    Inherit,
+}
+
+/// Changes exactly one permission, preserving every other bit of the override.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ChangeChannelOverride {
+    pub permission: WorkspacePermission,
+    pub state: OverrideState,
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 //! The requests of the administration about the people of a server: removal, ban and
-//! unban of an account (ADR 0113), a new member of a workspace (ADR 0115), invites and
-//! join requests (ADR 0111).
+//! unban of an account (ADR 0113), a new member of a workspace (ADR 0115), the removal of
+//! a member from one workspace (ADR 0106), invites and join requests (ADR 0111).
 
 use gpui::Context;
 use junto_client_core::protocol::ids::{AccountId, InviteId, JoinRequestId, ServerId, WorkspaceId};
@@ -11,34 +11,65 @@ use crate::state::AppState;
 
 impl AppState {
     /// Removes an account from the server. Its devices, sessions, memberships and roles
-    /// end. The request carries no reason: the audit log records the removal.
+    /// end. The reason stays in the audit entry of the removal (ADR 0106).
     pub fn remove_account(
         &mut self,
         server_id: ServerId,
         account_id: AccountId,
+        reason: Option<String>,
         cx: &mut Context<Self>,
     ) {
         self.admin_ask(
             server_id,
             AskKind::RemoveAccount(account_id),
-            |api| async move { api.remove_account(account_id).await },
+            |api| async move {
+                api.remove_account_with_reason(account_id, reason.as_deref())
+                    .await
+            },
             |_, (), _| {},
             cx,
         );
     }
 
     /// Bans an account. Its keys cannot log in or join again, and its invites are
-    /// cancelled (ADR 0106).
+    /// cancelled. The reason stays in the audit entry of the ban (ADR 0106).
     pub fn ban_account(
         &mut self,
         server_id: ServerId,
         account_id: AccountId,
+        reason: Option<String>,
         cx: &mut Context<Self>,
     ) {
         self.admin_ask(
             server_id,
             AskKind::BanAccount(account_id),
-            |api| async move { api.ban_account(account_id).await },
+            |api| async move {
+                api.ban_account_with_reason(account_id, reason.as_deref())
+                    .await
+            },
+            |_, (), _| {},
+            cx,
+        );
+    }
+
+    /// Removes a member from one workspace. Its roles of that workspace go with the
+    /// membership; its account, its other workspaces and its server roles stay
+    /// (ADR 0106).
+    pub fn remove_workspace_member(
+        &mut self,
+        server_id: ServerId,
+        workspace_id: WorkspaceId,
+        account_id: AccountId,
+        reason: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.admin_ask(
+            server_id,
+            AskKind::RemoveMember(account_id),
+            |api| async move {
+                api.remove_workspace_member(workspace_id, account_id, reason.as_deref())
+                    .await
+            },
             |_, (), _| {},
             cx,
         );

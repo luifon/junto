@@ -1,10 +1,13 @@
 //! The text of the administration of a server and of the settings of a channel
 //! (ADR 0761).
 
+pub mod notifications;
 pub mod overrides;
 pub mod people;
 pub mod recordings;
 pub mod records;
+pub mod roles;
+pub mod server;
 
 use junto_client_core::api::{ApiError, ErrorCategory};
 use junto_client_core::flow::FlowError;
@@ -35,6 +38,9 @@ pub const SENDING: &str = "Sending…";
 pub const UP: &str = "Up";
 pub const DOWN: &str = "Down";
 pub const FIRST_ALREADY: &str = "It is the first one.";
+pub const MOVE_NEEDS: &str =
+    "The move changes a channel in which you do not hold “manage channel”.";
+pub const CHANNEL_MANAGE_NEEDS: &str = "You do not hold “manage channel” in this channel.";
 pub const LAST_ALREADY: &str = "It is the last one.";
 pub const NAME_EMPTY: &str = "Type a name.";
 
@@ -49,14 +55,18 @@ pub fn nav_title(title: &NavTitle) -> String {
 pub const fn page_name(page: AdminPage) -> &'static str {
     match page {
         AdminPage::Workspaces => "Workspaces",
+        AdminPage::Server => "Server",
         AdminPage::People => "People",
         AdminPage::Invites => "Invites",
         AdminPage::JoinRequests => "Join requests",
         AdminPage::Tokens => "Access tokens",
         AdminPage::AuditLog => "Audit log",
+        AdminPage::ServerRoles => "Server roles",
         AdminPage::Channels => "Channels",
+        AdminPage::Roles => "Roles",
         AdminPage::Archive => "Archive and retention",
         AdminPage::Members => "Members",
+        AdminPage::Notifications => "Notifications",
         AdminPage::Recordings => "Recordings",
         AdminPage::Exports => "Exports",
     }
@@ -65,13 +75,15 @@ pub const fn page_name(page: AdminPage) -> &'static str {
 pub const fn page_icon(page: AdminPage) -> Icon {
     match page {
         AdminPage::Workspaces => Icon::List,
+        AdminPage::Server => Icon::Gear,
         AdminPage::People | AdminPage::Members => Icon::People,
         AdminPage::Invites => Icon::Invite,
         AdminPage::JoinRequests => Icon::Hand,
-        AdminPage::Tokens => Icon::Key,
+        AdminPage::Tokens | AdminPage::ServerRoles | AdminPage::Roles => Icon::Key,
         AdminPage::AuditLog => Icon::Clock,
         AdminPage::Channels => Icon::Hash,
         AdminPage::Archive => Icon::Lock,
+        AdminPage::Notifications => Icon::Chat,
         AdminPage::Recordings => Icon::Record,
         AdminPage::Exports => Icon::Download,
     }
@@ -81,14 +93,18 @@ pub const fn page_icon(page: AdminPage) -> Icon {
 pub const fn page_selector(page: AdminPage) -> &'static str {
     match page {
         AdminPage::Workspaces => "admin-nav-workspaces",
+        AdminPage::Server => "admin-nav-server",
         AdminPage::People => "admin-nav-people",
         AdminPage::Invites => "admin-nav-invites",
         AdminPage::JoinRequests => "admin-nav-requests",
         AdminPage::Tokens => "admin-nav-tokens",
         AdminPage::AuditLog => "admin-nav-audit",
+        AdminPage::ServerRoles => "admin-nav-server-roles",
         AdminPage::Channels => "admin-nav-channels",
+        AdminPage::Roles => "admin-nav-roles",
         AdminPage::Archive => "admin-nav-archive",
         AdminPage::Members => "admin-nav-members",
+        AdminPage::Notifications => "admin-nav-notifications",
         AdminPage::Recordings => "admin-nav-recordings",
         AdminPage::Exports => "admin-nav-exports",
     }
@@ -325,6 +341,7 @@ fn conflict(what: AskKind) -> &'static str {
             "The channel is archived. Its settings cannot be changed."
         }
         AskKind::AddMember(_) => "The account is banned or removed. It cannot be added.",
+        AskKind::RemoveMember(_) => "The account is not a member of this workspace any more.",
         AskKind::RemoveAccount(_) => "The account is removed already.",
         AskKind::BanAccount(_) => "The account is banned or removed already.",
         AskKind::UnbanAccount(_) => "The account is not banned.",
@@ -332,6 +349,8 @@ fn conflict(what: AskKind) -> &'static str {
             "The request was decided already, or it has expired."
         }
         AskKind::RevokeInvite(_) => "The invite is revoked already.",
+        AskKind::DeleteRole(_) => "Every member holds the “everyone” role. It is not deleted.",
+        AskKind::AssignRole(..) => "The account is banned or removed. It gets no role.",
         _ => {
             "The server refused, because its state has changed. Close this page and open it again."
         }
@@ -344,6 +363,8 @@ fn limit(what: AskKind) -> &'static str {
         AskKind::RequestExport => {
             "Your account has 3 exports that wait or 10 stored exports. Remove one first."
         }
+        AskKind::CreateRole(_) => "This level has 250 roles, which is the most. Delete one first.",
+        AskKind::AssignRole(..) => "The account holds 64 roles, which is the most.",
         _ => "A limit of the server is reached.",
     }
 }
@@ -356,6 +377,8 @@ fn invalid(what: AskKind) -> &'static str {
         | AskKind::UpdateCategory(_)
         | AskKind::CreateChannel
         | AskKind::UpdateChannel(_)
+        | AskKind::CreateRole(_)
+        | AskKind::UpdateRole(_)
         | AskKind::CreateToken => {
             "The server did not accept the name. A name has 1 to 64 characters and no line break."
         }
@@ -364,8 +387,36 @@ fn invalid(what: AskKind) -> &'static str {
             RETENTION_DAYS_RANGE
         }
         AskKind::CallSettings(_) => "The server did not accept the user limit.",
+        AskKind::MoveRole(_) => {
+            "The order of the roles has changed. The role is where the list shows it now."
+        }
         _ => "The server did not accept the values.",
     }
+}
+
+const fn is_role_ask(what: AskKind) -> bool {
+    matches!(
+        what,
+        AskKind::CreateRole(_)
+            | AskKind::UpdateRole(_)
+            | AskKind::DeleteRole(_)
+            | AskKind::MoveRole(_)
+            | AskKind::AssignRole(..)
+    )
+}
+
+const fn is_moderation(what: AskKind) -> bool {
+    matches!(
+        what,
+        AskKind::RemoveAccount(_)
+            | AskKind::BanAccount(_)
+            | AskKind::UnbanAccount(_)
+            | AskKind::RemoveMember(_)
+    )
+}
+
+const fn is_logo_ask(what: AskKind) -> bool {
+    matches!(what, AskKind::SetLogo | AskKind::RemoveLogo)
 }
 
 /// Why the server did not do a request of the administration.
@@ -383,12 +434,29 @@ pub fn refusal(what: AskKind, error: &ApiError) -> String {
         (Some(ErrorCode::Unavailable), _) if what == AskKind::RequestExport => {
             "This server has no place for exports. Its administrator sets one."
         }
+        (Some(ErrorCode::InvalidRequest), _) if is_moderation(what) => people::REASON_REFUSED,
         (Some(ErrorCode::InvalidRequest), _) => invalid(what),
         (Some(ErrorCode::InviteNotFound), _) => "The server knows no invite with this code.",
         (Some(ErrorCode::InviteExpired), _) => "The invite has expired.",
         (Some(ErrorCode::InviteExhausted), _) => "The invite has no use left.",
         (Some(ErrorCode::InviteRevoked), _) => "The invite was revoked.",
+        (Some(ErrorCode::ImageTooLarge), _) => server::LOGO_TOO_LARGE,
+        (Some(ErrorCode::ImageUnsupported), _) => server::LOGO_UNSUPPORTED,
+        (_, Some(ErrorCategory::NotAllowed)) if is_logo_ask(what) => server::LOGO_NOT_ALLOWED,
+        // The server states a refusal of role order as `forbidden`, without a detail
+        // (ADR 0309).
+        (_, Some(ErrorCategory::NotAllowed)) if is_role_ask(what) => {
+            "Your account may not do this. A role at or above your highest role cannot be \
+             changed, moved, given or taken."
+        }
+        (_, Some(ErrorCategory::NotAllowed)) if is_moderation(what) => {
+            "Your account may not do this. An account with a role at or above your highest \
+             role cannot be removed, banned or unbanned."
+        }
         (_, Some(ErrorCategory::NotAllowed)) => "Your account may not do this.",
+        (_, Some(ErrorCategory::NotFound)) if matches!(what, AskKind::RemoveMember(_)) => {
+            conflict(what)
+        }
         (_, Some(ErrorCategory::NotFound)) => "The server holds this no longer.",
         (_, Some(ErrorCategory::Conflict)) => conflict(what),
         _ => return crate::text::flow_error(&FlowError::from(error)),

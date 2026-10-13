@@ -75,6 +75,9 @@ fn scene() -> Scene {
             categories: Vec::new(),
             channels: vec![general.clone(), daily.clone()],
             calls: Vec::new(),
+            permissions: Vec::new(),
+            channel_permissions: Vec::new(),
+            notification_default: None,
         }],
         own_call: None,
         direct_calls: Vec::new(),
@@ -152,6 +155,7 @@ impl Scene {
             last_reply: None,
             pinned: false,
             files_removed_by_retention: false,
+            reply_authors: Vec::new(),
         }
     }
 
@@ -362,7 +366,7 @@ fn the_level_without_a_stored_one_follows_the_order_of_the_server() {
     // The administrators set "all messages".
     scene.known.workspace_defaults.insert(
         (server_id, studio),
-        DefaultRead::Read(NotificationLevel::All),
+        DefaultRead::Read(Some(NotificationLevel::All)),
     );
     assert_eq!(
         inherited(&scene, channel).inherited,
@@ -373,19 +377,38 @@ fn the_level_without_a_stored_one_follows_the_order_of_the_server() {
         Some(NotificationLevel::All)
     );
 
-    // The route tells "mentions only" also for a workspace without a stored level. With
-    // another level of the account the client cannot tell which holds.
+    // The administrators set "mentions only": the level of the account does not count.
     scene.known.workspace_defaults.insert(
         (server_id, studio),
-        DefaultRead::Read(NotificationLevel::Mentions),
+        DefaultRead::Read(Some(NotificationLevel::Mentions)),
     );
     assert_eq!(
         inherited(&scene, channel).inherited,
         Some(NotificationLevel::Mentions)
     );
     scene.settings(SettingsScope::Account, level(NotificationLevel::Nothing));
-    assert_eq!(inherited(&scene, channel).inherited, None);
-    assert_eq!(inherited(&scene, workspace).inherited, None);
+    assert_eq!(
+        inherited(&scene, channel).inherited,
+        Some(NotificationLevel::Mentions)
+    );
+    assert_eq!(
+        inherited(&scene, workspace).inherited,
+        Some(NotificationLevel::Mentions)
+    );
+
+    // The workspace sets no level: the level of the account holds (ADR 0412).
+    scene
+        .known
+        .workspace_defaults
+        .insert((server_id, studio), DefaultRead::Read(None));
+    assert_eq!(
+        inherited(&scene, channel).inherited,
+        Some(NotificationLevel::Nothing)
+    );
+    assert_eq!(
+        inherited(&scene, workspace).inherited,
+        Some(NotificationLevel::Nothing)
+    );
     assert_eq!(
         inherited(&scene, SettingsScope::Account).stored,
         Some(NotificationLevel::Nothing)
@@ -568,7 +591,7 @@ fn the_quiet_times_are_shown_for_all_servers_and_tell_where_they_differ() {
     let quiet = DailyQuiet {
         start_minute: 22 * 60,
         end_minute: 7 * 60,
-        utc_offset_minutes: 0,
+        time_zone: "UTC".to_owned(),
     };
     let known = first.known.clone();
     // A saved server with a session whose state the device does not hold.
@@ -809,7 +832,7 @@ fn the_notices_that_a_quiet_time_held_back_are_not_shown_when_it_ends() {
             daily_quiet: Some(DailyQuiet {
                 start_minute: 2 * 60,
                 end_minute: 8 * 60,
-                utc_offset_minutes: 0,
+                time_zone: "UTC".to_owned(),
             }),
             ..NotificationSettings::default()
         },
@@ -849,7 +872,7 @@ fn a_daily_quiet_time_holds_as_do_not_disturb_does() {
             daily_quiet: Some(DailyQuiet {
                 start_minute: 8 * 60,
                 end_minute: 10 * 60,
-                utc_offset_minutes: 0,
+                time_zone: "UTC".to_owned(),
             }),
             ..NotificationSettings::default()
         },
@@ -864,7 +887,7 @@ fn a_daily_quiet_time_holds_as_do_not_disturb_does() {
             daily_quiet: Some(DailyQuiet {
                 start_minute: 8 * 60,
                 end_minute: 10 * 60,
-                utc_offset_minutes: 180,
+                time_zone: "Etc/GMT-3".to_owned(),
             }),
             ..NotificationSettings::default()
         },

@@ -1,6 +1,7 @@
 //! The commands of the administration: workspaces, categories, channels, overrides,
-//! members, accounts, invites, access tokens, exports, the audit log, the archive period
-//! and retention (ADR 0210, ADR 0308, ADR 0410, ADR 0411).
+//! members, accounts, invites, access tokens, exports, the audit log, the archive period,
+//! retention and the logo of the server (ADR 0101, ADR 0106, ADR 0210, ADR 0304, ADR 0305,
+//! ADR 0308, ADR 0410, ADR 0411).
 
 use std::fmt::Display;
 use std::io::Write;
@@ -8,13 +9,13 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use futures_util::StreamExt as _;
-use junto_client_core::api::{BodyStream, ServerApi};
+use junto_client_core::api::{AvatarImage, BodyStream, ServerApi};
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::access_token::{
     AccessTokenInfo, AccessTokenQuery, CreateAccessToken, TokenAction,
 };
-use junto_client_core::protocol::account::AccountSummary;
-use junto_client_core::protocol::audit::{AuditEntry, AuditEvent, AuditPage, AuditQuery};
+use junto_client_core::protocol::account::{AccountSummary, Avatar};
+use junto_client_core::protocol::audit::{AuditEntry, AuditEvent, AuditFilterQuery, AuditPage};
 use junto_client_core::protocol::call::UpdateCallSettings;
 use junto_client_core::protocol::discovery::Retention;
 use junto_client_core::protocol::export::Export;
@@ -26,9 +27,9 @@ use junto_client_core::protocol::invite::{Invite, JoinRequestStatus, Redemption}
 use junto_client_core::protocol::message::MessagePlace;
 use junto_client_core::protocol::secret::InviteCode;
 use junto_client_core::protocol::structure::{
-    ArchivePeriod, ArchivedChannel, Category, Channel, ChannelKind, ChannelOverride,
-    CreateCategory, CreateChannel, SetChannelOverride, UpdateCategory, UpdateChannel, Workspace,
-    WorkspaceMember,
+    ArchivePeriod, ArchivedChannel, Category, ChangeChannelOverride, Channel, ChannelKind,
+    ChannelOverride, CreateCategory, CreateChannel, OverrideState, SetChannelOverride,
+    UpdateCategory, UpdateChannel, Workspace, WorkspaceMember,
 };
 use time::OffsetDateTime;
 
@@ -52,11 +53,13 @@ enum Action {
     CallSettings(ChannelId, UpdateCallSettings),
     Overrides(ChannelId),
     SetOverride(ChannelId, WorkspaceRoleId, SetChannelOverride),
+    ChangeOverride(ChannelId, WorkspaceRoleId, ChangeChannelOverride),
     Members(WorkspaceId),
     AddMember(WorkspaceId, AccountId),
+    RemoveMember(WorkspaceId, AccountId, Option<String>),
     Accounts,
-    RemoveAccount(AccountId),
-    BanAccount(AccountId),
+    RemoveAccount(AccountId, Option<String>),
+    BanAccount(AccountId, Option<String>),
     UnbanAccount(AccountId),
     Invites,
     RevokeInvite(InviteId),
@@ -74,8 +77,8 @@ enum Action {
     ShowExport(ExportId),
     DownloadExport(ExportId, PathBuf),
     RemoveExport(ExportId),
-    ServerAudit(AuditQuery),
-    WorkspaceAudit(WorkspaceId, AuditQuery),
+    ServerAudit(AuditFilterQuery),
+    WorkspaceAudit(WorkspaceId, AuditFilterQuery),
     ShowArchivePeriod(WorkspaceId),
     SetArchivePeriod(WorkspaceId, ArchivePeriod),
     ShowRetention(WorkspaceId),
@@ -83,16 +86,27 @@ enum Action {
     SetRecordingRetention(WorkspaceId, Retention),
     ShowDirectRetention,
     SetDirectRetention(Retention),
+    ShowLogo,
+    SetLogo(Vec<u8>),
+    RemoveLogo,
 }
 
-fn word<'a>(words: &'a [String], position: usize, what: &str) -> Result<&'a str, Failure> {
+pub(crate) fn word<'a>(
+    words: &'a [String],
+    position: usize,
+    what: &str,
+) -> Result<&'a str, Failure> {
     words
         .get(position)
         .map(String::as_str)
         .ok_or_else(|| usage(format!("{what} is missing")))
 }
 
-fn identifier<T: FromStr>(words: &[String], position: usize, what: &str) -> Result<T, Failure> {
+pub(crate) fn identifier<T: FromStr>(
+    words: &[String],
+    position: usize,
+    what: &str,
+) -> Result<T, Failure> {
     word(words, position, what)?
         .parse()
         .map_err(|_| usage(format!("{what} is not an identifier")))
@@ -109,7 +123,7 @@ fn named<T: FromStr>(arguments: &Arguments, name: &str, what: &str) -> Result<Op
         .transpose()
 }
 
-fn position(text: &str) -> Result<i32, Failure> {
+pub(crate) fn position(text: &str) -> Result<i32, Failure> {
     text.parse()
         .map_err(|_| usage("a position is a whole number"))
 }
@@ -143,7 +157,7 @@ fn kind(arguments: &Arguments) -> Result<ChannelKind, Failure> {
 }
 
 /// A permission of a workspace by the name that the server writes.
-fn permission(text: &str) -> Result<WorkspacePermission, Failure> {
+pub(crate) fn permission(text: &str) -> Result<WorkspacePermission, Failure> {
     WorkspacePermission::ALL
         .iter()
         .find(|held| held.name() == text)
@@ -157,6 +171,21 @@ fn permissions(arguments: &Arguments, name: &str) -> Result<Vec<WorkspacePermiss
         .iter()
         .map(|text| permission(text))
         .collect()
+}
+
+/// What `overrides change` does with one permission of an override.
+fn override_state(text: &str) -> Result<OverrideState, Failure> {
+    match text {
+        "allow" => Ok(OverrideState::Allow),
+        "deny" => Ok(OverrideState::Deny),
+        "inherit" => Ok(OverrideState::Inherit),
+        _ => Err(usage("a permission takes allow, deny or inherit")),
+    }
+}
+
+/// The reason of a removal or of a ban. The server keeps it in the audit entry.
+fn reason(arguments: &Arguments) -> Option<String> {
+    arguments.value("reason").map(str::to_owned)
 }
 
 /// An action of an access token by the name that the server writes.
@@ -210,8 +239,14 @@ fn call_change(arguments: &Arguments) -> Result<UpdateCallSettings, Failure> {
     Ok(change)
 }
 
-fn audit_query(arguments: &Arguments) -> Result<AuditQuery, Failure> {
-    Ok(AuditQuery {
+/// The filters and the page of `audit`. An option that is absent filters nothing.
+fn audit_query(arguments: &Arguments) -> Result<AuditFilterQuery, Failure> {
+    Ok(AuditFilterQuery {
+        action: arguments.value("action").map(str::to_owned),
+        actor_id: named(arguments, "actor", "an account")?,
+        target_id: named(arguments, "target", "an identifier")?,
+        since: crate::discovery::time_of(arguments, "since")?,
+        until: crate::discovery::time_of(arguments, "until")?,
         before: named(arguments, "before", "an audit entry")?,
         limit: arguments.number("limit")?,
     })
@@ -304,25 +339,43 @@ fn overrides(
                 deny: permissions(arguments, "deny")?,
             },
         ),
+        "change" => Action::ChangeOverride(
+            channel()?,
+            identifier(words, 2, "the role")?,
+            ChangeChannelOverride {
+                permission: permission(word(words, 3, "the permission")?)?,
+                state: override_state(word(words, 4, "allow, deny or inherit")?)?,
+            },
+        ),
         _ => return Ok(None),
     }))
 }
 
-fn members(action: &str, words: &[String]) -> Result<Option<Action>, Failure> {
+fn members(
+    action: &str,
+    words: &[String],
+    arguments: &Arguments,
+) -> Result<Option<Action>, Failure> {
     let workspace = || identifier::<WorkspaceId>(words, 1, "the workspace");
+    let account = || identifier::<AccountId>(words, 2, "the account");
     Ok(Some(match action {
         "list" => Action::Members(workspace()?),
-        "add" => Action::AddMember(workspace()?, identifier(words, 2, "the account")?),
+        "add" => Action::AddMember(workspace()?, account()?),
+        "remove" => Action::RemoveMember(workspace()?, account()?, reason(arguments)),
         _ => return Ok(None),
     }))
 }
 
-fn accounts(action: &str, words: &[String]) -> Result<Option<Action>, Failure> {
+fn accounts(
+    action: &str,
+    words: &[String],
+    arguments: &Arguments,
+) -> Result<Option<Action>, Failure> {
     let account = || identifier::<AccountId>(words, 1, "the account");
     Ok(Some(match action {
         "list" => Action::Accounts,
-        "remove" => Action::RemoveAccount(account()?),
-        "ban" => Action::BanAccount(account()?),
+        "remove" => Action::RemoveAccount(account()?, reason(arguments)),
+        "ban" => Action::BanAccount(account()?, reason(arguments)),
         "unban" => Action::UnbanAccount(account()?),
         _ => return Ok(None),
     }))
@@ -432,6 +485,16 @@ fn retention(action: &str, words: &[String]) -> Result<Option<Action>, Failure> 
     }))
 }
 
+fn logo(action: &str, words: &[String]) -> Result<Option<Action>, Failure> {
+    Ok(Some(match action {
+        "show" => Action::ShowLogo,
+        // The file is read before the server is contacted.
+        "set" => Action::SetLogo(crate::read_image(word(words, 1, "the file")?)?),
+        "remove" => Action::RemoveLogo,
+        _ => return Ok(None),
+    }))
+}
+
 /// Reads the action of one command of the administration from `words`: the name of the
 /// action and its arguments.
 fn parse(command: &str, words: &[String], arguments: &Arguments) -> Result<Action, Failure> {
@@ -448,14 +511,15 @@ fn parse(command: &str, words: &[String], arguments: &Arguments) -> Result<Actio
         "categories" => categories(action, words)?,
         "channels" => channels(action, words, arguments)?,
         "overrides" => overrides(action, words, arguments)?,
-        "members" => members(action, words)?,
-        "accounts" => accounts(action, words)?,
+        "members" => members(action, words, arguments)?,
+        "accounts" => accounts(action, words, arguments)?,
         "invites" => invites(action, words)?,
         "tokens" => tokens(action, words, arguments)?,
         "exports" => exports(action, words)?,
         "audit" => audit(action, words, arguments)?,
         "archive-period" => archive_period(action, words)?,
         "retention" => retention(action, words)?,
+        "logo" => logo(action, words)?,
         other => return Err(usage(format!("unknown command {other}"))),
     };
     parsed.ok_or_else(|| usage(format!("unknown action of {command}: {action}")))
@@ -469,7 +533,7 @@ fn wire<T: serde::Serialize>(value: &T) -> String {
     }
 }
 
-fn listed<T: Display>(items: &[T]) -> String {
+pub(crate) fn listed<T: Display>(items: &[T]) -> String {
     if items.is_empty() {
         return "none".to_owned();
     }
@@ -477,13 +541,18 @@ fn listed<T: Display>(items: &[T]) -> String {
     items.join(",")
 }
 
-fn names(permissions: &[WorkspacePermission]) -> String {
+pub(crate) fn names(permissions: &[WorkspacePermission]) -> String {
     let names: Vec<&str> = permissions.iter().map(|held| held.name()).collect();
     listed(&names)
 }
 
 fn pair(name: &str, id: impl Display) -> String {
     format!("{name}={id}")
+}
+
+/// The reason of a removal or of a ban in quotation marks, when the entry has one.
+fn reason_pair(reason: Option<&str>) -> Option<String> {
+    reason.map(|reason| format!("reason={:?}", shown(reason)))
 }
 
 fn days_text(days: Option<u32>) -> String {
@@ -590,8 +659,12 @@ fn invite_line(invite: &Invite) -> String {
         Some(revocation) => wire(revocation),
         None => "not revoked".to_owned(),
     };
+    let creator = match &invite.created_by_name {
+        Some(name) => format!("  creator {}", shown(name)),
+        None => String::new(),
+    };
     format!(
-        "invite: {}  by {}  uses {} of {}  expires {}  workspaces {}  {revocation}",
+        "invite: {}  by {}  uses {} of {}  expires {}  workspaces {}  {revocation}{creator}",
         invite.id,
         invite.created_by,
         invite.uses,
@@ -651,7 +724,6 @@ fn audit_details(event: &AuditEvent) -> Vec<String> {
     use AuditEvent as E;
     match event {
         E::OwnerClaimed { account_id }
-        | E::AccountRemoved { account_id }
         | E::AccountUnbanned { account_id }
         | E::WorkspaceMemberAdded { account_id }
         | E::CallMicrophoneBlocked { account_id }
@@ -661,6 +733,12 @@ fn audit_details(event: &AuditEvent) -> Vec<String> {
         | E::CallMemberDisconnected { account_id }
         | E::CallMemberMovedOut { account_id }
         | E::CallMemberMovedIn { account_id } => vec![pair("account", account_id)],
+        E::AccountRemoved { account_id, reason }
+        | E::WorkspaceMemberRemoved { account_id, reason } => {
+            let mut pairs = vec![pair("account", account_id)];
+            pairs.extend(reason_pair(reason.as_deref()));
+            pairs
+        }
         E::OwnerAssigned {
             account_id,
             previous_owner_id,
@@ -686,6 +764,15 @@ fn audit_details(event: &AuditEvent) -> Vec<String> {
         } => vec![
             pair("invite", invite_id),
             pair("workspaces", listed(workspace_ids)),
+        ],
+        E::InviteWorkspacesChanged {
+            invite_id,
+            invite_created_by,
+            removed_workspace_id,
+        } => vec![
+            pair("invite", invite_id),
+            pair("invite_created_by", invite_created_by),
+            pair("removed_workspace", removed_workspace_id),
         ],
         E::InviteRevoked {
             invite_id,
@@ -726,15 +813,26 @@ fn audit_details(event: &AuditEvent) -> Vec<String> {
         ],
         E::JoinRequestDenied { join_request_id } => vec![pair("request", join_request_id)],
         E::AccountBanned {
+            reason,
             account_id,
             cancelled_invite_ids,
-        } => vec![
-            pair("account", account_id),
-            pair("cancelled_invites", listed(cancelled_invite_ids)),
-        ],
+        } => {
+            let mut pairs = vec![
+                pair("account", account_id),
+                pair("cancelled_invites", listed(cancelled_invite_ids)),
+            ];
+            pairs.extend(reason_pair(reason.as_deref()));
+            pairs
+        }
         E::ServerRoleCreated { role_id, .. }
         | E::ServerRoleUpdated { role_id, .. }
         | E::ServerRoleDeleted { role_id, .. } => vec![pair("role", role_id)],
+        E::ServerRolePositionChanged { role_id, position } => {
+            vec![pair("role", role_id), pair("position", position)]
+        }
+        E::WorkspaceRolePositionChanged { role_id, position } => {
+            vec![pair("role", role_id), pair("position", position)]
+        }
         E::ServerRoleAssigned {
             role_id,
             account_id,
@@ -781,6 +879,13 @@ fn audit_details(event: &AuditEvent) -> Vec<String> {
         | E::TranscriptRequested { recording_id } => vec![pair("recording", recording_id)],
         E::PermanentMessageDeleted { message_id } => vec![pair("message", message_id)],
         E::ExportRequested { export_id } => vec![pair("export", export_id)],
+        E::ServerLogoChanged { logo } => {
+            let hash = match logo {
+                Some(logo) => shown(&logo.hash),
+                None => "none".to_owned(),
+            };
+            vec![pair("logo", hash)]
+        }
         E::OwnerCodeIssued { .. }
         | E::EventEpochRenewed
         | E::ChannelCreated { .. }
@@ -789,6 +894,7 @@ fn audit_details(event: &AuditEvent) -> Vec<String> {
         | E::GlossaryReplaced { .. }
         | E::AttachmentLimitsChanged { .. }
         | E::NotificationDefaultChanged { .. }
+        | E::NotificationDefaultRemoved
         | E::RecordingRetentionChanged { .. }
         | E::RetentionChanged { .. }
         | E::ChannelArchived
@@ -845,6 +951,32 @@ fn period_line(period: ArchivePeriod) -> String {
 /// `what` is the kind of the content that the server removes by its age.
 fn retention_line(what: &str, retention: &Retention) -> String {
     format!("{what} retention: {}", days_text(retention.days))
+}
+
+/// The logo as the server describes it after it stored the image.
+fn stored_logo_line(logo: &Avatar) -> String {
+    format!(
+        "logo: {}  {} bytes  {}x{}  {}",
+        logo.media_type.media_type(),
+        logo.bytes,
+        logo.width,
+        logo.height,
+        shown(&logo.hash)
+    )
+}
+
+/// The logo as the tool read it: the type that its first bytes state, its size and the
+/// hash that the tool computed.
+fn logo_line(logo: Option<&AvatarImage>) -> String {
+    match logo {
+        Some(logo) => format!(
+            "logo: {}  {} bytes  {}",
+            logo.media_type.media_type(),
+            logo.bytes.len(),
+            logo.hash
+        ),
+        None => "logo: none".to_owned(),
+    }
 }
 
 /// Writes the body of a file of `bytes` bytes into `file`. A body that is longer or
@@ -992,6 +1124,11 @@ async fn perform(api: &ServerApi, action: Action) -> Result<Vec<String>, Failure
                 .await
                 .map_err(failed)?,
         )],
+        Action::ChangeOverride(channel_id, role_id, change) => vec![override_line(
+            &api.change_channel_override(channel_id, role_id, change.permission, change.state)
+                .await
+                .map_err(failed)?,
+        )],
         Action::Members(workspace_id) => api
             .workspace_members(workspace_id)
             .await
@@ -1004,6 +1141,11 @@ async fn perform(api: &ServerApi, action: Action) -> Result<Vec<String>, Failure
                 .await
                 .map_err(failed)?,
         ),
+        Action::RemoveMember(workspace_id, account_id, reason) => done(
+            api.remove_workspace_member(workspace_id, account_id, reason.as_deref())
+                .await
+                .map_err(failed)?,
+        ),
         Action::Accounts => api
             .accounts()
             .await
@@ -1011,10 +1153,16 @@ async fn perform(api: &ServerApi, action: Action) -> Result<Vec<String>, Failure
             .iter()
             .map(account_line)
             .collect(),
-        Action::RemoveAccount(account_id) => {
-            done(api.remove_account(account_id).await.map_err(failed)?)
-        }
-        Action::BanAccount(account_id) => done(api.ban_account(account_id).await.map_err(failed)?),
+        Action::RemoveAccount(account_id, reason) => done(
+            api.remove_account_with_reason(account_id, reason.as_deref())
+                .await
+                .map_err(failed)?,
+        ),
+        Action::BanAccount(account_id, reason) => done(
+            api.ban_account_with_reason(account_id, reason.as_deref())
+                .await
+                .map_err(failed)?,
+        ),
         Action::UnbanAccount(account_id) => {
             done(api.unban_account(account_id).await.map_err(failed)?)
         }
@@ -1138,6 +1286,14 @@ async fn perform(api: &ServerApi, action: Action) -> Result<Vec<String>, Failure
                 .await
                 .map_err(failed)?,
         )],
+        Action::ShowLogo => {
+            let logo = api.server_logo().await.map_err(failed)?;
+            vec![logo_line(logo.as_ref())]
+        }
+        Action::SetLogo(image) => vec![stored_logo_line(
+            &api.set_server_logo(image).await.map_err(failed)?,
+        )],
+        Action::RemoveLogo => done(api.remove_server_logo().await.map_err(failed)?),
     })
 }
 
@@ -1179,7 +1335,7 @@ mod tests {
     use std::io::{Read, Seek};
 
     use junto_client_core::api::{TransportError, TransportErrorKind};
-    use junto_client_core::protocol::account::AccountStatus;
+    use junto_client_core::protocol::account::{AccountStatus, ImageType};
     use junto_client_core::protocol::export::{ExportFailure, ExportState};
     use junto_client_core::protocol::ids::AuditEntryId;
     use junto_client_core::protocol::invite::{InviteRevocation, JoinRequestState};
@@ -1494,6 +1650,7 @@ mod tests {
             "audit",
             "archive-period",
             "retention",
+            "logo",
         ] {
             assert!(refused(command, &["destroy"]), "{command}");
             assert!(refused(command, &[]), "{command}");
@@ -1510,15 +1667,193 @@ mod tests {
         ));
         let entry_id = AuditEntryId::generate();
         let entry = entry_id.to_string();
-        assert!(matches!(
-            parsed(
-                "audit",
-                &["server", "--before", entry.as_str(), "--limit", "20"]
-            ),
-            Ok(Action::ServerAudit(AuditQuery { before: Some(id), limit: Some(20) }))
-                if id == entry_id
-        ));
+        let Ok(Action::ServerAudit(page)) = parsed(
+            "audit",
+            &["server", "--before", entry.as_str(), "--limit", "20"],
+        ) else {
+            panic!("the page is not read");
+        };
+        assert_eq!(
+            page,
+            AuditFilterQuery {
+                before: Some(entry_id),
+                limit: Some(20),
+                ..AuditFilterQuery::default()
+            }
+        );
         assert!(refused("audit", &["server", "--before", "yesterday"]));
+    }
+
+    #[test]
+    fn a_removal_and_a_ban_take_a_reason_or_none() {
+        let (account_id, workspace_id) = (AccountId::generate(), WorkspaceId::generate());
+        let (account, workspace) = (account_id.to_string(), workspace_id.to_string());
+        let (account, workspace) = (account.as_str(), workspace.as_str());
+        assert!(matches!(
+            parsed("accounts", &["remove", account, "--reason", "Spam in #general"]),
+            Ok(Action::RemoveAccount(id, Some(reason)))
+                if id == account_id && reason == "Spam in #general"
+        ));
+        assert!(matches!(
+            parsed("accounts", &["remove", account]),
+            Ok(Action::RemoveAccount(id, None)) if id == account_id
+        ));
+        assert!(matches!(
+            parsed("accounts", &["ban", account, "--reason", "Spam"]),
+            Ok(Action::BanAccount(id, Some(reason))) if id == account_id && reason == "Spam"
+        ));
+        assert!(matches!(
+            parsed("accounts", &["ban", account]),
+            Ok(Action::BanAccount(id, None)) if id == account_id
+        ));
+        assert!(matches!(
+            parsed("members", &["remove", workspace, account, "--reason", "Left the team"]),
+            Ok(Action::RemoveMember(in_workspace, id, Some(reason)))
+                if in_workspace == workspace_id && id == account_id && reason == "Left the team"
+        ));
+        assert!(matches!(
+            parsed("members", &["remove", workspace, account]),
+            Ok(Action::RemoveMember(in_workspace, id, None))
+                if in_workspace == workspace_id && id == account_id
+        ));
+        assert!(refused("members", &["remove", workspace]));
+        assert!(refused("members", &["remove", workspace, "first"]));
+        assert!(refused("accounts", &["remove"]));
+        assert!(refused("accounts", &["ban", "first"]));
+    }
+
+    #[test]
+    fn a_change_of_an_override_names_one_permission_and_its_state() {
+        let (channel_id, role_id) = (ChannelId::generate(), WorkspaceRoleId::generate());
+        let (channel, role) = (channel_id.to_string(), role_id.to_string());
+        let change = |options: &[&str]| {
+            let mut words = vec!["change", channel.as_str(), role.as_str()];
+            words.extend(options);
+            match parsed("overrides", &words) {
+                Ok(Action::ChangeOverride(channel_id, role_id, change)) => {
+                    Some((channel_id, role_id, change))
+                }
+                _ => None,
+            }
+        };
+        for (word, state) in [
+            ("allow", OverrideState::Allow),
+            ("deny", OverrideState::Deny),
+            ("inherit", OverrideState::Inherit),
+        ] {
+            let expected = ChangeChannelOverride {
+                permission: WorkspacePermission::MuteMembers,
+                state,
+            };
+            assert_eq!(
+                change(&["mute_members", word]),
+                Some((channel_id, role_id, expected))
+            );
+        }
+        assert_eq!(change(&[]), None);
+        assert_eq!(change(&["mute_members"]), None);
+        assert_eq!(change(&["mute_members", "remove"]), None);
+        assert_eq!(change(&["MuteMembers", "allow"]), None);
+        assert_eq!(change(&["administrator", "deny"]), None);
+        assert!(refused("overrides", &["change", channel.as_str()]));
+    }
+
+    #[test]
+    fn the_audit_log_takes_filters_with_identifiers_and_times() {
+        let (actor_id, target_id) = (AccountId::generate(), ChannelId::generate());
+        let workspace_id = WorkspaceId::generate();
+        let (actor, target) = (actor_id.to_string(), target_id.to_string());
+        let workspace = workspace_id.to_string();
+        let since = OffsetDateTime::UNIX_EPOCH + time::Duration::days(20_000);
+        let Ok(Action::WorkspaceAudit(in_workspace, query)) = parsed(
+            "audit",
+            &[
+                "workspace",
+                workspace.as_str(),
+                "--action",
+                "account_banned",
+                "--actor",
+                actor.as_str(),
+                "--target",
+                target.as_str(),
+                "--since",
+                "2024-10-04T00:00:00Z",
+                "--until",
+                "2024-10-05T00:00:00Z",
+                "--limit",
+                "5",
+            ],
+        ) else {
+            panic!("the filters are not read");
+        };
+        assert_eq!(in_workspace, workspace_id);
+        assert_eq!(
+            query,
+            AuditFilterQuery {
+                action: Some("account_banned".to_owned()),
+                actor_id: Some(actor_id),
+                target_id: Some(target_id.as_uuid()),
+                since: Some(since),
+                until: Some(since + time::Duration::days(1)),
+                before: None,
+                limit: Some(5),
+            }
+        );
+        // No option: no filter.
+        assert!(matches!(
+            parsed("audit", &["server"]),
+            Ok(Action::ServerAudit(query)) if query == AuditFilterQuery::default()
+        ));
+        assert!(refused("audit", &["server", "--since", "yesterday"]));
+        assert!(refused("audit", &["server", "--until", "2024-10-05"]));
+        assert!(refused("audit", &["server", "--actor", "first"]));
+        assert!(refused("audit", &["server", "--target", "general"]));
+        assert!(refused("audit", &["workspace", "--limit", "5"]));
+    }
+
+    #[test]
+    fn the_logo_is_shown_set_from_a_file_and_removed() {
+        const IMAGE: &[u8] = b"\x89PNG\r\n\x1a\nimage";
+        assert!(matches!(parsed("logo", &["show"]), Ok(Action::ShowLogo)));
+        let removal = parsed("logo", &["remove"]);
+        assert!(matches!(removal, Ok(Action::RemoveLogo)));
+        assert!(refused("logo", &["set"]));
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logo.png");
+        std::fs::write(&path, IMAGE).unwrap();
+        assert!(matches!(
+            parsed("logo", &["set", path.to_str().unwrap()]),
+            Ok(Action::SetLogo(image)) if image == IMAGE
+        ));
+        // A file that does not exist fails before the server is contacted.
+        let absent = directory.path().join("absent.png");
+        assert!(matches!(
+            parsed("logo", &["set", absent.to_str().unwrap()]),
+            Err(Failure::Failed(_))
+        ));
+
+        let stored = Avatar {
+            hash: "ab12\u{1b}".to_owned(),
+            media_type: ImageType::Png,
+            bytes: 2048,
+            width: 64,
+            height: 32,
+        };
+        assert_eq!(
+            stored_logo_line(&stored),
+            "logo: image/png  2048 bytes  64x32  ab12"
+        );
+        let read = AvatarImage {
+            media_type: ImageType::Webp,
+            hash: "cd34".to_owned(),
+            bytes: IMAGE.to_vec(),
+        };
+        assert_eq!(
+            logo_line(Some(&read)),
+            format!("logo: image/webp  {} bytes  cd34", IMAGE.len())
+        );
+        assert_eq!(logo_line(None), "logo: none");
     }
 
     #[test]
@@ -1624,6 +1959,7 @@ mod tests {
     fn the_lines_of_people_show_members_accounts_invites_and_requests() {
         let role_id = WorkspaceRoleId::generate();
         let member = WorkspaceMember {
+            avatar: None,
             account_id: AccountId::generate(),
             name: "Grace\u{7}".to_owned(),
             role_ids: vec![role_id],
@@ -1658,6 +1994,7 @@ mod tests {
 
         let workspace_id = WorkspaceId::generate();
         let invite = Invite {
+            created_by_name: None,
             id: InviteId::generate(),
             created_by: owner.id,
             created_at: at,
@@ -1675,7 +2012,16 @@ mod tests {
                 invite.id, owner.id
             )
         );
+        let with_creator = Invite {
+            created_by_name: Some("Ada\u{1b}[2J".to_owned()),
+            ..invite.clone()
+        };
+        assert_eq!(
+            invite_line(&with_creator),
+            format!("{}  creator Ada[2J", invite_line(&invite))
+        );
         let revoked = Invite {
+            created_by_name: None,
             revocation: Some(InviteRevocation::CreatorBanned),
             ..invite
         };
@@ -1791,6 +2137,7 @@ mod tests {
         };
 
         let banned = entry(AuditEvent::AccountBanned {
+            reason: None,
             account_id,
             cancelled_invite_ids: Vec::new(),
         });
@@ -1854,6 +2201,115 @@ mod tests {
         assert_eq!(
             lines[1],
             format!("continue with: --before {}", page.entries[0].id)
+        );
+    }
+
+    #[test]
+    fn a_line_of_the_audit_log_shows_a_reason_a_narrowed_invite_and_the_logo() {
+        let at = OffsetDateTime::UNIX_EPOCH + time::Duration::days(20_000);
+        let (actor_id, account_id) = (AccountId::generate(), AccountId::generate());
+        let (workspace_id, invite_id) = (WorkspaceId::generate(), InviteId::generate());
+        let entry = |event: AuditEvent| AuditEntry {
+            id: AuditEntryId::generate(),
+            occurred_at: at,
+            actor_id: Some(actor_id),
+            access_token_id: None,
+            workspace_id: None,
+            channel_id: None,
+            event,
+        };
+
+        // A reason stands in quotation marks, without its control characters.
+        let banned = entry(AuditEvent::AccountBanned {
+            reason: Some("Spam in \"general\"\u{1b}[2J".to_owned()),
+            account_id,
+            cancelled_invite_ids: vec![invite_id],
+        });
+        assert_eq!(
+            audit_line(&banned),
+            format!(
+                "audit: {}  {at}  {actor_id}  account_banned  account={account_id} \
+                 cancelled_invites={invite_id} reason=\"Spam in \\\"general\\\"[2J\"",
+                banned.id
+            )
+        );
+
+        let removed = entry(AuditEvent::AccountRemoved {
+            reason: Some("Left the team".to_owned()),
+            account_id,
+        });
+        assert_eq!(
+            audit_line(&removed),
+            format!(
+                "audit: {}  {at}  {actor_id}  account_removed  account={account_id} \
+                 reason=\"Left the team\"",
+                removed.id
+            )
+        );
+        let without_reason = entry(AuditEvent::AccountRemoved {
+            reason: None,
+            account_id,
+        });
+        assert_eq!(
+            audit_line(&without_reason),
+            format!(
+                "audit: {}  {at}  {actor_id}  account_removed  account={account_id}",
+                without_reason.id
+            )
+        );
+
+        let left = AuditEntry {
+            workspace_id: Some(workspace_id),
+            ..entry(AuditEvent::WorkspaceMemberRemoved {
+                account_id,
+                reason: Some("Left the team".to_owned()),
+            })
+        };
+        assert_eq!(
+            audit_line(&left),
+            format!(
+                "audit: {}  {at}  {actor_id}  workspace_member_removed  workspace={workspace_id} \
+                 account={account_id} reason=\"Left the team\"",
+                left.id
+            )
+        );
+
+        let narrowed = entry(AuditEvent::InviteWorkspacesChanged {
+            invite_id,
+            invite_created_by: account_id,
+            removed_workspace_id: workspace_id,
+        });
+        assert_eq!(
+            audit_line(&narrowed),
+            format!(
+                "audit: {}  {at}  {actor_id}  invite_workspaces_changed  invite={invite_id} \
+                 invite_created_by={account_id} removed_workspace={workspace_id}",
+                narrowed.id
+            )
+        );
+
+        let logo = Avatar {
+            hash: "ab12".to_owned(),
+            media_type: ImageType::Png,
+            bytes: 2048,
+            width: 64,
+            height: 64,
+        };
+        let set = entry(AuditEvent::ServerLogoChanged { logo: Some(logo) });
+        assert_eq!(
+            audit_line(&set),
+            format!(
+                "audit: {}  {at}  {actor_id}  server_logo_changed  logo=ab12",
+                set.id
+            )
+        );
+        let taken = entry(AuditEvent::ServerLogoChanged { logo: None });
+        assert_eq!(
+            audit_line(&taken),
+            format!(
+                "audit: {}  {at}  {actor_id}  server_logo_changed  logo=none",
+                taken.id
+            )
         );
     }
 

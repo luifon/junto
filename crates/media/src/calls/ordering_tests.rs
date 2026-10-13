@@ -77,6 +77,7 @@ fn fixture() -> Fixture {
         hides_occupants: false,
         recording: None,
         participants: vec![CallParticipant {
+            avatar: None,
             account_id,
             identity: "seat".into(),
             joined_at: OffsetDateTime::UNIX_EPOCH,
@@ -142,8 +143,12 @@ fn fixture() -> Fixture {
                 in_use: true,
                 call: Some(call.clone()),
             }],
+            permissions: vec![],
+            channel_permissions: vec![],
+            notification_default: None,
         }],
         own_call: Some(OwnCall {
+            hides_occupants: Some(false),
             call_id: call.id,
             place: call.place,
             device_id,
@@ -296,6 +301,45 @@ async fn unrelated_events_and_an_old_identity_do_not_release_the_gate() {
     f.session.read_blocks(&f.model);
     assert!(!f.session.controls.microphone_blocked && !f.session.controls.sound_blocked);
     assert!(f.session.admitted);
+    f.session.engine.close().await;
+}
+
+/// ADR 0517: a server that says that its admission check has not seen the seat is believed
+/// before the list of the call. A server that says nothing of the seat is read by the list.
+#[tokio::test]
+async fn a_seat_that_the_server_says_is_not_inside_is_not_admitted() {
+    use junto_client_core::model::SeatStated;
+    let stated = |identity: &str, inside| {
+        Some(SeatStated {
+            identity: identity.into(),
+            inside,
+        })
+    };
+    let mut f = fixture();
+    f.session.rejoining = false;
+    f.model.own_seat = stated("seat", false);
+    f.session.read_blocks(&f.model);
+    assert!(
+        !f.session.admitted,
+        "the list admitted a seat that the server says it has not seen"
+    );
+    assert!(f.session.controls.microphone_blocked && f.session.controls.sound_blocked);
+    // What the server says of another seat of the account says nothing of this one.
+    f.model.own_seat = stated("other-seat", false);
+    f.session.read_blocks(&f.model);
+    assert!(f.session.admitted);
+    assert!(!f.session.controls.microphone_blocked && !f.session.controls.sound_blocked);
+    f.model.own_seat = stated("seat", false);
+    f.session.read_blocks(&f.model);
+    assert!(!f.session.admitted);
+    // Not stated is not "outside".
+    f.model.own_seat = None;
+    f.session.read_blocks(&f.model);
+    assert!(f.session.admitted);
+    f.model.own_seat = stated("seat", true);
+    f.session.read_blocks(&f.model);
+    assert!(f.session.admitted);
+    assert!(!f.session.controls.microphone_blocked && !f.session.controls.sound_blocked);
     f.session.engine.close().await;
 }
 

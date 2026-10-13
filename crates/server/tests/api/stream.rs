@@ -386,15 +386,24 @@ async fn beyond_the_replay_bound_the_client_is_told_to_load_a_snapshot() {
     reconnected.subscribe(Level::Full, Some(start)).await;
     assert_eq!(names(&mut reconnected, 5).await.len(), 5);
 
-    server.category(&owner, workspace.id, "f", 5).await;
+    let last = server.category(&owner, workspace.id, "f", 5).await;
     reconnected
         .send(&junto_protocol::events::ClientMessage::Subscribe {
             level: Level::Full,
             cursor: Some(start),
         })
         .await;
+    let mut answer = reconnected.next().await;
+    if let Frame::Message(ServerMessage::Event {
+        event: Event::CategoryCreated { category },
+        ..
+    }) = &answer
+    {
+        assert_eq!(category.id, last.id);
+        answer = reconnected.next().await;
+    }
     assert_eq!(
-        reconnected.next().await,
+        answer,
         Frame::Message(ServerMessage::Resync {
             reason: ResyncReason::TooFarBehind
         })
@@ -594,12 +603,31 @@ pub async fn apply(server: &TestServer, member: &Member, snapshot: &mut Snapshot
                     categories: Vec::new(),
                     channels: Vec::new(),
                     calls: Vec::new(),
+                    permissions: Vec::new(),
+                    channel_permissions: Vec::new(),
+                    notification_default: None,
                 });
             }
         }
         Event::WorkspaceUpdated { workspace } => {
             if let Some(index) = state(snapshot, workspace.id) {
                 snapshot.workspaces[index].workspace = workspace;
+            }
+        }
+        // The client loads a snapshot (ADR 0208). The lists of the permissions of the
+        // account are part of it (ADR 0310).
+        Event::PermissionsChanged {
+            workspace_id: Some(workspace_id),
+        } => {
+            let loaded = server.snapshot(member).await;
+            let current = loaded
+                .workspaces
+                .iter()
+                .find(|state| state.workspace.id == workspace_id);
+            if let (Some(index), Some(current)) = (state(snapshot, workspace_id), current) {
+                snapshot.workspaces[index].permissions = current.permissions.clone();
+                snapshot.workspaces[index].channel_permissions =
+                    current.channel_permissions.clone();
             }
         }
         Event::CategoryCreated { category } | Event::CategoryUpdated { category } => {
@@ -629,6 +657,22 @@ pub async fn apply(server: &TestServer, member: &Member, snapshot: &mut Snapshot
                 snapshot.workspaces[index]
                     .channels
                     .retain(|channel| channel.id != channel_id);
+            }
+        }
+        Event::WorkspaceRolePositionsShifted {
+            workspace_id,
+            positions,
+        } => {
+            if let Some(index) = state(snapshot, workspace_id) {
+                for changed in positions {
+                    if let Some(role) = snapshot.workspaces[index]
+                        .roles
+                        .iter_mut()
+                        .find(|r| r.id == changed.role_id)
+                    {
+                        role.position = changed.position;
+                    }
+                }
             }
         }
         Event::WorkspaceRoleCreated { role } | Event::WorkspaceRoleUpdated { role } => {

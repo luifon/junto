@@ -879,6 +879,7 @@ async fn a_run_deletes_the_directories_of_earlier_runs_only() {
 }
 
 /// True while the process with the identifier in the file `name` of the worker exists.
+#[cfg(unix)]
 fn alive(worker: &FakeWorker, name: &str) -> bool {
     let process = worker.note(name);
     std::process::Command::new("kill")
@@ -891,6 +892,7 @@ fn alive(worker: &FakeWorker, name: &str) -> bool {
 
 /// A command of the worker can be a script that starts further processes. A process that
 /// outlives the script does not hold the server, and is ended with the run.
+#[cfg(unix)]
 #[tokio::test]
 async fn a_process_that_the_worker_leaves_behind_is_ended_with_the_run() {
     let worker = FakeWorker::new();
@@ -920,6 +922,7 @@ async fn a_process_that_the_worker_leaves_behind_is_ended_with_the_run() {
 
 /// At the time limit the server ends every process of the run, also when the command is a
 /// script that waits for the worker.
+#[cfg(unix)]
 #[tokio::test]
 async fn the_time_limit_ends_every_process_of_the_run() {
     let worker = FakeWorker::new();
@@ -948,6 +951,7 @@ async fn the_time_limit_ends_every_process_of_the_run() {
 
 /// The file of the worker is kept before the transcript is stored. A transcript whose file
 /// cannot be kept is not stored; the run counts as failed and is repeated.
+#[cfg(unix)]
 #[tokio::test]
 async fn a_transcript_whose_file_cannot_be_kept_is_not_stored() {
     use std::os::unix::fs::PermissionsExt;

@@ -102,6 +102,9 @@ fn same(held: &ServerModel, fresh: &ServerModel) -> bool {
                     && held.roles == fresh.roles
                     && held.categories == fresh.categories
                     && held.channels == fresh.channels
+                    && held.permissions == fresh.permissions
+                    && held.channel_permissions == fresh.channel_permissions
+                    && held.notification_default == fresh.notification_default
             })
 }
 

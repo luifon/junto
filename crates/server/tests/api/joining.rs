@@ -978,3 +978,105 @@ async fn redemptions_are_limited_per_account_and_per_client_address() {
         .await
         .error(ErrorCode::InviteNotFound);
 }
+
+#[tokio::test]
+async fn invite_lists_name_the_creator_without_widening_the_audience() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let creator = server.join(&owner, "Creator").await;
+    let outsider = server.join(&owner, "Outsider").await;
+    server
+        .grant_server(&owner, &creator, &[ServerPermission::CreateInvites])
+        .await;
+    server
+        .grant_server(&owner, &outsider, &[ServerPermission::CreateInvites])
+        .await;
+    let workspace: Workspace = server
+        .post(&owner, "/api/v1/workspaces", &json!({"name":"Private"}))
+        .await
+        .ok(StatusCode::CREATED);
+    server
+        .put_empty(
+            &owner,
+            &format!(
+                "/api/v1/workspaces/{}/members/{}",
+                workspace.id, creator.account_id
+            ),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let owner_before = server.snapshot(&owner).await.cursor;
+    let outsider_before = server.snapshot(&outsider).await.cursor;
+    let created: junto_protocol::invite::InviteCreated = server
+        .post(
+            &creator,
+            "/api/v1/invites",
+            &json!({"workspace_ids":[workspace.id]}),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    let sent = crate::discovery_support::events(
+        &server,
+        &owner,
+        owner_before,
+        junto_protocol::events::Level::Full,
+    )
+    .await;
+    assert!(sent.iter().any(|event| matches!(event, junto_protocol::events::Event::InviteCreated { invite } if invite.id == created.invite.id && invite.created_by_name.as_deref() == Some("Creator"))));
+    let hidden = crate::discovery_support::events(
+        &server,
+        &outsider,
+        outsider_before,
+        junto_protocol::events::Level::Full,
+    )
+    .await;
+    assert!(!hidden.iter().any(|event| matches!(event, junto_protocol::events::Event::InviteCreated { invite } if invite.id == created.invite.id)));
+    assert_eq!(created.invite.created_by_name.as_deref(), Some("Creator"));
+    server
+        .patch(&creator, "/api/v1/account", &json!({"name":"Renamed"}))
+        .await
+        .ok::<OwnAccount>(StatusCode::OK);
+    for reader in [&owner, &creator] {
+        let list: Vec<Invite> = server
+            .get(reader, "/api/v1/invites")
+            .await
+            .ok(StatusCode::OK);
+        assert_eq!(
+            list.iter()
+                .find(|invite| invite.id == created.invite.id)
+                .unwrap()
+                .created_by_name
+                .as_deref(),
+            Some("Renamed")
+        );
+    }
+    let list: Vec<Invite> = server
+        .get(&outsider, "/api/v1/invites")
+        .await
+        .ok(StatusCode::OK);
+    assert!(!list.iter().any(|invite| invite.id == created.invite.id));
+    server
+        .post(
+            &owner,
+            &format!("/api/v1/accounts/{}/removal", creator.account_id),
+            &json!({}),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let list: Vec<Invite> = server
+        .get(&owner, "/api/v1/invites")
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(
+        list.iter()
+            .find(|invite| invite.id == created.invite.id)
+            .unwrap()
+            .created_by_name
+            .as_deref(),
+        Some("Renamed")
+    );
+    server
+        .get(&creator, "/api/v1/invites")
+        .await
+        .error(ErrorCode::Unauthenticated);
+}

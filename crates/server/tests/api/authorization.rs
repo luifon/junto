@@ -273,6 +273,20 @@ async fn world() -> World {
 
     let mut operations = vec![
         operation(
+            Method::PUT,
+            "/api/v1/server/logo",
+            &[],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/server/logo",
+            &[],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
             Method::GET,
             "/api/v1/attachment-limits",
             &[],
@@ -626,6 +640,20 @@ async fn world() -> World {
         ),
         operation(
             Method::PATCH,
+            "/api/v1/server-roles/positions",
+            &[],
+            json!({"positions": []}),
+            &forbidden,
+        ),
+        operation(
+            Method::PATCH,
+            "/api/v1/workspaces/{workspace_id}/roles/positions",
+            &[&ws],
+            json!({"positions": []}),
+            &forbidden,
+        ),
+        operation(
+            Method::PATCH,
             "/api/v1/server-roles/{role_id}",
             &[&server_role.id],
             json!({ "permissions": ["administrator"] }),
@@ -666,6 +694,13 @@ async fn world() -> World {
             &[&closed_id],
             none.clone(),
             &[(Plain, NotFound)],
+        ),
+        operation(
+            Method::POST,
+            "/api/v1/workspaces/{workspace_id}/members/{account_id}/removal",
+            &[&closed_id, &outsider.account_id],
+            none.clone(),
+            &[(Caller::Plain, NotFound)],
         ),
         operation(
             Method::PUT,
@@ -749,6 +784,13 @@ async fn world() -> World {
             "/api/v1/channels/{channel_id}/overrides",
             &[&channel.id],
             none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::PATCH,
+            "/api/v1/channels/{channel_id}/overrides/{role_id}",
+            &[&channel.id, &role.id],
+            json!({"permission":"manage_channel", "state":"allow"}),
             &forbidden,
         ),
         operation(
@@ -1269,6 +1311,48 @@ async fn world() -> World {
             &forbidden,
         ),
         operation(
+            Method::DELETE,
+            "/api/v1/workspaces/{workspace_id}/notification-default",
+            &[&ws],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/notifications/read",
+            &[],
+            json!({}),
+            &own,
+        ),
+        operation(
+            Method::PUT,
+            "/api/v1/messages/{message_id}/thread/follow",
+            &[&absent],
+            json!({"following":true}),
+            &unknown,
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/messages/{message_id}/thread/follow",
+            &[&absent],
+            none.clone(),
+            &unknown,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/channels/{channel_id}/threads",
+            &[&absent],
+            none.clone(),
+            &unknown,
+        ),
+        operation(
+            Method::GET,
+            "/api/v1/channels/{channel_id}/permissions",
+            &[&absent],
+            none.clone(),
+            &unknown,
+        ),
+        operation(
             Method::GET,
             "/api/v1/workspaces/{workspace_id}/file-retention",
             &[&ws],
@@ -1442,6 +1526,15 @@ async fn send(
     operation: &Operation,
     token: Option<&str>,
 ) -> crate::support::Reply {
+    if operation.method == Method::PUT && operation.template == "/api/v1/server/logo" {
+        let mut request = reqwest::Client::new()
+            .put(format!("{}{}", server.base, operation.path))
+            .body(junto_server::image::samples::png(8, 8));
+        if let Some(token) = token {
+            request = request.bearer_auth(token);
+        }
+        return TestServer::reply(request).await;
+    }
     let body = (!operation.body.is_null()).then_some(&operation.body);
     server
         .send(operation.method.clone(), &operation.path, token, body, None)
@@ -1600,6 +1693,11 @@ fn token_reach() -> BTreeMap<(&'static str, &'static str), TokenAction> {
             ManageStructure,
         ),
         ("PATCH", "/api/v1/channels/{channel_id}", ManageStructure),
+        (
+            "PATCH",
+            "/api/v1/channels/{channel_id}/overrides/{role_id}",
+            ManageStructure,
+        ),
         ("DELETE", "/api/v1/channels/{channel_id}", ManageStructure),
         (
             "DELETE",
@@ -1635,6 +1733,12 @@ fn token_reach() -> BTreeMap<(&'static str, &'static str), TokenAction> {
         (
             "PATCH",
             "/api/v1/workspaces/{workspace_id}/roles/{role_id}",
+            ManageStructure,
+        ),
+        ("PATCH", "/api/v1/server-roles/positions", ManageStructure),
+        (
+            "PATCH",
+            "/api/v1/workspaces/{workspace_id}/roles/positions",
             ManageStructure,
         ),
         ("POST", "/api/v1/server-roles", ManageStructure),
@@ -1718,7 +1822,8 @@ async fn the_reach_of_access_tokens_is_the_stated_list_of_documented_operations(
         // A request with a token changes no role assignment and lifts no ban (ADR 0213).
         let assigns_a_role = path.ends_with("/server-roles/{role_id}")
             && path.starts_with("/api/v1/accounts/")
-            || path.ends_with("/members/{account_id}/roles/{role_id}");
+            || path.ends_with("/members/{account_id}/roles/{role_id}")
+            || path.ends_with("/members/{account_id}/removal");
         let lifts_a_ban = *method == "DELETE" && path.ends_with("/ban");
         assert!(
             !closed.iter().any(|prefix| path.starts_with(prefix))
@@ -1753,6 +1858,12 @@ async fn an_access_token_is_refused_on_every_route_outside_its_reach() {
             server.access_token(&world.administrator, &others).await,
         );
     }
+    let cannot_read_positions = server
+        .access_token(
+            &world.administrator,
+            &[TokenAction::ManageStructure, TokenAction::ReadAuditLog],
+        )
+        .await;
     let unknown = "jat_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
     let before = database_state(server).await;
@@ -1778,7 +1889,14 @@ async fn an_access_token_is_refused_on_every_route_outside_its_reach() {
                 closed += 1;
             }
             Some(action) => {
-                let reply = send(server, operation, Some(lacking[action].token.expose())).await;
+                let token = if operation.method == Method::GET
+                    && operation.template == "/api/v1/server-roles"
+                {
+                    cannot_read_positions.token.expose()
+                } else {
+                    lacking[action].token.expose()
+                };
+                let reply = send(server, operation, Some(token)).await;
                 assert_eq!(
                     reply.code(),
                     ErrorCode::Forbidden,

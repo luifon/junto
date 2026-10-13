@@ -494,7 +494,13 @@ impl Shell {
     ) -> AnyElement {
         let theme = theme(cx);
         let (server_id, channel_id) = (view.server_id, settings.channel_id);
-        let manage = (!settings.may_manage).then_some(text::MANAGE_NO_PERMISSION);
+        // The list of an archived channel is read by itself: until it arrives nothing is
+        // offered, and the reason is that read, not a missing permission.
+        let manage = if settings.permissions_read {
+            (!settings.may_manage).then_some(text::MANAGE_NO_PERMISSION)
+        } else {
+            Some(text::admin::READING)
+        };
         let mut column = div().flex().flex_col().child(page_title(
             text::admin::channel_page_name(ChannelPage::Archive),
             text::admin::CHANNEL_ARCHIVE_HELP,

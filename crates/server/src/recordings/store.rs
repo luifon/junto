@@ -418,6 +418,7 @@ async fn note(
             action: kind.to_owned(),
             actor_id: account_id,
             recording_id: Some(recording.id),
+            duration_seconds: None,
             subject_id: None,
         },
         Some(recording.call_id),

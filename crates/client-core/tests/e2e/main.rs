@@ -8,6 +8,9 @@ mod calls_live;
 mod messages;
 mod recording_server;
 mod recordings;
+mod remaining;
+mod requests;
+mod roles;
 mod stream;
 mod support;
 mod threads;
@@ -30,7 +33,7 @@ use junto_client_core::flow::link_all::{
 };
 use junto_client_core::profile::{AVATAR_MAX_BYTES, InvalidAvatar, ProfileError, avatar_hash};
 use junto_client_core::protocol::account::{AccountStatus, ImageType, RecoverAccount};
-use junto_client_core::protocol::audit::{AuditEvent, AuditQuery};
+use junto_client_core::protocol::audit::{AuditEvent, AuditFilterQuery};
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::protocol::invite::{ApproveJoinRequest, CreateInvite};
 use junto_client_core::protocol::secret::{InviteCode, OwnerCode};
@@ -239,9 +242,9 @@ async fn a_second_device_with_a_fresh_data_directory_joins_with_an_invite() {
 
     let log = owner
         .api()
-        .server_audit_log(&AuditQuery {
-            before: None,
+        .server_audit_log(&AuditFilterQuery {
             limit: Some(10),
+            ..AuditFilterQuery::default()
         })
         .await
         .unwrap();

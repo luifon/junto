@@ -29,7 +29,7 @@ use crate::events;
 use crate::extract::{ApiJson, ApiPath, ApiQuery, Bearer};
 use crate::proof;
 use crate::recordings::store::{self, RecordingRow};
-use crate::recordings::transcripts::{self, NotCorrected};
+use crate::recordings::transcripts::{self, NotCorrected, Window};
 use crate::routes::recordings::{changeable, readable};
 use crate::state::AppState;
 use crate::validate;
@@ -136,9 +136,26 @@ fn page_size(query: &TranscriptLineQuery) -> ApiResult<i64> {
     }
 }
 
+/// The window that the parameters of a read of lines name. At most one of `after`,
+/// `before` and `around` is given; `around` is a page with that line in its middle.
+fn window(query: &TranscriptLineQuery, size: i64) -> ApiResult<Window> {
+    match (query.after, query.before, query.around) {
+        (after, None, None) => Ok(Window::After(after)),
+        (None, Some(before), None) => Ok(Window::Before(before)),
+        (None, None, Some(around)) => {
+            let ahead = u32::try_from((size - 1) / 2).unwrap_or(0);
+            Ok(Window::From(around.saturating_sub(ahead)))
+        }
+        _ => Err(ApiError::invalid(
+            "give at most one of after, before and around",
+        )),
+    }
+}
+
 /// The lines of the transcript of a recording in the order of the timeline, in pages. Each
 /// line carries its newest correction and, when it was corrected, the text of the worker.
-/// The caller may read the recording.
+/// `around` reads the page with one line in its middle, and `before` the page before a
+/// line. The caller may read the recording.
 #[utoipa::path(
     get,
     path = "/api/v1/recordings/{recording_id}/transcript/lines",
@@ -154,18 +171,48 @@ pub async fn list_transcript_lines(
     ApiQuery(query): ApiQuery<TranscriptLineQuery>,
 ) -> ApiResult<Json<TranscriptLinePage>> {
     let size = page_size(&query)?;
+    let window = window(&query, size)?;
     let now = app.now();
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         readable(connection, &access, recording_id, false).await?;
-        let mut lines = transcripts::lines(connection, recording_id, query.after, size + 1).await?;
+        let mut lines = transcripts::lines(connection, recording_id, window, size + 1).await?;
         let shown = usize::try_from(size).unwrap_or(usize::MAX);
         let has_more = lines.len() > shown;
+        if has_more && matches!(window, Window::Before(_)) {
+            lines.remove(0);
+        }
         lines.truncate(shown);
-        let next_after = has_more
-            .then(|| lines.last().map(|line| line.line))
-            .flatten();
-        Ok(TranscriptLinePage { lines, next_after })
+        let first = lines.first().map(|line| line.line);
+        let last = lines.last().map(|line| line.line);
+        // The read took one line more in its direction, which states whether lines follow
+        // there. One statement asks for the other direction.
+        let (next_after, previous_before) = match window {
+            Window::Before(bound) => {
+                let follows = transcripts::has_line(connection, recording_id, bound, false).await?;
+                // An empty page before the first line: the lines follow from the bound.
+                let after = last.or_else(|| bound.checked_sub(1));
+                (after.filter(|_| follows), first.filter(|_| has_more))
+            }
+            Window::After(_) | Window::From(_) => {
+                let start = match (first, window) {
+                    (Some(first), _) => first,
+                    (None, Window::From(start)) => start,
+                    (None, Window::After(after)) => {
+                        after.map_or(0, |after| after.saturating_add(1))
+                    }
+                    (None, Window::Before(bound)) => bound,
+                };
+                let precedes = start > 0
+                    && transcripts::has_line(connection, recording_id, start, true).await?;
+                (last.filter(|_| has_more), precedes.then_some(start))
+            }
+        };
+        Ok(TranscriptLinePage {
+            lines,
+            next_after,
+            previous_before,
+        })
     })
     .map(Json)
 }
@@ -349,7 +396,8 @@ pub(crate) async fn text_of(
     let mut text = String::new();
     let mut after = None;
     loop {
-        let lines = transcripts::lines(connection, recording_id, after, TEXT_PAGE).await?;
+        let lines =
+            transcripts::lines(connection, recording_id, Window::After(after), TEXT_PAGE).await?;
         let Some(last) = lines.last() else {
             break;
         };

@@ -10,7 +10,6 @@ use junto_protocol::account::{
     AccountProfile, AccountSummary, ApproveDeviceLink, Avatar, Device, ImageType, LookUpDeviceLink,
     OwnAccount, PendingDeviceLink, RecoverAccount, RecoveryNotice, RenameDevice, UpdateProfile,
 };
-use junto_protocol::audit::{AuditPage, AuditQuery};
 use junto_protocol::ids::{
     AccountId, CategoryId, ChannelId, DeviceId, InviteId, JoinRequestId, RecoveryId, ServerRoleId,
     WorkspaceId, WorkspaceRoleId,
@@ -380,16 +379,6 @@ impl ServerApi {
         self.get("/accounts".to_owned()).await
     }
 
-    pub async fn remove_account(&self, account_id: AccountId) -> Result<(), ApiError> {
-        self.act(Method::Post, format!("/accounts/{account_id}/removal"))
-            .await
-    }
-
-    pub async fn ban_account(&self, account_id: AccountId) -> Result<(), ApiError> {
-        self.act(Method::Put, format!("/accounts/{account_id}/ban"))
-            .await
-    }
-
     pub async fn unban_account(&self, account_id: AccountId) -> Result<(), ApiError> {
         self.act(Method::Delete, format!("/accounts/{account_id}/ban"))
             .await
@@ -598,108 +587,5 @@ impl ServerApi {
     ) -> Result<ChannelOverride, ApiError> {
         let path = format!("/channels/{channel_id}/overrides/{role_id}");
         self.send(Method::Put, path, sets).await
-    }
-
-    // The audit log.
-
-    pub async fn server_audit_log(&self, query: &AuditQuery) -> Result<AuditPage, ApiError> {
-        let response = self
-            .call(Method::Get, "/audit-log".to_owned(), page(query), None)
-            .await?;
-        read_json(&response)
-    }
-
-    pub async fn workspace_audit_log(
-        &self,
-        workspace_id: WorkspaceId,
-        query: &AuditQuery,
-    ) -> Result<AuditPage, ApiError> {
-        let path = format!("/workspaces/{workspace_id}/audit-log");
-        read_json(&self.call(Method::Get, path, page(query), None).await?)
-    }
-}
-
-fn page(query: &AuditQuery) -> Vec<(&'static str, String)> {
-    let mut pairs = Vec::new();
-    if let Some(before) = query.before {
-        pairs.push(("before", before.to_string()));
-    }
-    if let Some(limit) = query.limit {
-        pairs.push(("limit", limit.to_string()));
-    }
-    pairs
-}
-
-#[cfg(test)]
-mod tests {
-    use junto_protocol::audit::AuditEvent;
-    use junto_protocol::ids::ServerId;
-
-    use super::*;
-    use crate::address::ServerAddress;
-    use crate::api::RetryPolicy;
-    use crate::api::transport::{HttpRequest, Transport, TransportFuture};
-    use crate::version::SupportedVersions;
-
-    struct Fixed(&'static str);
-
-    impl Transport for Fixed {
-        fn send(&self, _request: HttpRequest) -> TransportFuture {
-            let body = self.0.as_bytes().to_vec();
-            Box::pin(async move {
-                Ok(HttpResponse {
-                    status: 200,
-                    retry_after: None,
-                    body: body.into(),
-                })
-            })
-        }
-    }
-
-    fn api(body: &'static str) -> ServerApi {
-        ApiClient::new(
-            Arc::new(Fixed(body)),
-            ServerAddress::parse("chat.example.test").unwrap(),
-            ServerId::generate(),
-            SupportedVersions::THIS_BUILD.negotiate(&[1]).unwrap(),
-            RetryPolicy::default(),
-        )
-        .with_token(SecretToken::new("jst_test".to_owned()))
-    }
-
-    #[tokio::test]
-    async fn an_audit_page_with_an_action_of_a_newer_server_is_read_whole() {
-        let page = r#"{"entries":[
-            {"id":"0198f1c2-7d3a-7b1e-9c55-000000000003",
-             "occurred_at":"2030-01-02T00:00:00Z",
-             "actor_id":"0198f1c2-7d3a-7b1e-9c55-0000000000aa",
-             "workspace_id":"0198f1c2-7d3a-7b1e-9c55-0000000000bb",
-             "channel_id":null,
-             "event":{"action":"glossary_updated","terms":3,"nested":{"a":[1,2]}}},
-            {"id":"0198f1c2-7d3a-7b1e-9c55-000000000002",
-             "occurred_at":"2030-01-01T00:00:00Z",
-             "actor_id":null,"workspace_id":null,"channel_id":null,
-             "event":{"action":"owner_claimed",
-                      "account_id":"0198f1c2-7d3a-7b1e-9c55-0000000000aa"}}],
-            "next_before":"0198f1c2-7d3a-7b1e-9c55-000000000002"}"#;
-        for log in [
-            api(page).server_audit_log(&AuditQuery::default()).await,
-            api(page)
-                .workspace_audit_log(WorkspaceId::generate(), &AuditQuery::default())
-                .await,
-        ] {
-            let log = log.unwrap();
-            assert_eq!(log.entries.len(), 2);
-            let later = &log.entries[0];
-            assert_eq!(later.event, AuditEvent::Unknown);
-            assert_eq!(later.id.to_string(), "0198f1c2-7d3a-7b1e-9c55-000000000003");
-            assert_eq!(later.occurred_at.year(), 2030);
-            assert!(later.actor_id.is_some() && later.workspace_id.is_some());
-            assert!(matches!(
-                log.entries[1].event,
-                AuditEvent::OwnerClaimed { .. }
-            ));
-            assert!(log.next_before.is_some());
-        }
     }
 }

@@ -72,10 +72,14 @@ impl Class {
             | Event::ThreadRead { .. }
             | Event::MessageRead { .. }
             | Event::NotificationSettingsChanged { .. }
+            | Event::ServerLogoChanged { .. }
             | Event::AttachmentLimitsChanged { .. }
             | Event::WorkspaceDeleted { .. }
             | Event::ExportUpdated { .. }
-            | Event::ExportRemoved { .. } => Self::Control,
+            | Event::ExportRemoved { .. }
+            | Event::NotificationsRead { .. }
+            | Event::ThreadFollowChanged { .. }
+            | Event::NotificationDefaultChanged { .. } => Self::Control,
             Event::ConversationOpened { .. } => Self::DirectMessage,
             Event::MessageMentioned { .. } | Event::NotificationChanged { .. } => Self::Mention,
             Event::CallInvited { .. } | Event::CallInvitationResolved { .. } => Self::CallInvite,
@@ -89,12 +93,15 @@ impl Class {
             | Event::AccountStatusChanged { .. }
             | Event::AccountServerRolesChanged { .. }
             | Event::OwnerChanged { .. }
+            | Event::ServerRolePositionsShifted { .. }
+            | Event::WorkspaceRolePositionsShifted { .. }
             | Event::ServerRoleCreated { .. }
             | Event::ServerRoleUpdated { .. }
             | Event::AccessTokenCreated { .. }
             | Event::AccessTokenRevoked { .. }
             | Event::AccessTokensOfCreatorRevoked { .. }
             | Event::InviteCreated { .. }
+            | Event::InviteChanged { .. }
             | Event::InviteRevoked { .. }
             | Event::InviteUsed { .. }
             | Event::InvitesOfCreatorRevoked { .. }
@@ -187,6 +194,13 @@ pub struct Seen {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "to", rename_all = "snake_case")]
 pub enum Audience {
+    /// Keeps the position of a silent ring or empty notice without delivering it.
+    Suppressed,
+    /// The affected member, and accounts that currently see the workspace.
+    WorkspaceMembership {
+        workspace_id: WorkspaceId,
+        account_id: AccountId,
+    },
     Account {
         account_id: AccountId,
     },
@@ -492,14 +506,16 @@ impl Audience {
 
     pub const fn workspace_id(&self) -> Option<WorkspaceId> {
         match self {
-            Self::SystemMessage { workspace_id, .. }
+            Self::WorkspaceMembership { workspace_id, .. }
+            | Self::SystemMessage { workspace_id, .. }
             | Self::Mention { workspace_id, .. }
             | Self::Workspace { workspace_id }
             | Self::WorkspaceRoleHolders { workspace_id, .. }
             | Self::Channel { workspace_id, .. }
             | Self::DeletedChannel { workspace_id, .. }
             | Self::Call { workspace_id, .. } => Some(*workspace_id),
-            Self::Notification { .. }
+            Self::Suppressed
+            | Self::Notification { .. }
             | Self::ActiveAccounts
             | Self::Listed { .. }
             | Self::DeletedWorkspace { .. }
@@ -579,11 +595,20 @@ impl Audience {
         let permission = |permission| Some(Self::ServerPermission { permission });
         let workspace = |workspace_id| Some(Self::Workspace { workspace_id });
         match event {
+            Event::WorkspaceMemberRemoved {
+                workspace_id,
+                account_id,
+            } => Some(Self::WorkspaceMembership {
+                workspace_id: *workspace_id,
+                account_id: *account_id,
+            }),
             Event::ConversationOpened { conversation } => Some(Self::Direct {
                 low_account_id: conversation.low_account_id,
                 high_account_id: conversation.high_account_id,
             }),
-            Event::AttachmentLimitsChanged { .. } => Some(Self::ActiveAccounts),
+            Event::ServerLogoChanged { .. } | Event::AttachmentLimitsChanged { .. } => {
+                Some(Self::ActiveAccounts)
+            }
             Event::MessageMentioned {
                 workspace_id,
                 channel_id,
@@ -600,7 +625,10 @@ impl Audience {
             Event::ThreadRead { .. }
             | Event::MessageRead { .. }
             | Event::NotificationChanged { .. }
-            | Event::NotificationSettingsChanged { .. } => None,
+            | Event::NotificationSettingsChanged { .. }
+            | Event::NotificationsRead { .. }
+            | Event::ThreadFollowChanged { .. } => None,
+            Event::NotificationDefaultChanged { workspace_id, .. } => workspace(*workspace_id),
             Event::RetentionChanged { workspace_id } => match workspace_id {
                 Some(id) => workspace(*id),
                 None => permission(ServerPermission::Administrator),
@@ -664,12 +692,15 @@ impl Audience {
             Event::ServerRoleCreated { .. }
             | Event::ServerRoleUpdated { .. }
             | Event::ServerRoleDeleted { .. }
-            | Event::AccessTokenCreated { .. }
+            | Event::ServerRolePositionsShifted { .. } => permission(ServerPermission::BanMembers),
+            Event::WorkspaceRolePositionsShifted { workspace_id, .. } => workspace(*workspace_id),
+            Event::AccessTokenCreated { .. }
             | Event::AccessTokenRevoked { .. }
             | Event::AccessTokensOfCreatorRevoked { .. } => {
                 permission(ServerPermission::Administrator)
             }
             Event::InviteCreated { .. }
+            | Event::InviteChanged { .. }
             | Event::InviteRevoked { .. }
             | Event::InviteUsed { .. } => None,
             Event::InvitesOfCreatorRevoked { .. } => permission(ServerPermission::CreateInvites),
@@ -679,7 +710,6 @@ impl Audience {
             Event::WorkspaceCreated { workspace: changed }
             | Event::WorkspaceUpdated { workspace: changed } => workspace(changed.id),
             Event::WorkspaceMemberAdded { workspace_id, .. }
-            | Event::WorkspaceMemberRemoved { workspace_id, .. }
             | Event::WorkspaceMemberRolesChanged { workspace_id, .. } => workspace(*workspace_id),
             Event::WorkspaceRoleCreated { role } | Event::WorkspaceRoleUpdated { role } => {
                 workspace(role.workspace_id)
@@ -709,6 +739,12 @@ impl Audience {
     /// Whether a writer may state this audience for `event`.
     pub fn fits(&self, event: &Event) -> bool {
         match (event, self) {
+            (
+                Event::CallInvited { .. }
+                | Event::CallInvitationResolved { .. }
+                | Event::NotificationChanged { .. },
+                Self::Suppressed,
+            ) => true,
             (
                 Event::NotificationChanged { message_id },
                 Self::Notification {
@@ -762,7 +798,9 @@ impl Audience {
                 Event::PermissionsChanged { .. }
                 | Event::CallAccessEnded {}
                 | Event::DirectMuteSet { .. }
-                | Event::DirectMuteRemoved { .. },
+                | Event::DirectMuteRemoved { .. }
+                | Event::NotificationsRead { .. }
+                | Event::ThreadFollowChanged { .. },
                 Self::Account { .. },
             ) => true,
             (
@@ -813,8 +851,21 @@ impl Audience {
                 true
             }
             (Event::PermissionsChanged { .. }, Self::Listed { .. }) => true,
+            // The accounts that see a new workspace, or a channel that appears with
+            // overrides (ADR 0310).
             (
-                Event::InviteCreated { invite },
+                Event::PermissionsChanged {
+                    workspace_id: Some(named),
+                },
+                Self::Workspace { workspace_id }
+                | Self::Channel {
+                    workspace_id,
+                    permission: WorkspacePermission::ViewChannel,
+                    ..
+                },
+            ) => named == workspace_id,
+            (
+                Event::InviteCreated { invite } | Event::InviteChanged { invite },
                 Self::Invite {
                     created_by,
                     workspace_ids,
@@ -999,6 +1050,11 @@ pub fn receives<'a>(
     };
     let workspace = audience.workspace_id().and_then(standing);
     match audience {
+        Audience::Suppressed => false,
+        Audience::WorkspaceMembership { account_id, .. } => {
+            (*account_id == recipient.account_id && allows(Request::OwnAccount))
+                || workspace.is_some_and(|w| allows(Request::ViewWorkspace(&w.scope)))
+        }
         Audience::Notification { .. } | Audience::ActiveAccounts => allows(Request::OwnAccount),
         Audience::Account { account_id } => {
             *account_id == recipient.account_id && allows(Request::OwnAccount)
@@ -1526,6 +1582,7 @@ mod tests {
         let me = recipient(&plain);
         let own = |call| Event::OwnCallChanged { call, left: None };
         let joined = own(Some(OwnCall {
+            hides_occupants: Some(false),
             call_id: CallId::generate(),
             place: channel(&place),
             device_id: DeviceId::generate(),
@@ -1895,7 +1952,17 @@ mod tests {
         assert!(server_holders.fits(&on_server));
         assert!(!server_holders.fits(&in_workspace));
         assert!(account.fits(&in_workspace) && account.fits(&on_server));
-        assert!(!workspace.fits(&in_workspace));
+        // The accounts that see a new workspace, and the accounts that see a channel that
+        // appears with overrides, are told as well (ADR 0310).
+        assert!(workspace.fits(&in_workspace));
+        assert!(!workspace.fits(&on_server));
+        let elsewhere = Audience::Workspace {
+            workspace_id: WorkspaceId::generate(),
+        };
+        assert!(!elsewhere.fits(&in_workspace));
+        assert!(channel_audience(&place, WorkspacePermission::ViewChannel).fits(&in_workspace));
+        assert!(!channel_audience(&place, WorkspacePermission::ManageChannel).fits(&in_workspace));
+        assert!(!channel_audience(&place, WorkspacePermission::ViewChannel).fits(&on_server));
 
         let channel = Channel {
             id: place.channel_id,

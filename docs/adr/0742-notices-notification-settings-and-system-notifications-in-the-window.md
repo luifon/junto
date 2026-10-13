@@ -24,7 +24,7 @@ List of notices:
 Notification settings:
 
 - One dialog shows the settings of one scope: the server (the account on that server), a workspace, or a channel. The menu of the server opens the first two, and the menu of a channel the third.
-- The level is one of "all messages", "mentions only" and "nothing". A workspace and a channel also have "default", which takes the level of the scope above (ADR 0409). The dialog states which level "default" gives now only when the client can tell it: with a stored level of the workspace, with a level of the administrators that is not "mentions only", or when the level of the account is "mentions only" too.
+- The level is one of "all messages", "mentions only" and "nothing". A workspace and a channel also have "default", which takes the level of the scope above (ADR 0409). The dialog states which level "default" gives now only when the client can tell it: with a stored level of the workspace, or when the level of the administrators was read. The server states that level, or that the workspace sets none (ADR 0412); with none, the level of the account holds.
 - The dialog of a channel also has the mute with its four lengths, and the two switches for mentions of a role and of everyone.
 - The dialog of a workspace reads the level of its administrators when it opens. An administrator of the server sets it there; another member reads it.
 - A change is one request that replaces the settings of its scope. One change of a scope is on its way at a time. The dialog shows what the server took until the state of the server holds it, and no longer than until the state was replaced: `notification_settings_changed` reloads the state (ADR 0722), and a change that the server already held sends no event. A refusal is told in the dialog of the scope, and above the composer when the change came from the menu of a row. The level of the administrators that an open dialog shows is read again after the state was replaced.
@@ -35,7 +35,7 @@ Quiet times:
 
 - "Do not disturb" and the daily quiet time are in the settings of the application. A change is sent to every server on which the device has a session, because ADR 0404 defines them for the whole application and the server stores them per account. A server that does not take the change is named with its reason, and so is a server whose state the device does not hold at that moment, or whose settings of the account are being changed.
 - The switch shows "on" when every such server says so. When the servers differ, the settings say so, and the next change sets all of them.
-- The daily quiet time is typed as two times of day. The client sends them as minutes of a day with the distance of the system from UTC at that moment. Two equal times are refused before a request.
+- The daily quiet time is typed as two times of day. The client sends them as minutes of a day with the name of the time zone of the system (ADR 0412, ADR 0798), and applies the quiet time to what it holds by the clock of the zone that the settings name. Two equal times are refused before a request.
 
 System notifications:
 
@@ -59,8 +59,8 @@ System notifications:
 - The notices and the notification settings have no screen in the approved design. They are built from its components and are shown to the operator as pictures.
 - "Mark all as read" costs one request for each unread notice, and the requests share the limit of 120 changes in a minute with the sends of the account (ADR 0408). A route that marks every notice would replace them.
 - A thread has no notification setting, because the server has none.
-- "Default" is shown without the level that it gives in the cases where the server does not tell enough. A level of the administrators that the route and the snapshot state, with "none", would end that.
-- After a change of the clock for daylight saving time, the daily quiet time starts and ends one hour away from the typed times until the person sets it again: the server keeps a distance from UTC and no time zone.
+- "Default" is shown without the level that it gives while the level of the administrators is not read, or when its read failed.
+- The daily quiet time names the time zone that the system had when the person set it. The window has no control that chooses another zone, and it shows the two times without the name of their zone.
 - A device with sessions on two servers can hold two values of "do not disturb" after a change on another device. The settings say so.
 - The first notice after "do not disturb" ended can miss its system notification when it arrives in the same change of the state as the notices of the quiet time.
 - On macOS the system notifications need an application bundle, which the build does not make yet (ADR 0701). `cargo run` shows none.

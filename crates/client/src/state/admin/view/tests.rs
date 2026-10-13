@@ -72,15 +72,16 @@ fn scene() -> Scene {
     let own = AccountId::generate();
     let (studio, lab) = (WorkspaceId::generate(), WorkspaceId::generate());
     let projects = CategoryId::generate();
-    let role = |name: &str, permissions: &[WorkspacePermission], is_everyone| WorkspaceRole {
+    let role = |name: &str, permissions: &[WorkspacePermission], position| WorkspaceRole {
+        position,
         id: WorkspaceRoleId::generate(),
         workspace_id: studio,
         name: name.to_owned(),
         permissions: permissions.to_vec(),
-        is_everyone,
+        is_everyone: position == 0,
     };
-    let everyone = role("everyone", &[WorkspacePermission::ViewChannel], true);
-    let leads = role("leads", &[], false);
+    let everyone = role("everyone", &[WorkspacePermission::ViewChannel], 0);
+    let leads = role("leads", &[], 1);
     let general = channel(studio, ChannelKind::Text, "general", 0, None);
     let daily = channel(studio, ChannelKind::Voice, "Daily", 1, None);
     let plans = channel(studio, ChannelKind::Text, "plans", 2, Some(projects));
@@ -111,6 +112,9 @@ fn scene() -> Scene {
                 categories: Vec::new(),
                 channels: Vec::new(),
                 calls: Vec::new(),
+                permissions: Vec::new(),
+                channel_permissions: Vec::new(),
+                notification_default: None,
             },
             WorkspaceState {
                 workspace: workspace(studio, "Studio", true),
@@ -124,6 +128,9 @@ fn scene() -> Scene {
                 }],
                 channels: vec![general.clone(), daily.clone(), plans.clone()],
                 calls: Vec::new(),
+                permissions: Vec::new(),
+                channel_permissions: Vec::new(),
+                notification_default: None,
             },
         ],
         own_call: None,
@@ -172,7 +179,8 @@ impl Scene {
     }
 
     fn model(&self) -> ServerModel {
-        let mut model = ServerModel::from_snapshot(self.snapshot.clone());
+        let mut model =
+            ServerModel::from_snapshot(crate::state::fixtures::stated(self.snapshot.clone()));
         model.admin = Arc::new(self.admin.clone());
         model
     }
@@ -339,14 +347,18 @@ fn each_server_permission_adds_its_page() {
 fn an_administrator_and_the_owner_have_every_page() {
     let every = [
         AdminPage::Workspaces,
+        AdminPage::Server,
         AdminPage::People,
         AdminPage::Invites,
         AdminPage::JoinRequests,
         AdminPage::Tokens,
+        AdminPage::ServerRoles,
         AdminPage::AuditLog,
         AdminPage::Channels,
+        AdminPage::Roles,
         AdminPage::Archive,
         AdminPage::Members,
+        AdminPage::Notifications,
         AdminPage::Recordings,
         AdminPage::Exports,
     ];
@@ -459,6 +471,48 @@ fn the_channels_page_lists_the_groups_in_the_order_of_the_channel_list() {
 }
 
 #[test]
+fn a_channel_in_which_the_person_does_not_manage_takes_no_change_on_the_channels_page() {
+    use junto_client_core::protocol::structure::ChannelPermissions;
+    let mut scene = scene();
+    scene.lead_holds(&[WorkspacePermission::ManageChannel]);
+    let lines = |scene: &Scene| {
+        let (_, _, page) = scene.page(AdminPage::Channels);
+        let ServerPage::Channels(page) = page else {
+            panic!("the page of the channels is not offered");
+        };
+        [scene.general, scene.daily, scene.plans].map(|channel_id| {
+            let line = page.channel(channel_id).unwrap();
+            (line.may_manage, line.moves_up, line.moves_down)
+        })
+    };
+    // The list of the workspace holds for every channel: "general" is the first channel
+    // of its group and "Daily" the last, and "plans" is alone in its category.
+    assert_eq!(
+        lines(&scene),
+        [
+            (true, false, true),
+            (true, true, false),
+            (true, false, false)
+        ]
+    );
+    // An override denies "manage channel" in "Daily": the channel takes no change, and
+    // no move of a neighbour that would change its position either (ADR 0790).
+    let daily = scene.daily;
+    scene.studio_mut().channel_permissions = vec![ChannelPermissions {
+        channel_id: daily,
+        permissions: vec![WorkspacePermission::ViewChannel],
+    }];
+    assert_eq!(
+        lines(&scene),
+        [
+            (true, false, false),
+            (false, false, false),
+            (true, false, false)
+        ]
+    );
+}
+
+#[test]
 fn each_page_holds_open_the_collections_that_it_shows() {
     let mut scene = scene();
     let model = scene.model();
@@ -469,9 +523,10 @@ fn each_page_holds_open_the_collections_that_it_shows() {
     let studio = Some(scene.studio);
     assert!(needs(&server(AdminPage::Workspaces), &model, studio).is_empty());
     assert!(needs(&server(AdminPage::Channels), &model, studio).is_empty());
+    // The order of the server roles decides who can be removed and banned (ADR 0791).
     assert_eq!(
         needs(&server(AdminPage::People), &model, studio),
-        [AdminPart::Accounts]
+        [AdminPart::Accounts, AdminPart::ServerRoles]
     );
     assert_eq!(
         needs(&server(AdminPage::Invites), &model, studio),
@@ -524,9 +579,10 @@ fn each_page_holds_open_the_collections_that_it_shows() {
         needs(&server(AdminPage::People), &model, studio),
         [AdminPart::Accounts, AdminPart::ServerRoles]
     );
+    // An administrator stands in a workspace at a server role (ADR 0309).
     assert_eq!(
         needs(&server(AdminPage::Members), &model, studio),
-        [AdminPart::Accounts]
+        [AdminPart::Accounts, AdminPart::ServerRoles]
     );
     assert_eq!(
         needs(&server(AdminPage::Archive), &model, studio),
@@ -805,6 +861,14 @@ fn the_main_area_shows_a_selected_archived_channel_as_archived() {
     scene.lead_holds(&[WorkspacePermission::ManageChannel]);
     let archived = scene.archive(scene.plans);
     let mut model = scene.model();
+    // The route of the channel stated what the account holds in it (ADR 0790).
+    Arc::make_mut(&mut model.admin).channel_permissions = vec![(
+        scene.plans,
+        Collection::Loaded(vec![
+            WorkspacePermission::ViewChannel,
+            WorkspacePermission::ManageChannel,
+        ]),
+    )];
     model.timelines.push(Arc::new(Timeline {
         place: PlaceId::Channel(scene.plans),
         messages: Vec::new(),
@@ -888,6 +952,7 @@ fn the_thread_and_the_pins_of_an_archived_channel_offer_no_change() {
         thread_root,
         reply_count: 0,
         last_reply: None,
+        reply_authors: Vec::new(),
         pinned: false,
         files_removed_by_retention: false,
     };
@@ -1010,6 +1075,7 @@ fn an_archived_voice_channel_offers_no_recording_removal() {
                 subject_id: None,
                 actor_id: None,
                 recording_id: Some(RecordingId::generate()),
+                duration_seconds: None,
             }),
             reply_to: None,
             permanent: false,
@@ -1021,6 +1087,7 @@ fn an_archived_voice_channel_offers_no_recording_removal() {
             last_reply: None,
             pinned: false,
             files_removed_by_retention: false,
+            reply_authors: Vec::new(),
         };
         model.timelines.push(Arc::new(Timeline {
             place: PlaceId::Channel(scene.daily),

@@ -1,4 +1,3 @@
-use junto_authz::WorkspacePermissions;
 use junto_protocol::access_token::{AccessTokenInfo, TokenAction};
 use junto_protocol::account::{AccountProfile, AccountStatus, AccountSummary};
 use junto_protocol::discovery::Retention;
@@ -9,7 +8,7 @@ use junto_protocol::ids::{
     JoinRequestId, ServerRoleId, WorkspaceId,
 };
 use junto_protocol::invite::{Invite, InviteRevocation, JoinRequest, JoinRequestState};
-use junto_protocol::roles::{ServerRole, WorkspaceRole};
+use junto_protocol::roles::ServerRole;
 use junto_protocol::structure::{
     ArchivePeriod, ArchivedChannel, Category, ChannelOverride, Workspace,
 };
@@ -41,6 +40,7 @@ fn account(name: &str) -> AccountSummary {
 
 fn invite(created_by: AccountId) -> Invite {
     Invite {
+        created_by_name: None,
         id: InviteId::generate(),
         created_by,
         created_at: time(),
@@ -500,6 +500,7 @@ fn the_collections_of_the_server_follow_their_events_once_they_are_loaded() {
 
     // Server roles: a deleted role leaves the accounts too.
     let role = ServerRole {
+        position: 1,
         id: role_id,
         name: "inviters".to_owned(),
         permissions: vec![ServerPermission::CreateInvites],
@@ -784,83 +785,6 @@ fn a_change_of_the_retention_asks_for_the_open_settings_again() {
     );
     model.set_admin(workspace, AdminSet::NotLoaded);
     assert!(model.admin.settings.is_empty());
-}
-
-#[test]
-fn the_permissions_in_a_channel_follow_the_function_of_the_server() {
-    let scene = scene();
-    let mut model = scene.model();
-    // Unknown until the overrides of the channel are loaded.
-    assert_eq!(model.channel_permissions(scene.general), None);
-    let part = AdminPart::Overrides(scene.general);
-    loaded(&mut model, part, AdminPayload::Overrides(Vec::new()));
-    let base: WorkspacePermissions = [
-        WorkspacePermission::ViewChannel,
-        WorkspacePermission::MuteMembers,
-    ]
-    .into_iter()
-    .collect();
-    assert_eq!(model.channel_permissions(scene.general), Some(base));
-
-    // The override of a held role allows; the deny of the "everyone" role is applied
-    // first, and the allow of a held role wins over it.
-    let leads = model
-        .workspace(scene.workspace_id)
-        .unwrap()
-        .roles
-        .iter()
-        .find(|role: &&WorkspaceRole| role.name == "leads")
-        .unwrap()
-        .id;
-    loaded(
-        &mut model,
-        part,
-        AdminPayload::Overrides(vec![
-            ChannelOverride {
-                role_id: scene.everyone,
-                allow: Vec::new(),
-                deny: vec![WorkspacePermission::MuteMembers],
-            },
-            ChannelOverride {
-                role_id: scene.helpers,
-                allow: vec![WorkspacePermission::ManageMessages],
-                deny: Vec::new(),
-            },
-            // The override of a role that the account does not hold gives nothing.
-            ChannelOverride {
-                role_id: leads,
-                allow: vec![WorkspacePermission::ManageChannel],
-                deny: Vec::new(),
-            },
-        ]),
-    );
-    let held = model.channel_permissions(scene.general).unwrap();
-    assert!(held.contains(WorkspacePermission::ManageMessages));
-    assert!(held.contains(WorkspacePermission::ViewChannel));
-    assert!(!held.contains(WorkspacePermission::MuteMembers));
-    assert!(!held.contains(WorkspacePermission::ManageChannel));
-
-    // Without sight of the channel the account holds nothing in it.
-    loaded(
-        &mut model,
-        part,
-        AdminPayload::Overrides(vec![ChannelOverride {
-            role_id: scene.everyone,
-            allow: Vec::new(),
-            deny: vec![WorkspacePermission::ViewChannel],
-        }]),
-    );
-    assert_eq!(
-        model.channel_permissions(scene.general),
-        Some(WorkspacePermissions::EMPTY)
-    );
-
-    // An administrator holds every permission, with or without the overrides.
-    model.account.server_permissions = vec![ServerPermission::Administrator];
-    assert_eq!(
-        model.channel_permissions(scene.daily),
-        Some(WorkspacePermissions::ALL)
-    );
 }
 
 #[test]

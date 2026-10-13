@@ -6,6 +6,7 @@ mod discovery;
 mod live;
 mod messages;
 mod recordings;
+mod roles;
 mod secret_input;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -84,6 +85,7 @@ commands:
   categories <action> [arguments]
   channels <action> [arguments]
   overrides <action> [arguments]
+  roles <action> [arguments]
   members <action> [arguments]
   accounts <action> [arguments]
   tokens <action> [arguments]
@@ -91,6 +93,7 @@ commands:
   audit <action> [arguments]
   archive-period <action> [arguments]
   retention <action> [arguments]
+  logo <action> [arguments]
                                send one request of the administration routes
   profile                      show or set the local profile preset
                                [--name <name>] [--avatar <file>] [--no-avatar]
@@ -168,6 +171,11 @@ actions of threads:
   read <root message> <position>
   unread [--before <continuation>] [--limit <n>]
                                the threads that hold something unread, the newest first
+  follow <root message>, unfollow <root message>
+                               the choice to follow a thread or not
+  clear-follow <root message>  no choice: the rule of the server decides
+  followed <channel> [--before <continuation>] [--limit <n>]
+                               the threads of a channel that the account follows
   fork <root message> --name <name> [--kind <text|voice>]
                                copy the thread into a new channel
 
@@ -182,12 +190,15 @@ actions of notices:
   set-settings <scope> [--level <all|mentions|nothing|inherit>]
                [--mute <yes|no>] [--mute-hours <n>]
                [--role-mentions <yes|no|inherit>] [--everyone-mentions <yes|no|inherit>]
-               [--dnd <yes|no>] [--quiet <HH:MM-HH:MM> [--utc-offset <minutes>]] [--no-quiet]
+               [--dnd <yes|no>] [--quiet <HH:MM-HH:MM> [--time-zone <name>]] [--no-quiet]
                                change the named settings of a scope and keep the others;
                                the mute and the mention switches belong to a channel,
-                               --dnd and --quiet to the account
+                               --dnd and --quiet to the account; a time zone is a
+                               name such as Europe/Lisbon, and UTC without one
+  read-all [--until <time>]    mark every notice up to a time as read, in one request
   default <workspace>          the level that an administrator set for a workspace
   set-default <workspace> <all|mentions|nothing>
+  remove-default <workspace>   the workspace sets no level
 
 A scope is account, workspace:<id> or channel:<id>. A time is written as
 2026-01-31T00:00:00Z.
@@ -244,14 +255,43 @@ actions of overrides:
                                set the override of a role in a channel; without an option
                                the override is removed. A permission is written as the
                                server names it, such as view_channel
+  change <channel> <role> <permission> <allow|deny|inherit>
+                               change one permission of the override of a role in a channel
+                               and keep the other permissions of it
+
+actions of roles:
+  list <workspace>             the roles of a workspace: the \"everyone\" role, then the
+                               other roles from the highest position to the lowest
+  create <workspace> <name> [--permissions <list>]
+  rename <workspace> <role> <name>
+  permissions <workspace> <role> <list>
+                               replace the permissions of a role; --none in the place of
+                               the list gives the role no permission
+  delete <workspace> <role>
+  give <workspace> <account> <role>, take <workspace> <account> <role>
+  move <workspace> <role> <position>
+                               give a role the position that a role of the list holds; each
+                               role between the two positions takes the position of the
+                               role beside it, in one request
+  server <action> [arguments]  the same actions for the roles of the server, each without
+                               <workspace>
+
+A list of permissions is written with commas and without spaces, such as
+view_channel,manage_messages. A role of the server takes the permissions of the server,
+such as create_invites.
 
 actions of members:
   list <workspace>
   add <workspace> <account>    add an existing account to a workspace
+  remove <workspace> <account> [--reason <text>]
+                               remove an account from one workspace; the reason stays in
+                               the audit log
 
 actions of accounts:
   list
-  remove <account>, ban <account>, unban <account>
+  remove <account> [--reason <text>], ban <account> [--reason <text>]
+                               the reason stays in the audit log
+  unban <account>
 
 actions of invites:
   list
@@ -274,8 +314,13 @@ actions of exports:
   remove <export>
 
 actions of audit:
-  server [--before <entry>] [--limit <n>]
-  workspace <workspace> [--before <entry>] [--limit <n>]
+  server [filters] [--before <entry>] [--limit <n>]
+  workspace <workspace> [filters] [--before <entry>] [--limit <n>]
+                               the filters: --action <name> for one action as the server
+                               names it, such as account_banned; --actor <account>;
+                               --target <identifier> for an identifier that the entry
+                               names; --since <time> and --until <time>, each written as
+                               2026-01-31T00:00:00Z
 
 actions of archive-period:
   show <workspace>
@@ -287,6 +332,11 @@ actions of retention:
   recordings <workspace> <days|never>
   direct show
   direct set <days|never>      the retention of the files of direct messages
+
+actions of logo:
+  show                         the type, the size and the hash of the logo of the server
+  set <file>                   send an image file as the logo of the server
+  remove
 
 An action that joins a call prints the token for the media server only with --show-token.
 A place in a call belongs to the session that asked for it, and every command ends its
@@ -335,7 +385,7 @@ const VALUE_OPTIONS: &[&str] = &[
     "everyone-mentions",
     "dnd",
     "quiet",
-    "utc-offset",
+    "time-zone",
     "channel",
     "author",
     "from",
@@ -348,6 +398,11 @@ const VALUE_OPTIONS: &[&str] = &[
     "deny",
     "action",
     "days",
+    "reason",
+    "actor",
+    "target",
+    "since",
+    "permissions",
 ];
 const FLAGS: &[&str] = &[
     "when-selected",
@@ -358,6 +413,7 @@ const FLAGS: &[&str] = &[
     "show-token",
     "no-quiet",
     "no-category",
+    "none",
 ];
 const WAIT_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -675,8 +731,9 @@ async fn run(arguments: Arguments) -> Result<(), Failure> {
         }
         "recordings" => recordings::run(&client, &arguments).await,
         "deny-request" | "invites" | "redeem" | "workspaces" | "categories" | "channels"
-        | "overrides" | "members" | "accounts" | "tokens" | "exports" | "audit"
+        | "overrides" | "members" | "accounts" | "tokens" | "exports" | "audit" | "logo"
         | "archive-period" | "retention" => admin::run(&client, command, &arguments).await,
+        "roles" => roles::run(&client, &arguments).await,
         other => Err(usage(format!("unknown command {other}"))),
     }
 }

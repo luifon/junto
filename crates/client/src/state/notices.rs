@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 use super::feed::{self, Names, Zone};
 use super::view::{Known, Shown};
-use crate::text;
+use crate::{text, zones};
 
 /// The characters of a message that a notice, a search result and a system notification
 /// show.
@@ -409,7 +409,8 @@ pub struct ChannelNotify {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DefaultRead {
     Reading,
-    Read(NotificationLevel),
+    /// The level, or none while the workspace sets no level (ADR 0412).
+    Read(Option<NotificationLevel>),
     Failed,
 }
 
@@ -454,17 +455,15 @@ pub fn stored_settings(
         .unwrap_or_default()
 }
 
-/// The level that the administrators set for a workspace, when the client can tell that
-/// they set one. The route answers "mentions only" for a workspace without a stored level
-/// too, so only the two other levels are known to be stored.
+/// The level that the administrators set for a workspace, or that they set none, when
+/// the client has read it (ADR 0412).
 fn known_default(
     server_id: ServerId,
     workspace_id: WorkspaceId,
     known: &Known,
 ) -> Option<Option<NotificationLevel>> {
     match known.workspace_defaults.get(&(server_id, workspace_id)) {
-        Some(DefaultRead::Read(NotificationLevel::Mentions)) => Some(None),
-        Some(DefaultRead::Read(level)) => Some(Some(*level)),
+        Some(DefaultRead::Read(level)) => Some(*level),
         Some(DefaultRead::Reading | DefaultRead::Failed) | None => None,
     }
 }
@@ -480,12 +479,8 @@ fn inherited_level(
 ) -> Option<NotificationLevel> {
     let stored = |scope| stored_settings(server_id, scope, model, known).level;
     let account = stored(SettingsScope::Account).unwrap_or(NotificationLevel::Mentions);
-    let below_workspace = |workspace_id| match known_default(server_id, workspace_id, known)? {
-        Some(level) => Some(level),
-        // "Mentions only" is the level of the administrators, or no level is stored: the
-        // two cases give the same level only when the account has that level too.
-        None => (account == NotificationLevel::Mentions).then_some(account),
-    };
+    let below_workspace =
+        |workspace_id| Some(known_default(server_id, workspace_id, known)?.unwrap_or(account));
     match scope {
         SettingsScope::Account => Some(NotificationLevel::Mentions),
         SettingsScope::Workspace(workspace_id) => below_workspace(workspace_id),
@@ -619,7 +614,7 @@ pub fn quiet_view(
         quiet_now: known.clock.is_some_and(|now| {
             servers
                 .iter()
-                .any(|(server_id, _, model)| Some(*server_id) == shown && model.is_quiet(now))
+                .any(|(server_id, _, model)| Some(*server_id) == shown && quiet_at(model, now))
         }),
         busy: known.quiet_busy,
         failed: known
@@ -631,6 +626,12 @@ pub fn quiet_view(
             })
             .collect(),
     }
+}
+
+/// True while the account of a server wants no alert at an instant. The clock of the zone
+/// that the daily quiet time names decides, as on the server (ADR 0412, ADR 0798).
+pub(super) fn quiet_at(model: &ServerModel, at: OffsetDateTime) -> bool {
+    model.is_quiet(|zone| zones::minute_in(zone, at))
 }
 
 /// The minutes of a day of a time that a person typed as `22:00` or `7:30`.
@@ -885,7 +886,7 @@ pub fn alerts(seen: &mut Seen, scene: &AlertScene<'_>) -> Alerts {
         seen.newest = newest;
         seen.do_not_disturb = do_not_disturb;
     }
-    let quiet = model.is_quiet(scene.now);
+    let quiet = quiet_at(model, scene.now);
     let held_back = seen.do_not_disturb && !do_not_disturb;
     seen.do_not_disturb = do_not_disturb;
     seen.recent
@@ -978,7 +979,7 @@ pub fn alerts(seen: &mut Seen, scene: &AlertScene<'_>) -> Alerts {
         else {
             continue;
         };
-        if quiet || held_back || model.is_quiet(notice.created_at) {
+        if quiet || held_back || quiet_at(model, notice.created_at) {
             continue;
         }
         let tag = notice_tag(scene.server_id, notice.id);

@@ -309,6 +309,19 @@ async fn a_failing_step_of_maintenance_does_not_stop_the_later_steps() {
                 .unwrap();
         }
     };
+    sqlx::query(
+        "insert into events(id,recorded_at,class,kind,audience,audience_account_id,payload)
+        select gen_random_uuid(),$1,'control','permissions_changed',
+        jsonb_build_object('to','account','account_id',$2::uuid),$2,
+        jsonb_build_object('type','permissions_changed','workspace_id',null)
+        from generate_series(1,$3)",
+    )
+    .bind(server.clock.now())
+    .bind(files.owner.account_id)
+    .bind(server.state.config.limits.stream.events_kept as i32 + 1)
+    .execute(&server.db)
+    .await
+    .unwrap();
     rename("trimmed_through", "trimmed_through_moved").await;
 
     server.clock.advance(Duration::hours(25));

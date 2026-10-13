@@ -389,6 +389,26 @@ impl Shell {
                             .into_any_element(),
                     );
                 }
+                // The further threads of the shown channel that the person follows.
+                if let Some(more) = channel.more_followed {
+                    let row = ChannelRow::new(
+                        ("followed-more", index),
+                        Icon::ChevronDown,
+                        text::followed::show_more(more.count),
+                    )
+                    .nested()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.state
+                            .update(cx, |state, cx| state.show_more_followed(cx));
+                    }));
+                    rows.push(
+                        div()
+                            .flex_none()
+                            .debug_selector(move || format!("followed-more:{channel_id}"))
+                            .child(row)
+                            .into_any_element(),
+                    );
+                }
                 let occupants = channel
                     .voice
                     .as_ref()

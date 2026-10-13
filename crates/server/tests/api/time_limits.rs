@@ -92,6 +92,13 @@ async fn a_request_blocked_inside_a_statement_gets_the_timeout_error_and_frees_i
         reply.error(ErrorCode::Timeout);
         assert!(reply.retry_after.is_some());
     }
+    // Cancellation must release its backend within twice the lock timeout after the replies.
+    tokio::time::timeout(
+        server.state.config.limits.database.lock.unsigned_abs() * 2,
+        until_no_backend_is_busy(&server, holder_pid),
+    )
+    .await
+    .expect("a cancelled statement held its backend beyond twice the lock timeout");
     assert_eq!(busy_backends(&server, holder_pid).await, 0);
 
     let account = tokio::time::timeout(PATIENCE, server.get(&owner, "/api/v1/account"))

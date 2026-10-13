@@ -13,8 +13,9 @@ use junto_protocol::message::MessagePlace;
 use junto_protocol::recording::Recording;
 use junto_protocol::structure::Channel;
 
+use super::rank::sort_workspace_roles;
 use super::{
-    AdminPart, CallModel, ChannelModel, Loadable, PlaceId, Reach, ServerModel, ThreadMoved,
+    AdminPart, CallModel, ChannelModel, LogoState, PlaceId, Reach, ServerModel, ThreadMoved,
     WorkspaceModel,
 };
 
@@ -168,6 +169,7 @@ impl Part {
                 } | Event::ThreadRead { .. }
                     | Event::NotificationChanged { .. }
                     | Event::MessageMentioned { .. }
+                    | Event::ThreadFollowChanged { .. }
             ),
             Self::ThreadHead(_) => matches!(
                 event,
@@ -183,6 +185,7 @@ impl Part {
                 Event::NotificationChanged { .. }
                     | Event::MessageRead { .. }
                     | Event::ThreadRead { .. }
+                    | Event::NotificationsRead { .. }
             ),
             Self::Named(message_id) => {
                 matches!(event, Event::MessageChanged { message_id: of, .. } if of == message_id)
@@ -217,9 +220,12 @@ impl Part {
                 _ => false,
             },
             Self::Admin(part) => part.concerns(event),
+            // The answer to a page that was asked for before every notice was read states
+            // its notices as unread: the event is applied to them after the answer.
+            Self::MoreNotices(_) => matches!(event, Event::NotificationsRead { .. }),
             // A page after the loaded ones is added only while the list before it is the
             // one that the request continued; no event changes its answer.
-            Self::MoreThreads | Self::MoreNotices(_) => false,
+            Self::MoreThreads => false,
         }
     }
 }
@@ -289,18 +295,22 @@ impl ServerModel {
                     self.account.avatar.clone_from(&profile.avatar);
                 }
                 for workspace in &mut self.workspaces {
-                    let renamed = workspace.members.loaded().is_some_and(|members| {
+                    // The description of the avatar of a member is the one of the profile
+                    // (ADR 0119).
+                    let changed = workspace.members.loaded().is_some_and(|members| {
                         members.iter().any(|member| {
-                            member.account_id == profile.id && member.name != profile.name
+                            member.account_id == profile.id
+                                && (member.name != profile.name || member.avatar != profile.avatar)
                         })
                     });
-                    if !renamed {
+                    if !changed {
                         continue;
                     }
                     if let Some(members) = Arc::make_mut(workspace).members.loaded_mut() {
                         for member in members {
                             if member.account_id == profile.id {
                                 member.name.clone_from(&profile.name);
+                                member.avatar.clone_from(&profile.avatar);
                             }
                         }
                     }
@@ -318,14 +328,8 @@ impl ServerModel {
                     }
                     Some(_) => {}
                     None if created => {
-                        self.workspaces.push(Arc::new(WorkspaceModel {
-                            workspace: workspace.clone(),
-                            own_role_ids: Vec::new(),
-                            roles: Vec::new(),
-                            categories: Vec::new(),
-                            channels: Vec::new(),
-                            members: Loadable::NotLoaded,
-                        }));
+                        self.workspaces
+                            .push(Arc::new(WorkspaceModel::unlisted(workspace.clone())));
                         self.workspaces.sort_by_key(|held| held.workspace.id);
                     }
                     None => {}
@@ -369,10 +373,75 @@ impl ServerModel {
             Event::WorkspaceRoleCreated { role } | Event::WorkspaceRoleUpdated { role } => {
                 if let Some(workspace) = self.workspace_mut(role.workspace_id) {
                     upsert(&mut workspace.roles, role, |held| held.id == role.id);
-                    workspace
-                        .roles
-                        .sort_by_key(|held| (!held.is_everyone, held.id));
+                    sort_workspace_roles(&mut workspace.roles);
                 }
+            }
+            Event::WorkspaceRolePositionsShifted {
+                workspace_id,
+                positions,
+            } => {
+                // The event states absolute positions (ADR 0309): a second delivery, or
+                // a delivery after a read that held the new positions already, changes
+                // nothing.
+                let moves = self.workspace(*workspace_id).is_some_and(|workspace| {
+                    workspace.roles.iter().any(|held| {
+                        positions.iter().any(|moved| {
+                            moved.role_id == held.id && moved.position != held.position
+                        })
+                    })
+                });
+                if moves && let Some(workspace) = self.workspace_mut(*workspace_id) {
+                    for held in &mut workspace.roles {
+                        if let Some(moved) = positions.iter().find(|moved| moved.role_id == held.id)
+                        {
+                            held.position = moved.position;
+                        }
+                    }
+                    sort_workspace_roles(&mut workspace.roles);
+                }
+            }
+            Event::NotificationsRead { until, read_at } => {
+                for held in &mut self.notices {
+                    if held.read_at.is_none() && held.created_at <= *until {
+                        held.read_at = Some(*read_at);
+                    }
+                }
+                // A notice of that time whose transaction ended after the request stays
+                // unread on the server (ADR 0412): the list of the server decides.
+                return Follow::load(Part::Notices);
+            }
+            Event::ThreadFollowChanged {
+                root_id,
+                following,
+                follow_setting,
+            } => {
+                if let Some(held) = self
+                    .threads
+                    .iter_mut()
+                    .find(|held| held.root_id == *root_id)
+                {
+                    held.following = *following;
+                    held.follow_setting = *follow_setting;
+                }
+                // The replies of a thread that is not followed are not unread, and a
+                // thread that is followed from now on enters the lists with its next
+                // reply: the server states both (ADR 0412).
+                return Follow::load(Part::UnreadThreads);
+            }
+            Event::NotificationDefaultChanged {
+                workspace_id,
+                level,
+            } => {
+                if self.workspace(*workspace_id).is_none() {
+                    return Follow::default();
+                }
+                if let Some(workspace) = self.workspace_mut(*workspace_id) {
+                    workspace.notification_default = *level;
+                }
+                // The level decides the unread signs of every channel of the workspace
+                // that sets none of its own, and only the snapshot states them all
+                // (ADR 0409).
+                return Follow::reload();
             }
             Event::CategoryCreated { category } | Event::CategoryUpdated { category } => {
                 if let Some(workspace) = self.workspace_mut(category.workspace_id) {
@@ -424,6 +493,7 @@ impl ServerModel {
                     workspace
                         .channels
                         .retain(|channel| channel.channel.id != *channel_id);
+                    workspace.forget_channel_permissions(*channel_id);
                 }
                 self.forget_place(PlaceId::Channel(*channel_id));
                 self.lose_recordings_of(*channel_id);
@@ -441,6 +511,8 @@ impl ServerModel {
                     workspace
                         .channels
                         .retain(|channel| channel.channel.id != channel_id);
+                    // The snapshot states no list for an archived channel (ADR 0310).
+                    workspace.forget_channel_permissions(channel_id);
                 }
                 // The call of an archived voice channel ends (ADR 0410).
                 self.forget_calls_of(channel_id);
@@ -526,12 +598,17 @@ impl ServerModel {
                 return Follow::loads(self.thread_heads());
             }
             Event::CallStarted {
+                hides_occupants,
                 call_id,
                 place,
                 started_at,
             } => {
-                let shown = self.shows(*call_id, place);
-                if shown && let Some(call) = self.call_mut(*call_id, place, true) {
+                // The event states the setting that the call keeps (ADR 0517). An older
+                // server does not: the setting is then the one that the state holds.
+                let hides = hides_occupants.or_else(|| self.hides(*call_id, place));
+                let shown = hides.is_some_and(|hides| !hides || self.has_place_in(*call_id));
+                if shown && let Some(call) = self.call_mut_stated(*call_id, place, *hides_occupants)
+                {
                     call.started_at = Some(*started_at);
                 }
                 if let Some(channel) = self.channel_mut(place) {
@@ -582,11 +659,12 @@ impl ServerModel {
                 // the account reads the call and the requests to enter; before, the
                 // server gave it neither, and nothing of a call that hides who is inside
                 // (ADR 0517).
-                if matches!(event, Event::CallParticipantJoined { .. })
-                    && participant.account_id == self.account.id
-                    && self.has_place_in(*call_id)
-                {
-                    return Follow::load(Part::OwnCall);
+                if participant.account_id == self.account.id && self.has_place_in(*call_id) {
+                    // An earlier answer that said "not inside" is older than this event.
+                    self.own_seat = None;
+                    if matches!(event, Event::CallParticipantJoined { .. }) {
+                        return Follow::load(Part::OwnCall);
+                    }
                 }
             }
             Event::CallParticipantLeft {
@@ -719,6 +797,7 @@ impl ServerModel {
             }
             Event::OwnCallChanged { call, .. } => {
                 let before = std::mem::replace(&mut self.own_call, call.clone());
+                self.own_seat = None;
                 let same_call = match (&before, call) {
                     (Some(before), Some(now)) => before.call_id == now.call_id,
                     _ => false,
@@ -748,6 +827,9 @@ impl ServerModel {
             }
             Event::AttachmentLimitsChanged { limits } => {
                 self.attachment_limits = Some(limits.clone());
+            }
+            Event::ServerLogoChanged { logo } => {
+                self.logo = LogoState::Stated(logo.clone());
             }
             Event::MessageMentioned { channel_id, .. } => {
                 if self.channel(*channel_id).is_some() {
@@ -844,6 +926,7 @@ impl ServerModel {
             | Event::ServerRoleCreated { .. }
             | Event::ServerRoleUpdated { .. }
             | Event::ServerRoleDeleted { .. }
+            | Event::ServerRolePositionsShifted { .. }
             | Event::AccessTokenCreated { .. }
             | Event::AccessTokenRevoked { .. }
             | Event::AccessTokensOfCreatorRevoked { .. }
@@ -851,6 +934,7 @@ impl ServerModel {
             | Event::ExportUpdated { .. }
             | Event::ExportRemoved { .. }
             | Event::InviteCreated { .. }
+            | Event::InviteChanged { .. }
             | Event::InviteRevoked { .. }
             | Event::InviteUsed { .. }
             | Event::InvitesOfCreatorRevoked { .. }
@@ -1021,15 +1105,21 @@ impl ServerModel {
     }
 
     /// Whether the call `call_id` at `place` hides who is inside. A call keeps the setting
-    /// of its start (ADR 0517), and the state holds it with the call. A call that the
-    /// state does not hold is a new one for it and takes the setting of its channel.
+    /// of its start (ADR 0517), and the state holds it with the call. For a call that the
+    /// state does not hold, the own call of the account states the setting when it is that
+    /// call; another call is a new one for the state and takes the setting of its channel.
     fn hides(&self, call_id: CallId, place: &CallPlace) -> Option<bool> {
         match place {
             CallPlace::Channel { channel_id, .. } => {
                 let channel = self.channel(*channel_id)?;
                 Some(match &channel.call {
                     Some(call) if call.id == call_id => call.hides_occupants,
-                    _ => channel.channel.hides_occupants,
+                    _ => self
+                        .own_call
+                        .as_ref()
+                        .filter(|own| own.call_id == call_id)
+                        .and_then(|own| own.hides_occupants)
+                        .unwrap_or(channel.channel.hides_occupants),
                 })
             }
             CallPlace::Direct { .. } => Some(false),
@@ -1053,10 +1143,35 @@ impl ServerModel {
         place: &CallPlace,
         create: bool,
     ) -> Option<&mut CallModel> {
+        let hides = self.hides(call_id, place)?;
+        self.call_mut_with(call_id, place, create, hides)
+    }
+
+    /// The call `call_id` at `place` for the event of its start, which states the setting
+    /// that the call keeps when `stated` is present (ADR 0517). The call is added when the
+    /// state does not hold it, and a call that the state holds takes the stated setting.
+    fn call_mut_stated(
+        &mut self,
+        call_id: CallId,
+        place: &CallPlace,
+        stated: Option<bool>,
+    ) -> Option<&mut CallModel> {
+        let hides = stated.or_else(|| self.hides(call_id, place))?;
+        let call = self.call_mut_with(call_id, place, true, hides)?;
+        call.hides_occupants = hides;
+        Some(call)
+    }
+
+    fn call_mut_with(
+        &mut self,
+        call_id: CallId,
+        place: &CallPlace,
+        create: bool,
+        hides: bool,
+    ) -> Option<&mut CallModel> {
         // An account without a place in a call that hides who is inside holds no details
         // of that call. The server sends it none; an event that was kept during a read is
         // applied by what holds now.
-        let hides = self.hides(call_id, place)?;
         if hides && !self.has_place_in(call_id) {
             return None;
         }

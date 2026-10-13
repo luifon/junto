@@ -604,6 +604,12 @@
         "call_id": {
           "$ref": "#/components/schemas/CallId"
         },
+        "hides_occupants": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "place": {
           "$ref": "#/components/schemas/CallPlace"
         },
@@ -1076,6 +1082,25 @@
       ],
       "type": "object"
     },
+    "invite_changed": {
+      "description": "The workspaces granted by an existing invite were narrowed.",
+      "properties": {
+        "invite": {
+          "$ref": "#/components/schemas/Invite"
+        },
+        "type": {
+          "enum": [
+            "invite_changed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "invite",
+        "type"
+      ],
+      "type": "object"
+    },
     "invite_created": {
       "properties": {
         "invite": {
@@ -1319,6 +1344,35 @@
       ],
       "type": "object"
     },
+    "notification_default_changed": {
+      "description": "The notification default of a workspace was set, changed or removed. `level` is\nabsent when the workspace has none now.",
+      "properties": {
+        "level": {
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/NotificationLevel"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "enum": [
+            "notification_default_changed"
+          ],
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/components/schemas/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "type"
+      ],
+      "type": "object"
+    },
     "notification_settings_changed": {
       "properties": {
         "type": {
@@ -1329,6 +1383,31 @@
         }
       },
       "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "notifications_read": {
+      "description": "Every visible notice created at or before `until` is read at `read_at` (ADR 0412).",
+      "properties": {
+        "read_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "notifications_read"
+          ],
+          "type": "string"
+        },
+        "until": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "until",
+        "read_at",
         "type"
       ],
       "type": "object"
@@ -1512,6 +1591,30 @@
       ],
       "type": "object"
     },
+    "server_logo_changed": {
+      "properties": {
+        "logo": {
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/Avatar"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "enum": [
+            "server_logo_changed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
     "server_role_created": {
       "properties": {
         "role": {
@@ -1549,6 +1652,28 @@
       ],
       "type": "object"
     },
+    "server_role_positions_shifted": {
+      "description": "Replaces the positions of existing server roles before the following creation.",
+      "properties": {
+        "positions": {
+          "items": {
+            "$ref": "#/components/schemas/ServerRolePosition"
+          },
+          "type": "array"
+        },
+        "type": {
+          "enum": [
+            "server_role_positions_shifted"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "positions",
+        "type"
+      ],
+      "type": "object"
+    },
     "server_role_updated": {
       "properties": {
         "role": {
@@ -1563,6 +1688,35 @@
       },
       "required": [
         "role",
+        "type"
+      ],
+      "type": "object"
+    },
+    "thread_follow_changed": {
+      "description": "The account of the recipient chose to follow a thread or not, or removed its choice.\n`following` is what holds now; `follow_setting` is the choice, absent when none is\nset (ADR 0412).",
+      "properties": {
+        "follow_setting": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "following": {
+          "type": "boolean"
+        },
+        "root_id": {
+          "$ref": "#/components/schemas/MessageId"
+        },
+        "type": {
+          "enum": [
+            "thread_follow_changed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "root_id",
+        "following",
         "type"
       ],
       "type": "object"
@@ -1804,6 +1958,32 @@
       "required": [
         "workspace_id",
         "role_id",
+        "type"
+      ],
+      "type": "object"
+    },
+    "workspace_role_positions_shifted": {
+      "description": "Replaces the positions of existing non-everyone roles before creation.",
+      "properties": {
+        "positions": {
+          "items": {
+            "$ref": "#/components/schemas/WorkspaceRolePosition"
+          },
+          "type": "array"
+        },
+        "type": {
+          "enum": [
+            "workspace_role_positions_shifted"
+          ],
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/components/schemas/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "positions",
         "type"
       ],
       "type": "object"
@@ -2165,6 +2345,17 @@
         "properties": {
           "account_id": {
             "$ref": "#/components/schemas/AccountId"
+          },
+          "avatar": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Avatar",
+                "description": "Metadata of the avatar, without its image bytes."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "deafened": {
             "description": "The person's own sound setting, as their client reports it.",
@@ -2818,6 +3009,28 @@
             "type": "object"
           },
           {
+            "description": "Replaces the positions of existing server roles before the following creation.",
+            "properties": {
+              "positions": {
+                "items": {
+                  "$ref": "#/components/schemas/ServerRolePosition"
+                },
+                "type": "array"
+              },
+              "type": {
+                "enum": [
+                  "server_role_positions_shifted"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "positions",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
             "properties": {
               "role": {
                 "$ref": "#/components/schemas/ServerRole"
@@ -2918,6 +3131,25 @@
               "type": {
                 "enum": [
                   "invite_created"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "invite",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The workspaces granted by an existing invite were narrowed.",
+            "properties": {
+              "invite": {
+                "$ref": "#/components/schemas/Invite"
+              },
+              "type": {
+                "enum": [
+                  "invite_changed"
                 ],
                 "type": "string"
               }
@@ -3157,6 +3389,32 @@
             "type": "object"
           },
           {
+            "description": "Replaces the positions of existing non-everyone roles before creation.",
+            "properties": {
+              "positions": {
+                "items": {
+                  "$ref": "#/components/schemas/WorkspaceRolePosition"
+                },
+                "type": "array"
+              },
+              "type": {
+                "enum": [
+                  "workspace_role_positions_shifted"
+                ],
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            },
+            "required": [
+              "workspace_id",
+              "positions",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
             "properties": {
               "role": {
                 "$ref": "#/components/schemas/WorkspaceRole"
@@ -3332,6 +3590,12 @@
             "properties": {
               "call_id": {
                 "$ref": "#/components/schemas/CallId"
+              },
+              "hides_occupants": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
               },
               "place": {
                 "$ref": "#/components/schemas/CallPlace"
@@ -4011,6 +4275,30 @@
           },
           {
             "properties": {
+              "logo": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/Avatar"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": {
+                "enum": [
+                  "server_logo_changed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
               "limits": {
                 "$ref": "#/components/schemas/AttachmentLimits"
               },
@@ -4377,6 +4665,89 @@
               "type"
             ],
             "type": "object"
+          },
+          {
+            "description": "Every visible notice created at or before `until` is read at `read_at` (ADR 0412).",
+            "properties": {
+              "read_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "notifications_read"
+                ],
+                "type": "string"
+              },
+              "until": {
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": [
+              "until",
+              "read_at",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The account of the recipient chose to follow a thread or not, or removed its choice.\n`following` is what holds now; `follow_setting` is the choice, absent when none is\nset (ADR 0412).",
+            "properties": {
+              "follow_setting": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "following": {
+                "type": "boolean"
+              },
+              "root_id": {
+                "$ref": "#/components/schemas/MessageId"
+              },
+              "type": {
+                "enum": [
+                  "thread_follow_changed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "root_id",
+              "following",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The notification default of a workspace was set, changed or removed. `level` is\nabsent when the workspace has none now.",
+            "properties": {
+              "level": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/NotificationLevel"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": {
+                "enum": [
+                  "notification_default_changed"
+                ],
+                "type": "string"
+              },
+              "workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            },
+            "required": [
+              "workspace_id",
+              "type"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -4501,6 +4872,13 @@
           },
           "created_by": {
             "$ref": "#/components/schemas/AccountId"
+          },
+          "created_by_name": {
+            "description": "Current creator name in a list; the name at creation in an event.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "expires_at": {
             "format": "date-time",
@@ -4723,6 +5101,14 @@
         ],
         "type": "string"
       },
+      "NotificationLevel": {
+        "enum": [
+          "all",
+          "mentions",
+          "nothing"
+        ],
+        "type": "string"
+      },
       "OwnCall": {
         "description": "The call that the account is in, and the device that it is in the call with.",
         "properties": {
@@ -4731,6 +5117,13 @@
           },
           "device_id": {
             "$ref": "#/components/schemas/DeviceId"
+          },
+          "hides_occupants": {
+            "description": "The retained hide setting, or unknown when an older server omitted it.",
+            "type": [
+              "boolean",
+              "null"
+            ]
           },
           "identity": {
             "type": "string"
@@ -5202,6 +5595,10 @@
               "$ref": "#/components/schemas/ServerPermission"
             },
             "type": "array"
+          },
+          "position": {
+            "format": "int32",
+            "type": "integer"
           }
         },
         "required": [
@@ -5214,6 +5611,22 @@
       "ServerRoleId": {
         "format": "uuid",
         "type": "string"
+      },
+      "ServerRolePosition": {
+        "properties": {
+          "position": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "role_id": {
+            "$ref": "#/components/schemas/ServerRoleId"
+          }
+        },
+        "required": [
+          "role_id",
+          "position"
+        ],
+        "type": "object"
       },
       "ShareAudio": {
         "description": "The sound that a screen share sends (ADR 0502).",
@@ -5292,6 +5705,17 @@
           "account_id": {
             "$ref": "#/components/schemas/AccountId"
           },
+          "avatar": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Avatar",
+                "description": "Metadata of the avatar, without its image bytes."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "name": {
             "type": "string"
           },
@@ -5349,6 +5773,10 @@
             },
             "type": "array"
           },
+          "position": {
+            "format": "int32",
+            "type": "integer"
+          },
           "workspace_id": {
             "$ref": "#/components/schemas/WorkspaceId"
           }
@@ -5365,6 +5793,22 @@
       "WorkspaceRoleId": {
         "format": "uuid",
         "type": "string"
+      },
+      "WorkspaceRolePosition": {
+        "properties": {
+          "position": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "role_id": {
+            "$ref": "#/components/schemas/WorkspaceRoleId"
+          }
+        },
+        "required": [
+          "role_id",
+          "position"
+        ],
+        "type": "object"
       }
     }
   }

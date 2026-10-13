@@ -198,6 +198,7 @@ pub async fn get_own_call(
         Ok(OwnCallView {
             cursor,
             call: Some(OwnCallState {
+                inside: Some(store::is_inside(connection, call.id, access.account_id).await?),
                 own: member.own_call(&call),
                 entry_requests: store::entry_requests(connection, now, &call, access.account_id)
                     .await?,

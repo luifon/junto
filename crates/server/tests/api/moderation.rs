@@ -75,6 +75,7 @@ async fn a_ban_blocks_the_keys_and_cancels_the_invites_and_an_unban_restores_the
     assert_eq!(
         log.entries[0].event,
         AuditEvent::AccountBanned {
+            reason: None,
             account_id: guest.account_id,
             cancelled_invite_ids: vec![guest_invite.invite.id],
         }
@@ -234,6 +235,7 @@ async fn a_removal_ends_the_account_and_frees_its_key() {
     assert_eq!(
         log.entries[0].event,
         AuditEvent::AccountRemoved {
+            reason: None,
             account_id: guest.account_id
         }
     );
@@ -478,7 +480,10 @@ async fn each_server_permission_opens_its_own_action_and_no_other() {
             let reply = server
                 .send::<Value>(method.clone(), path, Some(&holder.token), None, None)
                 .await;
-            let expected = if held == needed || *held == ServerPermission::Administrator {
+            let expected = if held == needed
+                || *held == ServerPermission::Administrator
+                || (*held == ServerPermission::BanMembers && *path == "/api/v1/server-roles")
+            {
                 StatusCode::OK
             } else {
                 StatusCode::FORBIDDEN

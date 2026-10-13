@@ -4,7 +4,9 @@
 use time::OffsetDateTime;
 
 use super::{date, date_time, days};
-use crate::state::admin::view::people::{Blocked, GrantFault, InviteState, RoleNames};
+use crate::state::admin::view::people::{
+    Blocked, GrantFault, InviteState, NoRemoval, ReasonFault, RoleNames,
+};
 
 // The accounts of the server.
 pub const PEOPLE_HELP: &str =
@@ -59,8 +61,14 @@ pub const fn blocked(reason: Blocked) -> &'static str {
         Blocked::Removed => "The account is removed.",
         Blocked::Banned => "The account is banned already.",
         Blocked::NotBanned => "The account is not banned.",
+        Blocked::Outranked => OUTRANKED,
+        Blocked::OrderNotRead => "The order of the server roles is on its way.",
     }
 }
+
+/// The sentence in the row of an account that role order protects (ADR 0309).
+pub const OUTRANKED: &str = "This account holds a server role at or above your highest server role. You cannot \
+     remove, ban or unban it.";
 
 pub fn remove_question(name: &str) -> String {
     format!(
@@ -78,7 +86,48 @@ pub fn ban_question(name: &str) -> String {
     )
 }
 
+// The reason of a ban and of a removal.
+pub const REASON: &str = "Reason";
+pub const REASON_PLACEHOLDER: &str = "Reason (optional)";
+pub const REASON_HELP: &str =
+    "The reason is kept in the entry of the audit log. It is not sent to the person.";
+pub const REASON_REFUSED: &str = "The server did not accept the reason. A reason has at most 1,000 characters and no \
+     control character.";
+
+pub const fn reason_fault(fault: ReasonFault) -> &'static str {
+    match fault {
+        ReasonFault::TooLong => "A reason has at most 1,000 characters.",
+        ReasonFault::Control => "A reason holds no control character.",
+    }
+}
+
 // The members of a workspace.
+pub const REMOVE_FROM_WORKSPACE: &str = "Remove from workspace";
+
+pub fn remove_member_question(name: &str, workspace: &str) -> String {
+    format!(
+        "Remove “{name}” from the workspace “{workspace}”? The account loses its roles of \
+         this workspace and its invites lose this workspace. The account, its other \
+         workspaces and its server roles stay. The person can enter again with an invite of \
+         another member."
+    )
+}
+
+/// Why a member cannot be removed from the workspace.
+pub const fn no_removal(reason: NoRemoval) -> &'static str {
+    match reason {
+        NoRemoval::Owner => "The server owner cannot be removed from a workspace.",
+        NoRemoval::OwnAccount => "You cannot remove your own account from a workspace.",
+        NoRemoval::Outranked => MEMBER_OUTRANKED,
+        NoRemoval::OrderNotRead => "The order of the roles is on its way.",
+    }
+}
+
+/// The sentence in the row of a member that role order protects (ADR 0309).
+pub const MEMBER_OUTRANKED: &str = "This member stands at or above your highest role in this workspace. You cannot \
+     remove it from the workspace.";
+pub const REMOVE_MEMBER_NEEDS: &str =
+    "Only an administrator can remove a member from this workspace.";
 pub const NO_MEMBERS: &str = "This workspace has no member.";
 pub const MEMBERS_NOT_READ: &str = "The members could not be read.";
 pub const NOT_MEMBERS: &str = "Accounts that are not members";

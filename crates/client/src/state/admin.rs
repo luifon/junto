@@ -2,11 +2,14 @@
 //! open, which collections of the client core that page needs, and the one request of
 //! the person that is on its way or was refused.
 
+mod notifications;
 mod overrides;
 mod people;
 pub(crate) mod recordings;
 mod records;
-mod structure;
+pub mod roles;
+mod server;
+pub(crate) mod structure;
 pub mod view;
 
 use std::collections::{HashMap, HashSet};
@@ -24,7 +27,8 @@ use junto_client_core::protocol::ids::{
 use junto_client_core::protocol::secret::{AccessToken, InviteCode};
 
 pub use recordings::RecordingList;
-pub use records::{AuditLog, AuditScope, ExportFiles};
+pub use records::{AuditFilter, AuditLog, AuditPeriod, AuditScope, ExportFiles};
+pub use roles::{RoleLevel, RolePermission, RoleRef};
 pub use view::AdminView;
 
 use super::AppState;
@@ -34,17 +38,25 @@ use crate::text;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AdminPage {
     Workspaces,
+    /// The server itself: its logo (ADR 0101).
+    Server,
     People,
     Invites,
     JoinRequests,
     Tokens,
     AuditLog,
+    /// The server roles in their order (ADR 0309).
+    ServerRoles,
     /// The categories and channels of the shown workspace.
     Channels,
+    /// The roles of the shown workspace in their order.
+    Roles,
     /// The archived channels, the archive period and the retention of the shown workspace.
     Archive,
     /// The members of the shown workspace.
     Members,
+    /// The notification level that the shown workspace sets for its members (ADR 0412).
+    Notifications,
     /// The recordings of the shown workspace that the account can see (ADR 0784).
     Recordings,
     /// The exports of the person.
@@ -102,10 +114,14 @@ pub enum AskKind {
     CallSettings(ChannelId),
     SetOverride(ChannelId, WorkspaceRoleId),
     ArchivePeriod,
+    /// The notification level of a workspace is set or removed.
+    NotificationDefault(WorkspaceId),
     FileRetention,
     RecordingRetention,
     DirectRetention,
     AddMember(AccountId),
+    /// The removal of a member from the shown workspace (ADR 0106).
+    RemoveMember(AccountId),
     RemoveAccount(AccountId),
     BanAccount(AccountId),
     UnbanAccount(AccountId),
@@ -117,6 +133,16 @@ pub enum AskKind {
     RevokeToken(AccessTokenId),
     RequestExport,
     RemoveExport(ExportId),
+    CreateRole(RoleLevel),
+    /// A new name or other permissions of a role.
+    UpdateRole(RoleRef),
+    DeleteRole(RoleRef),
+    MoveRole(RoleRef),
+    /// A role is given to an account or taken from it.
+    AssignRole(RoleRef, AccountId),
+    /// A file is read and sent as the logo of the server (ADR 0101).
+    SetLogo,
+    RemoveLogo,
 }
 
 /// Where a request stands. A request that the server did leaves no state: its effect
@@ -183,6 +209,9 @@ pub struct AdminState {
     pub(crate) exports: records::ExportFiles,
     /// The recordings of a workspace that the page has read.
     pub(crate) recordings: recordings::RecordingList,
+    /// The roles whose permissions the person changed and whose change the state does
+    /// not show yet (ADR 0791).
+    pub(crate) role_changes: roles::RoleChanges,
 }
 
 /// The request that an answer belongs to.
@@ -248,6 +277,8 @@ impl AdminState {
             (Some(held), Some(now)) if held == now => false,
             (Some(_), _) => {
                 self.close();
+                // The changes that wait belong to the account of before.
+                self.role_changes.forget();
                 true
             }
         }
@@ -334,15 +365,17 @@ impl AppState {
     }
 
     /// The collections of the client core that the window needs are held open: those of
-    /// the open page, and the archived list of the workspace of an archived channel that
-    /// the main area shows (ADR 0762). Every other collection is released.
+    /// the open page, and for an archived channel that the main area shows the archived
+    /// list of its workspace (ADR 0762) and the permissions of the account in the channel
+    /// (ADR 0310). Every other collection is released.
     pub(super) fn follow_admin(
         &mut self,
-        archived: Option<(ServerId, WorkspaceId)>,
+        archived: Option<(ServerId, WorkspaceId, ChannelId)>,
         cx: &mut Context<Self>,
     ) {
         // A save of an export does not outlive its server or its account.
         self.end_stale_export_saves();
+        self.settle_role_changes();
         let mut wanted: Vec<(ServerId, AdminPart)> = Vec::new();
         let snapshots = self.snapshots();
         let model_of = |server_id: ServerId| {
@@ -371,10 +404,15 @@ impl AppState {
                 }
             }
         }
-        if let Some((server_id, workspace_id)) = archived {
-            let key = (server_id, AdminPart::Archived(workspace_id));
-            if !wanted.contains(&key) {
-                wanted.push(key);
+        if let Some((server_id, workspace_id, channel_id)) = archived {
+            for part in [
+                AdminPart::Archived(workspace_id),
+                AdminPart::ChannelPermissions(channel_id),
+            ] {
+                let key = (server_id, part);
+                if !wanted.contains(&key) {
+                    wanted.push(key);
+                }
             }
         }
         let gone: Vec<(ServerId, AdminPart)> = self

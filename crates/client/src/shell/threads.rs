@@ -83,6 +83,7 @@ impl Shell {
             };
             vec![
                 self.render_fork_bar(thread, &theme, cx),
+                self.render_follow_bar(thread, &theme, cx),
                 self.render_thread_root(thread, &theme, window, cx),
                 self.render_pane(Pane::Thread, &shown, window, cx),
             ]
@@ -226,6 +227,94 @@ impl Shell {
                     )
                     .into_any_element()
             })
+            .into_any_element()
+    }
+
+    /// The control that states whether the person follows the thread, with the actions
+    /// that change it (ADR 0412). Nothing is drawn until the server has told the state.
+    fn render_follow_bar(
+        &mut self,
+        thread: &ThreadPanel,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = theme.colors;
+        let Some(follow) = &thread.follow else {
+            return div().flex_none().into_any_element();
+        };
+        let following = follow.following;
+        let state = text::followed::state(following, follow.setting);
+        // An archived channel takes no change, and one change is on its way at a time.
+        let held = follow.busy || follow.read_only;
+        let change = Button::new("thread-follow")
+            .label(text::followed::action(following))
+            .disabled(held)
+            .when(follow.read_only, |button| {
+                button.tooltip(text::followed::ARCHIVED)
+            })
+            .selector("thread-follow")
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.state
+                    .update(cx, |state, cx| state.follow_thread(!following, cx));
+            }));
+        // The choice of the person can be removed: the rule of the server decides again.
+        let default = follow.setting.map(|_| {
+            Button::new("thread-follow-default")
+                .kind(ButtonKind::Ghost)
+                .w_auto()
+                .px(u(8.0))
+                .label(text::followed::USE_DEFAULT)
+                .tooltip(if follow.read_only {
+                    text::followed::ARCHIVED
+                } else {
+                    text::followed::USE_DEFAULT_HELP
+                })
+                .disabled(held)
+                .when(held, |button| button.opacity(0.55))
+                .selector("thread-follow-default")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.state
+                        .update(cx, |state, cx| state.clear_thread_follow(cx));
+                }))
+        });
+        div()
+            .id("follow-bar")
+            .role(Role::Group)
+            .aria_label(text::followed::CONTROL)
+            .debug_selector(|| "follow-bar".to_owned())
+            .flex()
+            .flex_col()
+            .flex_none()
+            .gap(u(7.0))
+            .px(u(14.0))
+            .pt(u(9.0))
+            .pb(u(10.0))
+            .border_b_1()
+            .border_color(Hsla::from(colors.rule))
+            .child(
+                div()
+                    .id("thread-follow-state")
+                    .role(Role::Status)
+                    .aria_label(state)
+                    .debug_selector(|| "thread-follow-state".to_owned())
+                    .typeface(theme.types.small, theme)
+                    .ink(colors.ink_2)
+                    .child(state),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(u(6.0))
+                    .child(change)
+                    .children(default),
+            )
+            .children(
+                follow
+                    .refused
+                    .clone()
+                    .map(|reason| Notice::error(reason).selector("thread-follow-refused")),
+            )
             .into_any_element()
     }
 

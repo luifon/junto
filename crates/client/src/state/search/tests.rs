@@ -69,6 +69,9 @@ fn scene() -> Scene {
             categories: Vec::new(),
             channels: vec![general.clone(), daily.clone()],
             calls: Vec::new(),
+            permissions: Vec::new(),
+            channel_permissions: Vec::new(),
+            notification_default: None,
         }],
         own_call: None,
         direct_calls: Vec::new(),
@@ -335,11 +338,13 @@ fn the_filters_offer_the_channels_and_the_members_of_the_shown_workspace() {
     let workspace_id = scene.studio;
     let members = vec![
         WorkspaceMember {
+            avatar: None,
             account_id: scene.own,
             name: "Luca".to_owned(),
             role_ids: Vec::new(),
         },
         WorkspaceMember {
+            avatar: None,
             account_id: scene.ana,
             name: "Ana".to_owned(),
             role_ids: Vec::new(),
@@ -404,6 +409,9 @@ fn the_text_of_a_result_is_held_up_to_a_bound() {
             created_at: morning(),
             text,
             rank: 1.0,
+            position: None,
+            thread_root: None,
+            start_ms: None,
         })
     };
     assert_eq!(from_server("short".to_owned()).text, "short");

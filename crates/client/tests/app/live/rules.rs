@@ -680,6 +680,13 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
     scene.window.click("invite-open");
     scene.window.click_named(format!("invite:{ada}"));
     scene.invitation_for_ada();
+    // The invitation reaches Ada and the window of the person on two paths: the click
+    // waits for the row of the window.
+    scene
+        .window
+        .until("the invitation is shown as made again", |window| {
+            window.shows_named(format!("withdraw-invitation:{ada}"))
+        });
     scene
         .window
         .until("the invitation is shown as made", |window| {

@@ -19,6 +19,7 @@ use junto_client_core::protocol::structure::ChannelKind;
 use super::{Layer, Shell};
 use crate::assets::Icon;
 use crate::state::MentionSwitch;
+use crate::state::admin::view::notifications::DefaultChoice;
 use crate::state::notices::{
     Agreement, DefaultRead, Jump, Mute, MuteFor, NoticeRow, NoticesPanel, NotifyPanel, QuietView,
     Whereabouts, clock_text, parse_clock,
@@ -860,7 +861,9 @@ impl Shell {
                             text::WORKSPACE_DEFAULT,
                             levels.map(|level| SharedString::from(text::level_name(level))),
                         )
-                        .selected(levels.iter().position(|level| *level == held))
+                        .selected(
+                            held.and_then(|held| levels.iter().position(|level| *level == held)),
+                        )
                         .selector("workspace-default")
                         .on_select({
                             let select = cx.listener(move |this, index: &usize, _, cx| {
@@ -886,9 +889,17 @@ impl Shell {
                         .typeface(theme.types.control, &theme)
                         .font_weight(FontWeight::SEMIBOLD)
                         .ink(colors.ink)
-                        .child(text::level_name(held)),
+                        .child(text::admin::notifications::choice(DefaultChoice::of(held))),
                 ),
             };
+            // An administrator sees no selected level for a workspace that sets none.
+            if default.may_set && default.level == DefaultRead::Read(None) {
+                dialog = dialog.child(
+                    help(text::admin::notifications::stated(DefaultChoice::NotSet).into())
+                        .id("workspace-default-not-set")
+                        .debug_selector(|| "workspace-default-not-set".to_owned()),
+                );
+            }
             dialog = dialog.child(help(text::WORKSPACE_DEFAULT_HELP.into()));
         }
 

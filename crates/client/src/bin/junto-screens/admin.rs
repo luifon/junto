@@ -8,10 +8,11 @@ use std::sync::Arc;
 use junto_client::shell::Shell;
 use junto_client::shell::admin::Mode;
 use junto_client::shell::admin::people::Open as PeopleOpen;
+use junto_client::shell::admin::records::AuditMenu;
 use junto_client::state::admin::view::records::{AuditGroup, ExportSave};
 use junto_client::state::admin::{
-    AdminOpen, AdminPage, Ask, AskKind, AskState, AuditLog, AuditScope, ChannelPage, ExportFiles,
-    Made,
+    AdminOpen, AdminPage, Ask, AskKind, AskState, AuditFilter, AuditLog, AuditPeriod, AuditScope,
+    ChannelPage, ExportFiles, Made,
 };
 use junto_client::state::feed::Zone;
 use junto_client::state::view::ServerSnapshot;
@@ -23,7 +24,7 @@ use junto_client_core::model::{
 use junto_client_core::protocol::access_token::{AccessTokenInfo, TokenAction};
 use junto_client_core::protocol::account::{AccountStatus, AccountSummary};
 use junto_client_core::protocol::audit::{AuditEntry, AuditEvent};
-use junto_client_core::protocol::discovery::Retention;
+use junto_client_core::protocol::discovery::{NotificationLevel, Retention};
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::protocol::export::{Export, ExportFailure, ExportState};
 use junto_client_core::protocol::ids::{WorkspaceId, WorkspaceRoleId};
@@ -61,6 +62,7 @@ const DECISIONS: u32 = 37;
 const ROADMAP: u32 = 38;
 const MODERATORS: u32 = 50;
 const INVITERS: u32 = 51;
+const ADMINISTRATORS: u32 = 54;
 const PROJECTS: u32 = 60;
 const ROOMS: u32 = 61;
 const INVITE: u32 = 600;
@@ -75,12 +77,12 @@ fn ago(days: i64) -> OffsetDateTime {
     at() - Duration::days(days)
 }
 
-fn collections(model: &mut ServerModel) -> &mut AdminModel {
+pub(crate) fn collections(model: &mut ServerModel) -> &mut AdminModel {
     Arc::make_mut(&mut model.admin)
 }
 
 /// The two servers of the screens, with the state of "Acme Studio" changed.
-fn servers(change: impl FnOnce(&mut ServerModel)) -> Vec<ServerSnapshot> {
+pub(crate) fn servers(change: impl FnOnce(&mut ServerModel)) -> Vec<ServerSnapshot> {
     vec![acme_with(change), harbor()]
 }
 
@@ -89,8 +91,10 @@ fn owner(model: &mut ServerModel) {
     model.account.is_owner = true;
 }
 
-/// Luca is an administrator, and another account owns the server.
+/// Luca is an administrator by the server role "Administrators", and another account
+/// owns the server.
 fn administrator(model: &mut ServerModel) {
+    model.account.server_role_ids = vec![id(ADMINISTRATORS)];
     model.account.server_permissions = vec![ServerPermission::Administrator];
 }
 
@@ -152,7 +156,7 @@ fn structure(model: &mut ServerModel) {
 
 /// Every account of "Acme Studio": Elisa is banned, Diego is removed, and `owner` owns
 /// the server.
-fn accounts(owner: &str) -> Vec<AccountSummary> {
+pub(crate) fn accounts(owner: &str) -> Vec<AccountSummary> {
     PEOPLE
         .iter()
         .enumerate()
@@ -178,6 +182,13 @@ fn accounts(owner: &str) -> Vec<AccountSummary> {
 fn server_roles() -> Vec<ServerRole> {
     vec![
         ServerRole {
+            position: 3,
+            id: id(ADMINISTRATORS),
+            name: "Administrators".to_owned(),
+            permissions: vec![ServerPermission::Administrator],
+        },
+        ServerRole {
+            position: 2,
             id: id(MODERATORS),
             name: "Moderators".to_owned(),
             permissions: vec![
@@ -186,6 +197,7 @@ fn server_roles() -> Vec<ServerRole> {
             ],
         },
         ServerRole {
+            position: 1,
             id: id(INVITERS),
             name: "Inviters".to_owned(),
             permissions: vec![ServerPermission::CreateInvites],
@@ -195,6 +207,7 @@ fn server_roles() -> Vec<ServerRole> {
 
 fn invite(number: u32, by: &str, created: OffsetDateTime, days: i64, uses: (u32, u32)) -> Invite {
     Invite {
+        created_by_name: None,
         id: id(INVITE + number),
         created_by: person(by),
         created_at: created,
@@ -500,6 +513,9 @@ fn server_log() -> Vec<AuditEntry> {
         12,
         Some("Luca"),
         AuditEvent::AccountBanned {
+            reason: Some(
+                "Sent the same advertisement to every channel after two warnings.".to_owned(),
+            ),
             account_id: person("Elisa"),
             cancelled_invite_ids: vec![id(INVITE + 4)],
         },
@@ -585,6 +601,7 @@ fn server_log() -> Vec<AuditEntry> {
         2 * day + 4 * hour,
         Some("Ana"),
         AuditEvent::AccountRemoved {
+            reason: None,
             account_id: person("Diego"),
         },
     );
@@ -734,7 +751,7 @@ fn workspace_log() -> Vec<AuditEntry> {
 
 /// A request that the server refused with this code, with the sentence that the page
 /// states for it.
-fn refused(what: AskKind, code: ErrorCode) -> Option<Ask> {
+pub(crate) fn refused(what: AskKind, code: ErrorCode) -> Option<Ask> {
     let error = ApiError::Rejected(Rejection {
         code,
         status: code.http_status(),
@@ -755,7 +772,7 @@ fn utc(shell: &mut Shell, cx: &mut gpui::Context<Shell>) {
 }
 
 /// Opens the administration of "Acme Studio" at a page.
-fn open_page(
+pub(crate) fn open_page(
     shell: &mut Shell,
     page: AdminPage,
     window: &mut gpui::Window,
@@ -789,7 +806,12 @@ fn open_channel(
 
 /// Shows this state of a request and this result of a request. A call that opens a
 /// form or a question puts both away, so this call comes after it.
-fn tell(shell: &mut Shell, ask: Option<Ask>, made: Option<Made>, cx: &mut gpui::Context<Shell>) {
+pub(crate) fn tell(
+    shell: &mut Shell,
+    ask: Option<Ask>,
+    made: Option<Made>,
+    cx: &mut gpui::Context<Shell>,
+) {
     shell
         .state()
         .clone()
@@ -1237,6 +1259,29 @@ fn draw_people(studio: &mut Studio) -> Result<(), String> {
             shell.show_banned_only(true, cx);
         },
     )?;
+    // The question takes a reason, which the audit log keeps.
+    studio.draw(
+        Screen::new("admin-people-ban-reason", everyone()),
+        |shell, window, cx| {
+            open_page(shell, AdminPage::People, window, cx);
+            let open = PeopleOpen::BanAccount(person("Carla"));
+            shell.set_people_open(Some(open), window, cx);
+            shell.type_reason(
+                "Sent the same advertisement to every channel after two warnings.",
+                window,
+                cx,
+            );
+        },
+    )?;
+    studio.draw(
+        Screen::new("admin-people-reason-too-long", everyone()),
+        |shell, window, cx| {
+            open_page(shell, AdminPage::People, window, cx);
+            let open = PeopleOpen::RemoveAccount(person("Bruno"));
+            shell.set_people_open(Some(open), window, cx);
+            shell.type_reason(&"The same sentence again. ".repeat(41), window, cx);
+        },
+    )?;
     // Another person banned the account while the question was open.
     studio.draw(
         Screen::new("admin-people-refused", everyone()),
@@ -1279,6 +1324,42 @@ fn draw_people(studio: &mut Studio) -> Result<(), String> {
             }),
         ),
         |shell, window, cx| open_page(shell, AdminPage::Members, window, cx),
+    )?;
+    // An administrator below the owner removes a member from the workspace: the owner,
+    // the own account and an administrator at the same position state why not.
+    let removing = || {
+        servers(|model| {
+            administrator(model);
+            let mut listed = accounts("Ana");
+            for account in &mut listed {
+                if account.name == "Bruno" {
+                    account.server_role_ids = vec![id(ADMINISTRATORS)];
+                }
+            }
+            collections(model).accounts = Collection::Loaded(listed);
+            collections(model).server_roles = Collection::Loaded(server_roles());
+        })
+    };
+    studio.draw(
+        Screen::new("admin-members-remove", removing()),
+        |shell, window, cx| open_page(shell, AdminPage::Members, window, cx),
+    )?;
+    studio.draw(
+        Screen::new("admin-members-remove-question", removing()),
+        |shell, window, cx| {
+            open_page(shell, AdminPage::Members, window, cx);
+            let open = PeopleOpen::RemoveMember(person("Carla"));
+            shell.set_people_open(Some(open), window, cx);
+            shell.type_reason("The project of this workspace ended.", window, cx);
+        },
+    )?;
+    studio.draw(
+        Screen::new("admin-members-remove-refused", removing()),
+        |shell, window, cx| {
+            open_page(shell, AdminPage::Members, window, cx);
+            let what = AskKind::RemoveMember(person("Carla"));
+            tell(shell, refused(what, ErrorCode::Forbidden), None, cx);
+        },
     )?;
     studio.draw(
         Screen::new(
@@ -1539,11 +1620,48 @@ fn draw_audit(studio: &mut Studio) -> Result<(), String> {
             show_log(shell, scope, |log| log, window, cx);
         },
     )?;
+    // The server applied the filters: the log holds the entries that pass them.
+    fn banned(log: AuditLog) -> AuditLog {
+        let filter = AuditFilter {
+            action: Some("account_banned"),
+            about: Some(person("Elisa")),
+            period: AuditPeriod::Month,
+            ..AuditFilter::default()
+        };
+        log.with_filter(filter, |entry| {
+            matches!(entry.event, AuditEvent::AccountBanned { .. })
+        })
+        .with_people(vec![person("Luca"), person("Ana"), person("Elisa")])
+    }
     studio.draw(
         Screen::new("admin-audit-filtered", with_names()),
+        |shell, window, cx| show_log(shell, AuditScope::Server, banned, window, cx),
+    )?;
+    studio.draw(
+        Screen::new("admin-audit-filter-actions", with_names()),
         |shell, window, cx| {
-            let filter = |log: AuditLog| log.with_filters(Some(AuditGroup::Members), None);
-            show_log(shell, AuditScope::Server, filter, window, cx);
+            show_log(shell, AuditScope::Server, banned, window, cx);
+            shell.show_audit_menu(Some(AuditMenu::Action(AuditGroup::Members)), cx);
+        },
+    )?;
+    studio.draw(
+        Screen::new("admin-audit-filter-people", with_names()),
+        |shell, window, cx| {
+            show_log(shell, AuditScope::Server, banned, window, cx);
+            shell.show_audit_menu(Some(AuditMenu::About), cx);
+        },
+    )?;
+    studio.draw(
+        Screen::new("admin-audit-filter-none-pass", with_names()),
+        |shell, window, cx| {
+            let none = |log: AuditLog| {
+                let filter = AuditFilter {
+                    action: Some("server_logo_changed"),
+                    ..AuditFilter::default()
+                };
+                log.with_filter(filter, |_| false)
+            };
+            show_log(shell, AuditScope::Server, none, window, cx);
         },
     )?;
     studio.draw(
@@ -1567,7 +1685,58 @@ fn draw_audit(studio: &mut Studio) -> Result<(), String> {
     )
 }
 
+fn draw_notifications(studio: &mut Studio) -> Result<(), String> {
+    let with_level = |level: Option<NotificationLevel>| {
+        servers(move |model| {
+            administrator(model);
+            Arc::make_mut(&mut model.workspaces[0]).notification_default = level;
+        })
+    };
+    studio.draw(
+        Screen::new("admin-notifications-not-set", with_level(None)),
+        |shell, window, cx| open_page(shell, AdminPage::Notifications, window, cx),
+    )?;
+    studio.draw(
+        Screen::new(
+            "admin-notifications-all",
+            with_level(Some(NotificationLevel::All)),
+        ),
+        |shell, window, cx| open_page(shell, AdminPage::Notifications, window, cx),
+    )?;
+    studio.draw(
+        Screen::new(
+            "admin-notifications-nothing-150",
+            with_level(Some(NotificationLevel::Nothing)),
+        )
+        .scale(150),
+        |shell, window, cx| open_page(shell, AdminPage::Notifications, window, cx),
+    )?;
+    studio.draw(
+        Screen::new(
+            "admin-notifications-sending",
+            with_level(Some(NotificationLevel::Mentions)),
+        ),
+        |shell, window, cx| {
+            open_page(shell, AdminPage::Notifications, window, cx);
+            let ask = Ask {
+                what: AskKind::NotificationDefault(id(STUDIO)),
+                state: AskState::Sending,
+            };
+            tell(shell, Some(ask), None, cx);
+        },
+    )?;
+    studio.draw(
+        Screen::new("admin-notifications-refused", with_level(None)),
+        |shell, window, cx| {
+            open_page(shell, AdminPage::Notifications, window, cx);
+            let what = AskKind::NotificationDefault(id(STUDIO));
+            tell(shell, refused(what, ErrorCode::Forbidden), None, cx);
+        },
+    )
+}
+
 pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
+    draw_notifications(studio)?;
     draw_workspaces(studio)?;
     draw_channels(studio)?;
     draw_channel_settings(studio)?;

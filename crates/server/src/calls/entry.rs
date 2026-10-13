@@ -283,6 +283,7 @@ pub async fn enter(
     if !seated {
         let own = Event::OwnCallChanged {
             call: Some(junto_protocol::call::OwnCall {
+                hides_occupants: Some(call.hides_occupants),
                 call_id: call.id,
                 place: call.place,
                 device_id: access.device_id,
@@ -392,8 +393,22 @@ async fn ring(
     let invited = Event::CallInvited {
         invitation: waiting.invitation.clone(),
     };
+    if waiting.silent {
+        events::log::record(
+            connection,
+            now,
+            &events::audience::Audience::Suppressed,
+            &invited,
+        )
+        .await?;
+    }
     for account_id in waiting.told() {
         events::tell_account(&mut *connection, now, account_id, &invited).await?;
+    }
+    // A later ring of the same call, after a new seat of an account that waits alone,
+    // starts no second call.
+    if call.direct_caller.is_none() {
+        store::direct_call_rung(connection, now, call, caller, other).await?;
     }
     Ok(())
 }

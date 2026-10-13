@@ -50,7 +50,7 @@ fn texts_of(timeline: &junto_client_core::model::Timeline) -> Vec<String> {
 }
 
 /// Two clients with a text channel open on both, and a message of the owner in it.
-async fn scene_with_root(name: &str) -> (Pair, PlaceId, std::sync::Arc<Message>) {
+pub(crate) async fn scene_with_root(name: &str) -> (Pair, PlaceId, std::sync::Arc<Message>) {
     let server = TestServer::start(name).await;
     let address = server.address();
     let scene = pair(server, &address).await;
@@ -68,7 +68,7 @@ async fn scene_with_root(name: &str) -> (Pair, PlaceId, std::sync::Arc<Message>)
     (scene, place, root)
 }
 
-async fn open(handle: &ServerHandle, place: PlaceId) {
+pub(crate) async fn open(handle: &ServerHandle, place: PlaceId) {
     handle.live().open_messages(place).await.unwrap();
 }
 

@@ -131,7 +131,7 @@ pub async fn get_snapshot(
             .fetch_all(&mut *connection)
             .await?;
             let mut channel_calls: Vec<ChannelCall> = Vec::new();
-            for channel in &structure.channels {
+            for channel in &structure.list.channels {
                 if in_use.contains(&channel.id) {
                     let call = super::calls::visible_call(connection, &access, channel).await?;
                     channel_calls.push(call);
@@ -146,10 +146,30 @@ pub async fn get_snapshot(
                 own_role_ids: workspace_roles::role_ids_of(connection, id, access.account_id)
                     .await?,
                 roles: workspace_roles::roles_of(connection, id).await?,
-                categories: structure.categories,
-                channels: structure.channels,
+                categories: structure.list.categories,
+                channels: structure.list.channels,
                 calls: channel_calls,
+                permissions: structure.permissions,
+                channel_permissions: structure.channel_permissions,
+                notification_default: None,
             });
+        }
+        let seen: Vec<WorkspaceId> = workspaces.iter().map(|state| state.workspace.id).collect();
+        let defaults: Vec<(WorkspaceId, String)> = sqlx::query_as(
+            "select workspace_id, level from workspace_notification_defaults
+             where workspace_id = any($1)",
+        )
+        .bind(&seen)
+        .fetch_all(&mut *connection)
+        .await?;
+        for (workspace_id, level) in defaults {
+            if let Some(state) = workspaces
+                .iter_mut()
+                .find(|state| state.workspace.id == workspace_id)
+            {
+                state.notification_default =
+                    Some(crate::messages::notifications::stored_level(&level)?);
+            }
         }
 
         let member = calls::member_of(connection, access.account_id, false).await?;

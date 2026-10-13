@@ -1,12 +1,15 @@
 //! What the administration shows (ADR 0761), derived from the state of a server without
 //! a side effect: the pages that the person may use, and the rows and the allowed actions
 //! of the open page. The server decides every request; a page shows as possible what the
-//! roles of the person allow.
+//! server stated that the person holds (ADR 0310).
 
+pub mod notifications;
 pub mod overrides;
 pub mod people;
 pub mod recordings;
 pub mod records;
+pub mod roles;
+pub mod server;
 #[cfg(test)]
 mod tests;
 
@@ -16,7 +19,7 @@ use junto_client_core::protocol::structure::{ArchivedChannel, ChannelKind};
 use junto_client_core::protocol::{ServerPermission, WorkspacePermission};
 use time::OffsetDateTime;
 
-use super::{AdminOpen, AdminPage, AdminState, Ask, ChannelPage, Made};
+use super::{AdminOpen, AdminPage, AdminState, Ask, ChannelPage, Made, RoleLevel};
 use crate::state::view::{Known, Selection, ServerSnapshot, shown_model, shown_workspace, status};
 
 /// A collection of the client core as a page shows it.
@@ -102,6 +105,13 @@ pub struct ChannelLine {
     /// The first or the last channel of its group: it moves in one direction only.
     pub first: bool,
     pub last: bool,
+    /// The person holds "manage channel" in this channel (ADR 0790).
+    pub may_manage: bool,
+    /// The move by one place is possible: the channel is not the first or the last one,
+    /// and the person holds "manage channel" in every channel whose position the move
+    /// changes.
+    pub moves_up: bool,
+    pub moves_down: bool,
 }
 
 /// The channels of one category, or the channels without a category.
@@ -115,7 +125,7 @@ pub struct ChannelGroup {
 pub struct ChannelsPage {
     pub workspace_id: WorkspaceId,
     pub workspace_name: String,
-    /// The roles of the person hold "manage channel" in the workspace.
+    /// The person holds "manage channel" in the workspace.
     pub may_manage: bool,
     /// The channels without a category first, then each category in its order.
     pub groups: Vec<ChannelGroup>,
@@ -174,7 +184,8 @@ pub struct ArchivePage {
     pub workspace_id: WorkspaceId,
     pub workspace_name: String,
     pub channels: Listed<Vec<ArchivedLine>>,
-    /// The roles of the person hold "manage channel": restore and delete.
+    /// The person holds "manage channel" in the workspace: restore and delete. The list of
+    /// one archived channel is read only for the channel whose settings are open.
     pub may_manage: bool,
     pub is_owner: bool,
     /// Present for an administrator.
@@ -216,7 +227,7 @@ pub struct ChannelArchivePage {
     pub archived: Option<(OffsetDateTime, Option<OffsetDateTime>)>,
     pub permanent: bool,
     pub is_owner: bool,
-    /// The roles of the person hold "export channel".
+    /// The person holds "export channel" in the channel.
     pub may_export: bool,
 }
 
@@ -235,8 +246,11 @@ pub struct ChannelSettings {
     pub kind: ChannelKind,
     /// An archived channel takes no change of its settings (ADR 0410).
     pub archived: bool,
-    /// The roles of the person hold "manage channel" in the workspace.
+    /// The person holds "manage channel" in the channel.
     pub may_manage: bool,
+    /// The state holds what the person may do in the channel. False for an archived
+    /// channel until its own list is read (ADR 0790).
+    pub permissions_read: bool,
     pub pages: Vec<ChannelPage>,
     pub selected: ChannelPage,
     pub page: ChannelPageView,
@@ -245,16 +259,22 @@ pub struct ChannelSettings {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerPage {
     Workspaces(WorkspacesPage),
+    /// The server itself: its logo.
+    Server(server::ServerSettingsPage),
     Channels(ChannelsPage),
     Archive(ArchivePage),
     Members(people::MembersPage),
+    Notifications(notifications::NotificationsPage),
     People(people::PeoplePage),
     Invites(people::InvitesPage),
     JoinRequests(people::RequestsPage),
     Tokens(records::TokensPage),
     Exports(records::ExportsPage),
-    AuditLog(records::AuditPage),
+    /// In a box: the page with its filters is larger than every other page.
+    AuditLog(Box<records::AuditPage>),
     Recordings(recordings::RecordingsPage),
+    /// The server roles, or the roles of the shown workspace.
+    Roles(roles::RolesPage),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -276,6 +296,9 @@ pub struct AdminView {
     pub ask: Option<Ask>,
     /// What the last request made and the person has not put away.
     pub made: Option<Made>,
+    /// The roles whose permissions the person changed and whose change the state does
+    /// not show yet: their switches take no further change (ADR 0791).
+    pub changing_roles: Vec<super::RoleRef>,
 }
 
 impl AdminView {
@@ -306,20 +329,21 @@ pub fn holds_server(model: &ServerModel, permission: ServerPermission) -> bool {
     model.is_administrator() || model.account.server_permissions.contains(&permission)
 }
 
-/// True when the roles of the person give the permission in the workspace. The overrides
-/// of a channel are not counted, and the server decides every request.
-pub fn holds_workspace(
-    model: &ServerModel,
-    workspace: &WorkspaceModel,
-    permission: WorkspacePermission,
-) -> bool {
-    model.is_administrator() || workspace.role_permissions().contains(&permission)
+/// True when the person holds the permission in the workspace, as the server stated it
+/// (ADR 0310). A channel can have another list: a control of one channel asks for that
+/// one.
+pub fn holds_workspace(workspace: &WorkspaceModel, permission: WorkspacePermission) -> bool {
+    workspace.holds(permission)
 }
 
 /// The pages that the person may use, in their groups. A page that the person may not
 /// use is absent.
 pub fn nav(model: &ServerModel, workspace: Option<&WorkspaceModel>) -> Vec<NavGroup> {
     let mut server = vec![AdminPage::Workspaces];
+    // Only an administrator sets or removes the logo of the server (ADR 0101).
+    if model.is_administrator() {
+        server.push(AdminPage::Server);
+    }
     for (page, permission) in [
         (AdminPage::People, ServerPermission::BanMembers),
         (AdminPage::Invites, ServerPermission::CreateInvites),
@@ -327,16 +351,16 @@ pub fn nav(model: &ServerModel, workspace: Option<&WorkspaceModel>) -> Vec<NavGr
             AdminPage::JoinRequests,
             ServerPermission::ApproveJoinRequests,
         ),
-        // An administrator manages the tokens of every account.
+        // An administrator manages the tokens of every account, and the server roles.
         (AdminPage::Tokens, ServerPermission::Administrator),
+        (AdminPage::ServerRoles, ServerPermission::Administrator),
     ] {
         if holds_server(model, permission) {
             server.push(page);
         }
     }
-    let workspace_log = workspace.is_some_and(|workspace| {
-        holds_workspace(model, workspace, WorkspacePermission::ViewAuditEntries)
-    });
+    let workspace_log = workspace
+        .is_some_and(|workspace| holds_workspace(workspace, WorkspacePermission::ViewAuditEntries));
     if holds_server(model, ServerPermission::ViewServerAuditLog) || workspace_log {
         server.push(AdminPage::AuditLog);
     }
@@ -346,16 +370,20 @@ pub fn nav(model: &ServerModel, workspace: Option<&WorkspaceModel>) -> Vec<NavGr
     }];
     if let Some(workspace) = workspace {
         let mut pages = Vec::new();
-        if holds_workspace(model, workspace, WorkspacePermission::ManageChannel) {
+        if holds_workspace(workspace, WorkspacePermission::ManageChannel) {
             pages.push(AdminPage::Channels);
+        }
+        if holds_workspace(workspace, WorkspacePermission::ManageRoles) {
+            pages.push(AdminPage::Roles);
         }
         // Every member lists the recordings: the server answers with what the account
         // may see.
-        pages.extend([
-            AdminPage::Archive,
-            AdminPage::Members,
-            AdminPage::Recordings,
-        ]);
+        pages.extend([AdminPage::Archive, AdminPage::Members]);
+        // Only an administrator sets the notification level of a workspace (ADR 0412).
+        if model.is_administrator() {
+            pages.push(AdminPage::Notifications);
+        }
+        pages.push(AdminPage::Recordings);
         groups.push(NavGroup {
             title: NavTitle::Workspace(workspace.workspace.name.clone()),
             pages,
@@ -384,13 +412,32 @@ pub fn needs(
     let administrator = model.is_administrator();
     match *open {
         AdminOpen::Server { page, .. } => match page {
-            AdminPage::Workspaces | AdminPage::Channels | AdminPage::AuditLog => Vec::new(),
-            AdminPage::People => {
-                let mut parts = vec![AdminPart::Accounts];
-                if administrator {
-                    parts.push(AdminPart::ServerRoles);
+            // The snapshot carries the notification level of a workspace.
+            // The logo is no collection: its image is read from the public route.
+            AdminPage::Workspaces
+            | AdminPage::Channels
+            | AdminPage::Notifications
+            | AdminPage::Server => Vec::new(),
+            // The filters by person offer the accounts of the server to a person who may
+            // list them.
+            AdminPage::AuditLog => {
+                if holds_server(model, ServerPermission::BanMembers) {
+                    vec![AdminPart::Accounts]
+                } else {
+                    Vec::new()
                 }
-                parts
+            }
+            // The server gives the server roles to every person who has the page: their
+            // order decides who can be removed and banned (ADR 0309).
+            AdminPage::People => vec![AdminPart::Accounts, AdminPart::ServerRoles],
+            AdminPage::ServerRoles => vec![AdminPart::ServerRoles],
+            // An administrator stands in a workspace at the position of a server role.
+            AdminPage::Roles => {
+                if administrator && !model.account.is_owner {
+                    vec![AdminPart::ServerRoles]
+                } else {
+                    Vec::new()
+                }
             }
             AdminPage::Invites => vec![AdminPart::Invites],
             AdminPage::JoinRequests => vec![AdminPart::JoinRequests],
@@ -405,7 +452,11 @@ pub fn needs(
             AdminPage::Recordings => workspace_id.map(AdminPart::Archived).into_iter().collect(),
             AdminPage::Members => {
                 if administrator {
-                    vec![AdminPart::Accounts]
+                    let mut parts = vec![AdminPart::Accounts];
+                    if !model.account.is_owner {
+                        parts.push(AdminPart::ServerRoles);
+                    }
+                    parts
                 } else {
                     Vec::new()
                 }
@@ -430,11 +481,14 @@ pub fn needs(
             page,
             ..
         } => {
-            // The settings of an archived channel find it in the archived list.
+            // The settings of an archived channel find it in the archived list. The
+            // snapshot states no permissions for it: they are read by themselves
+            // (ADR 0310).
             let mut parts = vec![AdminPart::Archived(workspace_id)];
-            let may_manage = model.workspace(workspace_id).is_some_and(|workspace| {
-                holds_workspace(model, workspace, WorkspacePermission::ManageChannel)
-            });
+            if model.channel(channel_id).is_none() {
+                parts.push(AdminPart::ChannelPermissions(channel_id));
+            }
+            let may_manage = model.holds_in(channel_id, WorkspacePermission::ManageChannel);
             if may_manage && matches!(page, ChannelPage::Overview | ChannelPage::Permissions) {
                 parts.push(AdminPart::Overrides(channel_id));
             }
@@ -465,7 +519,7 @@ fn workspaces_page(model: &ServerModel, shown: Option<WorkspaceId>) -> Workspace
     }
 }
 
-fn channels_page(model: &ServerModel, workspace: &WorkspaceModel) -> ChannelsPage {
+fn channels_page(workspace: &WorkspaceModel) -> ChannelsPage {
     let in_category = |category_id: Option<CategoryId>| {
         category_id.filter(|id| workspace.categories.iter().any(|held| held.id == *id))
     };
@@ -483,6 +537,9 @@ fn channels_page(model: &ServerModel, workspace: &WorkspaceModel) -> ChannelsPag
                 permanent: held.channel.permanent_messages,
                 first: false,
                 last: false,
+                may_manage: workspace.holds_in(held.channel.id, WorkspacePermission::ManageChannel),
+                moves_up: false,
+                moves_down: false,
             })
             .collect();
         if let Some(first) = lines.first_mut() {
@@ -490,6 +547,21 @@ fn channels_page(model: &ServerModel, workspace: &WorkspaceModel) -> ChannelsPag
         }
         if let Some(last) = lines.last_mut() {
             last.last = true;
+        }
+        // A move changes the position of the channel and of its neighbour, and of every
+        // channel of the group when two of them share a position.
+        let order: Vec<(ChannelId, i32)> =
+            lines.iter().map(|line| (line.id, line.position)).collect();
+        let manages = |channel_id: ChannelId| {
+            workspace.holds_in(channel_id, WorkspacePermission::ManageChannel)
+        };
+        for (index, line) in lines.iter_mut().enumerate() {
+            let offered = |up: bool| {
+                let changes = crate::state::admin::structure::moved(&order, index, up);
+                !changes.is_empty() && changes.iter().all(|(channel_id, _)| manages(*channel_id))
+            };
+            line.moves_up = offered(true);
+            line.moves_down = offered(false);
         }
         lines
     };
@@ -513,7 +585,7 @@ fn channels_page(model: &ServerModel, workspace: &WorkspaceModel) -> ChannelsPag
     ChannelsPage {
         workspace_id: workspace.workspace.id,
         workspace_name: workspace.workspace.name.clone(),
-        may_manage: holds_workspace(model, workspace, WorkspacePermission::ManageChannel),
+        may_manage: holds_workspace(workspace, WorkspacePermission::ManageChannel),
         groups,
     }
 }
@@ -530,7 +602,7 @@ fn archive_page(model: &ServerModel, workspace: &WorkspaceModel, known: &Known) 
                 .map(|archived| ArchivedLine::of(archived, known))
                 .collect()
         }),
-        may_manage: holds_workspace(model, workspace, WorkspacePermission::ManageChannel),
+        may_manage: holds_workspace(workspace, WorkspacePermission::ManageChannel),
         is_owner: model.account.is_owner,
         settings: administrator.then(|| {
             Listed::of(model.admin.workspace_settings(workspace_id), |settings| {
@@ -558,7 +630,7 @@ fn channel_settings(
         .readable_channel(channel_id)
         .filter(|channel| channel.workspace_id == workspace_id)?;
     let archived = model.admin.archived_channel(channel_id);
-    let may_manage = holds_workspace(model, workspace, WorkspacePermission::ManageChannel);
+    let may_manage = model.holds_in(channel_id, WorkspacePermission::ManageChannel);
     let mut pages = Vec::new();
     if may_manage {
         pages.extend([ChannelPage::Overview, ChannelPage::Permissions]);
@@ -614,7 +686,7 @@ fn channel_settings(
             }),
             permanent: channel.permanent_messages,
             is_owner: model.account.is_owner,
-            may_export: holds_workspace(model, workspace, WorkspacePermission::ExportChannel),
+            may_export: model.holds_in(channel_id, WorkspacePermission::ExportChannel),
         }),
     };
     Some(ChannelSettings {
@@ -624,6 +696,7 @@ fn channel_settings(
         kind: channel.kind,
         archived: archived.is_some(),
         may_manage,
+        permissions_read: model.permissions_in(channel_id).is_some(),
         pages,
         selected,
         page,
@@ -672,7 +745,7 @@ pub fn derive(
             };
             let page = match (selected, workspace) {
                 (AdminPage::Channels, Some(workspace)) => {
-                    ServerPage::Channels(channels_page(model, workspace))
+                    ServerPage::Channels(channels_page(workspace))
                 }
                 (AdminPage::Archive, Some(workspace)) => {
                     ServerPage::Archive(archive_page(model, workspace, known))
@@ -680,10 +753,26 @@ pub fn derive(
                 (AdminPage::Members, Some(workspace)) => {
                     ServerPage::Members(people::members(server_id, model, workspace, known))
                 }
+                (AdminPage::Notifications, Some(workspace)) => {
+                    ServerPage::Notifications(notifications::derive(workspace))
+                }
                 (AdminPage::Recordings, Some(workspace)) => ServerPage::Recordings(
                     recordings::recordings(server_id, model, workspace, known, admin),
                 ),
+                (AdminPage::Server, _) => {
+                    ServerPage::Server(server::settings(server, model, known))
+                }
                 (AdminPage::People, _) => ServerPage::People(people::people(model, known)),
+                (AdminPage::Roles, Some(workspace)) => {
+                    match roles::derive(model, RoleLevel::Workspace(workspace.workspace.id)) {
+                        Some(page) => ServerPage::Roles(page),
+                        None => ServerPage::Workspaces(workspaces_page(model, None)),
+                    }
+                }
+                (AdminPage::ServerRoles, _) => match roles::derive(model, RoleLevel::Server) {
+                    Some(page) => ServerPage::Roles(page),
+                    None => ServerPage::Workspaces(workspaces_page(model, None)),
+                },
                 (AdminPage::Invites, _) => {
                     ServerPage::Invites(people::invites(server_id, model, known, admin))
                 }
@@ -696,14 +785,16 @@ pub fn derive(
                 (AdminPage::Exports, _) => {
                     ServerPage::Exports(records::exports(server_id, model, known, admin))
                 }
-                (AdminPage::AuditLog, _) => {
-                    ServerPage::AuditLog(records::audit(server_id, model, workspace, known, admin))
-                }
+                (AdminPage::AuditLog, _) => ServerPage::AuditLog(Box::new(records::audit(
+                    server_id, model, workspace, known, admin,
+                ))),
                 (
                     AdminPage::Workspaces
                     | AdminPage::Channels
+                    | AdminPage::Roles
                     | AdminPage::Archive
                     | AdminPage::Members
+                    | AdminPage::Notifications
                     | AdminPage::Recordings,
                     _,
                 ) => ServerPage::Workspaces(workspaces_page(
@@ -728,5 +819,6 @@ pub fn derive(
         scope,
         ask: admin.ask.clone(),
         made: admin.made.clone(),
+        changing_roles: admin.role_changes.of(server_id),
     })
 }

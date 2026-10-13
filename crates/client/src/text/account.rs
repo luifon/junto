@@ -380,6 +380,7 @@ pub fn refusal(what: AskKind, error: &ApiError) -> String {
             AskKind::SetPicture => "The server did not accept the file as a picture.",
             _ => "The server did not accept the request.",
         },
+        // The code `last_device`, and `conflict` of a server from before that code.
         (_, Some(ErrorCategory::Conflict)) if matches!(what, AskKind::RemoveDevice(_)) => {
             LAST_DEVICE
         }
@@ -559,12 +560,18 @@ mod tests {
             )
             .contains("1024 by 1024")
         );
-        // The server refuses the removal of the last device with `conflict`.
+        // The server refuses the removal of the last device with `last_device`, and a
+        // server from before that code with `conflict`.
+        for code in [ErrorCode::LastDevice, ErrorCode::Conflict] {
+            assert_eq!(
+                refusal(AskKind::RemoveDevice(device), &rejected(code, None)),
+                LAST_DEVICE
+            );
+        }
+        assert_eq!(ErrorCode::LastDevice.http_status(), 409);
+        // The code of the last device has the same sentence at every other control.
         assert_eq!(
-            refusal(
-                AskKind::RemoveDevice(device),
-                &rejected(ErrorCode::Conflict, None)
-            ),
+            refusal(AskKind::SaveName, &rejected(ErrorCode::LastDevice, None)),
             LAST_DEVICE
         );
         // The same code at another control keeps the general sentence.

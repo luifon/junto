@@ -41,28 +41,24 @@ async fn the_server_does_not_migrate_while_a_recording_runs() {
     let started = studio.record().await;
     assert!(bootstrap::start(&database, "Acme", now).await.is_ok());
 
-    // The database has the schema of the version before: the newest migration waits.
+    let future = later_version(&["create table recording_guard_probe (id bigint)"]).await;
     let applied = migrations().await;
-    sqlx::query(
-        "delete from _sqlx_migrations
-         where version = (select max(version) from _sqlx_migrations)",
-    )
-    .execute(&server.db)
-    .await
-    .unwrap();
-    let refused = bootstrap::start(&database, "Acme", now).await;
+    let refused = bootstrap::migrate(&database, &future).await;
     assert!(matches!(refused, Err(StartError::RecordingRuns)));
-    assert_eq!(migrations().await, applied - 1);
+    assert_eq!(migrations().await, applied);
     let message = StartError::RecordingRuns.to_string();
     assert!(message.contains("No migration runs while a recording runs"));
 
-    // When no recording runs any more, the start applies the migration. Here its tables
-    // exist already, so the migration itself fails; the rule about recordings does not
-    // refuse the start.
     let stopped = studio.stop(started.id).await;
     assert_eq!(stopped.recording.state, RecordingState::Processing);
-    let migrated = bootstrap::start(&database, "Acme", now).await;
-    assert!(matches!(migrated, Err(StartError::Migration(_))));
+    bootstrap::migrate(&database, &future).await.unwrap();
+    assert_eq!(migrations().await, applied + 1);
+    let applied: bool =
+        sqlx::query_scalar("select to_regclass('recording_guard_probe') is not null")
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert!(applied);
 }
 
 /// A server with a recorder checks at its start that the programs that read the files of

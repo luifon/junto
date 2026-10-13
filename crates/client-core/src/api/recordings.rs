@@ -348,6 +348,7 @@ mod tests {
         let page = TranscriptLinePage {
             lines: vec![line(5, "Good morning."), line(6, "Can you hear me?")],
             next_after: Some(6),
+            previous_before: None,
         };
         let text = "[00:00:05] Ada: Good morning.\n";
         let (fixed, api) = played(vec![

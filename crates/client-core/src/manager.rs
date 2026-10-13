@@ -20,8 +20,8 @@ use crate::api::session::{
     Authority, AuthorityFuture, OpenAuthorityFuture, Outline, open_with_token, send_with_token,
 };
 use crate::api::{
-    AccessLoss, ApiClient, ApiError, ErrorCategory, ExpectedAccount, ReqwestTransport, RetryPolicy,
-    ServerApi, Transport, TransportError, TransportErrorKind, server_info,
+    AccessLoss, ApiClient, ApiError, AvatarImage, ErrorCategory, ExpectedAccount, ReqwestTransport,
+    RetryPolicy, ServerApi, Transport, TransportError, TransportErrorKind, logo_at, server_info,
 };
 use crate::book::{
     BookError, ConnectionMode, EntryKey, Membership, ProfileSync, ServerBook, ServerEntry,
@@ -743,6 +743,20 @@ impl ServerHandle {
             .core
             .runtime
             .run(async move { server.acknowledge_recovery(recovery_id).await });
+        async move { work.await.unwrap_or(Err(ApiError::Stopped)) }
+    }
+
+    /// Reads the logo of the server from its public route, without the session
+    /// (ADR 0101). Absent: the server has no logo, or the client knows no address of one.
+    pub fn logo(
+        &self,
+    ) -> impl Future<Output = Result<Option<AvatarImage>, ApiError>> + Send + 'static + use<> {
+        let server = self.server.clone();
+        let work = self
+            .server
+            .core
+            .runtime
+            .run(async move { server.logo().await });
         async move { work.await.unwrap_or(Err(ApiError::Stopped)) }
     }
 
@@ -1867,6 +1881,27 @@ impl Server {
             server: self.clone(),
             account: Some(account_id),
         }))
+    }
+
+    /// The logo from the route of the API version that was chosen for the server. Before
+    /// the server was contacted in this run, the path of the server book is used.
+    async fn logo(&self) -> Result<Option<AvatarImage>, ApiError> {
+        let (api, path) = {
+            let state = lock(&self.state);
+            // An address that answered as another server gets nothing but the request
+            // for the server information (ADR 0714).
+            if matches!(state.reach, Reach::OtherServer { .. }) {
+                return Ok(None);
+            }
+            (state.api.clone(), state.entry.logo_path.clone())
+        };
+        if let Some(api) = api {
+            return api.server_logo().await;
+        }
+        match path.and_then(|path| self.address.logo_url(&path)) {
+            Some(url) => logo_at(self.core.transport.as_ref(), url, &self.core.policy).await,
+            None => Ok(None),
+        }
     }
 
     /// Sends the acknowledgement of a recovery for the account that the flow shows, and

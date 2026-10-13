@@ -72,10 +72,10 @@ fn the_structure_file_schema_describes_every_field_of_a_file() {
     let id = "0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e5f";
     let full: StructureFile = serde_json::from_value(serde_json::json!({
         "format": 1,
-        "server_roles": [{ "id": id, "name": "r", "permissions": ["administrator"] }],
+        "server_roles": [{ "id": id, "name": "r", "position": 1, "permissions": ["administrator"] }],
         "workspaces": [{
             "id": id, "name": "w", "default": true,
-            "roles": [{ "id": id, "name": "r", "everyone": true, "permissions": [] }],
+            "roles": [{ "id": id, "name": "r", "everyone": true, "position": 0, "permissions": [] }],
             "categories": [{ "id": id, "name": "c", "position": 1 }],
             "channels": [{ "id": id, "name": "c", "kind": "voice", "category": id,
                            "position": 1, "permanent_messages": true, "user_limit": 2,
@@ -164,6 +164,7 @@ fn routes_without_a_session_are_the_ones_a_device_uses_before_it_has_one() {
         [
             "get /api/server",
             "get /api/v1/health",
+            "get /api/v1/server/logo",
             "post /api/v1/auth/challenges",
             "post /api/v1/auth/sessions",
             "post /api/v1/device-links",
@@ -300,7 +301,7 @@ fn every_enum_of_the_generated_documents_lists_the_names_that_serde_writes() {
         FileCheck, FileProblem, RecordingFailure, RecordingState, RecordingStopReason,
         SegmentFailure, SegmentSource, SegmentState,
     };
-    use junto_protocol::structure::ChannelKind;
+    use junto_protocol::structure::{ChannelKind, OverrideState};
     use junto_protocol::structure_file::{StructureChange, StructureKind};
     use junto_protocol::transcript::{
         LineSource, SegmentReason, SegmentTranscription, SpeakerSeparation, SpeakersReason,
@@ -371,6 +372,7 @@ fn every_enum_of_the_generated_documents_lists_the_names_that_serde_writes() {
         MoveOutcome,
         NotificationKind,
         NotificationLevel,
+        OverrideState,
         RecordingFailure,
         RecordingState,
         RecordingStopReason,

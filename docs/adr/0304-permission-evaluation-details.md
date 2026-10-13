@@ -55,6 +55,7 @@ Stored sets:
 - A set of permissions is stored as one integer in which each permission has a fixed bit. A test fixes the bit and the name of every permission.
 - The database refuses an integer with a bit above the highest known one. A new permission needs a migration that widens that check.
 - Overrides exist for channels only. A category has no overrides.
+- `PATCH /api/v1/channels/{channel_id}/overrides/{role_id}` changes one named permission to `allow`, `deny` or `inherit`, preserving every other bit. It requires manage channel and applies the grant rule only to that permission's delta, without role order. The current override is locked and changed in the serializable transaction; retries preserve concurrent changes of other permissions. It uses the existing `channel_override_set` event and audit entry. The read uses the channel/role primary key and the write affects at most one row.
 
 ## Consequences
 
@@ -62,7 +63,7 @@ Stored sets:
 - A person with "manage roles" cannot use a role to enter a channel: assigning a role whose override allows "view channel" in a channel that the person cannot see is denied, and so is removing a role whose override denies "view channel" there, from the own account or from another member.
 - The roles and overrides that a decision uses are read in the transaction of the change (ADR 0009), so a permission that was revoked before the change commits is not used.
 - A person with "manage channel" who denies a permission to a role that the person holds loses that permission in the channel and cannot remove the deny again. An administrator can.
-- A person with "manage roles" can take a role from any member, a role with more permissions included, unless an override of the role denies a permission that the person does not hold in the channel of that override. A role order is not part of the first version.
+- Role changes and server moderation also obey the order of ADR 0309. A person with "manage roles" changes only roles below their highest role, with the permission-grant ceiling above.
 - A person with "create workspace" and no administrator permission gets an empty workspace that an administrator has to give roles to.
 - A category does not hide its name from members who see none of its channels.
 - The number of a permission bit cannot be reused for another permission.

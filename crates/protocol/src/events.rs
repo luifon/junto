@@ -261,6 +261,10 @@ pub enum Event {
         account_id: AccountId,
         previous_owner_id: Option<AccountId>,
     },
+    /// Replaces the positions of existing server roles before the following creation.
+    ServerRolePositionsShifted {
+        positions: Vec<crate::roles::ServerRolePosition>,
+    },
     ServerRoleCreated {
         role: ServerRole,
     },
@@ -283,6 +287,10 @@ pub enum Event {
         created_by: AccountId,
     },
     InviteCreated {
+        invite: Invite,
+    },
+    /// The workspaces granted by an existing invite were narrowed.
+    InviteChanged {
         invite: Invite,
     },
     InviteRevoked {
@@ -325,6 +333,11 @@ pub enum Event {
         account_id: AccountId,
         role_ids: Vec<WorkspaceRoleId>,
     },
+    /// Replaces the positions of existing non-everyone roles before creation.
+    WorkspaceRolePositionsShifted {
+        workspace_id: WorkspaceId,
+        positions: Vec<crate::roles::WorkspaceRolePosition>,
+    },
     WorkspaceRoleCreated {
         role: WorkspaceRole,
     },
@@ -359,6 +372,8 @@ pub enum Event {
     /// The first person is in the room of a call: the voice channel is in use, or the
     /// direct-message call has begun.
     CallStarted {
+        #[serde(default)]
+        hides_occupants: Option<bool>,
         call_id: CallId,
         place: CallPlace,
         #[serde(with = "time::serde::rfc3339")]
@@ -528,6 +543,9 @@ pub enum Event {
     ConversationOpened {
         conversation: crate::message::Conversation,
     },
+    ServerLogoChanged {
+        logo: Option<crate::account::Avatar>,
+    },
     AttachmentLimitsChanged {
         limits: crate::message::AttachmentLimits,
     },
@@ -600,6 +618,27 @@ pub enum Event {
         export_id: crate::ids::ExportId,
         reason: crate::export::ExportRemoval,
     },
+    /// Every visible notice created at or before `until` is read at `read_at` (ADR 0412).
+    NotificationsRead {
+        #[serde(with = "time::serde::rfc3339")]
+        until: OffsetDateTime,
+        #[serde(with = "time::serde::rfc3339")]
+        read_at: OffsetDateTime,
+    },
+    /// The account of the recipient chose to follow a thread or not, or removed its choice.
+    /// `following` is what holds now; `follow_setting` is the choice, absent when none is
+    /// set (ADR 0412).
+    ThreadFollowChanged {
+        root_id: crate::ids::MessageId,
+        following: bool,
+        follow_setting: Option<bool>,
+    },
+    /// The notification default of a workspace was set, changed or removed. `level` is
+    /// absent when the workspace has none now.
+    NotificationDefaultChanged {
+        workspace_id: WorkspaceId,
+        level: Option<crate::discovery::NotificationLevel>,
+    },
 }
 
 impl Event {
@@ -616,12 +655,15 @@ impl Event {
         "account_status_changed",
         "account_server_roles_changed",
         "owner_changed",
+        "server_role_positions_shifted",
+        "workspace_role_positions_shifted",
         "server_role_created",
         "server_role_updated",
         "access_token_created",
         "access_token_revoked",
         "access_tokens_of_creator_revoked",
         "invite_created",
+        "invite_changed",
         "invite_revoked",
         "invite_used",
         "invites_of_creator_revoked",
@@ -671,6 +713,7 @@ impl Event {
         "message_read",
         "message_mentioned",
         "conversation_opened",
+        "server_logo_changed",
         "attachment_limits_changed",
         "notification_changed",
         "notification_settings_changed",
@@ -684,6 +727,9 @@ impl Event {
         "workspace_deleted",
         "export_updated",
         "export_removed",
+        "notifications_read",
+        "thread_follow_changed",
+        "notification_default_changed",
     ];
 
     pub const fn name(&self) -> &'static str {
@@ -700,12 +746,15 @@ impl Event {
             Self::AccountStatusChanged { .. } => "account_status_changed",
             Self::AccountServerRolesChanged { .. } => "account_server_roles_changed",
             Self::OwnerChanged { .. } => "owner_changed",
+            Self::ServerRolePositionsShifted { .. } => "server_role_positions_shifted",
+            Self::WorkspaceRolePositionsShifted { .. } => "workspace_role_positions_shifted",
             Self::ServerRoleCreated { .. } => "server_role_created",
             Self::ServerRoleUpdated { .. } => "server_role_updated",
             Self::AccessTokenCreated { .. } => "access_token_created",
             Self::AccessTokenRevoked { .. } => "access_token_revoked",
             Self::AccessTokensOfCreatorRevoked { .. } => "access_tokens_of_creator_revoked",
             Self::InviteCreated { .. } => "invite_created",
+            Self::InviteChanged { .. } => "invite_changed",
             Self::InviteRevoked { .. } => "invite_revoked",
             Self::InviteUsed { .. } => "invite_used",
             Self::InvitesOfCreatorRevoked { .. } => "invites_of_creator_revoked",
@@ -758,6 +807,7 @@ impl Event {
             Self::RetentionChanged { .. } => "retention_changed",
             Self::MessageMentioned { .. } => "message_mentioned",
             Self::ConversationOpened { .. } => "conversation_opened",
+            Self::ServerLogoChanged { .. } => "server_logo_changed",
             Self::AttachmentLimitsChanged { .. } => "attachment_limits_changed",
             Self::ChannelArchived { .. } => "channel_archived",
             Self::ChannelRestored { .. } => "channel_restored",
@@ -768,12 +818,19 @@ impl Event {
             Self::WorkspaceDeleted { .. } => "workspace_deleted",
             Self::ExportUpdated { .. } => "export_updated",
             Self::ExportRemoved { .. } => "export_removed",
+            Self::NotificationsRead { .. } => "notifications_read",
+            Self::ThreadFollowChanged { .. } => "thread_follow_changed",
+            Self::NotificationDefaultChanged { .. } => "notification_default_changed",
         }
     }
 }
 
 /// A server message as a client of this API version reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "The ordinary message stays inline; boxing it would allocate for every decoded frame and change the reader API."
+)]
 pub enum Received {
     Message(ServerMessage),
     /// An event of a type that this version does not know. The client moves its cursor to
@@ -848,6 +905,7 @@ mod tests {
             deletes_at: Some(time()),
         };
         let participant = CallParticipant {
+            avatar: None,
             account_id,
             identity: "seat".to_owned(),
             joined_at: time(),
@@ -881,6 +939,7 @@ mod tests {
             position: 0,
         };
         let workspace_role = WorkspaceRole {
+            position: 1,
             id: WorkspaceRoleId::generate(),
             workspace_id,
             name: "helpers".to_owned(),
@@ -888,11 +947,13 @@ mod tests {
             is_everyone: false,
         };
         let server_role = ServerRole {
+            position: 1,
             id: ServerRoleId::generate(),
             name: "moderators".to_owned(),
             permissions: vec![junto_authz::ServerPermission::BanMembers],
         };
         let invite = Invite {
+            created_by_name: None,
             id: InviteId::generate(),
             created_by: account_id,
             created_at: time(),
@@ -991,6 +1052,19 @@ mod tests {
                 account_id,
                 previous_owner_id: None,
             },
+            Event::ServerRolePositionsShifted {
+                positions: vec![crate::roles::ServerRolePosition {
+                    role_id: server_role.id,
+                    position: 2,
+                }],
+            },
+            Event::WorkspaceRolePositionsShifted {
+                workspace_id,
+                positions: vec![crate::roles::WorkspaceRolePosition {
+                    role_id: workspace_role.id,
+                    position: 2,
+                }],
+            },
             Event::ServerRoleCreated {
                 role: server_role.clone(),
             },
@@ -1012,6 +1086,9 @@ mod tests {
                 created_by: account_id,
             },
             Event::InviteCreated {
+                invite: invite.clone(),
+            },
+            Event::InviteChanged {
                 invite: invite.clone(),
             },
             Event::InviteRevoked {
@@ -1046,6 +1123,7 @@ mod tests {
             Event::WorkspaceMemberAdded {
                 workspace_id,
                 member: WorkspaceMember {
+                    avatar: None,
                     account_id,
                     name: "Newcomer".to_owned(),
                     role_ids: vec![],
@@ -1086,6 +1164,7 @@ mod tests {
                 deny: vec![WorkspacePermission::ViewChannel],
             },
             Event::CallStarted {
+                hides_occupants: Some(false),
                 call_id,
                 place,
                 started_at: time(),
@@ -1186,6 +1265,7 @@ mod tests {
             },
             Event::OwnCallChanged {
                 call: Some(OwnCall {
+                    hides_occupants: Some(false),
                     call_id,
                     place,
                     device_id,
@@ -1260,6 +1340,7 @@ mod tests {
                     high_account_id: other_account_id,
                 },
             },
+            Event::ServerLogoChanged { logo: None },
             Event::AttachmentLimitsChanged {
                 limits: crate::message::AttachmentLimits {
                     bytes_per_file: 100_000_000,
@@ -1310,6 +1391,19 @@ mod tests {
             Event::ExportRemoved {
                 export_id,
                 reason: crate::export::ExportRemoval::Expired,
+            },
+            Event::NotificationsRead {
+                until: time(),
+                read_at: time(),
+            },
+            Event::ThreadFollowChanged {
+                root_id: crate::ids::MessageId::generate(),
+                following: false,
+                follow_setting: Some(false),
+            },
+            Event::NotificationDefaultChanged {
+                workspace_id,
+                level: Some(crate::discovery::NotificationLevel::All),
             },
         ]
     }

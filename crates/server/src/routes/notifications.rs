@@ -9,12 +9,14 @@ use crate::{
     state::AppState,
     transact,
 };
+use axum::http::StatusCode;
 use axum::{Json, extract::State};
 use junto_authz::{Request, ServerPermission};
 use junto_protocol::{
+    audit::AuditEvent,
     discovery::{
-        Notification, NotificationDefault, NotificationLevel, NotificationPage,
-        NotificationSettings,
+        MarkNotificationsRead, Notification, NotificationDefault, NotificationPage,
+        NotificationSettings, NotificationsRead,
     },
     events::Event,
     ids::{ChannelId, MessageId, WorkspaceId},
@@ -22,6 +24,10 @@ use junto_protocol::{
 use serde::Deserialize;
 use sqlx::PgConnection;
 use uuid::Uuid;
+
+/// The longest name of a time zone that a quiet time states. The names of the IANA
+/// database are shorter.
+const LONGEST_ZONE_NAME: usize = 64;
 
 async fn scope(connection: &mut PgConnection, access: &Access, id: Uuid) -> ApiResult<bool> {
     if id.is_nil() {
@@ -79,7 +85,8 @@ pub async fn set_settings(
         quiet.start_minute == quiet.end_minute
             || quiet.start_minute >= 1440
             || quiet.end_minute >= 1440
-            || !(-840..=840).contains(&quiet.utc_offset_minutes)
+            || quiet.time_zone.is_empty()
+            || quiet.time_zone.len() > LONGEST_ZONE_NAME
     }) || body.muted_until.is_some_and(|until| until <= app.now())
         || (!body.mute && body.muted_until.is_some())
     {
@@ -103,6 +110,21 @@ pub async fn set_settings(
             ));
         }
         super::messages::rate(&app, &access, &mut counted)?;
+        if let Some(quiet) = &body.daily_quiet {
+            // The names that the database lists are the zones whose clock it can read
+            // (ADR 0412). Another text is refused, also one that PostgreSQL would read as
+            // a rule of its own.
+            let known: bool =
+                sqlx::query_scalar("select exists(select 1 from pg_timezone_names where name=$1)")
+                    .bind(&quiet.time_zone)
+                    .fetch_one(&mut *connection)
+                    .await?;
+            if !known {
+                return Err(ApiError::invalid(
+                    "the server does not know the time zone of the quiet time",
+                ));
+            }
+        }
         let changed = sqlx::query(
             "insert into notification_settings(account_id,scope_id,settings) values($1,$2,$3) on
              conflict(account_id,scope_id) do update set settings=excluded.settings where
@@ -128,6 +150,7 @@ pub async fn set_settings(
     .map(Json)
 }
 
+/// The notification default of a workspace. `level` is absent when none is set.
 #[utoipa::path(get,path="/api/v1/workspaces/{workspace_id}/notification-default",tag="messages",params(("workspace_id"=WorkspaceId,Path)),security(("session"=[])),responses((status=200,body=NotificationDefault),ApiError))]
 pub async fn get_default(
     State(app): State<AppState>,
@@ -138,7 +161,7 @@ pub async fn get_default(
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, app.now()).await?;
         super::search::read_rate(&app, &access, &mut counted)?;
-        scope(connection, &access, id.as_uuid()).await?;
+        default_workspace(connection, &access, id).await?;
         let value: Option<String> = sqlx::query_scalar(
             "select level from workspace_notification_defaults where workspace_id=$1",
         )
@@ -146,16 +169,64 @@ pub async fn get_default(
         .fetch_optional(connection)
         .await?;
         Ok(NotificationDefault {
-            level: match value.as_deref() {
-                Some("all") => NotificationLevel::All,
-                Some("nothing") => NotificationLevel::Nothing,
-                _ => NotificationLevel::Mentions,
-            },
+            level: value
+                .as_deref()
+                .map(notifications::stored_level)
+                .transpose()?,
         })
     })
     .map(Json)
 }
 
+/// The caller of a change of the notification default of a workspace: an administrator
+/// who sees the workspace.
+/// The workspace whose notification default a request names: one that the caller sees.
+/// Another identifier, the one of a channel included, gets `not_found`.
+async fn default_workspace(
+    connection: &mut PgConnection,
+    access: &Access,
+    id: WorkspaceId,
+) -> ApiResult<()> {
+    let scope = access.workspace(connection, id).await?;
+    access.require(Request::ViewWorkspace(&scope))
+}
+
+async fn default_changer(
+    app: &AppState,
+    connection: &mut PgConnection,
+    bearer: &Bearer,
+    id: WorkspaceId,
+) -> ApiResult<Access> {
+    let access = Access::open(connection, bearer, app.now()).await?;
+    default_workspace(connection, &access, id).await?;
+    access.require(Request::Server(ServerPermission::Administrator))?;
+    Ok(access)
+}
+
+/// Records a change of the notification default of a workspace for the accounts that see
+/// the workspace. The event carries the level, so no client reads it again.
+async fn default_changed(
+    connection: &mut PgConnection,
+    now: time::OffsetDateTime,
+    access: &Access,
+    id: WorkspaceId,
+    body: &NotificationDefault,
+) -> ApiResult<()> {
+    let entry = match body.level {
+        Some(level) => AuditEvent::NotificationDefaultChanged { level },
+        None => AuditEvent::NotificationDefaultRemoved,
+    };
+    let about = crate::audit::About::Workspace(id);
+    crate::audit::record(connection, now, Some(access.account_id), about, &entry).await?;
+    let changed = Event::NotificationDefaultChanged {
+        workspace_id: id,
+        level: body.level,
+    };
+    events::publish(connection, now, &changed).await
+}
+
+/// Sets the notification default of a workspace. The body states a level; `DELETE` on the
+/// same path removes the default.
 #[utoipa::path(put,path="/api/v1/workspaces/{workspace_id}/notification-default",tag="messages",params(("workspace_id"=WorkspaceId,Path)),request_body=NotificationDefault,security(("session"=[])),responses((status=200,body=NotificationDefault),ApiError))]
 pub async fn set_default(
     State(app): State<AppState>,
@@ -163,47 +234,55 @@ pub async fn set_default(
     ApiPath(id): ApiPath<WorkspaceId>,
     ApiJson(body): ApiJson<NotificationDefault>,
 ) -> ApiResult<Json<NotificationDefault>> {
+    let Some(level) = body.level else {
+        return Err(ApiError::invalid(
+            "state a level; DELETE removes the default of the workspace",
+        ));
+    };
     let mut counted = false;
     transact!(app, |connection| {
-        let access = Access::open(connection, &bearer, app.now()).await?;
-        scope(connection, &access, id.as_uuid()).await?;
-        access.require(Request::Server(ServerPermission::Administrator))?;
+        let access = default_changer(&app, connection, &bearer, id).await?;
         super::messages::rate(&app, &access, &mut counted)?;
-        let level = match body.level {
-            NotificationLevel::All => "all",
-            NotificationLevel::Mentions => "mentions",
-            NotificationLevel::Nothing => "nothing",
-        };
         let changed = sqlx::query("insert into workspace_notification_defaults(workspace_id,level) values($1,$2) on conflict(workspace_id) do
              update set level=excluded.level where workspace_notification_defaults.level<>excluded.level")
             .bind(id)
-            .bind(level)
+            .bind(notifications::level_name(level))
             .execute(&mut *connection)
             .await?
             .rows_affected();
         if changed > 0 {
-            crate::audit::record(
-                connection,
-                app.now(),
-                Some(access.account_id),
-                crate::audit::About::Workspace(id),
-                &junto_protocol::audit::AuditEvent::NotificationDefaultChanged {
-                    level: body.level,
-                },
-            )
-            .await?;
-            // The default is a setting of the workspace: the accounts that see it are told.
-            events::log::record(
-                connection,
-                app.now(),
-                &events::audience::Audience::Workspace { workspace_id: id },
-                &Event::NotificationSettingsChanged {},
-            )
-            .await?;
+            default_changed(connection, app.now(), &access, id, &body).await?;
         }
         Ok(body.clone())
     })
     .map(Json)
+}
+
+/// Removes the notification default of a workspace. The workspace then has none: the
+/// default of each account, or `mentions`, applies (ADR 0412).
+#[utoipa::path(delete,path="/api/v1/workspaces/{workspace_id}/notification-default",tag="messages",params(("workspace_id"=WorkspaceId,Path)),security(("session"=[])),responses((status=204),ApiError))]
+pub async fn remove_default(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath(id): ApiPath<WorkspaceId>,
+) -> ApiResult<StatusCode> {
+    let mut counted = false;
+    transact!(app, |connection| {
+        let access = default_changer(&app, connection, &bearer, id).await?;
+        super::messages::rate(&app, &access, &mut counted)?;
+        let removed =
+            sqlx::query("delete from workspace_notification_defaults where workspace_id=$1")
+                .bind(id)
+                .execute(&mut *connection)
+                .await?
+                .rows_affected();
+        if removed > 0 {
+            let none = NotificationDefault { level: None };
+            default_changed(connection, app.now(), &access, id, &none).await?;
+        }
+        Ok(())
+    })?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
@@ -283,6 +362,39 @@ pub async fn mark_read(
             .await?;
         }
         Ok(notice)
+    })
+    .map(Json)
+}
+
+/// Marks every notice that the caller reads now and that was created at or before `until`,
+/// in one request (ADR 0412). The devices of the account get one event.
+#[utoipa::path(put,path="/api/v1/notifications/read",tag="messages",request_body=MarkNotificationsRead,security(("session"=[])),responses((status=200,body=NotificationsRead),ApiError))]
+pub async fn mark_all_read(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiJson(body): ApiJson<MarkNotificationsRead>,
+) -> ApiResult<Json<NotificationsRead>> {
+    let now = app.now();
+    let until = body.until.map_or(now, |until| until.min(now));
+    let mut counted = false;
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        access.require(Request::OwnAccount)?;
+        super::messages::rate(&app, &access, &mut counted)?;
+        let places = crate::access::visibility::places(connection, &access).await?;
+        let marked = notifications::mark_all_read(connection, &access, now, until, &places).await?;
+        if marked > 0 {
+            let read = Event::NotificationsRead {
+                until,
+                read_at: now,
+            };
+            events::tell_account(connection, now, access.account_id, &read).await?;
+        }
+        Ok(NotificationsRead {
+            until,
+            read_at: now,
+            marked: u32::try_from(marked).unwrap_or(u32::MAX),
+        })
     })
     .map(Json)
 }

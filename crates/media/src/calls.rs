@@ -1947,11 +1947,14 @@ impl Session {
         }
         self.accepted = cursor;
         // The state lists the person when the media connection is made. Until then the
-        // blocks are the ones that the server gave with the place.
+        // blocks are the ones that the server gave with the place. A server that says
+        // that its admission check has not seen this seat is believed before the list;
+        // a server that says nothing of the seat is read by the list alone (ADR 0517).
         let own = model
             .call_at(&self.target.place)
             .and_then(|call| call.participant(model.account.id))
-            .filter(|own| own.identity == self.place.identity());
+            .filter(|own| own.identity == self.place.identity())
+            .filter(|own| !model.seat_stated_outside(&own.identity));
         let Some(own) = own else {
             if std::mem::replace(&mut self.admitted, false) {
                 self.apply_controls();
@@ -2396,6 +2399,7 @@ mod tests {
 
     fn own(identity: &str) -> OwnCall {
         OwnCall {
+            hides_occupants: None,
             call_id: junto_client_core::protocol::ids::CallId::generate(),
             place: CallPlace::direct(AccountId::generate(), AccountId::generate()),
             device_id: junto_client_core::protocol::ids::DeviceId::generate(),
@@ -2559,6 +2563,7 @@ mod tests {
     fn an_answer_for_a_hidden_call_that_does_not_list_the_person_tells_no_blocks() {
         let own = AccountId::generate();
         let listed = |identity: &str| junto_client_core::protocol::call::CallParticipant {
+            avatar: None,
             account_id: own,
             identity: identity.to_owned(),
             joined_at: OffsetDateTime::UNIX_EPOCH,

@@ -350,8 +350,19 @@ fn a_quiet_time_shows_no_system_notification_and_mark_all_reads_the_list(cx: &mu
     });
     assert_eq!(window.kept().shown[0].body, "in the morning, @Luca");
 
+    // A change of the notification settings replaces the state (ADR 0722). The settings
+    // show the change before that. The list of the notices has no row and no "Mark all
+    // as read" from the replacement until the messages of its notices are read again, so
+    // each change is followed to its replacement before the list is used below.
+    let reloads = |window: &mut Window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.reloads_of(server_id))
+    };
+
     // A daily quiet time is written as two times of day.
     window.in_shell(|shell, window, cx| shell.type_quiet_times("22:00", "7:30", window, cx));
+    let before = reloads(&mut window);
     window.click("set-daily-quiet");
     window.until("the daily quiet time", |window| {
         matches!(
@@ -360,14 +371,23 @@ fn a_quiet_time_shows_no_system_notification_and_mark_all_reads_the_list(cx: &mu
                 if daily.start_minute == 22 * 60 && daily.end_minute == 7 * 60 + 30
         )
     });
+    window.until(
+        "the state was replaced after the quiet time was set",
+        |window| reloads(window) > before,
+    );
     // Two equal times are no time span.
     window.in_shell(|shell, window, cx| shell.type_quiet_times("8:00", "08:00", window, cx));
     window.click("set-daily-quiet");
     assert!(window.shows("quiet-time-refused"));
+    let before = reloads(&mut window);
     window.click("daily-quiet");
     window.until("no daily quiet time", |window| {
         window.view().quiet.daily == Some(Agreement::All(None))
     });
+    window.until(
+        "the state was replaced after the quiet time was removed",
+        |window| reloads(window) > before,
+    );
     window.click("dialog-close");
 
     // "Mark all as read" marks the three notices, and the count ends.
@@ -485,10 +505,8 @@ fn a_person_sets_the_level_and_the_mute_of_a_channel(cx: &mut TestAppContext) {
         window.view().notify.is_some_and(|panel| {
             matches!(panel.scope, SettingsScope::Workspace(_))
                 && panel.workspace_default.is_some_and(|default| {
-                    default.level
-                        == junto_client::state::notices::DefaultRead::Read(
-                            NotificationLevel::Mentions,
-                        )
+                    // The workspace of a new server sets no level (ADR 0412).
+                    default.level == junto_client::state::notices::DefaultRead::Read(None)
                         && !default.may_set
                 })
         })

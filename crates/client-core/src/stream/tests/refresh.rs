@@ -58,6 +58,7 @@ async fn a_refresh_cancels_an_own_call_read_from_before_its_snapshot() {
     let cursor = soon("snapshot", rig.live.refresh()).await.unwrap();
     assert_eq!(cursor.position, 60);
     rig.http.routes.lock().unwrap().own_call = Some(OwnCallState {
+        inside: None,
         own: own.clone(),
         call: Call {
             id: own.call_id,
@@ -151,6 +152,7 @@ async fn an_own_call_read_keeps_its_blocks_over_older_and_later_delivery_of_incl
     {
         let mut routes = rig.http.routes.lock().unwrap();
         routes.own_call = Some(OwnCallState {
+            inside: None,
             own: own.clone(),
             call: Call {
                 id: call_id,
@@ -259,6 +261,117 @@ async fn an_own_call_read_keeps_its_blocks_over_older_and_later_delivery_of_incl
     );
 }
 
+/// ADR 0517 with the positions of ADR 0785: what an answer of the own call says of the seat
+/// holds at the position of that answer. An event that the answer holds does not end it;
+/// an event after it that lists the account does.
+#[tokio::test(start_paused = true)]
+async fn what_an_own_call_answer_says_of_the_seat_is_ordered_with_the_events() {
+    use crate::model::SeatStated;
+    let mut rig = rig();
+    rig.want(ConnectionLevel::Selected, "jst_one");
+    let (peer, _, _) = rig.served().await;
+    let call_id = CallId::generate();
+    let own = rig.scene.own_call(call_id, rig.scene.daily);
+    let place = own.place;
+    let mut seat = participant(rig.scene.account_id);
+    seat.identity.clone_from(&own.identity);
+    let answer =
+        |inside: bool, participants: Vec<junto_protocol::call::CallParticipant>| OwnCallState {
+            inside: Some(inside),
+            own: own.clone(),
+            call: Call {
+                id: call_id,
+                place,
+                started_at: Some(time()),
+                lock: None,
+                meeting: None,
+                hides_occupants: false,
+                participants,
+                recording: None,
+            },
+            entry_requests: vec![],
+        };
+    {
+        let mut routes = rig.http.routes.lock().unwrap();
+        routes.own_call = Some(answer(false, vec![]));
+        routes.own_call_cursor = Some(Cursor {
+            epoch: rig.epoch(),
+            position: 45,
+        });
+    }
+    peer.event(
+        41,
+        Event::OwnCallChanged {
+            call: Some(own.clone()),
+            left: None,
+        },
+    )
+    .await;
+    let model = rig
+        .model_when("the answer", |model| model.own_seat.is_some())
+        .await;
+    assert!(model.seat_stated_outside(&own.identity));
+
+    // The answer was read at position 45 and holds this event. The read that the event
+    // asks for gets no answer yet.
+    let gate = rig.http.hold("/api/v1/call");
+    peer.event(
+        44,
+        Event::CallParticipantJoined {
+            call_id,
+            place,
+            participant: seat.clone(),
+        },
+    )
+    .await;
+    requests(&rig, "/api/v1/call", 2).await;
+    let model = rig
+        .model_when("included event", |model| model.cursor.position == 44)
+        .await;
+    assert!(model.seat_stated_outside(&own.identity));
+    assert_eq!(model.call_at(&place).unwrap().participants, vec![]);
+
+    // The server sees the seat after that answer. The event of the entry ends the
+    // statement before the next answer arrives.
+    {
+        let mut routes = rig.http.routes.lock().unwrap();
+        routes.own_call = Some(answer(true, vec![seat.clone()]));
+        routes.own_call_cursor = Some(Cursor {
+            epoch: rig.epoch(),
+            position: 46,
+        });
+    }
+    peer.event(
+        46,
+        Event::CallParticipantJoined {
+            call_id,
+            place,
+            participant: seat.clone(),
+        },
+    )
+    .await;
+    let model = rig
+        .model_when("later event", |model| model.cursor.position == 46)
+        .await;
+    assert_eq!(model.own_seat, None);
+    assert!(!model.seat_stated_outside(&own.identity));
+    assert_eq!(model.call_at(&place).unwrap().participants, vec![seat]);
+    requests(&rig, "/api/v1/call", 3).await;
+    gate.add_permits(2);
+    let model = rig
+        .model_when("the answer after the entry", |model| {
+            model.own_seat.is_some()
+        })
+        .await;
+    assert_eq!(
+        model.own_seat,
+        Some(SeatStated {
+            identity: own.identity,
+            inside: true
+        })
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn events_newer_than_a_held_own_call_answer_survive_its_installation() {
     use junto_protocol::call::{BlockReason, CallLock, Meeting, MicrophoneBlock};
@@ -289,6 +402,7 @@ async fn events_newer_than_a_held_own_call_answer_survive_its_installation() {
             position: 42,
         });
         routes.own_call = Some(OwnCallState {
+            inside: None,
             own: own.clone(),
             call: Call {
                 id: call_id,
@@ -366,6 +480,7 @@ async fn an_own_call_answer_without_a_position_is_used_as_before_the_positions()
         let mut routes = rig.http.routes.lock().unwrap();
         routes.own_call_unplaced = true;
         routes.own_call = Some(OwnCallState {
+            inside: None,
             own: own.clone(),
             call: Call {
                 id: call_id,
@@ -460,6 +575,7 @@ async fn an_included_leave_removes_the_speaking_mark_that_an_own_call_answer_kep
     {
         let mut routes = rig.http.routes.lock().unwrap();
         routes.own_call = Some(OwnCallState {
+            inside: None,
             own,
             call: Call {
                 id: call_id,

@@ -72,6 +72,7 @@ fn message(number: u32, place: MessagePlace, author: &str, minutes: i64, text: &
         last_reply: None,
         pinned: false,
         files_removed_by_retention: false,
+        reply_authors: Vec::new(),
     }
 }
 
@@ -348,7 +349,7 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
                 |known| {
                     known.workspace_defaults.insert(
                         (server_id(), studio_id()),
-                        DefaultRead::Read(NotificationLevel::Mentions),
+                        DefaultRead::Read(Some(NotificationLevel::Mentions)),
                     );
                     change(known);
                 },
@@ -412,7 +413,7 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
         dialog(SettingsScope::Workspace(studio_id()), |known| {
             known.workspace_defaults.insert(
                 (server_id(), studio_id()),
-                DefaultRead::Read(NotificationLevel::All),
+                DefaultRead::Read(Some(NotificationLevel::All)),
             );
         }),
     )?;
@@ -442,7 +443,7 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
         daily_quiet: daily.map(|(start_minute, end_minute)| DailyQuiet {
             start_minute,
             end_minute,
-            utc_offset_minutes: 0,
+            time_zone: junto_client::zones::FALLBACK.to_owned(),
         }),
         ..NotificationSettings::default()
     };

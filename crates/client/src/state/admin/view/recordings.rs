@@ -215,6 +215,9 @@ mod tests {
             categories: Vec::new(),
             channels,
             calls: Vec::new(),
+            permissions: Vec::new(),
+            channel_permissions: Vec::new(),
+            notification_default: None,
         };
         Scene {
             server_id: ServerId::generate(),
@@ -262,7 +265,8 @@ mod tests {
 
     impl Scene {
         fn model(&self) -> ServerModel {
-            let mut model = ServerModel::from_snapshot(self.snapshot.clone());
+            let mut model =
+                ServerModel::from_snapshot(crate::state::fixtures::stated(self.snapshot.clone()));
             model.admin = Arc::new(self.admin.clone());
             model
         }
@@ -407,6 +411,7 @@ mod tests {
         let mut model = scene.model();
         Arc::make_mut(&mut model.workspaces[0]).members =
             junto_client_core::model::Loadable::Loaded(vec![WorkspaceMember {
+                avatar: None,
                 account_id: scene.ana,
                 name: "Ana".to_owned(),
                 role_ids: Vec::new(),

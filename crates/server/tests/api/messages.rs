@@ -311,10 +311,10 @@ async fn direct_conversations_are_private_and_follow_contact_changes() {
         .await
         .ok(StatusCode::CREATED);
     assert!(
-        matches!(stream.event().await.1,Event::NotificationChanged{message_id} if message_id==sent.id)
+        matches!(stream.event().await.1,Event::MessageChanged{message_id,..} if message_id==sent.id)
     );
     assert!(
-        matches!(stream.event().await.1,Event::MessageChanged{message_id,..} if message_id==sent.id)
+        matches!(stream.event().await.1,Event::NotificationChanged{message_id} if message_id==sent.id)
     );
     for who in [&owner, &reader] {
         server.put(who, &msg(sent.id), &text("hijack")).await.error(

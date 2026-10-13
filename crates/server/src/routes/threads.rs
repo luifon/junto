@@ -6,8 +6,8 @@ use junto_protocol::{
     events::Event,
     ids::{ChannelId, MessageId},
     message::{
-        ForkThread, MarkRead, Message, MessagePage, MessagePlace, SendMessage, ThreadPage,
-        ThreadState,
+        FollowedThreads, ForkThread, MarkRead, Message, MessagePage, MessagePlace, SendMessage,
+        SetThreadFollow, ThreadPage, ThreadState,
     },
     structure::Channel,
 };
@@ -240,6 +240,8 @@ pub async fn fork(
             },
         )
         .await?;
+        events::permissions_changed_by_overrides_of(connection, now, workspace_id, channel.id)
+            .await?;
         let (_, source_root) = messages::get(connection, &access, id).await?;
         messages::changed(
             connection,
@@ -386,18 +388,7 @@ pub async fn unread(
     if !(1..=200).contains(&limit) {
         return Err(ApiError::invalid("limit must be 1 to 200"));
     }
-    let before = query
-        .before
-        .as_deref()
-        .map(|value| {
-            let invalid = || ApiError::invalid("invalid thread cursor");
-            let (newest, root) = value.split_once(':').ok_or_else(invalid)?;
-            Ok::<_, ApiError>((
-                newest.parse::<uuid::Uuid>().map_err(|_| invalid())?,
-                root.parse::<uuid::Uuid>().map_err(|_| invalid())?,
-            ))
-        })
-        .transpose()?;
+    let before = thread_cursor(query.before.as_deref())?;
     let mut counted = false;
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, app.now()).await?;
@@ -411,6 +402,91 @@ pub async fn unread(
             limit,
         )
         .await
+    })
+    .map(Json)
+}
+
+/// Stores the choice of the caller to follow a thread or not (ADR 0412). The caller sees
+/// the channel of the thread.
+#[utoipa::path(put,path="/api/v1/messages/{message_id}/thread/follow",tag="messages",params(("message_id"=MessageId,Path)),request_body=SetThreadFollow,security(("session"=[])),responses((status=200,body=ThreadState),ApiError))]
+pub async fn set_follow(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath(id): ApiPath<MessageId>,
+    ApiJson(body): ApiJson<SetThreadFollow>,
+) -> ApiResult<Json<ThreadState>> {
+    let mut counted = false;
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, app.now()).await?;
+        root(connection, &access, id).await?;
+        rate(&app, &access, &mut counted)?;
+        let choice = Some(body.following);
+        messages::threads::set_follow(connection, app.now(), &access, id, choice).await?;
+        messages::threads::state(connection, access.account_id, id).await
+    })
+    .map(Json)
+}
+
+/// Removes the choice of the caller for a thread. The caller then follows the thread when
+/// it wrote in it or was named in it.
+#[utoipa::path(delete,path="/api/v1/messages/{message_id}/thread/follow",tag="messages",params(("message_id"=MessageId,Path)),security(("session"=[])),responses((status=204),ApiError))]
+pub async fn remove_follow(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath(id): ApiPath<MessageId>,
+) -> ApiResult<StatusCode> {
+    let mut counted = false;
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, app.now()).await?;
+        root(connection, &access, id).await?;
+        rate(&app, &access, &mut counted)?;
+        messages::threads::set_follow(connection, app.now(), &access, id, None).await
+    })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(serde::Deserialize, utoipa::IntoParams)]
+pub struct FollowedQuery {
+    /// The value `next` of the page before.
+    pub before: Option<String>,
+    /// From 1 to 200. Absent: 50.
+    pub limit: Option<u32>,
+}
+
+fn thread_cursor(value: Option<&str>) -> ApiResult<Option<(uuid::Uuid, uuid::Uuid)>> {
+    value
+        .map(|value| {
+            let invalid = || ApiError::invalid("invalid thread cursor");
+            let (newest, root) = value.split_once(':').ok_or_else(invalid)?;
+            Ok::<_, ApiError>((
+                newest.parse::<uuid::Uuid>().map_err(|_| invalid())?,
+                root.parse::<uuid::Uuid>().map_err(|_| invalid())?,
+            ))
+        })
+        .transpose()
+}
+
+/// The threads of a channel that the caller follows, the one with the newest reply first,
+/// in pages. Threads without unread replies are included (ADR 0413). The caller sees the
+/// channel.
+#[utoipa::path(get,path="/api/v1/channels/{channel_id}/threads",tag="messages",params(("channel_id"=ChannelId,Path),FollowedQuery),security(("session"=[])),responses((status=200,body=FollowedThreads),ApiError))]
+pub async fn followed(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath(channel_id): ApiPath<ChannelId>,
+    ApiQuery(query): ApiQuery<FollowedQuery>,
+) -> ApiResult<Json<FollowedThreads>> {
+    let limit = query.limit.unwrap_or(50);
+    if !(1..=200).contains(&limit) {
+        return Err(ApiError::invalid("limit must be 1 to 200"));
+    }
+    let before = thread_cursor(query.before.as_deref())?;
+    let mut counted = false;
+    read!(app, |connection| {
+        let access = Access::open(connection, &bearer, app.now()).await?;
+        Place::channel(connection, &access, channel_id).await?;
+        super::search::read_rate(&app, &access, &mut counted)?;
+        messages::threads::followed(connection, access.account_id, channel_id, before, limit).await
     })
     .map(Json)
 }

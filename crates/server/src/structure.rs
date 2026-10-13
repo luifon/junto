@@ -150,7 +150,8 @@ async fn register(
 
 /// The statements of the export. Their number does not depend on the size of the
 /// structure. They are constants so that a test can read their plans.
-pub const EXPORT_SERVER_ROLES: &str = "select coalesce(i.identifier, r.id), r.name, r.permissions
+pub const EXPORT_SERVER_ROLES: &str =
+    "select coalesce(i.identifier, r.id), r.name, r.permissions, r.position
      from server_roles r
      left join structure_identifiers i on i.kind = 'server_role' and i.object_id = r.id
      order by r.id";
@@ -160,7 +161,7 @@ pub const EXPORT_WORKSPACES: &str = "select w.id, coalesce(i.identifier, w.id), 
      where w.deleted_at is null
      order by w.id";
 pub const EXPORT_ROLES: &str =
-    "select r.workspace_id, coalesce(i.identifier, r.id), r.name, r.permissions, r.is_everyone
+    "select r.workspace_id, coalesce(i.identifier, r.id), r.name, r.permissions, r.is_everyone, r.position
      from workspace_roles r
      left join structure_identifiers i on i.kind = 'workspace_role' and i.object_id = r.id
      order by r.is_everyone desc, r.id";
@@ -224,13 +225,13 @@ pub async fn export(connection: &mut PgConnection, access: &Access) -> ApiResult
 async fn read(connection: &mut PgConnection) -> ApiResult<StructureFile> {
     let default_workspace = store::default_workspace(&mut *connection).await?;
 
-    let server_roles: Vec<(Uuid, String, i64)> = sqlx::query_as(EXPORT_SERVER_ROLES)
+    let server_roles: Vec<(Uuid, String, i64, i32)> = sqlx::query_as(EXPORT_SERVER_ROLES)
         .fetch_all(&mut *connection)
         .await?;
     let workspaces: Vec<(WorkspaceId, Uuid, String)> = sqlx::query_as(EXPORT_WORKSPACES)
         .fetch_all(&mut *connection)
         .await?;
-    let roles: Vec<(WorkspaceId, Uuid, String, i64, bool)> = sqlx::query_as(EXPORT_ROLES)
+    let roles: Vec<(WorkspaceId, Uuid, String, i64, bool, i32)> = sqlx::query_as(EXPORT_ROLES)
         .fetch_all(&mut *connection)
         .await?;
     let categories: Vec<(WorkspaceId, Uuid, String, i32)> = sqlx::query_as(EXPORT_CATEGORIES)
@@ -267,10 +268,11 @@ async fn read(connection: &mut PgConnection) -> ApiResult<StructureFile> {
             channels: Vec::new(),
         });
     }
-    for (workspace_id, entry, name, permissions, everyone) in roles {
+    for (workspace_id, entry, name, permissions, everyone, position) in roles {
         entry_of(&mut entries, &place, workspace_id)?
             .roles
             .push(RoleEntry {
+                position: Some(position),
                 id: StructureId::from_uuid(entry),
                 name,
                 everyone,
@@ -311,8 +313,9 @@ async fn read(connection: &mut PgConnection) -> ApiResult<StructureFile> {
         format: STRUCTURE_FORMAT,
         server_roles: server_roles
             .into_iter()
-            .map(|(entry, name, permissions)| {
+            .map(|(entry, name, permissions, position)| {
                 Ok(ServerRoleEntry {
+                    position: Some(position),
                     id: StructureId::from_uuid(entry),
                     name,
                     permissions: Some(db::server_list(db::server_permissions(permissions)?)),
@@ -386,6 +389,31 @@ async fn apply_one(
     use StructureKind::{Category, Channel, ServerRole as ServerRoleKind, Workspace};
     let role_kind = StructureKind::WorkspaceRole;
     match change {
+        StructureChange::ReorderServerRoles { positions } => {
+            if positions.len() > 250 {
+                return Err(ApiError::invalid("at most 250 role positions may change"));
+            }
+            let mut resolved = Vec::new();
+            for p in positions {
+                resolved.push((resolve(connection, ServerRoleKind, p.id).await?, p.position));
+            }
+            crate::role_order::reorder(connection, access, now, None, &resolved).await
+        }
+        StructureChange::ReorderWorkspaceRoles {
+            workspace,
+            positions,
+        } => {
+            if positions.len() > 250 {
+                return Err(ApiError::invalid("at most 250 role positions may change"));
+            }
+            let workspace =
+                WorkspaceId::from_uuid(resolve(connection, Workspace, *workspace).await?);
+            let mut resolved = Vec::new();
+            for p in positions {
+                resolved.push((resolve(connection, role_kind, p.id).await?, p.position));
+            }
+            crate::role_order::reorder(connection, access, now, Some(workspace), &resolved).await
+        }
         StructureChange::CreateServerRole {
             id,
             name,
@@ -394,11 +422,19 @@ async fn apply_one(
             require_unused(&mut *connection, ServerRoleKind, *id).await?;
             let held: ServerPermissions = permissions.iter().copied().collect();
             let role = ServerRole {
+                position: 1,
                 id: ServerRoleId::generate(),
                 name: validate::name("name", name)?,
                 permissions: db::server_list(held),
             };
-            server_roles::create(&mut *connection, access, now, &role).await?;
+            server_roles::create(
+                &mut *connection,
+                access,
+                now,
+                &role,
+                app.config.limits.most_server_roles,
+            )
+            .await?;
             register(connection, created, ServerRoleKind, *id, role.id.as_uuid()).await
         }
         StructureChange::UpdateServerRole {
@@ -447,6 +483,7 @@ async fn apply_one(
             let workspace_id = resolve(&mut *connection, Workspace, *workspace).await?;
             let held: WorkspacePermissions = permissions.iter().copied().collect();
             let role = WorkspaceRole {
+                position: 1,
                 id: WorkspaceRoleId::generate(),
                 workspace_id: WorkspaceId::from_uuid(workspace_id),
                 name: validate::name("name", name)?,
@@ -592,7 +629,8 @@ async fn apply_one(
                 ChannelId::from_uuid(channel_id),
                 WorkspaceRoleId::from_uuid(role_id),
             );
-            channels::set_override_in(connection, &app.calls, access, now, ids, next).await?;
+            channels::set_override_in(connection, &app.calls, access, now, ids, next, false)
+                .await?;
             Ok(())
         }
         StructureChange::DeleteChannel { id } => {

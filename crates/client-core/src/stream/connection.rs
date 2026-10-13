@@ -883,10 +883,11 @@ impl Client {
                     .and_then(|own| model.call_at(&own.place))
                     .cloned(),
                 model.entry_requests.clone(),
+                model.own_seat.clone(),
             )
         });
         let follow = model.apply(&event);
-        if let Some((call, entry_requests)) = saved_call {
+        if let Some((call, entry_requests, own_seat)) = saved_call {
             if let Some(mut call) = call {
                 // The answer holds no speaking marks: they follow the events (ADR 0785).
                 if let Some(applied) = model.call_at(&call.place) {
@@ -895,6 +896,8 @@ impl Client {
                 model.put_call(call);
             }
             model.entry_requests = entry_requests;
+            // The answer said whether the seat is inside as of its position.
+            model.own_seat = own_seat;
         }
         model.cursor.position = id;
         self.model_changed = true;

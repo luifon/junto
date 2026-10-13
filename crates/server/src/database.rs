@@ -235,7 +235,11 @@ impl Database {
                         }
                         return Step::Done(Ok(value));
                     }
-                    Err(error) if is_conflict(&error) => {}
+                    Err(error)
+                        if is_conflict(&error)
+                            || error
+                                .as_database_error()
+                                .is_some_and(|e| e.is_unique_violation()) => {}
                     Err(error) => return Step::Done(Err(error.into())),
                 }
             }

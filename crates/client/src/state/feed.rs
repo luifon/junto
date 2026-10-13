@@ -100,10 +100,16 @@ pub struct Part {
     pub strong: bool,
 }
 
+/// How many authors of replies the thread line of a message shows.
+pub const MOST_THREAD_AUTHORS: usize = 3;
+
 /// What a message of a channel shows of the thread under it (ADR 0403).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreadMark {
     pub replies: u64,
+    /// The first authors of the replies, at most three, in the order of their first
+    /// reply (ADR 0413). Empty when the server stated none.
+    pub authors: Vec<AccountId>,
     /// The author and the time of the last reply, once that reply was read.
     pub last: Option<LastReply>,
     /// The side panel shows this thread.
@@ -553,6 +559,7 @@ pub fn system_parts(system: &SystemMessage, names: &Names) -> (SystemKind, Vec<P
                 subject.as_deref().unwrap_or(crate::text::SOMEBODY),
                 subject.is_some(),
             ),
+            "{duration}" => push(&crate::text::call_length(system.duration_seconds), false),
             other => push(other, false),
         }
         rest = &rest[end..];
@@ -594,6 +601,13 @@ fn thread_mark<'a>(
     let state = source.model.thread_state(message.id);
     Some(ThreadMark {
         replies: message.reply_count,
+        // The server states at most three; a longer list is cut (ADR 0714).
+        authors: message
+            .reply_authors
+            .iter()
+            .copied()
+            .take(MOST_THREAD_AUTHORS)
+            .collect(),
         last,
         open: source.open_thread == Some(message.id),
         unread: state.map_or(0, |state| state.unread),
@@ -933,6 +947,9 @@ mod tests {
                     hides_occupants: false,
                 }],
                 calls: Vec::new(),
+                permissions: Vec::new(),
+                channel_permissions: Vec::new(),
+                notification_default: None,
             }],
             own_call: None,
             direct_calls: Vec::new(),
@@ -953,7 +970,7 @@ mod tests {
             roles: HashMap::from([(role, "Leads".to_owned())]),
         };
         Scene {
-            model: ServerModel::from_snapshot(snapshot),
+            model: ServerModel::from_snapshot(crate::state::fixtures::stated(snapshot)),
             own,
             ana,
             place: MessagePlace::Channel {
@@ -987,6 +1004,7 @@ mod tests {
                 thread_root: None,
                 reply_count: 0,
                 last_reply: None,
+                reply_authors: Vec::new(),
                 pinned: false,
                 files_removed_by_retention: false,
             }
@@ -1045,6 +1063,8 @@ mod tests {
             latest: 2,
             unread: 1,
             mentions: 0,
+            following: true,
+            follow_setting: None,
         }];
         let timeline = scene.timeline(vec![root.clone()]);
         assert_eq!(named_quotes(&timeline), [reply.id].into_iter().collect());
@@ -1252,6 +1272,7 @@ mod tests {
             subject_id: Some(scene.own),
             actor_id: Some(scene.ana),
             recording_id: None,
+            duration_seconds: None,
         });
         let mut unknown = system.clone();
         unknown.id = MessageId::generate();
@@ -1260,6 +1281,7 @@ mod tests {
             subject_id: None,
             actor_id: None,
             recording_id: None,
+            duration_seconds: None,
         });
         let mention = |position, text: &str, target| {
             let at = text.find('@').unwrap();
@@ -1390,6 +1412,7 @@ mod tests {
             subject_id: None,
             actor_id: None,
             recording_id: Some(recording_id),
+            duration_seconds: None,
         });
         let mut started = post.clone();
         started.id = MessageId::generate();
@@ -1555,5 +1578,85 @@ mod tests {
         println!("derivation of 10,000 messages: {each:?} for {rows} rows");
         assert!(rows > 10_000);
         assert!(each < std::time::Duration::from_millis(500), "{each:?}");
+    }
+    #[test]
+    fn the_thread_line_names_the_first_authors_of_the_replies_that_the_server_stated() {
+        let scene = scene();
+        let mut root = scene.message(1, scene.ana, 0, "root");
+        root.reply_count = 5;
+        let others: Vec<AccountId> = (0..3).map(|_| AccountId::generate()).collect();
+        let authors = |root: &Message| {
+            let timeline = scene.timeline(vec![root.clone()]);
+            scene
+                .feed(&timeline, false)
+                .rows
+                .iter()
+                .find_map(|row| match row {
+                    FeedRow::Message(row) => row.thread.as_ref().map(|mark| mark.authors.clone()),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        // A server of before the field states none.
+        assert!(authors(&root).is_empty());
+        root.reply_authors = vec![scene.own, others[0]];
+        assert_eq!(authors(&root), [scene.own, others[0]]);
+        // The server states at most three; a longer list is cut.
+        root.reply_authors = vec![others[2], scene.own, others[0], others[1]];
+        assert_eq!(authors(&root), [others[2], scene.own, others[0]]);
+    }
+
+    #[test]
+    fn the_lines_of_a_direct_call_state_who_called_who_did_not_answer_and_the_length() {
+        let scene = scene();
+        let line = |action: &str, actor, subject, duration_seconds| {
+            let system = SystemMessage {
+                action: action.to_owned(),
+                subject_id: Some(subject),
+                actor_id: Some(actor),
+                recording_id: None,
+                duration_seconds,
+            };
+            let (kind, parts) = system_parts(&system, &scene.names);
+            let text: String = parts
+                .iter()
+                .map(|part| {
+                    if part.strong {
+                        format!("[{}]", part.text)
+                    } else {
+                        part.text.clone()
+                    }
+                })
+                .collect();
+            (kind, text)
+        };
+        let (ana, own) = (scene.ana, scene.own);
+        assert_eq!(
+            line("direct_call_started", ana, own, None),
+            (SystemKind::Start, "[Ana] started a call".to_owned())
+        );
+        // The actor of the line is the caller, and the subject the account that was
+        // called (ADR 0518).
+        assert_eq!(
+            line("direct_call_not_answered", ana, own, None),
+            (
+                SystemKind::Plain,
+                "[Luca] did not answer the call of [Ana]".to_owned()
+            )
+        );
+        assert_eq!(
+            line("direct_call_declined", own, ana, None),
+            (SystemKind::Plain, "[Luca] declined the call".to_owned())
+        );
+        let ended = |seconds| line("direct_call_ended", ana, own, seconds).1;
+        assert_eq!(
+            ended(Some(252)),
+            "The call ended after 4 minutes 12 seconds"
+        );
+        assert_eq!(ended(Some(1)), "The call ended after 1 second");
+        assert_eq!(ended(Some(60)), "The call ended after 1 minute 0 seconds");
+        assert_eq!(ended(Some(3_725)), "The call ended after 1 hour 2 minutes");
+        // A server that states no length.
+        assert_eq!(ended(None), "The call ended");
     }
 }

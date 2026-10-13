@@ -76,12 +76,13 @@ struct Client {
 
 impl Client {
     fn start(command: &str, url: &str, token: &CallToken, arguments: &[&str]) -> Self {
+        let tool = std::env::var("JUNTO_TEST_PARTICIPANT").unwrap_or_else(|_| TOOL.to_owned());
         assert!(
-            std::path::Path::new(TOOL).exists(),
-            "{TOOL} is missing. Build it once: (cd spikes/test-participant && \
+            std::path::Path::new(&tool).exists(),
+            "{tool} is missing. Build it once: (cd spikes/test-participant && \
              ../../tools/serial.sh cargo build --release)"
         );
-        let mut child = Command::new(TOOL)
+        let mut child = Command::new(&tool)
             .arg(command)
             .args(["--url", url, "--token", token.expose()])
             .args(arguments)

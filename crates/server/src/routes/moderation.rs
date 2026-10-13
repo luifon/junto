@@ -3,7 +3,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use junto_authz::{OwnerAction, Request, ServerPermission};
 use junto_protocol::account::{
-    AccountStatus, AccountSummary, DeviceOrigin, RecoverAccount, RecoveryNotice,
+    AccountStatus, AccountSummary, DeviceOrigin, ModerationReason, RecoverAccount, RecoveryNotice,
 };
 use junto_protocol::audit::AuditEvent;
 use junto_protocol::events::Event;
@@ -110,6 +110,7 @@ async fn set_status(
     path = "/api/v1/accounts/{account_id}/removal",
     tag = "moderation",
     params(("account_id" = AccountId, Path)),
+    request_body = Option<ModerationReason>,
     security(("session" = [])),
     responses((status = 204), ApiError)
 )]
@@ -117,7 +118,9 @@ pub async fn remove_account(
     State(app): State<AppState>,
     bearer: Bearer,
     ApiPath(account_id): ApiPath<AccountId>,
+    body: axum::body::Bytes,
 ) -> ApiResult<StatusCode> {
+    let reason = moderation_reason(&body)?;
     let now = app.now();
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
@@ -128,6 +131,7 @@ pub async fn remove_account(
             return Err(ApiError::conflict("the account is already removed"));
         }
 
+        access.require_above_account(connection, account_id).await?;
         set_status(connection, now, account_id, AccountStatus::Removed).await?;
         store::contact_changed(connection, now, account_id).await?;
         let sessions = Sessions::OfAccount(account_id);
@@ -167,7 +171,10 @@ pub async fn remove_account(
             now,
             Some(access.account_id),
             About::Server,
-            &AuditEvent::AccountRemoved { account_id },
+            &AuditEvent::AccountRemoved {
+                account_id,
+                reason: reason.clone(),
+            },
         )
         .await
     })?;
@@ -180,6 +187,7 @@ pub async fn remove_account(
     path = "/api/v1/accounts/{account_id}/ban",
     tag = "moderation",
     params(("account_id" = AccountId, Path)),
+    request_body = Option<ModerationReason>,
     security(("session" = [])),
     responses((status = 204), ApiError)
 )]
@@ -187,7 +195,9 @@ pub async fn ban_account(
     State(app): State<AppState>,
     bearer: Bearer,
     ApiPath(account_id): ApiPath<AccountId>,
+    body: axum::body::Bytes,
 ) -> ApiResult<StatusCode> {
+    let reason = moderation_reason(&body)?;
     let now = app.now();
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
@@ -202,6 +212,7 @@ pub async fn ban_account(
             AccountStatus::Removed => return Err(ApiError::conflict("the account is removed")),
         }
 
+        access.require_above_account(connection, account_id).await?;
         set_status(connection, now, account_id, AccountStatus::Banned).await?;
         store::contact_changed(connection, now, account_id).await?;
         store::end_sessions(connection, &app.calls, now, account_id, SessionEnd::Banned).await?;
@@ -228,6 +239,7 @@ pub async fn ban_account(
             Some(access.account_id),
             About::Server,
             &AuditEvent::AccountBanned {
+                reason: reason.clone(),
                 account_id,
                 cancelled_invite_ids,
             },
@@ -260,6 +272,9 @@ pub async fn unban_account(
         if locked_status(connection, account_id).await? != AccountStatus::Banned {
             return Err(ApiError::conflict("the account is not banned"));
         }
+        access
+            .require_above_restored_roles(connection, account_id)
+            .await?;
         set_status(connection, now, account_id, AccountStatus::Active).await?;
         store::contact_changed(connection, now, account_id).await?;
         audit::record(
@@ -327,4 +342,26 @@ pub async fn recover_account(
         Ok(notice)
     })?;
     Ok((StatusCode::CREATED, Json(notice)))
+}
+
+pub(crate) fn moderation_reason(body: &[u8]) -> ApiResult<Option<String>> {
+    let request = if body.is_empty() {
+        ModerationReason::default()
+    } else {
+        let value: serde_json::Value = serde_json::from_slice(body)
+            .map_err(|_| ApiError::invalid("expected an optional moderation reason"))?;
+        if !value.is_null() && !value.is_object() {
+            return Err(ApiError::invalid("expected an optional moderation reason"));
+        }
+        serde_json::from_value::<Option<ModerationReason>>(value)
+            .map_err(|_| ApiError::invalid("expected an optional moderation reason"))?
+            .unwrap_or_default()
+    };
+    let reason = request.reason.as_deref().unwrap_or_default().trim();
+    if reason.chars().count() > 1000 || reason.chars().any(char::is_control) {
+        return Err(ApiError::invalid(
+            "reason must have at most 1000 characters and no controls",
+        ));
+    }
+    Ok((!reason.is_empty()).then(|| reason.to_owned()))
 }

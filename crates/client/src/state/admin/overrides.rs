@@ -1,57 +1,19 @@
 //! The requests of the administration that change the overrides of the roles in a channel
 //! (ADR 0304).
 //!
-//! The server stores an override as two whole sets, so a change of one permission sends
-//! every permission of the override. The sets are made from the override that the server
-//! holds at the time of the request: the state of the window can be older than an answer
-//! of the server, and sets made from it would undo the change before.
+//! A change of one permission is one request that names that permission and its new
+//! state. The server changes it in the override that it holds and keeps every other
+//! permission, so a change of another person to the same override is not undone, and the
+//! grant rule is applied to the changed permission only.
 
 use gpui::Context;
-use junto_client_core::api::{ApiError, ServerApi};
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::ids::{ChannelId, ServerId, WorkspaceRoleId};
 use junto_client_core::protocol::structure::{ChannelOverride, SetChannelOverride};
 
 use super::AskKind;
-use super::view::overrides::{Choice, changed, choice_of, private_change};
+use super::view::overrides::{Choice, choice_of, private_state, state_of};
 use crate::state::AppState;
-
-/// The override of a role in a channel as the server holds it now.
-async fn stored_override(
-    api: &ServerApi,
-    channel_id: ChannelId,
-    role_id: WorkspaceRoleId,
-) -> Result<Option<ChannelOverride>, ApiError> {
-    let stored = api.channel_overrides(channel_id).await?;
-    Ok(stored.into_iter().find(|held| held.role_id == role_id))
-}
-
-async fn set_choice(
-    api: ServerApi,
-    channel_id: ChannelId,
-    role_id: WorkspaceRoleId,
-    permission: WorkspacePermission,
-    choice: Choice,
-) -> Result<ChannelOverride, ApiError> {
-    let stored = stored_override(&api, channel_id, role_id).await?;
-    let (allow, deny) = changed(stored.as_ref(), permission, choice);
-    api.set_channel_override(channel_id, role_id, &SetChannelOverride { allow, deny })
-        .await
-}
-
-async fn set_privacy(
-    api: ServerApi,
-    channel_id: ChannelId,
-    role_id: WorkspaceRoleId,
-    private: bool,
-) -> Result<(), ApiError> {
-    let stored = stored_override(&api, channel_id, role_id).await?;
-    if let Some((allow, deny)) = private_change(stored.as_ref(), private) {
-        api.set_channel_override(channel_id, role_id, &SetChannelOverride { allow, deny })
-            .await?;
-    }
-    Ok(())
-}
 
 impl AppState {
     /// The overrides of a channel as the state of the server holds them. Absent until
@@ -65,9 +27,10 @@ impl AppState {
         model.admin.overrides(channel_id).loaded().cloned()
     }
 
-    /// Sets one permission of one role in one channel to a choice. The other permissions
-    /// of the override stay. Nothing is sent while the overrides are not loaded, and for
-    /// the choice that the override states already.
+    /// Sets one permission of one role in one channel to a choice, with one request that
+    /// names that permission. The other permissions of the override stay as the server
+    /// holds them. Nothing is sent while the overrides are not loaded, and for the choice
+    /// that the override states already.
     pub fn set_override_choice(
         &mut self,
         server_id: ServerId,
@@ -84,10 +47,14 @@ impl AppState {
         if choice_of(shown, permission) == choice {
             return;
         }
+        let state = state_of(choice);
         self.admin_ask(
             server_id,
             AskKind::SetOverride(channel_id, role_id),
-            |api| set_choice(api, channel_id, role_id, permission, choice),
+            |api| async move {
+                api.change_channel_override(channel_id, role_id, permission, state)
+                    .await
+            },
             |_, _, _| {},
             cx,
         );
@@ -120,9 +87,10 @@ impl AppState {
         );
     }
 
-    /// Makes a channel private or open: adds or removes "view channel" in the deny set of
-    /// the "everyone" role (ADR 0304). Nothing is sent while the overrides are not
-    /// loaded, and for a channel that is private or open already.
+    /// Makes a channel private or open: denies "view channel" to the "everyone" role, or
+    /// lets the roles decide it again (ADR 0304). The request names that one permission.
+    /// Nothing is sent while the overrides are not loaded, and for a channel that is
+    /// private or open already.
     pub fn set_private(
         &mut self,
         server_id: ServerId,
@@ -148,14 +116,22 @@ impl AppState {
             return;
         };
         let shown = overrides.iter().find(|held| held.role_id == role_id);
-        if private_change(shown, private).is_none() {
+        let Some(state) = private_state(shown, private) else {
             return;
-        }
+        };
         self.admin_ask(
             server_id,
             AskKind::SetOverride(channel_id, role_id),
-            |api| set_privacy(api, channel_id, role_id, private),
-            |_, (), _| {},
+            |api| async move {
+                api.change_channel_override(
+                    channel_id,
+                    role_id,
+                    WorkspacePermission::ViewChannel,
+                    state,
+                )
+                .await
+            },
+            |_, _, _| {},
             cx,
         );
     }

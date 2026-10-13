@@ -379,3 +379,101 @@ async fn a_direct_call_rings_a_server_that_is_not_selected_and_a_decline_pauses_
     })
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn a_direct_call_that_is_not_answered_leaves_its_lines_and_a_notice_for_a_client_that_starts_later()
+ {
+    use junto_client_core::model::PlaceId;
+    use junto_client_core::protocol::discovery::NotificationKind;
+
+    let scene = three().await;
+    let (ann, ben) = (&scene.ann, &scene.ben);
+    let (ann_id, ben_id) = (logged_in(ann), logged_in(ben));
+    live(&scene.devices[0], ann).await;
+    // The device of Ben is not connected: nothing rings anywhere.
+    ann.api().join_direct_call(ben_id).await.unwrap();
+    model_when(ann, "the ring that Ann made", |model| {
+        model.invitations.len() == 1
+    })
+    .await;
+    // Ann hangs up before an answer: the call ends, and the server stores its lines in
+    // the conversation of the two accounts (ADR 0518).
+    ann.api().leave_call().await.unwrap();
+    model_when(ann, "Ann has left", |model| {
+        model.own_call.is_none() && model.invitations.is_empty()
+    })
+    .await;
+
+    // Ben starts afterwards. The state of the server tells of the call: the conversation
+    // exists, it holds one unread message, and the notice of the missed call is there.
+    let model = live(&scene.devices[1], ben).await;
+    let model = if model.conversations.is_empty() {
+        model_when(ben, "the conversation of the call", |model| {
+            !model.conversations.is_empty()
+        })
+        .await
+    } else {
+        model
+    };
+    let conversation = model.conversations[0].clone();
+    assert!(
+        [conversation.low_account_id, conversation.high_account_id].contains(&ann_id),
+        "{conversation:?}"
+    );
+    let place = PlaceId::Direct(conversation.id);
+    let summary = model.message_state(place).unwrap();
+    assert_eq!(summary.unread, 1);
+    let missed: Vec<_> = model
+        .notices
+        .iter()
+        .filter(|notice| notice.kind == NotificationKind::MissedCall)
+        .collect();
+    assert_eq!(missed.len(), 1, "{:?}", model.notices);
+    assert!(missed[0].read_at.is_none());
+
+    // The conversation holds the two lines, and the notice names the second one.
+    ben.live().open_messages(place).await.unwrap();
+    let model = model_when(ben, "the lines of the call", |model| {
+        model
+            .timeline(place)
+            .is_some_and(|timeline| timeline.messages.len() == 2)
+    })
+    .await;
+    let lines: Vec<(String, _, _)> = model
+        .timeline(place)
+        .unwrap()
+        .messages
+        .iter()
+        .map(|message| {
+            let system = message.system.as_ref().unwrap();
+            (system.action.clone(), system.actor_id, system.subject_id)
+        })
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            ("direct_call_started".to_owned(), Some(ann_id), Some(ben_id)),
+            (
+                "direct_call_not_answered".to_owned(),
+                Some(ann_id),
+                Some(ben_id)
+            ),
+        ]
+    );
+    let line = &model.timeline(place).unwrap().messages[1];
+    assert_eq!(missed[0].message_id, line.id);
+    // The caller reads the same lines and has no unread message and no notice of them.
+    let model = ann.live().view().model.unwrap();
+    assert!(
+        model
+            .notices
+            .iter()
+            .all(|notice| notice.kind != NotificationKind::MissedCall)
+    );
+    assert!(
+        model
+            .message_state(place)
+            .is_none_or(|state| state.unread == 0)
+    );
+}

@@ -217,8 +217,18 @@ pub(super) async fn send(
         }
         messages::mentions(connection, &access, &place, id, &body.document, now).await?;
         messages::uploads::attach(connection, app, &access, &place, id, &body.attachments).await?;
-        messages::notifications::create(connection, now, id, None).await?;
-        messages::changed(connection, now, place.value, id, position as u64, false).await?;
+        let message_event = uuid::Uuid::now_v7();
+        messages::changed_at(
+            connection,
+            now,
+            place.value,
+            id,
+            position as u64,
+            false,
+            message_event,
+        )
+        .await?;
+        messages::notifications::create(connection, now, id, None, message_event).await?;
         if let Some(root) = thread_root {
             messages::threads::advance(connection, now, &access, root, position).await?;
             let (_, root_message) = messages::get(connection, &access, root).await?;
@@ -293,8 +303,19 @@ pub async fn edit_message(
             .bind(now)
             .execute(&mut *connection)
             .await?;
-        messages::notifications::create(connection, now, id, Some(&recipients)).await?;
-        messages::changed(connection, now, place.value, id, message.position, false).await?;
+        let message_event = uuid::Uuid::now_v7();
+        messages::changed_at(
+            connection,
+            now,
+            place.value,
+            id,
+            message.position,
+            false,
+            message_event,
+        )
+        .await?;
+        messages::notifications::create(connection, now, id, Some(&recipients), message_event)
+            .await?;
         Ok(messages::get(connection, &access, id).await?.1)
     })
     .map(Json)
@@ -470,37 +491,11 @@ pub async fn open_conversation(
         rate(&app, &access, &mut counted)?;
         let low = access.account_id.min(body.account_id);
         let high = access.account_id.max(body.account_id);
-        let existing: Option<ConversationId> = sqlx::query_scalar(
-            "select id from conversations where low_account_id=$1 and high_account_id=$2",
-        )
-        .bind(low)
-        .bind(high)
-        .fetch_optional(&mut *connection)
-        .await?;
-        let is_new = existing.is_none();
-        let id = if let Some(existing) = existing {
-            existing
-        } else {
-            sqlx::query(
-                "insert into conversations(id,low_account_id,high_account_id) values($1,$2,$3)",
-            )
-            .bind(id)
-            .bind(low)
-            .bind(high)
-            .execute(&mut *connection)
-            .await
-            .map_err(ApiError::concurrent)?;
-            id
-        };
-        Place::direct(connection, &access, id)
+        let (conversation, is_new) = Place::conversation_between(connection, low, high, id).await?;
+        Place::direct(connection, &access, conversation.id)
             .await?
             .ensure(connection)
             .await?;
-        let conversation = Conversation {
-            id,
-            low_account_id: low,
-            high_account_id: high,
-        };
         if is_new {
             events::publish(
                 connection,

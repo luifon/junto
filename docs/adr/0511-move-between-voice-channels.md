@@ -50,3 +50,5 @@ Failure:
 - A reader of the audit log who sees both channels finds two entries with the same time, the same account and the same actor, and can join them. A reader who sees one channel sees that a person was moved out or in, and not where from or where to.
 - Blocks of the source do not follow the person: a block belongs to a call (ADR 0510).
 - A moved person who is in a call from another device than expected, or who closed the client, makes the move time out.
+
+Role order and its action-specific exemptions are decided in ADR 0309.

@@ -16,11 +16,11 @@ use junto_client_core::protocol::{ServerPermission, WorkspacePermission};
 use time::OffsetDateTime;
 
 use super::{channel_name, date, date_time, days};
-use crate::state::admin::AuditScope;
 use crate::state::admin::view::records::{
     About, Actor, ActorChoice, AuditGroup, AuditLine, ExportLine, ExportOf, ExportStatus, Names,
     ScopeChoice, TokenFault, TokenLine,
 };
+use crate::state::admin::{AuditPeriod, AuditScope};
 
 pub const COPY: &str = "Copy";
 pub const COPIED: &str = "Copied";
@@ -300,14 +300,20 @@ pub fn save_refused(error: &ApiError) -> String {
 pub const AUDIT_HELP: &str = "The actions that the server recorded: who did what, and when. Nobody can change or \
      delete an entry.";
 pub const AUDIT_SCOPE: &str = "Log that is shown";
-pub const AUDIT_GROUP: &str = "Actions that are shown";
-pub const AUDIT_ACTOR: &str = "Person";
-pub const ALL_ACTIONS: &str = "All";
+pub const AUDIT_ACTION: &str = "Action";
+pub const AUDIT_ACTION_GROUP: &str = "Kind of action";
+pub const EVERY_ACTION: &str = "Every action";
+pub const AUDIT_ACTOR: &str = "Person who acted";
 pub const EVERYONE: &str = "Everyone";
+pub const AUDIT_ABOUT: &str = "Person concerned";
+pub const ANYONE: &str = "Anyone";
+pub const AUDIT_PERIOD: &str = "Time";
+pub const AUDIT_FILTERED: &str = "The server returns the entries that pass these filters.";
+pub const CLEAR_FILTERS: &str = "Clear filters";
 pub const UNNAMED_ACTOR: &str = "An account whose name is not known here";
 pub const THE_SERVER: &str = "The server";
 pub const NO_ENTRIES: &str = "This log has no entry.";
-pub const NO_ENTRIES_SHOWN: &str = "No loaded entry passes the filters.";
+pub const NO_ENTRIES_FILTERED: &str = "No entry of this log passes the filters.";
 pub const LOAD_OLDER: &str = "Load older";
 pub const READ_AGAIN: &str = "Read again";
 pub const AUDIT_BOUND: &str = "The page shows the newest 2,000 entries. It reads no older entry.";
@@ -335,28 +341,28 @@ pub const fn audit_group(group: AuditGroup) -> &'static str {
     }
 }
 
-/// What a group of actions holds, for the accessibility tree and the help of the filter.
-pub const fn audit_group_help(group: AuditGroup) -> &'static str {
-    match group {
-        AuditGroup::Members => "Members and bans",
-        AuditGroup::Invites => "Invites and join requests",
-        AuditGroup::Roles => "Roles and permissions",
-        AuditGroup::Structure => "Workspaces and channels",
-        AuditGroup::Calls => "Calls and recordings",
-        AuditGroup::Messages => "Messages and retention",
-        AuditGroup::Server => "Access tokens and the server",
+/// An action as the filter names it: the name of the protocol with spaces, so that an
+/// action of the list is the action that the server matches.
+pub fn audit_action(action: &str) -> String {
+    capital(action.replace('_', " "))
+}
+
+/// A period as the filter names it.
+pub const fn audit_period(period: AuditPeriod) -> &'static str {
+    match period {
+        AuditPeriod::Any => "Any time",
+        AuditPeriod::Day => "Last 24 hours",
+        AuditPeriod::Week => "Last 7 days",
+        AuditPeriod::Month => "Last 30 days",
     }
 }
 
-/// The sentence under the filter that states what the chosen group holds.
-pub fn audit_group_shown(group: Option<AuditGroup>) -> String {
-    match group {
-        Some(group) => format!("Shown: {}.", lower_first(audit_group_help(group))),
-        None => "Shown: every action.".to_owned(),
-    }
+/// The reason of a ban or of a removal, as the row of its entry states it.
+pub fn audit_reason(reason: &str) -> String {
+    format!("Reason: {reason}")
 }
 
-/// An account of the filter by the person who acted.
+/// An account of a filter by person.
 pub fn audit_actor_choice(choice: &ActorChoice) -> String {
     choice
         .name
@@ -364,10 +370,10 @@ pub fn audit_actor_choice(choice: &ActorChoice) -> String {
         .unwrap_or_else(|| UNNAMED_ACTOR.to_owned())
 }
 
-pub fn audit_count(shown: usize, loaded: usize) -> String {
+pub fn audit_count(loaded: usize) -> String {
     match loaded {
-        1 => format!("{shown} of 1 loaded entry shown"),
-        loaded => format!("{shown} of {loaded} loaded entries shown"),
+        1 => "1 entry loaded".to_owned(),
+        loaded => format!("{loaded} entries loaded"),
     }
 }
 
@@ -411,14 +417,6 @@ pub fn audit_failure(error: &ApiError) -> String {
             "The server has no such workspace for your account.".to_owned()
         }
         _ => crate::text::flow_error(&FlowError::from(error)),
-    }
-}
-
-fn lower_first(text: &str) -> String {
-    let mut characters = text.chars();
-    match characters.next() {
-        Some(first) => first.to_lowercase().chain(characters).collect(),
-        None => String::new(),
     }
 }
 
@@ -653,12 +651,31 @@ pub fn audit_sentence(event: &AuditEvent, names: &Names<'_>) -> String {
             the_workspaces(workspace_ids, names)
         ),
         AuditEvent::JoinRequestDenied { .. } => "a join request was denied.".to_owned(),
-        AuditEvent::AccountRemoved { account_id } => {
+        AuditEvent::AccountRemoved { account_id, .. } => {
             format!("{} was removed from the server.", account(*account_id))
         }
+        AuditEvent::WorkspaceMemberRemoved { account_id, .. } => format!(
+            "an administrator removed {} from the workspace.",
+            account(*account_id)
+        ),
+        AuditEvent::InviteWorkspacesChanged {
+            invite_created_by,
+            removed_workspace_id,
+            ..
+        } => format!(
+            "an invite of {} gives {} no longer, because its creator was removed from that \
+             workspace.",
+            account(*invite_created_by),
+            the_workspaces(std::slice::from_ref(removed_workspace_id), names)
+        ),
+        AuditEvent::ServerLogoChanged { logo } => match logo {
+            Some(_) => "the logo of the server was set.".to_owned(),
+            None => "the logo of the server was removed.".to_owned(),
+        },
         AuditEvent::AccountBanned {
             account_id,
             cancelled_invite_ids,
+            ..
         } => {
             let banned = format!("{} was banned.", account(*account_id));
             match cancelled_invite_ids.len() {
@@ -686,6 +703,17 @@ pub fn audit_sentence(event: &AuditEvent, names: &Names<'_>) -> String {
             "the server role “{name}” was changed. It has {} now.",
             server_permissions(permissions)
         ),
+        AuditEvent::ServerRolePositionChanged { role_id, position } => format!(
+            "{} was moved to position {position} in the order of the server roles.",
+            the_server_role(names.server_role(*role_id))
+        ),
+        AuditEvent::WorkspaceRolePositionChanged { role_id, position } => format!(
+            "{} was moved to position {position} in the order of the roles.",
+            the_role(names.workspace_role(*role_id))
+        ),
+        AuditEvent::NotificationDefaultRemoved => {
+            "the default notification level was removed. The workspace sets none.".to_owned()
+        }
         AuditEvent::ServerRoleAssigned {
             role_id,
             account_id,

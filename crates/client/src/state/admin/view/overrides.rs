@@ -5,7 +5,7 @@
 use junto_client_core::model::{ServerModel, WorkspaceModel};
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::ids::WorkspaceRoleId;
-use junto_client_core::protocol::structure::{Channel, ChannelOverride};
+use junto_client_core::protocol::structure::{Channel, ChannelOverride, OverrideState};
 
 use super::Listed;
 
@@ -127,47 +127,27 @@ pub fn choice_of(current: Option<&ChannelOverride>, permission: WorkspacePermiss
     }
 }
 
-/// The allow set and the deny set of an override after one permission is set to a
-/// choice. The other permissions stay. Each set is in the order of
-/// `WorkspacePermission::ALL`, and no permission is in both. Two empty sets remove the
-/// override.
-pub fn changed(
-    current: Option<&ChannelOverride>,
-    permission: WorkspacePermission,
-    choice: Choice,
-) -> (Vec<WorkspacePermission>, Vec<WorkspacePermission>) {
-    let mut allow = Vec::new();
-    let mut deny = Vec::new();
-    for held in WorkspacePermission::ALL.iter().copied() {
-        let next = if held == permission {
-            choice
-        } else {
-            choice_of(current, held)
-        };
-        match next {
-            Choice::Allow => allow.push(held),
-            Choice::Deny => deny.push(held),
-            Choice::Default => {}
-        }
+/// The state that the request for one permission of an override names for a choice
+/// (ADR 0304). The server changes that permission and keeps every other one.
+pub const fn state_of(choice: Choice) -> OverrideState {
+    match choice {
+        Choice::Allow => OverrideState::Allow,
+        Choice::Default => OverrideState::Inherit,
+        Choice::Deny => OverrideState::Deny,
     }
-    (allow, deny)
 }
 
-/// The sets of the override of the "everyone" role that make a channel private or open
-/// (ADR 0304): "view channel" enters the deny set or leaves it. Absent when the channel
-/// is private or open already; an allow of "view channel" stays in an open channel.
-pub fn private_change(
-    current: Option<&ChannelOverride>,
-    private: bool,
-) -> Option<(Vec<WorkspacePermission>, Vec<WorkspacePermission>)> {
-    let view = WorkspacePermission::ViewChannel;
-    let denied = choice_of(current, view) == Choice::Deny;
-    let choice = if private {
-        Choice::Deny
+/// The state of "view channel" in the override of the "everyone" role that makes a
+/// channel private or open (ADR 0304): denied, or decided by the roles. Absent when the
+/// channel is private or open already; an allow of "view channel" stays in an open
+/// channel.
+pub fn private_state(current: Option<&ChannelOverride>, private: bool) -> Option<OverrideState> {
+    let denied = choice_of(current, WorkspacePermission::ViewChannel) == Choice::Deny;
+    (denied != private).then_some(if private {
+        OverrideState::Deny
     } else {
-        Choice::Default
-    };
-    (denied != private).then(|| changed(current, view, choice))
+        OverrideState::Inherit
+    })
 }
 
 /// The page of the overrides of a channel. The permissions that the person holds in the
@@ -177,7 +157,9 @@ pub fn derive(
     workspace: &WorkspaceModel,
     channel: &Channel,
 ) -> PermissionsPage {
-    let held = model.channel_permissions(channel.id);
+    // What the person holds in the channel is the list that the server stated
+    // (ADR 0310).
+    let held = model.permissions_in(channel.id);
     let roles = Listed::of(model.admin.overrides(channel.id), |overrides| {
         let everyone = workspace.roles.iter().filter(|role| role.is_everyone);
         let others = workspace.roles.iter().filter(|role| !role.is_everyone);
@@ -197,7 +179,7 @@ pub fn derive(
                         .map(|permission| PermissionLine {
                             permission,
                             current: choice_of(current, permission),
-                            held: held.is_some_and(|held| held.contains(permission)),
+                            held: held.is_some_and(|held| held.contains(&permission)),
                         })
                         .collect(),
                 }
@@ -215,7 +197,7 @@ mod tests {
     use junto_client_core::protocol::ServerPermission;
     use junto_client_core::protocol::WorkspacePermission::{
         DeafenMembers, LockRoom, ManageChannel, MentionEveryone, MoveMembers, MuteMembers,
-        RecordCalls, RunMeetingMode, ViewChannel,
+        RecordCalls, ViewChannel,
     };
     use junto_client_core::protocol::account::OwnAccount;
     use junto_client_core::protocol::events::Cursor;
@@ -242,16 +224,17 @@ mod tests {
 
     fn scene() -> Scene {
         let studio = WorkspaceId::generate();
-        let role = |name: &str, permissions: &[WorkspacePermission], is_everyone| WorkspaceRole {
+        let role = |name: &str, permissions: &[WorkspacePermission], position| WorkspaceRole {
+            position,
             id: WorkspaceRoleId::generate(),
             workspace_id: studio,
             name: name.to_owned(),
             permissions: permissions.to_vec(),
-            is_everyone,
+            is_everyone: position == 0,
         };
-        let leads = role("leads", &[ManageChannel], false);
-        let everyone = role("everyone", &[ViewChannel], true);
-        let guests = role("guests", &[], false);
+        let leads = role("leads", &[ManageChannel], 2);
+        let everyone = role("everyone", &[ViewChannel], 0);
+        let guests = role("guests", &[], 1);
         let general = Channel {
             id: ChannelId::generate(),
             workspace_id: studio,
@@ -288,6 +271,9 @@ mod tests {
                 categories: Vec::new(),
                 channels: vec![general.clone()],
                 calls: Vec::new(),
+                permissions: Vec::new(),
+                channel_permissions: Vec::new(),
+                notification_default: None,
             }],
             own_call: None,
             direct_calls: Vec::new(),
@@ -339,13 +325,25 @@ mod tests {
             }
         }
 
+        /// The server states this list for the account in the channel (ADR 0310): what
+        /// its permission function gives with the overrides of the channel.
+        fn holds_in_channel(&mut self, permissions: &[WorkspacePermission]) {
+            let general = self.general;
+            self.snapshot.workspaces[0].channel_permissions =
+                vec![junto_client_core::protocol::structure::ChannelPermissions {
+                    channel_id: general,
+                    permissions: permissions.to_vec(),
+                }];
+        }
+
         /// The overrides of the channel are read and hold these.
         fn load(&mut self, overrides: Vec<ChannelOverride>) {
             self.admin.overrides = vec![(self.general, Collection::Loaded(overrides))];
         }
 
         fn page(&self) -> PermissionsPage {
-            let mut model = ServerModel::from_snapshot(self.snapshot.clone());
+            let mut model =
+                ServerModel::from_snapshot(crate::state::fixtures::stated(self.snapshot.clone()));
             model.admin = Arc::new(self.admin.clone());
             let workspace = model.workspace(self.studio).unwrap();
             let channel = model.readable_channel(self.general).unwrap();
@@ -591,11 +589,17 @@ mod tests {
     }
 
     #[test]
-    fn the_permissions_of_the_person_count_the_overrides_of_the_channel() {
+    fn the_choices_follow_the_list_that_the_server_states_for_the_channel() {
         let mut scene = scene();
         scene.lead_holds(&[ManageChannel, MuteMembers]);
         scene.load(vec![sets(scene.leads, &[RecordCalls], &[MuteMembers])]);
-        // The override of the role of the person allows "record calls" in this channel.
+        // The page compares no override: until the server states another list for the
+        // channel, the list of the workspace holds.
+        assert!(!scene.line(scene.guests, RecordCalls).held);
+        assert!(scene.line(scene.guests, MuteMembers).held);
+        // The server states the list of the channel: the override of the role of the
+        // person allows "record calls" there.
+        scene.holds_in_channel(&[ViewChannel, ManageChannel, RecordCalls]);
         assert!(scene.line(scene.guests, RecordCalls).held);
         assert_eq!(
             scene.line(scene.guests, RecordCalls).refused(Choice::Allow),
@@ -616,6 +620,7 @@ mod tests {
         );
         // An allow of the "everyone" role counts for the person too.
         scene.load(vec![sets(scene.everyone, &[DeafenMembers], &[])]);
+        scene.holds_in_channel(&[ViewChannel, ManageChannel, MuteMembers, DeafenMembers]);
         assert_eq!(
             scene
                 .line(scene.guests, DeafenMembers)
@@ -654,132 +659,52 @@ mod tests {
     }
 
     #[test]
-    fn a_change_makes_every_transition_between_the_three_choices() {
-        let role_id = WorkspaceRoleId::generate();
-        let of = |choice: Choice| match choice {
-            Choice::Allow => sets(role_id, &[ViewChannel, MuteMembers], &[LockRoom]),
-            Choice::Default => sets(role_id, &[ViewChannel], &[LockRoom]),
-            Choice::Deny => sets(role_id, &[ViewChannel], &[MuteMembers, LockRoom]),
-        };
-        for from in Choice::ALL {
-            for to in Choice::ALL {
-                let (allow, deny) = changed(Some(&of(from)), MuteMembers, to);
-                let expected = of(to);
-                assert_eq!(
-                    (allow, deny),
-                    (expected.allow, expected.deny),
-                    "from {from:?} to {to:?}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn a_change_of_a_role_without_an_override_makes_one_with_the_single_choice() {
-        assert_eq!(
-            changed(None, RecordCalls, Choice::Allow),
-            (vec![RecordCalls], vec![])
-        );
-        assert_eq!(
-            changed(None, RecordCalls, Choice::Deny),
-            (vec![], vec![RecordCalls])
-        );
-        assert_eq!(
-            changed(None, RecordCalls, Choice::Default),
-            (vec![], vec![])
-        );
-    }
-
-    #[test]
-    fn the_last_choice_set_to_default_leaves_two_empty_sets() {
-        let role_id = WorkspaceRoleId::generate();
-        let allowed = sets(role_id, &[RecordCalls], &[]);
-        assert_eq!(
-            changed(Some(&allowed), RecordCalls, Choice::Default),
-            (vec![], vec![])
-        );
-        let denied = sets(role_id, &[], &[RecordCalls]);
-        assert_eq!(
-            changed(Some(&denied), RecordCalls, Choice::Default),
-            (vec![], vec![])
-        );
-    }
-
-    #[test]
-    fn a_change_keeps_the_sets_in_order_without_duplicates_and_apart() {
-        let role_id = WorkspaceRoleId::generate();
-        // Not in order, with a permission twice and with "lock room" in both sets.
-        let held = sets(
-            role_id,
-            &[RunMeetingMode, ViewChannel, ViewChannel, LockRoom],
-            &[LockRoom, MoveMembers, MoveMembers],
-        );
-        assert_eq!(
-            changed(Some(&held), MentionEveryone, Choice::Allow),
-            (
-                vec![ViewChannel, MentionEveryone, RunMeetingMode],
-                vec![MoveMembers, LockRoom]
-            )
-        );
-        let ordered = |set: &[WorkspacePermission]| set.windows(2).all(|pair| pair[0] < pair[1]);
-        for permission in WorkspacePermission::ALL.iter().copied() {
-            for choice in Choice::ALL {
-                let (allow, deny) = changed(Some(&held), permission, choice);
-                assert!(
-                    ordered(&allow) && ordered(&deny),
-                    "{permission:?} {choice:?}"
-                );
-                assert!(
-                    allow.iter().all(|allowed| !deny.contains(allowed)),
-                    "{permission:?} {choice:?}"
-                );
-                assert_eq!(allow.contains(&permission), choice == Choice::Allow);
-                assert_eq!(deny.contains(&permission), choice == Choice::Deny);
-            }
-        }
+    fn a_choice_names_the_state_of_its_one_permission() {
+        assert_eq!(state_of(Choice::Allow), OverrideState::Allow);
+        assert_eq!(state_of(Choice::Deny), OverrideState::Deny);
+        // "Default" takes the permission out of both sets: the roles decide.
+        assert_eq!(state_of(Choice::Default), OverrideState::Inherit);
     }
 
     #[test]
     fn a_private_channel_denies_view_channel_to_the_everyone_role() {
         let mut scene = scene();
         let everyone = scene.everyone;
-        assert_eq!(
-            private_change(None, true),
-            Some((vec![], vec![ViewChannel]))
-        );
-        // The other permissions of the override stay.
+        assert_eq!(private_state(None, true), Some(OverrideState::Deny));
+        // The other permissions of the override do not matter: the request names
+        // "view channel" only.
         let held = sets(everyone, &[MentionEveryone], &[RecordCalls]);
-        let (allow, deny) = private_change(Some(&held), true).unwrap();
+        assert_eq!(private_state(Some(&held), true), Some(OverrideState::Deny));
+        let private = sets(everyone, &[MentionEveryone], &[ViewChannel, RecordCalls]);
+        assert_eq!(private_state(Some(&private), true), None);
         assert_eq!(
-            (&allow, &deny),
-            (&vec![MentionEveryone], &vec![ViewChannel, RecordCalls])
-        );
-        let private = sets(everyone, &allow, &deny);
-        assert_eq!(private_change(Some(&private), true), None);
-        assert_eq!(
-            private_change(Some(&private), false),
-            Some((vec![MentionEveryone], vec![RecordCalls]))
+            private_state(Some(&private), false),
+            Some(OverrideState::Inherit)
         );
         // An open channel stays as it is, and keeps an allow of "view channel".
-        assert_eq!(private_change(None, false), None);
-        assert_eq!(private_change(Some(&held), false), None);
+        assert_eq!(private_state(None, false), None);
+        assert_eq!(private_state(Some(&held), false), None);
         let allowed = sets(everyone, &[ViewChannel], &[]);
-        assert_eq!(private_change(Some(&allowed), false), None);
+        assert_eq!(private_state(Some(&allowed), false), None);
         assert_eq!(
-            private_change(Some(&allowed), true),
-            Some((vec![], vec![ViewChannel]))
+            private_state(Some(&allowed), true),
+            Some(OverrideState::Deny)
         );
-        // The last deny that leaves removes the override.
         let only = sets(everyone, &[], &[ViewChannel]);
-        assert_eq!(private_change(Some(&only), false), Some((vec![], vec![])));
+        assert_eq!(
+            private_state(Some(&only), false),
+            Some(OverrideState::Inherit)
+        );
 
         // The page shows the deny at the "everyone" role.
         scene.load(vec![only]);
         let line = scene.line(everyone, ViewChannel);
         assert_eq!(line.current, Choice::Deny);
         assert!(scene.role(everyone).has_override);
-        // A person who is no administrator does not see a private channel, holds nothing
-        // in it, and cannot open it again.
+        // A person who is no administrator holds nothing in a private channel, and cannot
+        // open it again.
+        scene.holds_in_channel(&[]);
+        let line = scene.line(everyone, ViewChannel);
         assert_eq!(line.refused(Choice::Default), Some(Refused::LiftsDeny));
     }
 }

@@ -343,6 +343,7 @@ async fn channel_deletion_removes_messages_and_queues_attachment_cleanup() {
     assert!(!files.directory.0.join(upload.id.to_string()).exists());
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn a_symbolic_link_cannot_supply_an_uploaded_chunk() {
     let files = Files::open().await;

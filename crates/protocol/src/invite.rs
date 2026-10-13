@@ -32,6 +32,9 @@ pub enum InviteRevocation {
 pub struct Invite {
     pub id: InviteId,
     pub created_by: AccountId,
+    /// Current creator name in a list; the name at creation in an event.
+    #[serde(default)]
+    pub created_by_name: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]

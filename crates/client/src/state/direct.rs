@@ -356,7 +356,7 @@ impl super::AppState {
                         .client
                         .server(*id)
                         .and_then(|s| s.live().view().model)
-                        .is_some_and(|m| !m.is_quiet(now))
+                        .is_some_and(|m| !super::notices::quiet_at(&m, now))
             });
         let device = self
             .known

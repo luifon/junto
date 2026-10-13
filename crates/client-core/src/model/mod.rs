@@ -11,10 +11,14 @@ mod admin;
 mod apply;
 mod discovery;
 mod messages;
+mod permissions;
+mod rank;
 mod recordings;
 
 #[cfg(test)]
 mod admin_tests;
+#[cfg(test)]
+mod adoption_tests;
 #[cfg(test)]
 mod discovery_tests;
 #[cfg(test)]
@@ -22,16 +26,18 @@ pub(crate) mod message_tests;
 #[cfg(test)]
 pub(crate) mod recording_tests;
 #[cfg(test)]
+mod remaining_tests;
+#[cfg(test)]
 pub(crate) mod tests;
 
 use std::sync::Arc;
 
-use junto_protocol::account::OwnAccount;
+use junto_protocol::account::{Avatar, OwnAccount};
 use junto_protocol::call::{
     Call, CallInvitation, CallLock, CallMove, CallParticipant, CallPlace, ChannelCall, DirectMute,
     EntryRequest, Meeting, OwnCall, OwnCallState,
 };
-use junto_protocol::discovery::{Notification, ScopedNotificationSettings};
+use junto_protocol::discovery::{Notification, NotificationLevel, ScopedNotificationSettings};
 use junto_protocol::events::Cursor;
 use junto_protocol::ids::{
     AccountId, CallId, ChannelId, DeviceId, MessageId, WorkspaceId, WorkspaceRoleId,
@@ -42,7 +48,9 @@ use junto_protocol::message::{
 use junto_protocol::recording::Recording;
 use junto_protocol::roles::WorkspaceRole;
 use junto_protocol::snapshot::{Snapshot, WorkspaceState};
-use junto_protocol::structure::{Category, Channel, Workspace, WorkspaceMember};
+use junto_protocol::structure::{
+    Category, Channel, ChannelPermissions, Workspace, WorkspaceMember,
+};
 use junto_protocol::{ServerPermission, WorkspacePermission};
 use time::OffsetDateTime;
 
@@ -58,6 +66,7 @@ pub use messages::{
     MOST_LOADED, PendingFile, PendingMessage, PlaceId, ReadFailure, Reading, SendFailure,
     SendState, Timeline,
 };
+pub use rank::{RoleRank, outranks};
 pub use recordings::{
     LINES_PAGE, MOST_LINES, MOST_SEGMENTS, MOST_SPEAKERS, OpenRecording, TranscriptLines,
 };
@@ -94,6 +103,28 @@ impl<T> Loadable<T> {
     }
 }
 
+/// What the state knows of the logo of the server (ADR 0101). The snapshot does not carry
+/// the logo: the public information of the server names its path, and an event states a
+/// change.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum LogoState {
+    /// No event stated the logo since the snapshot.
+    #[default]
+    NotStated,
+    /// The description of the logo that the last event stated. Absent: the server has no
+    /// logo.
+    Stated(Option<Avatar>),
+}
+
+/// What the server said of a seat of the account in its own call (ADR 0517).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeatStated {
+    /// The identity of the seat in the room of the media server.
+    pub identity: String,
+    /// The admission check of the server has seen the seat in the room.
+    pub inside: bool,
+}
+
 /// A call as the account may see it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallModel {
@@ -106,8 +137,9 @@ pub struct CallModel {
     pub meeting: Option<Meeting>,
     /// The call shows who is inside only to the people inside. A call keeps the setting
     /// that its voice channel had when the call began (ADR 0517). For a call that the
-    /// state learned of from an event, this is the setting of the channel at that event,
-    /// until an answer of the server states it.
+    /// state learned of from an event that does not state the setting, this is the setting
+    /// of the own call of the account, or of the channel at that event, until an event or
+    /// an answer of the server states it.
     pub hides_occupants: bool,
     /// The people in the call, in the order in which they joined. Empty for the account
     /// with a place in a call that hides who is inside, until the server has seen its
@@ -188,7 +220,17 @@ pub struct WorkspaceModel {
     pub workspace: Workspace,
     /// The roles of the workspace that the account holds, without the "everyone" role.
     pub own_role_ids: Vec<WorkspaceRoleId>,
+    /// The "everyone" role first, then the roles from the highest position to the lowest
+    /// (ADR 0309).
     pub roles: Vec<WorkspaceRole>,
+    /// The workspace permissions that the account holds in the workspace, as the server
+    /// stated them (ADR 0310).
+    pub permissions: Vec<WorkspacePermission>,
+    /// The channels in which the account holds another list than `permissions`.
+    pub channel_permissions: Vec<ChannelPermissions>,
+    /// The notification level that the workspace sets for its members. Absent: none is
+    /// set (ADR 0412).
+    pub notification_default: Option<NotificationLevel>,
     /// In the order of their positions.
     pub categories: Vec<Category>,
     /// The channels that the account can see, in the order of their positions.
@@ -209,12 +251,37 @@ impl WorkspaceModel {
                 channel.set_call(shown);
             }
         }
+        let mut roles = state.roles;
+        rank::sort_workspace_roles(&mut roles);
+        let held: Vec<ChannelId> = channels.iter().map(|held| held.channel.id).collect();
+        let mut channel_permissions = state.channel_permissions;
+        // A list for a channel that the snapshot does not carry belongs to nothing.
+        channel_permissions.retain(|entry| held.contains(&entry.channel_id));
         Self {
             workspace: state.workspace,
             own_role_ids: state.own_role_ids,
-            roles: state.roles,
+            roles,
+            permissions: state.permissions,
+            channel_permissions,
+            notification_default: state.notification_default,
             categories: state.categories,
             channels,
+            members: Loadable::NotLoaded,
+        }
+    }
+
+    /// A workspace that an event named and no snapshot carried yet. The account holds
+    /// nothing in it until the snapshot that follows `permissions_changed` (ADR 0310).
+    pub(crate) fn unlisted(workspace: Workspace) -> Self {
+        Self {
+            workspace,
+            own_role_ids: Vec::new(),
+            roles: Vec::new(),
+            permissions: Vec::new(),
+            channel_permissions: Vec::new(),
+            notification_default: None,
+            categories: Vec::new(),
+            channels: Vec::new(),
             members: Loadable::NotLoaded,
         }
     }
@@ -223,21 +290,6 @@ impl WorkspaceModel {
         self.channels
             .iter()
             .find(|channel| channel.channel.id == channel_id)
-    }
-
-    /// The permissions that the "everyone" role and the roles of the account give in the
-    /// workspace. The overrides of a channel are not in the snapshot (ADR 0207), so this
-    /// is not the answer for one channel, and the server decides every request.
-    pub fn role_permissions(&self) -> Vec<WorkspacePermission> {
-        let mut held: Vec<WorkspacePermission> = self
-            .roles
-            .iter()
-            .filter(|role| role.is_everyone || self.own_role_ids.contains(&role.id))
-            .flat_map(|role| role.permissions.iter().copied())
-            .collect();
-        held.sort_unstable();
-        held.dedup();
-        held
     }
 }
 
@@ -262,6 +314,12 @@ pub struct ServerModel {
     /// The call of the last answer of `GET /call` that was put into the state, and the
     /// position that the answer named (ADR 0519).
     pub(crate) own_call_cursor: Option<(CallId, Cursor)>,
+    /// What the last answer of `GET /call` in the state said of the seat of the account
+    /// (ADR 0517). Absent when the answer did not say it, which a reader takes as not
+    /// stated and not as outside; after an event later than the answer listed the account
+    /// in the call, because the statement holds at the position of its answer only
+    /// (ADR 0785); and after a change of the own call, which is followed by a new read.
+    pub own_seat: Option<SeatStated>,
     /// The direct-message calls of the account. One without `started_at` is not in
     /// progress yet.
     pub direct_calls: Vec<CallModel>,
@@ -314,6 +372,8 @@ pub struct ServerModel {
     pub(crate) seen_positions: std::collections::BTreeMap<PlaceId, u64>,
     /// The collections of the administration that a reader has open (ADR 0760).
     pub admin: Arc<AdminModel>,
+    /// What the events told of the logo of the server since the snapshot.
+    pub logo: LogoState,
 }
 
 impl ServerModel {
@@ -358,6 +418,7 @@ impl ServerModel {
                 .collect(),
             own_call: snapshot.own_call,
             own_call_cursor: None,
+            own_seat: None,
             direct_calls: snapshot
                 .direct_calls
                 .into_iter()
@@ -385,6 +446,7 @@ impl ServerModel {
             recordings: Vec::new(),
             seen_positions: std::collections::BTreeMap::new(),
             admin: Arc::default(),
+            logo: LogoState::NotStated,
         }
     }
 
@@ -422,6 +484,16 @@ impl ServerModel {
                     && self.call_at(place).is_some_and(|call| call.id == *id)
             })
             .map_or(self.cursor, |(_, cursor)| cursor)
+    }
+
+    /// True when the server said that its admission check has not seen the seat `identity`
+    /// of the account in the room (ADR 0517). Only this statement tells a reader that the
+    /// person is not inside yet; without it the reader decides as for a server that does
+    /// not state it.
+    pub fn seat_stated_outside(&self, identity: &str) -> bool {
+        self.own_seat
+            .as_ref()
+            .is_some_and(|seat| seat.identity == identity && !seat.inside)
     }
 
     /// True when the account is in a call with the device `device_id`.
@@ -498,6 +570,10 @@ impl ServerModel {
             return;
         }
         self.entry_requests = loaded.entry_requests;
+        self.own_seat = loaded.inside.map(|inside| SeatStated {
+            identity: loaded.own.identity.clone(),
+            inside,
+        });
         let speaking = self
             .call_at(&loaded.call.place)
             .filter(|held| held.id == loaded.call.id)

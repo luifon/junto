@@ -99,6 +99,11 @@ pub struct SystemMessage {
     pub subject_id: Option<AccountId>,
     pub actor_id: Option<AccountId>,
     pub recording_id: Option<RecordingId>,
+    /// Present for the line `direct_call_ended`: the seconds from the moment at which both
+    /// accounts were in the room of the call to the moment from which one of them was
+    /// alone until its end (ADR 0518).
+    #[serde(default)]
+    pub duration_seconds: Option<u64>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -131,6 +136,10 @@ pub struct Message {
     pub pinned: bool,
     #[serde(default)]
     pub files_removed_by_retention: bool,
+    /// For the root of a thread: at most three authors of its replies, in the order of
+    /// their first reply that is not deleted (ADR 0413).
+    #[serde(default)]
+    pub reply_authors: Vec<AccountId>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -266,6 +275,32 @@ pub struct ThreadState {
     pub latest: u64,
     pub unread: u64,
     pub mentions: u64,
+    /// Whether the account follows the thread: its replies count as unread and notify.
+    #[serde(default)]
+    pub following: bool,
+    /// The choice of the account. Absent: none, and the account follows a thread that it
+    /// wrote in or was named in (ADR 0412).
+    #[serde(default)]
+    pub follow_setting: Option<bool>,
+}
+
+/// The choice of an account to follow a thread or not.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct SetThreadFollow {
+    pub following: bool,
+}
+
+/// One page of the threads of a channel that the account follows, the one with the newest
+/// reply first. Threads without unread replies are included.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct FollowedThreads {
+    pub threads: Vec<ThreadState>,
+    pub more: bool,
+    /// Pass as `before` to read the next page. Absent on the last page.
+    pub next: Option<String>,
 }
 
 /// One page of threads with unread replies or mentions, newest first.

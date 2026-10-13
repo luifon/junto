@@ -1069,6 +1069,10 @@ async fn an_address_that_answers_as_another_server_gets_no_proof_and_no_token() 
         handle.dispatch(AccessAction::LogIn).await,
         Err(FlowError::OtherServer)
     );
+    // The server book holds the path of a logo of the saved server. The address that
+    // answers as another server gets no request for it (ADR 0714).
+    assert!(handle.entry().logo_path.is_some());
+    assert_eq!(handle.logo().await.unwrap(), None);
     assert_eq!(other.seen(), ["Get /api/server", "Get /api/server"]);
 
     network.plug("acme", real);

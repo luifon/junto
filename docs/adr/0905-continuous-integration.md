@@ -4,7 +4,7 @@
 
 Accepted
 
-Open: the workflow was checked with a linter for workflow files and was never run on a runner. The tests that need PostgreSQL do not run on macOS and Windows.
+The tests that need PostgreSQL do not run on macOS and Windows.
 
 ## Context
 
@@ -27,6 +27,8 @@ Jobs:
 - Recording layout page: the locked packages without install scripts, the build, and the browser tests against a LiveKit server in Docker.
 - Transcription worker: the locked packages with `uv`, `ruff`, `mypy`, and the unit tests.
 - Images and deployment: the check of pinned versions, the linter for workflow files and the linter for shell scripts from pinned images, the rendered Compose files of every form, the builds of the server image and the link image, the test of the hand-over scripts, the tests of the recorder start script and of the entry, the start of the local form, which builds the worker image, a backup of a running server with a restore into an empty deployment (ADR 0902, ADR 0911), an upgrade from an earlier release with the way back (ADR 0911), and the start of the one-host form and of the two-host form on the runner. This job fetches the whole history, because the upgrade test reads the files of an earlier commit.
+
+- The deployment job sets every Compose CPU limit variable from the runner's available processor count before starting any form. Deployment defaults stay unchanged; a recorder or worker default larger than the runner must not make container creation fail.
 
 - `tools/serial.sh` uses `flock` where `lockf` does not exist, so that the scripts that call it run on Linux.
 

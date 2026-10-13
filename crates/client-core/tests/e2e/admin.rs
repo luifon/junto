@@ -633,26 +633,21 @@ async fn an_override_hides_a_channel_from_a_member_and_its_removal_shows_the_cha
     let overrides = |model: &ServerModel| model.admin.overrides(plans.id).loaded().cloned();
 
     // The member holds no permission to manage the channel: the server refuses the
-    // overrides, and the permissions of the member in the channel stay unknown.
+    // overrides. What the member holds in the channel is what the snapshot states.
     let failed = refused(member, part).await;
     assert_eq!(
         *failed.admin.overrides(plans.id),
         Collection::Failed(LoadFailure::NotAllowed)
     );
-    assert!(failed.channel_permissions(plans.id).is_none());
-    let member_model = member.live().view().model.unwrap();
-    assert!(member_model.channel_permissions(plans.id).is_none());
+    assert!(failed.holds_in(plans.id, WorkspacePermission::ViewChannel));
+    assert!(!failed.holds_in(plans.id, WorkspacePermission::ManageChannel));
 
     owner.live().open_admin(part).await.unwrap();
     let model = model_when(owner, "no override", |model| {
         overrides(model) == Some(Vec::new())
     })
     .await;
-    assert!(
-        model
-            .channel_permissions(plans.id)
-            .is_some_and(|held| held.contains(WorkspacePermission::ViewChannel))
-    );
+    assert!(model.holds_in(plans.id, WorkspacePermission::ManageChannel));
     let everyone = model
         .workspace(workspace_id)
         .unwrap()

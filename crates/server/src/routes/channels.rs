@@ -8,8 +8,9 @@ use junto_protocol::audit::AuditEvent;
 use junto_protocol::events::Event;
 use junto_protocol::ids::{CategoryId, ChannelId, WorkspaceId, WorkspaceRoleId};
 use junto_protocol::structure::{
-    Category, Channel, ChannelKind, ChannelList, ChannelOverride, CreateCategory, CreateChannel,
-    SetChannelOverride, UpdateCategory, UpdateChannel,
+    Category, ChangeChannelOverride, Channel, ChannelKind, ChannelList, ChannelOverride,
+    ChannelPermissions, CreateCategory, CreateChannel, OverrideState, SetChannelOverride,
+    UpdateCategory, UpdateChannel,
 };
 use sqlx::PgConnection;
 use time::OffsetDateTime;
@@ -249,18 +250,31 @@ pub async fn list_channels(
         let access = Access::open(connection, &bearer, now).await?;
         let scope = access.workspace(connection, workspace_id).await?;
         access.require(Request::ViewWorkspace(&scope))?;
-        visible_structure(connection, &access, workspace_id, &scope).await
+        Ok(visible_structure(connection, &access, workspace_id, &scope)
+            .await?
+            .list)
     })
     .map(Json)
 }
 
-/// The categories of a workspace and the channels of it that the caller can see.
+/// What the caller sees of the structure of a workspace, with what the caller may do in
+/// it (ADR 0310).
+pub struct Visible {
+    pub list: ChannelList,
+    /// The permissions that the caller holds in the workspace.
+    pub permissions: Vec<WorkspacePermission>,
+    /// The channels of the list in which the caller holds another set.
+    pub channel_permissions: Vec<ChannelPermissions>,
+}
+
+/// The categories of a workspace and the channels of it that the caller can see, and the
+/// permissions of the caller in the workspace and in each of those channels.
 pub async fn visible_structure(
     connection: &mut PgConnection,
     access: &Access,
     workspace_id: WorkspaceId,
     scope: &WorkspaceScope,
-) -> ApiResult<ChannelList> {
+) -> ApiResult<Visible> {
     let categories: Vec<(CategoryId, String, i32)> = sqlx::query_as(
         "select id, name, position from categories
          where workspace_id = $1
@@ -269,7 +283,10 @@ pub async fn visible_structure(
     .bind(workspace_id)
     .fetch_all(&mut *connection)
     .await?;
-    let channels = access
+    let permissions = access.workspace_permissions(scope);
+    let mut channels = Vec::new();
+    let mut channel_permissions = Vec::new();
+    let seen = access
         .workspace_channels(connection, workspace_id, scope)
         .await?
         .into_iter()
@@ -280,21 +297,66 @@ pub async fn visible_structure(
                     scope: channel_scope,
                     permission: WorkspacePermission::ViewChannel,
                 })
-        })
-        .map(|(record, _)| record.channel)
-        .collect();
-    Ok(ChannelList {
-        categories: categories
-            .into_iter()
-            .map(|(id, name, position)| Category {
-                id,
-                workspace_id,
-                name,
-                position,
-            })
-            .collect(),
-        channels,
+        });
+    for (record, channel_scope) in seen {
+        let held = access.channel_permissions(&channel_scope);
+        if held != permissions {
+            channel_permissions.push(ChannelPermissions {
+                channel_id: record.channel.id,
+                permissions: held,
+            });
+        }
+        channels.push(record.channel);
+    }
+    Ok(Visible {
+        list: ChannelList {
+            categories: categories
+                .into_iter()
+                .map(|(id, name, position)| Category {
+                    id,
+                    workspace_id,
+                    name,
+                    position,
+                })
+                .collect(),
+            channels,
+        },
+        permissions,
+        channel_permissions,
     })
+}
+
+/// The workspace permissions that the caller holds in one channel that it can see, an
+/// archived channel included (ADR 0310).
+#[utoipa::path(
+    get,
+    path = "/api/v1/channels/{channel_id}/permissions",
+    tag = "channels",
+    params(("channel_id" = ChannelId, Path)),
+    security(("session" = [])),
+    responses((status = 200, body = ChannelPermissions), ApiError)
+)]
+pub async fn get_channel_permissions(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath(channel_id): ApiPath<ChannelId>,
+) -> ApiResult<Json<ChannelPermissions>> {
+    let now = app.now();
+    let mut counted = false;
+    read!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        let (_, scope) = access.channel(connection, channel_id).await?;
+        access.require(Request::Channel {
+            scope: &scope,
+            permission: WorkspacePermission::ViewChannel,
+        })?;
+        super::search::read_rate(&app, &access, &mut counted)?;
+        Ok(ChannelPermissions {
+            channel_id,
+            permissions: access.channel_permissions(&scope),
+        })
+    })
+    .map(Json)
 }
 
 /// Creates a text channel or a voice channel in a workspace.
@@ -767,6 +829,66 @@ pub async fn set_channel_override(
             now,
             (channel_id, role_id),
             next,
+            false,
+        )
+        .await
+    })
+    .map(Json)
+}
+
+/// Changes one permission of a channel override with the grant ceiling on its delta.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/channels/{channel_id}/overrides/{role_id}",
+    tag = "channels",
+    params(("channel_id" = ChannelId, Path), ("role_id" = WorkspaceRoleId, Path)),
+    request_body = ChangeChannelOverride,
+    security(("session" = [])),
+    responses((status = 200, body = ChannelOverride), ApiError)
+)]
+pub async fn change_channel_override(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath((channel_id, role_id)): ApiPath<(ChannelId, WorkspaceRoleId)>,
+    ApiJson(body): ApiJson<ChangeChannelOverride>,
+) -> ApiResult<Json<ChannelOverride>> {
+    let now = app.now();
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        let (_, scope) = access.channel(connection, channel_id).await?;
+        access.require(Request::Channel {
+            scope: &scope,
+            permission: WorkspacePermission::ManageChannel,
+        })?;
+        let stored: Option<(i64, i64)> = sqlx::query_as(
+            "select allow, deny from channel_overrides
+             where channel_id=$1 and role_id=$2 for update",
+        )
+        .bind(channel_id)
+        .bind(role_id)
+        .fetch_optional(&mut *connection)
+        .await?;
+        let previous = match stored {
+            Some((allow, deny)) => stored_override(allow, deny)?,
+            None => Override::NONE,
+        };
+        let changed = WorkspacePermissions::from(body.permission);
+        let mut allow = previous.allow().difference(changed);
+        let mut deny = previous.deny().difference(changed);
+        match body.state {
+            OverrideState::Allow => allow = allow.union(changed),
+            OverrideState::Deny => deny = deny.union(changed),
+            OverrideState::Inherit => {}
+        }
+        let next = Override::new(allow, deny).map_err(|error| ApiError::internal(&error))?;
+        set_override_in(
+            connection,
+            &app.calls,
+            &access,
+            now,
+            (channel_id, role_id),
+            next,
+            true,
         )
         .await
     })
@@ -780,6 +902,7 @@ pub(crate) async fn set_override_in(
     now: OffsetDateTime,
     (channel_id, role_id): (ChannelId, WorkspaceRoleId),
     next: Override,
+    only_if_changed: bool,
 ) -> ApiResult<ChannelOverride> {
     let (allow, deny) = (next.allow(), next.deny());
     let result = ChannelOverride {
@@ -822,6 +945,9 @@ pub(crate) async fn set_override_in(
         granting: previous.granted_by_change_to(next),
     })?;
 
+    if only_if_changed && previous == next {
+        return Ok(result);
+    }
     if next.is_none() {
         sqlx::query("delete from channel_overrides where channel_id = $1 and role_id = $2")
             .bind(channel_id)

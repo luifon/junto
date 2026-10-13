@@ -94,6 +94,7 @@ pub async fn record(
                 action: event.action().to_owned(),
                 actor_id: actor,
                 recording_id: None,
+                duration_seconds: None,
                 subject_id: match event {
                     AuditEvent::CallMicrophoneBlocked { account_id }
                     | AuditEvent::CallMicrophoneUnblocked { account_id }

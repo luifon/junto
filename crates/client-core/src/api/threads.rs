@@ -2,7 +2,8 @@
 
 use junto_protocol::ids::{ChannelId, MessageId};
 use junto_protocol::message::{
-    ForkThread, MarkRead, Message, SendMessage, ThreadPage, ThreadState, UnreadThreads,
+    FollowedThreads, ForkThread, MarkRead, Message, SendMessage, SetThreadFollow, ThreadPage,
+    ThreadState, UnreadThreads,
 };
 use junto_protocol::structure::{Channel, ChannelKind};
 
@@ -93,6 +94,47 @@ impl ServerApi {
         let response = self
             .call(Method::Get, "/threads/unread".to_owned(), query, None)
             .await?;
+        read_json(&response)
+    }
+
+    /// Stores the choice of the caller to follow a thread or not. The replies of a thread
+    /// that is not followed do not count as unread and do not notify; a mention still
+    /// does (ADR 0412).
+    pub async fn set_thread_follow(
+        &self,
+        root_id: MessageId,
+        following: bool,
+    ) -> Result<ThreadState, ApiError> {
+        let path = format!("{}/follow", thread_of(root_id));
+        self.send(Method::Put, path, &SetThreadFollow { following })
+            .await
+    }
+
+    /// Removes the choice of the caller for a thread. The rule decides again: an account
+    /// that wrote in the thread or was named in it follows it.
+    pub async fn clear_thread_follow(&self, root_id: MessageId) -> Result<(), ApiError> {
+        self.act(Method::Delete, format!("{}/follow", thread_of(root_id)))
+            .await
+    }
+
+    /// One page of the threads of a channel that the caller follows and that have a
+    /// reply, the one with the newest reply first, read threads included. `before` is the
+    /// continuation of the page before (ADR 0413).
+    pub async fn followed_threads(
+        &self,
+        channel_id: ChannelId,
+        before: Option<&str>,
+        limit: Option<u32>,
+    ) -> Result<FollowedThreads, ApiError> {
+        let mut query = Vec::new();
+        if let Some(before) = before {
+            query.push(("before", before.to_owned()));
+        }
+        if let Some(limit) = limit {
+            query.push(("limit", limit.to_string()));
+        }
+        let path = format!("/channels/{channel_id}/threads");
+        let response = self.call(Method::Get, path, query, None).await?;
         read_json(&response)
     }
 

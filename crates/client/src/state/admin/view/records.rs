@@ -19,7 +19,7 @@ use junto_client_core::transfers::local_name;
 use time::{Date, Duration, OffsetDateTime};
 
 use super::{Listed, holds_server, holds_workspace};
-use crate::state::admin::{AdminState, AuditScope, Made};
+use crate::state::admin::{AdminState, AuditFilter, AuditScope, Made};
 use crate::state::view::Known;
 use crate::text;
 
@@ -237,8 +237,10 @@ impl AuditGroup {
             | AuditEvent::AccountBanned { .. }
             | AuditEvent::AccountUnbanned { .. }
             | AuditEvent::AccountRecovered { .. }
-            | AuditEvent::WorkspaceMemberAdded { .. } => Self::Members,
+            | AuditEvent::WorkspaceMemberAdded { .. }
+            | AuditEvent::WorkspaceMemberRemoved { .. } => Self::Members,
             AuditEvent::InviteCreated { .. }
+            | AuditEvent::InviteWorkspacesChanged { .. }
             | AuditEvent::InviteRevoked { .. }
             | AuditEvent::InviteRedeemed { .. }
             | AuditEvent::JoinRequestApproved { .. }
@@ -253,6 +255,8 @@ impl AuditGroup {
             | AuditEvent::WorkspaceRoleAssigned { .. }
             | AuditEvent::WorkspaceRoleUnassigned { .. }
             | AuditEvent::WorkspaceRoleDeleted { .. }
+            | AuditEvent::ServerRolePositionChanged { .. }
+            | AuditEvent::WorkspaceRolePositionChanged { .. }
             | AuditEvent::ChannelOverrideSet { .. } => Self::Roles,
             AuditEvent::WorkspaceCreated { .. }
             | AuditEvent::WorkspaceRenamed { .. }
@@ -281,6 +285,7 @@ impl AuditGroup {
             AuditEvent::AttachmentLimitsChanged { .. }
             | AuditEvent::PermanentMessageDeleted { .. }
             | AuditEvent::NotificationDefaultChanged { .. }
+            | AuditEvent::NotificationDefaultRemoved
             | AuditEvent::RecordingRetentionChanged { .. }
             | AuditEvent::RetentionChanged { .. }
             | AuditEvent::ArchivePeriodChanged { .. }
@@ -292,9 +297,119 @@ impl AuditGroup {
             | AuditEvent::EventEpochRenewed
             | AuditEvent::AccessTokenCreated { .. }
             | AuditEvent::AccessTokenRevoked { .. }
+            | AuditEvent::ServerLogoChanged { .. }
             | AuditEvent::Unknown => Self::Server,
         }
     }
+
+    /// The actions of the group that the filter offers, by their names in the protocol.
+    pub fn actions(self) -> impl Iterator<Item = &'static str> {
+        ACTIONS
+            .iter()
+            .filter(move |(_, group)| *group == self)
+            .map(|(name, _)| *name)
+    }
+}
+
+/// Every action of the audit log that the filter by action offers, by its name in the
+/// protocol, with its group (ADR 0305). The server matches the name exactly. A test
+/// compares the list with the actions of the protocol.
+pub const ACTIONS: [(&str, AuditGroup); 66] = [
+    ("account_joined", AuditGroup::Members),
+    ("account_removed", AuditGroup::Members),
+    ("account_banned", AuditGroup::Members),
+    ("account_unbanned", AuditGroup::Members),
+    ("account_recovered", AuditGroup::Members),
+    ("workspace_member_added", AuditGroup::Members),
+    ("workspace_member_removed", AuditGroup::Members),
+    ("invite_created", AuditGroup::Invites),
+    ("invite_workspaces_changed", AuditGroup::Invites),
+    ("invite_revoked", AuditGroup::Invites),
+    ("invite_redeemed", AuditGroup::Invites),
+    ("join_request_approved", AuditGroup::Invites),
+    ("join_request_denied", AuditGroup::Invites),
+    ("server_role_created", AuditGroup::Roles),
+    ("server_role_updated", AuditGroup::Roles),
+    ("server_role_assigned", AuditGroup::Roles),
+    ("server_role_unassigned", AuditGroup::Roles),
+    ("server_role_deleted", AuditGroup::Roles),
+    ("server_role_position_changed", AuditGroup::Roles),
+    ("workspace_role_created", AuditGroup::Roles),
+    ("workspace_role_updated", AuditGroup::Roles),
+    ("workspace_role_assigned", AuditGroup::Roles),
+    ("workspace_role_unassigned", AuditGroup::Roles),
+    ("workspace_role_deleted", AuditGroup::Roles),
+    ("workspace_role_position_changed", AuditGroup::Roles),
+    ("channel_override_set", AuditGroup::Roles),
+    ("workspace_created", AuditGroup::Structure),
+    ("workspace_renamed", AuditGroup::Structure),
+    ("workspace_deleted", AuditGroup::Structure),
+    ("category_created", AuditGroup::Structure),
+    ("category_updated", AuditGroup::Structure),
+    ("category_deleted", AuditGroup::Structure),
+    ("channel_created", AuditGroup::Structure),
+    ("channel_updated", AuditGroup::Structure),
+    ("channel_deleted", AuditGroup::Structure),
+    ("channel_archived", AuditGroup::Structure),
+    ("channel_restored", AuditGroup::Structure),
+    ("channel_call_settings_updated", AuditGroup::Calls),
+    ("call_microphone_blocked", AuditGroup::Calls),
+    ("call_microphone_unblocked", AuditGroup::Calls),
+    ("call_sound_blocked", AuditGroup::Calls),
+    ("call_sound_unblocked", AuditGroup::Calls),
+    ("call_member_disconnected", AuditGroup::Calls),
+    ("call_member_moved_out", AuditGroup::Calls),
+    ("call_member_moved_in", AuditGroup::Calls),
+    ("recording_started", AuditGroup::Calls),
+    ("recording_stopped", AuditGroup::Calls),
+    ("recording_removed", AuditGroup::Calls),
+    ("transcript_requested", AuditGroup::Calls),
+    ("glossary_replaced", AuditGroup::Calls),
+    ("attachment_limits_changed", AuditGroup::Messages),
+    ("permanent_message_deleted", AuditGroup::Messages),
+    ("notification_default_changed", AuditGroup::Messages),
+    ("notification_default_removed", AuditGroup::Messages),
+    ("recording_retention_changed", AuditGroup::Messages),
+    ("retention_changed", AuditGroup::Messages),
+    ("archive_period_changed", AuditGroup::Messages),
+    ("export_requested", AuditGroup::Messages),
+    ("owner_claimed", AuditGroup::Server),
+    ("owner_assigned", AuditGroup::Server),
+    ("owner_code_issued", AuditGroup::Server),
+    ("owner_access_restored", AuditGroup::Server),
+    ("event_epoch_renewed", AuditGroup::Server),
+    ("access_token_created", AuditGroup::Server),
+    ("access_token_revoked", AuditGroup::Server),
+    ("server_logo_changed", AuditGroup::Server),
+];
+
+/// The group of an action that the filter offers, by the name of the action.
+pub fn group_of_action(action: &str) -> Option<AuditGroup> {
+    ACTIONS
+        .iter()
+        .find(|(name, _)| *name == action)
+        .map(|(_, group)| *group)
+}
+
+/// The most characters of a reason that a row shows (ADR 0106).
+const REASON_CHARACTERS: usize = 1000;
+
+/// The reason that a ban or a removal states. It is text of another person: a control
+/// character is not shown, and a text beyond the length that the server takes is cut.
+fn stated_reason(event: &AuditEvent) -> Option<String> {
+    let reason = match event {
+        AuditEvent::AccountRemoved { reason, .. }
+        | AuditEvent::AccountBanned { reason, .. }
+        | AuditEvent::WorkspaceMemberRemoved { reason, .. } => reason.as_deref()?,
+        _ => return None,
+    };
+    let shown: String = reason
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(REASON_CHARACTERS)
+        .collect();
+    let shown = shown.trim();
+    (!shown.is_empty()).then(|| shown.to_owned())
 }
 
 /// What the state knows of the names that an audit entry refers to by an identifier. A
@@ -421,6 +536,8 @@ pub struct AuditLine {
     pub with_token: bool,
     /// What was done, with the names that the state holds.
     pub sentence: String,
+    /// The reason that the person stated for a ban or a removal (ADR 0106).
+    pub reason: Option<String>,
     /// The workspace of the entry. Absent for an entry about the server, and in the log
     /// of that workspace.
     pub workspace: Option<About>,
@@ -428,7 +545,7 @@ pub struct AuditLine {
     pub group: AuditGroup,
 }
 
-/// An account that did an action of a loaded entry.
+/// An account that the filters by person offer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActorChoice {
     pub id: AccountId,
@@ -443,7 +560,7 @@ pub struct AuditPage {
     /// read it, and the first one otherwise.
     pub scope: Option<AuditScope>,
     pub state: AuditRead,
-    /// The loaded entries that pass the filters, the newest first.
+    /// The loaded entries, the newest first. The server applied the filters.
     pub rows: Vec<AuditLine>,
     /// The number of loaded entries.
     pub loaded: usize,
@@ -451,11 +568,13 @@ pub struct AuditPage {
     pub older: bool,
     /// The page holds the most entries that it keeps. It reads no older entry.
     pub at_bound: bool,
-    pub group: Option<AuditGroup>,
-    pub actor: Option<AccountId>,
-    /// The accounts that occur as actors in the loaded entries, in the order of their
-    /// names, and after them the accounts without a known name.
-    pub actors: Vec<ActorChoice>,
+    /// The filters that the entries were asked for with.
+    pub filter: AuditFilter,
+    /// The accounts that the two filters by person offer: the accounts and the members
+    /// that the state holds, the accounts that acted in an entry that the page read, and
+    /// the accounts of the filters. In the order of their names, and after them the
+    /// accounts without a known name.
+    pub people: Vec<ActorChoice>,
 }
 
 /// The name of an account, when the state holds it: the own account, the loaded accounts,
@@ -671,6 +790,7 @@ fn audit_line(entry: &AuditEntry, scope: AuditScope, names: &Names<'_>) -> Audit
         },
         with_token: entry.access_token_id.is_some(),
         sentence: text::admin::records::audit_sentence(&entry.event, names),
+        reason: stated_reason(&entry.event),
         workspace: if in_shown_workspace {
             None
         } else {
@@ -697,7 +817,7 @@ pub fn audit(
         });
     }
     if let Some(workspace) = workspace
-        && holds_workspace(model, workspace, WorkspacePermission::ViewAuditEntries)
+        && holds_workspace(workspace, WorkspacePermission::ViewAuditEntries)
     {
         scopes.push(ScopeChoice {
             scope: AuditScope::Workspace(workspace.workspace.id),
@@ -719,21 +839,40 @@ pub fn audit(
         None => &[],
     };
     let names = Names::new(server_id, model, known);
-    let actor = log.actor.filter(|_| read.is_some());
-    let mut actors: Vec<ActorChoice> = Vec::new();
-    for id in entries
-        .iter()
-        .filter_map(|entry| entry.actor_id)
-        .chain(actor)
-    {
-        if !actors.iter().any(|held| held.id == id) {
-            actors.push(ActorChoice {
-                id,
-                name: names.account(id),
-            });
+    let filter = match read {
+        Some(_) => log.filter,
+        None => AuditFilter::default(),
+    };
+    let mut people: Vec<ActorChoice> = Vec::new();
+    if read.is_some() {
+        let seen = log.people.iter().copied();
+        let accounts = model
+            .admin
+            .accounts
+            .loaded()
+            .into_iter()
+            .flatten()
+            .map(|account| account.id);
+        let members = workspace
+            .and_then(|workspace| workspace.members.loaded())
+            .into_iter()
+            .flatten()
+            .map(|member| member.account_id);
+        for id in seen
+            .chain(accounts)
+            .chain(members)
+            .chain(filter.actor)
+            .chain(filter.about)
+        {
+            if !people.iter().any(|held| held.id == id) {
+                people.push(ActorChoice {
+                    id,
+                    name: names.account(id),
+                });
+            }
         }
     }
-    actors.sort_by(|one, other| match (&one.name, &other.name) {
+    people.sort_by(|one, other| match (&one.name, &other.name) {
         (Some(one_name), Some(other_name)) => one_name
             .to_lowercase()
             .cmp(&other_name.to_lowercase())
@@ -745,11 +884,6 @@ pub fn audit(
     let rows: Vec<AuditLine> = match read {
         Some(scope) => entries
             .iter()
-            .filter(|entry| {
-                log.group
-                    .is_none_or(|group| AuditGroup::of(&entry.event) == group)
-                    && actor.is_none_or(|actor| entry.actor_id == Some(actor))
-            })
             .map(|entry| audit_line(entry, scope, &names))
             .collect(),
         None => Vec::new(),
@@ -772,9 +906,8 @@ pub fn audit(
         loaded: entries.len(),
         older: read.is_some() && log.next_before.is_some() && !at_bound,
         at_bound,
-        group: log.group,
-        actor,
-        actors,
+        filter,
+        people,
     }
 }
 
@@ -784,7 +917,7 @@ mod tests {
     use std::sync::Arc;
 
     use junto_client_core::model::{AdminModel, Collection, LoadFailure};
-    use junto_client_core::protocol::account::OwnAccount;
+    use junto_client_core::protocol::account::{AccountStatus, AccountSummary, OwnAccount};
     use junto_client_core::protocol::discovery::NotificationLevel;
     use junto_client_core::protocol::events::Cursor;
     use junto_client_core::protocol::ids::{
@@ -798,7 +931,7 @@ mod tests {
 
     use super::*;
     use crate::state::admin::records::AuditFailure;
-    use crate::state::admin::{AuditLog, ExportFiles};
+    use crate::state::admin::{AuditLog, AuditPeriod, ExportFiles};
     use crate::state::feed::Zone;
     use crate::text::admin::records as txt;
 
@@ -847,14 +980,15 @@ mod tests {
         let own = AccountId::generate();
         let (studio, lab) = (WorkspaceId::generate(), WorkspaceId::generate());
         let projects = CategoryId::generate();
-        let role = |name: &str, is_everyone| WorkspaceRole {
+        let role = |name: &str, position| WorkspaceRole {
+            position,
             id: WorkspaceRoleId::generate(),
             workspace_id: studio,
             name: name.to_owned(),
             permissions: Vec::new(),
-            is_everyone,
+            is_everyone: position == 0,
         };
-        let (everyone, leads) = (role("everyone", true), role("leads", false));
+        let (everyone, leads) = (role("everyone", 0), role("leads", 1));
         let general = channel(studio, "general");
         let workspace = |id, name: &str, is_default| Workspace {
             id,
@@ -896,6 +1030,9 @@ mod tests {
                         }],
                         channels: vec![general],
                         calls: Vec::new(),
+                        permissions: Vec::new(),
+                        channel_permissions: Vec::new(),
+                        notification_default: None,
                     },
                     WorkspaceState {
                         workspace: workspace(lab, "Lab", false),
@@ -904,6 +1041,9 @@ mod tests {
                         categories: Vec::new(),
                         channels: Vec::new(),
                         calls: Vec::new(),
+                        permissions: Vec::new(),
+                        channel_permissions: Vec::new(),
+                        notification_default: None,
                     },
                 ],
                 own_call: None,
@@ -936,7 +1076,8 @@ mod tests {
         }
 
         fn model(&self, admin: AdminModel) -> ServerModel {
-            let mut model = ServerModel::from_snapshot(self.snapshot.clone());
+            let mut model =
+                ServerModel::from_snapshot(crate::state::fixtures::stated(self.snapshot.clone()));
             model.admin = Arc::new(admin);
             model
         }
@@ -1097,7 +1238,13 @@ mod tests {
             AuditEvent::ServerRoleDeleted { .. } => 57,
             AuditEvent::WorkspaceDeleted { .. } => 58,
             AuditEvent::ExportRequested { .. } => 59,
-            AuditEvent::Unknown => 60,
+            AuditEvent::ServerRolePositionChanged { .. } => 60,
+            AuditEvent::WorkspaceRolePositionChanged { .. } => 61,
+            AuditEvent::NotificationDefaultRemoved => 62,
+            AuditEvent::Unknown => 63,
+            AuditEvent::WorkspaceMemberRemoved { .. } => 64,
+            AuditEvent::InviteWorkspacesChanged { .. } => 65,
+            AuditEvent::ServerLogoChanged { .. } => 66,
         }
     }
 
@@ -1181,13 +1328,47 @@ mod tests {
                 vec!["Ana", "the default workspace"],
             ),
             (AuditEvent::JoinRequestDenied { join_request_id }, vec![]),
-            (AuditEvent::AccountRemoved { account_id }, vec!["Ana"]),
+            (
+                AuditEvent::AccountRemoved {
+                    reason: None,
+                    account_id,
+                },
+                vec!["Ana"],
+            ),
             (
                 AuditEvent::AccountBanned {
+                    reason: Some("Spam".to_owned()),
                     account_id,
                     cancelled_invite_ids: vec![invite_id, InviteId::generate()],
                 },
                 vec!["Ana", "2 invites"],
+            ),
+            (
+                AuditEvent::WorkspaceMemberRemoved {
+                    account_id,
+                    reason: None,
+                },
+                vec!["Ana", "removed", "from the workspace"],
+            ),
+            (
+                AuditEvent::InviteWorkspacesChanged {
+                    invite_id,
+                    invite_created_by: account_id,
+                    removed_workspace_id: scene.lab,
+                },
+                vec!["Ana", "“Lab”", "no longer"],
+            ),
+            (
+                AuditEvent::ServerLogoChanged {
+                    logo: Some(junto_client_core::protocol::account::Avatar {
+                        hash: "a".repeat(64),
+                        media_type: junto_client_core::protocol::account::ImageType::Png,
+                        bytes: 2048,
+                        width: 64,
+                        height: 64,
+                    }),
+                },
+                vec!["logo", "set"],
             ),
             (AuditEvent::AccountUnbanned { account_id }, vec!["Ana"]),
             (
@@ -1449,6 +1630,21 @@ mod tests {
                 },
                 vec![],
             ),
+            (
+                AuditEvent::ServerRolePositionChanged {
+                    role_id: moderators,
+                    position: 4,
+                },
+                vec!["“Moderators”", "position 4"],
+            ),
+            (
+                AuditEvent::WorkspaceRolePositionChanged {
+                    role_id: scene.leads,
+                    position: 2,
+                },
+                vec!["“leads”", "position 2"],
+            ),
+            (AuditEvent::NotificationDefaultRemoved, vec!["sets none"]),
             (AuditEvent::Unknown, vec![txt::UNKNOWN_ACTION]),
         ]
     }
@@ -2148,6 +2344,7 @@ mod tests {
         let removal = entry(
             Some(scene.own),
             AuditEvent::AccountRemoved {
+                reason: None,
                 account_id: AccountId::generate(),
             },
         );
@@ -2207,12 +2404,12 @@ mod tests {
             AuditScope::Workspace(scene.studio),
             entries(),
         );
-        admin.audit.actor = Some(AccountId::generate());
+        admin.audit.filter.actor = Some(AccountId::generate());
         let shown = page(&admin, Some(scene.studio));
         assert_eq!(shown.scope, Some(AuditScope::Workspace(scene.studio)));
         assert_eq!(shown.state, AuditRead::Loaded);
         assert_eq!(shown.loaded, 1);
-        assert!(shown.actor.is_some());
+        assert!(shown.filter.actor.is_some());
 
         // The window shows another workspace: the page shows the first scope and none of
         // the entries, and the person of the filter belongs to the log before.
@@ -2220,8 +2417,8 @@ mod tests {
         assert_eq!(shown.scope, Some(AuditScope::Server));
         assert_eq!(shown.state, AuditRead::NotRead);
         assert_eq!((shown.loaded, shown.rows.len()), (0, 0));
-        assert_eq!(shown.actor, None);
-        assert!(shown.actors.is_empty());
+        assert_eq!(shown.filter, AuditFilter::default());
+        assert!(shown.people.is_empty());
 
         // The log of another server.
         let admin = log(ServerId::generate(), AuditScope::Server, entries());
@@ -2259,6 +2456,7 @@ mod tests {
         let moderators = ServerRoleId::generate();
         let model = scene.model(AdminModel {
             server_roles: Collection::Loaded(vec![ServerRole {
+                position: 1,
                 id: moderators,
                 name: "Moderators".to_owned(),
                 permissions: Vec::new(),
@@ -2310,9 +2508,52 @@ mod tests {
         }
         // The list holds each action of the protocol once.
         places.sort_unstable();
-        assert_eq!(places, (0..61).collect::<Vec<usize>>());
+        assert_eq!(places, (0..67).collect::<Vec<usize>>());
 
-        let removal = AuditEvent::AccountRemoved { account_id: ana };
+        // The filter by action offers each action of the protocol once, by the name that
+        // the server matches, in the group of the action.
+        let mut offered: Vec<&str> = ACTIONS.iter().map(|(name, _)| *name).collect();
+        let mut named: Vec<&str> = actions
+            .iter()
+            .filter(|(event, _)| *event != AuditEvent::Unknown)
+            .map(|(event, _)| event.action())
+            .collect();
+        for (event, _) in &actions {
+            if *event != AuditEvent::Unknown {
+                assert_eq!(
+                    group_of_action(event.action()),
+                    Some(AuditGroup::of(event)),
+                    "{event:?}"
+                );
+            }
+        }
+        offered.sort_unstable();
+        named.sort_unstable();
+        assert_eq!(offered, named);
+        assert_eq!(group_of_action("unknown"), None);
+        assert_eq!(group_of_action("glossary_updated"), None);
+        for group in AuditGroup::ALL {
+            assert!(group.actions().next().is_some(), "{group:?}");
+            assert!(
+                group
+                    .actions()
+                    .all(|action| group_of_action(action) == Some(group))
+            );
+        }
+        assert_eq!(txt::audit_action("account_banned"), "Account banned");
+        assert_eq!(
+            txt::audit_action("workspace_member_removed"),
+            "Workspace member removed"
+        );
+        assert_eq!(
+            txt::audit_sentence(&AuditEvent::ServerLogoChanged { logo: None }, &names),
+            "The logo of the server was removed."
+        );
+
+        let removal = AuditEvent::AccountRemoved {
+            reason: None,
+            account_id: ana,
+        };
         assert_eq!(
             txt::audit_sentence(&removal, &names),
             "The account “Ana” was removed from the server."
@@ -2356,6 +2597,7 @@ mod tests {
         let account_id = AccountId::generate();
         assert_eq!(
             of(AuditEvent::AccountBanned {
+                reason: None,
                 account_id,
                 cancelled_invite_ids: Vec::new(),
             }),
@@ -2388,56 +2630,57 @@ mod tests {
     }
 
     #[test]
-    fn the_filters_by_group_and_by_person_show_a_part_of_the_loaded_entries_and_count_it() {
+    fn the_page_shows_every_loaded_entry_and_the_filters_that_the_server_applied() {
         let scene = scene().administrator();
-        let model = scene.model(AdminModel::default());
-        let (ana, bea, zoe) = (
+        let (ana, bea, zoe, eli) = (
+            AccountId::generate(),
             AccountId::generate(),
             AccountId::generate(),
             AccountId::generate(),
         );
+        let account = |id: AccountId, name: &str| AccountSummary {
+            id,
+            name: name.to_owned(),
+            status: AccountStatus::Active,
+            is_owner: false,
+            server_role_ids: Vec::new(),
+            created_at: time(),
+        };
         let mut known = known();
         known.people.read_name(scene.server_id, ana, "Ana");
         let ban = entry(
             Some(ana),
             AuditEvent::AccountBanned {
+                reason: None,
                 account_id: zoe,
                 cancelled_invite_ids: Vec::new(),
             },
         );
-        let revocation = entry(
-            Some(ana),
-            AuditEvent::InviteRevoked {
-                invite_id: InviteId::generate(),
-                invite_created_by: None,
+        let removal = entry(
+            Some(bea),
+            AuditEvent::AccountRemoved {
+                reason: None,
+                account_id: zoe,
             },
         );
-        let removal = entry(Some(bea), AuditEvent::AccountRemoved { account_id: zoe });
         let reset = entry(None, AuditEvent::EventEpochRenewed);
         let mut admin = log(
             scene.server_id,
             AuditScope::Server,
-            vec![
-                ban.clone(),
-                revocation.clone(),
-                removal.clone(),
-                reset.clone(),
-            ],
+            vec![ban.clone(), removal.clone(), reset.clone()],
         );
-        let ids = |admin: &AdminState| {
-            let page = audit(scene.server_id, &model, None, &known, admin);
-            assert_eq!(page.loaded, 4);
-            assert_eq!(
-                (page.group, page.actor),
-                (admin.audit.group, admin.audit.actor)
-            );
-            page.rows.iter().map(|row| row.id).collect::<Vec<_>>()
-        };
-        assert_eq!(ids(&admin), [ban.id, revocation.id, removal.id, reset.id]);
-        // The accounts that acted, by name, and after them the ones without a known name.
+        admin.audit.people = vec![ana, bea];
+        let model = scene.model(AdminModel::default());
         let page = audit(scene.server_id, &model, None, &known, &admin);
+        // The server applied the filters: the page hides no loaded entry.
+        let ids: Vec<_> = page.rows.iter().map(|row| row.id).collect();
+        assert_eq!(ids, [ban.id, removal.id, reset.id]);
+        assert_eq!((page.loaded, page.filter), (3, AuditFilter::default()));
+        assert!(!page.filter.is_set());
+        // The accounts that acted in a page that was read, by name, and after them the
+        // ones without a known name.
         assert_eq!(
-            page.actors,
+            page.people,
             [
                 ActorChoice {
                     id: ana,
@@ -2449,29 +2692,99 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(txt::audit_count(4, 4), "4 of 4 loaded entries shown");
+        assert_eq!(txt::audit_count(3), "3 entries loaded");
+        assert_eq!(txt::audit_count(1), "1 entry loaded");
 
-        admin.audit.group = Some(AuditGroup::Members);
-        assert_eq!(ids(&admin), [ban.id, removal.id]);
-        admin.audit.actor = Some(ana);
-        assert_eq!(ids(&admin), [ban.id]);
-        assert_eq!(txt::audit_count(1, 4), "1 of 4 loaded entries shown");
-        admin.audit.group = None;
-        assert_eq!(ids(&admin), [ban.id, revocation.id]);
-        admin.audit.group = Some(AuditGroup::Server);
-        assert!(ids(&admin).is_empty());
-        admin.audit.actor = None;
-        assert_eq!(ids(&admin), [reset.id]);
-
-        // A person without a loaded entry stays in the list, so that the filter can be
-        // seen and taken away.
-        admin.audit.group = None;
-        admin.audit.actor = Some(zoe);
-        assert!(ids(&admin).is_empty());
+        // The filters of the log are the ones of the page. An account of a filter stays
+        // in the list also when no entry names it, so that the filter can be seen and
+        // taken away.
+        admin.audit.filter = AuditFilter {
+            action: Some("account_banned"),
+            actor: Some(ana),
+            about: Some(zoe),
+            period: AuditPeriod::Week,
+        };
+        admin.audit.entries = vec![ban.clone()];
         let page = audit(scene.server_id, &model, None, &known, &admin);
-        assert_eq!(page.actors.len(), 3);
-        assert!(page.actors.iter().any(|choice| choice.id == zoe));
-        assert_eq!(txt::audit_count(1, 1), "1 of 1 loaded entry shown");
+        assert_eq!(page.filter, admin.audit.filter);
+        assert!(page.filter.is_set());
+        assert_eq!(page.rows.len(), 1);
+        let offered: Vec<AccountId> = page.people.iter().map(|choice| choice.id).collect();
+        assert_eq!(offered.len(), 3);
+        assert_eq!(offered[0], ana);
+        assert!(offered.contains(&bea) && offered.contains(&zoe));
+
+        // The accounts of the server, for a person who lists them, are offered too.
+        let model = scene.model(AdminModel {
+            accounts: Collection::Loaded(vec![account(eli, "Eli"), account(zoe, "Zoe")]),
+            ..AdminModel::default()
+        });
+        let page = audit(scene.server_id, &model, None, &known, &admin);
+        let names: Vec<Option<&str>> = page
+            .people
+            .iter()
+            .map(|choice| choice.name.as_deref())
+            .collect();
+        assert_eq!(names, [Some("Ana"), Some("Eli"), Some("Zoe"), None]);
+
+        // The filters and their people belong to the log that was read.
+        let other = log(ServerId::generate(), AuditScope::Server, vec![ban]);
+        let page = audit(scene.server_id, &model, None, &known, &other);
+        assert_eq!(page.filter, AuditFilter::default());
+        assert!(page.people.is_empty() && page.rows.is_empty());
+    }
+
+    #[test]
+    fn a_ban_and_a_removal_state_their_reason_without_control_characters() {
+        let scene = scene().administrator();
+        let model = scene.model(AdminModel::default());
+        let known = known();
+        let names = Names::new(scene.server_id, &model, &known);
+        let zoe = AccountId::generate();
+        let line = |event: AuditEvent| audit_line(&entry(None, event), AuditScope::Server, &names);
+        let banned = |reason: Option<&str>| AuditEvent::AccountBanned {
+            reason: reason.map(str::to_owned),
+            account_id: zoe,
+            cancelled_invite_ids: Vec::new(),
+        };
+        assert_eq!(line(banned(None)).reason, None);
+        assert_eq!(
+            line(banned(Some("Spam in #general"))).reason.as_deref(),
+            Some("Spam in #general")
+        );
+        // The reason is text of another person.
+        assert_eq!(
+            line(banned(Some(" two\nlines\u{7} "))).reason.as_deref(),
+            Some("twolines")
+        );
+        assert_eq!(line(banned(Some(" \n "))).reason, None);
+        let long = "a".repeat(1500);
+        let cut = line(banned(Some(long.as_str()))).reason.unwrap();
+        assert_eq!(cut.chars().count(), 1000);
+        assert_eq!(
+            line(AuditEvent::AccountRemoved {
+                reason: Some("Left the team".to_owned()),
+                account_id: zoe,
+            })
+            .reason
+            .as_deref(),
+            Some("Left the team")
+        );
+        assert_eq!(
+            line(AuditEvent::WorkspaceMemberRemoved {
+                account_id: zoe,
+                reason: Some("Project ended".to_owned()),
+            })
+            .reason
+            .as_deref(),
+            Some("Project ended")
+        );
+        // The sentence of the action does not repeat the reason.
+        let stated = line(banned(Some("Spam in #general")));
+        assert!(!stated.sentence.contains("Spam"));
+        assert_eq!(txt::audit_reason("Spam"), "Reason: Spam");
+        // No other action states one.
+        assert_eq!(line(AuditEvent::EventEpochRenewed).reason, None);
     }
 
     #[test]

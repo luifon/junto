@@ -790,6 +790,11 @@ async fn rule_a09_archive_events_reach_the_viewers_of_the_channel() {
             Event::ChannelRestored {
                 channel: private.clone()
             },
+            // The channel is back with its overrides: the accounts that see it load the
+            // lists of their permissions again (ADR 0310).
+            Event::PermissionsChanged {
+                workspace_id: Some(workspace.id)
+            },
         ]
     );
     assert!(server.traffic(&plain, &mut plain_stream).await.is_empty());

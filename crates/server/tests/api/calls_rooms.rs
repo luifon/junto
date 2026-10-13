@@ -723,13 +723,13 @@ async fn a_move_joins_the_destination_first_and_leaves_the_source_when_the_join_
         names(&told),
         [
             "call_participant_left",
-            "call_participant_joined",
             "own_call_changed",
+            "call_participant_joined",
             "call_move_resolved"
         ]
     );
     assert!(matches!(
-        &told[2],
+        &told[1],
         Event::OwnCallChanged { call: Some(own), left: Some(LeaveReason::Moved) }
             if own.call_id == moved.id
     ));

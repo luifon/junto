@@ -21,7 +21,7 @@ use super::notices::{
 };
 use super::view::{ServerSnapshot, Shown};
 use crate::notify::{Kept, SystemNotifier};
-use crate::text;
+use crate::{text, zones};
 
 /// One of the two mention switches of a channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -348,7 +348,7 @@ impl AppState {
     }
 
     /// The state of a server was replaced: the level of the administrators that an open
-    /// dialog shows is read again, because no event tells its change.
+    /// dialog shows is read again. A change of that level replaces the state (ADR 0792).
     pub(super) fn read_default_after_reload(
         &mut self,
         server_id: ServerId,
@@ -657,14 +657,14 @@ impl AppState {
         self.change_quiet(cx, move |settings| settings.do_not_disturb = on);
     }
 
-    /// Sets the daily quiet time as two minutes of a day in the time zone of the person,
-    /// or ends it with `None`. The server keeps the distance of this moment from UTC.
+    /// Sets the daily quiet time as two minutes of a day on the clock of the time zone of
+    /// the system, or ends it with `None`. The server keeps the name of the zone
+    /// (ADR 0412).
     pub fn set_daily_quiet(&mut self, span: Option<(u16, u16)>, cx: &mut Context<Self>) {
-        let offset = self.known.zone.local(OffsetDateTime::now_utc()).offset();
         let daily = span.map(|(start_minute, end_minute)| DailyQuiet {
             start_minute,
             end_minute,
-            utc_offset_minutes: offset.whole_minutes(),
+            time_zone: zones::system(),
         });
         self.change_quiet(cx, move |settings| settings.daily_quiet.clone_from(&daily));
     }

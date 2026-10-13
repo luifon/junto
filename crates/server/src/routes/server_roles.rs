@@ -1,7 +1,7 @@
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use junto_authz::{Request, ServerPermission, ServerPermissions};
+use junto_authz::{Request, RoleRank, ServerPermission, ServerPermissions};
 use junto_protocol::audit::AuditEvent;
 use junto_protocol::events::Event;
 use junto_protocol::ids::{AccountId, ServerRoleId};
@@ -23,17 +23,19 @@ use crate::{store, validate};
 async fn locked_role(
     connection: &mut PgConnection,
     role_id: ServerRoleId,
-) -> ApiResult<(String, ServerPermissions)> {
-    let row: Option<(String, i64)> =
-        sqlx::query_as("select name, permissions from server_roles where id = $1 for update")
-            .bind(role_id)
-            .fetch_optional(connection)
-            .await?;
-    let (name, bits) = row.ok_or_else(ApiError::not_found)?;
-    Ok((name, db::server_permissions(bits)?))
+) -> ApiResult<(String, ServerPermissions, i32)> {
+    let row: Option<(String, i64, i32)> = sqlx::query_as(
+        "select name, permissions, position from server_roles where id = $1 for update",
+    )
+    .bind(role_id)
+    .fetch_optional(connection)
+    .await?;
+    let (name, bits, position) = row.ok_or_else(ApiError::not_found)?;
+    Ok((name, db::server_permissions(bits)?, position))
 }
 
-/// The server roles.
+/// The server roles, visible to administrators and holders of ban_members.
+/// Tokens may use either read_structure or manage_members for this list.
 #[utoipa::path(
     get,
     path = "/api/v1/server-roles",
@@ -48,14 +50,16 @@ pub async fn list_server_roles(
     let now = app.now();
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        access.require(Request::Server(ServerPermission::Administrator))?;
-        let rows: Vec<(ServerRoleId, String, i64)> =
-            sqlx::query_as("select id, name, permissions from server_roles order by id")
-                .fetch_all(&mut *connection)
-                .await?;
+        access.require(Request::Server(ServerPermission::BanMembers))?;
+        let rows: Vec<(ServerRoleId, String, i64, i32)> = sqlx::query_as(
+            "select id, name, permissions, position from server_roles order by position",
+        )
+        .fetch_all(&mut *connection)
+        .await?;
         rows.into_iter()
-            .map(|(id, name, bits)| {
+            .map(|(id, name, bits, position)| {
                 Ok(ServerRole {
+                    position,
                     id,
                     name,
                     permissions: db::server_list(db::server_permissions(bits)?),
@@ -82,6 +86,7 @@ pub async fn create_server_role(
 ) -> ApiResult<(StatusCode, Json<ServerRole>)> {
     let permissions: ServerPermissions = body.permissions.iter().copied().collect();
     let role = ServerRole {
+        position: 1,
         id: ServerRoleId::generate(),
         name: validate::name("name", &body.name)?,
         permissions: db::server_list(permissions),
@@ -89,7 +94,14 @@ pub async fn create_server_role(
     let now = app.now();
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
-        create(connection, &access, now, &role).await
+        create(
+            connection,
+            &access,
+            now,
+            &role,
+            app.config.limits.most_server_roles,
+        )
+        .await
     })?;
     Ok((StatusCode::CREATED, Json(role)))
 }
@@ -99,14 +111,27 @@ pub(crate) async fn create(
     access: &Access,
     now: OffsetDateTime,
     role: &ServerRole,
+    ceiling: u32,
 ) -> ApiResult<()> {
     let permissions: ServerPermissions = role.permissions.iter().copied().collect();
     access.require(Request::ManageServerRoles {
         granting: permissions,
     })?;
+    let existing: i64 = sqlx::query_scalar(
+        "select count(*) from (select position from server_roles order by position limit $1) roles",
+    )
+    .bind(i64::from(ceiling))
+    .fetch_one(&mut *connection)
+    .await?;
+    if existing >= i64::from(ceiling) {
+        return Err(ApiError::limit_reached(
+            "the server has the largest number of roles",
+        ));
+    }
+    crate::role_order::insert_bottom(connection, access, now, None).await?;
     sqlx::query(
-        "insert into server_roles (id, name, permissions, created_at)
-         values ($1, $2, $3, $4)",
+        "insert into server_roles (id, name, permissions, created_at, position)
+         values ($1, $2, $3, $4, 1)",
     )
     .bind(role.id)
     .bind(&role.name)
@@ -180,13 +205,18 @@ pub(crate) async fn update(
     new_permissions: Option<ServerPermissions>,
 ) -> ApiResult<ServerRole> {
     access.require(Request::Server(ServerPermission::Administrator))?;
-    let (old_name, old_permissions) = locked_role(connection, role_id).await?;
+    let (old_name, old_permissions, position) = locked_role(connection, role_id).await?;
+    Access::require_rank(
+        access.rank(connection, None).await?,
+        RoleRank::Server(position),
+    )?;
     let permissions = new_permissions.unwrap_or(old_permissions);
     access.require(Request::ManageServerRoles {
         granting: permissions.difference(old_permissions),
     })?;
 
     let role = ServerRole {
+        position,
         id: role_id,
         name: new_name.unwrap_or(old_name),
         permissions: db::server_list(permissions),
@@ -252,7 +282,11 @@ pub(crate) async fn delete(
     access.require(Request::ManageServerRoles {
         granting: ServerPermissions::EMPTY,
     })?;
-    let (name, permissions) = locked_role(connection, role_id).await?;
+    let (name, permissions, position) = locked_role(connection, role_id).await?;
+    Access::require_rank(
+        access.rank(connection, None).await?,
+        RoleRank::Server(position),
+    )?;
     if administers(permissions) {
         store::contact_changed_for_holders(connection, now, role_id).await?;
     }
@@ -344,7 +378,11 @@ pub async fn assign_server_role(
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::Server(ServerPermission::Administrator))?;
-        let (_, permissions) = locked_role(connection, role_id).await?;
+        let (_, permissions, position) = locked_role(connection, role_id).await?;
+        Access::require_rank(
+            access.rank(connection, None).await?,
+            RoleRank::Server(position),
+        )?;
         access.require(Request::ManageServerRoles {
             granting: permissions,
         })?;
@@ -405,6 +443,11 @@ pub async fn unassign_server_role(
         access.require(Request::ManageServerRoles {
             granting: ServerPermissions::EMPTY,
         })?;
+        let (_, _, position) = locked_role(connection, role_id).await?;
+        Access::require_rank(
+            access.rank(connection, None).await?,
+            RoleRank::Server(position),
+        )?;
         let deleted =
             sqlx::query("delete from account_server_roles where account_id = $1 and role_id = $2")
                 .bind(account_id)
@@ -412,7 +455,7 @@ pub async fn unassign_server_role(
                 .execute(&mut *connection)
                 .await?;
         if deleted.rows_affected() > 0 {
-            let (_, permissions) = locked_role(connection, role_id).await?;
+            let (_, permissions, _) = locked_role(connection, role_id).await?;
             audit::record(
                 connection,
                 now,
@@ -427,6 +470,35 @@ pub async fn unassign_server_role(
             announce_roles(connection, now, account_id, permissions).await?;
         }
         Ok(())
+    })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Reorders up to 250 roles in one transaction.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/server-roles/positions",
+    tag = "server roles",
+
+    request_body = junto_protocol::roles::ReorderServerRoles,
+    security(("session" = [])),
+    responses((status = 204), ApiError)
+)]
+pub async fn reorder_server_roles(
+    State(app): State<AppState>,
+    bearer: Bearer,
+
+    ApiJson(body): ApiJson<junto_protocol::roles::ReorderServerRoles>,
+) -> ApiResult<StatusCode> {
+    let now = app.now();
+    let positions: Vec<_> = body
+        .positions
+        .iter()
+        .map(|p| (p.role_id.as_uuid(), p.position))
+        .collect();
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        crate::role_order::reorder(connection, &access, now, None, &positions).await
     })?;
     Ok(StatusCode::NO_CONTENT)
 }

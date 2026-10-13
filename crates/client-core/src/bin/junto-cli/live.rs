@@ -14,6 +14,7 @@ use junto_client_core::protocol::call::{
     Call, CallInvitation, CallJoin, CallLock, CallMove, CallParticipant, CallPlace, EntryRequest,
     Meeting, ShareAudio, UpdateCallSettings,
 };
+use junto_client_core::protocol::discovery::NotificationLevel;
 use junto_client_core::protocol::events::{Cursor, Event};
 use junto_client_core::protocol::ids::{
     AccountId, CallId, CallInvitationId, CallMoveId, ChannelId, EntryRequestId,
@@ -607,8 +608,8 @@ fn state_lines(model: &ServerModel) -> Vec<String> {
             shown(&workspace.workspace.name)
         ));
         let permissions: Vec<&str> = workspace
-            .role_permissions()
-            .into_iter()
+            .permissions
+            .iter()
             .map(|permission| permission.name())
             .collect();
         lines.push(format!("permissions: {}", permissions.join(", ")));
@@ -732,9 +733,34 @@ fn event_details(event: &Event) -> String {
         Event::AccountServerRolesChanged { account_id, .. } => format!("account={account_id}"),
         Event::OwnerChanged { account_id, .. } => format!("account={account_id}"),
         Event::ServerRoleCreated { role } | Event::ServerRoleUpdated { role } => {
-            format!("role={}", role.id)
+            format!("role={} position={}", role.id, role.position)
         }
-        Event::InviteCreated { invite } => format!("invite={}", invite.id),
+        Event::ServerRolePositionsShifted { positions } => {
+            format!("roles={}", positions.len())
+        }
+        Event::WorkspaceRolePositionsShifted {
+            workspace_id,
+            positions,
+        } => format!("workspace={workspace_id} roles={}", positions.len()),
+        Event::NotificationsRead { until, .. } => format!("until={until}"),
+        Event::ThreadFollowChanged {
+            root_id, following, ..
+        } => format!("thread={root_id} following={following}"),
+        Event::NotificationDefaultChanged {
+            workspace_id,
+            level,
+        } => format!(
+            "workspace={workspace_id} level={}",
+            match level {
+                Some(NotificationLevel::All) => "all",
+                Some(NotificationLevel::Mentions) => "mentions",
+                Some(NotificationLevel::Nothing) => "nothing",
+                None => "not_set",
+            }
+        ),
+        Event::InviteCreated { invite } | Event::InviteChanged { invite } => {
+            format!("invite={}", invite.id)
+        }
         Event::InviteRevoked {
             invite_id,
             revocation,
@@ -767,7 +793,10 @@ fn event_details(event: &Event) -> String {
             ..
         } => format!("workspace={workspace_id} account={account_id}"),
         Event::WorkspaceRoleCreated { role } | Event::WorkspaceRoleUpdated { role } => {
-            format!("workspace={} role={}", role.workspace_id, role.id)
+            format!(
+                "workspace={} role={} position={}",
+                role.workspace_id, role.id, role.position
+            )
         }
         Event::CategoryCreated { category } | Event::CategoryUpdated { category } => {
             format!(
@@ -910,6 +939,10 @@ fn event_details(event: &Event) -> String {
             "conversation={} accounts={},{}",
             conversation.id, conversation.low_account_id, conversation.high_account_id
         ),
+        Event::ServerLogoChanged { logo } => match logo {
+            Some(logo) => format!("logo={}", shown(&logo.hash)),
+            None => "logo=none".to_owned(),
+        },
         Event::AttachmentLimitsChanged { limits } => format!(
             "bytes_per_file={} files_per_message={}",
             limits.bytes_per_file, limits.files_per_message
@@ -1195,5 +1228,52 @@ async fn watching(
             _ = &mut interrupt => return Ok(()),
             () = until(end) => return Ok(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use junto_client_core::protocol::account::{Avatar, ImageType};
+    use junto_client_core::protocol::ids::{InviteId, WorkspaceId};
+    use junto_client_core::protocol::invite::Invite;
+
+    use super::*;
+
+    #[test]
+    fn the_details_of_an_event_name_a_changed_invite_and_the_logo() {
+        let at = OffsetDateTime::UNIX_EPOCH + time::Duration::days(20_000);
+        let invite = Invite {
+            id: InviteId::generate(),
+            created_by: AccountId::generate(),
+            created_by_name: None,
+            created_at: at,
+            expires_at: at,
+            max_uses: 5,
+            uses: 2,
+            workspace_ids: vec![WorkspaceId::generate()],
+            revocation: None,
+        };
+        let created = Event::InviteCreated {
+            invite: invite.clone(),
+        };
+        let changed = Event::InviteChanged {
+            invite: invite.clone(),
+        };
+        assert_eq!(changed.name(), "invite_changed");
+        assert_eq!(event_details(&changed), format!("invite={}", invite.id));
+        assert_eq!(event_details(&changed), event_details(&created));
+
+        let logo = Avatar {
+            hash: "ab12\u{1b}".to_owned(),
+            media_type: ImageType::Png,
+            bytes: 2048,
+            width: 64,
+            height: 64,
+        };
+        let set = Event::ServerLogoChanged { logo: Some(logo) };
+        assert_eq!(set.name(), "server_logo_changed");
+        assert_eq!(event_details(&set), "logo=ab12");
+        let taken = Event::ServerLogoChanged { logo: None };
+        assert_eq!(event_details(&taken), "logo=none");
     }
 }

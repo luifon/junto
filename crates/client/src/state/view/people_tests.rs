@@ -37,6 +37,7 @@ fn avatar(hash: PictureHash) -> Avatar {
 
 fn member(account_id: AccountId, name: &str) -> WorkspaceMember {
     WorkspaceMember {
+        avatar: None,
         account_id,
         name: name.to_owned(),
         role_ids: Vec::new(),
@@ -63,6 +64,7 @@ fn call(scene: &mut Scene, people: &[AccountId]) {
             participants: people
                 .iter()
                 .map(|account_id| CallParticipant {
+                    avatar: None,
                     account_id: *account_id,
                     identity: format!("seat-{account_id}"),
                     joined_at: time(),

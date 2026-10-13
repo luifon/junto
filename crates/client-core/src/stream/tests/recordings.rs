@@ -71,7 +71,14 @@ impl Tape {
                 let next_after = (rest.len() > limit)
                     .then(|| lines.last().map(|last| last.line))
                     .flatten();
-                json(200, &TranscriptLinePage { lines, next_after })
+                json(
+                    200,
+                    &TranscriptLinePage {
+                        lines,
+                        next_after,
+                        previous_before: None,
+                    },
+                )
             }
             other => panic!("the stream client asked for the route {other} of a recording"),
         })

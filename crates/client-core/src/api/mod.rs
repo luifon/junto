@@ -5,10 +5,12 @@ mod calls;
 mod client;
 pub(crate) mod error;
 mod messages;
+mod moderation;
 mod notices;
 pub(crate) mod proof;
 mod recordings;
 mod retry;
+mod roles;
 pub(crate) mod session;
 mod threads;
 pub(crate) mod transport;
@@ -21,6 +23,7 @@ pub use error::{
     AccessLoss, ApiError, ErrorCategory, Rejection, category, code_name, unknown_refusal,
 };
 pub use messages::{CHUNK_BYTES, FileBody, PageQuery};
+pub use moderation::{LONGEST_REASON, logo_at, stated_reason};
 pub use notices::{SearchQuery, SettingsScope};
 pub use proof::{ChallengeMismatch, ExpectedAccount};
 pub use retry::RetryPolicy;

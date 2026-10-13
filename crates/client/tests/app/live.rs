@@ -36,6 +36,7 @@ use crate::harness::{
 mod cameras;
 mod detached;
 mod direct;
+mod lines;
 mod rules;
 
 /// The voice channel of the tests. A new server has a voice channel of its own beside it.

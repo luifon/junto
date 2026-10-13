@@ -73,6 +73,8 @@ pub enum Credential {
     Session,
     /// An access token, on a route of this action (ADR 0210).
     AccessToken(TokenAction),
+    /// Either read_structure or manage_members may read server role positions.
+    RolePositionsToken,
 }
 
 /// The hash of the credential of a request: of a session token, or of an access token on a
@@ -104,7 +106,16 @@ impl<S: Send + Sync> FromRequestParts<S> for Bearer {
             .ok_or_else(tokens::outside_reach)?;
         Ok(Self(
             hash_access_token(token),
-            Credential::AccessToken(action),
+            if parts.method == axum::http::Method::GET
+                && parts
+                    .extensions
+                    .get::<MatchedPath>()
+                    .is_some_and(|p| p.as_str() == "/api/v1/server-roles")
+            {
+                Credential::RolePositionsToken
+            } else {
+                Credential::AccessToken(action)
+            },
         ))
     }
 }

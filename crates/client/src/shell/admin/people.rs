@@ -19,8 +19,9 @@ use super::{
 use crate::assets::Icon;
 use crate::shell::Shell;
 use crate::state::admin::view::people::{
-    AccountLine, DEFAULT_EXPIRY_DAYS, DEFAULT_USES, EXPIRY_DAYS, Grant, InviteLine, InvitesPage,
-    MemberList, MembersPage, NewCode, PeoplePage, RequestsPage, USES, expiry, typed_uses,
+    AccountLine, Blocked, DEFAULT_EXPIRY_DAYS, DEFAULT_USES, EXPIRY_DAYS, Grant, InviteLine,
+    InvitesPage, MemberLine, MemberList, MembersPage, NewCode, NoRemoval, PeoplePage, RequestsPage,
+    USES, expiry, typed_reason, typed_uses,
 };
 use crate::state::admin::view::{AdminView, Listed, Scope, ServerPage};
 use crate::state::admin::{AdminPage, AskKind, AskState};
@@ -50,6 +51,8 @@ pub enum Open {
     RemoveAccount(AccountId),
     /// The question before the ban of an account.
     BanAccount(AccountId),
+    /// The question before the removal of a member from the shown workspace.
+    RemoveMember(AccountId),
     /// The form of a new invite.
     NewInvite,
 }
@@ -72,6 +75,8 @@ enum GrantFor {
 pub(crate) struct Ui {
     /// The typed number of uses of a new invite.
     pub(crate) uses: Entity<InputState>,
+    /// The typed reason of the ban or of the removal that the open question asks about.
+    pub(crate) reason: Entity<InputState>,
     pub(crate) open: Option<Open>,
     pub(crate) filter: Filter,
     /// The lifetime of a new invite in days.
@@ -92,20 +97,34 @@ pub(crate) struct Ui {
 impl Ui {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Shell>) -> (Self, Vec<Subscription>) {
         let uses = Field::state(txt::USES_PLACEHOLDER, window, cx);
-        let subscriptions = vec![Field::observe(
-            &uses,
-            window,
-            cx,
-            |this: &mut Shell, event, window, cx| match event {
-                FieldEvent::Changed => {
-                    this.admin.people.invalid = None;
-                    cx.notify();
-                }
-                FieldEvent::Submitted => this.submit_invite_form(window, cx),
-            },
-        )];
+        let reason = Field::state(txt::REASON_PLACEHOLDER, window, cx);
+        let subscriptions = vec![
+            Field::observe(
+                &uses,
+                window,
+                cx,
+                |this: &mut Shell, event, window, cx| match event {
+                    FieldEvent::Changed => {
+                        this.admin.people.invalid = None;
+                        cx.notify();
+                    }
+                    FieldEvent::Submitted => this.submit_invite_form(window, cx),
+                },
+            ),
+            // The question draws whether the typed reason can be sent.
+            Field::observe(
+                &reason,
+                window,
+                cx,
+                |_: &mut Shell, event, _, cx| match event {
+                    FieldEvent::Changed => cx.notify(),
+                    FieldEvent::Submitted => {}
+                },
+            ),
+        ];
         let ui = Self {
             uses,
+            reason,
             open: None,
             filter: Filter::All,
             invite_days: DEFAULT_EXPIRY_DAYS,
@@ -120,14 +139,19 @@ impl Ui {
     }
 }
 
-/// A row with the statement of a refusal under it. `selector` names the row for a test.
-fn framed(selector: String, row: gpui::Div, refused: Option<AnyElement>) -> AnyElement {
+/// A row with what stands under it: the statement of a refusal, a reason, the roles of
+/// the account. `selector` names the row for a test.
+fn framed(
+    selector: String,
+    row: gpui::Div,
+    under: impl IntoIterator<Item = AnyElement>,
+) -> AnyElement {
     div()
         .flex()
         .flex_col()
         .flex_none()
         .child(named(selector, row).flex_1())
-        .children(refused)
+        .children(under)
         .into_any_element()
 }
 
@@ -211,6 +235,43 @@ impl Shell {
         ui.sent = None;
         ui.copied = None;
         self.reset_invite_form(window, cx);
+        self.type_reason("", window, cx);
+    }
+
+    /// Puts text into the field of the reason of the open question, as typing does.
+    pub fn type_reason(&mut self, reason: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let reason = reason.to_owned();
+        self.admin
+            .people
+            .reason
+            .update(cx, |field, cx| field.set_value(reason, window, cx));
+        cx.notify();
+    }
+
+    /// The reason that the open question sends, or why the typed text cannot be sent.
+    fn reason_typed(&self, cx: &Context<Self>) -> Result<Option<String>, &'static str> {
+        typed_reason(&self.admin.people.reason.read(cx).value()).map_err(txt::reason_fault)
+    }
+
+    /// The field of the reason under an open question, with what the reason is for and
+    /// why the typed text cannot be sent.
+    fn render_reason(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let fault = self.reason_typed(cx).err();
+        div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .gap(u(4.0))
+            .mt(u(6.0))
+            .mb(u(6.0))
+            .debug_selector(|| "moderation-reason".to_owned())
+            .child(
+                Field::new(&self.admin.people.reason, txt::REASON)
+                    .selector("moderation-reason-field"),
+            )
+            .child(sentence(txt::REASON_HELP, theme))
+            .children(fault.map(|fault| Notice::error(fault).selector("moderation-reason-invalid")))
+            .into_any_element()
     }
 
     fn reset_invite_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -236,6 +297,8 @@ impl Shell {
         if open == Some(Open::NewInvite) {
             self.reset_invite_form(window, cx);
         }
+        // A reason belongs to the question that it was typed for.
+        self.type_reason("", window, cx);
         self.state
             .update(cx, |state, cx| state.dismiss_admin_ask(cx));
         cx.notify();
@@ -319,14 +382,16 @@ impl Shell {
         cx.notify();
     }
 
-    /// A question in the row of an account, with its two answers.
+    /// A question in the row of an account, with its two answers. The confirmation
+    /// carries the typed reason; a reason that cannot be sent holds the confirmation.
     fn render_account_question(
         &mut self,
         question: Question,
         theme: &Theme,
         cx: &mut Context<Self>,
-        confirmed: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        confirmed: impl Fn(&mut Self, Option<String>, &mut Window, &mut Context<Self>) + 'static,
     ) -> gpui::Div {
+        let invalid = self.reason_typed(cx).is_err();
         div()
             .flex()
             .flex_1()
@@ -356,11 +421,13 @@ impl Shell {
                     .kind(ButtonKind::Primary)
                     .label(question.confirm)
                     .selector(question.confirm_selector)
-                    .disabled(question.sending)
+                    .disabled(question.sending || invalid)
                     .h(u(28.0))
                     .px(u(10.0))
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        confirmed(this, window, cx);
+                        if let Ok(reason) = this.reason_typed(cx) {
+                            confirmed(this, reason, window, cx);
+                        }
                     })),
             )
     }
@@ -374,41 +441,61 @@ impl Shell {
     ) -> AnyElement {
         let server_id = view.server_id;
         let account_id = row.id;
+        // A question whose action is not possible any more is put away for good: it does
+        // not return when the action becomes possible again.
+        // While the order of the roles is read again the question stays, and its
+        // answer waits.
+        let gone = |action: Result<(), Blocked>| {
+            action.is_err_and(|reason| reason != Blocked::OrderNotRead)
+        };
+        let reading = |action: Result<(), Blocked>| action == Err(Blocked::OrderNotRead);
+        let stale = match self.admin.people.open {
+            Some(Open::RemoveAccount(id)) => id == account_id && gone(row.remove),
+            Some(Open::BanAccount(id)) => id == account_id && gone(row.ban),
+            _ => false,
+        };
+        if stale {
+            self.admin.people.open = None;
+            self.admin.people.sent = None;
+        }
         let content: AnyElement = match self.admin.people.open {
-            Some(Open::RemoveAccount(id)) if id == account_id => self
+            // A question stays only while its action is possible: the order of the roles
+            // or the status of the account can change while it is open.
+            Some(Open::RemoveAccount(id)) if id == account_id && !gone(row.remove) => self
                 .render_account_question(
                     Question {
                         sentence: txt::remove_question(&row.name).into(),
                         confirm: txt::REMOVE,
                         confirm_selector: "account-confirm",
                         cancel_selector: "account-cancel",
-                        sending: view.sending(AskKind::RemoveAccount(account_id)),
+                        sending: view.sending(AskKind::RemoveAccount(account_id))
+                            || reading(row.remove),
                     },
                     theme,
                     cx,
-                    move |this, _, cx| {
+                    move |this, reason, _, cx| {
                         this.admin.people.sent = Some(AskKind::RemoveAccount(account_id));
                         this.state.update(cx, |state, cx| {
-                            state.remove_account(server_id, account_id, cx);
+                            state.remove_account(server_id, account_id, reason, cx);
                         });
                     },
                 )
                 .into_any_element(),
-            Some(Open::BanAccount(id)) if id == account_id => self
+            Some(Open::BanAccount(id)) if id == account_id && !gone(row.ban) => self
                 .render_account_question(
                     Question {
                         sentence: txt::ban_question(&row.name).into(),
                         confirm: txt::BAN,
                         confirm_selector: "account-confirm",
                         cancel_selector: "account-cancel",
-                        sending: view.sending(AskKind::BanAccount(account_id)),
+                        sending: view.sending(AskKind::BanAccount(account_id)) || reading(row.ban),
                     },
                     theme,
                     cx,
-                    move |this, _, cx| {
+                    move |this, reason, _, cx| {
                         this.admin.people.sent = Some(AskKind::BanAccount(account_id));
                         this.state.update(cx, |state, cx| {
-                            state.ban_account(server_id, account_id, cx);
+                            state.ban_account(server_id, account_id, reason, cx);
                         });
                     },
                 )
@@ -421,8 +508,14 @@ impl Shell {
                     .items_center()
                     .gap(u(8.0))
                     .child(
-                        crate::shell::people::avatar(&self.faces(server_id), account_id, 26.0)
-                            .radius(2.0),
+                        crate::shell::people::avatar_of(
+                            &self.faces(server_id),
+                            account_id,
+                            &row.name,
+                            false,
+                            26.0,
+                        )
+                        .radius(2.0),
                     )
                     .child(line_text(
                         row.name.clone(),
@@ -431,6 +524,22 @@ impl Shell {
                     ));
                 for mark in account_marks(row) {
                     content = content.child(Chip::new(mark));
+                }
+                if row.assignable.is_some() {
+                    let shown = self.admin.roles.account == Some(account_id);
+                    content = content.child(row_action(
+                        ("account-roles", account_id.as_uuid().as_u128() as u64),
+                        if shown {
+                            text::admin::roles::HIDE_ROLES
+                        } else {
+                            text::admin::roles::ROLES
+                        },
+                        format!("account-roles-toggle-{account_id}"),
+                        None,
+                        cx.listener(move |this, _, _, cx| {
+                            this.show_account_roles((!shown).then_some(account_id), cx);
+                        }),
+                    ));
                 }
                 // A removed account takes no action: its state is the mark of the row.
                 if row.status != AccountStatus::Removed {
@@ -485,10 +594,36 @@ impl Shell {
             .refused(AskKind::RemoveAccount(account_id))
             .or(view.refused(AskKind::BanAccount(account_id)))
             .or(view.refused(AskKind::UnbanAccount(account_id)));
+        let mut under: Vec<AnyElement> = Vec::new();
+        if matches!(
+            self.admin.people.open,
+            Some(Open::RemoveAccount(id) | Open::BanAccount(id)) if id == account_id
+        ) {
+            under.push(self.render_reason(theme, cx));
+        }
+        // Role order protects the account: the row states it without a pointer
+        // (ADR 0309).
+        if row.outranked() {
+            under.push(
+                sentence(txt::OUTRANKED, theme)
+                    .mt(u(3.0))
+                    .mb(u(4.0))
+                    .pl(u(34.0))
+                    .ink(theme.colors.ink)
+                    .debug_selector(move || format!("account-outranked-{account_id}"))
+                    .into_any_element(),
+            );
+        }
+        if let Some(choices) = &row.assignable
+            && self.admin.roles.account == Some(account_id)
+        {
+            under.push(self.render_role_choices(view, account_id, &row.name, choices, theme, cx));
+        }
+        under.extend(refusal(refused, "account-refused"));
         framed(
             format!("account-row-{account_id}"),
             line(theme).child(content),
-            refusal(refused, "account-refused"),
+            under,
         )
     }
 
@@ -587,6 +722,48 @@ impl Shell {
             .into_any_element()
     }
 
+    /// The question before the removal of a member from the shown workspace, in the row
+    /// of the member. Absent when the row shows no question. A question whose removal is
+    /// not possible any more is put away: the order of the roles can change while it is
+    /// open. While the order is read again the question stays, and its answer waits.
+    fn render_member_question(
+        &mut self,
+        view: &AdminView,
+        page: &MembersPage,
+        row: &MemberLine,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::Div> {
+        let account_id = row.account_id;
+        if self.admin.people.open != Some(Open::RemoveMember(account_id)) {
+            return None;
+        }
+        let reading = row.remove == Some(Err(NoRemoval::OrderNotRead));
+        if !matches!(row.remove, Some(Ok(()))) && !reading {
+            self.admin.people.open = None;
+            self.admin.people.sent = None;
+            return None;
+        }
+        let (server_id, workspace_id) = (view.server_id, page.workspace_id);
+        Some(self.render_account_question(
+            Question {
+                sentence: txt::remove_member_question(&row.name, &page.workspace_name).into(),
+                confirm: txt::REMOVE,
+                confirm_selector: "member-remove-confirm",
+                cancel_selector: "member-remove-cancel",
+                sending: view.sending(AskKind::RemoveMember(account_id)) || reading,
+            },
+            theme,
+            cx,
+            move |this, reason, _, cx| {
+                this.admin.people.sent = Some(AskKind::RemoveMember(account_id));
+                this.state.update(cx, |state, cx| {
+                    state.remove_workspace_member(server_id, workspace_id, account_id, reason, cx);
+                });
+            },
+        ))
+    }
+
     pub(crate) fn render_members_page(
         &mut self,
         view: &AdminView,
@@ -637,27 +814,102 @@ impl Shell {
                     column = column.child(sentence(txt::NO_MEMBERS, &theme).py(u(10.0)));
                 }
                 for row in rows {
+                    let account_id = row.account_id;
+                    if let Some(question) = self.render_member_question(view, page, row, &theme, cx)
+                    {
+                        let mut under = vec![self.render_reason(&theme, cx)];
+                        under.extend(refusal(
+                            view.refused(AskKind::RemoveMember(account_id)),
+                            "member-remove-refused",
+                        ));
+                        column = column.child(framed(
+                            format!("member-row-{account_id}"),
+                            line(&theme).child(question),
+                            under,
+                        ));
+                        continue;
+                    }
                     let roles =
                         (!row.roles.is_empty()).then(|| SharedString::from(row.roles.join(", ")));
                     let mut content = line(&theme)
                         .child(
-                            crate::shell::people::avatar(&faces, row.account_id, 26.0).radius(2.0),
+                            crate::shell::people::avatar_of(
+                                &faces,
+                                row.account_id,
+                                &row.name,
+                                row.pictured,
+                                26.0,
+                            )
+                            .radius(2.0),
                         )
                         .child(line_text(row.name.clone(), roles, &theme));
                     if row.is_self {
                         content = content.child(Chip::new(txt::YOU));
                     }
-                    column = column.child(framed(
-                        format!("member-row-{}", row.account_id),
-                        content,
-                        None,
+                    let mut under: Vec<AnyElement> = Vec::new();
+                    // Role order protects the member: the row states it without a
+                    // pointer (ADR 0309).
+                    if row.remove == Some(Err(NoRemoval::Outranked)) {
+                        under.push(
+                            sentence(txt::MEMBER_OUTRANKED, &theme)
+                                .mt(u(3.0))
+                                .mb(u(4.0))
+                                .pl(u(34.0))
+                                .ink(theme.colors.ink)
+                                .debug_selector(move || format!("member-outranked-{account_id}"))
+                                .into_any_element(),
+                        );
+                    }
+                    under.extend(refusal(
+                        view.refused(AskKind::RemoveMember(account_id)),
+                        "member-remove-refused",
                     ));
+                    if let Some(choices) = &row.assignable {
+                        let shown = self.admin.roles.account == Some(account_id);
+                        content = content.child(row_action(
+                            ("member-roles", account_id.as_uuid().as_u128() as u64),
+                            if shown {
+                                text::admin::roles::HIDE_ROLES
+                            } else {
+                                text::admin::roles::ROLES
+                            },
+                            format!("member-roles-toggle-{account_id}"),
+                            None,
+                            cx.listener(move |this, _, _, cx| {
+                                this.show_account_roles((!shown).then_some(account_id), cx);
+                            }),
+                        ));
+                        if shown {
+                            under.push(self.render_role_choices(
+                                view, account_id, &row.name, choices, &theme, cx,
+                            ));
+                        }
+                    }
+                    if let Some(remove) = row.remove {
+                        content = content.child(row_action(
+                            ("member-remove", account_id.as_uuid().as_u128() as u64),
+                            txt::REMOVE_FROM_WORKSPACE,
+                            format!("member-remove-{account_id}"),
+                            remove.err().map(txt::no_removal),
+                            cx.listener(move |this, _, window, cx| {
+                                this.set_people_open(
+                                    Some(Open::RemoveMember(account_id)),
+                                    window,
+                                    cx,
+                                );
+                            }),
+                        ));
+                    }
+                    column =
+                        column.child(framed(format!("member-row-{account_id}"), content, under));
                 }
             }
         }
         match (&page.addable, &page.members) {
             (None, _) => {
-                column = column.child(sentence(txt::ADD_NEEDS, &theme).mt(u(12.0)));
+                column = column
+                    .child(sentence(txt::ADD_NEEDS, &theme).mt(u(12.0)))
+                    .child(sentence(txt::REMOVE_MEMBER_NEEDS, &theme).mt(u(4.0)));
             }
             // The accounts that can be added are known when the members are.
             (Some(_), MemberList::Loading | MemberList::Failed) => {}
@@ -694,8 +946,10 @@ impl Shell {
                             let what = AskKind::AddMember(account_id);
                             let content = line(&theme)
                                 .child(
-                                    crate::shell::people::avatar(&faces, account_id, 26.0)
-                                        .radius(2.0),
+                                    crate::shell::people::avatar_of(
+                                        &faces, account_id, &row.name, false, 26.0,
+                                    )
+                                    .radius(2.0),
                                 )
                                 .child(line_text(row.name.clone(), None, &theme))
                                 .child(row_action(

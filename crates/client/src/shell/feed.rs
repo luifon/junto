@@ -1810,13 +1810,39 @@ impl Shell {
                                     this.open_thread(server_id, channel_id, message_id, window, cx);
                                 }))
                         })
-                        .when_some(mark.last.as_ref(), |chip, last| {
-                            let seed = last
-                                .author_id
-                                .map_or(0, |author| author.as_uuid().as_u128());
-                            let picture = last.author_id.and_then(|author| faces.image(author));
-                            chip.child(Avatar::new(seed, 18.0).radius(2.0).image(picture))
+                        // The first authors of the replies, as the design draws them: three
+                        // small pictures that overlap. A server that states no author
+                        // gives the picture of the author of the last reply.
+                        .when(!mark.authors.is_empty(), |chip| {
+                            let mut authors = div()
+                                .debug_selector(move || format!("thread-authors:{message_id}"))
+                                .flex()
+                                .flex_none()
+                                .items_center();
+                            for (place, author) in mark.authors.iter().enumerate() {
+                                authors = authors.child(
+                                    div()
+                                        .flex_none()
+                                        .when(place > 0, |picture| picture.ml(u(-4.0)))
+                                        .child(
+                                            Avatar::new(author.as_uuid().as_u128(), 15.0)
+                                                .radius(2.0)
+                                                .image(faces.image(*author)),
+                                        ),
+                                );
+                            }
+                            chip.child(authors)
                         })
+                        .when_some(
+                            mark.last.as_ref().filter(|_| mark.authors.is_empty()),
+                            |chip, last| {
+                                let seed = last
+                                    .author_id
+                                    .map_or(0, |author| author.as_uuid().as_u128());
+                                let picture = last.author_id.and_then(|author| faces.image(author));
+                                chip.child(Avatar::new(seed, 18.0).radius(2.0).image(picture))
+                            },
+                        )
                         .child(
                             div()
                                 .flex_none()

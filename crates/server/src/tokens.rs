@@ -83,6 +83,11 @@ pub const REACH: &[(&str, &str, TokenAction)] = &[
     ),
     ("DELETE", "/api/v1/server-roles/{role_id}", ManageStructure),
     ("PATCH", "/api/v1/channels/{channel_id}", ManageStructure),
+    (
+        "PATCH",
+        "/api/v1/channels/{channel_id}/overrides/{role_id}",
+        ManageStructure,
+    ),
     ("DELETE", "/api/v1/channels/{channel_id}", ManageStructure),
     (
         "PATCH",
@@ -102,6 +107,12 @@ pub const REACH: &[(&str, &str, TokenAction)] = &[
     (
         "PATCH",
         "/api/v1/workspaces/{workspace_id}/roles/{role_id}",
+        ManageStructure,
+    ),
+    ("PATCH", "/api/v1/server-roles/positions", ManageStructure),
+    (
+        "PATCH",
+        "/api/v1/workspaces/{workspace_id}/roles/positions",
         ManageStructure,
     ),
     ("POST", "/api/v1/server-roles", ManageStructure),
@@ -141,7 +152,8 @@ pub const REACH: &[(&str, &str, TokenAction)] = &[
 ];
 
 /// The action that an access token needs on the route with this method and this path
-/// pattern. `None`: no access token reaches the route.
+/// pattern. The server-role list also accepts manage_members (ADR 0309).
+/// `None`: no access token reaches the route.
 pub fn reach(method: &Method, path: &str) -> Option<TokenAction> {
     REACH
         .iter()

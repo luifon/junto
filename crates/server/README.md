@@ -34,7 +34,7 @@ Without the four LiveKit settings the server runs, and a request to join a call 
 
 A logged-in device receives the changes of the server over one WebSocket connection (ADR 0107).
 
-1. `GET /api/v1/snapshot` returns the account, its workspaces, and the roles, categories and channels that it may see, with a cursor. It also carries the calls that the account may see, and what waits for the account in calls: invitations for it and by it, moves that name it, and its own requests to enter.
+1. `GET /api/v1/snapshot` returns the account, its workspaces, and the roles, categories and channels that it may see, with a cursor. It also carries the calls that the account may see, and what waits for the account in calls: invitations for it and by it, moves that name it, and its own requests to enter. Each workspace of the snapshot states `permissions`, the workspace permissions that the account holds there, and `channel_permissions`, one entry for each channel in which a channel override gives the account another list; a channel without an entry has the list of the workspace (ADR 0310). `GET /api/v1/channels/{channel_id}/permissions` states the list for one channel, an archived one included. A client reads what its account may do from these lists and loads a snapshot at `permissions_changed`.
 2. The device opens `GET /api/v1/events` as a WebSocket with its session token in the `Authorization` header. The server sends `hello`.
 3. The device sends `{"type": "subscribe", "level": "full", "cursor": <cursor of the snapshot>}`. The level `background` delivers control events, direct messages, mentions and call invites, with access checked at delivery.
 4. The server sends each event that the account may receive as `{"type": "event", "id": <position>, "at": <time>, "event": {...}}`, in the order of the positions. The device keeps the `id` of the last event that it applied; an event with an `id` at or below it is a repeat.
@@ -43,6 +43,12 @@ A logged-in device receives the changes of the server over one WebSocket connect
 Events are written in the transaction of the change that they describe and get their position at the commit (ADR 0010). Each connection reads them from the database and decides with the permission function, immediately before it sends them, whether the account may receive them; a decision is valid for one second (ADR 0011). A client message is one unfragmented frame of at most 4096 bytes. A removal, a ban, a logout and a device removal close the affected connections with the message `ended`. The events and their recipients are in ADR 0208, the limits of a connection in ADR 0116.
 
 ## Calls
+
+`call_started`, `own_call_changed.call` and snapshot `own_call` carry the hide setting
+retained at call creation. `GET /api/v1/call` also returns `call.inside`: until it becomes
+true, the media connection has not yet been observed by admission and inside-only actions
+return `not_in_call`. Reload after the own participant-joined event; a completed move
+announces its destination own call before that event.
 
 The server decides who is in a call; media goes from the clients to LiveKit and never through the server (ADR 0501 to ADR 0514).
 
@@ -58,7 +64,7 @@ While the server does not reach LiveKit, nobody is let into a call. After the re
 
 `DELETE /api/v1/channels/{channel_id}/call/participants/{account_id}/hand` lowers the raised hand of another person: the person who runs meeting mode does this, and a moderator with `mute_members` (ADR 0516).
 
-Two accounts have a direct-message call only while they share a workspace or one of them administers the server (ADR 0307). One account rings another at most 3 times in 10 minutes and not for 5 minutes after a decline, and an account that muted the conversation or is in its quiet time is not rung; the caller gets the same events and the same count of rings in both cases (ADR 0515).
+Two accounts have a direct-message call only while they share a workspace or one of them administers the server (ADR 0307). One account rings another at most 3 times in 10 minutes and not for 5 minutes after a decline, and an account that muted the conversation or is in its quiet time is not rung; the caller gets the same events and the same count of rings in both cases (ADR 0515). A direct-message call writes system lines into the conversation of the two accounts: `direct_call_started` at the ring, `direct_call_not_answered` or `direct_call_declined` at its end, and `direct_call_ended` with `duration_seconds` after a call that both accounts were inside. A call that was not answered counts as an unread message for the account that was called and gives it a notice of the kind `missed_call`; the lines are the same for an account that muted the conversation or is in its quiet time (ADR 0518).
 
 The server reaches the API of LiveKit (`JUNTO_LIVEKIT_API_URL`) without TLS and refuses an `https://` address at the start. Put that address on a private network (ADR 0508).
 
@@ -251,6 +257,15 @@ tools/with-test-postgres.sh tools/serial.sh \
 
 `tools/with-test-livekit.sh` starts LiveKit 1.13.9 in development mode as the container `junto-dev-livekit` on the local ports 17880 to 17882 and removes it afterwards. LiveKit sends its notifications to `127.0.0.1:17890` on the machine of the tests, where one test listens; on Linux, set `JUNTO_TEST_WEBHOOK_ADDRESS` to an address of the machine that the container reaches.
 
+The live tier accepts `JUNTO_TEST_PARTICIPANT` as an executable path, so a debug build can
+be used: `cargo build --manifest-path spikes/test-participant/Cargo.toml --target-dir target`,
+then set the variable to the absolute path of `target/debug/test-participant`.
+
+Unix-mode, symbolic-link and process-group tests are compiled only on Unix. On Windows
+the recording-file implementation refuses operations with Unsupported; Windows CI currently
+builds server tests but does not run the database tier (ADR 0905). The unsupported-storage implementation and its refusal tests compile on every test platform, including Unix; a Windows runner is still needed to check the complete Windows build. Unix process-group
+termination has no Windows equivalent in this implementation.
+
 ## Checks
 
 ```sh
@@ -306,18 +321,33 @@ Deleting its destination permits another fork; an archived destination keeps the
 Occupant hiding is inherited only by voice forks. Authors and named recipients follow
 threads; role/everyone mentions count as unread without following. Participants and mention
 recipients read or advance their position at `/api/v1/messages/{id}/thread/read`.
+`PUT /api/v1/messages/{id}/thread/follow` stores the choice of the caller to follow a thread or
+not, and `DELETE` removes the choice; a thread that is not followed has no unread replies and
+no thread notices, and a mention still notifies (ADR 0412). A root message carries
+`reply_authors`, the first three authors of its replies. `GET /api/v1/channels/{id}/threads`
+lists the threads of a channel that the caller follows, read ones included, the one with the
+newest reply first (ADR 0413).
 The snapshot contains at most 200 unread threads, plus `threads_more` and `threads_next`.
 Continue with `GET /api/v1/threads/unread?before=...&limit=...` (maximum 200); unread mentions
 of unfollowed threads appear with zero unread replies.
 Pin or unpin an authored channel message at
 `/api/v1/messages/{id}/pin`, and read pins at `/api/v1/channels/{id}/pins`.
-`GET /api/v1/search?q=...` searches current authorized messages and transcript lines.
+`GET /api/v1/search?q=...` searches current authorized messages and transcript lines. A hit
+states the `position` and the `thread_root` of its message, or the `start_ms` of its
+transcript line. `GET /api/v1/recordings/{id}/transcript/lines` takes `around=<line>` for the
+page with that line in its middle and `before=<line>` for the page before a line.
 
 Read notifications at `/api/v1/notifications` and mark one read with
-`PUT /api/v1/notifications/{id}/read`. Personal settings use
+`PUT /api/v1/notifications/{id}/read`. `PUT /api/v1/notifications/read` marks every notice
+that the account reads and that was created at or before `until` in one request, and the devices of the account get
+`notifications_read`, with `until` and `read_at`. The stored read boundary also marks notices from transactions that commit later with an earlier timestamp. Personal settings use
 `/api/v1/notification-settings/{scope_id}`: the nil UUID names account/server defaults,
 and a workspace or channel UUID names its override. Workspace administrator defaults
-use `/api/v1/workspaces/{id}/notification-default`. Clients apply synchronized do-not-disturb
+use `/api/v1/workspaces/{id}/notification-default`: `GET` returns the level or `null` when
+none is set, `PUT` sets one and `DELETE` removes it; the snapshot carries it, and a change is
+the event `notification_default_changed` with the level. A daily quiet time states
+`start_minute`, `end_minute` and `time_zone`, the name of an IANA time zone that the database
+knows, and holds while the clock of that zone is inside the window (ADR 0412). Clients apply synchronized do-not-disturb
 settings to OS notifications; the server also suppresses notification delivery and direct-call
 invitations during quiet periods, including replay. Equal daily quiet endpoints are invalid.
 Unread state continues to update. Reading a place marks its
@@ -367,3 +397,90 @@ A deletion of a channel or of a workspace changes rows of the structure in its r
 content (messages, attachments, recordings, exports) is removed afterwards by one task, in
 transactions of at most 500 rows (ADR 0017). The tests run it with
 `junto_server::purge::run_once`, the exports with `junto_server::exports::run_once`.
+
+
+## Role order
+
+Ban and removal accept an optional JSON `reason` of at most 1000 characters without
+controls. It is retained only in the audit entry. POST on
+`/api/v1/workspaces/{workspace_id}/members/{account_id}/removal` removes only that membership and
+its roles, requiring administrator and a strictly higher workspace rank. It ends the
+workspace seat and rechecks contact; other memberships and server access stay. In the same
+transaction, invites created by the removed account lose this workspace. Single-workspace
+invites are revoked; other invites keep their remaining workspaces and emit `invite_changed`
+and the audit action `invite_workspaces_changed` (ADRs 0106 and 0111). Server removal keeps
+invites valid; a ban cancels them. An invite made by another member still permits return.
+
+PATCH on `/api/v1/channels/{channel_id}/overrides/{role_id}` takes
+`{"permission":"mute_members","state":"deny"}`. State is allow, deny or inherit. It
+preserves every other permission and applies the grant ceiling to the changed bit.
+
+Roles carry a `position`; larger values are higher, and everyone stays at zero.
+The owner stands above all roles. Server actions compare server roles. In a workspace,
+administrators compare their highest administrator-granting server roles above workspace
+roles; other people use only that workspace's roles. Other server permissions give no
+workspace position. Bans, removals and restored roles on unban require a strictly higher
+position; administrator does not bypass this check. Role management compares the role,
+not the recipient. Voice moderation, moves and content moderation keep ADR 0309's exemptions.
+
+`PATCH /api/v1/server-roles/positions` and
+`PATCH /api/v1/workspaces/{workspace_id}/roles/positions` take
+`{"positions":[{"role_id":"<uuid>","position":1}]}`. At most 250 named roles move
+atomically, to distinct positions from 1 through 1,000,000. Both old and new positions
+must be below the actor, and collisions with unnamed roles are refused. Everyone cannot
+move. The routes require `manage_structure` for tokens and use the creator's current
+position. Taking an unknown role returns `not_found` after visibility checks.
+
+Role lists, role-created/updated events and workspace snapshot roles carry positions.
+Holders of `ban_members` can read server roles and receive their events; tokens may use
+`read_structure` or `manage_members` for that list. A reorder writes position audit entries
+and permission-change notices. Creation writes one audit entry and at most three events
+under the 250-role ceiling:
+`server_role_positions_shifted` or `workspace_role_positions_shifted` carries the changed
+roles in chunks of at most 128 `positions` (each `role_id` and absolute `position`), then
+the usual created
+event adds the new role at one. The workspace event also names `workspace_id`.
+The shift emits no permission-change notices because the relative order is unchanged.
+
+Structure format 2 exports optional relative-order keys. Setup sorts positioned roles
+into their existing slots after creations and deletions, preserving unnamed/unpositioned
+roles. New unpositioned roles remain at the bottom. Old exports tolerate later client
+creations, and repeated apply changes nothing. Format 1 files remain readable; old tools
+must be upgraded before reading format 2 exports.
+
+## Audit filters and profiles
+
+Both audit lists accept `action`, `actor_id`, `target_id`, inclusive `since` and exclusive
+`until` (RFC 3339). Repeat the same filters with `before` to continue; each page has at most
+200 entries. A target is an identifier named by the event or its workspace/channel/call
+scope. Filters retain the current channel and hidden-call checks and disclose no total.
+Action, actor, time and target lookups have indexes (ADR 0305). A time filter orders by
+occurrence time then identifier; its continuation uses the last returned entry under the
+same filters and audience. Both lists share a limit of 120 requests per minute per account.
+
+Invite lists include the creator's current retained display name in `created_by_name`;
+`invite_created` keeps the name at creation. Only the existing invite readers receive it.
+Member lists, `workspace_member_added`, call participants and their events include optional
+avatar metadata, without image bytes. Removing the last device returns `last_device` (409).
+
+## Server logo
+
+An administrator with a session uploads an image to `PUT /api/v1/server/logo` or removes it
+with `DELETE`. Avatar image bounds, format checks and the profile-change rate limit apply.
+The public `GET` returns the image with its media type, hash ETag and `nosniff`; `/api/server`
+advertises its path. A change records `server_logo_changed` for active accounts and the audit
+action of the same name. The image is public even before joining (ADR 0101). GET uses
+`public, no-cache`, supports `If-None-Match` with 304 responses, and has a limit of 120
+requests per minute per address. Cross-origin embedding of this public image is permitted.
+
+
+## Replay retention and admission compatibility
+
+A message and its following notification reserve equal positions regardless of a recipient's
+mute or quiet time. They form one retained unit, so the default 5,000-unit log keeps the
+original ordinary-message horizon with at most 10,000 rows after maintenance. Suppressed
+notices wake nobody, and other notices wake only their eligible recipient connections.
+
+An absent `OwnCallState.inside` means the earlier server did not state admission; only an
+explicit false means entering. Migration 0016 renews the event epoch once without changing
+historical payloads, so reconnecting clients load a fresh snapshot (ADR 0517).

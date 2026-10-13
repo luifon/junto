@@ -429,7 +429,7 @@ async fn a_change_of_the_notification_default_of_a_workspace_reaches_its_members
     let changes = |events: Vec<(u64, Event)>| {
         events
             .into_iter()
-            .filter(|(_, event)| *event == Event::NotificationSettingsChanged {})
+            .filter(|(_, event)| matches!(event, Event::NotificationDefaultChanged { .. }))
             .count()
     };
     assert_eq!(changes(server.traffic(&inside, &mut of_inside).await), 1);

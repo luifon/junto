@@ -72,7 +72,8 @@ Read positions and events:
 - The last-read position is per account and place, moves forward only and cannot pass the
   latest position visible to that account. The snapshot supplies place, latest visible
   position, last-read position, unread count and mention count. An author's own messages
-  and all system lines do not count unread. Sending a message, including a reply or direct
+  and all system lines do not count unread, except the line of a direct-message call that
+  the account did not answer (ADR 0518). Sending a message, including a reply or direct
   message, advances the author's read position to that message in the send transaction;
   earlier messages therefore become read. Failed sends advance nothing. Counts are exact through 99 and capped at 100,
   meaning 100 or more. Indexed reads start after the read position; latest public position
