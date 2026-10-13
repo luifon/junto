@@ -60,6 +60,7 @@ fn general_with_thread() -> (Timeline, Arc<Message>, Vec<Message>) {
         thread_root: Some(root_id),
         reply_count: 0,
         last_reply: None,
+        reply_authors: Vec::new(),
         pinned: false,
         files_removed_by_retention: false,
     };
@@ -96,6 +97,8 @@ fn general_with_thread() -> (Timeline, Arc<Message>, Vec<Message>) {
     let root = Arc::make_mut(&mut made.messages[root_index]);
     root.reply_count = replies.len() as u64;
     root.last_reply = replies.last().map(|reply| reply.id);
+    // The first authors of the replies, as the server states them (ADR 0413).
+    root.reply_authors = vec![person("Ana"), person("Bruno"), person("Luca")];
     let root = made.messages[root_index].clone();
     (made.timeline(), root, replies)
 }
@@ -189,6 +192,17 @@ fn with_directs(closed: bool) -> (Vec<ServerSnapshot>, ConversationId) {
     made.message("Ana", 20, "Do you have ten minutes after the daily?");
     made.message("Luca", 22, "Yes. I will call you at 10:30.");
     made.message("Ana", 23, "Good. Bring the retention spec.");
+    // The lines of two calls of the conversation (ADR 0518): one that took place, and
+    // one that the person did not answer.
+    made.system(30, "direct_call_started", Some("Luca"), Some("Ana"));
+    made.system(43, "direct_call_ended", Some("Luca"), Some("Ana"));
+    if let Some(ended) = made.messages.last_mut()
+        && let Some(system) = Arc::make_mut(ended).system.as_mut()
+    {
+        system.duration_seconds = Some(754);
+    }
+    made.system(95, "direct_call_started", Some("Ana"), Some("Luca"));
+    made.system(96, "direct_call_not_answered", Some("Ana"), Some("Luca"));
     let direct = direct_place(&with_ana);
     for message in &mut made.messages {
         Arc::make_mut(message).place = direct;
@@ -280,6 +294,8 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
             latest: 24,
             unread: 2,
             mentions: 1,
+            following: true,
+            follow_setting: None,
         }];
         model.named = vec![(root.id, Named::Read(root))];
     });

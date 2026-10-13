@@ -38,7 +38,7 @@ Collections:
 
 Permissions in a channel:
 
-- The client core depends on `junto-authz`, the crate with the permission function of the server. With the roles of the account and the loaded overrides of a channel it computes the permissions that the account holds in that channel, by the same function that the server uses for the grant rule. An administrator holds every permission. Without the loaded overrides the answer is unknown.
+- ADR 0790 replaces this part. The permissions of the account in a channel are the lists that the server states, and the client core computes none. It depends on `junto-authz` for role order only (ADR 0791).
 
 Command-line tool:
 
@@ -49,6 +49,5 @@ Command-line tool:
 - A page of the administration shows a change that another person made without a request of its own.
 - A collection that nobody has open costs no request and no memory.
 - A reader that forgets a release keeps a collection in the state and its events applied.
-- The permissions of the account in a channel are known only to a person who may read the overrides, which needs "manage channel". For every other person the client shows what the roles of the workspace allow, and the server decides.
 - The token list of a server with more than 2,000 tokens is not complete on screen.
-- The client applies the permission function of the server to predict a refusal. The server still decides every request (ADR 0304).
+- The server decides every request (ADR 0304).

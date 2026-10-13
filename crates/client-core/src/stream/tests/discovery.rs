@@ -40,6 +40,8 @@ fn unread(root: &Message, last_read: u64, latest: u64, unread: u64) -> ThreadSta
         latest,
         unread,
         mentions: 0,
+        following: true,
+        follow_setting: None,
     }
 }
 
@@ -187,6 +189,8 @@ async fn a_thread_opens_at_its_read_position_and_leaves_the_list_when_it_is_read
         latest: 300,
         unread: 100,
         mentions: 0,
+        following: true,
+        follow_setting: None,
     };
     {
         let mut routes = rig.http.routes.lock().unwrap();
@@ -609,6 +613,8 @@ async fn the_answer_to_a_read_position_of_a_thread_does_not_remove_what_came_aft
         latest,
         unread,
         mentions: 0,
+        following: true,
+        follow_setting: None,
     };
     let text_place = rig.scene.text_place();
     let reply_at = |position: u64| {
@@ -877,6 +883,8 @@ async fn a_late_answer_to_a_read_position_of_a_thread_does_not_move_the_position
         latest: 5,
         unread,
         mentions: 0,
+        following: true,
+        follow_setting: None,
     };
     let text_place = rig.scene.text_place();
     {

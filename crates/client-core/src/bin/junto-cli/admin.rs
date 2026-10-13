@@ -735,6 +735,12 @@ fn audit_details(event: &AuditEvent) -> Vec<String> {
         E::ServerRoleCreated { role_id, .. }
         | E::ServerRoleUpdated { role_id, .. }
         | E::ServerRoleDeleted { role_id, .. } => vec![pair("role", role_id)],
+        E::ServerRolePositionChanged { role_id, position } => {
+            vec![pair("role", role_id), pair("position", position)]
+        }
+        E::WorkspaceRolePositionChanged { role_id, position } => {
+            vec![pair("role", role_id), pair("position", position)]
+        }
         E::ServerRoleAssigned {
             role_id,
             account_id,
@@ -789,6 +795,7 @@ fn audit_details(event: &AuditEvent) -> Vec<String> {
         | E::GlossaryReplaced { .. }
         | E::AttachmentLimitsChanged { .. }
         | E::NotificationDefaultChanged { .. }
+        | E::NotificationDefaultRemoved
         | E::RecordingRetentionChanged { .. }
         | E::RetentionChanged { .. }
         | E::ChannelArchived

@@ -253,6 +253,8 @@ impl AuditGroup {
             | AuditEvent::WorkspaceRoleAssigned { .. }
             | AuditEvent::WorkspaceRoleUnassigned { .. }
             | AuditEvent::WorkspaceRoleDeleted { .. }
+            | AuditEvent::ServerRolePositionChanged { .. }
+            | AuditEvent::WorkspaceRolePositionChanged { .. }
             | AuditEvent::ChannelOverrideSet { .. } => Self::Roles,
             AuditEvent::WorkspaceCreated { .. }
             | AuditEvent::WorkspaceRenamed { .. }
@@ -281,6 +283,7 @@ impl AuditGroup {
             AuditEvent::AttachmentLimitsChanged { .. }
             | AuditEvent::PermanentMessageDeleted { .. }
             | AuditEvent::NotificationDefaultChanged { .. }
+            | AuditEvent::NotificationDefaultRemoved
             | AuditEvent::RecordingRetentionChanged { .. }
             | AuditEvent::RetentionChanged { .. }
             | AuditEvent::ArchivePeriodChanged { .. }
@@ -697,7 +700,7 @@ pub fn audit(
         });
     }
     if let Some(workspace) = workspace
-        && holds_workspace(model, workspace, WorkspacePermission::ViewAuditEntries)
+        && holds_workspace(workspace, WorkspacePermission::ViewAuditEntries)
     {
         scopes.push(ScopeChoice {
             scope: AuditScope::Workspace(workspace.workspace.id),
@@ -847,14 +850,15 @@ mod tests {
         let own = AccountId::generate();
         let (studio, lab) = (WorkspaceId::generate(), WorkspaceId::generate());
         let projects = CategoryId::generate();
-        let role = |name: &str, is_everyone| WorkspaceRole {
+        let role = |name: &str, position| WorkspaceRole {
+            position,
             id: WorkspaceRoleId::generate(),
             workspace_id: studio,
             name: name.to_owned(),
             permissions: Vec::new(),
-            is_everyone,
+            is_everyone: position == 0,
         };
-        let (everyone, leads) = (role("everyone", true), role("leads", false));
+        let (everyone, leads) = (role("everyone", 0), role("leads", 1));
         let general = channel(studio, "general");
         let workspace = |id, name: &str, is_default| Workspace {
             id,
@@ -896,6 +900,9 @@ mod tests {
                         }],
                         channels: vec![general],
                         calls: Vec::new(),
+                        permissions: Vec::new(),
+                        channel_permissions: Vec::new(),
+                        notification_default: None,
                     },
                     WorkspaceState {
                         workspace: workspace(lab, "Lab", false),
@@ -904,6 +911,9 @@ mod tests {
                         categories: Vec::new(),
                         channels: Vec::new(),
                         calls: Vec::new(),
+                        permissions: Vec::new(),
+                        channel_permissions: Vec::new(),
+                        notification_default: None,
                     },
                 ],
                 own_call: None,
@@ -936,7 +946,8 @@ mod tests {
         }
 
         fn model(&self, admin: AdminModel) -> ServerModel {
-            let mut model = ServerModel::from_snapshot(self.snapshot.clone());
+            let mut model =
+                ServerModel::from_snapshot(crate::state::fixtures::stated(self.snapshot.clone()));
             model.admin = Arc::new(admin);
             model
         }
@@ -1097,7 +1108,10 @@ mod tests {
             AuditEvent::ServerRoleDeleted { .. } => 57,
             AuditEvent::WorkspaceDeleted { .. } => 58,
             AuditEvent::ExportRequested { .. } => 59,
-            AuditEvent::Unknown => 60,
+            AuditEvent::ServerRolePositionChanged { .. } => 60,
+            AuditEvent::WorkspaceRolePositionChanged { .. } => 61,
+            AuditEvent::NotificationDefaultRemoved => 62,
+            AuditEvent::Unknown => 63,
         }
     }
 
@@ -1449,6 +1463,21 @@ mod tests {
                 },
                 vec![],
             ),
+            (
+                AuditEvent::ServerRolePositionChanged {
+                    role_id: moderators,
+                    position: 4,
+                },
+                vec!["“Moderators”", "position 4"],
+            ),
+            (
+                AuditEvent::WorkspaceRolePositionChanged {
+                    role_id: scene.leads,
+                    position: 2,
+                },
+                vec!["“leads”", "position 2"],
+            ),
+            (AuditEvent::NotificationDefaultRemoved, vec!["sets none"]),
             (AuditEvent::Unknown, vec![txt::UNKNOWN_ACTION]),
         ]
     }
@@ -2259,6 +2288,7 @@ mod tests {
         let moderators = ServerRoleId::generate();
         let model = scene.model(AdminModel {
             server_roles: Collection::Loaded(vec![ServerRole {
+                position: 1,
                 id: moderators,
                 name: "Moderators".to_owned(),
                 permissions: Vec::new(),
@@ -2310,7 +2340,7 @@ mod tests {
         }
         // The list holds each action of the protocol once.
         places.sort_unstable();
-        assert_eq!(places, (0..61).collect::<Vec<usize>>());
+        assert_eq!(places, (0..64).collect::<Vec<usize>>());
 
         let removal = AuditEvent::AccountRemoved { account_id: ana };
         assert_eq!(

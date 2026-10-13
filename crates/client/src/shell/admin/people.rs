@@ -19,8 +19,9 @@ use super::{
 use crate::assets::Icon;
 use crate::shell::Shell;
 use crate::state::admin::view::people::{
-    AccountLine, DEFAULT_EXPIRY_DAYS, DEFAULT_USES, EXPIRY_DAYS, Grant, InviteLine, InvitesPage,
-    MemberList, MembersPage, NewCode, PeoplePage, RequestsPage, USES, expiry, typed_uses,
+    AccountLine, Blocked, DEFAULT_EXPIRY_DAYS, DEFAULT_USES, EXPIRY_DAYS, Grant, InviteLine,
+    InvitesPage, MemberList, MembersPage, NewCode, PeoplePage, RequestsPage, USES, expiry,
+    typed_uses,
 };
 use crate::state::admin::view::{AdminView, Listed, Scope, ServerPage};
 use crate::state::admin::{AdminPage, AskKind, AskState};
@@ -120,14 +121,19 @@ impl Ui {
     }
 }
 
-/// A row with the statement of a refusal under it. `selector` names the row for a test.
-fn framed(selector: String, row: gpui::Div, refused: Option<AnyElement>) -> AnyElement {
+/// A row with what stands under it: the statement of a refusal, a reason, the roles of
+/// the account. `selector` names the row for a test.
+fn framed(
+    selector: String,
+    row: gpui::Div,
+    under: impl IntoIterator<Item = AnyElement>,
+) -> AnyElement {
     div()
         .flex()
         .flex_col()
         .flex_none()
         .child(named(selector, row).flex_1())
-        .children(refused)
+        .children(under)
         .into_any_element()
 }
 
@@ -374,15 +380,35 @@ impl Shell {
     ) -> AnyElement {
         let server_id = view.server_id;
         let account_id = row.id;
+        // A question whose action is not possible any more is put away for good: it does
+        // not return when the action becomes possible again.
+        // While the order of the roles is read again the question stays, and its
+        // answer waits.
+        let gone = |action: Result<(), Blocked>| {
+            action.is_err_and(|reason| reason != Blocked::OrderNotRead)
+        };
+        let reading = |action: Result<(), Blocked>| action == Err(Blocked::OrderNotRead);
+        let stale = match self.admin.people.open {
+            Some(Open::RemoveAccount(id)) => id == account_id && gone(row.remove),
+            Some(Open::BanAccount(id)) => id == account_id && gone(row.ban),
+            _ => false,
+        };
+        if stale {
+            self.admin.people.open = None;
+            self.admin.people.sent = None;
+        }
         let content: AnyElement = match self.admin.people.open {
-            Some(Open::RemoveAccount(id)) if id == account_id => self
+            // A question stays only while its action is possible: the order of the roles
+            // or the status of the account can change while it is open.
+            Some(Open::RemoveAccount(id)) if id == account_id && !gone(row.remove) => self
                 .render_account_question(
                     Question {
                         sentence: txt::remove_question(&row.name).into(),
                         confirm: txt::REMOVE,
                         confirm_selector: "account-confirm",
                         cancel_selector: "account-cancel",
-                        sending: view.sending(AskKind::RemoveAccount(account_id)),
+                        sending: view.sending(AskKind::RemoveAccount(account_id))
+                            || reading(row.remove),
                     },
                     theme,
                     cx,
@@ -394,14 +420,14 @@ impl Shell {
                     },
                 )
                 .into_any_element(),
-            Some(Open::BanAccount(id)) if id == account_id => self
+            Some(Open::BanAccount(id)) if id == account_id && !gone(row.ban) => self
                 .render_account_question(
                     Question {
                         sentence: txt::ban_question(&row.name).into(),
                         confirm: txt::BAN,
                         confirm_selector: "account-confirm",
                         cancel_selector: "account-cancel",
-                        sending: view.sending(AskKind::BanAccount(account_id)),
+                        sending: view.sending(AskKind::BanAccount(account_id)) || reading(row.ban),
                     },
                     theme,
                     cx,
@@ -431,6 +457,22 @@ impl Shell {
                     ));
                 for mark in account_marks(row) {
                     content = content.child(Chip::new(mark));
+                }
+                if row.assignable.is_some() {
+                    let shown = self.admin.roles.account == Some(account_id);
+                    content = content.child(row_action(
+                        ("account-roles", account_id.as_uuid().as_u128() as u64),
+                        if shown {
+                            text::admin::roles::HIDE_ROLES
+                        } else {
+                            text::admin::roles::ROLES
+                        },
+                        format!("account-roles-toggle-{account_id}"),
+                        None,
+                        cx.listener(move |this, _, _, cx| {
+                            this.show_account_roles((!shown).then_some(account_id), cx);
+                        }),
+                    ));
                 }
                 // A removed account takes no action: its state is the mark of the row.
                 if row.status != AccountStatus::Removed {
@@ -485,10 +527,30 @@ impl Shell {
             .refused(AskKind::RemoveAccount(account_id))
             .or(view.refused(AskKind::BanAccount(account_id)))
             .or(view.refused(AskKind::UnbanAccount(account_id)));
+        let mut under: Vec<AnyElement> = Vec::new();
+        // Role order protects the account: the row states it without a pointer
+        // (ADR 0309).
+        if row.outranked() {
+            under.push(
+                sentence(txt::OUTRANKED, theme)
+                    .mt(u(3.0))
+                    .mb(u(4.0))
+                    .pl(u(34.0))
+                    .ink(theme.colors.ink)
+                    .debug_selector(move || format!("account-outranked-{account_id}"))
+                    .into_any_element(),
+            );
+        }
+        if let Some(choices) = &row.assignable
+            && self.admin.roles.account == Some(account_id)
+        {
+            under.push(self.render_role_choices(view, account_id, &row.name, choices, theme, cx));
+        }
+        under.extend(refusal(refused, "account-refused"));
         framed(
             format!("account-row-{account_id}"),
             line(theme).child(content),
-            refusal(refused, "account-refused"),
+            under,
         )
     }
 
@@ -647,11 +709,31 @@ impl Shell {
                     if row.is_self {
                         content = content.child(Chip::new(txt::YOU));
                     }
-                    column = column.child(framed(
-                        format!("member-row-{}", row.account_id),
-                        content,
-                        None,
-                    ));
+                    let account_id = row.account_id;
+                    let mut under: Vec<AnyElement> = Vec::new();
+                    if let Some(choices) = &row.assignable {
+                        let shown = self.admin.roles.account == Some(account_id);
+                        content = content.child(row_action(
+                            ("member-roles", account_id.as_uuid().as_u128() as u64),
+                            if shown {
+                                text::admin::roles::HIDE_ROLES
+                            } else {
+                                text::admin::roles::ROLES
+                            },
+                            format!("member-roles-toggle-{account_id}"),
+                            None,
+                            cx.listener(move |this, _, _, cx| {
+                                this.show_account_roles((!shown).then_some(account_id), cx);
+                            }),
+                        ));
+                        if shown {
+                            under.push(self.render_role_choices(
+                                view, account_id, &row.name, choices, &theme, cx,
+                            ));
+                        }
+                    }
+                    column =
+                        column.child(framed(format!("member-row-{account_id}"), content, under));
                 }
             }
         }

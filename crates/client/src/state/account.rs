@@ -942,7 +942,9 @@ pub(crate) mod tests {
             in_progress: None,
             error: None,
             stream: StreamStatus::Live,
-            model: Some(Arc::new(ServerModel::from_snapshot(snapshot))),
+            model: Some(Arc::new(ServerModel::from_snapshot(
+                crate::state::fixtures::stated(snapshot),
+            ))),
         }
     }
 

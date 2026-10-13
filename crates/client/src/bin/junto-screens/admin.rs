@@ -61,6 +61,7 @@ const DECISIONS: u32 = 37;
 const ROADMAP: u32 = 38;
 const MODERATORS: u32 = 50;
 const INVITERS: u32 = 51;
+const ADMINISTRATORS: u32 = 54;
 const PROJECTS: u32 = 60;
 const ROOMS: u32 = 61;
 const INVITE: u32 = 600;
@@ -75,12 +76,12 @@ fn ago(days: i64) -> OffsetDateTime {
     at() - Duration::days(days)
 }
 
-fn collections(model: &mut ServerModel) -> &mut AdminModel {
+pub(crate) fn collections(model: &mut ServerModel) -> &mut AdminModel {
     Arc::make_mut(&mut model.admin)
 }
 
 /// The two servers of the screens, with the state of "Acme Studio" changed.
-fn servers(change: impl FnOnce(&mut ServerModel)) -> Vec<ServerSnapshot> {
+pub(crate) fn servers(change: impl FnOnce(&mut ServerModel)) -> Vec<ServerSnapshot> {
     vec![acme_with(change), harbor()]
 }
 
@@ -89,8 +90,10 @@ fn owner(model: &mut ServerModel) {
     model.account.is_owner = true;
 }
 
-/// Luca is an administrator, and another account owns the server.
+/// Luca is an administrator by the server role "Administrators", and another account
+/// owns the server.
 fn administrator(model: &mut ServerModel) {
+    model.account.server_role_ids = vec![id(ADMINISTRATORS)];
     model.account.server_permissions = vec![ServerPermission::Administrator];
 }
 
@@ -152,7 +155,7 @@ fn structure(model: &mut ServerModel) {
 
 /// Every account of "Acme Studio": Elisa is banned, Diego is removed, and `owner` owns
 /// the server.
-fn accounts(owner: &str) -> Vec<AccountSummary> {
+pub(crate) fn accounts(owner: &str) -> Vec<AccountSummary> {
     PEOPLE
         .iter()
         .enumerate()
@@ -178,6 +181,13 @@ fn accounts(owner: &str) -> Vec<AccountSummary> {
 fn server_roles() -> Vec<ServerRole> {
     vec![
         ServerRole {
+            position: 3,
+            id: id(ADMINISTRATORS),
+            name: "Administrators".to_owned(),
+            permissions: vec![ServerPermission::Administrator],
+        },
+        ServerRole {
+            position: 2,
             id: id(MODERATORS),
             name: "Moderators".to_owned(),
             permissions: vec![
@@ -186,6 +196,7 @@ fn server_roles() -> Vec<ServerRole> {
             ],
         },
         ServerRole {
+            position: 1,
             id: id(INVITERS),
             name: "Inviters".to_owned(),
             permissions: vec![ServerPermission::CreateInvites],
@@ -734,7 +745,7 @@ fn workspace_log() -> Vec<AuditEntry> {
 
 /// A request that the server refused with this code, with the sentence that the page
 /// states for it.
-fn refused(what: AskKind, code: ErrorCode) -> Option<Ask> {
+pub(crate) fn refused(what: AskKind, code: ErrorCode) -> Option<Ask> {
     let error = ApiError::Rejected(Rejection {
         code,
         status: code.http_status(),
@@ -755,7 +766,7 @@ fn utc(shell: &mut Shell, cx: &mut gpui::Context<Shell>) {
 }
 
 /// Opens the administration of "Acme Studio" at a page.
-fn open_page(
+pub(crate) fn open_page(
     shell: &mut Shell,
     page: AdminPage,
     window: &mut gpui::Window,
@@ -789,7 +800,12 @@ fn open_channel(
 
 /// Shows this state of a request and this result of a request. A call that opens a
 /// form or a question puts both away, so this call comes after it.
-fn tell(shell: &mut Shell, ask: Option<Ask>, made: Option<Made>, cx: &mut gpui::Context<Shell>) {
+pub(crate) fn tell(
+    shell: &mut Shell,
+    ask: Option<Ask>,
+    made: Option<Made>,
+    cx: &mut gpui::Context<Shell>,
+) {
     shell
         .state()
         .clone()

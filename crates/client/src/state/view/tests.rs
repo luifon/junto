@@ -100,6 +100,9 @@ pub(super) fn scene() -> Scene {
         categories: Vec::new(),
         channels,
         calls: Vec::new(),
+        permissions: Vec::new(),
+        channel_permissions: Vec::new(),
+        notification_default: None,
     };
     let snapshot = Snapshot {
         cursor: Cursor {
@@ -185,7 +188,7 @@ impl Scene {
     }
 
     pub(super) fn model(&self) -> ServerModel {
-        ServerModel::from_snapshot(self.snapshot.clone())
+        ServerModel::from_snapshot(crate::state::fixtures::stated(self.snapshot.clone()))
     }
 
     fn server(&self) -> ServerSnapshot {
@@ -647,18 +650,16 @@ fn a_lock_and_a_recording_show_only_for_a_channel_in_use() {
 fn the_members_are_in_the_order_of_their_names_with_their_roles() {
     let mut scene = scene();
     let workspace_id = scene.studio;
-    let role = |name: &str, is_everyone| WorkspaceRole {
+    let role = |name: &str, position| WorkspaceRole {
+        position,
         id: WorkspaceRoleId::generate(),
         workspace_id,
         name: name.to_owned(),
         permissions: Vec::new(),
-        is_everyone,
+        is_everyone: position == 0,
     };
-    let (everyone, leads, engineers) = (
-        role("everyone", true),
-        role("Leads", false),
-        role("Engineers", false),
-    );
+    let (everyone, leads, engineers) =
+        (role("everyone", 0), role("Leads", 2), role("Engineers", 1));
     scene.studio_mut().roles = vec![everyone.clone(), leads.clone(), engineers.clone()];
     let member = |account_id, name: &str, role_ids| WorkspaceMember {
         account_id,
@@ -1140,6 +1141,8 @@ mod calls {
             latest: 4,
             unread: 2,
             mentions: 0,
+            following: true,
+            follow_setting: None,
         }];
         model.named = vec![(root.id, Named::Read(Arc::new(root.clone())))];
         let server = server("Acme Studio", Some(model), logged_in(own, Vec::new()));
@@ -1736,6 +1739,7 @@ mod calls {
         let (own, daily) = (scene.own, scene.daily);
         let call_id = scene.call(daily, vec![participant(own)]).id;
         let everyone = WorkspaceRole {
+            position: 0,
             id: WorkspaceRoleId::generate(),
             workspace_id: scene.studio,
             name: "everyone".to_owned(),
@@ -1923,6 +1927,7 @@ mod calls {
     fn everyone_may(scene: &mut Scene, permissions: &[WorkspacePermission]) {
         let workspace_id = scene.studio;
         scene.studio_mut().roles = vec![WorkspaceRole {
+            position: 0,
             id: WorkspaceRoleId::generate(),
             workspace_id,
             name: "everyone".to_owned(),
@@ -2158,6 +2163,7 @@ mod calls {
                 lock: true,
                 run_meeting: true,
                 manage: true,
+                record: true,
                 mute: true,
                 deafen: true,
                 disconnect: true,

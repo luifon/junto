@@ -426,21 +426,25 @@ impl Shell {
                         ("channel-up", number),
                         text::admin::UP,
                         format!("channel-up-{channel_id}"),
-                        row.first.then_some(text::admin::FIRST_ALREADY),
+                        row.first
+                            .then_some(text::admin::FIRST_ALREADY)
+                            .or((!row.moves_up).then_some(text::admin::MOVE_NEEDS)),
                         Self::channel_step_listener(server_id, workspace_id, channel_id, true, cx),
                     ))
                     .child(row_action(
                         ("channel-down", number),
                         text::admin::DOWN,
                         format!("channel-down-{channel_id}"),
-                        row.last.then_some(text::admin::LAST_ALREADY),
+                        row.last
+                            .then_some(text::admin::LAST_ALREADY)
+                            .or((!row.moves_down).then_some(text::admin::MOVE_NEEDS)),
                         Self::channel_step_listener(server_id, workspace_id, channel_id, false, cx),
                     ))
                     .child(row_action(
                         ("channel-move", number),
                         text::admin::MOVE_TO,
                         format!("channel-move-{channel_id}"),
-                        None,
+                        (!row.may_manage).then_some(text::admin::CHANNEL_MANAGE_NEEDS),
                         cx.listener(move |this, _, window, cx| {
                             this.set_admin_mode(
                                 Some(Mode::MoveChannel(channel_id)),

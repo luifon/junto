@@ -13,9 +13,9 @@ use junto_protocol::message::MessagePlace;
 use junto_protocol::recording::Recording;
 use junto_protocol::structure::Channel;
 
+use super::rank::sort_workspace_roles;
 use super::{
-    AdminPart, CallModel, ChannelModel, Loadable, PlaceId, Reach, ServerModel, ThreadMoved,
-    WorkspaceModel,
+    AdminPart, CallModel, ChannelModel, PlaceId, Reach, ServerModel, ThreadMoved, WorkspaceModel,
 };
 
 /// A part of the state that is read from a route of its own.
@@ -164,6 +164,7 @@ impl Part {
                 } | Event::ThreadRead { .. }
                     | Event::NotificationChanged { .. }
                     | Event::MessageMentioned { .. }
+                    | Event::ThreadFollowChanged { .. }
             ),
             Self::ThreadHead(_) => matches!(
                 event,
@@ -179,14 +180,18 @@ impl Part {
                 Event::NotificationChanged { .. }
                     | Event::MessageRead { .. }
                     | Event::ThreadRead { .. }
+                    | Event::NotificationsRead { .. }
             ),
             Self::Named(message_id) => {
                 matches!(event, Event::MessageChanged { message_id: of, .. } if of == message_id)
             }
             Self::Admin(part) => part.concerns(event),
+            // The answer to a page that was asked for before every notice was read states
+            // its notices as unread: the event is applied to them after the answer.
+            Self::MoreNotices(_) => matches!(event, Event::NotificationsRead { .. }),
             // A page after the loaded ones is added only while the list before it is the
             // one that the request continued; no event changes its answer.
-            Self::MoreThreads | Self::MoreNotices(_) => false,
+            Self::MoreThreads => false,
         }
     }
 }
@@ -285,14 +290,8 @@ impl ServerModel {
                     }
                     Some(_) => {}
                     None if created => {
-                        self.workspaces.push(Arc::new(WorkspaceModel {
-                            workspace: workspace.clone(),
-                            own_role_ids: Vec::new(),
-                            roles: Vec::new(),
-                            categories: Vec::new(),
-                            channels: Vec::new(),
-                            members: Loadable::NotLoaded,
-                        }));
+                        self.workspaces
+                            .push(Arc::new(WorkspaceModel::unlisted(workspace.clone())));
                         self.workspaces.sort_by_key(|held| held.workspace.id);
                     }
                     None => {}
@@ -336,10 +335,75 @@ impl ServerModel {
             Event::WorkspaceRoleCreated { role } | Event::WorkspaceRoleUpdated { role } => {
                 if let Some(workspace) = self.workspace_mut(role.workspace_id) {
                     upsert(&mut workspace.roles, role, |held| held.id == role.id);
-                    workspace
-                        .roles
-                        .sort_by_key(|held| (!held.is_everyone, held.id));
+                    sort_workspace_roles(&mut workspace.roles);
                 }
+            }
+            Event::WorkspaceRolePositionsShifted {
+                workspace_id,
+                positions,
+            } => {
+                // The event states absolute positions (ADR 0309): a second delivery, or
+                // a delivery after a read that held the new positions already, changes
+                // nothing.
+                let moves = self.workspace(*workspace_id).is_some_and(|workspace| {
+                    workspace.roles.iter().any(|held| {
+                        positions.iter().any(|moved| {
+                            moved.role_id == held.id && moved.position != held.position
+                        })
+                    })
+                });
+                if moves && let Some(workspace) = self.workspace_mut(*workspace_id) {
+                    for held in &mut workspace.roles {
+                        if let Some(moved) = positions.iter().find(|moved| moved.role_id == held.id)
+                        {
+                            held.position = moved.position;
+                        }
+                    }
+                    sort_workspace_roles(&mut workspace.roles);
+                }
+            }
+            Event::NotificationsRead { until, read_at } => {
+                for held in &mut self.notices {
+                    if held.read_at.is_none() && held.created_at <= *until {
+                        held.read_at = Some(*read_at);
+                    }
+                }
+                // A notice of that time whose transaction ended after the request stays
+                // unread on the server (ADR 0412): the list of the server decides.
+                return Follow::load(Part::Notices);
+            }
+            Event::ThreadFollowChanged {
+                root_id,
+                following,
+                follow_setting,
+            } => {
+                if let Some(held) = self
+                    .threads
+                    .iter_mut()
+                    .find(|held| held.root_id == *root_id)
+                {
+                    held.following = *following;
+                    held.follow_setting = *follow_setting;
+                }
+                // The replies of a thread that is not followed are not unread, and a
+                // thread that is followed from now on enters the lists with its next
+                // reply: the server states both (ADR 0412).
+                return Follow::load(Part::UnreadThreads);
+            }
+            Event::NotificationDefaultChanged {
+                workspace_id,
+                level,
+            } => {
+                if self.workspace(*workspace_id).is_none() {
+                    return Follow::default();
+                }
+                if let Some(workspace) = self.workspace_mut(*workspace_id) {
+                    workspace.notification_default = *level;
+                }
+                // The level decides the unread signs of every channel of the workspace
+                // that sets none of its own, and only the snapshot states them all
+                // (ADR 0409).
+                return Follow::reload();
             }
             Event::CategoryCreated { category } | Event::CategoryUpdated { category } => {
                 if let Some(workspace) = self.workspace_mut(category.workspace_id) {
@@ -375,6 +439,7 @@ impl ServerModel {
                     workspace
                         .channels
                         .retain(|channel| channel.channel.id != *channel_id);
+                    workspace.forget_channel_permissions(*channel_id);
                 }
                 self.forget_place(PlaceId::Channel(*channel_id));
                 self.forget_calls_of(*channel_id);
@@ -391,6 +456,8 @@ impl ServerModel {
                     workspace
                         .channels
                         .retain(|channel| channel.channel.id != channel_id);
+                    // The snapshot states no list for an archived channel (ADR 0310).
+                    workspace.forget_channel_permissions(channel_id);
                 }
                 // The call of an archived voice channel ends (ADR 0410).
                 self.forget_calls_of(channel_id);
@@ -771,6 +838,7 @@ impl ServerModel {
             | Event::ServerRoleCreated { .. }
             | Event::ServerRoleUpdated { .. }
             | Event::ServerRoleDeleted { .. }
+            | Event::ServerRolePositionsShifted { .. }
             | Event::AccessTokenCreated { .. }
             | Event::AccessTokenRevoked { .. }
             | Event::AccessTokensOfCreatorRevoked { .. }

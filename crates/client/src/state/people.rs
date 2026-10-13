@@ -847,6 +847,12 @@ fn message_people(row: &MessageRow, people: &mut Vec<AccountId>) {
             .and_then(|thread| thread.last.as_ref())
             .and_then(|last| last.author_id),
     );
+    // The thread line draws the pictures of the first authors of the replies.
+    people.extend(
+        row.thread
+            .iter()
+            .flat_map(|thread| thread.authors.iter().copied()),
+    );
 }
 
 /// The people that a derived view names, by server: the account of the session with the

@@ -19,7 +19,7 @@ The state:
 - An event about an object whose parent the state does not hold is not applied. The parent became visible by a permission change, and the reload after that change brings both.
 - The state holds no devices, accounts, server roles, invites, join requests and channel overrides. Their events change nothing and are told to readers as notices.
 - The fields of the account change by the event of its profile and by a reload.
-- The state gives the permissions as far as the snapshot does: the server permissions of the account, and per workspace the permissions of the "everyone" role and of the roles of the account. Channel overrides are not in the snapshot, so the client has no answer for one channel. The server decides every request.
+- The state gives the permissions that the snapshot states: the server permissions of the account, and per workspace the list of the workspace and the lists of single channels (ADR 0310, ADR 0790). The server decides every request.
 
 Calls in the state:
 

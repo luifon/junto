@@ -686,6 +686,17 @@ pub fn audit_sentence(event: &AuditEvent, names: &Names<'_>) -> String {
             "the server role “{name}” was changed. It has {} now.",
             server_permissions(permissions)
         ),
+        AuditEvent::ServerRolePositionChanged { role_id, position } => format!(
+            "{} was moved to position {position} in the order of the server roles.",
+            the_server_role(names.server_role(*role_id))
+        ),
+        AuditEvent::WorkspaceRolePositionChanged { role_id, position } => format!(
+            "{} was moved to position {position} in the order of the roles.",
+            the_role(names.workspace_role(*role_id))
+        ),
+        AuditEvent::NotificationDefaultRemoved => {
+            "the default notification level was removed. The workspace sets none.".to_owned()
+        }
         AuditEvent::ServerRoleAssigned {
             role_id,
             account_id,

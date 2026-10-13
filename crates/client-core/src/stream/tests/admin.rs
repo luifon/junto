@@ -43,6 +43,8 @@ struct AdminRoutes {
     token_queries: Vec<(Option<AccessTokenId>, usize)>,
     direct_retention: Option<Retention>,
     settings: Option<WorkspaceSettings>,
+    /// The workspace permissions that the route of one channel states for the account.
+    permissions: Vec<junto_protocol::WorkspacePermission>,
     /// The next requests whose path ends with the text get no answer.
     lost: Vec<&'static str>,
 }
@@ -104,6 +106,17 @@ impl AdminRoutes {
             json(&self.server_roles)
         } else if ends("/overrides") {
             json(&self.overrides)
+        } else if ends("/permissions") {
+            // `/api/v1/channels/{channel_id}/permissions`: the answer names its channel.
+            let channel_id = path
+                .rsplit('/')
+                .nth(1)
+                .and_then(|id| id.parse().ok())
+                .unwrap();
+            json(&junto_protocol::structure::ChannelPermissions {
+                channel_id,
+                permissions: self.permissions.clone(),
+            })
         } else if ends("/archived-channels") {
             json(&self.archived)
         } else if ends("/access-tokens") {
@@ -1280,4 +1293,84 @@ async fn a_new_session_during_a_refresh_of_loaded_settings_sends_the_read_again(
         let last = seen.iter().rfind(|(path, _)| path.ends_with(end)).unwrap();
         assert_eq!(last.1, "jst_two", "{end}");
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_permissions_in_an_archived_channel_are_read_again_after_a_reload_and_stay_open() {
+    use junto_protocol::WorkspacePermission::{ManageChannel, ViewChannel};
+    let (rig, mut peer, admin) = served_rig().await;
+    let (workspace_id, general) = (rig.scene.workspace_id, rig.scene.general);
+    let list = AdminPart::Archived(workspace_id);
+    soon("the archived channels", rig.live.open_admin(list))
+        .await
+        .unwrap();
+    let gone = archived_channel(rig.model().channel(general).unwrap().channel.clone());
+    admin.lock().unwrap().archived = vec![gone.clone()];
+    peer.event(
+        41,
+        Event::ChannelArchived {
+            channel: gone.clone(),
+        },
+    )
+    .await;
+    let model = rig
+        .model_when("the archived channel", |model| {
+            model.admin.archived_channel(general).is_some()
+        })
+        .await;
+    // The snapshot stated the list of the workspace for the channel. An archived channel
+    // has no list until its route answered (ADR 0310).
+    assert_eq!(model.permissions_in(general), None);
+
+    let part = AdminPart::ChannelPermissions(general);
+    admin.lock().unwrap().permissions = vec![ViewChannel, ManageChannel];
+    soon("the permissions of the channel", rig.live.open_admin(part))
+        .await
+        .unwrap();
+    let model = rig.model();
+    assert!(model.holds_in(general, ManageChannel));
+    assert_eq!(rig.http.count("/permissions"), 1);
+
+    // The permissions of the account changed: the state is replaced. The snapshot names
+    // no archived channel, and the collection of the channel is read again without its
+    // reader asking, while the archived list is still on its way.
+    admin.lock().unwrap().permissions = vec![ViewChannel];
+    let gate = rig.http.hold("/archived-channels");
+    rig.set_snapshot(90, |snapshot| {
+        snapshot.workspaces[0]
+            .channels
+            .retain(|held| held.id != general);
+    });
+    peer.send(&ServerMessage::Resync {
+        reason: ResyncReason::TooFarBehind,
+    })
+    .await;
+    peer.serve().await;
+    let model = rig
+        .model_when("the permissions after the reload", |model| {
+            model.cursor.position == 90
+                && model.admin.channel_permissions(general).loaded().is_some()
+                && !model.holds_in(general, ManageChannel)
+        })
+        .await;
+    assert!(model.holds_in(general, ViewChannel));
+    assert_eq!(model.admin.state(list), CollectionState::Loading);
+    assert_eq!(rig.http.count("/permissions"), 2);
+    gate.add_permits(64);
+    let model = rig
+        .model_when("the archived channels again", |model| {
+            model.admin.state(list) == CollectionState::Loaded
+        })
+        .await;
+    assert_eq!(model.admin.state(part), CollectionState::Loaded);
+    assert!(model.holds_in(general, ViewChannel));
+
+    // The reader releases the collection: nothing of it stays.
+    rig.live.release_admin(part);
+    let model = rig
+        .model_when("the released permissions", |model| {
+            model.admin.state(part) == CollectionState::NotLoaded
+        })
+        .await;
+    assert_eq!(model.permissions_in(general), None);
 }

@@ -68,6 +68,11 @@ fn level(text: &str) -> Result<NotificationLevel, Failure> {
     }
 }
 
+/// The level of a workspace for its members, which can be absent (ADR 0412).
+fn default_word(level: Option<NotificationLevel>) -> &'static str {
+    level.map_or("not set", level_word)
+}
+
 fn level_word(level: NotificationLevel) -> &'static str {
     match level {
         NotificationLevel::All => "all",
@@ -101,8 +106,8 @@ fn minute_of_day(text: &str) -> Option<u16> {
     (hours < 24 && minutes < 60).then_some(hours * 60 + minutes)
 }
 
-/// A daily quiet time `HH:MM-HH:MM` at a distance from UTC in minutes.
-fn quiet(text: &str, utc_offset_minutes: i16) -> Result<DailyQuiet, Failure> {
+/// A daily quiet time `HH:MM-HH:MM` on the clock of a named time zone (ADR 0412).
+fn quiet(text: &str, time_zone: &str) -> Result<DailyQuiet, Failure> {
     let wrong = || usage("--quiet takes HH:MM-HH:MM with two different times");
     let (start, end) = text.split_once('-').ok_or_else(wrong)?;
     let (start_minute, end_minute) = minute_of_day(start)
@@ -114,7 +119,7 @@ fn quiet(text: &str, utc_offset_minutes: i16) -> Result<DailyQuiet, Failure> {
     Ok(DailyQuiet {
         start_minute,
         end_minute,
-        utc_offset_minutes,
+        time_zone: time_zone.to_owned(),
     })
 }
 
@@ -165,15 +170,9 @@ fn changed_settings(
         settings.daily_quiet = None;
     }
     if let Some(text) = arguments.value("quiet") {
-        let offset = arguments
-            .value("utc-offset")
-            .map(|text| {
-                text.parse::<i16>()
-                    .map_err(|_| usage("--utc-offset takes minutes, such as -180"))
-            })
-            .transpose()?
-            .unwrap_or(0);
-        settings.daily_quiet = Some(quiet(text, offset)?);
+        // The server knows the names of the time zones and refuses another text.
+        let zone = arguments.value("time-zone").unwrap_or("UTC");
+        settings.daily_quiet = Some(quiet(text, zone)?);
     }
     // A mute that has ended is stored as a mute with a time in the past, which the server
     // refuses in a new request.
@@ -206,12 +205,12 @@ pub(crate) fn scoped_settings_lines(scope: &str, settings: &NotificationSettings
     };
     let quiet = match &settings.daily_quiet {
         Some(quiet) => format!(
-            "{:02}:{:02}-{:02}:{:02} at {} minutes from UTC",
+            "{:02}:{:02}-{:02}:{:02} in {}",
             quiet.start_minute / 60,
             quiet.start_minute % 60,
             quiet.end_minute / 60,
             quiet.end_minute % 60,
-            quiet.utc_offset_minutes
+            shown(&quiet.time_zone)
         ),
         None => "none".to_owned(),
     };
@@ -233,13 +232,20 @@ pub(crate) fn scoped_settings_lines(scope: &str, settings: &NotificationSettings
 }
 
 pub(crate) fn thread_line(state: &ThreadState) -> String {
+    // The choice of the account for the thread, when it made one (ADR 0412).
+    let choice = match state.follow_setting {
+        Some(true) => " (chosen)",
+        Some(false) => " (chosen not to)",
+        None => "",
+    };
     format!(
-        "thread: {}  latest {}  read {}  unread {}  mentions {}",
+        "thread: {}  latest {}  read {}  unread {}  mentions {}  following {}{choice}",
         state.root_id,
         state.latest,
         state.last_read,
         count(state.unread),
-        count(state.mentions)
+        count(state.mentions),
+        if state.following { "yes" } else { "no" }
     )
 }
 
@@ -356,6 +362,37 @@ async fn threads(
                     .map_err(failed)?,
             )]
         }
+        "follow" | "unfollow" => {
+            let root_id = identifier(words, 1, "the root message")?;
+            let following = word(words, 0, "the action of threads")? == "follow";
+            vec![thread_line(
+                &api.set_thread_follow(root_id, following)
+                    .await
+                    .map_err(failed)?,
+            )]
+        }
+        "clear-follow" => {
+            let root_id = identifier(words, 1, "the root message")?;
+            api.clear_thread_follow(root_id).await.map_err(failed)?;
+            vec!["the rule decides again whether the account follows the thread".to_owned()]
+        }
+        "followed" => {
+            let channel_id: ChannelId = identifier(words, 1, "the channel")?;
+            let page = api
+                .followed_threads(
+                    channel_id,
+                    arguments.value("before"),
+                    arguments.number("limit")?,
+                )
+                .await
+                .map_err(failed)?;
+            let mut lines: Vec<String> = page.threads.iter().map(thread_line).collect();
+            lines.push(format!("more: {}", page.more));
+            if let Some(next) = &page.next {
+                lines.push(format!("continue with: --before {}", shown(next)));
+            }
+            lines
+        }
         "unread" => {
             let page = api
                 .unread_threads(arguments.value("before"), arguments.number("limit")?)
@@ -460,7 +497,22 @@ async fn notices(
                 .notification_default(workspace_id)
                 .await
                 .map_err(failed)?;
-            vec![format!("default level: {}", level_word(held))]
+            vec![format!("default level: {}", default_word(held))]
+        }
+        "remove-default" => {
+            let workspace_id = identifier(words, 1, "the workspace")?;
+            api.remove_notification_default(workspace_id)
+                .await
+                .map_err(failed)?;
+            vec!["default level: not set".to_owned()]
+        }
+        "read-all" => {
+            let until = time_of(arguments, "until")?;
+            let read = api.mark_notifications_read(until).await.map_err(failed)?;
+            vec![format!(
+                "notices read: {}  until {}",
+                read.marked, read.until
+            )]
         }
         "set-default" => {
             let workspace_id = identifier(words, 1, "the workspace")?;
@@ -469,7 +521,7 @@ async fn notices(
                 .set_notification_default(workspace_id, wanted)
                 .await
                 .map_err(failed)?;
-            vec![format!("default level: {}", level_word(held))]
+            vec![format!("default level: {}", default_word(held))]
         }
         other => return Err(usage(format!("unknown action of notices: {other}"))),
     })
@@ -582,17 +634,17 @@ mod tests {
 
     #[test]
     fn a_quiet_time_is_two_different_times_of_day() {
-        let held = match quiet("22:30-07:00", -180) {
+        let held = match quiet("22:30-07:00", "America/Sao_Paulo") {
             Ok(held) => held,
             Err(_) => panic!("the quiet time is not read"),
         };
         assert_eq!(
-            (held.start_minute, held.end_minute, held.utc_offset_minutes),
-            (22 * 60 + 30, 7 * 60, -180)
+            (held.start_minute, held.end_minute, held.time_zone.as_str()),
+            (22 * 60 + 30, 7 * 60, "America/Sao_Paulo")
         );
-        assert!(quiet("07:00-07:00", 0).is_err());
-        assert!(quiet("24:00-07:00", 0).is_err());
-        assert!(quiet("7-8", 0).is_err());
+        assert!(quiet("07:00-07:00", "UTC").is_err());
+        assert!(quiet("24:00-07:00", "UTC").is_err());
+        assert!(quiet("7-8", "UTC").is_err());
     }
 
     #[test]

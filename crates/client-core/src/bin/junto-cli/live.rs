@@ -14,6 +14,7 @@ use junto_client_core::protocol::call::{
     Call, CallInvitation, CallJoin, CallLock, CallMove, CallParticipant, CallPlace, EntryRequest,
     Meeting, ShareAudio, UpdateCallSettings,
 };
+use junto_client_core::protocol::discovery::NotificationLevel;
 use junto_client_core::protocol::events::{Cursor, Event};
 use junto_client_core::protocol::ids::{
     AccountId, CallId, CallInvitationId, CallMoveId, ChannelId, EntryRequestId,
@@ -607,8 +608,8 @@ fn state_lines(model: &ServerModel) -> Vec<String> {
             shown(&workspace.workspace.name)
         ));
         let permissions: Vec<&str> = workspace
-            .role_permissions()
-            .into_iter()
+            .permissions
+            .iter()
             .map(|permission| permission.name())
             .collect();
         lines.push(format!("permissions: {}", permissions.join(", ")));
@@ -732,8 +733,31 @@ fn event_details(event: &Event) -> String {
         Event::AccountServerRolesChanged { account_id, .. } => format!("account={account_id}"),
         Event::OwnerChanged { account_id, .. } => format!("account={account_id}"),
         Event::ServerRoleCreated { role } | Event::ServerRoleUpdated { role } => {
-            format!("role={}", role.id)
+            format!("role={} position={}", role.id, role.position)
         }
+        Event::ServerRolePositionsShifted { positions } => {
+            format!("roles={}", positions.len())
+        }
+        Event::WorkspaceRolePositionsShifted {
+            workspace_id,
+            positions,
+        } => format!("workspace={workspace_id} roles={}", positions.len()),
+        Event::NotificationsRead { until, .. } => format!("until={until}"),
+        Event::ThreadFollowChanged {
+            root_id, following, ..
+        } => format!("thread={root_id} following={following}"),
+        Event::NotificationDefaultChanged {
+            workspace_id,
+            level,
+        } => format!(
+            "workspace={workspace_id} level={}",
+            match level {
+                Some(NotificationLevel::All) => "all",
+                Some(NotificationLevel::Mentions) => "mentions",
+                Some(NotificationLevel::Nothing) => "nothing",
+                None => "not_set",
+            }
+        ),
         Event::InviteCreated { invite } => format!("invite={}", invite.id),
         Event::InviteRevoked {
             invite_id,
@@ -767,7 +791,10 @@ fn event_details(event: &Event) -> String {
             ..
         } => format!("workspace={workspace_id} account={account_id}"),
         Event::WorkspaceRoleCreated { role } | Event::WorkspaceRoleUpdated { role } => {
-            format!("workspace={} role={}", role.workspace_id, role.id)
+            format!(
+                "workspace={} role={} position={}",
+                role.workspace_id, role.id, role.position
+            )
         }
         Event::CategoryCreated { category } | Event::CategoryUpdated { category } => {
             format!(

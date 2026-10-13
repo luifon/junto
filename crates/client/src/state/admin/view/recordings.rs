@@ -215,6 +215,9 @@ mod tests {
             categories: Vec::new(),
             channels,
             calls: Vec::new(),
+            permissions: Vec::new(),
+            channel_permissions: Vec::new(),
+            notification_default: None,
         };
         Scene {
             server_id: ServerId::generate(),
@@ -262,7 +265,8 @@ mod tests {
 
     impl Scene {
         fn model(&self) -> ServerModel {
-            let mut model = ServerModel::from_snapshot(self.snapshot.clone());
+            let mut model =
+                ServerModel::from_snapshot(crate::state::fixtures::stated(self.snapshot.clone()));
             model.admin = Arc::new(self.admin.clone());
             model
         }

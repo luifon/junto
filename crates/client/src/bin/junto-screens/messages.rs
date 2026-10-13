@@ -93,6 +93,7 @@ impl Made {
             thread_root: None,
             reply_count: 0,
             last_reply: None,
+            reply_authors: Vec::new(),
             pinned: false,
             files_removed_by_retention: false,
         }));
@@ -116,6 +117,7 @@ impl Made {
             subject_id: subject.map(person),
             actor_id: actor.map(person),
             recording_id: None,
+            duration_seconds: None,
         });
     }
 
@@ -310,6 +312,9 @@ pub(crate) fn acme_with(change: impl FnOnce(&mut ServerModel)) -> ServerSnapshot
         let model = Arc::make_mut(model);
         model.message_states = vec![state(31, 5, 2), state(32, 3, 0)];
         change(model);
+        // The change can give the person a role or a permission: the lists that the
+        // window reads are stated again (ADR 0310).
+        junto_client::state::fixtures::restate(model);
     }
     server
 }

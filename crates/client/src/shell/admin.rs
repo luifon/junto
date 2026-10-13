@@ -8,6 +8,7 @@ pub mod overrides;
 pub mod people;
 mod recordings;
 pub mod records;
+pub mod roles;
 mod workspaces;
 
 use gpui::{
@@ -81,6 +82,7 @@ pub(crate) struct AdminUi {
     pub(crate) people: people::Ui,
     pub(crate) records: records::Ui,
     pub(crate) recordings: recordings::Ui,
+    pub(crate) roles: roles::Ui,
 }
 
 impl AdminUi {
@@ -113,6 +115,8 @@ impl AdminUi {
         subscriptions.extend(more);
         let (records, more) = records::Ui::new(window, cx);
         subscriptions.extend(more);
+        let (roles, more) = roles::Ui::new(window, cx);
+        subscriptions.extend(more);
         let ui = Self {
             name,
             value,
@@ -127,6 +131,7 @@ impl AdminUi {
             people,
             records,
             recordings: recordings::Ui::default(),
+            roles,
         };
         (ui, subscriptions)
     }
@@ -368,6 +373,7 @@ impl Shell {
         self.reset_people_ui(window, cx);
         self.reset_records_ui(window, cx);
         self.reset_recordings_ui();
+        self.reset_roles_ui(window, cx);
     }
 
     /// Shows a form or a question in a row, with the fields empty or holding `name`.
@@ -849,6 +855,7 @@ impl Shell {
             ServerPage::Exports(page) => self.render_exports_page(view, page, window, cx),
             ServerPage::AuditLog(page) => self.render_audit_page(view, page, window, cx),
             ServerPage::Recordings(page) => self.render_recordings_page(view, page, window, cx),
+            ServerPage::Roles(page) => self.render_roles_page(view, page, window, cx),
         }
     }
 

@@ -1549,8 +1549,43 @@ pub fn system_line(action: &str) -> (crate::state::feed::SystemKind, &'static st
         "channel_restored" => (Plain, "{actor} restored this channel"),
         "channel_deletion_due" => (Plain, "The server deletes this archived channel in 7 days"),
         "export_requested" => (Plain, "{actor} asked for an export of this channel"),
+        // The lines of a call between the two accounts of a direct conversation
+        // (ADR 0518). The actor of the first two is the caller.
+        "direct_call_started" => (Start, "{actor} started a call"),
+        "direct_call_not_answered" => (Plain, "{subject} did not answer the call of {actor}"),
+        "direct_call_declined" => (Plain, "{actor} declined the call"),
+        "direct_call_ended" => (Plain, "The call ended{duration}"),
         _ => (Plain, "An event that this version of Junto does not know"),
     }
+}
+
+/// The length of a call as a system line states it after "The call ended": ` after 4
+/// minutes 12 seconds`. Nothing for a line without a length.
+pub fn call_length(seconds: Option<u64>) -> String {
+    let Some(seconds) = seconds else {
+        return String::new();
+    };
+    let count = |number: u64, one: &str, many: &str| match number {
+        1 => format!("1 {one}"),
+        number => format!("{number} {many}"),
+    };
+    let (hours, minutes, rest) = (seconds / 3600, seconds % 3600 / 60, seconds % 60);
+    let length = if hours > 0 {
+        format!(
+            "{} {}",
+            count(hours, "hour", "hours"),
+            count(minutes, "minute", "minutes")
+        )
+    } else if minutes > 0 {
+        format!(
+            "{} {}",
+            count(minutes, "minute", "minutes"),
+            count(rest, "second", "seconds")
+        )
+    } else {
+        count(rest, "second", "seconds")
+    };
+    format!(" after {length}")
 }
 
 /// Why a document is not sent as it is.

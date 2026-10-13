@@ -33,6 +33,7 @@ use crate::harness::{
     member,
 };
 
+mod lines;
 mod rules;
 
 /// The voice channel of the tests. A new server has a voice channel of its own beside it.

@@ -164,6 +164,11 @@ actions of threads:
   read <root message> <position>
   unread [--before <continuation>] [--limit <n>]
                                the threads that hold something unread, the newest first
+  follow <root message>, unfollow <root message>
+                               the choice to follow a thread or not
+  clear-follow <root message>  no choice: the rule of the server decides
+  followed <channel> [--before <continuation>] [--limit <n>]
+                               the threads of a channel that the account follows
   fork <root message> --name <name> [--kind <text|voice>]
                                copy the thread into a new channel
 
@@ -178,12 +183,15 @@ actions of notices:
   set-settings <scope> [--level <all|mentions|nothing|inherit>]
                [--mute <yes|no>] [--mute-hours <n>]
                [--role-mentions <yes|no|inherit>] [--everyone-mentions <yes|no|inherit>]
-               [--dnd <yes|no>] [--quiet <HH:MM-HH:MM> [--utc-offset <minutes>]] [--no-quiet]
+               [--dnd <yes|no>] [--quiet <HH:MM-HH:MM> [--time-zone <name>]] [--no-quiet]
                                change the named settings of a scope and keep the others;
                                the mute and the mention switches belong to a channel,
-                               --dnd and --quiet to the account
+                               --dnd and --quiet to the account; a time zone is a
+                               name such as Europe/Lisbon, and UTC without one
+  read-all [--until <time>]    mark every notice up to a time as read, in one request
   default <workspace>          the level that an administrator set for a workspace
   set-default <workspace> <all|mentions|nothing>
+  remove-default <workspace>   the workspace sets no level
 
 A scope is account, workspace:<id> or channel:<id>. A time is written as
 2026-01-31T00:00:00Z.
@@ -309,7 +317,7 @@ const VALUE_OPTIONS: &[&str] = &[
     "everyone-mentions",
     "dnd",
     "quiet",
-    "utc-offset",
+    "time-zone",
     "channel",
     "author",
     "from",

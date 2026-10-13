@@ -558,6 +558,8 @@ pub struct ChannelRow {
     pub permanent: bool,
     /// The unread threads of the channel, and the thread that the side panel shows.
     pub threads: Vec<ThreadEntry>,
+    /// What the person holds in the channel, as the server stated it (ADR 0310).
+    pub allowed: Allowed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -620,16 +622,17 @@ pub struct MeetingView {
     pub may_speak: bool,
 }
 
-/// What the roles of the person allow in the workspace of a call. The server decides each
-/// request: an override of the channel can differ (ADR 0719).
+/// What the person holds in one channel, or in the workspace where no channel is meant:
+/// the list that the server stated (ADR 0310). The server decides each request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Allowed {
-    /// Delete the messages of other people.
+    /// Delete and pin the messages of other people.
     pub manage_messages: bool,
     pub mention_everyone: bool,
     pub lock: bool,
     pub run_meeting: bool,
     pub manage: bool,
+    pub record: bool,
     pub mute: bool,
     pub deafen: bool,
     pub disconnect: bool,
@@ -835,7 +838,8 @@ pub struct WorkspaceView {
     pub members: Members,
     /// Present when the selected channel is the voice channel of the call of this device.
     pub call: Option<CallPanel>,
-    /// What the roles of the person allow in the calls of this workspace.
+    /// What the person holds in the shown channel, and in the workspace while no channel
+    /// is shown.
     pub allowed: Allowed,
     /// The messages of the selected channel. Absent until the client holds its timeline.
     pub feed: Option<Feed>,
@@ -870,7 +874,8 @@ pub struct ArchivedState {
     /// The server does not delete the channel before this time. Absent: the server does
     /// not delete it.
     pub deletes_at: Option<OffsetDateTime>,
-    /// The roles of the person hold "manage channel": the channel can be restored.
+    /// The person holds "manage channel" in the channel: it can be restored. False until
+    /// the list of the archived channel is read (ADR 0310).
     pub may_restore: bool,
 }
 
@@ -912,7 +917,9 @@ impl ShellView {
             .occupants
             .iter()
             .find(|occupant| occupant.account_id == account_id && !occupant.is_self)?;
-        let allowed = workspace.allowed;
+        // The person menu acts in the voice channel of its row: the list of that channel
+        // decides.
+        let allowed = row.allowed;
         let own_call = self
             .call
             .as_ref()
@@ -926,9 +933,14 @@ impl ShellView {
             invite_to: own_call
                 .filter(|call| call.channel_id != Some(channel_id))
                 .and_then(|call| call.name.clone()),
+            // A move needs "move members" in both channels (ADR 0511).
             destinations: if allowed.move_members {
                 rows()
-                    .filter(|other| other.kind == ChannelKind::Voice && other.id != channel_id)
+                    .filter(|other| {
+                        other.kind == ChannelKind::Voice
+                            && other.id != channel_id
+                            && other.allowed.move_members
+                    })
                     .map(|other| (other.id, other.name.clone()))
                     .collect()
             } else {
@@ -1415,6 +1427,7 @@ fn channel_row(
         unread: Unread::of(model, PlaceId::Channel(channel.channel.id)),
         permanent: channel.channel.permanent_messages,
         threads: Vec::new(),
+        allowed: allowed(workspace.permissions_in(channel.channel.id)),
     }
 }
 
@@ -1691,6 +1704,9 @@ fn workspace_view(
             unread: Unread::of(model, PlaceId::Channel(channel_id)),
             permanent: archived.channel.permanent_messages,
             threads: thread_entries(channel_id, model, &names, open),
+            // No snapshot states the list of an archived channel: nothing is offered
+            // until its own read answered (ADR 0310).
+            allowed: allowed(model.permissions_in(channel_id).unwrap_or_default()),
         });
     }
     let call = channel
@@ -1702,7 +1718,9 @@ fn workspace_view(
         })
         .zip(known.media.calls.call.as_ref())
         .map(|(row, active)| call_panel(server_id, row, active, workspace, model, known));
-    let allowed = allowed(workspace, model);
+    let allowed = channel
+        .as_ref()
+        .map_or_else(|| allowed(&workspace.permissions), |row| row.allowed);
     let place = conversation
         .as_ref()
         .map(|row| PlaceId::Direct(row.id))
@@ -2053,8 +2071,7 @@ fn recording_control(
     server_id: ServerId,
     call_id: Option<CallId>,
     running: Option<&Recording>,
-    workspace: &WorkspaceModel,
-    model: &ServerModel,
+    may_record: bool,
     known: &Known,
 ) -> RecordingControl {
     let state = match running {
@@ -2075,10 +2092,7 @@ fn recording_control(
     };
     RecordingControl {
         state,
-        may_record: model.is_administrator()
-            || workspace
-                .role_permissions()
-                .contains(&WorkspacePermission::RecordCalls),
+        may_record,
         busy: known.recording_busy,
     }
 }
@@ -2167,8 +2181,7 @@ fn call_panel(
             server_id,
             call.map(|call| call.id),
             call.and_then(|call| call.recording.as_ref()),
-            workspace,
-            model,
+            row.allowed.record,
             known,
         ),
         room: room_view(server_id, row, active, workspace, model, known),
@@ -2191,16 +2204,16 @@ fn may_speak(
         && known.media.calls.muted
 }
 
-/// What the roles of the account allow in a workspace.
-fn allowed(workspace: &WorkspaceModel, model: &ServerModel) -> Allowed {
-    let held = workspace.role_permissions();
-    let may = |permission| model.is_administrator() || held.contains(&permission);
+/// What a list of permissions that the server stated allows (ADR 0310).
+fn allowed(held: &[WorkspacePermission]) -> Allowed {
+    let may = |permission| held.contains(&permission);
     Allowed {
         manage_messages: may(WorkspacePermission::ManageMessages),
         mention_everyone: may(WorkspacePermission::MentionEveryone),
         lock: may(WorkspacePermission::LockRoom),
         run_meeting: may(WorkspacePermission::RunMeetingMode),
         manage: may(WorkspacePermission::ManageChannel),
+        record: may(WorkspacePermission::RecordCalls),
         mute: may(WorkspacePermission::MuteMembers),
         deafen: may(WorkspacePermission::DeafenMembers),
         disconnect: may(WorkspacePermission::DisconnectMembers),
@@ -2249,7 +2262,7 @@ fn room_view(
         }
     });
     let voice = row.voice.as_ref();
-    let allowed = allowed(workspace, model);
+    let allowed = row.allowed;
     let hides = active
         .target
         .place
@@ -2599,5 +2612,7 @@ mod book_tests;
 mod panel_tests;
 #[cfg(test)]
 mod people_tests;
+#[cfg(test)]
+mod permission_tests;
 #[cfg(test)]
 mod tests;

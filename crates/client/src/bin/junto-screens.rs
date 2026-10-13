@@ -24,6 +24,7 @@ use junto_client::shell::call::CallTab;
 use junto_client::shell::share::SoundKind;
 use junto_client::shell::{Open, Shell};
 use junto_client::state::AppState;
+use junto_client::state::fixtures::stated;
 use junto_client::state::view::{EntryState, MediaSnapshot, OwnEntry, ServerSnapshot, ShownLevels};
 use junto_client::theme;
 use junto_client_core::api::{
@@ -84,6 +85,8 @@ mod book;
 mod messages;
 #[path = "junto-screens/people.rs"]
 mod people;
+#[path = "junto-screens/roles.rs"]
+mod roles;
 #[path = "junto-screens/threads.rs"]
 mod threads;
 
@@ -161,6 +164,9 @@ fn workspace(number: u32, name: &str, is_default: bool) -> WorkspaceState {
         categories: Vec::new(),
         channels: Vec::new(),
         calls: Vec::new(),
+        permissions: Vec::new(),
+        channel_permissions: Vec::new(),
+        notification_default: None,
     }
 }
 
@@ -169,25 +175,22 @@ fn workspace(number: u32, name: &str, is_default: bool) -> WorkspaceState {
 fn studio() -> WorkspaceState {
     let mut studio = workspace(10, "Studio", true);
     let workspace_id = studio.workspace.id;
-    let role = |number, name: &str, is_everyone| WorkspaceRole {
+    let role = |number, name: &str, position| WorkspaceRole {
+        position,
         id: id(number),
         workspace_id,
         name: name.to_owned(),
         permissions: Vec::new(),
-        is_everyone,
+        is_everyone: position == 0,
     };
     // The permissions that the "everyone" role of a new workspace has.
-    let mut everyone = role(20, "everyone", true);
+    let mut everyone = role(20, "everyone", 0);
     everyone.permissions = vec![
         WorkspacePermission::ViewChannel,
         WorkspacePermission::LockRoom,
         WorkspacePermission::RunMeetingMode,
     ];
-    studio.roles = vec![
-        everyone,
-        role(21, "Leads", false),
-        role(22, "Engineers", false),
-    ];
+    studio.roles = vec![everyone, role(21, "Leads", 2), role(22, "Engineers", 1)];
     let voice = |number, name: &str| channel(number, workspace_id, ChannelKind::Voice, name);
     let daily = voice(34, "Daily");
     let focus = voice(35, "Focus room");
@@ -319,14 +322,14 @@ fn snapshot(account: &str, workspaces: Vec<WorkspaceState>) -> Snapshot {
 fn acme_model(change: impl FnOnce(&mut WorkspaceState)) -> Arc<ServerModel> {
     let mut studio = studio();
     change(&mut studio);
-    let mut model = ServerModel::from_snapshot(snapshot(
+    let mut model = ServerModel::from_snapshot(stated(snapshot(
         "Luca",
         vec![
             studio,
             workspace(11, "Client Alpha", false),
             workspace(12, "Client Beta", false),
         ],
-    ));
+    )));
     let studio = Arc::make_mut(&mut model.workspaces[0]);
     let roles: Vec<_> = studio.roles.iter().map(|role| role.id).collect();
     studio.members = Loadable::Loaded(
@@ -391,10 +394,10 @@ fn harbor() -> ServerSnapshot {
         in_progress: None,
         error: None,
         stream: StreamStatus::Live,
-        model: Some(Arc::new(ServerModel::from_snapshot(snapshot(
+        model: Some(Arc::new(ServerModel::from_snapshot(stated(snapshot(
             "Luca",
             vec![workspace(13, "Lounge", true)],
-        )))),
+        ))))),
     }
 }
 
@@ -2686,6 +2689,7 @@ fn run(out: &Path) -> Result<(), String> {
         Some("threads") => threads::draw(&mut studio),
         Some("admin") => admin::draw(&mut studio),
         Some("people") => people::draw(&mut studio),
+        Some("roles") => roles::draw(&mut studio),
         Some("account") => account::draw(&mut studio),
         Some("book") => book::draw(&mut studio),
         _ => draw_all(&mut studio)
@@ -2696,6 +2700,7 @@ fn run(out: &Path) -> Result<(), String> {
             .and_then(|()| threads::draw(&mut studio))
             .and_then(|()| admin::draw(&mut studio))
             .and_then(|()| people::draw(&mut studio))
+            .and_then(|()| roles::draw(&mut studio))
             .and_then(|()| account::draw(&mut studio))
             .and_then(|()| book::draw(&mut studio))
             .and_then(|()| draw_components(&mut studio)),

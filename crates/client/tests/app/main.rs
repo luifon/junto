@@ -26,6 +26,8 @@ mod linking;
 mod live;
 mod messages;
 mod people;
+mod permissions;
+mod roles;
 mod servers;
 mod states;
 mod threads;

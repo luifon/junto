@@ -61,16 +61,17 @@ pub(crate) fn channel(
 pub(crate) fn scene() -> Scene {
     let account_id = AccountId::generate();
     let workspace_id = WorkspaceId::generate();
-    let role = |name: &str, permissions: &[WorkspacePermission], is_everyone| WorkspaceRole {
+    let role = |name: &str, permissions: &[WorkspacePermission], position| WorkspaceRole {
+        position,
         id: WorkspaceRoleId::generate(),
         workspace_id,
         name: name.to_owned(),
         permissions: permissions.to_vec(),
-        is_everyone,
+        is_everyone: position == 0,
     };
-    let everyone = role("everyone", &[WorkspacePermission::ViewChannel], true);
-    let helpers = role("helpers", &[WorkspacePermission::MuteMembers], false);
-    let unheld = role("leads", &[WorkspacePermission::ManageChannel], false);
+    let everyone = role("everyone", &[WorkspacePermission::ViewChannel], 0);
+    let helpers = role("helpers", &[WorkspacePermission::MuteMembers], 1);
+    let unheld = role("leads", &[WorkspacePermission::ManageChannel], 2);
     let general = channel(workspace_id, ChannelKind::Text, "general", 0);
     let daily = channel(workspace_id, ChannelKind::Voice, "Daily", 1);
     let mut hidden = channel(workspace_id, ChannelKind::Voice, "HR", 2);
@@ -100,6 +101,12 @@ pub(crate) fn scene() -> Scene {
             categories: Vec::new(),
             channels: vec![general.clone(), daily.clone(), hidden.clone()],
             calls: Vec::new(),
+            permissions: vec![
+                WorkspacePermission::ViewChannel,
+                WorkspacePermission::MuteMembers,
+            ],
+            channel_permissions: Vec::new(),
+            notification_default: None,
         }],
         own_call: None,
         direct_calls: Vec::new(),
@@ -250,7 +257,7 @@ fn a_snapshot_gives_the_structure_the_calls_and_the_permissions_of_the_roles() {
     let workspace = model.workspace(scene.workspace_id).unwrap();
     assert_eq!(workspace.members, Loadable::NotLoaded);
     assert_eq!(
-        workspace.role_permissions(),
+        workspace.permissions,
         [
             WorkspacePermission::ViewChannel,
             WorkspacePermission::MuteMembers
@@ -331,21 +338,25 @@ fn structure_events_replace_whole_objects_and_keep_the_order_of_positions() {
     );
 
     let role = WorkspaceRole {
+        position: 1,
         id: scene.helpers,
         workspace_id: scene.workspace_id,
         name: "helpers".to_owned(),
         permissions: vec![WorkspacePermission::MoveMembers],
         is_everyone: false,
     };
-    model.apply(&Event::WorkspaceRoleUpdated { role });
+    model.apply(&Event::WorkspaceRoleUpdated { role: role.clone() });
     let workspace = model.workspace(scene.workspace_id).unwrap();
     assert_eq!(workspace.roles.len(), 3);
     assert_eq!(workspace.roles[0].id, scene.everyone);
+    assert!(workspace.roles.contains(&role));
+    // What the account holds is what the server stated (ADR 0310): the event of a role
+    // changes the role, and the snapshot after `permissions_changed` changes the list.
     assert_eq!(
-        workspace.role_permissions(),
+        workspace.permissions,
         [
             WorkspacePermission::ViewChannel,
-            WorkspacePermission::MoveMembers
+            WorkspacePermission::MuteMembers
         ]
     );
 
@@ -1196,10 +1207,6 @@ fn members_follow_the_events_once_they_are_loaded() {
     });
     let workspace = model.workspace(scene.workspace_id).unwrap();
     assert!(workspace.own_role_ids.is_empty());
-    assert_eq!(
-        workspace.role_permissions(),
-        [WorkspacePermission::ViewChannel]
-    );
     let held = workspace.members.loaded().unwrap();
     assert!(
         held.iter()

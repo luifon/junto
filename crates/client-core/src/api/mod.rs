@@ -8,6 +8,7 @@ mod messages;
 mod notices;
 pub(crate) mod proof;
 mod retry;
+mod roles;
 pub(crate) mod session;
 mod threads;
 pub(crate) mod transport;

@@ -35,6 +35,8 @@ fn unread(root_id: MessageId, last_read: u64, latest: u64, unread: u64) -> Threa
         latest,
         unread,
         mentions: 0,
+        following: true,
+        follow_setting: None,
     }
 }
 
@@ -95,7 +97,7 @@ fn a_snapshot_gives_the_unread_threads_the_notices_and_the_settings() {
     assert_eq!(model.unread_notices().count(), 1);
     // One notice is not a full list of the snapshot: nothing follows it.
     assert!(!model.notices_more);
-    assert!(model.is_quiet(time()));
+    assert!(model.is_quiet(|_| None));
     assert!(
         model
             .notification_settings(SettingsScope::Channel(scene.general))
@@ -552,7 +554,7 @@ fn the_end_of_a_mute_is_known_for_the_channels_that_the_state_holds() {
         model.mute_ends(now),
         [(scene.general, now + time::Duration::hours(1))]
     );
-    assert!(!model.is_quiet(now));
+    assert!(!model.is_quiet(|_| Some(0)));
 }
 
 #[test]

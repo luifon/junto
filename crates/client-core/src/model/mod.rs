@@ -11,9 +11,13 @@ mod admin;
 mod apply;
 mod discovery;
 mod messages;
+mod permissions;
+mod rank;
 
 #[cfg(test)]
 mod admin_tests;
+#[cfg(test)]
+mod adoption_tests;
 #[cfg(test)]
 mod discovery_tests;
 #[cfg(test)]
@@ -28,7 +32,7 @@ use junto_protocol::call::{
     Call, CallInvitation, CallLock, CallMove, CallParticipant, CallPlace, ChannelCall, DirectMute,
     EntryRequest, Meeting, OwnCall, OwnCallState,
 };
-use junto_protocol::discovery::{Notification, ScopedNotificationSettings};
+use junto_protocol::discovery::{Notification, NotificationLevel, ScopedNotificationSettings};
 use junto_protocol::events::Cursor;
 use junto_protocol::ids::{
     AccountId, CallId, ChannelId, DeviceId, MessageId, WorkspaceId, WorkspaceRoleId,
@@ -39,7 +43,9 @@ use junto_protocol::message::{
 use junto_protocol::recording::Recording;
 use junto_protocol::roles::WorkspaceRole;
 use junto_protocol::snapshot::{Snapshot, WorkspaceState};
-use junto_protocol::structure::{Category, Channel, Workspace, WorkspaceMember};
+use junto_protocol::structure::{
+    Category, Channel, ChannelPermissions, Workspace, WorkspaceMember,
+};
 use junto_protocol::{ServerPermission, WorkspacePermission};
 use time::OffsetDateTime;
 
@@ -55,6 +61,7 @@ pub use messages::{
     MOST_LOADED, PendingFile, PendingMessage, PlaceId, ReadFailure, Reading, SendFailure,
     SendState, Timeline,
 };
+pub use rank::{RoleRank, outranks};
 
 /// How many notices a snapshot carries at most (ADR 0409).
 const SNAPSHOT_NOTICES: usize = 50;
@@ -181,7 +188,17 @@ pub struct WorkspaceModel {
     pub workspace: Workspace,
     /// The roles of the workspace that the account holds, without the "everyone" role.
     pub own_role_ids: Vec<WorkspaceRoleId>,
+    /// The "everyone" role first, then the roles from the highest position to the lowest
+    /// (ADR 0309).
     pub roles: Vec<WorkspaceRole>,
+    /// The workspace permissions that the account holds in the workspace, as the server
+    /// stated them (ADR 0310).
+    pub permissions: Vec<WorkspacePermission>,
+    /// The channels in which the account holds another list than `permissions`.
+    pub channel_permissions: Vec<ChannelPermissions>,
+    /// The notification level that the workspace sets for its members. Absent: none is
+    /// set (ADR 0412).
+    pub notification_default: Option<NotificationLevel>,
     /// In the order of their positions.
     pub categories: Vec<Category>,
     /// The channels that the account can see, in the order of their positions.
@@ -202,12 +219,37 @@ impl WorkspaceModel {
                 channel.set_call(shown);
             }
         }
+        let mut roles = state.roles;
+        rank::sort_workspace_roles(&mut roles);
+        let held: Vec<ChannelId> = channels.iter().map(|held| held.channel.id).collect();
+        let mut channel_permissions = state.channel_permissions;
+        // A list for a channel that the snapshot does not carry belongs to nothing.
+        channel_permissions.retain(|entry| held.contains(&entry.channel_id));
         Self {
             workspace: state.workspace,
             own_role_ids: state.own_role_ids,
-            roles: state.roles,
+            roles,
+            permissions: state.permissions,
+            channel_permissions,
+            notification_default: state.notification_default,
             categories: state.categories,
             channels,
+            members: Loadable::NotLoaded,
+        }
+    }
+
+    /// A workspace that an event named and no snapshot carried yet. The account holds
+    /// nothing in it until the snapshot that follows `permissions_changed` (ADR 0310).
+    pub(crate) fn unlisted(workspace: Workspace) -> Self {
+        Self {
+            workspace,
+            own_role_ids: Vec::new(),
+            roles: Vec::new(),
+            permissions: Vec::new(),
+            channel_permissions: Vec::new(),
+            notification_default: None,
+            categories: Vec::new(),
+            channels: Vec::new(),
             members: Loadable::NotLoaded,
         }
     }
@@ -216,21 +258,6 @@ impl WorkspaceModel {
         self.channels
             .iter()
             .find(|channel| channel.channel.id == channel_id)
-    }
-
-    /// The permissions that the "everyone" role and the roles of the account give in the
-    /// workspace. The overrides of a channel are not in the snapshot (ADR 0207), so this
-    /// is not the answer for one channel, and the server decides every request.
-    pub fn role_permissions(&self) -> Vec<WorkspacePermission> {
-        let mut held: Vec<WorkspacePermission> = self
-            .roles
-            .iter()
-            .filter(|role| role.is_everyone || self.own_role_ids.contains(&role.id))
-            .flat_map(|role| role.permissions.iter().copied())
-            .collect();
-        held.sort_unstable();
-        held.dedup();
-        held
     }
 }
 

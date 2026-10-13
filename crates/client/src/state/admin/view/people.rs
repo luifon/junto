@@ -1,17 +1,18 @@
 //! The pages of the people of a server (ADR 0761): every account, the members of the
 //! shown workspace, the invites and the join requests that wait.
 
-use junto_client_core::model::{Collection, Loadable, ServerModel, WorkspaceModel};
+use junto_client_core::model::{Collection, Loadable, ServerModel, WorkspaceModel, outranks};
+use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::account::{AccountStatus, AccountSummary};
 use junto_client_core::protocol::ids::{
     AccountId, InviteId, JoinRequestId, ServerId, WorkspaceId, WorkspaceRoleId,
 };
 use junto_client_core::protocol::invite::{Invite, InviteRevocation};
-use junto_client_core::protocol::roles::ServerRole;
 use junto_client_core::protocol::secret::InviteCode;
 use time::{Duration, OffsetDateTime};
 
 use super::Listed;
+use super::roles::{RoleChoice, server_choices, workspace_choices};
 use crate::state::admin::{AdminState, Made};
 use crate::state::view::Known;
 
@@ -48,6 +49,12 @@ pub enum Blocked {
     Banned,
     /// An unban needs a banned account.
     NotBanned,
+    /// The account holds a server role at or above the highest server role of the
+    /// person: role order refuses the removal, the ban and the unban (ADR 0309).
+    Outranked,
+    /// The order of the server roles is on its way, so the page cannot tell yet whether
+    /// the account stands below the person.
+    OrderNotRead,
 }
 
 /// The server roles of an account.
@@ -74,15 +81,32 @@ pub struct AccountLine {
     pub remove: Result<(), Blocked>,
     pub ban: Result<(), Blocked>,
     pub unban: Result<(), Blocked>,
+    /// For an administrator and an active account: the server roles that the account
+    /// holds or can be given. Absent while the order of the roles is not read.
+    pub assignable: Option<Vec<RoleChoice>>,
 }
 
 impl AccountLine {
-    fn of(
-        account: &AccountSummary,
-        own: AccountId,
-        roles: Option<&[ServerRole]>,
-        known: &Known,
-    ) -> Self {
+    /// True when role order is the reason why the account takes no removal, ban or unban.
+    pub fn outranked(&self) -> bool {
+        [self.remove, self.ban, self.unban].contains(&Err(Blocked::Outranked))
+    }
+
+    fn of(account: &AccountSummary, model: &ServerModel, known: &Known) -> Self {
+        let own = model.account.id;
+        let roles = model.admin.server_roles.loaded().map(Vec::as_slice);
+        // A removal, a ban and an unban need the person above the account in the order
+        // of the server roles; the owner stands above everyone (ADR 0309).
+        let order = match (model.server_rank(), model.server_rank_of(account)) {
+            // The owner stands above every account, whatever roles it holds.
+            _ if model.account.is_owner => Ok(()),
+            (Some(person), Some(target)) if outranks(person, target) => Ok(()),
+            (Some(_), Some(_)) => Err(Blocked::Outranked),
+            // A read that failed leaves the decision to the server.
+            _ if matches!(model.admin.server_roles, Collection::Failed(_)) => Ok(()),
+            _ => Err(Blocked::OrderNotRead),
+        };
+        let administrator = model.is_administrator();
         // The server names the owner first when the owner asks about the own account.
         let target = if account.is_owner {
             Err(Blocked::Owner)
@@ -117,9 +141,12 @@ impl AccountLine {
                 None => RoleNames::Count(account.server_role_ids.len()),
             },
             created: known.zone.local(account.created_at),
-            remove: target.and(remove),
-            ban: target.and(ban),
-            unban: target.and(unban),
+            remove: target.and(remove).and(order),
+            ban: target.and(ban).and(order),
+            unban: target.and(unban).and(order),
+            assignable: (administrator && account.status == AccountStatus::Active)
+                .then(|| server_choices(model, &account.server_role_ids))
+                .flatten(),
         }
     }
 }
@@ -143,6 +170,9 @@ pub struct MemberLine {
     /// The names of the roles of the member in the workspace, without the "everyone"
     /// role.
     pub roles: Vec<String>,
+    /// For a person with "manage roles": the roles of the workspace that the member holds
+    /// or can be given. Absent while the order of the roles is not read.
+    pub assignable: Option<Vec<RoleChoice>>,
 }
 
 /// The members of a workspace as the page shows them. The window reads them with the
@@ -426,12 +456,10 @@ fn invite_line(
 
 /// The page of every account of the server.
 pub fn people(model: &ServerModel, known: &Known) -> PeoplePage {
-    let own = model.account.id;
-    let roles = model.admin.server_roles.loaded().map(Vec::as_slice);
     let accounts = Listed::of(&model.admin.accounts, |accounts| {
         let mut rows: Vec<AccountLine> = accounts
             .iter()
-            .map(|account| AccountLine::of(account, own, roles, known))
+            .map(|account| AccountLine::of(account, model, known))
             .collect();
         rows.sort_by(|one, other| {
             by_name((one.name.as_str(), one.id), (other.name.as_str(), other.id))
@@ -462,6 +490,7 @@ pub fn members(
             .map(|role| role.name.clone())
             .collect()
     };
+    let may_assign = workspace.holds(WorkspacePermission::ManageRoles);
     let list = match &workspace.members {
         Loadable::Loaded(members) => {
             let mut rows: Vec<MemberLine> = members
@@ -471,6 +500,9 @@ pub fn members(
                     name: member.name.clone(),
                     is_self: member.account_id == model.account.id,
                     roles: role_names(member.role_ids.as_slice()),
+                    assignable: may_assign
+                        .then(|| workspace_choices(model, workspace, &member.role_ids))
+                        .flatten(),
                 })
                 .collect();
             rows.sort_by(|one, other| {
@@ -577,12 +609,13 @@ mod tests {
     use junto_client_core::protocol::events::Cursor;
     use junto_client_core::protocol::ids::{ServerRoleId, StreamEpoch};
     use junto_client_core::protocol::invite::JoinRequest;
-    use junto_client_core::protocol::roles::WorkspaceRole;
+    use junto_client_core::protocol::roles::{ServerRole, WorkspaceRole};
     use junto_client_core::protocol::snapshot::{Snapshot, WorkspaceState};
     use junto_client_core::protocol::structure::{Workspace, WorkspaceMember};
     use time::UtcOffset;
 
     use super::*;
+    use crate::state::admin::RoleRef;
     use crate::state::feed::Zone;
 
     fn time() -> OffsetDateTime {
@@ -619,6 +652,9 @@ mod tests {
             categories: Vec::new(),
             channels: Vec::new(),
             calls: Vec::new(),
+            permissions: Vec::new(),
+            channel_permissions: Vec::new(),
+            notification_default: None,
         }
     }
 
@@ -672,7 +708,8 @@ mod tests {
         }
 
         fn model(&self, admin: AdminModel) -> ServerModel {
-            let mut model = ServerModel::from_snapshot(self.snapshot.clone());
+            let mut model =
+                ServerModel::from_snapshot(crate::state::fixtures::stated(self.snapshot.clone()));
             model.admin = Arc::new(admin);
             model
         }
@@ -694,6 +731,36 @@ mod tests {
             accounts: Collection::Loaded(accounts),
             ..AdminModel::default()
         }
+    }
+
+    fn server_role(name: &str, position: i32) -> ServerRole {
+        ServerRole {
+            position,
+            id: ServerRoleId::generate(),
+            name: name.to_owned(),
+            permissions: vec![ServerPermission::BanMembers],
+        }
+    }
+
+    /// The person holds the server role "Wardens" at position 2, and the state holds the
+    /// server roles "Stewards" (3), "Wardens" and "Clerks" (1) with these accounts.
+    fn as_warden(
+        scene: &mut Scene,
+        accounts: Vec<AccountSummary>,
+    ) -> (AdminModel, [ServerRole; 3]) {
+        let roles = [
+            server_role("Stewards", 3),
+            server_role("Wardens", 2),
+            server_role("Clerks", 1),
+        ];
+        scene.snapshot.account.server_role_ids = vec![roles[1].id];
+        scene.snapshot.account.server_permissions = vec![ServerPermission::BanMembers];
+        let admin = AdminModel {
+            accounts: Collection::Loaded(accounts),
+            server_roles: Collection::Loaded(roles.to_vec()),
+            ..AdminModel::default()
+        };
+        (admin, roles)
     }
 
     fn member(
@@ -815,9 +882,10 @@ mod tests {
 
     #[test]
     fn an_active_account_can_be_removed_and_banned_and_not_unbanned() {
-        let scene = scene();
+        let mut scene = scene();
         let ana = account("Ana", AccountStatus::Active);
-        let page = people(&scene.model(with_accounts(vec![ana.clone()])), &known());
+        let (admin, _) = as_warden(&mut scene, vec![ana.clone()]);
+        let page = people(&scene.model(admin), &known());
         let row = line(&page, ana.id);
         assert_eq!(row.status, AccountStatus::Active);
         assert_eq!(row.remove, Ok(()));
@@ -830,20 +898,121 @@ mod tests {
 
     #[test]
     fn a_banned_account_can_be_removed_and_unbanned_and_is_counted() {
-        let scene = scene();
+        let mut scene = scene();
         let ana = account("Ana", AccountStatus::Banned);
         let bea = account("Bea", AccountStatus::Banned);
         let caio = account("Caio", AccountStatus::Active);
-        let page = people(
-            &scene.model(with_accounts(vec![ana.clone(), bea, caio])),
-            &known(),
-        );
+        let (admin, _) = as_warden(&mut scene, vec![ana.clone(), bea, caio]);
+        let page = people(&scene.model(admin), &known());
         let row = line(&page, ana.id);
         assert_eq!(row.status, AccountStatus::Banned);
         assert_eq!(row.remove, Ok(()));
         assert_eq!(row.ban, Err(Blocked::Banned));
         assert_eq!(row.unban, Ok(()));
         assert_eq!(page.banned, 2);
+    }
+
+    #[test]
+    fn an_account_at_or_above_the_person_takes_no_removal_no_ban_and_no_unban() {
+        let mut scene = scene();
+        let mut above = account("Ana", AccountStatus::Active);
+        let mut equal = account("Bea", AccountStatus::Active);
+        let mut below = account("Caio", AccountStatus::Active);
+        let mut banned = account("Dora", AccountStatus::Banned);
+        let plain = account("Emil", AccountStatus::Active);
+        let accounts = [&above, &equal, &below, &banned, &plain].map(|held| held.id);
+        let (mut admin, [stewards, wardens, clerks]) = as_warden(&mut scene, Vec::new());
+        above.server_role_ids = vec![clerks.id, stewards.id];
+        equal.server_role_ids = vec![wardens.id];
+        below.server_role_ids = vec![clerks.id];
+        banned.server_role_ids = vec![stewards.id];
+        admin.accounts = Collection::Loaded(vec![above, equal, below, banned, plain]);
+        let page = people(&scene.model(admin.clone()), &known());
+        let states = |page: &PeoplePage, index: usize| {
+            let row = line(page, accounts[index]);
+            (row.remove, row.ban, row.unban, row.outranked())
+        };
+        let held = Err(Blocked::Outranked);
+        // An account with a higher role, and one with the same highest role (ADR 0309).
+        assert_eq!(
+            states(&page, 0),
+            (held, held, Err(Blocked::NotBanned), true)
+        );
+        assert_eq!(
+            states(&page, 1),
+            (held, held, Err(Blocked::NotBanned), true)
+        );
+        // An account below the person, and one without a role.
+        assert_eq!(
+            states(&page, 2),
+            (Ok(()), Ok(()), Err(Blocked::NotBanned), false)
+        );
+        assert_eq!(states(&page, 3), (held, Err(Blocked::Banned), held, true));
+        assert_eq!(
+            states(&page, 4),
+            (Ok(()), Ok(()), Err(Blocked::NotBanned), false)
+        );
+        // A person who is no administrator gives and takes no server role.
+        assert!(line(&page, accounts[2]).assignable.is_none());
+
+        // The owner stands above every account.
+        scene.snapshot.account.is_owner = true;
+        let page = people(&scene.model(admin.clone()), &known());
+        assert_eq!(
+            states(&page, 0),
+            (Ok(()), Ok(()), Err(Blocked::NotBanned), false)
+        );
+        assert_eq!(
+            states(&page, 3),
+            (Ok(()), Err(Blocked::Banned), Ok(()), false)
+        );
+        scene.snapshot.account.is_owner = false;
+
+        // The order of the roles is on its way: nothing is offered yet. After a read that
+        // failed the server decides.
+        let reading = Err(Blocked::OrderNotRead);
+        admin.server_roles = Collection::Loading;
+        let page = people(&scene.model(admin.clone()), &known());
+        assert_eq!(
+            states(&page, 2),
+            (reading, reading, Err(Blocked::NotBanned), false)
+        );
+        admin.server_roles = Collection::Failed(LoadFailure::NoAnswer);
+        let page = people(&scene.model(admin), &known());
+        assert_eq!(
+            states(&page, 0),
+            (Ok(()), Ok(()), Err(Blocked::NotBanned), false)
+        );
+    }
+
+    #[test]
+    fn an_administrator_gives_and_takes_the_server_roles_below_its_own() {
+        let mut scene = scene();
+        let mut ana = account("Ana", AccountStatus::Active);
+        let banned = account("Bea", AccountStatus::Banned);
+        let (mut admin, [stewards, wardens, clerks]) = as_warden(&mut scene, Vec::new());
+        scene.snapshot.account.server_permissions = vec![ServerPermission::Administrator];
+        ana.server_role_ids = vec![clerks.id];
+        let (ana_id, banned_id) = (ana.id, banned.id);
+        admin.accounts = Collection::Loaded(vec![ana, banned]);
+        let page = people(&scene.model(admin), &known());
+        let choices = line(&page, ana_id).assignable.clone().unwrap();
+        let shown: Vec<(&str, bool, bool)> = choices
+            .iter()
+            .map(|choice| (choice.name.as_str(), choice.held, choice.blocked.is_some()))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("Stewards", false, true),
+                ("Wardens", false, true),
+                ("Clerks", true, false)
+            ]
+        );
+        assert_eq!(choices[0].role, RoleRef::Server(stewards.id));
+        assert_eq!(choices[1].role, RoleRef::Server(wardens.id));
+        // A banned account gets no role (ADR 0113).
+        assert!(line(&page, banned_id).assignable.is_none());
     }
 
     #[test]
@@ -896,13 +1065,17 @@ mod tests {
     #[test]
     fn the_roles_of_an_account_are_named_when_the_server_roles_are_loaded() {
         let scene = scene();
-        let role = |name: &str| ServerRole {
+        let role = |name: &str, position| ServerRole {
+            position,
             id: ServerRoleId::generate(),
             name: name.to_owned(),
             permissions: Vec::new(),
         };
-        let (moderators, recruiters, unused) =
-            (role("Moderators"), role("Recruiters"), role("Unused"));
+        let (moderators, recruiters, unused) = (
+            role("Moderators", 3),
+            role("Recruiters", 2),
+            role("Unused", 1),
+        );
         let mut ana = account("Ana", AccountStatus::Active);
         // A role that the server has deleted is not named.
         ana.server_role_ids = vec![recruiters.id, moderators.id, ServerRoleId::generate()];
@@ -976,18 +1149,16 @@ mod tests {
     #[test]
     fn the_members_of_a_workspace_carry_the_names_of_their_roles_without_the_everyone_role() {
         let mut scene = scene();
-        let role = |name: &str, is_everyone| WorkspaceRole {
+        let role = |name: &str, position| WorkspaceRole {
+            position,
             id: WorkspaceRoleId::generate(),
             workspace_id: scene.studio,
             name: name.to_owned(),
             permissions: Vec::new(),
-            is_everyone,
+            is_everyone: position == 0,
         };
-        let (everyone, designers, leads) = (
-            role("everyone", true),
-            role("Designers", false),
-            role("Leads", false),
-        );
+        let (everyone, designers, leads) =
+            (role("everyone", 0), role("Designers", 2), role("Leads", 1));
         scene.snapshot.workspaces[0].roles =
             vec![everyone.clone(), designers.clone(), leads.clone()];
         let mut model = scene.model(AdminModel::default());
@@ -1016,12 +1187,14 @@ mod tests {
                     name: "Ana".to_owned(),
                     is_self: false,
                     roles: vec!["Designers".to_owned(), "Leads".to_owned()],
+                    assignable: None,
                 },
                 MemberLine {
                     account_id: scene.own,
                     name: "Luca".to_owned(),
                     is_self: true,
                     roles: Vec::new(),
+                    assignable: None,
                 },
             ])
         );

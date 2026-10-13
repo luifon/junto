@@ -7,6 +7,8 @@ mod admin;
 mod calls_live;
 mod messages;
 mod recordings;
+mod requests;
+mod roles;
 mod stream;
 mod support;
 mod threads;

@@ -43,6 +43,7 @@ pub(crate) fn message(
         thread_root: None,
         reply_count: 0,
         last_reply: None,
+        reply_authors: Vec::new(),
         pinned: false,
         files_removed_by_retention: false,
     }

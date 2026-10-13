@@ -55,11 +55,10 @@ pub(crate) enum ThreadMoved {
     Unsettled,
 }
 
-/// True at `now` inside a daily quiet time. The two minutes are minutes of a day at the
-/// stated distance from UTC; a time that starts later than it ends passes midnight.
-pub fn in_daily_quiet(quiet: &DailyQuiet, now: OffsetDateTime) -> bool {
-    let local = now + time::Duration::minutes(i64::from(quiet.utc_offset_minutes));
-    let minute = u16::from(local.hour()) * 60 + u16::from(local.minute());
+/// True at a minute of the day inside a daily quiet time. `minute` is the minute of the
+/// day on the clock of the time zone that the quiet time names (ADR 0412); a time that
+/// starts later than it ends passes midnight.
+pub fn in_daily_quiet(quiet: &DailyQuiet, minute: u16) -> bool {
     if quiet.start_minute < quiet.end_minute {
         (quiet.start_minute..quiet.end_minute).contains(&minute)
     } else {
@@ -470,17 +469,21 @@ impl ServerModel {
             .map(|held| &held.settings)
     }
 
-    /// True while the account wants no alert: "do not disturb" is on, or `now` lies in the
-    /// daily quiet time. The server delivers no notice event during this time; a client
-    /// applies the same rule to what it holds already (ADR 0409).
-    pub fn is_quiet(&self, now: OffsetDateTime) -> bool {
+    /// True while the account wants no alert: "do not disturb" is on, or the clock of the
+    /// zone of the daily quiet time shows a time inside it. `minute_in` gives the minute of
+    /// the day that the clock of a named time zone shows now, and nothing for a zone that
+    /// the caller does not know: the client core holds no time zone data, and a zone that
+    /// is not known gives no quiet time, as on the server (ADR 0412). The server delivers
+    /// no notice event during this time; a client applies the same rule to what it holds
+    /// already (ADR 0409).
+    pub fn is_quiet(&self, minute_in: impl Fn(&str) -> Option<u16>) -> bool {
         self.notification_settings(SettingsScope::Account)
             .is_some_and(|settings| {
                 settings.do_not_disturb
-                    || settings
-                        .daily_quiet
-                        .as_ref()
-                        .is_some_and(|quiet| in_daily_quiet(quiet, now))
+                    || settings.daily_quiet.as_ref().is_some_and(|quiet| {
+                        minute_in(&quiet.time_zone)
+                            .is_some_and(|minute| in_daily_quiet(quiet, minute))
+                    })
             })
     }
 
@@ -530,38 +533,31 @@ impl ServerModel {
 mod tests {
     use super::*;
 
-    fn at(hour: u8, minute: u8) -> OffsetDateTime {
-        OffsetDateTime::from_unix_timestamp(1_700_000_000)
-            .unwrap()
-            .replace_time(time::Time::from_hms(hour, minute, 0).unwrap())
+    fn quiet(start: u16, end: u16) -> DailyQuiet {
+        DailyQuiet {
+            start_minute: start,
+            end_minute: end,
+            time_zone: "Europe/Lisbon".to_owned(),
+        }
     }
 
     #[test]
-    fn a_daily_quiet_time_holds_between_its_minutes_in_its_zone() {
-        let quiet = DailyQuiet {
-            start_minute: 13 * 60,
-            end_minute: 14 * 60,
-            utc_offset_minutes: -180,
-        };
-        // 13:00 at three hours behind UTC is 16:00 UTC.
-        assert!(!in_daily_quiet(&quiet, at(15, 59)));
-        assert!(in_daily_quiet(&quiet, at(16, 0)));
-        assert!(in_daily_quiet(&quiet, at(16, 59)));
-        assert!(!in_daily_quiet(&quiet, at(17, 0)));
+    fn a_daily_quiet_time_holds_between_its_minutes_on_the_clock_of_its_zone() {
+        let quiet = quiet(13 * 60, 14 * 60);
+        assert!(!in_daily_quiet(&quiet, 12 * 60 + 59));
+        assert!(in_daily_quiet(&quiet, 13 * 60));
+        assert!(in_daily_quiet(&quiet, 13 * 60 + 59));
+        assert!(!in_daily_quiet(&quiet, 14 * 60));
     }
 
     #[test]
     fn a_daily_quiet_time_can_pass_midnight() {
-        let quiet = DailyQuiet {
-            start_minute: 22 * 60,
-            end_minute: 7 * 60,
-            utc_offset_minutes: 0,
-        };
-        assert!(in_daily_quiet(&quiet, at(22, 0)));
-        assert!(in_daily_quiet(&quiet, at(23, 59)));
-        assert!(in_daily_quiet(&quiet, at(0, 0)));
-        assert!(in_daily_quiet(&quiet, at(6, 59)));
-        assert!(!in_daily_quiet(&quiet, at(7, 0)));
-        assert!(!in_daily_quiet(&quiet, at(21, 59)));
+        let quiet = quiet(22 * 60, 7 * 60);
+        assert!(in_daily_quiet(&quiet, 22 * 60));
+        assert!(in_daily_quiet(&quiet, 23 * 60 + 59));
+        assert!(in_daily_quiet(&quiet, 0));
+        assert!(in_daily_quiet(&quiet, 6 * 60 + 59));
+        assert!(!in_daily_quiet(&quiet, 7 * 60));
+        assert!(!in_daily_quiet(&quiet, 21 * 60 + 59));
     }
 }

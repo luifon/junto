@@ -1,8 +1,8 @@
 //! The routes of notices, notification settings and search (ADR 0409).
 
 use junto_protocol::discovery::{
-    Notification, NotificationDefault, NotificationLevel, NotificationPage, NotificationSettings,
-    SearchPage,
+    MarkNotificationsRead, Notification, NotificationDefault, NotificationLevel, NotificationPage,
+    NotificationSettings, NotificationsRead, SearchPage,
 };
 use junto_protocol::ids::{AccountId, ChannelId, WorkspaceId};
 use time::OffsetDateTime;
@@ -139,11 +139,12 @@ impl ServerApi {
         self.send(Method::Put, path, settings).await
     }
 
-    /// The level that an administrator set for the members of a workspace.
+    /// The level that an administrator set for the members of a workspace. Absent: the
+    /// workspace has none (ADR 0412).
     pub async fn notification_default(
         &self,
         workspace_id: WorkspaceId,
-    ) -> Result<NotificationLevel, ApiError> {
+    ) -> Result<Option<NotificationLevel>, ApiError> {
         let path = format!("/workspaces/{workspace_id}/notification-default");
         let held: NotificationDefault = self.get(path).await?;
         Ok(held.level)
@@ -154,12 +155,33 @@ impl ServerApi {
         &self,
         workspace_id: WorkspaceId,
         level: NotificationLevel,
-    ) -> Result<NotificationLevel, ApiError> {
+    ) -> Result<Option<NotificationLevel>, ApiError> {
         let path = format!("/workspaces/{workspace_id}/notification-default");
-        let held: NotificationDefault = self
-            .send(Method::Put, path, &NotificationDefault { level })
-            .await?;
+        let body = NotificationDefault { level: Some(level) };
+        let held: NotificationDefault = self.send(Method::Put, path, &body).await?;
         Ok(held.level)
+    }
+
+    /// Removes the level that an administrator set for the members of a workspace. The
+    /// default of each account applies afterwards (ADR 0412).
+    pub async fn remove_notification_default(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<(), ApiError> {
+        let path = format!("/workspaces/{workspace_id}/notification-default");
+        self.act(Method::Delete, path).await
+    }
+
+    /// Marks every unread notice of the caller that was created at or before `until` as
+    /// read, in one request. `until` is the time of the newest notice that the person
+    /// saw; without it the server takes the time of the request (ADR 0412).
+    pub async fn mark_notifications_read(
+        &self,
+        until: Option<OffsetDateTime>,
+    ) -> Result<NotificationsRead, ApiError> {
+        let body = MarkNotificationsRead { until };
+        self.send(Method::Put, "/notifications/read".to_owned(), &body)
+            .await
     }
 
     // Search.

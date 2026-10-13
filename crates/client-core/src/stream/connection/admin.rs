@@ -89,13 +89,19 @@ pub(super) async fn read(api: &ServerApi, part: AdminPart) -> Result<AdminPayloa
                 recording_retention,
             }))
         }
+        AdminPart::ChannelPermissions(channel_id) => api
+            .channel_permissions(channel_id)
+            .await
+            .map(AdminPayload::ChannelPermissions),
     }
 }
 
 /// True when the state holds the workspace or the channel of a collection.
 fn in_state(model: &ServerModel, part: AdminPart) -> bool {
     match part {
-        AdminPart::Overrides(channel_id) => model.readable_channel(channel_id).is_some(),
+        AdminPart::Overrides(channel_id) | AdminPart::ChannelPermissions(channel_id) => {
+            model.readable_channel(channel_id).is_some()
+        }
         part => part
             .workspace()
             .is_none_or(|workspace_id| model.workspace(workspace_id).is_some()),
@@ -231,10 +237,20 @@ impl Client {
         let Some(model) = &mut self.model else {
             return;
         };
-        if let Some(before) = before {
-            model.carry_archived(before, places);
-        }
         let wanted: Vec<AdminPart> = self.admin.wanted.keys().copied().collect();
+        if let Some(before) = before {
+            // A collection of one channel holds its channel as a reader of its messages
+            // does: an archived channel is in no snapshot, and without it the collection
+            // would close at every reload.
+            let mut held = places.to_vec();
+            held.extend(wanted.iter().filter_map(|part| match part {
+                AdminPart::Overrides(channel_id) | AdminPart::ChannelPermissions(channel_id) => {
+                    Some(PlaceId::Channel(*channel_id))
+                }
+                _ => None,
+            }));
+            model.carry_archived(before, &held);
+        }
         for part in wanted {
             let held = self
                 .model

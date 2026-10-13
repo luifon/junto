@@ -40,6 +40,7 @@ pub(super) fn message(
         thread_root: None,
         reply_count: 0,
         last_reply: None,
+        reply_authors: Vec::new(),
         pinned: false,
         files_removed_by_retention: false,
     }
@@ -227,6 +228,7 @@ fn the_thread_of_the_side_panel_belongs_to_the_shown_channel() {
     let mut scene = scene();
     let ana = AccountId::generate();
     let manage = WorkspaceRole {
+        position: 0,
         id: junto_client_core::protocol::ids::WorkspaceRoleId::generate(),
         workspace_id: scene.studio,
         name: "everyone".to_owned(),
@@ -268,6 +270,8 @@ fn the_thread_of_the_side_panel_belongs_to_the_shown_channel() {
         latest: 6,
         unread: 2,
         mentions: 1,
+        following: true,
+        follow_setting: None,
     }];
     model.named = vec![(other_root.id, Named::Read(Arc::new(other_root.clone())))];
     model.workspaces[1] = {

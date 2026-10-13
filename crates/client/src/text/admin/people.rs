@@ -59,8 +59,14 @@ pub const fn blocked(reason: Blocked) -> &'static str {
         Blocked::Removed => "The account is removed.",
         Blocked::Banned => "The account is banned already.",
         Blocked::NotBanned => "The account is not banned.",
+        Blocked::Outranked => OUTRANKED,
+        Blocked::OrderNotRead => "The order of the server roles is on its way.",
     }
 }
+
+/// The sentence in the row of an account that role order protects (ADR 0309).
+pub const OUTRANKED: &str = "This account holds a server role at or above your highest server role. You cannot \
+     remove, ban or unban it.";
 
 pub fn remove_question(name: &str) -> String {
     format!(

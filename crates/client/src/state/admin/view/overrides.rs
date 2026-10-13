@@ -177,7 +177,9 @@ pub fn derive(
     workspace: &WorkspaceModel,
     channel: &Channel,
 ) -> PermissionsPage {
-    let held = model.channel_permissions(channel.id);
+    // What the person holds in the channel is the list that the server stated
+    // (ADR 0310).
+    let held = model.permissions_in(channel.id);
     let roles = Listed::of(model.admin.overrides(channel.id), |overrides| {
         let everyone = workspace.roles.iter().filter(|role| role.is_everyone);
         let others = workspace.roles.iter().filter(|role| !role.is_everyone);
@@ -197,7 +199,7 @@ pub fn derive(
                         .map(|permission| PermissionLine {
                             permission,
                             current: choice_of(current, permission),
-                            held: held.is_some_and(|held| held.contains(permission)),
+                            held: held.is_some_and(|held| held.contains(&permission)),
                         })
                         .collect(),
                 }
@@ -242,16 +244,17 @@ mod tests {
 
     fn scene() -> Scene {
         let studio = WorkspaceId::generate();
-        let role = |name: &str, permissions: &[WorkspacePermission], is_everyone| WorkspaceRole {
+        let role = |name: &str, permissions: &[WorkspacePermission], position| WorkspaceRole {
+            position,
             id: WorkspaceRoleId::generate(),
             workspace_id: studio,
             name: name.to_owned(),
             permissions: permissions.to_vec(),
-            is_everyone,
+            is_everyone: position == 0,
         };
-        let leads = role("leads", &[ManageChannel], false);
-        let everyone = role("everyone", &[ViewChannel], true);
-        let guests = role("guests", &[], false);
+        let leads = role("leads", &[ManageChannel], 2);
+        let everyone = role("everyone", &[ViewChannel], 0);
+        let guests = role("guests", &[], 1);
         let general = Channel {
             id: ChannelId::generate(),
             workspace_id: studio,
@@ -288,6 +291,9 @@ mod tests {
                 categories: Vec::new(),
                 channels: vec![general.clone()],
                 calls: Vec::new(),
+                permissions: Vec::new(),
+                channel_permissions: Vec::new(),
+                notification_default: None,
             }],
             own_call: None,
             direct_calls: Vec::new(),
@@ -339,13 +345,25 @@ mod tests {
             }
         }
 
+        /// The server states this list for the account in the channel (ADR 0310): what
+        /// its permission function gives with the overrides of the channel.
+        fn holds_in_channel(&mut self, permissions: &[WorkspacePermission]) {
+            let general = self.general;
+            self.snapshot.workspaces[0].channel_permissions =
+                vec![junto_client_core::protocol::structure::ChannelPermissions {
+                    channel_id: general,
+                    permissions: permissions.to_vec(),
+                }];
+        }
+
         /// The overrides of the channel are read and hold these.
         fn load(&mut self, overrides: Vec<ChannelOverride>) {
             self.admin.overrides = vec![(self.general, Collection::Loaded(overrides))];
         }
 
         fn page(&self) -> PermissionsPage {
-            let mut model = ServerModel::from_snapshot(self.snapshot.clone());
+            let mut model =
+                ServerModel::from_snapshot(crate::state::fixtures::stated(self.snapshot.clone()));
             model.admin = Arc::new(self.admin.clone());
             let workspace = model.workspace(self.studio).unwrap();
             let channel = model.readable_channel(self.general).unwrap();
@@ -591,11 +609,17 @@ mod tests {
     }
 
     #[test]
-    fn the_permissions_of_the_person_count_the_overrides_of_the_channel() {
+    fn the_choices_follow_the_list_that_the_server_states_for_the_channel() {
         let mut scene = scene();
         scene.lead_holds(&[ManageChannel, MuteMembers]);
         scene.load(vec![sets(scene.leads, &[RecordCalls], &[MuteMembers])]);
-        // The override of the role of the person allows "record calls" in this channel.
+        // The page compares no override: until the server states another list for the
+        // channel, the list of the workspace holds.
+        assert!(!scene.line(scene.guests, RecordCalls).held);
+        assert!(scene.line(scene.guests, MuteMembers).held);
+        // The server states the list of the channel: the override of the role of the
+        // person allows "record calls" there.
+        scene.holds_in_channel(&[ViewChannel, ManageChannel, RecordCalls]);
         assert!(scene.line(scene.guests, RecordCalls).held);
         assert_eq!(
             scene.line(scene.guests, RecordCalls).refused(Choice::Allow),
@@ -616,6 +640,7 @@ mod tests {
         );
         // An allow of the "everyone" role counts for the person too.
         scene.load(vec![sets(scene.everyone, &[DeafenMembers], &[])]);
+        scene.holds_in_channel(&[ViewChannel, ManageChannel, MuteMembers, DeafenMembers]);
         assert_eq!(
             scene
                 .line(scene.guests, DeafenMembers)
@@ -778,8 +803,10 @@ mod tests {
         let line = scene.line(everyone, ViewChannel);
         assert_eq!(line.current, Choice::Deny);
         assert!(scene.role(everyone).has_override);
-        // A person who is no administrator does not see a private channel, holds nothing
-        // in it, and cannot open it again.
+        // A person who is no administrator holds nothing in a private channel, and cannot
+        // open it again.
+        scene.holds_in_channel(&[]);
+        let line = scene.line(everyone, ViewChannel);
         assert_eq!(line.refused(Choice::Default), Some(Refused::LiftsDeny));
     }
 }

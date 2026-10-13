@@ -9,6 +9,8 @@ pub mod account;
 pub mod admin;
 pub mod book;
 pub mod feed;
+#[cfg(any(test, feature = "test-support"))]
+pub mod fixtures;
 pub mod linking;
 mod messages;
 pub mod people;
@@ -1577,9 +1579,14 @@ impl AppState {
         let archived = shown.server.zip(
             view.workspace()
                 .filter(|workspace| workspace.archived.is_some())
-                .map(|workspace| workspace.id),
+                .and_then(|workspace| Some((workspace.id, workspace.channel.as_ref()?.id))),
         );
-        self.follow_admin(archived, cx);
+        self.follow_admin(
+            archived.map(|(server_id, (workspace_id, channel_id))| {
+                (server_id, workspace_id, channel_id)
+            }),
+            cx,
+        );
         self.follow_account(cx);
         self.follow_places(shown, cx);
         self.ask_missing_quotes(shown, cx);

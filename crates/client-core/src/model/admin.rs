@@ -8,10 +8,7 @@
 
 use std::sync::Arc;
 
-use junto_authz::{
-    ChannelScope, HeldRole, Membership, Override, RoleKey, RoleOverride, WorkspacePermissions,
-    WorkspaceScope,
-};
+use junto_protocol::WorkspacePermission;
 use junto_protocol::access_token::AccessTokenInfo;
 use junto_protocol::account::AccountSummary;
 use junto_protocol::discovery::Retention;
@@ -22,6 +19,7 @@ use junto_protocol::invite::{Invite, JoinRequest, JoinRequestState};
 use junto_protocol::roles::ServerRole;
 use junto_protocol::structure::{ArchivePeriod, ArchivedChannel, Channel, ChannelOverride};
 
+use super::rank::sort_server_roles;
 use super::{PlaceId, ServerModel};
 use crate::api::{ApiError, ErrorCategory};
 
@@ -106,6 +104,9 @@ pub enum AdminPart {
     Archived(WorkspaceId),
     /// The archive period and the retention of one workspace.
     WorkspaceSettings(WorkspaceId),
+    /// The workspace permissions of the account in one archived channel (ADR 0310). The
+    /// snapshot states them for the channels of the channel lists only.
+    ChannelPermissions(ChannelId),
 }
 
 /// The settings of a workspace that only an administrator reads.
@@ -133,6 +134,7 @@ pub(crate) enum AdminPayload {
     Overrides(Vec<ChannelOverride>),
     Archived(Vec<ArchivedChannel>),
     WorkspaceSettings(WorkspaceSettings),
+    ChannelPermissions(Vec<WorkspacePermission>),
 }
 
 /// What the stream client puts in the place of a collection.
@@ -159,11 +161,14 @@ pub struct AdminModel {
     pub access_tokens_more: bool,
     /// The newest first.
     pub exports: Collection<Vec<Export>>,
+    /// From the highest position to the lowest (ADR 0309).
     pub server_roles: Collection<Vec<ServerRole>>,
     pub direct_retention: Collection<Retention>,
     pub overrides: Vec<(ChannelId, Collection<Vec<ChannelOverride>>)>,
     pub archived: Vec<(WorkspaceId, Collection<Vec<ArchivedChannel>>)>,
     pub settings: Vec<(WorkspaceId, Collection<WorkspaceSettings>)>,
+    /// The permissions of the account in the archived channels that a reader asked for.
+    pub channel_permissions: Vec<(ChannelId, Collection<Vec<WorkspacePermission>>)>,
     /// The archived channels that the state knows outside the loaded lists: a channel
     /// that was archived while a reader had its messages open, and a channel that a
     /// reload carried for such a reader until the list of its workspace answers.
@@ -249,6 +254,15 @@ impl AdminModel {
         keyed(&self.settings, workspace_id)
     }
 
+    /// The permissions of the account in an archived channel, while a reader has them
+    /// open.
+    pub fn channel_permissions(
+        &self,
+        channel_id: ChannelId,
+    ) -> &Collection<Vec<WorkspacePermission>> {
+        keyed(&self.channel_permissions, channel_id)
+    }
+
     pub fn state(&self, part: AdminPart) -> CollectionState {
         match part {
             AdminPart::Accounts => state_of(&self.accounts),
@@ -262,6 +276,9 @@ impl AdminModel {
             AdminPart::Archived(workspace_id) => state_of(self.archived(workspace_id)),
             AdminPart::WorkspaceSettings(workspace_id) => {
                 state_of(self.workspace_settings(workspace_id))
+            }
+            AdminPart::ChannelPermissions(channel_id) => {
+                state_of(self.channel_permissions(channel_id))
             }
         }
     }
@@ -308,6 +325,9 @@ impl AdminModel {
                 }
                 AdminPart::WorkspaceSettings(workspace_id) => {
                     mark_keyed_loading(&mut self.settings, workspace_id);
+                }
+                AdminPart::ChannelPermissions(channel_id) => {
+                    mark_keyed_loading(&mut self.channel_permissions, channel_id);
                 }
             }
             return;
@@ -367,7 +387,7 @@ impl AdminModel {
             AdminPart::ServerRoles => {
                 self.server_roles = plain(set, |payload| match payload {
                     AdminPayload::ServerRoles(mut roles) => {
-                        roles.sort_by_key(|held| held.id);
+                        sort_server_roles(&mut roles);
                         Some(roles)
                     }
                     _ => None,
@@ -411,6 +431,13 @@ impl AdminModel {
                     _ => None,
                 });
                 set_keyed(&mut self.settings, workspace_id, collection);
+            }
+            AdminPart::ChannelPermissions(channel_id) => {
+                let collection = plain(set, |payload| match payload {
+                    AdminPayload::ChannelPermissions(permissions) => Some(permissions),
+                    _ => None,
+                });
+                set_keyed(&mut self.channel_permissions, channel_id, collection);
             }
         }
     }
@@ -460,6 +487,8 @@ impl AdminModel {
         self.archived.retain(|(held, _)| *held != workspace_id);
         self.settings.retain(|(held, _)| *held != workspace_id);
         self.overrides.retain(|(held, _)| !channels.contains(held));
+        self.channel_permissions
+            .retain(|(held, _)| !channels.contains(held));
         self.archived_known
             .retain(|held| held.channel.workspace_id != workspace_id);
     }
@@ -507,7 +536,18 @@ impl AdminModel {
             Event::ServerRoleCreated { role } | Event::ServerRoleUpdated { role } => {
                 if let Some(roles) = self.server_roles.loaded_mut() {
                     upsert(roles, role, |held| held.id == role.id);
-                    roles.sort_by_key(|held| held.id);
+                    sort_server_roles(roles);
+                }
+            }
+            Event::ServerRolePositionsShifted { positions } => {
+                if let Some(roles) = self.server_roles.loaded_mut() {
+                    for held in roles.iter_mut() {
+                        if let Some(moved) = positions.iter().find(|moved| moved.role_id == held.id)
+                        {
+                            held.position = moved.position;
+                        }
+                    }
+                    sort_server_roles(roles);
                 }
             }
             Event::ServerRoleDeleted { role_id } => {
@@ -675,6 +715,7 @@ impl AdminPart {
                 Event::ServerRoleCreated { .. }
                     | Event::ServerRoleUpdated { .. }
                     | Event::ServerRoleDeleted { .. }
+                    | Event::ServerRolePositionsShifted { .. }
             ),
             Self::Overrides(channel_id) => match event {
                 Event::ChannelOverrideSet { channel_id: of, .. } => of == channel_id,
@@ -692,6 +733,9 @@ impl AdminPart {
                 _ => false,
             },
             Self::WorkspaceSettings(_) | Self::DirectRetention => self.is_stale_after(event),
+            // No event carries the list: a change of it is `permissions_changed`, which
+            // replaces the state, and every open collection is read again then.
+            Self::ChannelPermissions(_) => false,
         }
     }
 
@@ -717,17 +761,6 @@ impl AdminPart {
             _ => None,
         }
     }
-}
-
-fn set_of(permissions: &[junto_protocol::WorkspacePermission]) -> WorkspacePermissions {
-    permissions.iter().copied().collect()
-}
-
-fn rule_of(held: &ChannelOverride) -> Override {
-    // A server that sends a permission in both sets states no rule that the function
-    // of the permissions accepts: the deny is kept, which gives the account less.
-    let deny = set_of(&held.deny);
-    Override::new(set_of(&held.allow).difference(deny), deny).unwrap_or(Override::NONE)
 }
 
 impl ServerModel {
@@ -871,6 +904,16 @@ impl ServerModel {
                         .overrides
                         .retain(|(of, _)| of != channel_id);
                 }
+                if self
+                    .admin
+                    .channel_permissions
+                    .iter()
+                    .any(|(of, _)| of == channel_id)
+                {
+                    self.admin_mut()
+                        .channel_permissions
+                        .retain(|(of, _)| of != channel_id);
+                }
             }
             Event::RetentionChanged { workspace_id } => {
                 let part = match workspace_id {
@@ -916,49 +959,5 @@ impl ServerModel {
         channels: &[ChannelId],
     ) {
         self.admin_mut().forget_workspace(workspace_id, channels);
-    }
-
-    /// The permissions that the account holds in a channel by its roles and the loaded
-    /// overrides of the channel, decided by the function of the server (ADR 0304). `None`
-    /// until the overrides of the channel are loaded. An administrator holds every
-    /// permission. The server decides every request; this is what a screen shows as
-    /// possible.
-    pub fn channel_permissions(&self, channel_id: ChannelId) -> Option<WorkspacePermissions> {
-        if self.is_administrator() {
-            return Some(WorkspacePermissions::ALL);
-        }
-        let channel = self.readable_channel(channel_id)?;
-        let workspace = self.workspace(channel.workspace_id)?;
-        let overrides = self.admin.overrides(channel_id).loaded()?;
-        let everyone = workspace.roles.iter().find(|role| role.is_everyone)?;
-        let key = |role_id: WorkspaceRoleId| RoleKey(role_id.as_uuid().as_u128());
-        let scope = ChannelScope {
-            workspace: WorkspaceScope {
-                membership: Membership::Member,
-                everyone: set_of(&everyone.permissions),
-                roles: workspace
-                    .roles
-                    .iter()
-                    .filter(|role| !role.is_everyone && workspace.own_role_ids.contains(&role.id))
-                    .map(|role| HeldRole {
-                        key: key(role.id),
-                        permissions: set_of(&role.permissions),
-                    })
-                    .collect(),
-            },
-            everyone_override: overrides
-                .iter()
-                .find(|held| held.role_id == everyone.id)
-                .map_or(Override::NONE, rule_of),
-            role_overrides: overrides
-                .iter()
-                .filter(|held| held.role_id != everyone.id)
-                .map(|held| RoleOverride {
-                    role: key(held.role_id),
-                    rule: rule_of(held),
-                })
-                .collect(),
-        };
-        Some(scope.usable_permissions())
     }
 }

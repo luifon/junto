@@ -65,7 +65,7 @@ macro_rules! server_page {
 
 /// The name of the element of one row. gpui finds a drawn element by a name that lives as
 /// long as the program, and a test builds few names.
-fn sel(prefix: &str, of: impl std::fmt::Display) -> &'static str {
+pub(crate) fn sel(prefix: &str, of: impl std::fmt::Display) -> &'static str {
     Box::leak(format!("{prefix}-{of}").into_boxed_str())
 }
 
@@ -88,7 +88,11 @@ fn owner_window(
 }
 
 /// An invite for one use. No workspace: the default workspace.
-fn invite(world: &World, inviter: &ServerHandle, workspace_ids: Vec<WorkspaceId>) -> InviteCode {
+pub(crate) fn invite(
+    world: &World,
+    inviter: &ServerHandle,
+    workspace_ids: Vec<WorkspaceId>,
+) -> InviteCode {
     let invite = CreateInvite {
         workspace_ids,
         ..CreateInvite::default()
@@ -101,7 +105,7 @@ fn invite(world: &World, inviter: &ServerHandle, workspace_ids: Vec<WorkspaceId>
 
 /// A device without a window that joins the server with an invite code. Its event stream
 /// runs, so its state follows the server.
-fn joined(
+pub(crate) fn joined(
     world: &World,
     server: &TestServer,
     code: &InviteCode,
@@ -185,7 +189,7 @@ fn grant_workspace(
         .unwrap();
 }
 
-fn default_workspace(world: &World, handle: &ServerHandle) -> WorkspaceId {
+pub(crate) fn default_workspace(world: &World, handle: &ServerHandle) -> WorkspaceId {
     world
         .run(handle.api().workspaces())
         .unwrap()
@@ -195,7 +199,7 @@ fn default_workspace(world: &World, handle: &ServerHandle) -> WorkspaceId {
         .id
 }
 
-fn text_channel(
+pub(crate) fn text_channel(
     world: &World,
     handle: &ServerHandle,
     workspace_id: WorkspaceId,
@@ -214,7 +218,7 @@ fn text_channel(
 }
 
 /// Waits until the event stream of a client without a window is in a state.
-fn until_stream(
+pub(crate) fn until_stream(
     world: &World,
     handle: &ServerHandle,
     what: &str,
@@ -230,7 +234,7 @@ fn until_stream(
 }
 
 /// The state of a client without a window, once it holds what `holds` asks for.
-fn until_model(
+pub(crate) fn until_model(
     world: &World,
     handle: &ServerHandle,
     what: &str,
@@ -243,7 +247,7 @@ fn until_model(
 
 /// Waits until the window gives a value, and returns it.
 #[track_caller]
-fn awaited<T>(
+pub(crate) fn awaited<T>(
     window: &mut Window,
     what: &str,
     mut read: impl FnMut(&mut Window) -> Option<T>,
@@ -259,7 +263,7 @@ fn awaited<T>(
 /// Clicks an element of the open page of the administration when it is drawn inside the
 /// visible part of the page. An element outside that part is brought nearer with the
 /// wheel, as a person does, and is not clicked. True when the element was clicked.
-fn try_click(window: &mut Window, selector: &'static str) -> bool {
+pub(crate) fn try_click(window: &mut Window, selector: &'static str) -> bool {
     window.cx.run_until_parked();
     let (Some(page), Some(element)) = (
         window.cx.debug_bounds("admin-page"),
@@ -287,7 +291,7 @@ fn try_click(window: &mut Window, selector: &'static str) -> bool {
 /// element that is not drawn now, and the page is scrolled to an element below its
 /// visible part.
 #[track_caller]
-fn click_in_page(window: &mut Window, selector: &'static str) {
+pub(crate) fn click_in_page(window: &mut Window, selector: &'static str) {
     window.until(&format!("{selector} is drawn and is clicked"), |window| {
         try_click(window, selector)
     });
@@ -295,7 +299,11 @@ fn click_in_page(window: &mut Window, selector: &'static str) {
 
 /// Clicks a row of the list of pages until `open` holds for the window.
 #[track_caller]
-fn open_page(window: &mut Window, row: &'static str, mut open: impl FnMut(&mut Window) -> bool) {
+pub(crate) fn open_page(
+    window: &mut Window,
+    row: &'static str,
+    mut open: impl FnMut(&mut Window) -> bool,
+) {
     window.until(&format!("the page of {row} is open"), |window| {
         if open(window) {
             return true;
@@ -333,7 +341,7 @@ fn open_channel_settings(window: &mut Window, name: &str, channel_id: ChannelId)
 }
 
 /// True when no request of the open page is on its way and none was refused.
-fn idle(window: &mut Window) -> bool {
+pub(crate) fn idle(window: &mut Window) -> bool {
     window.admin().is_some_and(|view| view.ask.is_none())
 }
 
@@ -346,7 +354,7 @@ fn knows_member(window: &mut Window, name: &str) -> bool {
     )
 }
 
-fn account(window: &mut Window, account_id: AccountId) -> Option<AccountLine> {
+pub(crate) fn account(window: &mut Window, account_id: AccountId) -> Option<AccountLine> {
     server_page!(window, People)?
         .accounts
         .loaded()?

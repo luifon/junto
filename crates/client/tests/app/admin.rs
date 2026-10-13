@@ -360,6 +360,14 @@ fn an_administrator_manages_workspaces_and_channels_in_the_window(cx: &mut TestA
             page: ChannelPage::Archive,
         })
     );
+    // The permissions of the account in an archived channel are read from its route:
+    // the restore is offered when they arrived.
+    window.until("the restore is offered", |window| {
+        matches!(
+            window.admin().map(|view| view.scope),
+            Some(Scope::Channel(settings)) if settings.archived && settings.may_manage
+        )
+    });
     window.click("channel-restore");
     until_model(&world, &other, "the restored channel", |model| {
         model.channel(plans).is_some()
