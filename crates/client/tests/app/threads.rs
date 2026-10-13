@@ -171,7 +171,12 @@ fn a_person_answers_in_a_thread_and_sees_what_is_new_in_it(cx: &mut TestAppConte
     // the channel and the channel column show what is new in the thread.
     window.click("close-thread");
     assert!(!window.shows("thread-panel"));
-    assert!(!window.shows_named(format!("thread-row:{root_id}")));
+    // The person wrote in the thread and follows it by the rule of the server: it stays
+    // listed under its channel, without a sign (ADR 0796).
+    window.until("the followed thread under its channel", |window| {
+        window.shows_named(format!("thread-row:{root_id}"))
+    });
+    assert!(!window.shows_named(format!("thread-unread:{root_id}")));
     let mention = Document {
         blocks: vec![Block::Paragraph {
             content: vec![
@@ -582,4 +587,154 @@ fn a_late_answer_for_a_conversation_is_not_followed_after_the_person_went_away_a
     let workspace = view.workspace().unwrap();
     assert!(workspace.conversation.is_none());
     assert_eq!(workspace.channel.as_ref().unwrap().id, text);
+}
+
+#[gpui::test]
+fn a_person_follows_a_thread_and_stops_following_it(cx: &mut TestAppContext) {
+    let world = World::new();
+    let (_server, admin, _directory, mut window, channel_id, root_id) = with_root(cx, &world);
+    let server_id = window.view().selected.unwrap().id;
+    let follow = |window: &mut Window| {
+        window
+            .view()
+            .workspace()
+            .and_then(|workspace| workspace.thread.as_ref())
+            .and_then(|thread| thread.follow.clone())
+    };
+    // The row of the thread under its channel in the channel column.
+    let entry = |window: &mut Window| {
+        window
+            .channels()
+            .into_iter()
+            .flat_map(|row| row.threads)
+            .find(|entry| entry.root_id == root_id)
+    };
+
+    // A member who did not write in the thread and was not named in it does not follow
+    // it, and made no choice.
+    window.open_thread_of(root_id);
+    window.until("the follow state is read", |window| {
+        follow(window).is_some()
+    });
+    let control = follow(&mut window).unwrap();
+    assert_eq!((control.following, control.setting), (false, None));
+    assert_eq!(
+        text::followed::state(control.following, control.setting),
+        "You do not follow this thread."
+    );
+    assert_eq!(text::followed::action(control.following), "Follow");
+    assert!(window.shows("thread-follow-state") && window.shows("thread-follow"));
+    assert!(!window.shows("thread-follow-default") && !window.shows("thread-follow-refused"));
+
+    // The member presses "Follow": the server stores the choice.
+    window.click("thread-follow");
+    window.until("the choice to follow", |window| {
+        follow(window).is_some_and(|control| {
+            control.following && control.setting == Some(true) && !control.busy
+        })
+    });
+    let control = follow(&mut window).unwrap();
+    assert_eq!(
+        text::followed::state(control.following, control.setting),
+        "You follow this thread."
+    );
+    assert_eq!(control.refused, None);
+    assert!(window.shows("thread-follow-default"));
+
+    // The panel is closed. A thread without a reply is in no list.
+    window.click("close-thread");
+    assert!(!window.shows("thread-panel"));
+    assert_eq!(entry(&mut window), None);
+
+    // Another person answers: the thread is listed under its channel with what is new.
+    admin.reply(&world, root_id, document("One per speaker."));
+    window.until("the unread thread under its channel", |window| {
+        entry(window).is_some_and(|entry| {
+            entry.unread == 1 && entry.title.as_deref() == Some("Tracks or mixdown?")
+        })
+    });
+    assert!(window.shows_named(format!("thread-row:{root_id}")));
+
+    // The member opens the thread and reads the reply.
+    window.click_named(format!("thread-row:{root_id}"));
+    window.until("the reply is drawn", |window| {
+        window.replies() == ["One per speaker."]
+    });
+    let place = PlaceId::Thread {
+        channel_id,
+        root_id,
+    };
+    window.until("the reply is read", |window| {
+        // The read position follows the end of a list in an active window. The window
+        // of a test need not be the active one: the position is moved as the list
+        // moves it.
+        let end = window
+            .view()
+            .workspace()
+            .and_then(|workspace| workspace.thread.as_ref())
+            .and_then(|thread| thread.feed.as_ref())
+            .and_then(|feed| feed.end_position);
+        if let Some(position) = end {
+            window.in_shell(|shell, _, cx| {
+                shell.state().update(cx, |state, _| {
+                    state.mark_read(server_id, place, position);
+                });
+            });
+        }
+        entry(window).is_some_and(|entry| entry.open && entry.unread == 0)
+    });
+
+    // The panel is closed: the thread stays under its channel as a thread that the
+    // member follows, without a sign.
+    window.click("close-thread");
+    assert!(!window.shows("thread-panel"));
+    window.until("the followed thread under its channel", |window| {
+        entry(window).is_some_and(|entry| {
+            !entry.open
+                && entry.unread == 0
+                && entry.mentions == 0
+                && entry.title.as_deref() == Some("Tracks or mixdown?")
+        })
+    });
+    assert!(window.shows_named(format!("thread-row:{root_id}")));
+
+    // The member opens the thread from that row and stops following it.
+    window.click_named(format!("thread-row:{root_id}"));
+    window.until("the follow state of the followed thread", |window| {
+        follow(window).is_some_and(|control| control.following && control.setting == Some(true))
+    });
+    assert_eq!(text::followed::action(true), "Stop following");
+    window.click("thread-follow");
+    window.until("the choice not to follow", |window| {
+        follow(window).is_some_and(|control| {
+            !control.following && control.setting == Some(false) && !control.busy
+        })
+    });
+    let control = follow(&mut window).unwrap();
+    assert_eq!(
+        text::followed::state(control.following, control.setting),
+        text::followed::NOT_FOLLOWING_BY_CHOICE
+    );
+    window.click("close-thread");
+    window.until("the thread is not listed any more", |window| {
+        entry(window).is_none()
+    });
+    assert!(!window.shows_named(format!("thread-row:{root_id}")));
+
+    // A further reply is not unread for the member: no row is added.
+    admin.reply(&world, root_id, document("Agreed."));
+    let replies = |window: &mut Window| {
+        window
+            .messages()
+            .into_iter()
+            .find(|row| row.message.id == root_id)
+            .and_then(|row| row.thread)
+            .map(|mark| (mark.replies, mark.unread))
+    };
+    window.until("the second reply is counted on the message", |window| {
+        replies(window).is_some_and(|(count, _)| count == 2)
+    });
+    assert_eq!(replies(&mut window), Some((2, 0)));
+    assert_eq!(entry(&mut window), None);
+    assert!(!window.shows_named(format!("thread-row:{root_id}")));
 }

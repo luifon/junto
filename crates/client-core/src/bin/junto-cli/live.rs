@@ -758,7 +758,9 @@ fn event_details(event: &Event) -> String {
                 None => "not_set",
             }
         ),
-        Event::InviteCreated { invite } => format!("invite={}", invite.id),
+        Event::InviteCreated { invite } | Event::InviteChanged { invite } => {
+            format!("invite={}", invite.id)
+        }
         Event::InviteRevoked {
             invite_id,
             revocation,
@@ -937,6 +939,10 @@ fn event_details(event: &Event) -> String {
             "conversation={} accounts={},{}",
             conversation.id, conversation.low_account_id, conversation.high_account_id
         ),
+        Event::ServerLogoChanged { logo } => match logo {
+            Some(logo) => format!("logo={}", shown(&logo.hash)),
+            None => "logo=none".to_owned(),
+        },
         Event::AttachmentLimitsChanged { limits } => format!(
             "bytes_per_file={} files_per_message={}",
             limits.bytes_per_file, limits.files_per_message
@@ -1222,5 +1228,52 @@ async fn watching(
             _ = &mut interrupt => return Ok(()),
             () = until(end) => return Ok(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use junto_client_core::protocol::account::{Avatar, ImageType};
+    use junto_client_core::protocol::ids::{InviteId, WorkspaceId};
+    use junto_client_core::protocol::invite::Invite;
+
+    use super::*;
+
+    #[test]
+    fn the_details_of_an_event_name_a_changed_invite_and_the_logo() {
+        let at = OffsetDateTime::UNIX_EPOCH + time::Duration::days(20_000);
+        let invite = Invite {
+            id: InviteId::generate(),
+            created_by: AccountId::generate(),
+            created_by_name: None,
+            created_at: at,
+            expires_at: at,
+            max_uses: 5,
+            uses: 2,
+            workspace_ids: vec![WorkspaceId::generate()],
+            revocation: None,
+        };
+        let created = Event::InviteCreated {
+            invite: invite.clone(),
+        };
+        let changed = Event::InviteChanged {
+            invite: invite.clone(),
+        };
+        assert_eq!(changed.name(), "invite_changed");
+        assert_eq!(event_details(&changed), format!("invite={}", invite.id));
+        assert_eq!(event_details(&changed), event_details(&created));
+
+        let logo = Avatar {
+            hash: "ab12\u{1b}".to_owned(),
+            media_type: ImageType::Png,
+            bytes: 2048,
+            width: 64,
+            height: 64,
+        };
+        let set = Event::ServerLogoChanged { logo: Some(logo) };
+        assert_eq!(set.name(), "server_logo_changed");
+        assert_eq!(event_details(&set), "logo=ab12");
+        let taken = Event::ServerLogoChanged { logo: None };
+        assert_eq!(event_details(&taken), "logo=none");
     }
 }

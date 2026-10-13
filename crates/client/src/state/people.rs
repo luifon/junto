@@ -44,7 +44,7 @@ pub const TRIES: u8 = 3;
 pub const PICTURE_SIDE: u32 = 192;
 /// The largest side in pixels of an avatar that a server stores (ADR 0119). The decoder
 /// refuses a larger image of another account, whatever the server states.
-const AVATAR_SIDE: u32 = 1024;
+pub(crate) const AVATAR_SIDE: u32 = 1024;
 /// The largest side in pixels of the picture of the preset that the settings show. The
 /// preset does not read the size in pixels (ADR 0717).
 const PRESET_SIDE: u32 = 4096;

@@ -16,6 +16,11 @@ pub const PICTURE_UNSUPPORTED: &str =
 pub const PICTURE_UNREADABLE: &str =
     "The file could not be read. Check that the file exists and that you may open it.";
 
+/// The readable alternative of the picture that an account set (ADR 0702).
+pub fn picture_of(name: &str) -> String {
+    format!("Picture of {name}")
+}
+
 /// The line of a server that refused the picture of the preset for the account that this
 /// device created there (ADR 0717). The name is text of the server.
 pub fn preset_refused(server: &str) -> String {

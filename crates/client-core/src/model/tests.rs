@@ -149,6 +149,7 @@ impl Scene {
 
     pub(crate) fn own_call(&self, call_id: CallId, channel_id: ChannelId) -> OwnCall {
         OwnCall {
+            hides_occupants: None,
             call_id,
             place: self.place(channel_id),
             device_id: self.device_id,
@@ -159,6 +160,7 @@ impl Scene {
 
 pub(crate) fn participant(account_id: AccountId) -> CallParticipant {
     CallParticipant {
+        avatar: None,
         account_id,
         identity: format!("seat-{account_id}"),
         joined_at: time(),
@@ -173,6 +175,7 @@ pub(crate) fn participant(account_id: AccountId) -> CallParticipant {
 
 pub(crate) fn member(name: &str) -> WorkspaceMember {
     WorkspaceMember {
+        avatar: None,
         account_id: AccountId::generate(),
         name: name.to_owned(),
         role_ids: Vec::new(),
@@ -189,6 +192,7 @@ fn joined(call_id: CallId, place: CallPlace, participant: &CallParticipant) -> E
 
 fn started(call_id: CallId, place: CallPlace) -> Event {
     Event::CallStarted {
+        hides_occupants: None,
         call_id,
         place,
         started_at: time(),
@@ -497,6 +501,7 @@ fn a_call_in_a_voice_channel_follows_its_events() {
     model.apply(&joined(call_id, place, &bruno));
     model.apply(&joined(call_id, place, &ana));
     let muted = CallParticipant {
+        avatar: None,
         muted: true,
         hand_raised: true,
         ..bruno.clone()
@@ -577,6 +582,7 @@ fn meeting_mode_blocks_every_microphone_except_the_presenters_and_its_end_remove
     let listener = participant(AccountId::generate());
     let moderator = AccountId::generate();
     let blocked = CallParticipant {
+        avatar: None,
         microphone_block: Some(MicrophoneBlock {
             by: moderator,
             reason: BlockReason::Moderator,
@@ -749,6 +755,7 @@ fn the_account_reads_its_call_when_the_server_has_seen_its_device_in_the_room() 
     });
     assert_eq!(follow.load, [Part::OwnCall]);
     let answer = |participants: Vec<CallParticipant>| OwnCallState {
+        inside: None,
         own: own.clone(),
         call: Call {
             id: call_id,
@@ -781,6 +788,7 @@ fn the_account_reads_its_call_when_the_server_has_seen_its_device_in_the_room() 
         call_id,
         place,
         participant: CallParticipant {
+            avatar: None,
             muted: true,
             ..me.clone()
         },
@@ -842,6 +850,7 @@ fn a_read_of_a_hidden_call_that_the_account_left_shows_nothing_of_it() {
         model.apply(event);
     }
     model.set_own_call(Some(OwnCallState {
+        inside: None,
         own,
         call: Call {
             id: call_id,
@@ -944,6 +953,7 @@ fn the_account_that_leaves_a_call_that_never_started_keeps_nothing_of_it() {
         left: None,
     });
     model.set_own_call(Some(OwnCallState {
+        inside: None,
         own: own.clone(),
         call: Call {
             id: call_id,
@@ -996,7 +1006,9 @@ fn the_answer_for_the_own_call_gives_the_people_and_the_requests_of_that_call_on
         expires_at: time(),
     };
     let loaded = |call_id| OwnCallState {
+        inside: None,
         own: OwnCall {
+            hides_occupants: None,
             call_id,
             ..own.clone()
         },
@@ -1028,6 +1040,7 @@ fn the_answer_for_the_own_call_gives_the_people_and_the_requests_of_that_call_on
     // The call moves to another device of the account: the requests stay.
     let follow = model.apply(&Event::OwnCallChanged {
         call: Some(OwnCall {
+            hides_occupants: None,
             device_id: DeviceId::generate(),
             ..own
         }),
@@ -1144,6 +1157,7 @@ fn members_follow_the_events_once_they_are_loaded() {
     let mut model = scene.model();
     let (ana, bruno) = (member("Ana"), member("Bruno"));
     let own = WorkspaceMember {
+        avatar: None,
         account_id: scene.account_id,
         name: "Luca".to_owned(),
         role_ids: vec![scene.helpers],
@@ -1277,6 +1291,7 @@ fn the_events_that_arrived_during_a_read_are_applied_to_its_part_after_the_answe
         left: None,
     });
     let answer = OwnCallState {
+        inside: None,
         own,
         call: Call {
             id: call_id,
@@ -1343,6 +1358,7 @@ fn direct_calls_and_muted_conversations_follow_their_events() {
 
     // The account calls, nobody answers, and it leaves before the call started.
     let own = OwnCall {
+        hides_occupants: None,
         call_id,
         place,
         device_id: scene.device_id,
@@ -1353,6 +1369,7 @@ fn direct_calls_and_muted_conversations_follow_their_events() {
         left: None,
     });
     model.set_own_call(Some(OwnCallState {
+        inside: None,
         own,
         call: Call {
             id: call_id,
@@ -1623,6 +1640,7 @@ fn the_views_of_a_call_carry_its_recording_and_a_read_keeps_the_events_of_it() {
         left: None,
     });
     model.set_own_call(Some(OwnCallState {
+        inside: None,
         own: scene.own_call(call_id, scene.daily),
         call: call(Some(record.clone())),
         entry_requests: Vec::new(),
@@ -1638,6 +1656,7 @@ fn the_views_of_a_call_carry_its_recording_and_a_read_keeps_the_events_of_it() {
     assert!(Part::OwnCall.concerns(&during[0], &model));
     assert!(!Part::Members(scene.workspace_id).concerns(&during[0], &model));
     model.set_own_call(Some(OwnCallState {
+        inside: None,
         own: scene.own_call(call_id, scene.daily),
         call: call(Some(record)),
         entry_requests: Vec::new(),

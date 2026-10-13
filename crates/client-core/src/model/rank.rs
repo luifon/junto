@@ -103,6 +103,34 @@ impl ServerModel {
         Some(role_rank(false, &server, Some(&positions)))
     }
 
+    /// Where a member of a workspace stands for an action on its membership: a removal
+    /// from the workspace (ADR 0106). `account` is the account of the member as the list
+    /// of the accounts states it, and `role_ids` are its roles of the workspace. `None`
+    /// for a workspace that the state does not hold, when the workspace does not list
+    /// one of the roles, and while the server roles of an account that holds some are
+    /// not loaded.
+    pub fn workspace_rank_of(
+        &self,
+        workspace_id: WorkspaceId,
+        account: &AccountSummary,
+        role_ids: &[WorkspaceRoleId],
+    ) -> Option<RoleRank> {
+        if account.is_owner {
+            return Some(RoleRank::Owner);
+        }
+        let workspace = self.workspace(workspace_id)?;
+        let server = self.server_roles_of(&account.server_role_ids)?;
+        let mut positions = Vec::new();
+        for role_id in role_ids {
+            let role = workspace.roles.iter().find(|role| role.id == *role_id)?;
+            // The "everyone" role gives no position.
+            if !role.is_everyone {
+                positions.push(role.position);
+            }
+        }
+        Some(role_rank(false, &server, Some(&positions)))
+    }
+
     /// The server role with the identifier, while the server roles are loaded.
     pub fn server_role(&self, role_id: ServerRoleId) -> Option<&ServerRole> {
         self.admin

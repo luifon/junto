@@ -3,11 +3,13 @@
 //! of the open page. The server decides every request; a page shows as possible what the
 //! server stated that the person holds (ADR 0310).
 
+pub mod notifications;
 pub mod overrides;
 pub mod people;
 pub mod recordings;
 pub mod records;
 pub mod roles;
+pub mod server;
 #[cfg(test)]
 mod tests;
 
@@ -257,15 +259,19 @@ pub struct ChannelSettings {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerPage {
     Workspaces(WorkspacesPage),
+    /// The server itself: its logo.
+    Server(server::ServerSettingsPage),
     Channels(ChannelsPage),
     Archive(ArchivePage),
     Members(people::MembersPage),
+    Notifications(notifications::NotificationsPage),
     People(people::PeoplePage),
     Invites(people::InvitesPage),
     JoinRequests(people::RequestsPage),
     Tokens(records::TokensPage),
     Exports(records::ExportsPage),
-    AuditLog(records::AuditPage),
+    /// In a box: the page with its filters is larger than every other page.
+    AuditLog(Box<records::AuditPage>),
     Recordings(recordings::RecordingsPage),
     /// The server roles, or the roles of the shown workspace.
     Roles(roles::RolesPage),
@@ -334,6 +340,10 @@ pub fn holds_workspace(workspace: &WorkspaceModel, permission: WorkspacePermissi
 /// use is absent.
 pub fn nav(model: &ServerModel, workspace: Option<&WorkspaceModel>) -> Vec<NavGroup> {
     let mut server = vec![AdminPage::Workspaces];
+    // Only an administrator sets or removes the logo of the server (ADR 0101).
+    if model.is_administrator() {
+        server.push(AdminPage::Server);
+    }
     for (page, permission) in [
         (AdminPage::People, ServerPermission::BanMembers),
         (AdminPage::Invites, ServerPermission::CreateInvites),
@@ -368,11 +378,12 @@ pub fn nav(model: &ServerModel, workspace: Option<&WorkspaceModel>) -> Vec<NavGr
         }
         // Every member lists the recordings: the server answers with what the account
         // may see.
-        pages.extend([
-            AdminPage::Archive,
-            AdminPage::Members,
-            AdminPage::Recordings,
-        ]);
+        pages.extend([AdminPage::Archive, AdminPage::Members]);
+        // Only an administrator sets the notification level of a workspace (ADR 0412).
+        if model.is_administrator() {
+            pages.push(AdminPage::Notifications);
+        }
+        pages.push(AdminPage::Recordings);
         groups.push(NavGroup {
             title: NavTitle::Workspace(workspace.workspace.name.clone()),
             pages,
@@ -401,7 +412,21 @@ pub fn needs(
     let administrator = model.is_administrator();
     match *open {
         AdminOpen::Server { page, .. } => match page {
-            AdminPage::Workspaces | AdminPage::Channels | AdminPage::AuditLog => Vec::new(),
+            // The snapshot carries the notification level of a workspace.
+            // The logo is no collection: its image is read from the public route.
+            AdminPage::Workspaces
+            | AdminPage::Channels
+            | AdminPage::Notifications
+            | AdminPage::Server => Vec::new(),
+            // The filters by person offer the accounts of the server to a person who may
+            // list them.
+            AdminPage::AuditLog => {
+                if holds_server(model, ServerPermission::BanMembers) {
+                    vec![AdminPart::Accounts]
+                } else {
+                    Vec::new()
+                }
+            }
             // The server gives the server roles to every person who has the page: their
             // order decides who can be removed and banned (ADR 0309).
             AdminPage::People => vec![AdminPart::Accounts, AdminPart::ServerRoles],
@@ -728,9 +753,15 @@ pub fn derive(
                 (AdminPage::Members, Some(workspace)) => {
                     ServerPage::Members(people::members(server_id, model, workspace, known))
                 }
+                (AdminPage::Notifications, Some(workspace)) => {
+                    ServerPage::Notifications(notifications::derive(workspace))
+                }
                 (AdminPage::Recordings, Some(workspace)) => ServerPage::Recordings(
                     recordings::recordings(server_id, model, workspace, known, admin),
                 ),
+                (AdminPage::Server, _) => {
+                    ServerPage::Server(server::settings(server, model, known))
+                }
                 (AdminPage::People, _) => ServerPage::People(people::people(model, known)),
                 (AdminPage::Roles, Some(workspace)) => {
                     match roles::derive(model, RoleLevel::Workspace(workspace.workspace.id)) {
@@ -754,15 +785,16 @@ pub fn derive(
                 (AdminPage::Exports, _) => {
                     ServerPage::Exports(records::exports(server_id, model, known, admin))
                 }
-                (AdminPage::AuditLog, _) => {
-                    ServerPage::AuditLog(records::audit(server_id, model, workspace, known, admin))
-                }
+                (AdminPage::AuditLog, _) => ServerPage::AuditLog(Box::new(records::audit(
+                    server_id, model, workspace, known, admin,
+                ))),
                 (
                     AdminPage::Workspaces
                     | AdminPage::Channels
                     | AdminPage::Roles
                     | AdminPage::Archive
                     | AdminPage::Members
+                    | AdminPage::Notifications
                     | AdminPage::Recordings,
                     _,
                 ) => ServerPage::Workspaces(workspaces_page(

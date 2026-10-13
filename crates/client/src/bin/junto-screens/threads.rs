@@ -245,6 +245,155 @@ fn with_directs(closed: bool) -> (Vec<ServerSnapshot>, ConversationId) {
     (vec![acme, harbor()], ana_id)
 }
 
+/// The root of a thread of `#general` that the loaded messages of the channel do not
+/// hold.
+fn earlier_root(number: u32, author: &str, text: &str) -> Message {
+    Message {
+        id: id(5800 + number),
+        place: place(GENERAL),
+        position: u64::from(number),
+        author_id: Some(person(author)),
+        author_name: Some(author.to_owned()),
+        created_at: morning() - Duration::days(i64::from(number)),
+        edited_at: None,
+        document: Some(document(text)),
+        system: None,
+        reply_to: None,
+        permanent: false,
+        deleted: false,
+        attachments: Vec::new(),
+        reactions: Vec::new(),
+        thread_root: None,
+        reply_count: 3,
+        last_reply: None,
+        reply_authors: Vec::new(),
+        pinned: false,
+        files_removed_by_retention: false,
+    }
+}
+
+/// The screens of followed threads (ADR 0412, ADR 0413): the control of the thread panel
+/// in each state, and the followed threads under the shown channel.
+fn draw_followed(studio: &mut Studio) -> Result<(), String> {
+    let (servers, root_id) = with_thread(|_, _| {});
+    let follow = |state: (bool, Option<bool>), busy: bool, refused: Option<&'static str>| {
+        move |shell: &mut Shell, window: &mut gpui::Window, cx: &mut gpui::Context<Shell>| {
+            open_thread(shell, root_id, window, cx);
+            shell.state().clone().update(cx, |app, cx| {
+                app.show_follow_fixture(
+                    (server_id(), root_id),
+                    state,
+                    busy,
+                    refused.map(str::to_owned),
+                    cx,
+                );
+            });
+        }
+    };
+    // The four states: a choice to follow, a choice not to follow, and no choice with
+    // and without the rule of the server.
+    for (name, state) in [
+        ("follow-by-choice", (true, Some(true))),
+        ("follow-not-by-choice", (false, Some(false))),
+        ("follow-by-rule", (true, None)),
+        ("follow-no-choice", (false, None)),
+    ] {
+        studio.draw(
+            Screen::new(name, servers.clone()),
+            follow(state, false, None),
+        )?;
+    }
+    // A change on its way, and a change that the server refused.
+    studio.draw(
+        Screen::new("follow-sending", servers.clone()),
+        follow((false, Some(false)), true, None),
+    )?;
+    studio.draw(
+        Screen::new("follow-refused", servers),
+        follow(
+            (true, None),
+            false,
+            Some(junto_client::text::followed::THREAD_GONE),
+        ),
+    )?;
+
+    // The channel column: a thread with something unread, the followed threads that are
+    // read, and the row that offers the further ones.
+    let (unread, _) = with_thread(|model, _| {
+        let (_, root, _) = general_with_thread();
+        model.threads = vec![ThreadState {
+            root_id: root.id,
+            last_read: 22,
+            latest: 24,
+            unread: 2,
+            mentions: 1,
+            following: true,
+            follow_setting: None,
+        }];
+        model.named = vec![(root.id, Named::Read(root))];
+    });
+    let roots: Vec<Message> = [
+        ("Ana", "Retention of the call recordings"),
+        ("Bruno", "Which build goes to Alpha on Monday?"),
+        ("Carla", "Notes from the Alpha review"),
+        ("Marta", "The invoice for October"),
+        ("Diego", "Transcripts with separate tracks"),
+        ("Elisa", "The export of a channel is slow"),
+        ("Ana", "Names of the new voice channels"),
+        ("Bruno", "The checklist for v0.9"),
+        ("Carla", "A second recorder for the studio"),
+        ("Luca", "The order of the demo on Friday"),
+        ("Marta", "Access for the legal contact"),
+    ]
+    .into_iter()
+    .zip(1u32..)
+    .map(|((author, text), number)| earlier_root(number, author, text))
+    .collect();
+    // The server states the thread with the newest reply first: the unread one, then the
+    // read ones.
+    let followed: Vec<ThreadState> = std::iter::once(root_id)
+        .chain(roots.iter().map(|root| root.id))
+        .map(|root_id| ThreadState {
+            root_id,
+            last_read: 24,
+            latest: 24,
+            unread: 0,
+            mentions: 0,
+            following: true,
+            follow_setting: None,
+        })
+        .collect();
+    let list = |expanded: bool, more: bool| {
+        let (threads, roots) = (followed.clone(), roots.clone());
+        move |shell: &mut Shell, _: &mut gpui::Window, cx: &mut gpui::Context<Shell>| {
+            prepare(shell, none(), cx);
+            shell.state().clone().update(cx, |app, cx| {
+                app.show_followed_fixture(
+                    (server_id(), general_id()),
+                    threads,
+                    more,
+                    expanded,
+                    roots,
+                    cx,
+                );
+            });
+        }
+    };
+    studio.draw(
+        Screen::new("follow-list", unread.clone()),
+        list(false, false),
+    )?;
+    studio.draw(
+        Screen::new("follow-list-expanded", unread.clone()),
+        list(true, false),
+    )?;
+    // The server lists further pages: the row stays after the held threads are listed.
+    studio.draw(
+        Screen::new("follow-list-more-pages", unread),
+        list(true, true),
+    )
+}
+
 pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
     // View A of the design: the thread panel beside the list of its channel.
     let (servers, root_id) = with_thread(|_, _| {});
@@ -466,6 +615,8 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
             shell.open_message_menu(Pane::Main, own, window, cx);
         },
     )?;
+
+    draw_followed(studio)?;
 
     // Direct conversations: in the channel column, one that is open, and a refusal.
     let (directs, with_ana) = with_directs(false);

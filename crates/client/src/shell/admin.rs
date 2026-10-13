@@ -4,11 +4,13 @@
 
 mod archive;
 mod channels;
+mod notifications;
 pub mod overrides;
 pub mod people;
 mod recordings;
 pub mod records;
 pub mod roles;
+mod server;
 mod workspaces;
 
 use gpui::{
@@ -59,6 +61,8 @@ pub enum Mode {
     RenameChannel,
     /// A number of days is typed: the archive period or a retention.
     Days(AskKind),
+    /// The question before the removal of the logo of the server.
+    RemoveLogo,
 }
 
 /// What the layer of the administration holds of the window itself: the text of its
@@ -845,9 +849,13 @@ impl Shell {
     ) -> AnyElement {
         match page {
             ServerPage::Workspaces(page) => self.render_workspaces_page(view, page, window, cx),
+            ServerPage::Server(page) => self.render_server_settings_page(view, page, window, cx),
             ServerPage::Channels(page) => self.render_channels_page(view, page, window, cx),
             ServerPage::Archive(page) => self.render_archive_page(view, page, window, cx),
             ServerPage::Members(page) => self.render_members_page(view, page, window, cx),
+            ServerPage::Notifications(page) => {
+                self.render_notifications_page(view, page, window, cx)
+            }
             ServerPage::People(page) => self.render_people_page(view, page, window, cx),
             ServerPage::Invites(page) => self.render_invites_page(view, page, window, cx),
             ServerPage::JoinRequests(page) => self.render_requests_page(view, page, window, cx),

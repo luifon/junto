@@ -23,11 +23,13 @@ mod discovery_tests;
 #[cfg(test)]
 pub(crate) mod message_tests;
 #[cfg(test)]
+mod remaining_tests;
+#[cfg(test)]
 pub(crate) mod tests;
 
 use std::sync::Arc;
 
-use junto_protocol::account::OwnAccount;
+use junto_protocol::account::{Avatar, OwnAccount};
 use junto_protocol::call::{
     Call, CallInvitation, CallLock, CallMove, CallParticipant, CallPlace, ChannelCall, DirectMute,
     EntryRequest, Meeting, OwnCall, OwnCallState,
@@ -92,6 +94,19 @@ impl<T> Loadable<T> {
             Self::NotLoaded | Self::Loading => None,
         }
     }
+}
+
+/// What the state knows of the logo of the server (ADR 0101). The snapshot does not carry
+/// the logo: the public information of the server names its path, and an event states a
+/// change.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum LogoState {
+    /// No event stated the logo since the snapshot.
+    #[default]
+    NotStated,
+    /// The description of the logo that the last event stated. Absent: the server has no
+    /// logo.
+    Stated(Option<Avatar>),
 }
 
 /// A call as the account may see it.
@@ -328,6 +343,8 @@ pub struct ServerModel {
     pub(crate) seen_positions: std::collections::BTreeMap<PlaceId, u64>,
     /// The collections of the administration that a reader has open (ADR 0760).
     pub admin: Arc<AdminModel>,
+    /// What the events told of the logo of the server since the snapshot.
+    pub logo: LogoState,
 }
 
 impl ServerModel {
@@ -397,6 +414,7 @@ impl ServerModel {
             pins: Vec::new(),
             seen_positions: std::collections::BTreeMap::new(),
             admin: Arc::default(),
+            logo: LogoState::NotStated,
         }
     }
 

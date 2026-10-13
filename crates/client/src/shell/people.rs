@@ -25,6 +25,28 @@ pub(crate) fn avatar(faces: &ServerFaces, account_id: AccountId, size: f32) -> A
     Avatar::new(account_id.as_uuid().as_u128(), size).image(faces.image(account_id))
 }
 
+/// The avatar of an account in a list of people, with the readable alternative of its
+/// picture (ADR 0702). `pictured` is what the list of the server states: the account set
+/// a picture. A profile that the window read states the same. The alternative names the
+/// person, and it is present also while the image itself is not held.
+pub(crate) fn avatar_of(
+    faces: &ServerFaces,
+    account_id: AccountId,
+    name: &str,
+    pictured: bool,
+    size: f32,
+) -> Avatar {
+    let shown = avatar(faces, account_id, size);
+    if pictured || faces.face(account_id).is_some() {
+        shown.described(
+            ("picture", account_id.as_uuid().as_u128() as u64),
+            txt::picture_of(name),
+        )
+    } else {
+        shown
+    }
+}
+
 impl Shell {
     /// The pictures of the people of a server, as the view of this frame carries them.
     pub(crate) fn faces(&self, server_id: ServerId) -> ServerFaces {

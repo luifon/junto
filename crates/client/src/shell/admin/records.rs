@@ -17,11 +17,12 @@ use super::{group_label, line, named, page_title, refusal, row_action, sentence}
 use crate::shell::Shell;
 use crate::shell::room::option_row;
 use crate::state::admin::view::records::{
-    AuditGroup, AuditLine, AuditPage, AuditRead, DEFAULT_TOKEN_EXPIRY_DAYS, ExportLine, ExportSave,
-    ExportStatus, ExportsPage, NewToken, TOKEN_EXPIRY_DAYS, TokenLine, TokensPage, new_token,
+    ActorChoice, AuditGroup, AuditLine, AuditPage, AuditRead, DEFAULT_TOKEN_EXPIRY_DAYS,
+    ExportLine, ExportSave, ExportStatus, ExportsPage, NewToken, TOKEN_EXPIRY_DAYS, TokenLine,
+    TokensPage, group_of_action, new_token,
 };
 use crate::state::admin::view::{AdminView, Listed};
-use crate::state::admin::{AdminPage, AskKind, AskState, AuditScope};
+use crate::state::admin::{AdminPage, AskKind, AskState, AuditFilter, AuditPeriod, AuditScope};
 use crate::text;
 use crate::text::admin::records as txt;
 use crate::theme::{Theme, theme, u};
@@ -31,8 +32,24 @@ use crate::ui::{
 
 /// The width of the label before a control of a form or of a filter, in design pixels.
 const LABEL_WIDTH: f32 = 130.0;
-/// The width of the box that shows the person of the filter of the audit log.
-const ACTOR_WIDTH: f32 = 260.0;
+/// The width of the box that shows the choice of a filter of the audit log.
+const FILTER_WIDTH: f32 = 260.0;
+
+/// The list of choices that the page of the audit log shows under a filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuditMenu {
+    /// The actions of one group.
+    Action(AuditGroup),
+    Actor,
+    About,
+}
+
+/// A filter of the audit log by a person.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PersonFilter {
+    Actor,
+    About,
+}
 
 /// The actions that the form of a new access token has on when it opens: the one that
 /// changes nothing on the server.
@@ -59,8 +76,8 @@ pub(crate) struct Ui {
     pub(crate) remove_sent: bool,
     /// The log whose first read the page of the audit log asked for.
     pub(crate) audit_asked: Option<(ServerId, AuditScope)>,
-    /// The page of the audit log shows the accounts of the filter by person.
-    pub(crate) actors_open: bool,
+    /// The filter of the audit log whose choices the page shows.
+    pub(crate) audit_menu: Option<AuditMenu>,
 }
 
 impl Ui {
@@ -89,7 +106,7 @@ impl Ui {
             removing: None,
             remove_sent: false,
             audit_asked: None,
-            actors_open: false,
+            audit_menu: None,
         };
         (ui, subscriptions)
     }
@@ -146,6 +163,7 @@ fn lines(name: String, details: Vec<String>, theme: &Theme) -> gpui::Div {
 }
 
 fn audit_row(row: &AuditLine, theme: &Theme) -> AnyElement {
+    let id = row.id;
     let content = line(theme).child(
         div()
             .flex_1()
@@ -161,7 +179,16 @@ fn audit_row(row: &AuditLine, theme: &Theme) -> AnyElement {
                     .typeface(theme.types.control, theme)
                     .ink(theme.colors.ink)
                     .child(row.sentence.clone()),
-            ),
+            )
+            // The reason is text of the person who acted: it takes the lines that it
+            // needs and is not cut.
+            .children(row.reason.as_ref().map(|reason| {
+                div()
+                    .debug_selector(move || format!("audit-reason-{id}"))
+                    .typeface(theme.types.small, theme)
+                    .ink(theme.colors.ink)
+                    .child(txt::audit_reason(reason))
+            })),
     );
     framed(format!("audit-row-{}", row.id), content, Vec::new())
 }
@@ -178,7 +205,7 @@ impl Shell {
         ui.removing = None;
         ui.remove_sent = false;
         ui.audit_asked = None;
-        ui.actors_open = false;
+        ui.audit_menu = None;
         self.reset_token_form(window, cx);
     }
 
@@ -799,40 +826,91 @@ impl Shell {
         column.into_any_element()
     }
 
-    /// Shows the actions of one account in the audit log, or of every actor, and puts
-    /// the list of accounts away.
-    fn choose_audit_actor(&mut self, actor: Option<AccountId>, cx: &mut Context<Self>) {
-        self.admin.records.actors_open = false;
-        self.state
-            .update(cx, |state, cx| state.set_audit_actor(actor, cx));
+    /// Asks the server for the shown log with these filters, and puts the open list of
+    /// choices away.
+    pub fn set_audit_filter(&mut self, filter: AuditFilter, cx: &mut Context<Self>) {
+        self.admin.records.audit_menu = None;
+        let Some(server_id) = self
+            .state
+            .read(cx)
+            .admin_open()
+            .map(|open| open.server_id())
+        else {
+            return;
+        };
+        self.state.update(cx, |state, cx| {
+            state.set_audit_filter(server_id, filter, cx);
+        });
         cx.notify();
     }
 
-    /// The filter of the audit log by the person who acted: a box with the choice of
-    /// now, and under it, while it is open, the accounts of the loaded entries.
-    fn render_audit_actors(
+    /// Shows the choices of one filter of the audit log under it, or with `None` of no
+    /// filter.
+    pub fn show_audit_menu(&mut self, menu: Option<AuditMenu>, cx: &mut Context<Self>) {
+        self.admin.records.audit_menu = menu;
+        cx.notify();
+    }
+
+    /// Shows the choices of one filter under it, or puts them away.
+    fn toggle_audit_menu(&mut self, menu: AuditMenu, cx: &mut Context<Self>) {
+        let same = match (self.admin.records.audit_menu, menu) {
+            (Some(AuditMenu::Action(_)), AuditMenu::Action(_)) => true,
+            (open, menu) => open == Some(menu),
+        };
+        self.admin.records.audit_menu = (!same).then_some(menu);
+        cx.notify();
+    }
+
+    /// One choice of an open filter.
+    fn audit_choice(
+        id: impl Into<gpui::ElementId>,
+        label: impl Into<SharedString>,
+        selector: String,
+        chosen: bool,
+        on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
+    ) -> gpui::Div {
+        named(
+            selector,
+            Button::new(id)
+                .kind(if chosen {
+                    ButtonKind::Primary
+                } else {
+                    ButtonKind::Default
+                })
+                .label(label)
+                .h(u(28.0))
+                .px(u(10.0))
+                .on_click(on_click),
+        )
+    }
+
+    /// The filter by action: a box with the chosen action, and under it, while it is
+    /// open, the groups and the actions of one group.
+    fn render_audit_actions(
         &mut self,
         page: &AuditPage,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        let chosen = page
-            .actors
-            .iter()
-            .find(|choice| Some(choice.id) == page.actor)
-            .map_or_else(|| txt::EVERYONE.to_owned(), txt::audit_actor_choice);
+        let filter = page.filter;
+        let chosen = filter
+            .action
+            .map_or_else(|| txt::EVERY_ACTION.to_owned(), txt::audit_action);
+        let first = filter
+            .action
+            .and_then(group_of_action)
+            .unwrap_or(AuditGroup::ALL[0]);
         let mut parts = vec![
             labelled(
-                txt::AUDIT_ACTOR,
+                txt::AUDIT_ACTION,
                 div()
                     .flex_none()
-                    .w(u(ACTOR_WIDTH))
+                    .w(u(FILTER_WIDTH))
                     .child(
-                        SelectBox::new("audit-actor", txt::AUDIT_ACTOR, chosen)
-                            .selector("audit-actor")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.admin.records.actors_open = !this.admin.records.actors_open;
-                                cx.notify();
+                        SelectBox::new("audit-action", txt::AUDIT_ACTION, chosen)
+                            .selector("audit-action")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.toggle_audit_menu(AuditMenu::Action(first), cx);
                             })),
                     )
                     .into_any_element(),
@@ -840,48 +918,167 @@ impl Shell {
             )
             .into_any_element(),
         ];
-        if self.admin.records.actors_open {
-            let mut choices = div()
+        let Some(AuditMenu::Action(group)) = self.admin.records.audit_menu else {
+            return parts;
+        };
+        let groups = Segmented::new(
+            "audit-action-group",
+            txt::AUDIT_ACTION_GROUP,
+            AuditGroup::ALL
+                .iter()
+                .map(|group| SharedString::from(txt::audit_group(*group))),
+        )
+        .selected(AuditGroup::ALL.iter().position(|held| *held == group))
+        .selector("audit-action-group")
+        .on_select({
+            let select = cx.listener(|this, index: &usize, _, cx| {
+                if let Some(group) = AuditGroup::ALL.get(*index).copied() {
+                    this.admin.records.audit_menu = Some(AuditMenu::Action(group));
+                    cx.notify();
+                }
+            });
+            move |index, window, cx| select(&index, window, cx)
+        });
+        parts.push(
+            div()
                 .flex()
-                .flex_wrap()
                 .flex_none()
-                .gap(u(6.0))
-                .debug_selector(|| "audit-actors".to_owned())
-                .child(
-                    Button::new("audit-actor-everyone")
-                        .kind(if page.actor.is_none() {
-                            ButtonKind::Primary
-                        } else {
-                            ButtonKind::Default
-                        })
-                        .label(txt::EVERYONE)
-                        .selector("audit-actor-everyone")
-                        .h(u(28.0))
-                        .px(u(10.0))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.choose_audit_actor(None, cx);
-                        })),
-                );
-            for choice in &page.actors {
-                let account_id = choice.id;
-                choices = choices.child(named(
-                    format!("audit-actor-{account_id}"),
-                    Button::new(("audit-actor-choice", account_id.as_uuid().as_u128() as u64))
-                        .kind(if page.actor == Some(account_id) {
-                            ButtonKind::Primary
-                        } else {
-                            ButtonKind::Default
-                        })
-                        .label(txt::audit_actor_choice(choice))
-                        .h(u(28.0))
-                        .px(u(10.0))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.choose_audit_actor(Some(account_id), cx);
-                        })),
-                ));
-            }
-            parts.push(choices.into_any_element());
+                .debug_selector(|| "audit-action-group".to_owned())
+                .child(groups)
+                .into_any_element(),
+        );
+        let mut choices = div()
+            .flex()
+            .flex_wrap()
+            .flex_none()
+            .gap(u(6.0))
+            .debug_selector(|| "audit-actions".to_owned())
+            .child(Self::audit_choice(
+                "audit-action-every",
+                txt::EVERY_ACTION,
+                "audit-action-every".to_owned(),
+                filter.action.is_none(),
+                cx.listener(move |this, _, _, cx| {
+                    this.set_audit_filter(
+                        AuditFilter {
+                            action: None,
+                            ..filter
+                        },
+                        cx,
+                    );
+                }),
+            ));
+        for (index, action) in group.actions().enumerate() {
+            choices = choices.child(Self::audit_choice(
+                ("audit-action-choice", index),
+                txt::audit_action(action),
+                format!("audit-action-{action}"),
+                filter.action == Some(action),
+                cx.listener(move |this, _, _, cx| {
+                    this.set_audit_filter(
+                        AuditFilter {
+                            action: Some(action),
+                            ..filter
+                        },
+                        cx,
+                    );
+                }),
+            ));
         }
+        parts.push(choices.into_any_element());
+        parts
+    }
+
+    /// A filter by a person: a box with the choice of now, and under it, while it is
+    /// open, the accounts that the page offers.
+    fn render_audit_people(
+        &mut self,
+        page: &AuditPage,
+        which: PersonFilter,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let filter = page.filter;
+        let (label, none, id, menu, held) = match which {
+            PersonFilter::Actor => (
+                txt::AUDIT_ACTOR,
+                txt::EVERYONE,
+                "audit-actor",
+                AuditMenu::Actor,
+                filter.actor,
+            ),
+            PersonFilter::About => (
+                txt::AUDIT_ABOUT,
+                txt::ANYONE,
+                "audit-about",
+                AuditMenu::About,
+                filter.about,
+            ),
+        };
+        let with = move |account_id: Option<AccountId>| match which {
+            PersonFilter::Actor => AuditFilter {
+                actor: account_id,
+                ..filter
+            },
+            PersonFilter::About => AuditFilter {
+                about: account_id,
+                ..filter
+            },
+        };
+        let name_of = |choice: &ActorChoice| txt::audit_actor_choice(choice);
+        let chosen = page
+            .people
+            .iter()
+            .find(|choice| Some(choice.id) == held)
+            .map_or_else(|| none.to_owned(), name_of);
+        let mut parts =
+            vec![
+                labelled(
+                    label,
+                    div()
+                        .flex_none()
+                        .w(u(FILTER_WIDTH))
+                        .child(SelectBox::new(id, label, chosen).selector(id).on_click(
+                            cx.listener(move |this, _, _, cx| {
+                                this.toggle_audit_menu(menu, cx);
+                            }),
+                        ))
+                        .into_any_element(),
+                    theme,
+                )
+                .into_any_element(),
+            ];
+        if self.admin.records.audit_menu != Some(menu) {
+            return parts;
+        }
+        let mut choices = div()
+            .flex()
+            .flex_wrap()
+            .flex_none()
+            .gap(u(6.0))
+            .debug_selector(move || format!("{id}-choices"))
+            .child(Self::audit_choice(
+                (id, 0u64),
+                none,
+                format!("{id}-none"),
+                held.is_none(),
+                cx.listener(move |this, _, _, cx| {
+                    this.set_audit_filter(with(None), cx);
+                }),
+            ));
+        for choice in &page.people {
+            let account_id = choice.id;
+            choices = choices.child(Self::audit_choice(
+                (id, account_id.as_uuid().as_u128() as u64),
+                name_of(choice),
+                format!("{id}-{account_id}"),
+                held == Some(account_id),
+                cx.listener(move |this, _, _, cx| {
+                    this.set_audit_filter(with(Some(account_id)), cx);
+                }),
+            ));
+        }
+        parts.push(choices.into_any_element());
         parts
     }
 
@@ -933,7 +1130,7 @@ impl Shell {
                 let select = cx.listener(move |this, index: &usize, _, cx| {
                     if let Some(scope) = scopes.get(*index).copied() {
                         this.admin.records.audit_asked = Some((server_id, scope));
-                        this.admin.records.actors_open = false;
+                        this.admin.records.audit_menu = None;
                         this.state.update(cx, |state, cx| {
                             state.show_audit_log(server_id, scope, cx);
                         });
@@ -954,46 +1151,66 @@ impl Shell {
                 &theme,
             ));
         }
-        // The filters.
-        let group = Segmented::new(
-            "audit-group",
-            txt::AUDIT_GROUP,
-            [SharedString::from(txt::ALL_ACTIONS)].into_iter().chain(
-                AuditGroup::ALL
-                    .iter()
-                    .map(|group| SharedString::from(txt::audit_group(*group))),
-            ),
-        )
-        .selected(Some(match page.group {
-            Some(shown) => AuditGroup::ALL
+        // The filters. The server applies them: each change reads the log again.
+        let filter = page.filter;
+        column = column.children(self.render_audit_actions(page, &theme, cx));
+        column = column.children(self.render_audit_people(page, PersonFilter::Actor, &theme, cx));
+        column = column.children(self.render_audit_people(page, PersonFilter::About, &theme, cx));
+        let period = Segmented::new(
+            "audit-period",
+            txt::AUDIT_PERIOD,
+            AuditPeriod::ALL
                 .iter()
-                .position(|held| *held == shown)
-                .map_or(0, |index| index + 1),
-            None => 0,
-        }))
-        .selector("audit-group")
+                .map(|period| SharedString::from(txt::audit_period(*period))),
+        )
+        .selected(
+            AuditPeriod::ALL
+                .iter()
+                .position(|held| *held == filter.period),
+        )
+        .selector("audit-period")
         .on_select({
-            let select = cx.listener(|this, index: &usize, _, cx| {
-                let group = index
-                    .checked_sub(1)
-                    .and_then(|index| AuditGroup::ALL.get(index).copied());
-                this.state
-                    .update(cx, |state, cx| state.set_audit_group(group, cx));
-                cx.notify();
+            let select = cx.listener(move |this, index: &usize, _, cx| {
+                if let Some(period) = AuditPeriod::ALL.get(*index).copied() {
+                    this.set_audit_filter(AuditFilter { period, ..filter }, cx);
+                }
             });
             move |index, window, cx| select(&index, window, cx)
         });
-        column = column
-            .child(
+        column = column.child(labelled(
+            txt::AUDIT_PERIOD,
+            div()
+                .flex()
+                .flex_1()
+                .min_w_0()
+                .debug_selector(|| "audit-period".to_owned())
+                .child(period)
+                .into_any_element(),
+            &theme,
+        ));
+        if filter.is_set() {
+            column = column.child(
                 div()
                     .flex()
                     .flex_none()
-                    .debug_selector(|| "audit-group".to_owned())
-                    .child(group),
-            )
-            .child(sentence(txt::audit_group_shown(page.group), &theme));
-        if !page.actors.is_empty() {
-            column = column.children(self.render_audit_actors(page, &theme, cx));
+                    .items_center()
+                    .gap(u(10.0))
+                    .child(
+                        sentence(txt::AUDIT_FILTERED, &theme)
+                            .flex_1()
+                            .debug_selector(|| "audit-filtered".to_owned()),
+                    )
+                    .child(
+                        Button::new("audit-clear")
+                            .label(txt::CLEAR_FILTERS)
+                            .selector("audit-clear")
+                            .h(u(28.0))
+                            .px(u(10.0))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.set_audit_filter(AuditFilter::default(), cx);
+                            })),
+                    ),
+            );
         }
         // The entries.
         let mut entries = div().flex().flex_col().flex_none();
@@ -1002,17 +1219,15 @@ impl Shell {
         }
         column = column.child(entries);
         if page.loaded == 0 && page.state == AuditRead::Loaded {
-            column = column.child(
+            column = column.child(if filter.is_set() {
+                sentence(txt::NO_ENTRIES_FILTERED, &theme)
+                    .py(u(6.0))
+                    .debug_selector(|| "audit-none-pass".to_owned())
+            } else {
                 sentence(txt::NO_ENTRIES, &theme)
                     .py(u(6.0))
-                    .debug_selector(|| "audit-empty".to_owned()),
-            );
-        } else if page.loaded > 0 && page.rows.is_empty() {
-            column = column.child(
-                sentence(txt::NO_ENTRIES_SHOWN, &theme)
-                    .py(u(6.0))
-                    .debug_selector(|| "audit-none-shown".to_owned()),
-            );
+                    .debug_selector(|| "audit-empty".to_owned())
+            });
         }
         // The end of the list: a read that runs or failed, the older entries, the bound.
         match &page.state {
@@ -1084,7 +1299,7 @@ impl Shell {
                     .items_center()
                     .gap(u(10.0))
                     .child(
-                        sentence(txt::audit_count(page.rows.len(), page.loaded), &theme)
+                        sentence(txt::audit_count(page.loaded), &theme)
                             .flex_1()
                             .debug_selector(|| "audit-count".to_owned()),
                     )

@@ -55,6 +55,7 @@ fn channel(workspace_id: WorkspaceId, kind: ChannelKind, name: &str, position: i
 
 fn participant(account_id: AccountId) -> CallParticipant {
     CallParticipant {
+        avatar: None,
         account_id,
         identity: format!("seat-{account_id}"),
         joined_at: time(),
@@ -499,11 +500,13 @@ fn a_voice_channel_shows_its_people_with_their_marks_and_the_state_of_its_call()
     let workspace = Arc::make_mut(&mut model.workspaces[1]);
     workspace.members = Loadable::Loaded(vec![
         WorkspaceMember {
+            avatar: None,
             account_id: ana,
             name: "Ana".to_owned(),
             role_ids: Vec::new(),
         },
         WorkspaceMember {
+            avatar: None,
             account_id: bruno,
             name: "Bruno".to_owned(),
             role_ids: Vec::new(),
@@ -662,6 +665,7 @@ fn the_members_are_in_the_order_of_their_names_with_their_roles() {
         (role("everyone", 0), role("Leads", 2), role("Engineers", 1));
     scene.studio_mut().roles = vec![everyone.clone(), leads.clone(), engineers.clone()];
     let member = |account_id, name: &str, role_ids| WorkspaceMember {
+        avatar: None,
         account_id,
         name: name.to_owned(),
         role_ids,
@@ -1276,6 +1280,7 @@ mod calls {
         scene.call(daily, vec![participant(ana), held]);
         let mut model = scene.model();
         Arc::make_mut(&mut model.workspaces[1]).members = Loadable::Loaded(vec![WorkspaceMember {
+            avatar: None,
             account_id: ana,
             name: "Ana".to_owned(),
             role_ids: Vec::new(),
@@ -1525,6 +1530,7 @@ mod calls {
         scene.call(focus_id, vec![participant(ben)]);
         let mut model = scene.model();
         let member = |account_id, name: &str| WorkspaceMember {
+            avatar: None,
             account_id,
             name: name.to_owned(),
             role_ids: Vec::new(),
@@ -2352,11 +2358,13 @@ mod calls {
         let workspace = Arc::make_mut(&mut model.workspaces[1]);
         workspace.members = Loadable::Loaded(vec![
             WorkspaceMember {
+                avatar: None,
                 account_id: ben,
                 name: "Ben".to_owned(),
                 role_ids: Vec::new(),
             },
             WorkspaceMember {
+                avatar: None,
                 account_id: ana,
                 name: "Ana".to_owned(),
                 role_ids: Vec::new(),

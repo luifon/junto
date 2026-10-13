@@ -411,6 +411,7 @@ mod tests {
         let mut model = scene.model();
         Arc::make_mut(&mut model.workspaces[0]).members =
             junto_client_core::model::Loadable::Loaded(vec![WorkspaceMember {
+                avatar: None,
                 account_id: scene.ana,
                 name: "Ana".to_owned(),
                 role_ids: Vec::new(),

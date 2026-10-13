@@ -11,7 +11,9 @@ pub mod book;
 pub mod feed;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
+mod followed;
 pub mod linking;
+pub mod logo;
 mod messages;
 pub mod people;
 pub mod recording;
@@ -267,6 +269,9 @@ pub struct AppState {
     shown: Shown,
     /// The picture of the profile preset, and where a change of it stands.
     preset_picture: people::PresetPicture,
+    /// The images of the logos of the servers, and where the read of each stands
+    /// (ADR 0101).
+    logos: logo::Logos,
     /// The workspace whose members the window needs, and the task that reads them.
     members: Option<((ServerId, WorkspaceId), Task<()>)>,
     /// One task per saved server that wakes on each change of its event stream.
@@ -467,6 +472,7 @@ impl AppState {
             book: book::BookState::default(),
             shown: Shown::default(),
             preset_picture: people::PresetPicture::default(),
+            logos: logo::Logos::default(),
             members: None,
             watchers: HashMap::new(),
             waiting: HashMap::new(),
@@ -1081,6 +1087,8 @@ impl AppState {
     /// a recording only while it runs; how it ended is told here (ADR 0719).
     fn noticed(&mut self, server_id: ServerId, notice: &Notice, cx: &mut Context<Self>) {
         self.people_noticed(server_id, notice, cx);
+        self.followed_noticed(server_id, notice, cx);
+        self.logos_noticed(server_id, notice, cx);
         self.account_noticed(server_id, Some(notice), cx);
         self.recordings_noticed(server_id, Some(notice), cx);
         let event = match notice {
@@ -1512,6 +1520,8 @@ impl AppState {
                                 this.account_noticed(id, None, cx);
                                 this.recordings_noticed(id, None, cx);
                                 this.people_missed(id, cx);
+                                this.followed_missed(id, cx);
+                                this.logos_missed(id, cx);
                                 this.forget_quotes(id, None, cx);
                             }
                         });
@@ -1549,6 +1559,7 @@ impl AppState {
                 .date(),
         );
         self.keep_people(cx);
+        self.keep_logos(cx);
         self.follow_updates();
         let view = self.view();
         let shown = view.shown();
@@ -1576,6 +1587,7 @@ impl AppState {
         }
         self.shown = shown;
         self.follow_people(&view, cx);
+        self.follow_followed(&view, cx);
         let archived = shown.server.zip(
             view.workspace()
                 .filter(|workspace| workspace.archived.is_some())

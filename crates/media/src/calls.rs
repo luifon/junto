@@ -1912,6 +1912,7 @@ mod tests {
 
     fn own(identity: &str) -> OwnCall {
         OwnCall {
+            hides_occupants: None,
             call_id: junto_client_core::protocol::ids::CallId::generate(),
             place: CallPlace::direct(AccountId::generate(), AccountId::generate()),
             device_id: junto_client_core::protocol::ids::DeviceId::generate(),
@@ -2075,6 +2076,7 @@ mod tests {
     fn an_answer_for_a_hidden_call_that_does_not_list_the_person_tells_no_blocks() {
         let own = AccountId::generate();
         let listed = |identity: &str| junto_client_core::protocol::call::CallParticipant {
+            avatar: None,
             account_id: own,
             identity: identity.to_owned(),
             joined_at: OffsetDateTime::UNIX_EPOCH,

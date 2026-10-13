@@ -37,6 +37,7 @@ use junto_media::share::{CaptureError, ShareKind};
 use time::OffsetDateTime;
 
 use super::feed::{self, Feed, MessageRow, Names, Quoted, Zone};
+use super::followed::{Followed, held_root};
 use super::people::{self, Faces, People, Wanted};
 
 /// What the client core holds of one saved server at one moment.
@@ -144,6 +145,8 @@ pub struct Known {
     pub preset_name: String,
     /// The picture of the profile preset, as an image of the window.
     pub preset_picture: Option<Arc<RenderImage>>,
+    /// The logos of the servers that have one (ADR 0101).
+    pub logos: super::logo::ShownLogos,
     /// The servers that refused the picture of the profile preset for the account that
     /// this device created there (ADR 0717).
     pub preset_refused: HashSet<ServerId>,
@@ -170,6 +173,9 @@ pub struct Known {
     pub today: Option<time::Date>,
     /// The fork of a thread that the person asked for.
     pub fork: Option<ForkAsked>,
+    /// The follow state of the thread of the side panel, the followed threads of the
+    /// shown channel, and the roots that were read for their titles (ADR 0412, ADR 0413).
+    pub followed: super::followed::Followed,
     /// Why the server did not open a direct conversation, with the account that was asked
     /// for.
     pub conversation_refused: Option<(ServerId, AccountId, String)>,
@@ -252,8 +258,9 @@ impl Unread {
     }
 }
 
-/// An unread thread of a channel, or the thread that the side panel shows, as the channel
-/// column lists it under its channel.
+/// An unread thread of a channel, a thread of the shown channel that the account follows,
+/// or the thread that the side panel shows, as the channel column lists it under its
+/// channel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreadEntry {
     pub root_id: MessageId,
@@ -266,6 +273,30 @@ pub struct ThreadEntry {
     /// False for a thread of the voice channel of the call of this device: the view of
     /// that channel is the call, which shows no thread (ADR 0741).
     pub available: bool,
+}
+
+/// The row under the shown channel that offers its further followed threads (ADR 0413).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MoreFollowed {
+    /// How many further followed threads the client holds. Absent while the server lists
+    /// further ones: their number is not known.
+    pub count: Option<usize>,
+}
+
+/// The control of the thread panel that states whether the account follows the thread,
+/// and changes it (ADR 0412).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FollowControl {
+    /// The replies of the thread count as unread for the account.
+    pub following: bool,
+    /// The choice of the account. Absent: the rule of the server decides.
+    pub setting: Option<bool>,
+    /// A change is on its way: the actions take no click.
+    pub busy: bool,
+    /// The channel is archived and takes no change (ADR 0410).
+    pub read_only: bool,
+    /// Why the server did not make the last change.
+    pub refused: Option<String>,
 }
 
 /// One direct conversation of the server (ADR 0302).
@@ -300,6 +331,8 @@ pub struct ThreadPanel {
     pub fork: Option<ForkState>,
     /// The messages of the channel cannot be edited after they are sent (ADR 0402).
     pub permanent: bool,
+    /// Whether the account follows the thread. Absent until the server has told it.
+    pub follow: Option<FollowControl>,
 }
 
 /// The pinned messages of the shown channel, as the side panel shows them.
@@ -439,6 +472,9 @@ pub struct ServerRow {
     pub id: ServerId,
     pub name: String,
     pub address: String,
+    /// The image of the logo of the server, when the window holds it (ADR 0101). Without
+    /// it the window draws the generated picture of the server.
+    pub logo: Option<Arc<RenderImage>>,
     pub status: ServerStatus,
     pub selected: bool,
     /// The device has a recovery notice of this server that the person has not seen.
@@ -556,8 +592,11 @@ pub struct ChannelRow {
     pub unread: Unread,
     /// The messages of the channel cannot be edited after they are sent (ADR 0402).
     pub permanent: bool,
-    /// The unread threads of the channel, and the thread that the side panel shows.
+    /// The unread threads of the channel, for the shown channel the threads that the
+    /// account follows, and the thread that the side panel shows.
     pub threads: Vec<ThreadEntry>,
+    /// Present when the shown channel has further followed threads than its rows list.
+    pub more_followed: Option<MoreFollowed>,
     /// What the person holds in the channel, as the server stated it (ADR 0310).
     pub allowed: Allowed,
 }
@@ -573,6 +612,8 @@ pub struct MemberRow {
     pub account_id: AccountId,
     pub name: String,
     pub is_self: bool,
+    /// The member list of the server states that the account set a picture (ADR 0119).
+    pub pictured: bool,
     /// The names of the roles of the member, without the "everyone" role.
     pub roles: Vec<String>,
 }
@@ -1427,6 +1468,7 @@ fn channel_row(
         unread: Unread::of(model, PlaceId::Channel(channel.channel.id)),
         permanent: channel.channel.permanent_messages,
         threads: Vec::new(),
+        more_followed: None,
         allowed: allowed(workspace.permissions_in(channel.channel.id)),
     }
 }
@@ -1434,14 +1476,18 @@ fn channel_row(
 /// The characters of the root of a thread that the channel column shows.
 const THREAD_TITLE_CHARACTERS: usize = 48;
 
-/// The unread threads of a channel, in the order of the server, and after them the thread
-/// that the side panel shows when nothing of it is unread.
+/// The unread threads of a channel, in the order of the server; with `followed`, for the
+/// shown channel, the threads that the account follows and that are not among them, the
+/// one with the newest reply first (ADR 0413); and after them the thread that the side
+/// panel shows when no row lists it. With them, the row that offers the further followed
+/// threads.
 fn thread_entries(
     channel_id: ChannelId,
     model: &ServerModel,
     names: &Names,
     open: Option<MessageId>,
-) -> Vec<ThreadEntry> {
+    followed: Option<(ServerId, &Followed)>,
+) -> (Vec<ThreadEntry>, Option<MoreFollowed>) {
     use junto_client_core::model::Named;
     let title = |root: &junto_client_core::protocol::message::Message| {
         root.document
@@ -1467,6 +1513,31 @@ fn thread_entries(
             _ => None,
         })
         .collect();
+    let mut more = None;
+    if let Some((server_id, followed)) = followed {
+        let listed: Vec<MessageId> = entries.iter().map(|entry| entry.root_id).collect();
+        let (further, offered) = followed.list.listed((server_id, channel_id), &listed, open);
+        more = offered;
+        for state in further {
+            // The state of the server holds every unread thread, or the first pages of
+            // them: beyond those pages the list of followed threads tells what is unread.
+            let (unread, mentions) = match model.thread_state(state.root_id) {
+                Some(held) => (held.unread, held.mentions),
+                None if model.threads_more => (state.unread, state.mentions),
+                None => (0, 0),
+            };
+            entries.push(ThreadEntry {
+                root_id: state.root_id,
+                title: held_root(model, channel_id, state.root_id)
+                    .or_else(|| followed.roots.get(server_id, state.root_id))
+                    .and_then(&title),
+                unread,
+                mentions,
+                open: open == Some(state.root_id),
+                available: true,
+            });
+        }
+    }
     if let Some(root_id) = open
         && entries.iter().all(|entry| entry.root_id != root_id)
     {
@@ -1486,7 +1557,7 @@ fn thread_entries(
             available: true,
         });
     }
-    entries
+    (entries, more)
 }
 
 /// The channels of a workspace in the groups of the channel column: first the channels
@@ -1549,6 +1620,7 @@ fn members(
             let mut rows: Vec<MemberRow> = members
                 .iter()
                 .map(|member| MemberRow {
+                    pictured: member.avatar.is_some(),
                     account_id: member.account_id,
                     name: member.name.clone(),
                     is_self: member.account_id == model.account.id,
@@ -1674,7 +1746,9 @@ fn workspace_view(
         let open = open_thread
             .filter(|(channel_id, _)| *channel_id == row.id)
             .map(|(_, root_id)| root_id);
-        row.threads = thread_entries(row.id, model, &names, open);
+        // The followed threads are listed under the shown channel only.
+        let followed = (Some(row.id) == shown).then_some((server_id, &known.followed));
+        (row.threads, row.more_followed) = thread_entries(row.id, model, &names, open, followed);
         // The view of the voice channel of the call of this device is the call.
         let in_call = row
             .voice
@@ -1693,6 +1767,8 @@ fn workspace_view(
         let open = open_thread
             .filter(|(of, _)| *of == channel_id)
             .map(|(_, root_id)| root_id);
+        let followed = Some((server_id, &known.followed));
+        let (threads, more_followed) = thread_entries(channel_id, model, &names, open, followed);
         // A call of an archived voice channel has ended: the row has no voice state, and
         // the main area shows its messages.
         channel = Some(ChannelRow {
@@ -1703,7 +1779,8 @@ fn workspace_view(
             voice: None,
             unread: Unread::of(model, PlaceId::Channel(channel_id)),
             permanent: archived.channel.permanent_messages,
-            threads: thread_entries(channel_id, model, &names, open),
+            threads,
+            more_followed,
             // No snapshot states the list of an archived channel: nothing is offered
             // until its own read answered (ADR 0310).
             allowed: allowed(model.permissions_in(channel_id).unwrap_or_default()),
@@ -1815,6 +1892,7 @@ fn workspace_view(
                     .filter(|asked| asked.server_id == server_id && asked.root_id == root_id)
                     .map(|asked| asked.state.clone()),
                 permanent: row.permanent,
+                follow: known.followed.thread.control(server_id, root_id, read_only),
             }
         });
     let pins = selection
@@ -2493,6 +2571,7 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
                 id: server.id,
                 name: server.name.clone(),
                 address: server.address.clone(),
+                logo: known.logos.image(server.id),
                 selected,
                 has_recovery: matches!(
                     &server.access,
@@ -2608,6 +2687,8 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
 
 #[cfg(test)]
 mod book_tests;
+#[cfg(test)]
+mod followed_tests;
 #[cfg(test)]
 mod panel_tests;
 #[cfg(test)]

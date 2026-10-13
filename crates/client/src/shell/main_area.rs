@@ -1030,9 +1030,11 @@ impl Shell {
                         .when(index > 0, |row| {
                             row.border_t_1().border_color(Hsla::from(colors.rule_soft))
                         })
-                        .child(div().mt(u(2.0)).child(super::people::avatar(
+                        .child(div().mt(u(2.0)).child(super::people::avatar_of(
                             &faces,
                             member.account_id,
+                            &member.name,
+                            member.pictured,
                             30.0,
                         )))
                         .child(

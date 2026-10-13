@@ -23,6 +23,7 @@ use crate::state::view::{
 pub mod account;
 pub mod admin;
 pub mod book;
+pub mod followed;
 pub mod people;
 
 pub const APP_NAME: &str = "Junto";
@@ -32,6 +33,13 @@ pub const QUIT: &str = "Quit Junto";
 pub const SERVER_BOOK: &str = "Server book";
 pub const COLLAPSE_SERVER_BOOK: &str = "Collapse the server book to icons";
 pub const EXPAND_SERVER_BOOK: &str = "Expand the server book";
+
+/// The name of the image of the logo of a server (ADR 0101). The name is text of the
+/// server.
+pub fn logo_of(server: &str) -> String {
+    format!("Logo of {server}")
+}
+
 pub const ADD_SERVER: &str = "Add server";
 pub const ADD_SERVER_BY_ADDRESS: &str = "Add server by address";
 pub const ADDRESS_PLACEHOLDER: &str = "host:port";
@@ -1220,6 +1228,9 @@ pub fn refusal(code: ErrorCode) -> String {
         }
         ErrorCode::NotFound => "The server does not know what was asked for.",
         ErrorCode::Conflict => "The request does not fit the present state of the server.",
+        ErrorCode::LastDevice => {
+            "This is the only device of the account. The last device cannot be removed."
+        }
         ErrorCode::LimitReached => "A limit of the server is reached.",
         ErrorCode::InvalidRequest => "The server did not accept the request.",
         ErrorCode::ImageTooLarge => "The image is larger than the server stores.",
@@ -1854,6 +1865,7 @@ mod tests {
             (ErrorCode::RateLimited, "Try again later"),
             (ErrorCode::AccountBanned, "banned"),
             (ErrorCode::LinkCodeInvalid, "link code"),
+            (ErrorCode::LastDevice, "last device"),
         ] {
             assert!(refusal(code).contains(word), "{code:?}");
         }

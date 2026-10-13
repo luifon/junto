@@ -1,11 +1,13 @@
 //! The text of the administration of a server and of the settings of a channel
 //! (ADR 0761).
 
+pub mod notifications;
 pub mod overrides;
 pub mod people;
 pub mod recordings;
 pub mod records;
 pub mod roles;
+pub mod server;
 
 use junto_client_core::api::{ApiError, ErrorCategory};
 use junto_client_core::flow::FlowError;
@@ -53,6 +55,7 @@ pub fn nav_title(title: &NavTitle) -> String {
 pub const fn page_name(page: AdminPage) -> &'static str {
     match page {
         AdminPage::Workspaces => "Workspaces",
+        AdminPage::Server => "Server",
         AdminPage::People => "People",
         AdminPage::Invites => "Invites",
         AdminPage::JoinRequests => "Join requests",
@@ -63,6 +66,7 @@ pub const fn page_name(page: AdminPage) -> &'static str {
         AdminPage::Roles => "Roles",
         AdminPage::Archive => "Archive and retention",
         AdminPage::Members => "Members",
+        AdminPage::Notifications => "Notifications",
         AdminPage::Recordings => "Recordings",
         AdminPage::Exports => "Exports",
     }
@@ -71,6 +75,7 @@ pub const fn page_name(page: AdminPage) -> &'static str {
 pub const fn page_icon(page: AdminPage) -> Icon {
     match page {
         AdminPage::Workspaces => Icon::List,
+        AdminPage::Server => Icon::Gear,
         AdminPage::People | AdminPage::Members => Icon::People,
         AdminPage::Invites => Icon::Invite,
         AdminPage::JoinRequests => Icon::Hand,
@@ -78,6 +83,7 @@ pub const fn page_icon(page: AdminPage) -> Icon {
         AdminPage::AuditLog => Icon::Clock,
         AdminPage::Channels => Icon::Hash,
         AdminPage::Archive => Icon::Lock,
+        AdminPage::Notifications => Icon::Chat,
         AdminPage::Recordings => Icon::Record,
         AdminPage::Exports => Icon::Download,
     }
@@ -87,6 +93,7 @@ pub const fn page_icon(page: AdminPage) -> Icon {
 pub const fn page_selector(page: AdminPage) -> &'static str {
     match page {
         AdminPage::Workspaces => "admin-nav-workspaces",
+        AdminPage::Server => "admin-nav-server",
         AdminPage::People => "admin-nav-people",
         AdminPage::Invites => "admin-nav-invites",
         AdminPage::JoinRequests => "admin-nav-requests",
@@ -97,6 +104,7 @@ pub const fn page_selector(page: AdminPage) -> &'static str {
         AdminPage::Roles => "admin-nav-roles",
         AdminPage::Archive => "admin-nav-archive",
         AdminPage::Members => "admin-nav-members",
+        AdminPage::Notifications => "admin-nav-notifications",
         AdminPage::Recordings => "admin-nav-recordings",
         AdminPage::Exports => "admin-nav-exports",
     }
@@ -333,6 +341,7 @@ fn conflict(what: AskKind) -> &'static str {
             "The channel is archived. Its settings cannot be changed."
         }
         AskKind::AddMember(_) => "The account is banned or removed. It cannot be added.",
+        AskKind::RemoveMember(_) => "The account is not a member of this workspace any more.",
         AskKind::RemoveAccount(_) => "The account is removed already.",
         AskKind::BanAccount(_) => "The account is banned or removed already.",
         AskKind::UnbanAccount(_) => "The account is not banned.",
@@ -399,8 +408,15 @@ const fn is_role_ask(what: AskKind) -> bool {
 const fn is_moderation(what: AskKind) -> bool {
     matches!(
         what,
-        AskKind::RemoveAccount(_) | AskKind::BanAccount(_) | AskKind::UnbanAccount(_)
+        AskKind::RemoveAccount(_)
+            | AskKind::BanAccount(_)
+            | AskKind::UnbanAccount(_)
+            | AskKind::RemoveMember(_)
     )
+}
+
+const fn is_logo_ask(what: AskKind) -> bool {
+    matches!(what, AskKind::SetLogo | AskKind::RemoveLogo)
 }
 
 /// Why the server did not do a request of the administration.
@@ -418,11 +434,15 @@ pub fn refusal(what: AskKind, error: &ApiError) -> String {
         (Some(ErrorCode::Unavailable), _) if what == AskKind::RequestExport => {
             "This server has no place for exports. Its administrator sets one."
         }
+        (Some(ErrorCode::InvalidRequest), _) if is_moderation(what) => people::REASON_REFUSED,
         (Some(ErrorCode::InvalidRequest), _) => invalid(what),
         (Some(ErrorCode::InviteNotFound), _) => "The server knows no invite with this code.",
         (Some(ErrorCode::InviteExpired), _) => "The invite has expired.",
         (Some(ErrorCode::InviteExhausted), _) => "The invite has no use left.",
         (Some(ErrorCode::InviteRevoked), _) => "The invite was revoked.",
+        (Some(ErrorCode::ImageTooLarge), _) => server::LOGO_TOO_LARGE,
+        (Some(ErrorCode::ImageUnsupported), _) => server::LOGO_UNSUPPORTED,
+        (_, Some(ErrorCategory::NotAllowed)) if is_logo_ask(what) => server::LOGO_NOT_ALLOWED,
         // The server states a refusal of role order as `forbidden`, without a detail
         // (ADR 0309).
         (_, Some(ErrorCategory::NotAllowed)) if is_role_ask(what) => {
@@ -434,6 +454,9 @@ pub fn refusal(what: AskKind, error: &ApiError) -> String {
              role cannot be removed, banned or unbanned."
         }
         (_, Some(ErrorCategory::NotAllowed)) => "Your account may not do this.",
+        (_, Some(ErrorCategory::NotFound)) if matches!(what, AskKind::RemoveMember(_)) => {
+            conflict(what)
+        }
         (_, Some(ErrorCategory::NotFound)) => "The server holds this no longer.",
         (_, Some(ErrorCategory::Conflict)) => conflict(what),
         _ => return crate::text::flow_error(&FlowError::from(error)),

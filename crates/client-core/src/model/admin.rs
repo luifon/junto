@@ -580,7 +580,9 @@ impl AdminModel {
                     tokens.retain(|held| held.created_by != *created_by);
                 }
             }
-            Event::InviteCreated { invite } => {
+            // A changed invite is the invite as it is now: it lost a workspace with the
+            // removal of its creator from that workspace (ADR 0111).
+            Event::InviteCreated { invite } | Event::InviteChanged { invite } => {
                 if let Some(invites) = self.invites.loaded_mut() {
                     upsert(invites, invite, |held| held.id == invite.id);
                     invites.sort_by_key(|held| std::cmp::Reverse(held.id));
@@ -692,6 +694,7 @@ impl AdminPart {
             Self::Invites => matches!(
                 event,
                 Event::InviteCreated { .. }
+                    | Event::InviteChanged { .. }
                     | Event::InviteRevoked { .. }
                     | Event::InviteUsed { .. }
                     | Event::InvitesOfCreatorRevoked { .. }

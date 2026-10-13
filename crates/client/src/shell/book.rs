@@ -390,6 +390,7 @@ mod tests {
             id: ServerId::generate(),
             name: "Harbor".to_owned(),
             address: "harbor.example".to_owned(),
+            logo: None,
             status: ServerStatus::Ready,
             selected: false,
             has_recovery: false,

@@ -14,8 +14,8 @@ use crate::state::view::{ServerRow, ServerStatus, ShellView};
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Band, BandKind, Button, ButtonKind, Field, FieldKind, Menu, Mosaic, MosaicKind, ScrollArea,
-    StatusLine, StyleExt, WorkspaceRow, focus_ring, focus_ring_inside, menu_label, selection_mark,
+    Avatar, Band, BandKind, Button, ButtonKind, Field, FieldKind, Menu, ScrollArea, StatusLine,
+    StyleExt, WorkspaceRow, focus_ring, focus_ring_inside, menu_label, selection_mark,
 };
 
 /// The line under the name of a server: an icon and a text for every state that is not
@@ -57,6 +57,33 @@ pub(crate) fn status_line(row: &ServerRow) -> Option<(Option<Icon>, &'static str
 
 fn seed(row: &ServerRow) -> u128 {
     row.id.as_uuid().as_u128()
+}
+
+/// The picture of a server at a size in design pixels: its logo when the window holds the
+/// image (ADR 0101), and the generated picture otherwise. Only the logo has a name for a
+/// screen reader and for a test: the generated picture is decoration beside the name of
+/// the server.
+fn picture(
+    place: &'static str,
+    index: usize,
+    row: &ServerRow,
+    size: f32,
+    radius: f32,
+) -> AnyElement {
+    let picture = Avatar::new(seed(row), size)
+        .radius(radius)
+        .image(row.logo.clone());
+    if row.logo.is_none() {
+        return picture.into_any_element();
+    }
+    div()
+        .id((place, index))
+        .role(Role::Image)
+        .aria_label(text::logo_of(&row.name))
+        .debug_selector(move || format!("{place}-{index}"))
+        .flex_none()
+        .child(picture)
+        .into_any_element()
 }
 
 impl Shell {
@@ -303,7 +330,7 @@ impl Shell {
                     .flex_none()
                     .rounded(u(theme.metrics.radius))
                     .shadow(focus_ring(colors.basalt_edge, 1.0))
-                    .child(Mosaic::new(MosaicKind::Large, seed(row), 28.0)),
+                    .child(picture("server-logo", index, row, 28.0, 3.0)),
             )
             .child(
                 div()
@@ -498,12 +525,13 @@ impl Shell {
                 }
             }))
             .focus_visible(move |style| style.shadow(focused_ring))
-            .child(
-                div()
-                    .rounded(u(4.0))
-                    .shadow(ring)
-                    .child(Mosaic::new(MosaicKind::Large, seed(row), 36.0).radius(4.0)),
-            )
+            .child(div().rounded(u(4.0)).shadow(ring).child(picture(
+                "server-logo",
+                index,
+                row,
+                36.0,
+                4.0,
+            )))
             .when(row.unread.any() && status_line(row).is_none(), |icon| {
                 // The server holds messages that the person has not read: the terracotta
                 // sign of the channel list, at the corner of the avatar.
@@ -576,7 +604,7 @@ impl Shell {
             .pb(u(9.0))
             .border_b_1()
             .border_color(Hsla::from(colors.basalt_rule))
-            .child(Mosaic::new(MosaicKind::Large, seed(row), 30.0))
+            .child(picture("server-menu-logo", index, row, 30.0, 3.0))
             .child(
                 div()
                     .flex_1()

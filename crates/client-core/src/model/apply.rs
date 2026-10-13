@@ -15,7 +15,8 @@ use junto_protocol::structure::Channel;
 
 use super::rank::sort_workspace_roles;
 use super::{
-    AdminPart, CallModel, ChannelModel, PlaceId, Reach, ServerModel, ThreadMoved, WorkspaceModel,
+    AdminPart, CallModel, ChannelModel, LogoState, PlaceId, Reach, ServerModel, ThreadMoved,
+    WorkspaceModel,
 };
 
 /// A part of the state that is read from a route of its own.
@@ -261,18 +262,22 @@ impl ServerModel {
                     self.account.avatar.clone_from(&profile.avatar);
                 }
                 for workspace in &mut self.workspaces {
-                    let renamed = workspace.members.loaded().is_some_and(|members| {
+                    // The description of the avatar of a member is the one of the profile
+                    // (ADR 0119).
+                    let changed = workspace.members.loaded().is_some_and(|members| {
                         members.iter().any(|member| {
-                            member.account_id == profile.id && member.name != profile.name
+                            member.account_id == profile.id
+                                && (member.name != profile.name || member.avatar != profile.avatar)
                         })
                     });
-                    if !renamed {
+                    if !changed {
                         continue;
                     }
                     if let Some(members) = Arc::make_mut(workspace).members.loaded_mut() {
                         for member in members {
                             if member.account_id == profile.id {
                                 member.name.clone_from(&profile.name);
+                                member.avatar.clone_from(&profile.avatar);
                             }
                         }
                     }
@@ -540,6 +545,7 @@ impl ServerModel {
                 call_id,
                 place,
                 started_at,
+                ..
             } => {
                 let shown = self.shows(*call_id, place);
                 if shown && let Some(call) = self.call_mut(*call_id, place, true) {
@@ -743,6 +749,9 @@ impl ServerModel {
             Event::AttachmentLimitsChanged { limits } => {
                 self.attachment_limits = Some(limits.clone());
             }
+            Event::ServerLogoChanged { logo } => {
+                self.logo = LogoState::Stated(logo.clone());
+            }
             Event::MessageMentioned { channel_id, .. } => {
                 if self.channel(*channel_id).is_some() {
                     // The mention can be one of a thread (ADR 0409).
@@ -846,6 +855,7 @@ impl ServerModel {
             | Event::ExportUpdated { .. }
             | Event::ExportRemoved { .. }
             | Event::InviteCreated { .. }
+            | Event::InviteChanged { .. }
             | Event::InviteRevoked { .. }
             | Event::InviteUsed { .. }
             | Event::InvitesOfCreatorRevoked { .. }

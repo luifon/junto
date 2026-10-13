@@ -2,11 +2,13 @@
 //! open, which collections of the client core that page needs, and the one request of
 //! the person that is on its way or was refused.
 
+mod notifications;
 mod overrides;
 mod people;
 pub(crate) mod recordings;
 mod records;
 pub mod roles;
+mod server;
 pub(crate) mod structure;
 pub mod view;
 
@@ -25,7 +27,7 @@ use junto_client_core::protocol::ids::{
 use junto_client_core::protocol::secret::{AccessToken, InviteCode};
 
 pub use recordings::RecordingList;
-pub use records::{AuditLog, AuditScope, ExportFiles};
+pub use records::{AuditFilter, AuditLog, AuditPeriod, AuditScope, ExportFiles};
 pub use roles::{RoleLevel, RolePermission, RoleRef};
 pub use view::AdminView;
 
@@ -36,6 +38,8 @@ use crate::text;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AdminPage {
     Workspaces,
+    /// The server itself: its logo (ADR 0101).
+    Server,
     People,
     Invites,
     JoinRequests,
@@ -51,6 +55,8 @@ pub enum AdminPage {
     Archive,
     /// The members of the shown workspace.
     Members,
+    /// The notification level that the shown workspace sets for its members (ADR 0412).
+    Notifications,
     /// The recordings of the shown workspace that the account can see (ADR 0784).
     Recordings,
     /// The exports of the person.
@@ -108,10 +114,14 @@ pub enum AskKind {
     CallSettings(ChannelId),
     SetOverride(ChannelId, WorkspaceRoleId),
     ArchivePeriod,
+    /// The notification level of a workspace is set or removed.
+    NotificationDefault(WorkspaceId),
     FileRetention,
     RecordingRetention,
     DirectRetention,
     AddMember(AccountId),
+    /// The removal of a member from the shown workspace (ADR 0106).
+    RemoveMember(AccountId),
     RemoveAccount(AccountId),
     BanAccount(AccountId),
     UnbanAccount(AccountId),
@@ -130,6 +140,9 @@ pub enum AskKind {
     MoveRole(RoleRef),
     /// A role is given to an account or taken from it.
     AssignRole(RoleRef, AccountId),
+    /// A file is read and sent as the logo of the server (ADR 0101).
+    SetLogo,
+    RemoveLogo,
 }
 
 /// Where a request stands. A request that the server did leaves no state: its effect

@@ -64,6 +64,7 @@ impl Scene {
                 participants: inside
                     .iter()
                     .map(|account_id| CallParticipant {
+                        avatar: None,
                         account_id: *account_id,
                         identity: format!("seat-{account_id}"),
                         joined_at: time(),

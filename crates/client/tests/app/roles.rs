@@ -21,7 +21,7 @@ use junto_client_core::protocol::{ServerPermission, WorkspacePermission};
 
 use crate::admin_pages::{
     account, awaited, click_in_page, default_workspace, idle, invite, joined, open_page, sel,
-    until_model,
+    try_click, until_model,
 };
 use crate::harness::{Admin, Window, World, member};
 use crate::messages::document;
@@ -563,9 +563,15 @@ fn a_moderator_sees_why_an_account_with_a_higher_role_cannot_be_banned_before_tr
     window.until("the reason is gone", |window| {
         !window.shows(sel("account-outranked", carla))
     });
-    click_in_page(&mut window, sel("account-ban", carla));
+    // The state is replaced after a change of the order, and the page reads the order
+    // again: for that moment the control is drawn as held, without the reason of role
+    // order, and takes no click. The click is repeated until the question is drawn.
     window.until("the ban asks first", |window| {
-        window.shows("account-confirm")
+        if window.shows("account-confirm") {
+            return true;
+        }
+        try_click(window, sel("account-ban", carla));
+        false
     });
     // The order changes back while the question is open: the question is put away, and
     // the row states the reason again. Nothing was sent.
@@ -598,14 +604,16 @@ fn a_moderator_sees_why_an_account_with_a_higher_role_cannot_be_banned_before_tr
     awaited(&mut window, "the row follows the order again", |window| {
         account(window, carla).filter(|row| row.ban == Ok(()))
     });
-    // The click waits for the drawn row: the state of the test can be newer than the
-    // picture, and a control that is still drawn as held takes no click.
     window.until("the reason is gone again", |window| {
         !window.shows(sel("account-outranked", carla))
     });
-    click_in_page(&mut window, sel("account-ban", carla));
+    // As above: the control is held while the order is read again after the reload.
     window.until("the ban asks again", |window| {
-        window.shows("account-confirm")
+        if window.shows("account-confirm") {
+            return true;
+        }
+        try_click(window, sel("account-ban", carla));
+        false
     });
     click_in_page(&mut window, "account-confirm");
     let banned = awaited(&mut window, "the account is banned", |window| {

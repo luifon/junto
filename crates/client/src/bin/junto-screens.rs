@@ -81,6 +81,8 @@ mod account;
 mod admin;
 #[path = "junto-screens/book.rs"]
 mod book;
+#[path = "junto-screens/logo.rs"]
+mod logo;
 #[path = "junto-screens/messages.rs"]
 mod messages;
 #[path = "junto-screens/people.rs"]
@@ -126,6 +128,7 @@ fn person(name: &str) -> AccountId {
 
 fn participant(name: &str) -> CallParticipant {
     CallParticipant {
+        avatar: None,
         account_id: person(name),
         identity: format!("seat-{name}"),
         joined_at: at(),
@@ -337,6 +340,7 @@ fn acme_model(change: impl FnOnce(&mut WorkspaceState)) -> Arc<ServerModel> {
             .iter()
             .enumerate()
             .map(|(index, name)| WorkspaceMember {
+                avatar: None,
                 account_id: person(name),
                 name: (*name).to_owned(),
                 role_ids: match index {
@@ -2692,6 +2696,7 @@ fn run(out: &Path) -> Result<(), String> {
         Some("roles") => roles::draw(&mut studio),
         Some("account") => account::draw(&mut studio),
         Some("book") => book::draw(&mut studio),
+        Some("logo") => logo::draw(&mut studio),
         _ => draw_all(&mut studio)
             .and_then(|()| draw_calls(&mut studio))
             .and_then(|()| draw_shares(&mut studio))
@@ -2703,6 +2708,7 @@ fn run(out: &Path) -> Result<(), String> {
             .and_then(|()| roles::draw(&mut studio))
             .and_then(|()| account::draw(&mut studio))
             .and_then(|()| book::draw(&mut studio))
+            .and_then(|()| logo::draw(&mut studio))
             .and_then(|()| draw_components(&mut studio)),
     };
     let scratch = studio.scratch.clone();

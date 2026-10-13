@@ -40,6 +40,7 @@ fn account(name: &str) -> AccountSummary {
 
 fn invite(created_by: AccountId) -> Invite {
     Invite {
+        created_by_name: None,
         id: InviteId::generate(),
         created_by,
         created_at: time(),

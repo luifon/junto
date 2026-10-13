@@ -123,7 +123,10 @@ fn quiet(text: &str, time_zone: &str) -> Result<DailyQuiet, Failure> {
     })
 }
 
-fn time_of(arguments: &Arguments, name: &str) -> Result<Option<OffsetDateTime>, Failure> {
+pub(crate) fn time_of(
+    arguments: &Arguments,
+    name: &str,
+) -> Result<Option<OffsetDateTime>, Failure> {
     arguments
         .value(name)
         .map(|text| {
@@ -264,14 +267,37 @@ pub(crate) fn notice_line(notice: &Notification) -> String {
     )
 }
 
+/// A time from the start of a recording, as hours, minutes and seconds.
+fn line_time(start_ms: u64) -> String {
+    let seconds = start_ms / 1000;
+    let (hours, minutes, seconds) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
+}
+
+/// A result of a search: what it is, where it stands, and its text. A message states its
+/// position in its place and the root of its thread, so that a reader opens the place at
+/// the message; a transcript line states its time in the recording (ADR 0413).
 fn hit_lines(hit: &SearchHit) -> Vec<String> {
-    let what = match (hit.message_id, hit.recording_id, hit.line) {
+    let mut what = match (hit.message_id, hit.recording_id, hit.line) {
         (Some(message_id), _, _) => format!("message {message_id}"),
         (None, Some(recording_id), Some(line)) => {
             format!("transcript of recording {recording_id} line {line}")
         }
         _ => "unknown".to_owned(),
     };
+    if let Some(position) = hit.position {
+        what.push_str(&format!("  position {position}"));
+    }
+    if let Some(root_id) = hit.thread_root {
+        what.push_str(&format!("  thread {root_id}"));
+    }
+    if let Some(start_ms) = hit.start_ms {
+        what.push_str(&format!("  at {}", line_time(start_ms)));
+    }
     vec![
         format!(
             "result: {what}  place {}  author {}  {}  rank {}",
@@ -614,6 +640,55 @@ mod tests {
             Ok(arguments) => arguments,
             Err(_) => panic!("the arguments are not read"),
         }
+    }
+
+    #[test]
+    fn a_result_states_the_position_of_a_message_and_the_time_of_a_transcript_line() {
+        use junto_client_core::protocol::ids::{AccountId, MessageId, RecordingId};
+        let at = time::OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
+        let (message_id, root_id) = (MessageId::generate(), MessageId::generate());
+        let message = SearchHit {
+            message_id: Some(message_id),
+            recording_id: None,
+            line: None,
+            place_id: uuid::Uuid::nil(),
+            author_id: AccountId::generate(),
+            created_at: at,
+            text: "the obsidian plan".to_owned(),
+            rank: 0.5,
+            position: Some(41),
+            thread_root: Some(root_id),
+            start_ms: None,
+        };
+        let lines = hit_lines(&message);
+        assert!(lines[0].starts_with(&format!(
+            "result: message {message_id}  position 41  thread {root_id}  place "
+        )));
+        // A message of an earlier server states no position.
+        let plain = SearchHit {
+            position: None,
+            thread_root: None,
+            ..message.clone()
+        };
+        assert!(hit_lines(&plain)[0].starts_with(&format!("result: message {message_id}  place ")));
+
+        let recording_id = RecordingId::generate();
+        let spoken = SearchHit {
+            message_id: None,
+            recording_id: Some(recording_id),
+            line: Some(7),
+            position: None,
+            thread_root: None,
+            start_ms: Some(3_725_900),
+            ..message
+        };
+        assert!(hit_lines(&spoken)[0].starts_with(&format!(
+            "result: transcript of recording {recording_id} line 7  at 1:02:05  place "
+        )));
+        assert_eq!(line_time(0), "0:00");
+        assert_eq!(line_time(59_999), "0:59");
+        assert_eq!(line_time(61_000), "1:01");
+        assert_eq!(line_time(3_600_000), "1:00:00");
     }
 
     #[test]

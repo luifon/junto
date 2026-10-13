@@ -347,6 +347,7 @@ fn each_server_permission_adds_its_page() {
 fn an_administrator_and_the_owner_have_every_page() {
     let every = [
         AdminPage::Workspaces,
+        AdminPage::Server,
         AdminPage::People,
         AdminPage::Invites,
         AdminPage::JoinRequests,
@@ -357,6 +358,7 @@ fn an_administrator_and_the_owner_have_every_page() {
         AdminPage::Roles,
         AdminPage::Archive,
         AdminPage::Members,
+        AdminPage::Notifications,
         AdminPage::Recordings,
         AdminPage::Exports,
     ];

@@ -5,7 +5,9 @@
 use std::sync::Arc;
 
 use gpui::{
-    App, IntoElement, ObjectFit, RenderImage, RenderOnce, Styled, StyledImage, Window, img,
+    App, ElementId, InteractiveElement, IntoElement, ObjectFit, ParentElement, RenderImage,
+    RenderOnce, Role, SharedString, StatefulInteractiveElement, Styled, StyledImage, Window, div,
+    img,
 };
 
 use super::{Mosaic, MosaicKind};
@@ -18,6 +20,7 @@ pub struct Avatar {
     radius: f32,
     kind: MosaicKind,
     image: Option<Arc<RenderImage>>,
+    described: Option<(ElementId, SharedString)>,
 }
 
 impl Avatar {
@@ -29,6 +32,7 @@ impl Avatar {
             radius: 3.0,
             kind: MosaicKind::Large,
             image: None,
+            described: None,
         }
     }
 
@@ -49,11 +53,19 @@ impl Avatar {
         self.image = image;
         self
     }
+
+    /// The readable alternative of the picture that the account set (ADR 0702): the
+    /// avatar is an image with this label in the accessibility tree. A generated avatar
+    /// of an account without a picture carries no information and gets none.
+    pub fn described(mut self, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Self {
+        self.described = Some((id.into(), label.into()));
+        self
+    }
 }
 
 impl RenderOnce for Avatar {
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        match self.image {
+        let picture = match self.image {
             // The image fills the square: its middle is shown, with its proportions.
             Some(image) => img(image)
                 .size(u(self.size))
@@ -64,6 +76,16 @@ impl RenderOnce for Avatar {
             None => Mosaic::new(self.kind, self.seed, self.size)
                 .radius(self.radius)
                 .into_any_element(),
+        };
+        match self.described {
+            Some((id, label)) => div()
+                .id(id)
+                .role(Role::Image)
+                .aria_label(label)
+                .flex_none()
+                .child(picture)
+                .into_any_element(),
+            None => picture,
         }
     }
 }
