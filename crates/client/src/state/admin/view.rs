@@ -5,6 +5,7 @@
 
 pub mod overrides;
 pub mod people;
+pub mod recordings;
 pub mod records;
 #[cfg(test)]
 mod tests;
@@ -253,6 +254,7 @@ pub enum ServerPage {
     Tokens(records::TokensPage),
     Exports(records::ExportsPage),
     AuditLog(records::AuditPage),
+    Recordings(recordings::RecordingsPage),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -347,7 +349,13 @@ pub fn nav(model: &ServerModel, workspace: Option<&WorkspaceModel>) -> Vec<NavGr
         if holds_workspace(model, workspace, WorkspacePermission::ManageChannel) {
             pages.push(AdminPage::Channels);
         }
-        pages.extend([AdminPage::Archive, AdminPage::Members]);
+        // Every member lists the recordings: the server answers with what the account
+        // may see.
+        pages.extend([
+            AdminPage::Archive,
+            AdminPage::Members,
+            AdminPage::Recordings,
+        ]);
         groups.push(NavGroup {
             title: NavTitle::Workspace(workspace.workspace.name.clone()),
             pages,
@@ -393,6 +401,8 @@ pub fn needs(
                 parts.extend(workspace_id.map(AdminPart::Archived));
                 parts
             }
+            // A recording of an archived channel is named by the archived list.
+            AdminPage::Recordings => workspace_id.map(AdminPart::Archived).into_iter().collect(),
             AdminPage::Members => {
                 if administrator {
                     vec![AdminPart::Accounts]
@@ -670,6 +680,9 @@ pub fn derive(
                 (AdminPage::Members, Some(workspace)) => {
                     ServerPage::Members(people::members(server_id, model, workspace, known))
                 }
+                (AdminPage::Recordings, Some(workspace)) => ServerPage::Recordings(
+                    recordings::recordings(server_id, model, workspace, known, admin),
+                ),
                 (AdminPage::People, _) => ServerPage::People(people::people(model, known)),
                 (AdminPage::Invites, _) => {
                     ServerPage::Invites(people::invites(server_id, model, known, admin))
@@ -690,7 +703,8 @@ pub fn derive(
                     AdminPage::Workspaces
                     | AdminPage::Channels
                     | AdminPage::Archive
-                    | AdminPage::Members,
+                    | AdminPage::Members
+                    | AdminPage::Recordings,
                     _,
                 ) => ServerPage::Workspaces(workspaces_page(
                     model,

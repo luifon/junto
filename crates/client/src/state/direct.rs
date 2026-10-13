@@ -36,11 +36,29 @@ pub struct DirectCalls {
 }
 impl DirectCalls {
     pub(super) fn filter_view(&self, mut view: super::ShellView) -> super::ShellView {
+        let mut hidden = Vec::new();
         view.invitations.retain(|invited| {
-            self.rings
+            let shown = self
+                .rings
                 .get(&(invited.target.server_id, invited.id))
-                .is_none_or(|ring| ring.outcome == RingOutcome::Waiting)
+                .is_none_or(|ring| ring.outcome == RingOutcome::Waiting);
+            if !shown {
+                hidden.push((invited.target.server_id, invited.caller));
+            }
+            shown
         });
+        // The view names the caller of each invitation last, for the read of the profile.
+        // An invitation that is not shown names nobody.
+        for (server_id, caller) in hidden {
+            if let Some(wanted) = view.wanted_people.get_mut(&server_id)
+                && let Some(at) = wanted
+                    .accounts
+                    .iter()
+                    .rposition(|account| *account == caller)
+            {
+                wanted.accounts.remove(at);
+            }
+        }
         view
     }
 

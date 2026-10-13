@@ -5,7 +5,7 @@ use junto_protocol::call::{
     MicrophoneBlock, SoundBlock,
 };
 use junto_protocol::error::ErrorCode;
-use junto_protocol::events::Event;
+use junto_protocol::events::{Cursor, Event};
 use junto_protocol::ids::{AccountId, CallId, CallInvitationId};
 use sqlx::PgConnection;
 use time::OffsetDateTime;
@@ -98,13 +98,15 @@ impl Entered {
 }
 
 impl Entered {
-    /// Signs the join token and tells the event stream and the admission check. It runs
-    /// after the commit of the transaction that made `self`.
+    /// Signs the join token and gives the answer. `self` and `cursor` were read in one
+    /// transaction after the transaction that made the place (ADR 0519). Without a
+    /// cursor, `self` is what the transaction that made the place read.
     pub fn join(
         self,
         app: &AppState,
         media: &dyn MediaServer,
         now: OffsetDateTime,
+        cursor: Option<Cursor>,
     ) -> ApiResult<CallJoin> {
         let grant = JoinGrant {
             room: &self.room,
@@ -118,6 +120,7 @@ impl Entered {
             .join_token(&grant)
             .map_err(|error| ApiError::internal(&error))?;
         Ok(CallJoin {
+            cursor,
             call: self.call,
             media_url: media.client_url().to_owned(),
             token: signed.token,

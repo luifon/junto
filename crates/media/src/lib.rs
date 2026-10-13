@@ -5,6 +5,9 @@
 pub mod audio;
 pub mod calls;
 pub mod camera;
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+pub mod condition_wait;
 pub mod engine;
 pub mod permission;
 pub mod share;

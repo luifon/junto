@@ -12,7 +12,7 @@ use junto_protocol::call::{
     MeetingEnd, MoveOutcome, MoveParticipant, MuteDirectConversation, OwnCallState, OwnCallView,
     ReportCallState, ReportScreenShare, ReportSpeaking, UpdateCallSettings,
 };
-use junto_protocol::events::Event;
+use junto_protocol::events::{Cursor, Event};
 use junto_protocol::ids::{AccountId, CallInvitationId, CallMoveId, ChannelId, EntryRequestId};
 use junto_protocol::structure::{Channel, ChannelKind};
 use sqlx::{AssertSqlSafe, PgConnection};
@@ -184,16 +184,19 @@ pub async fn get_own_call(
     read!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         access.require(Request::OwnAccount)?;
+        let log = events::log::state(connection).await?;
+        let cursor = Some(log.cursor(log.head)?);
         let Some(member) = store::member_of(connection, access.account_id, false).await? else {
-            return Ok(OwnCallView { call: None });
+            return Ok(OwnCallView { cursor, call: None });
         };
         let Some(call) = store::call(connection, By::Id(member.call_id), false).await? else {
-            return Ok(OwnCallView { call: None });
+            return Ok(OwnCallView { cursor, call: None });
         };
         if !may_be_at(connection, &access, &call.place).await? {
-            return Ok(OwnCallView { call: None });
+            return Ok(OwnCallView { cursor, call: None });
         }
         Ok(OwnCallView {
+            cursor,
             call: Some(OwnCallState {
                 own: member.own_call(&call),
                 entry_requests: store::entry_requests(connection, now, &call, access.account_id)
@@ -607,7 +610,87 @@ pub async fn join_channel_call(
     })?;
     let media = app.calls.admitting()?.clone();
     app.streams.calls().enter(account_id, entered.key);
-    entered.join(&app, media.as_ref(), now).map(Json)
+    join_answer(&app, &bearer, entered, media.as_ref(), now, true)
+        .await
+        .map(Json)
+}
+
+/// Reads the answer of a route that gave a place, in a read transaction of its own after
+/// the commit of that place: the call, the blocks, the publishing rights of the token and
+/// the position of the event log are of one read (ADR 0519). An answer with a position
+/// states that the seat exists at that position.
+///
+/// A caller whom this read refuses gets the refusal: the session has ended, or the caller
+/// may no longer be at the place. When the seat or the call has ended since the commit, or
+/// the server could not complete the read, the answer is the one that the transaction of
+/// the place read, without a position: the place was made, and the caller was allowed to
+/// have this answer then.
+async fn join_answer(
+    app: &AppState,
+    bearer: &Bearer,
+    entered: entry::Entered,
+    media: &dyn crate::media::MediaServer,
+    now: OffsetDateTime,
+    shows_requests: bool,
+) -> ApiResult<CallJoin> {
+    let read: ApiResult<Option<(entry::Entered, Cursor)>> = async {
+        read!(app, |connection| {
+            let access = Access::open(connection, bearer, now).await?;
+            access.require(Request::OwnAccount)?;
+            if !may_be_at(connection, &access, &entered.call.place).await? {
+                return Err(ApiError::not_found());
+            }
+            let Some(call) = store::call(connection, By::Id(entered.call.id), false).await? else {
+                return Ok(None);
+            };
+            // The seat of a member, or the seat of a move into this call that waits.
+            let seated: bool = sqlx::query_scalar(
+                "select exists (select 1 from call_members
+                                where call_id = $1 and account_id = $2 and identity = $3)
+                     or exists (select 1 from call_moves
+                                where to_call_id = $1 and account_id = $2 and identity = $3)",
+            )
+            .bind(call.id)
+            .bind(access.account_id)
+            .bind(&entered.identity)
+            .fetch_one(&mut *connection)
+            .await?;
+            if !seated {
+                return Ok(None);
+            }
+            let log = events::log::state(connection).await?;
+            let answer = entry::Entered::read(
+                connection,
+                now,
+                call,
+                access.account_id,
+                entered.identity.clone(),
+                shows_requests,
+            )
+            .await?;
+            Ok(Some((answer, log.cursor(log.head)?)))
+        })
+    }
+    .await;
+    match read {
+        Ok(Some((answer, cursor))) => answer.join(app, media, now, Some(cursor)),
+        Ok(None) => entered.join(app, media, now, None),
+        Err(error) if not_completed(&error) => {
+            tracing::debug!(code = ?error.code(), "the answer of a join was not read again");
+            entered.join(app, media, now, None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// True when the server could not complete a read: the error tells nothing about the
+/// caller.
+fn not_completed(error: &ApiError) -> bool {
+    use junto_protocol::error::ErrorCode as Code;
+    matches!(
+        error.code(),
+        Code::Busy | Code::Timeout | Code::Internal | Code::Unavailable
+    )
 }
 
 /// Locks the voice channel that the caller is in: only people who are invited, moved in or
@@ -1074,7 +1157,9 @@ pub async fn accept_call_invitation(
     })?;
     let media = app.calls.admitting()?.clone();
     app.streams.calls().enter(account_id, entered.key);
-    entered.join(&app, media.as_ref(), now).map(Json)
+    join_answer(&app, &bearer, entered, media.as_ref(), now, true)
+        .await
+        .map(Json)
 }
 
 /// Declines an invitation into a call.
@@ -1321,7 +1406,9 @@ pub async fn join_move(
         entry::Entered::read(connection, now, to, account_id, pending.identity, false).await
     })?;
     let media = app.calls.admitting()?.clone();
-    entered.join(&app, media.as_ref(), now).map(Json)
+    join_answer(&app, &bearer, entered, media.as_ref(), now, false)
+        .await
+        .map(Json)
 }
 
 /// Reports that the device could not join the destination of a move. Nothing changes: the
@@ -1813,7 +1900,9 @@ pub async fn join_direct_call(
     })?;
     let media = app.calls.admitting()?.clone();
     app.streams.calls().enter(caller, entered.key);
-    entered.join(&app, media.as_ref(), now).map(Json)
+    join_answer(&app, &bearer, entered, media.as_ref(), now, true)
+        .await
+        .map(Json)
 }
 
 /// Declines the call of the other participant of a direct message.

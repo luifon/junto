@@ -101,7 +101,7 @@ fn scene() -> Scene {
         clock: Some(morning()),
         ..Known::default()
     };
-    known.names.insert((server_id, ana), "Ana".to_owned());
+    known.people.read_name(server_id, ana, "Ana");
     Scene {
         server_id,
         model,
@@ -1311,9 +1311,10 @@ fn the_text_of_a_system_notification_is_one_line_of_a_bounded_length() {
     let mut scene = scene();
     let mut seen = Seen::default();
     scene.alerts(&mut seen);
-    scene.known.names.insert(
-        (scene.server_id, scene.ana),
-        format!("Ana\n\u{7}{}", "a".repeat(400)),
+    scene.known.people.read_name(
+        scene.server_id,
+        scene.ana,
+        &format!("Ana\n\u{7}{}", "a".repeat(400)),
     );
     let mut message = scene.message(scene.in_channel(scene.general), 7, "");
     message.document = None;

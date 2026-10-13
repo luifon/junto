@@ -33,6 +33,11 @@ impl Shell {
             .gap(u(12.0))
             .p(u(24.0))
             .debug_selector(|| "incoming-direct-call".to_owned())
+            .child(super::people::avatar(
+                &self.faces(invited.target.server_id),
+                invited.caller,
+                48.0,
+            ))
             .child(format!(
                 "{} is calling",
                 invited.by.as_deref().unwrap_or(text::UNKNOWN_PERSON)
@@ -87,6 +92,7 @@ impl Shell {
             active.is_some(),
         );
         let incoming = self.view.as_ref().is_some_and(|view| view.invitations.iter().any(|invited| invited.target.server_id == server && matches!(invited.target.place, CallPlace::Direct { low_account_id, high_account_id } if low_account_id == other || high_account_id == other)));
+        let faces = self.faces(server);
         let pictures = active.map(|call| {
             let CallPlace::Direct {
                 low_account_id,
@@ -145,7 +151,8 @@ impl Shell {
                             };
                             running.then(|| (state.calls().clone(), id))
                         }))
-                        .picture(picture),
+                        .picture(faces.image(account))
+                        .camera_picture(picture),
                     )
                 }),
             )

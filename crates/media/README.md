@@ -12,6 +12,8 @@ The audio pipeline uses 48 kHz frames of 10 ms, processing for microphone sound 
 
 Screen capture supplies pictures and optional sound through an owned stream. The last still picture is refreshed once a second for late subscribers. Each viewer watches one share and hears only its sound, with an independent volume. Publication uses one full-resolution stream with an explicit resolution-preserving degradation preference. The SDK exposes no minimum bitrate or supported bandwidth-estimate override; low bandwidth may reduce cadence or suspend frames. See ADRs 0736, 0737 and 0773.
 
+On macOS the crate defines `pthread_cond_wait` and `pthread_cond_timedwait` for all statically linked code (`condition_wait`). The WebRTC library ends a blocking call when the system refuses its wait, before the awaited task ran; the functions return such a refusal as a wake-up without a signal, and the wait is repeated. `tools/check-condition-wait.sh` shows the fault and the correction with the linked library and checks the symbols of a built program. See ADR 0786.
+
 ## Tests
 
 Run ordinary tests through the shared build lock:

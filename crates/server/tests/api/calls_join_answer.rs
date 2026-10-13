@@ -157,6 +157,12 @@ async fn the_answer_to_a_join_states_the_block_of_meeting_mode() {
         .ok(StatusCode::OK);
     assert_eq!(blocks(&moved), (by_meeting, None));
     assert!(moved.entry_requests.is_empty());
+    // The seat of a move exists in the destination before the move completes: the answer
+    // names the position at which it was read (ADR 0519).
+    assert!(
+        moved.cursor.is_some(),
+        "the join of a move names no position"
+    );
 }
 
 /// A block names the person who set it, and the block of a meeting tells that meeting mode

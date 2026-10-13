@@ -484,7 +484,7 @@ fn account_name(
                 .find(|member| member.account_id == account_id)
                 .map(|member| member.name.clone())
         })
-        .or_else(|| known.names.get(&(server_id, account_id)).cloned())
+        .or_else(|| known.people.name(server_id, account_id))
 }
 
 fn token_line(
@@ -1503,7 +1503,7 @@ mod tests {
             zone: Zone::Fixed(offset),
             ..Known::default()
         };
-        known.names.insert((scene.server_id, ana), "Ana".to_owned());
+        known.people.read_name(scene.server_id, ana, "Ana");
         let page = tokens(scene.server_id, &model, &known, &AdminState::default());
         let rows = page.tokens.loaded().unwrap();
         assert_eq!(
@@ -1950,7 +1950,7 @@ mod tests {
             direct(scene.own, stranger),
         ]));
         let mut known = known();
-        known.names.insert((scene.server_id, ana), "Ana".to_owned());
+        known.people.read_name(scene.server_id, ana, "Ana");
         let page = exports(scene.server_id, &model, &known, &AdminState::default());
         let rows = page.exports.loaded().unwrap();
         let named = ExportOf::Direct {
@@ -2266,7 +2266,7 @@ mod tests {
             ..AdminModel::default()
         });
         let mut known = known();
-        known.names.insert((scene.server_id, ana), "Ana".to_owned());
+        known.people.read_name(scene.server_id, ana, "Ana");
         let names = Names::new(scene.server_id, &model, &known);
         // A state that knows none of the accounts, workspaces, channels and roles.
         let stranger = self::scene();
@@ -2397,7 +2397,7 @@ mod tests {
             AccountId::generate(),
         );
         let mut known = known();
-        known.names.insert((scene.server_id, ana), "Ana".to_owned());
+        known.people.read_name(scene.server_id, ana, "Ana");
         let ban = entry(
             Some(ana),
             AuditEvent::AccountBanned {
@@ -2480,7 +2480,7 @@ mod tests {
         let model = scene.model(AdminModel::default());
         let ana = AccountId::generate();
         let mut known = known();
-        known.names.insert((scene.server_id, ana), "Ana".to_owned());
+        known.people.read_name(scene.server_id, ana, "Ana");
         let mut with_token = entry(
             Some(ana),
             AuditEvent::WorkspaceCreated {

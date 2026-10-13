@@ -1075,7 +1075,7 @@ impl Actor {
     /// Publishes or withdraws the sound track of the share by what holds now: it is
     /// published while the share runs with a sound and the server lets the person send it.
     pub(super) fn sync_share_sound(&mut self) {
-        let may_send = self.may_send(SHARE_SOUND_SOURCE);
+        let may_send = self.may_send(SHARE_SOUND_SOURCE) && !self.controls.microphone_blocked;
         let Some(share) = &mut self.share else {
             return;
         };

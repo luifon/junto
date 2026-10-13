@@ -3,6 +3,7 @@
 
 pub mod overrides;
 pub mod people;
+pub mod recordings;
 pub mod records;
 
 use junto_client_core::api::{ApiError, ErrorCategory};
@@ -56,6 +57,7 @@ pub const fn page_name(page: AdminPage) -> &'static str {
         AdminPage::Channels => "Channels",
         AdminPage::Archive => "Archive and retention",
         AdminPage::Members => "Members",
+        AdminPage::Recordings => "Recordings",
         AdminPage::Exports => "Exports",
     }
 }
@@ -70,6 +72,7 @@ pub const fn page_icon(page: AdminPage) -> Icon {
         AdminPage::AuditLog => Icon::Clock,
         AdminPage::Channels => Icon::Hash,
         AdminPage::Archive => Icon::Lock,
+        AdminPage::Recordings => Icon::Record,
         AdminPage::Exports => Icon::Download,
     }
 }
@@ -86,6 +89,7 @@ pub const fn page_selector(page: AdminPage) -> &'static str {
         AdminPage::Channels => "admin-nav-channels",
         AdminPage::Archive => "admin-nav-archive",
         AdminPage::Members => "admin-nav-members",
+        AdminPage::Recordings => "admin-nav-recordings",
         AdminPage::Exports => "admin-nav-exports",
     }
 }

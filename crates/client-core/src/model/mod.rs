@@ -259,6 +259,9 @@ pub struct ServerModel {
     pub workspaces: Vec<Arc<WorkspaceModel>>,
     /// The call that the account is in, and the device that it is in the call with.
     pub own_call: Option<OwnCall>,
+    /// The call of the last answer of `GET /call` that was put into the state, and the
+    /// position that the answer named (ADR 0519).
+    pub(crate) own_call_cursor: Option<(CallId, Cursor)>,
     /// The direct-message calls of the account. One without `started_at` is not in
     /// progress yet.
     pub direct_calls: Vec<CallModel>,
@@ -354,6 +357,7 @@ impl ServerModel {
                 .map(|state| Arc::new(WorkspaceModel::of(state)))
                 .collect(),
             own_call: snapshot.own_call,
+            own_call_cursor: None,
             direct_calls: snapshot
                 .direct_calls
                 .into_iter()
@@ -404,6 +408,20 @@ impl ServerModel {
             CallPlace::Channel { channel_id, .. } => self.channel(*channel_id)?.call.as_ref(),
             CallPlace::Direct { .. } => self.direct_calls.iter().find(|call| call.place == *place),
         }
+    }
+
+    /// The position up to which the state holds the events of the call at `place`. It is
+    /// the cursor of the state, or the position of a read of the own call that is ahead of
+    /// the events (ADR 0785). The own call of the account and the moves follow the cursor
+    /// of the state only.
+    pub fn call_cursor(&self, place: &CallPlace) -> Cursor {
+        self.own_call_cursor
+            .filter(|(id, cursor)| {
+                cursor.epoch == self.cursor.epoch
+                    && cursor.position > self.cursor.position
+                    && self.call_at(place).is_some_and(|call| call.id == *id)
+            })
+            .map_or(self.cursor, |(_, cursor)| cursor)
     }
 
     /// True when the account is in a call with the device `device_id`.
@@ -490,7 +508,7 @@ impl ServerModel {
         self.put_call(call);
     }
 
-    fn put_call(&mut self, call: CallModel) {
+    pub(crate) fn put_call(&mut self, call: CallModel) {
         match call.place {
             CallPlace::Channel { .. } => {
                 if let Some(channel) = self.channel_mut(&call.place) {

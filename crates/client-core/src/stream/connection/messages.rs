@@ -994,7 +994,9 @@ impl Client {
                     self.read(Part::MoreNotices(last));
                 }
             }
-            Command::LoadMembers { .. }
+            Command::Refresh { .. }
+            | Command::LoginUnanswered
+            | Command::LoadMembers { .. }
             | Command::ReleaseMembers(_)
             | Command::OpenRecording { .. }
             | Command::ReleaseRecording(_)

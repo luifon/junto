@@ -7,7 +7,7 @@ use gpui::{
     prelude::FluentBuilder,
 };
 
-use super::{Meter, Mosaic, MosaicKind, StyleExt, icon};
+use super::{Avatar, Meter, StyleExt, icon};
 use crate::assets::Icon;
 use crate::theme::{theme, u};
 
@@ -31,11 +31,12 @@ pub const STRIP_TILE_SIZE: (f32, f32) = (148.0, 84.0);
 
 #[derive(IntoElement)]
 pub struct PersonTile {
-    picture: Option<CameraPicture>,
+    camera_picture: Option<CameraPicture>,
     camera_view: Option<(junto_media::calls::Calls, junto_media::engine::ShareId)>,
     id: ElementId,
     name: SharedString,
     seed: u128,
+    picture: Option<std::sync::Arc<gpui::RenderImage>>,
     speaking: bool,
     marks: Vec<TileMark>,
     label: SharedString,
@@ -54,11 +55,12 @@ impl PersonTile {
         label: impl Into<SharedString>,
     ) -> Self {
         Self {
-            picture: None,
+            camera_picture: None,
             camera_view: None,
             id: id.into(),
             name: name.into(),
             seed,
+            picture: None,
             speaking: false,
             marks: Vec::new(),
             label: label.into(),
@@ -86,7 +88,15 @@ impl PersonTile {
         self.focused = focused;
         self
     }
-    pub fn picture(mut self, picture: Option<CameraPicture>) -> Self {
+
+    /// The picture of the camera of the person. It covers the avatar.
+    pub fn camera_picture(mut self, picture: Option<CameraPicture>) -> Self {
+        self.camera_picture = picture;
+        self
+    }
+
+    /// The image of the avatar of the person, when the window holds it.
+    pub fn picture(mut self, picture: Option<std::sync::Arc<gpui::RenderImage>>) -> Self {
         self.picture = picture;
         self
     }
@@ -179,9 +189,11 @@ impl RenderOnce for PersonTile {
             .child(
                 div()
                     .mb(u(16.0))
-                    .child(Mosaic::new(MosaicKind::Large, self.seed, avatar)),
+                    .child(Avatar::new(self.seed, avatar).image(self.picture)),
             )
-            .when_some(self.picture, |tile, picture| tile.child(picture.element()))
+            .when_some(self.camera_picture, |tile, picture| {
+                tile.child(picture.element())
+            })
             .child(
                 div()
                     .absolute()

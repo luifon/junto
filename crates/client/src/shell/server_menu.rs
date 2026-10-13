@@ -26,6 +26,9 @@ impl Shell {
             return;
         }
         if self.state.read(cx).view().selected.is_some() {
+            // A move of a server that failed is told in the menu that asked for it.
+            self.state
+                .update(cx, |state, cx| state.dismiss_move_failure(cx));
             self.open_layer(Layer::ServerMenu, window, cx);
         }
     }
@@ -138,6 +141,7 @@ impl Shell {
                             })),
                     )
                     .children(notifications)
+                    .children(self.render_move_items(view, cx))
                     // The administration needs the state of the server.
                     .when(has_content, |menu| {
                         menu.child(
@@ -148,6 +152,22 @@ impl Shell {
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.open_server_admin(
                                         crate::state::admin::AdminPage::Workspaces,
+                                        window,
+                                        cx,
+                                    );
+                                })),
+                        )
+                    })
+                    // The account layer needs the state of the server too.
+                    .when(has_content, |menu| {
+                        menu.child(
+                            MenuItem::new("your-account", text::account::OPEN_ACCOUNT)
+                                .icon(Icon::People)
+                                .detail(text::account::OPEN_ACCOUNT_HELP)
+                                .selector("menu-account")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_account(
+                                        crate::state::account::AccountPage::Profile,
                                         window,
                                         cx,
                                     );

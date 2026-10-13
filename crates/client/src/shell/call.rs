@@ -27,8 +27,8 @@ use crate::state::view::{
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Button, ButtonKind, Flag, FlagKind, Menu, MenuItem, Meter, Mosaic, MosaicKind, PersonTile,
-    ScrollArea, SectionLabel, Segmented, SelectBox, StyleExt, Tab, TileMark, Toggle, VolumeSlider,
+    Button, ButtonKind, Flag, FlagKind, Menu, MenuItem, Meter, PersonTile, ScrollArea,
+    SectionLabel, Segmented, SelectBox, StyleExt, Tab, TileMark, Toggle, VolumeSlider,
     float_shadow, icon, tooltip,
 };
 
@@ -344,6 +344,7 @@ impl Shell {
         cx: &gpui::App,
     ) -> AnyElement {
         let colors = theme.colors;
+        let faces = self.shown_faces();
         let people = occupants(channel);
         let waiting = |title: &'static str, sentence: String, selector: &'static str| {
             div()
@@ -462,8 +463,9 @@ impl Shell {
                             |tile| tile.in_strip(),
                         )
                         .focused(focus == Some(occupant.account_id))
+                        .picture(faces.image(occupant.account_id))
                         .camera_view(self.camera_request(occupant, cx))
-                        .picture(self.camera_image(occupant))
+                        .camera_picture(self.camera_image(occupant))
                         .speaking(matches!(
                             occupant.microphone,
                             Microphone::Open { speaking: true }
@@ -702,6 +704,7 @@ impl Shell {
     ) -> AnyElement {
         let colors = theme.colors;
         let server_id = view.selected.as_ref().map(|server| server.id);
+        let faces = self.shown_faces();
         let state_line = |states: Vec<(Icon, SharedString)>| {
             let mut line = div()
                 .flex()
@@ -742,11 +745,11 @@ impl Shell {
                 .when(index > 0, |row| {
                     row.border_t_1().border_color(Hsla::from(colors.rule_soft))
                 })
-                .child(div().mt(u(2.0)).child(Mosaic::new(
-                    MosaicKind::Large,
-                    account_id.as_uuid().as_u128(),
-                    30.0,
-                )))
+                .child(
+                    div()
+                        .mt(u(2.0))
+                        .child(super::people::avatar(&faces, account_id, 30.0)),
+                )
         };
         let name_line = |name: SharedString, is_self: bool, camera: Option<AccountId>| {
             div()

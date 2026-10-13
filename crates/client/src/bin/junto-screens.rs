@@ -74,8 +74,12 @@ use junto_media::share::{
 use time::OffsetDateTime;
 
 /// The window of the design: 1440 by 900 pixels at 100 %.
+#[path = "junto-screens/account.rs"]
+mod account;
 #[path = "junto-screens/admin.rs"]
 mod admin;
+#[path = "junto-screens/book.rs"]
+mod book;
 #[path = "junto-screens/cameras.rs"]
 mod cameras;
 #[path = "junto-screens/discovery.rs"]
@@ -84,6 +88,8 @@ mod discovery;
 mod frames;
 #[path = "junto-screens/messages.rs"]
 mod messages;
+#[path = "junto-screens/people.rs"]
+mod people;
 #[path = "junto-screens/recorded.rs"]
 mod recorded;
 #[path = "junto-screens/threads.rs"]
@@ -2708,6 +2714,9 @@ fn run(out: &Path) -> Result<(), String> {
         // Not a picture: the time of a frame with 10,000 loaded messages.
         Some("frames") => frames::measure(&mut studio),
         Some("admin") => admin::draw(&mut studio),
+        Some("people") => people::draw(&mut studio),
+        Some("account") => account::draw(&mut studio),
+        Some("book") => book::draw(&mut studio),
         _ => draw_all(&mut studio)
             .and_then(|()| draw_calls(&mut studio))
             .and_then(|()| draw_shares(&mut studio))
@@ -2717,6 +2726,9 @@ fn run(out: &Path) -> Result<(), String> {
             .and_then(|()| discovery::draw(&mut studio))
             .and_then(|()| recorded::draw(&mut studio))
             .and_then(|()| admin::draw(&mut studio))
+            .and_then(|()| people::draw(&mut studio))
+            .and_then(|()| account::draw(&mut studio))
+            .and_then(|()| book::draw(&mut studio))
             .and_then(|()| draw_components(&mut studio)),
     };
     let scratch = studio.scratch.clone();

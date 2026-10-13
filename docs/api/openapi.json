@@ -10383,6 +10383,17 @@
           "call": {
             "$ref": "#/components/schemas/Call"
           },
+          "cursor": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Cursor",
+                "description": "The position in the event log up to which this answer holds the events. It is read\nwith the call and the blocks, after the place was made (ADR 0519). A server from\nbefore that ADR sends none."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "entry_requests": {
             "type": "array",
             "items": {
@@ -12678,6 +12689,17 @@
               {
                 "$ref": "#/components/schemas/OwnCallState",
                 "description": "Absent when the account is in no call."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cursor": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Cursor",
+                "description": "The position in the event log up to which this answer holds the events (ADR 0519).\nA server from before that ADR sends none."
               },
               {
                 "type": "null"

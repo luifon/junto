@@ -95,7 +95,7 @@ fn scene() -> Scene {
         clock: Some(morning()),
         ..Known::default()
     };
-    known.names.insert((server_id, ana), "Ana".to_owned());
+    known.people.read_name(server_id, ana, "Ana");
     Scene {
         server_id,
         model,

@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+use gpui::RenderImage;
 use junto_client_core::api::SettingsScope;
 use junto_client_core::flow::FlowError;
 use junto_client_core::flow::access::{AccessState, ActionKind, Notice};
@@ -42,6 +43,7 @@ use uuid::Uuid;
 
 use super::feed::{self, Feed, MessageRow, Names, Quoted, Zone};
 use super::notices::{DefaultRead, Mute, NoticesPanel, NotifyPanel, QuietView};
+use super::people::{self, Faces, People, Wanted};
 use super::recorded::TranscriptShown;
 use super::search::SearchPanel;
 
@@ -146,14 +148,20 @@ pub struct MediaSnapshot {
     pub can_share: bool,
 }
 
-/// The names of accounts that the members of a workspace do not give, the workspaces whose
-/// members could not be read, and what the media part holds.
+/// The profiles of accounts that were read, the workspaces whose members could not be
+/// read, and what the media part holds.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Known {
-    pub names: HashMap<(ServerId, AccountId), String>,
+    /// The names and the avatars of accounts, as their profiles gave them (ADR 0783).
+    pub people: People,
     pub members_failed: Vec<(ServerId, WorkspaceId)>,
     /// The name of the profile preset.
     pub preset_name: String,
+    /// The picture of the profile preset, as an image of the window.
+    pub preset_picture: Option<Arc<RenderImage>>,
+    /// The servers that refused the picture of the profile preset for the account that
+    /// this device created there (ADR 0717).
+    pub preset_refused: HashSet<ServerId>,
     pub media: MediaSnapshot,
     /// The last recording of the call of this device that failed or that the server
     /// stopped, with the server of that call. The state of a server holds a recording
@@ -220,6 +228,8 @@ pub struct Known {
     pub quiet_busy: bool,
     /// The servers that did not take the last change of the quiet times, with the reason.
     pub quiet_failed: Vec<(ServerId, String)>,
+    /// What the update check holds, and what the person did with it (ADR 0780).
+    pub updates: super::book::UpdatesKnown,
 }
 
 /// Where the fork of a thread stands that the person asked for.
@@ -489,6 +499,9 @@ pub struct ServerRow {
     pub has_recovery: bool,
     /// What the places of the server hold that the person has not read.
     pub unread: Unread,
+    /// What of it no listed workspace shows: the direct conversations, and every place
+    /// of a server without a listed workspace. The head of the server shows its sign.
+    pub head_unread: Unread,
     pub workspaces: Vec<WorkspaceRow>,
 }
 
@@ -1217,6 +1230,21 @@ pub struct ShellView {
     pub quiet: QuietView,
     /// The text of the search of the shown server, while it has one.
     pub search_text: Option<String>,
+    /// The pictures of the people that the window shows (ADR 0783). A drawing takes the
+    /// pictures of its server once, with [`Faces::of`], and asks for each person by the
+    /// account.
+    pub faces: Faces,
+    /// The people that this view names, by server. The state of the application reads
+    /// their profiles; the derivation starts nothing.
+    pub wanted_people: HashMap<ServerId, Wanted>,
+    /// The picture of the profile preset. The profile strip shows it for a person
+    /// without an account on the selected server.
+    pub preset_picture: Option<Arc<RenderImage>>,
+    /// The names of the servers that refused the picture of the profile preset, in the
+    /// order of the server book.
+    pub preset_refused: Vec<(ServerId, String)>,
+    /// A newer build of the client that the source of releases offers (ADR 0780).
+    pub update: Option<super::book::Available>,
 }
 
 impl ShellView {
@@ -1340,7 +1368,7 @@ fn name_of(
                 .find(|member| member.account_id == account_id)
                 .map(|member| member.name.clone())
         })
-        .or_else(|| known.names.get(&(server_id, account_id)).cloned())
+        .or_else(|| known.people.name(server_id, account_id))
 }
 
 fn voice_state(
@@ -2079,10 +2107,9 @@ fn names(
     known: &Known,
 ) -> Names {
     let mut accounts: HashMap<AccountId, String> = known
-        .names
-        .iter()
-        .filter(|((server, _), _)| *server == server_id)
-        .map(|((_, account_id), name)| (*account_id, name.clone()))
+        .people
+        .names(server_id)
+        .map(|(account_id, name)| (account_id, name.to_owned()))
         .collect();
     if let Some(members) = workspace.members.loaded() {
         accounts.extend(
@@ -2117,6 +2144,21 @@ fn server_unread(model: &ServerModel) -> Unread {
     let mut unread = Unread::default();
     for state in &model.message_states {
         unread.add(Unread::of(model, PlaceId::of(&state.place)));
+    }
+    unread
+}
+
+/// What a server holds unread that no row of a workspace shows: its direct conversations,
+/// and every place when the server lists no workspace.
+fn head_unread(model: &ServerModel) -> Unread {
+    if model.workspaces.is_empty() {
+        return server_unread(model);
+    }
+    let mut unread = Unread::default();
+    for state in &model.message_states {
+        if let place @ PlaceId::Direct(_) = PlaceId::of(&state.place) {
+            unread.add(Unread::of(model, place));
+        }
     }
     unread
 }
@@ -2496,12 +2538,7 @@ fn invitations(servers: &[ServerSnapshot], known: &Known) -> Vec<Invited> {
                         name_of(server.id, invitation.invited_by, workspace, model, known)
                     })
                 })
-                .or_else(|| {
-                    known
-                        .names
-                        .get(&(server.id, invitation.invited_by))
-                        .cloned()
-                });
+                .or_else(|| known.people.name(server.id, invitation.invited_by));
             waiting.push(Invited {
                 id: invitation.id,
                 caller: invitation.invited_by,
@@ -2546,7 +2583,7 @@ fn entry_prompts(servers: &[ServerSnapshot], known: &Known) -> Vec<EntryPrompt> 
                 .and_then(|workspace| {
                     name_of(server.id, request.account_id, workspace, model, known)
                 })
-                .or_else(|| known.names.get(&(server.id, request.account_id)).cloned()),
+                .or_else(|| known.people.name(server.id, request.account_id)),
             channel: channel_of(servers, &active.target),
         })
         .collect()
@@ -2646,7 +2683,7 @@ fn call_strip(servers: &[ServerSnapshot], known: &Known, shown: Shown) -> Option
                         name_of(active.target.server_id, other, workspace, model, known)
                     })
                 })
-                .or_else(|| known.names.get(&(active.target.server_id, other)).cloned())
+                .or_else(|| known.people.name(active.target.server_id, other))
         }),
         phase: active.phase,
         elapsed: started_at.zip(known.media.now).map(|(started_at, now)| {
@@ -2733,6 +2770,10 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
                 unread: shown_model(server)
                     .filter(|_| status.shows_content())
                     .map(server_unread)
+                    .unwrap_or_default(),
+                head_unread: shown_model(server)
+                    .filter(|_| status.shows_content())
+                    .map(head_unread)
                     .unwrap_or_default(),
                 workspaces: shown_model(server)
                     .filter(|_| status.shows_content())
@@ -2830,6 +2871,15 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
             .as_ref()
             .filter(|search| Some(search.server_id) == selected_id)
             .map(|search| search.text.clone()),
+        faces: Faces::default(),
+        wanted_people: HashMap::new(),
+        preset_picture: known.preset_picture.clone(),
+        preset_refused: servers
+            .iter()
+            .filter(|server| known.preset_refused.contains(&server.id))
+            .map(|server| (server.id, server.name.clone()))
+            .collect(),
+        update: super::book::available(&known.updates),
         share_notice: known
             .media
             .calls
@@ -2841,10 +2891,16 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
             }),
     };
     view.call = call_strip(servers, known, view.shown());
+    view.faces = people::faces(servers, &known.people);
+    view.wanted_people = people::wanted(servers, &view);
     view
 }
 
 #[cfg(test)]
+mod book_tests;
+#[cfg(test)]
 mod panel_tests;
+#[cfg(test)]
+mod people_tests;
 #[cfg(test)]
 mod tests;

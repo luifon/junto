@@ -116,10 +116,9 @@ pub fn account_names(
     known: &Known,
 ) -> HashMap<AccountId, String> {
     let mut names: HashMap<AccountId, String> = known
-        .names
-        .iter()
-        .filter(|((server, _), _)| *server == server_id)
-        .map(|((_, account_id), name)| (*account_id, name.clone()))
+        .people
+        .names(server_id)
+        .map(|(account_id, name)| (account_id, name.to_owned()))
         .collect();
     for workspace in &model.workspaces {
         if let Some(members) = workspace.members.loaded() {

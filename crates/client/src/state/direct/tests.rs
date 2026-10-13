@@ -177,3 +177,40 @@ fn a_voice_invitation_resolution_does_not_enter_direct_call_history() {
     calls.resolve(server, invitation.id, InvitationOutcome::Declined);
     assert!(calls.early.is_empty());
 }
+
+#[test]
+fn an_invitation_that_is_not_shown_names_no_caller_for_the_profile_reads() {
+    use crate::state::view::{Invited, Known, Selection, derive};
+    use junto_media::calls::CallTarget;
+    let (server, own, invitation) = ring();
+    let caller = invitation.invited_by;
+    let mut calls = DirectCalls::default();
+    calls.see(server, own, &invitation, Instant::now());
+    let view = || {
+        let mut view = derive(&[], &Selection::default(), &Known::default());
+        view.invitations.push(Invited {
+            id: invitation.id,
+            caller,
+            target: CallTarget {
+                server_id: server,
+                place: invitation.place,
+            },
+            by: None,
+            channel: None,
+        });
+        view.wanted_people
+            .entry(server)
+            .or_default()
+            .accounts
+            .push(caller);
+        view
+    };
+    let shown = calls.filter_view(view());
+    assert_eq!(shown.invitations.len(), 1);
+    assert_eq!(shown.wanted_people[&server].accounts, [caller]);
+    // The person declined: the invitation leaves the view, and its caller with it.
+    calls.resolve(server, invitation.id, InvitationOutcome::Declined);
+    let hidden = calls.filter_view(view());
+    assert!(hidden.invitations.is_empty());
+    assert!(hidden.wanted_people[&server].accounts.is_empty());
+}

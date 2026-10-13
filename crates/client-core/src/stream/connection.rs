@@ -83,6 +83,7 @@ struct Pending {
     ticket: u64,
     load: Load,
     events: Vec<Arc<Event>>,
+    positions: Vec<u64>,
     bytes: usize,
     request: AbortHandle,
 }
@@ -226,6 +227,8 @@ struct Client {
     /// The workspaces whose members a reader asked for.
     wanted_members: BTreeSet<WorkspaceId>,
     waiting_for_members: BTreeMap<WorkspaceId, Vec<MembersReply>>,
+    refresh_waiters: Vec<oneshot::Sender<Result<Cursor, LoadError>>>,
+    refreshed: Option<Cursor>,
     /// The answers to readers that asked for members, until the view that holds the result
     /// is given to the readers: a reader that is answered finds the members in the view.
     answers: Vec<(MembersReply, Result<(), LoadError>)>,
@@ -251,7 +254,8 @@ struct Client {
     /// carries what that read gives of a call that hides who is inside (ADR 0517).
     own_call_retry_at: Option<Instant>,
     own_call_backoff: Backoff,
-    /// The session ended. Nothing is tried until the client core gives another session.
+    /// The session ended. Nothing is tried until the client core gives another session,
+    /// or tells that its login got no answer.
     halted: bool,
     fault: Option<StreamFault>,
     shown: Option<(StreamStatus, Option<Level>)>,
@@ -295,6 +299,8 @@ pub(crate) async fn run(
         tickets: 0,
         wanted_members: BTreeSet::new(),
         waiting_for_members: BTreeMap::new(),
+        refresh_waiters: Vec::new(),
+        refreshed: None,
         answers: Vec::new(),
         link: None,
         opening: None,
@@ -406,6 +412,8 @@ impl Client {
 
     /// Ends the reads that are on their way and keeps their parts for the next session.
     fn park(&mut self) {
+        self.refresh_waiters.clear();
+        self.refreshed = None;
         let parts: Vec<Part> = self
             .pending
             .drain(..)
@@ -460,6 +468,8 @@ impl Client {
         self.resume.clear();
         self.wanted_members.clear();
         self.waiting_for_members.clear();
+        self.refresh_waiters.clear();
+        self.refreshed = None;
         self.forget_messages();
         self.forget_recordings();
         self.forget_admin();
@@ -685,6 +695,8 @@ impl Client {
     /// The state must be replaced: the client no longer knows which changes it missed, or
     /// it was told that what it may see has changed (ADR 0207, ADR 0208).
     fn reload(&mut self) {
+        self.pending
+            .retain(|pending| pending.load != Load::Part(Part::OwnCall));
         self.stale = true;
         if let Some(link) = &mut self.link {
             link.subscription = Subscription::None;
@@ -853,7 +865,37 @@ impl Client {
             // A repeat: deliveries are at least once (ADR 0011).
             return;
         }
+        let covered = model.own_call_cursor.is_some_and(|(call_id, cursor)| {
+            cursor.epoch == model.cursor.epoch
+                && id <= cursor.position
+                && model
+                    .own_call
+                    .as_ref()
+                    .is_some_and(|own| own.call_id == call_id)
+                && Part::OwnCall.concerns(&event, model)
+                && !matches!(event.as_ref(), Event::CallSpeaking { .. })
+        });
+        let saved_call = covered.then(|| {
+            (
+                model
+                    .own_call
+                    .as_ref()
+                    .and_then(|own| model.call_at(&own.place))
+                    .cloned(),
+                model.entry_requests.clone(),
+            )
+        });
         let follow = model.apply(&event);
+        if let Some((call, entry_requests)) = saved_call {
+            if let Some(mut call) = call {
+                // The answer holds no speaking marks: they follow the events (ADR 0785).
+                if let Some(applied) = model.call_at(&call.place) {
+                    call.speaking.clone_from(&applied.speaking);
+                }
+                model.put_call(call);
+            }
+            model.entry_requests = entry_requests;
+        }
         model.cursor.position = id;
         self.model_changed = true;
         self.messages.overtake_marks(&event, model);
@@ -866,6 +908,9 @@ impl Client {
                     continue;
                 }
                 pending.events.push(event.clone());
+                if part == Part::OwnCall {
+                    pending.positions.push(id);
+                }
                 pending.bytes += bytes;
                 if pending.events.len() > MOST_KEPT_EVENTS || pending.bytes > MOST_KEPT_BYTES {
                     again.push(part);
@@ -1063,6 +1108,7 @@ impl Client {
             ticket,
             load,
             events: Vec::new(),
+            positions: Vec::new(),
             bytes: 0,
             request: request.abort_handle(),
         });
@@ -1124,6 +1170,41 @@ impl Client {
                         model.set_members(workspace_id, Loadable::Loaded(members));
                     }
                     (Part::OwnCall, Payload::OwnCall(view)) => {
+                        if let Some(read_at) = view.cursor {
+                            if read_at.epoch != model.cursor.epoch {
+                                self.reload();
+                                return;
+                            }
+                            if model
+                                .own_call_cursor
+                                .is_some_and(|(_, cursor)| cursor.position > read_at.position)
+                            {
+                                return;
+                            }
+                            if let Some(call) = &view.call
+                                && model
+                                    .own_call
+                                    .as_ref()
+                                    .is_some_and(|own| own.call_id == call.own.call_id)
+                            {
+                                model.own_call_cursor = Some((call.own.call_id, read_at));
+                            }
+                            model.set_own_call(view.call);
+                            model.replay(
+                                part,
+                                pending
+                                    .positions
+                                    .iter()
+                                    .zip(&kept)
+                                    .filter(|(id, _)| **id > read_at.position)
+                                    .map(|(_, event)| event.as_ref()),
+                            );
+                            self.own_call_backoff.reset();
+                            self.model_changed = true;
+                            return;
+                        }
+                        // A server from before ADR 0519 names no position: as before it,
+                        // every event that arrived during the read is applied again.
                         model.set_own_call(view.call);
                         self.own_call_backoff.reset();
                     }
@@ -1213,10 +1294,27 @@ impl Client {
         self.carry_messages(before.as_ref());
         self.carry_recordings(before.as_ref());
         self.untold.push(Notice::Reloaded { cursor });
+        if !self.refresh_waiters.is_empty() {
+            self.refreshed = Some(cursor);
+        }
     }
 
     fn command(&mut self, command: Command) {
         match command {
+            Command::Refresh { reply } => {
+                if self.target.is_none() || self.halted {
+                    let _ = reply.send(Err(LoadError::Off));
+                    return;
+                }
+                self.refresh_waiters.push(reply);
+                self.refreshed = None;
+                self.pending.clear();
+                self.snapshot_retry_at = None;
+                self.reload();
+            }
+            // The session is tried again after the wait that its end set. A server that
+            // still refuses it reports the end again, and the client core logs in again.
+            Command::LoginUnanswered => self.halted = false,
             Command::LoadMembers {
                 workspace_id,
                 reply,
@@ -1349,6 +1447,11 @@ impl Client {
             });
             self.shown = Some((status, level));
             self.model_changed = false;
+        }
+        if let Some(cursor) = self.refreshed.take() {
+            for waiting in self.refresh_waiters.drain(..) {
+                let _ = waiting.send(Ok(cursor));
+            }
         }
         for (waiting, answer) in self.answers.drain(..) {
             let _ = waiting.send(answer);

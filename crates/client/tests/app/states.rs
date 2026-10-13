@@ -548,9 +548,10 @@ fn the_keyboard_reaches_the_menus_and_the_dialogs(cx: &mut TestAppContext) {
     window.click("channel-title");
     assert!(!window.shows("server-menu"));
 
-    // The last item follows notifications and administration; Escape declines.
+    // The last item opens the question, and Escape answers it with "no". The arrow up
+    // moves from the menu to its last item, however many items are before it.
     window.click("server-menu-button");
-    window.press("down down down down down enter");
+    window.press("up enter");
     assert!(window.shows("confirm-remove"));
     window.press("escape");
     assert!(!window.shows("confirm-remove"));

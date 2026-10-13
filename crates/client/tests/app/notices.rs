@@ -57,7 +57,14 @@ impl Admin {
         created.id
     }
 
-    fn mention(&self, world: &World, channel_id: ChannelId, text: &str, of: AccountId) -> Message {
+    /// Writes a message that mentions a person into a channel.
+    pub fn mention(
+        &self,
+        world: &World,
+        channel_id: ChannelId,
+        text: &str,
+        of: AccountId,
+    ) -> Message {
         self.send(world, channel_id, mention(text, of))
     }
 }

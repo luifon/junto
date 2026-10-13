@@ -55,19 +55,34 @@ impl ParentElement for ScrollArea {
     }
 }
 
+/// The thin scroll bar of the design over the right edge of what `handle` scrolls. It
+/// lies in an element that covers the scrolled one.
+pub(super) fn scroll_bar(handle: &ScrollHandle, dark: bool, cx: &App) -> impl IntoElement + use<> {
+    let colors = theme(cx).colors;
+    let thumb = Hsla::from(if dark {
+        colors.basalt_rule
+    } else {
+        colors.rule
+    });
+    let held = Hsla::from(if dark { colors.bone_3 } else { colors.ink_3 });
+    div().absolute().inset_0().child(
+        Scrollbar::vertical(handle)
+            .viewport_from_layout()
+            .mode(ScrollbarMode::Always)
+            .styles(|styles| {
+                styles
+                    .track(|track| track.bg(gpui::transparent_black()).width(px(10.0)))
+                    .track_hover(|track| track.bg(gpui::transparent_black()))
+                    .track_active(|track| track.bg(gpui::transparent_black()))
+                    .thumb(|bar| bar.bg(thumb).width(px(4.0)).radius(px(2.0)).inset(px(3.0)))
+                    .thumb_hover(|bar| bar.bg(held))
+                    .thumb_active(|bar| bar.bg(held))
+            }),
+    )
+}
+
 impl RenderOnce for ScrollArea {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let colors = theme(cx).colors;
-        let thumb = Hsla::from(if self.dark {
-            colors.basalt_rule
-        } else {
-            colors.rule
-        });
-        let held = Hsla::from(if self.dark {
-            colors.bone_3
-        } else {
-            colors.ink_3
-        });
         div()
             .relative()
             .flex()
@@ -89,23 +104,6 @@ impl RenderOnce for ScrollArea {
                     .track_scroll(&self.handle)
                     .children(self.children),
             )
-            .child(
-                div().absolute().inset_0().child(
-                    Scrollbar::vertical(&self.handle)
-                        .viewport_from_layout()
-                        .mode(ScrollbarMode::Always)
-                        .styles(|styles| {
-                            styles
-                                .track(|track| track.bg(gpui::transparent_black()).width(px(10.0)))
-                                .track_hover(|track| track.bg(gpui::transparent_black()))
-                                .track_active(|track| track.bg(gpui::transparent_black()))
-                                .thumb(|bar| {
-                                    bar.bg(thumb).width(px(4.0)).radius(px(2.0)).inset(px(3.0))
-                                })
-                                .thumb_hover(|bar| bar.bg(held))
-                                .thumb_active(|bar| bar.bg(held))
-                        }),
-                ),
-            )
+            .child(scroll_bar(&self.handle, self.dark, cx))
     }
 }

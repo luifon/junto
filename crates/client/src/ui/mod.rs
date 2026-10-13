@@ -4,6 +4,7 @@
 //! is activated with Enter or Space. A control has a role and a label for the accessibility
 //! tree (ADR 0702).
 
+mod avatar;
 mod button;
 mod controls;
 mod dialog;
@@ -23,6 +24,7 @@ use std::sync::Arc;
 
 use gpui::{App, BoxShadow, FocusHandle, FontFeatures, Hsla, Rgba, Styled, Svg, Window, px, svg};
 
+pub use avatar::Avatar;
 pub use button::{Button, ButtonKind};
 pub use controls::{SelectBox, Stepper, Tab, Toggle, VolumeSlider};
 pub use dialog::{Dialog, dialog_footer};

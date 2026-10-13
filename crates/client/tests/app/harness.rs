@@ -173,10 +173,29 @@ pub fn open(cx: &mut TestAppContext, data_dir: &Path) -> Window {
 
 /// Opens the application with the start argument for the interface scale.
 pub fn open_with(cx: &mut TestAppContext, data_dir: &Path, scale: Option<u32>) -> Window {
+    let client: Client = Device::open(data_dir, SupportedVersions::THIS_BUILD);
+    open_client(cx, client, scale)
+}
+
+/// Opens the application with a source of releases, and with the version that the build
+/// that runs is taken to have. The application itself has no source of releases yet.
+pub fn open_with_updates(
+    cx: &mut TestAppContext,
+    data_dir: &Path,
+    source: std::sync::Arc<junto_client_core::updates::FakeSource>,
+    build: junto_client_core::updates::Version,
+) -> Window {
+    let mut options = junto_client_core::ClientOptions::new(data_dir.join("junto"));
+    options.update_source = Some(source);
+    options.build = build;
+    open_client(cx, Client::open(options).unwrap(), None)
+}
+
+/// Opens the window of the application on an opened client.
+fn open_client(cx: &mut TestAppContext, client: Client, scale: Option<u32>) -> Window {
     // The client core answers from threads of its own runtime, at real times. The
     // scheduler of the test accepts that only when it is told so.
     cx.executor().allow_parking();
-    let client: Client = Device::open(data_dir, SupportedVersions::THIS_BUILD);
     let start = WindowStart {
         scale_percent: scale,
         activate: false,
@@ -275,7 +294,9 @@ impl Window {
             }
             assert!(
                 Instant::now() < deadline,
-                "after {PATIENCE:?} this did not hold: {what}"
+                "after {PATIENCE:?} this did not hold: {what}; the calls of the window: {:?}",
+                self.state
+                    .read_with(&self.cx, |state, _| state.calls().view())
             );
             std::thread::sleep(Duration::from_millis(20));
         }

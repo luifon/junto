@@ -68,6 +68,9 @@ const MICROPHONE_SOURCE: i32 = 2;
 /// How long the media server has to confirm that this device leaves a room. The devices
 /// are closed before, and the engine does not wait longer for a server that does not answer.
 const ROOM_CLOSE_LIMIT: Duration = Duration::from_secs(3);
+/// A leave that has not ended after this time is given up: a room that cannot be left
+/// does not stay in memory.
+const ROOM_LEAVE_END: Duration = Duration::from_secs(30);
 /// A device that fails is opened again once. A stream that the engine opened in this way
 /// and that fails again within this time stays closed until the person acts.
 const RECOVERY_SPAN: Duration = Duration::from_secs(5);
@@ -590,11 +593,58 @@ fn recent(at: Option<Instant>) -> bool {
 
 /// Leaves a room. The call library waits for the media server to confirm the leave.
 async fn close_room(room: Room) {
-    match tokio::time::timeout(ROOM_CLOSE_LIMIT, room.close()).await {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => tracing::debug!(%error, "the room was not left in order"),
-        Err(_) => tracing::warn!("the media server did not confirm that the room was left"),
+    let leave = async move { tokio::time::timeout(ROOM_LEAVE_END, room.close()).await };
+    match within(ROOM_CLOSE_LIMIT, leave).await {
+        Some(Ok(Ok(()))) => {}
+        Some(Ok(Err(error))) => tracing::debug!(%error, "the room was not left in order"),
+        Some(Err(_)) | None => {
+            tracing::warn!("the media server did not confirm that the room was left");
+        }
     }
+}
+
+/// Awaits the making of a media connection. On macOS it writes a warning when the system
+/// refused condition waits meanwhile (ADR 0786). The count is of the whole program:
+/// another connection that was made at the same time is counted too.
+pub(crate) async fn connecting<T>(connection: impl Future<Output = T>) -> T {
+    #[cfg(target_os = "macos")]
+    let refused = crate::condition_wait::refused();
+    let result = connection.await;
+    #[cfg(target_os = "macos")]
+    {
+        let refused = crate::condition_wait::refused() - refused;
+        if refused > 0 {
+            tracing::warn!(
+                refused,
+                "the system refused condition waits while the media connection was made"
+            );
+        }
+    }
+    result
+}
+
+/// Waits for `work` for at most `limit`. The work goes on when the wait has ended: the
+/// leave of a room that is cut off between two of its steps leaves the media connection
+/// half closed. Absent when the limit passed or the work failed.
+async fn within<T: Send + 'static>(
+    limit: Duration,
+    work: impl Future<Output = T> + Send + 'static,
+) -> Option<T> {
+    tokio::time::timeout(limit, tokio::spawn(work))
+        .await
+        .ok()?
+        .ok()
+}
+
+/// Ends a queue and returns what was sent and not taken. A sender finds the queue closed
+/// from now on and keeps what it wanted to send.
+fn ended<T>(queue: &mut mpsc::UnboundedReceiver<T>) -> Vec<T> {
+    queue.close();
+    let mut left = Vec::new();
+    while let Ok(item) = queue.try_recv() {
+        left.push(item);
+    }
+    left
 }
 
 async fn next_event(events: &mut Option<Events>) -> Option<RoomEvent> {
@@ -636,6 +686,14 @@ impl Actor {
         };
         self.leave(&mut events).await;
         self.pump.abort();
+        // A media connection that was made while the engine ended is left as every
+        // other one: a connection that is only dropped stays in the room. A connection
+        // that is made later is left by the work that makes it.
+        for message in ended(&mut internal) {
+            if let Internal::Connected(_, Ok((room, _))) = message {
+                close_room(room).await;
+            }
+        }
         if let Some(done) = done {
             let _ = done.send(());
         }
@@ -659,7 +717,8 @@ impl Actor {
         self.change(|state| state.connection = Connection::Connecting);
         let internal = self.internal.clone();
         self.runtime.spawn(async move {
-            let result = Room::connect(&join.url, join.token.expose(), RoomOptions::default())
+            let connection = Room::connect(&join.url, join.token.expose(), RoomOptions::default());
+            let result = connecting(connection)
                 .await
                 .map_err(|error| error.to_string());
             if let Err(Internal::Connected(_, Ok((room, _)))) = internal
@@ -680,6 +739,7 @@ impl Actor {
                 let before = std::mem::replace(&mut self.controls, controls);
                 if before.microphone_blocked != controls.microphone_blocked {
                     self.sync_microphone();
+                    self.sync_share_sound();
                 }
                 self.sync_gate();
                 self.sync_sound();
@@ -1399,5 +1459,41 @@ mod tests {
         assert_eq!(account_of(&account_id.to_string()), Some(account_id));
         assert_eq!(account_of("recorder"), None);
         assert_eq!(account_of(""), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn work_that_is_not_waited_for_any_longer_still_runs_to_its_end() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let finished = Arc::new(AtomicBool::new(false));
+        let work = {
+            let finished = finished.clone();
+            async move {
+                tokio::time::sleep(ROOM_CLOSE_LIMIT * 4).await;
+                finished.store(true, Ordering::SeqCst);
+            }
+        };
+        let started = Instant::now();
+        assert_eq!(within(ROOM_CLOSE_LIMIT, work).await, None);
+        assert!(started.elapsed() < ROOM_CLOSE_LIMIT * 2);
+        assert!(!finished.load(Ordering::SeqCst));
+        tokio::time::sleep(ROOM_CLOSE_LIMIT * 4).await;
+        assert!(
+            finished.load(Ordering::SeqCst),
+            "the work was cut off at the limit"
+        );
+
+        assert_eq!(within(ROOM_CLOSE_LIMIT, async { 7 }).await, Some(7));
+    }
+
+    #[test]
+    fn the_end_of_a_queue_gives_what_was_not_taken_and_refuses_what_comes_later() {
+        let (sender, mut queue) = mpsc::unbounded_channel();
+        sender.send(1).ok();
+        sender.send(2).ok();
+        assert_eq!(ended(&mut queue), [1, 2]);
+        // The sender keeps what it wanted to send, and can end it itself.
+        assert_eq!(sender.send(3).map_err(|unsent| unsent.0), Err(3));
+        assert_eq!(ended(&mut queue), [0; 0]);
     }
 }

@@ -389,8 +389,18 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
     cal.until_shown(ShareId::Of(ann_id), RED, BLUE).await;
     let other = cal.hears_afresh(PLAYER.0).await;
     assert!(other < ABSENT_DBFS, "{other}");
-    assert!(cal.hears(SYSTEM.0) > SHARE_HEARD_DBFS);
-    // Each sharer watches the share of the other one, and hears it.
+    // The sound of the share of Ann goes on. One half second can hold a gap while the
+    // processor is busy, so the test waits for a half second that holds the tone.
+    let level = cal.until_heard_tone(SYSTEM.0).await;
+    assert!(level > SHARE_HEARD_DBFS, "{level}");
+    // Each sharer watches the share of the other one, and hears it. The client of Ann
+    // learns of the share of Ben by itself: nothing orders that with the view of Cal.
+    ann.until("Ann watches the share of Ben", |view| {
+        view.call
+            .as_ref()
+            .is_some_and(|call| call.watched == Some(ShareId::Of(ben_id)))
+    })
+    .await;
     assert_eq!(
         ann.calls.view().call.unwrap().watched,
         Some(ShareId::Of(ben_id))
@@ -410,17 +420,31 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
     assert_eq!(picture.frame.source.0 * 3, picture.frame.source.1 * 4);
     // The share is sent at the frame rate that its sharer chose, 30 pictures per second.
     // The defaults of the call library send a picture of 800 pixels at 5 per second: in
-    // three seconds 15 pictures arrive with them.
+    // three seconds 15 pictures arrive with them. A sender lowers its cadence while its
+    // estimate of the bandwidth is low (ADR 0773), as in the first seconds of a stream on
+    // a busy machine, so the test counts spans of three seconds until one holds the
+    // pictures of the chosen rate.
     let mut pictures = cal.calls.main_picture();
-    pictures.borrow_and_update();
-    let mut arrived = 0;
-    let counted = tokio::time::timeout(Duration::from_secs(3), async {
-        while pictures.changed().await.is_ok() {
-            arrived += 1;
+    let counting = tokio::time::Instant::now();
+    let mut spans = Vec::new();
+    let arrived = loop {
+        pictures.borrow_and_update();
+        let mut arrived = 0;
+        let counted = tokio::time::timeout(Duration::from_secs(3), async {
+            while pictures.changed().await.is_ok() {
+                arrived += 1;
+            }
+        });
+        let _ = counted.await;
+        spans.push(arrived);
+        if arrived >= 36 || counting.elapsed() >= PATIENCE {
+            break arrived;
         }
-    });
-    let _ = counted.await;
-    assert!(arrived >= 36, "{arrived} pictures in three seconds");
+    };
+    assert!(
+        arrived >= 36,
+        "{arrived} pictures in three seconds; the spans before: {spans:?}"
+    );
     cal.until_heard_tone(PLAYER.0).await;
     cal.until_silent_tone(SYSTEM.0).await;
 
@@ -854,4 +878,60 @@ async fn a_share_goes_on_when_the_call_library_connects_anew_and_publishes_its_t
     }
     let orphan = ben.hears_afresh(SYSTEM.0).await;
     assert!(orphan < ABSENT_DBFS, "{orphan}");
+}
+
+#[tokio::test]
+#[ignore = "needs PostgreSQL and LiveKit"]
+async fn the_local_admission_gate_withdraws_share_sound_with_a_permissive_token() {
+    use junto_media::engine::{Controls, Engine, EngineOptions, MediaJoin, Watching};
+    use std::sync::Arc;
+    let _media = MEDIA_SERVER.read().await;
+    let one = Person::new(440.0);
+    let two = Person::new(880.0);
+    let (room, owner) = Room::new("Share admission", &one, "One").await;
+    let peer = room.member(&owner, &two, "Two").await;
+    one.enter(room.target).await;
+    let answer = peer.api().join_channel_call(room.voice).await.unwrap();
+    let engine = Engine::start(
+        &tokio::runtime::Handle::current(),
+        EngineOptions {
+            camera: Arc::new(two.camera.clone()),
+            host: Arc::new(two.host.clone()),
+            permission: Arc::new(two.permission.clone()),
+            capture: Arc::new(two.capture.clone()),
+        },
+        MediaJoin {
+            url: answer.media_url,
+            token: answer.token,
+        },
+        crate::scene::plain_voice(),
+        Controls::default(),
+        Default::default(),
+        Watching::default(),
+    );
+    let mut state = engine.state();
+    tokio::time::timeout(
+        PATIENCE,
+        state.wait_for(|state| state.connection == junto_media::engine::Connection::Connected),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    engine.start_share(screen(SoundChoice::System));
+    let id = ShareId::Of(account(&peer));
+    one.calls.watch_share(id);
+    one.until_shown(id, RED, BLUE).await;
+    one.until_heard_tone(SYSTEM.0).await;
+    engine.set_controls(Controls {
+        microphone_blocked: true,
+        ..Controls::default()
+    });
+    one.until_silent_tone(SYSTEM.0).await;
+    two.capture.set_colours(GREEN, YELLOW);
+    one.until_shown(id, GREEN, YELLOW).await;
+    engine.set_controls(Controls::default());
+    one.until_heard_tone(SYSTEM.0).await;
+    engine.close().await;
+    peer.api().leave_call_as(&answer.identity).await.unwrap();
+    one.calls.leave().await;
 }

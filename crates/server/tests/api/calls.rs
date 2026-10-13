@@ -1093,3 +1093,119 @@ async fn the_requests_of_one_session_that_change_calls_are_limited() {
     server.clock.advance(Duration::minutes(1));
     server.join_call(ann, scene.voice.id).await;
 }
+
+#[tokio::test]
+async fn call_answers_name_the_event_position_of_the_state_they_read() {
+    let scene = Scene::start().await;
+    let server = &scene.server;
+    let before = server.snapshot(&scene.ann).await.cursor;
+    let answer: Value = server
+        .call_join_reply(&scene.ann, scene.voice.id)
+        .await
+        .ok(StatusCode::OK);
+    let cursor: junto_protocol::events::Cursor = serde_json::from_value(
+        answer
+            .get("cursor")
+            .expect("a join answer carries its committed read cursor")
+            .clone(),
+    )
+    .unwrap();
+    let after = server.snapshot(&scene.ann).await;
+    assert_eq!(cursor, after.cursor);
+    assert!(cursor.position > before.position);
+    assert_eq!(
+        answer["identity"],
+        after.own_call.as_ref().unwrap().identity
+    );
+    let own = server.own_call(&scene.ann).await;
+    assert_eq!(own.cursor, Some(cursor));
+    assert_eq!(
+        own.call.as_ref().unwrap().own.call_id,
+        after.own_call.unwrap().call_id
+    );
+}
+
+#[tokio::test]
+async fn a_join_whose_answer_is_not_read_again_answers_without_a_position() {
+    let scene = Scene::start().await;
+    let server = &scene.server;
+    // The transaction that makes the place is held at its commit. Every transaction after
+    // it loses, so the read of the answer after the commit fails.
+    server.gate().arm(0);
+    let mut joining = Box::pin(server.call_join_reply(&scene.ann, scene.voice.id));
+    crate::support::drive_until(&mut joining, server.gate().arrived()).await;
+    server.gate().lose_next(10_000);
+    server.gate().release();
+    let answer: Value = joining.await.ok(StatusCode::OK);
+    server.gate().lose_next(0);
+    assert!(answer.get("cursor").is_none(), "{answer}");
+    // The place exists, and the answer names it.
+    let after = server.snapshot(&scene.ann).await;
+    assert_eq!(answer["identity"], after.own_call.unwrap().identity);
+    assert!(answer["token"].is_string());
+}
+
+/// Runs a join up to the commit of its place, changes the database with `change`, and then
+/// lets the join read its answer. The handler runs only while this function polls it.
+async fn join_with_a_change_before_the_answer(
+    scene: &Scene,
+    change: &str,
+) -> crate::support::Reply {
+    let server = &scene.server;
+    server.gate().arm(0);
+    let mut joining = Box::pin(server.call_join_reply(&scene.ann, scene.voice.id));
+    drive_until(&mut joining, server.gate().arrived()).await;
+    // Every read of the answer loses until the change is made.
+    server.gate().lose_next(10_000);
+    server.gate().release();
+    drive_until(&mut joining, async {
+        while server.count("call_members").await == 0 {}
+    })
+    .await;
+    sqlx::query(sqlx::AssertSqlSafe(change.to_owned()))
+        .bind(scene.ann.account_id)
+        .bind(scene.voice.id)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    // The attempt that runs now, or the next one, loses. The one after it reads the change.
+    server.gate().lose_next(1);
+    let reply = joining.await;
+    server.gate().lose_next(0);
+    reply
+}
+
+#[tokio::test]
+async fn a_join_whose_caller_is_refused_at_the_read_of_the_answer_gets_the_refusal() {
+    let scene = Scene::start().await;
+    // The channel is archived after the place was made: the caller may not be there.
+    let archived = "update channels set archived_at = now() where $1::uuid is not null and id = $2";
+    join_with_a_change_before_the_answer(&scene, archived)
+        .await
+        .error(ErrorCode::NotFound);
+}
+
+#[tokio::test]
+async fn a_join_whose_seat_ended_before_the_read_of_the_answer_answers_without_a_position() {
+    let scene = Scene::start().await;
+    let ended = "delete from call_members where account_id = $1 and $2::uuid is not null";
+    let answer: Value = join_with_a_change_before_the_answer(&scene, ended)
+        .await
+        .ok(StatusCode::OK);
+    // A position would state that the seat exists there.
+    assert!(answer.get("cursor").is_none(), "{answer}");
+    assert!(answer["identity"].is_string());
+}
+
+#[tokio::test]
+async fn a_join_whose_caller_is_refused_gets_the_refusal_also_when_the_call_has_ended() {
+    let scene = Scene::start().await;
+    // The channel is archived and the call, which the caller was alone in, has ended.
+    let both = "with archived as (
+                    update channels set archived_at = now()
+                    where $1::uuid is not null and id = $2 returning id)
+                delete from calls where id in (select call_id from call_members)";
+    join_with_a_change_before_the_answer(&scene, both)
+        .await
+        .error(ErrorCode::NotFound);
+}

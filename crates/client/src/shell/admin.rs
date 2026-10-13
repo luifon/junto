@@ -6,6 +6,7 @@ mod archive;
 mod channels;
 pub mod overrides;
 pub mod people;
+mod recordings;
 pub mod records;
 mod workspaces;
 
@@ -79,6 +80,7 @@ pub(crate) struct AdminUi {
     pub(crate) overrides: overrides::Ui,
     pub(crate) people: people::Ui,
     pub(crate) records: records::Ui,
+    pub(crate) recordings: recordings::Ui,
 }
 
 impl AdminUi {
@@ -124,6 +126,7 @@ impl AdminUi {
             overrides,
             people,
             records,
+            recordings: recordings::Ui::default(),
         };
         (ui, subscriptions)
     }
@@ -364,6 +367,7 @@ impl Shell {
         self.reset_overrides_ui(window, cx);
         self.reset_people_ui(window, cx);
         self.reset_records_ui(window, cx);
+        self.reset_recordings_ui();
     }
 
     /// Shows a form or a question in a row, with the fields empty or holding `name`.
@@ -844,6 +848,7 @@ impl Shell {
             ServerPage::Tokens(page) => self.render_tokens_page(view, page, window, cx),
             ServerPage::Exports(page) => self.render_exports_page(view, page, window, cx),
             ServerPage::AuditLog(page) => self.render_audit_page(view, page, window, cx),
+            ServerPage::Recordings(page) => self.render_recordings_page(view, page, window, cx),
         }
     }
 

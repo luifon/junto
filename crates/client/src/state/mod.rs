@@ -5,11 +5,15 @@
 //! event stream of each server, and tells the window to draw again. The window reads plain
 //! data through [`AppState::view`] and calls the methods here for what a person does.
 
+pub mod account;
 pub mod admin;
+pub mod book;
 pub mod feed;
+pub mod linking;
 mod messages;
 pub mod notices;
 mod notifying;
+pub mod people;
 pub mod person_drop;
 pub mod recorded;
 mod recorded_work;
@@ -205,20 +209,6 @@ struct Asked {
     identity: Option<String>,
 }
 
-/// How often the name of one account is asked for when no answer arrives.
-const NAME_TRIES: u8 = 3;
-
-/// Where the read of the name of one account stands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NameRead {
-    /// A request is on its way. The number counts the requests so far.
-    Asking(u8),
-    /// No request is on its way, and this number of requests got no answer.
-    Unanswered(u8),
-    /// The name was read, or the server refused: it is not asked for again.
-    Settled,
-}
-
 /// What the person asked for and that has not ended yet, or has failed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Pending {
@@ -279,10 +269,18 @@ pub struct AppState {
     pending: Pending,
     /// What the administration holds: the open page and its requests (ADR 0761).
     admin: admin::AdminState,
+    /// What the account layer holds: the open page, its requests and the devices that it
+    /// lists (ADR 0781).
+    account: account::AccountState,
+    /// The role and the flow of the link on all servers (ADR 0782).
+    linking: linking::LinkingState,
+    /// What the person did with the update notice, and a move of a server that failed
+    /// (ADR 0780).
+    book: book::BookState,
     /// What the window showed after the last change. Side effects follow a change of it.
     shown: Shown,
-    /// The accounts whose name was asked for from their profile route.
-    asked_names: HashMap<(ServerId, AccountId), NameRead>,
+    /// The picture of the profile preset, and where a change of it stands.
+    preset_picture: people::PresetPicture,
     /// The workspace whose members the window needs, and the task that reads them.
     members: Option<((ServerId, WorkspaceId), Task<()>)>,
     /// One task per saved server that wakes on each change of its event stream.
@@ -543,8 +541,11 @@ impl AppState {
             known,
             pending: Pending::default(),
             admin: admin::AdminState::default(),
+            account: account::AccountState::default(),
+            linking: linking::LinkingState::default(),
+            book: book::BookState::default(),
             shown: Shown::default(),
-            asked_names: HashMap::new(),
+            preset_picture: people::PresetPicture::default(),
             members: None,
             watchers: HashMap::new(),
             waiting: HashMap::new(),
@@ -596,6 +597,7 @@ impl AppState {
             _retry: retry,
             _media: [follow_calls, follow_levels, clock],
         };
+        state.load_preset_picture(cx);
         state.changed(cx);
         state
     }
@@ -1218,6 +1220,9 @@ impl AppState {
     }
 
     fn noticed(&mut self, server_id: ServerId, notice: &Notice, cx: &mut Context<Self>) {
+        self.people_noticed(server_id, notice, cx);
+        self.account_noticed(server_id, Some(notice), cx);
+        self.recordings_noticed(server_id, Some(notice), cx);
         let event = match notice {
             Notice::Event { event, .. } => event,
             // The state was replaced: every message can have changed meanwhile, and the
@@ -1734,7 +1739,12 @@ impl AppState {
                         // missed that the state was replaced.
                         let told = this.update(cx, |this, cx| match &notice {
                             Ok(notice) => this.noticed(id, notice, cx),
-                            Err(_) => this.reloaded(id, cx),
+                            Err(_) => {
+                                this.account_noticed(id, None, cx);
+                                this.recordings_noticed(id, None, cx);
+                                this.people_missed(id, cx);
+                                this.reloaded(id, cx);
+                            }
                         });
                         if told.is_err() {
                             break;
@@ -1773,6 +1783,8 @@ impl AppState {
         self.known.today = Some(self.known.zone.local(now).date());
         let snapshots = self.snapshots();
         self.settle_sent_settings(&snapshots);
+        self.keep_people(cx);
+        self.follow_updates();
         let view = self.view();
         let shown = view.shown();
         if shown.server != self.shown.server {
@@ -1820,13 +1832,14 @@ impl AppState {
         self.end_search_of_other_server(shown.server);
         self.drop_lost_search_filter(&snapshots, cx);
         self.shown = shown;
-        self.ask_missing_names(&view, cx);
+        self.follow_people(&view, cx);
         let archived = shown.server.zip(
             view.workspace()
                 .filter(|workspace| workspace.archived.is_some())
                 .map(|workspace| workspace.id),
         );
         self.follow_admin(archived, cx);
+        self.follow_account(cx);
         self.follow_places(shown, cx);
         self.follow_recordings(shown, cx);
         self.follow_jump(shown);
@@ -1860,78 +1873,6 @@ impl AppState {
         if let Some((key, _)) = self.members.take() {
             self.load_members(key, cx);
             cx.notify();
-        }
-    }
-
-    /// A person in a voice channel, or of a direct conversation, who is not in the member
-    /// list of the workspace has no name there. The name is read once from the profile
-    /// route.
-    fn ask_missing_names(&mut self, view: &ShellView, cx: &mut Context<Self>) {
-        let mut missing: Vec<(ServerId, AccountId)> = view
-            .invitations
-            .iter()
-            .filter(|invited| invited.by.is_none())
-            .map(|invited| (invited.target.server_id, invited.caller))
-            .collect();
-        if let (Some(selected), Some(workspace)) = (&view.selected, view.workspace())
-            && matches!(workspace.members, view::Members::Loaded(_))
-        {
-            missing.extend(
-                workspace
-                    .sections
-                    .iter()
-                    .flat_map(|section| &section.rows)
-                    .filter_map(|row| row.voice.as_ref())
-                    .flat_map(|voice| &voice.occupants)
-                    .filter(|occupant| occupant.name.is_none())
-                    .map(|occupant| (selected.id, occupant.account_id)),
-            );
-            missing.extend(
-                workspace
-                    .directs
-                    .iter()
-                    .filter(|row| row.name.is_none())
-                    .map(|row| (selected.id, row.account_id)),
-            );
-        }
-        for (server_id, account_id) in missing {
-            let Some(server) = self.client.server(server_id) else {
-                continue;
-            };
-            let read = self
-                .asked_names
-                .entry((server_id, account_id))
-                .or_insert(NameRead::Unanswered(0));
-            match *read {
-                NameRead::Unanswered(tries) if tries < NAME_TRIES => {
-                    *read = NameRead::Asking(tries + 1)
-                }
-                _ => continue,
-            }
-            let api = server.api();
-            cx.spawn(async move |this, cx| {
-                let read = api.profile(account_id).await;
-                let _ = this.update(cx, |this, cx| {
-                    let key = (server_id, account_id);
-                    let tries = match this.asked_names.get(&key) {
-                        Some(NameRead::Asking(tries)) => *tries,
-                        _ => NAME_TRIES,
-                    };
-                    let next = match read {
-                        Ok(profile) => {
-                            this.known.names.insert(key, profile.name);
-                            cx.notify();
-                            NameRead::Settled
-                        }
-                        // No answer: the name is asked for again with a later change.
-                        Err(error) if error.is_unavailable() => NameRead::Unanswered(tries),
-                        // A refusal is final: the account may not see the profile.
-                        Err(_) => NameRead::Settled,
-                    };
-                    this.asked_names.insert(key, next);
-                });
-            })
-            .detach();
         }
     }
 

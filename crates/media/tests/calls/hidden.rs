@@ -140,20 +140,36 @@ async fn a_media_connection_waits_for_the_server_listing_before_becoming_ready()
     joining.await.unwrap();
     let view = ben
         .until(
-            "the transport has opened its generated microphone",
+            "the media transport is connected but admission is not known",
             |view| {
                 view.call
                     .as_ref()
-                    .is_some_and(|call| call.microphone == MicrophoneState::Running)
+                    .is_some_and(|call| call.phase == Phase::Entering)
             },
         )
         .await;
-    assert_ne!(view.call.unwrap().phase, Phase::Connected);
+    let call = view.call.unwrap();
+    assert_ne!(call.phase, Phase::Connected);
+    assert_eq!(call.microphone, MicrophoneState::Closed);
+    assert!(
+        ben.host.opened_inputs().is_empty(),
+        "capture opened before admission"
+    );
     assert!(!ben_at.live().view().model.as_ref().is_some_and(|model| {
         model
             .call_at(&room.target.place)
             .is_some_and(|call| call.participant(account(&ben_at)).is_some())
     }));
+    // The same holds for as long as the state does not list the person: it is read again
+    // after a time in which an open gate would have started the microphone.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let call = ben.calls.view().call.unwrap();
+    assert_eq!(call.phase, Phase::Entering);
+    assert_eq!(call.microphone, MicrophoneState::Closed);
+    assert!(
+        ben.host.opened_inputs().is_empty(),
+        "capture opened before admission"
+    );
     proxy.block_streams(false);
     proxy.release();
     ben.until(
@@ -177,6 +193,14 @@ async fn a_media_connection_waits_for_the_server_listing_before_becoming_ready()
             .identity,
         identity
     );
+    ben.until("admission opens the microphone", |view| {
+        view.call
+            .as_ref()
+            .is_some_and(|call| call.microphone == MicrophoneState::Running)
+    })
+    .await;
+    ann.until_heard(&ben).await;
+    ben.until_heard(&ann).await;
     ben_at
         .api()
         .invite_to_call(room.voice, account(&cal_at))

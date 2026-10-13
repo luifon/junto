@@ -28,8 +28,8 @@ use crate::state::view::{DraftFile, Members, ShellView, WorkspaceView};
 use crate::text;
 use crate::theme::{theme, u};
 use crate::ui::{
-    Button, ButtonKind, Dialog, Field, FieldKind, Mosaic, MosaicKind, ScrollArea, StyleExt,
-    float_shadow, focus_ring_inside, icon, ledge, tooltip,
+    Button, ButtonKind, Dialog, Field, FieldKind, ScrollArea, StyleExt, float_shadow,
+    focus_ring_inside, icon, ledge, tooltip,
 };
 
 /// The rows of the text area: it grows with the text up to this number.
@@ -955,6 +955,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = theme(cx);
+        let faces = self.shown_faces();
         let colors = theme.colors;
         let side = if compact { 12.0 } else { 16.0 };
         let ring_width = theme.metrics.focus_ring;
@@ -1302,8 +1303,8 @@ impl Shell {
                 .occlude()
                 .children(found.iter().enumerate().map(|(index, candidate)| {
                     let taken = candidate.clone();
-                    let seed = match candidate.target {
-                        MentionTarget::Account(account_id) => Some(account_id.as_uuid().as_u128()),
+                    let person = match candidate.target {
+                        MentionTarget::Account(account_id) => Some(account_id),
                         _ => None,
                     };
                     div()
@@ -1325,8 +1326,8 @@ impl Shell {
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.take_candidate(pane, &taken, window, cx);
                         }))
-                        .child(match seed {
-                            Some(seed) => Mosaic::new(MosaicKind::Large, seed, 18.0)
+                        .child(match person {
+                            Some(account_id) => super::people::avatar(&faces, account_id, 18.0)
                                 .radius(2.0)
                                 .into_any_element(),
                             None => icon(Icon::People, 15.0, colors.ink_2).into_any_element(),

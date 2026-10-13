@@ -109,6 +109,12 @@ pub enum LoadError {
 }
 
 pub(crate) enum Command {
+    Refresh {
+        reply: oneshot::Sender<Result<Cursor, LoadError>>,
+    },
+    /// The login after an ended session got no answer of the server, and the client core
+    /// keeps the session (ADR 0787).
+    LoginUnanswered,
     LoadMembers {
         workspace_id: WorkspaceId,
         reply: oneshot::Sender<Result<(), LoadError>>,
@@ -245,6 +251,21 @@ impl LiveServer {
     pub fn notices(&self) -> Notices {
         Notices {
             receiver: self.shared.notices.subscribe(),
+        }
+    }
+
+    /// Replaces the state with a snapshot requested after this call, and returns its
+    /// cursor only after the replacement is visible to readers.
+    pub fn refresh(
+        &self,
+    ) -> impl Future<Output = Result<Cursor, LoadError>> + Send + 'static + use<> {
+        let (reply, answer) = oneshot::channel();
+        let sent = self.shared.send(Command::Refresh { reply });
+        async move {
+            if !sent {
+                return Err(LoadError::Off);
+            }
+            answer.await.unwrap_or(Err(LoadError::Off))
         }
     }
 

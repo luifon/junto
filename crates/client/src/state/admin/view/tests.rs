@@ -288,6 +288,7 @@ fn a_member_without_permissions_has_the_pages_that_every_member_may_use() {
             AdminPage::Workspaces,
             AdminPage::Archive,
             AdminPage::Members,
+            AdminPage::Recordings,
             AdminPage::Tokens,
             AdminPage::Exports
         ]
@@ -346,6 +347,7 @@ fn an_administrator_and_the_owner_have_every_page() {
         AdminPage::Channels,
         AdminPage::Archive,
         AdminPage::Members,
+        AdminPage::Recordings,
         AdminPage::Exports,
     ];
     let mut scene = scene();
@@ -492,6 +494,12 @@ fn each_page_holds_open_the_collections_that_it_shows() {
         [AdminPart::Exports]
     );
     assert!(needs(&server(AdminPage::Members), &model, studio).is_empty());
+    // A recording of an archived channel is named by the archived list.
+    assert_eq!(
+        needs(&server(AdminPage::Recordings), &model, studio),
+        [AdminPart::Archived(scene.studio)]
+    );
+    assert!(needs(&server(AdminPage::Recordings), &model, None).is_empty());
     // A member reads the archived list and not the settings of an administrator.
     assert_eq!(
         needs(&server(AdminPage::Archive), &model, studio),
@@ -1047,4 +1055,29 @@ fn an_archived_voice_channel_offers_no_recording_removal() {
         );
         assert_eq!(card.may_remove, !archived);
     }
+}
+
+#[test]
+fn every_member_has_the_page_of_the_recordings_of_the_shown_workspace() {
+    let scene = scene();
+    let (nav, selected, page) = scene.page(AdminPage::Recordings);
+    assert_eq!(selected, AdminPage::Recordings);
+    let ServerPage::Recordings(page) = page else {
+        panic!("the page of the recordings was opened");
+    };
+    assert_eq!(page.workspace_id, scene.studio);
+    assert_eq!(page.workspace_name, "Studio");
+    assert_eq!(page.state, recordings::RecordingsRead::NotRead);
+    // The page stands with the things of the workspace.
+    assert!(nav[1].pages.contains(&AdminPage::Recordings));
+    assert!(!nav[0].pages.contains(&AdminPage::Recordings));
+
+    // An account that sees no workspace has no such page: the first page is shown.
+    let mut scene = self::scene();
+    scene.snapshot.workspaces.clear();
+    scene.snapshot.account.workspace_ids.clear();
+    let (nav, selected, page) = scene.page(AdminPage::Recordings);
+    assert!(!pages(&nav).contains(&AdminPage::Recordings));
+    assert_eq!(selected, AdminPage::Workspaces);
+    assert!(matches!(page, ServerPage::Workspaces(_)));
 }

@@ -217,6 +217,11 @@ impl TestServer {
             )
             .env("JUNTO_LOG_FORMAT", "text")
             .env("JUNTO_LOG_LEVEL", "warn")
+            // The database of a test is made for one run. A first start that is too slow
+            // is stopped during its migrations, and PostgreSQL runs the statement of that
+            // process to its end. A second start would fail at the copy before a migration
+            // for as long as that connection exists (ADR 0018).
+            .env("JUNTO_MIGRATION_COPY", "none")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(logs)

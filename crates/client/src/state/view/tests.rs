@@ -513,7 +513,7 @@ fn a_voice_channel_shows_its_people_with_their_marks_and_the_state_of_its_call()
     }
     let server = server("Acme Studio", Some(model), logged_in(own, Vec::new()));
     let mut known = Known::default();
-    known.names.insert((server.id, carla), "Carla".to_owned());
+    known.people.read_name(server.id, carla, "Carla");
     let view = derive(std::slice::from_ref(&server), &Selection::default(), &known);
     let workspace = view.workspace().unwrap();
 
@@ -742,6 +742,15 @@ fn every_state_of_the_access_and_of_the_connection_has_its_status() {
     );
     assert_eq!(
         with(&|server| server.stream = StreamStatus::Interrupted(StreamFault::Silent)),
+        ServerStatus::Reconnecting
+    );
+    // A login after an ended session got no answer (ADR 0787): the flow stays logged in,
+    // and the server shows its last state as for an interrupted connection.
+    assert_eq!(
+        with(&|server| {
+            server.reach = Reach::Unreachable;
+            server.stream = StreamStatus::Interrupted(StreamFault::SessionEnded(None));
+        }),
         ServerStatus::Reconnecting
     );
     let no_model = |stream| {
@@ -2135,8 +2144,8 @@ mod calls {
         let mut own_call = active(target(&server, &scene, daily));
         own_call.share = running_share();
         let mut known = in_call(own_call);
-        known.names.insert((server.id, ana), "Ana".to_owned());
-        known.names.insert((server.id, ben), "Ben".to_owned());
+        known.people.read_name(server.id, ana, "Ana");
+        known.people.read_name(server.id, ben, "Ben");
         // The presenter's own microphone setting does not make a prompt.
         known.media.calls.muted = true;
         let view = derive(
@@ -2179,7 +2188,7 @@ mod calls {
             call.microphone_block = held.then(|| meeting_block(ana)).flatten();
             let mut known = in_call(call);
             known.media.calls.muted = muted;
-            known.names.insert((server.id, ana), "Ana".to_owned());
+            known.people.read_name(server.id, ana, "Ana");
             derive(
                 std::slice::from_ref(&server),
                 &selected(scene, channel),
@@ -2416,7 +2425,7 @@ mod calls {
         scene.snapshot.call_invitations = vec![incoming.clone()];
         let server = scene.server();
         let mut known = Known::default();
-        known.names.insert((server.id, ana), "Ana".to_owned());
+        known.people.read_name(server.id, ana, "Ana");
         let view = derive(std::slice::from_ref(&server), &Selection::default(), &known);
         assert_eq!(
             view.invitations,
@@ -2429,6 +2438,8 @@ mod calls {
             }]
         );
         assert!(view.entry_prompts.is_empty());
+        // The profile of the caller is read for the name and the picture of the question.
+        assert!(view.wanted_people[&server.id].accounts.contains(&ana));
 
         // The person is in the call and invited Ben, who is a member outside the call.
         // An invitation that the person made is no invitation for the person.
@@ -2632,7 +2643,7 @@ mod calls {
             } else {
                 Known::default()
             };
-            known.names.insert((server.id, ben), "Ben".to_owned());
+            known.people.read_name(server.id, ben, "Ben");
             known.media.voice.set_volume(server.id, ben, 140);
             let view = derive(std::slice::from_ref(&server), &Selection::default(), &known);
             view.person_menu(channel_id, account_id)

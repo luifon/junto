@@ -20,8 +20,8 @@ use crate::state::view::{
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Button, ButtonKind, Flag, FlagKind, Mosaic, MosaicKind, Notice, ScrollArea, SectionLabel,
-    SideHeader, StatePanel, StyleExt, float_shadow, icon, tooltip,
+    Button, ButtonKind, Flag, FlagKind, Notice, ScrollArea, SectionLabel, SideHeader, StatePanel,
+    StyleExt, float_shadow, icon, tooltip,
 };
 
 /// The time of a recovery as the notice shows it: the date and the time in UTC.
@@ -121,7 +121,12 @@ impl Shell {
                             .selector("no-workspace")
                             .into_any_element()
                     }
-                    _ => self.render_server_state(server, cx).into_any_element(),
+                    // A server that waits for a device link shows its code and the key
+                    // of this device (ADR 0782).
+                    _ => match self.render_link_wait_panel(server, cx) {
+                        Some(panel) => panel,
+                        None => self.render_server_state(server, cx).into_any_element(),
+                    },
                 },
                 None,
             ),
@@ -935,6 +940,7 @@ impl Shell {
                 .action(remove(cx)),
             ServerStatus::Incompatible(reason) => {
                 let (title, detail) = text::incompatibility(*reason);
+                let detail = self.incompatibility_detail(*reason, detail, cx);
                 StatePanel::new(title, detail)
                     .icon(Icon::Warning)
                     .selector("incompatible")
@@ -962,6 +968,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme.colors;
+        let faces = self.shown_faces();
         let header = SideHeader::new(text::MEMBERS)
             .icon(Icon::People)
             .note(workspace.name.clone())
@@ -1066,9 +1073,9 @@ impl Shell {
                         .when(index > 0, |row| {
                             row.border_t_1().border_color(Hsla::from(colors.rule_soft))
                         })
-                        .child(div().mt(u(2.0)).child(Mosaic::new(
-                            MosaicKind::Large,
-                            member.account_id.as_uuid().as_u128(),
+                        .child(div().mt(u(2.0)).child(super::people::avatar(
+                            &faces,
+                            member.account_id,
                             30.0,
                         )))
                         .child(

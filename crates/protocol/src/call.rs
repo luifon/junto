@@ -182,6 +182,11 @@ pub struct OwnCall {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CallJoin {
+    /// The position in the event log up to which this answer holds the events. It is read
+    /// with the call and the blocks, after the place was made (ADR 0519). A server from
+    /// before that ADR sends none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<crate::events::Cursor>,
     pub call: Call,
     /// The address of the media server for the device.
     pub media_url: String,
@@ -224,6 +229,10 @@ pub struct OwnCallState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct OwnCallView {
+    /// The position in the event log up to which this answer holds the events (ADR 0519).
+    /// A server from before that ADR sends none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<crate::events::Cursor>,
     /// Absent when the account is in no call.
     pub call: Option<OwnCallState>,
 }

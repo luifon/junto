@@ -35,6 +35,7 @@ mod admin;
 mod discovery;
 mod messages;
 mod recordings;
+mod refresh;
 
 const PATIENCE: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -152,6 +153,9 @@ struct Routes {
     snapshot: Option<Snapshot>,
     members: Vec<WorkspaceMember>,
     own_call: Option<OwnCallState>,
+    own_call_cursor: Option<Cursor>,
+    /// The answer of `GET /call` names no position, as a server from before ADR 0519.
+    own_call_unplaced: bool,
     /// How many requests are on their way now, and the most that were at one time.
     active: usize,
     most_active: usize,
@@ -251,6 +255,11 @@ impl crate::api::Transport for Http {
                 serde_json::to_vec(&routes.members)
             } else if path.ends_with("/api/v1/call") {
                 serde_json::to_vec(&OwnCallView {
+                    cursor: (!routes.own_call_unplaced).then(|| {
+                        routes
+                            .own_call_cursor
+                            .unwrap_or(routes.snapshot.as_ref().unwrap().cursor)
+                    }),
                     call: routes.own_call.clone(),
                 })
             } else {
@@ -772,6 +781,50 @@ async fn an_ended_session_is_reported_once_and_the_next_session_continues_the_st
     })
     .await;
     assert_eq!(*rig.host.ended.lock().unwrap(), ["jst_one", "jst_two"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_login_without_an_answer_tries_the_ended_session_again_and_keeps_the_state() {
+    let mut rig = rig();
+    rig.want(ConnectionLevel::Selected, "jst_one");
+    let (peer, _, _) = rig.served().await;
+    peer.send(&ServerMessage::Ended {
+        reason: EndReason::SessionEnded,
+        recovery: None,
+    })
+    .await;
+    rig.when("ended", |view| {
+        matches!(
+            view.status,
+            StreamStatus::Interrupted(StreamFault::SessionEnded(_))
+        )
+    })
+    .await;
+    assert_eq!(*rig.host.ended.lock().unwrap(), ["jst_one"]);
+    let ended_at = Instant::now();
+
+    // The login got no answer of the server: the client core keeps the session.
+    assert!(rig.live.shared.send(crate::live::Command::LoginUnanswered));
+    rig.wire
+        .refusals
+        .lock()
+        .unwrap()
+        .push_back(refusal("unauthenticated", 401, None));
+    rig.when("ended again", |_| rig.host.ended.lock().unwrap().len() == 2)
+        .await;
+    assert_eq!(*rig.host.ended.lock().unwrap(), ["jst_one", "jst_one"]);
+    assert_eq!(rig.opens(), 2);
+    // The attempt waited as an attempt after a lost connection does.
+    assert!(ended_at.elapsed() >= Duration::from_millis(500));
+    assert!(rig.live.view().model.is_some());
+
+    // The next login succeeds: the state and its cursor stay.
+    rig.want(ConnectionLevel::Selected, "jst_two");
+    let mut peer = rig.peer().await;
+    assert_eq!(peer.request.bearer.expose(), "jst_two");
+    peer.hello(rig.epoch()).await;
+    assert_eq!(peer.serve().await.1, rig.scene.snapshot.cursor);
+    assert_eq!(rig.http.count("/snapshot"), 1);
 }
 
 #[tokio::test(start_paused = true)]
@@ -1890,4 +1943,17 @@ async fn a_server_that_gives_another_account_at_every_login_waits_as_well() {
         );
         whole *= 2;
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn refresh_acknowledges_a_snapshot_requested_after_the_call() {
+    let mut rig = rig();
+    rig.want(ConnectionLevel::Selected, "jst_one");
+    let (_peer, _, _) = rig.served().await;
+    rig.set_snapshot(60, |snapshot| snapshot.account.name = "Changed".into());
+    let cursor = soon("fresh state", rig.live.refresh()).await.unwrap();
+    assert_eq!(cursor.position, 60);
+    assert_eq!(rig.model().cursor, cursor);
+    assert_eq!(rig.model().account.name, "Changed");
+    assert_eq!(rig.http.count("/snapshot"), 2);
 }
