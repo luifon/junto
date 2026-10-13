@@ -662,6 +662,11 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
     scene.invitation_for_ada();
     scene
         .window
+        .until("the invitation is shown as made", |window| {
+            window.shows_named(format!("withdraw-invitation:{ada}"))
+        });
+    scene
+        .window
         .click_named(format!("withdraw-invitation:{ada}"));
     let admin = scene.admin.handle.clone();
     scene.window.until("the invitation is withdrawn", |window| {

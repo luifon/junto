@@ -81,9 +81,15 @@ docker run -d --user 0 --name "$proxy" --network "$network" --network-alias cont
 created="$build $created"
 # Docker creates a missing mount point as its own user, which is root on a Linux host.
 mkdir -p "$root/spikes/test-participant/target"
+# The build gets at most four processors as a set and not as a quota. A quota stops every
+# thread of the container for the rest of each 100 ms in which it is used up, and a test
+# that measures sound in real time then measures those stops.
+processors=$(docker info --format '{{.NCPU}}' 2>/dev/null || true)
+case "$processors" in ''|*[!0-9]*|0) processors=4 ;; esac
+if [ "$processors" -gt 4 ]; then processors=4; fi
 # Test service ports are not published; no host display, sound or home is mounted.
 status=0
-docker run --name "$build" --network "$network" --memory 6g --cpus 4 --shm-size 512m \
+docker run --name "$build" --network "$network" --memory 6g --cpuset-cpus "0-$((processors - 1))" --shm-size 512m \
     --mount "type=bind,src=$root,dst=/src" \
     --mount "type=volume,src=$cargo_volume,dst=/usr/local/cargo/registry" \
     --mount "type=volume,src=$target_volume,dst=/target" \

@@ -29,7 +29,8 @@ use junto_media::share::{
 
 use crate::calls::{voice_channel, voice_file};
 use crate::harness::{
-    ABSENT_DBFS, ADMIN_TONE_HZ, Caller, HEARD_DBFS, WINDOW_TONE_HZ, Window, World, heard, member,
+    ABSENT_DBFS, ADMIN_TONE_HZ, Caller, HEARD_DBFS, PATIENCE, WINDOW_TONE_HZ, Window, World, heard,
+    member,
 };
 
 mod rules;
@@ -43,6 +44,78 @@ fn room(window: &mut Window) -> ChannelRow {
         .into_iter()
         .find(|row| row.kind == ChannelKind::Voice && row.name == ROOM)
         .unwrap()
+}
+
+/// Which side of the call hears: the window hears the tone of the administrator, and the
+/// administrator the tone of the window.
+#[derive(Debug, Clone, Copy)]
+enum Hears {
+    Window,
+    Administrator,
+}
+
+/// What a sink was given in the last 600 ms: one character for each 10 ms, the oldest
+/// first, a number sign for sound and a point for silence.
+fn sink_line(sound: &junto_media::audio::synthetic::SyntheticHost) -> String {
+    let (played, _) = sound.played(Duration::from_millis(600));
+    played
+        .as_chunks::<480>()
+        .0
+        .iter()
+        .map(|part| {
+            if junto_media::audio::synthetic::level(part) > -40.0 {
+                '#'
+            } else {
+                '.'
+            }
+        })
+        .collect()
+}
+
+/// What both engines know of the sound at this moment, for an assertion that failed.
+fn sound_report(world: &World, window: &mut Window, caller: &Caller) -> String {
+    let sinks = (sink_line(&window.sound), sink_line(&caller.sound));
+    let calls = window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().clone());
+    let line = |check: Option<_>| match check {
+        Some(check) => format!("{check}"),
+        None => "  no call".to_owned(),
+    };
+    let checks = (
+        line(world.run(calls.sound_check())),
+        line(world.run(caller.calls.sound_check())),
+    );
+    format!(
+        "each character is 10 ms of the last 600 ms, the oldest first\n\
+         the sink of the window:        {}\nthe window:\n{}\n\
+         the sink of the administrator: {}\nthe administrator:\n{}",
+        sinks.0, checks.0, sinks.1, checks.1
+    )
+}
+
+/// Waits until one side hears the other, and fails with what both engines know when the
+/// tone does not come. A single reading would also fail on a moment in which the threads
+/// of the test did not run: the half second that it measures then holds that gap.
+#[track_caller]
+fn until_hears(world: &World, window: &mut Window, caller: &Caller, side: Hears, after: &str) {
+    let deadline = std::time::Instant::now() + PATIENCE;
+    loop {
+        window.cx.run_until_parked();
+        let level = match side {
+            Hears::Window => heard(&window.sound, ADMIN_TONE_HZ),
+            Hears::Administrator => heard(&caller.sound, WINDOW_TONE_HZ),
+        };
+        if level > HEARD_DBFS {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "after {PATIENCE:?} {side:?} hears the other tone at {level} dBFS {after}\n{}",
+            sound_report(world, window, caller)
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 fn occupants(window: &mut Window) -> Vec<Occupant> {
@@ -185,7 +258,13 @@ fn a_person_joins_a_call_in_the_window_speaks_hears_mutes_and_leaves(cx: &mut Te
         window.view().controls.microphone == MicrophoneButton::Muted
             && own(window).is_some_and(|own| own.microphone == Microphone::Closed)
     });
-    assert!(heard(&window.sound, ADMIN_TONE_HZ) > HEARD_DBFS);
+    until_hears(
+        &world,
+        &mut window,
+        &caller,
+        Hears::Window,
+        "after the microphone of the window was closed",
+    );
     window.click("microphone");
     window.until("the administrator hears the window again", |_| {
         heard(&caller.sound, WINDOW_TONE_HZ) > HEARD_DBFS
@@ -196,11 +275,12 @@ fn a_person_joins_a_call_in_the_window_speaks_hears_mutes_and_leaves(cx: &mut Te
     window.until("the window plays nothing", |window| {
         heard(&window.sound, ADMIN_TONE_HZ) < ABSENT_DBFS
     });
-    let received = heard(&caller.sound, WINDOW_TONE_HZ);
-    assert!(
-        received > HEARD_DBFS,
-        "the remote tone is {received} dBFS after local sound was disabled; controls: {:?}",
-        window.view().controls
+    until_hears(
+        &world,
+        &mut window,
+        &caller,
+        Hears::Administrator,
+        "after the sound of the window was turned off",
     );
     window.click("sound-output");
     window.until("the window plays the call again", |window| {
@@ -260,7 +340,13 @@ fn a_person_joins_a_call_in_the_window_speaks_hears_mutes_and_leaves(cx: &mut Te
     // The call goes on while another channel is shown, and the strip leads back to it.
     window.click_channel("general");
     assert!(window.shows("call-strip") && !window.shows("call-stage"));
-    assert!(heard(&caller.sound, WINDOW_TONE_HZ) > HEARD_DBFS);
+    until_hears(
+        &world,
+        &mut window,
+        &caller,
+        Hears::Administrator,
+        "after another channel was shown",
+    );
     window.click("show-call");
     window.until("the call is shown again", |window| {
         window.shows("call-stage")

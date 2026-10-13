@@ -14,6 +14,7 @@ pub(crate) mod linux;
 pub mod playout;
 pub mod processing;
 pub mod rate;
+pub mod recent;
 #[cfg(feature = "test-support")]
 pub mod synthetic;
 

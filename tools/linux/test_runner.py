@@ -82,6 +82,15 @@ exit 0
         result = self.run_script("ownership")
         self.assertTrue(result.participant, result.commands)
 
+    def test_the_build_container_gets_processors_as_a_set_and_not_as_a_quota(self):
+        # A quota stops every thread of the container for the rest of each 100 ms in
+        # which it is used up; a test that measures sound then measures those stops.
+        result = self.run_script("ownership")
+        build = [line for line in result.commands.splitlines() if line.startswith("run --name junto-linux-build ")]
+        self.assertEqual(len(build), 1, result.commands)
+        self.assertIn(" --cpuset-cpus 0-3 ", build[0])
+        self.assertNotIn(" --cpus ", build[0])
+
     @unittest.skipUnless("flock" in SERIAL.read_text(), "the lock script has no flock path yet")
     def test_the_launcher_runs_on_a_host_without_lockf(self):
         result = self.run_script("ownership", launcher=True)

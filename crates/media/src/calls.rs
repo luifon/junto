@@ -227,6 +227,8 @@ enum SessionCommand {
     SimulateFullReconnect,
     #[cfg(feature = "test-support")]
     Statistics(crate::engine::statistics::Reply),
+    #[cfg(feature = "test-support")]
+    SoundCheck(crate::engine::statistics::SoundReply),
     /// Ends the call on this device. Who ends it gets the identity of the place and tells
     /// the server.
     End {
@@ -520,6 +522,17 @@ impl Calls {
                 .await
                 .unwrap_or_else(|_| Err("the call ended before its statistics answered".to_owned()))
         }
+    }
+
+    /// What the engine of the call of this device knows of its sound now, for a live test
+    /// that failed. Nothing when this device has no call.
+    #[cfg(feature = "test-support")]
+    pub fn sound_check(
+        &self,
+    ) -> impl Future<Output = Option<crate::engine::statistics::SoundCheck>> + Send + 'static {
+        let (reply, check) = oneshot::channel();
+        self.inner.tell(SessionCommand::SoundCheck(reply));
+        async move { check.await.ok() }
     }
 
     /// The picture of the watched share of the call of this device.
@@ -1511,6 +1524,8 @@ impl Session {
             SessionCommand::ViewSize(width, height) => self.engine.set_view_size(width, height),
             #[cfg(feature = "test-support")]
             SessionCommand::Statistics(reply) => self.engine.statistics(reply),
+            #[cfg(feature = "test-support")]
+            SessionCommand::SoundCheck(reply) => self.engine.sound_check(reply),
             #[cfg(feature = "test-support")]
             SessionCommand::SimulateFullReconnect => self.engine.simulate_full_reconnect(),
             // The loop takes this command itself.

@@ -25,7 +25,7 @@ The runner mounts that target volume at the participant path expected by the ser
 
 Run each full suite repetition through a separate launcher invocation so its database starts empty and is removed with its volume afterwards. Do not run several workspace repetitions inside one container command. PostgreSQL uses the image selection and database options of `tools/with-test-postgres.sh`.
 
-The runner creates its own PostgreSQL and LiveKit services, D-Bus session, PipeWire daemon and virtual sinks. It publishes no service ports and mounts no host display, sound device, session bus or home directory. The build has four Cargo jobs, four CPUs and a 6 GB memory limit. All compilation and test commands share the host build lock.
+The runner creates its own PostgreSQL and LiveKit services, D-Bus session, PipeWire daemon and virtual sinks. It publishes no service ports and mounts no host display, sound device, session bus or home directory. The build has four Cargo jobs, at most four processors and a 6 GB memory limit. The processors are given as a set and not as a quota: a quota stops every thread of the container for the rest of each 100 ms in which it is used up, and the live tests, which measure sound in real time, then measure those stops. All compilation and test commands share the host build lock.
 
 Call sound uses CPAL's native PipeWire backend. This lets the capture identify Junto's own playback using the process identity that the PipeWire daemon obtains from its socket. A PulseAudio compatibility connection would instead identify the compatibility service. The baseline library is PipeWire 0.3.65; physical devices and older versions need separate validation.
 
@@ -76,7 +76,7 @@ The test image builds a SHA-256-pinned wlr 0.7.1 portal backend with the shared-
 
 ## Diagnostics and retained resources
 
-With `test-support`, a live test can query connection statistics. A deficient frame-rate interval prints snapshots from its boundaries, the selected share and the share's age. Add `--show-output` to see diagnostics from a deficient interval that recovered before the test ended. Successful intervals do not print statistics.
+With `test-support`, a live test can query connection statistics, and `Calls::sound_check` gives what the engine knows of its sound: its states, the remote audio tracks, and for each 10 ms of the last 600 ms the number of frames that were captured, sent, received and played. The window test of a call prints it for both sides when a tone does not arrive. A deficient frame-rate interval prints snapshots from its boundaries, the selected share and the share's age. Add `--show-output` to see diagnostics from a deficient interval that recovered before the test ended. Successful intervals do not print statistics.
 
 The image `junto-linux-build:1` and volumes `junto-linux-cargo` and `junto-linux-target` remain for later commands. `JUNTO_LINUX_PREFIX` replaces the prefix `junto-linux` in the names of the image, the volumes, the containers and the network, for two checkouts on one machine. Keep the target volume to one architecture and the debug profile. An emulated architecture check needs a temporary target volume, removed when the check finishes. The runner removes its containers and network after each command. It refuses an existing resource name rather than replacing another run. On Linux it builds with the invoking user's user and group identifiers. `JUNTO_DOCKER_SOCKET` supplies a nonstandard local Docker socket, such as a rootless daemon's socket.
 

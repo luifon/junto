@@ -6,6 +6,7 @@
 //! difference.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use livekit::webrtc::native::audio_resampler::AudioResampler;
@@ -13,6 +14,7 @@ use livekit::webrtc::native::audio_resampler::AudioResampler;
 use super::host::Format;
 use super::processing::Processor;
 use super::rate::{MAX_SPAN_FRAMES, Span};
+use super::recent::Recent;
 use super::{FRAME_SAMPLES, PLAYOUT_CHANNELS, SAMPLE_RATE, to_f32};
 
 /// The samples of one frame of the mix.
@@ -45,6 +47,22 @@ struct State {
 #[derive(Default)]
 pub struct Mixer {
     state: Mutex<State>,
+    /// What passed the mixer lately, for the diagnosis of a live test.
+    pub passed: Passed,
+}
+
+/// The frames that passed the mixer.
+#[derive(Debug, Default)]
+pub struct Passed {
+    /// The frames that the remote tracks gave.
+    pub received: Recent,
+    /// The frames of the mix that held the sound of a track, and those that held none.
+    pub played: Recent,
+    pub silent: Recent,
+    /// How often the queue of a track that was played ran empty.
+    pub ran_empty: AtomicU64,
+    /// How often a queue was cut because it was full.
+    pub cut: AtomicU64,
 }
 
 impl Mixer {
@@ -93,12 +111,22 @@ impl Mixer {
             .map_or(0, |held| held.queue.len() / BLOCK_SAMPLES)
     }
 
+    /// For each track: whether it is played now, and the frames that wait.
+    pub fn queues(&self) -> Vec<(bool, usize)> {
+        self.lock()
+            .sources
+            .iter()
+            .map(|held| (held.playing, held.queue.len() / BLOCK_SAMPLES))
+            .collect()
+    }
+
     /// Writes the next 10 ms of the mix into `block`.
     pub fn mix(&self, block: &mut [i16]) {
         let mut sums = [0i32; BLOCK_SAMPLES];
         let mut state = self.lock();
         state.mixed += 1;
         let sound_off = state.sound_off;
+        let mut sounded = false;
         for source in &mut state.sources {
             if !source.playing && source.queue.len() >= START_BLOCKS * BLOCK_SAMPLES {
                 source.playing = true;
@@ -108,13 +136,20 @@ impl Mixer {
             }
             if source.queue.len() < BLOCK_SAMPLES {
                 source.playing = false;
+                self.passed.ran_empty.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
+            sounded = true;
             for (sum, sample) in sums.iter_mut().zip(source.queue.drain(..BLOCK_SAMPLES)) {
                 *sum += (f32::from(sample) * source.gain) as i32;
             }
         }
         drop(state);
+        if sounded && !sound_off {
+            self.passed.played.count();
+        } else {
+            self.passed.silent.count();
+        }
         for (out, sum) in block.iter_mut().zip(sums) {
             *out = if sound_off {
                 0
@@ -139,11 +174,13 @@ impl SourceHandle {
             return;
         };
         source.queue.extend(frame.iter().copied());
+        self.mixer.passed.received.count();
         let surplus = source
             .queue
             .len()
             .saturating_sub(MAX_BLOCKS * BLOCK_SAMPLES);
         if surplus > 0 {
+            self.mixer.passed.cut.fetch_add(1, Ordering::Relaxed);
             // Whole frames, down to the amount at which a track starts.
             let keep = START_BLOCKS * BLOCK_SAMPLES;
             let drop = (source.queue.len() - keep) / BLOCK_SAMPLES * BLOCK_SAMPLES;

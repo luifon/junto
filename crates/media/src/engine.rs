@@ -226,6 +226,8 @@ enum Command {
     SimulateFullReconnect,
     #[cfg(feature = "test-support")]
     Statistics(statistics::Reply),
+    #[cfg(feature = "test-support")]
+    SoundCheck(statistics::SoundReply),
     Close(oneshot::Sender<()>),
 }
 
@@ -316,6 +318,8 @@ impl Engine {
             source,
             pump,
             room: None,
+            #[cfg(feature = "test-support")]
+            connected_at: None,
             attempt: 0,
             capture: None,
             capture_generation: 0,
@@ -457,8 +461,11 @@ async fn pump(mut frames: FrameQueue, source: Arc<Mutex<Option<NativeAudioSource
             num_channels: 1,
             samples_per_channel: FRAME_SAMPLES as u32,
         };
-        if let Err(error) = current.capture_frame(&frame).await {
-            tracing::debug!(error = %error.message, "a frame of the microphone was not taken");
+        match current.capture_frame(&frame).await {
+            Ok(()) => frames.taken(),
+            Err(error) => {
+                tracing::debug!(error = %error.message, "a frame of the microphone was not taken");
+            }
         }
     }
 }
@@ -506,6 +513,9 @@ struct Actor {
     source: Arc<Mutex<Option<NativeAudioSource>>>,
     pump: JoinHandle<()>,
     room: Option<Room>,
+    /// When the media connection was made, for the diagnosis of a live test.
+    #[cfg(feature = "test-support")]
+    connected_at: Option<Instant>,
     /// Counts the connections that were started. The result of an earlier one is not used.
     attempt: u64,
     capture: Option<OpenStream>,
@@ -683,6 +693,8 @@ impl Actor {
             #[cfg(feature = "test-support")]
             Command::Statistics(reply) => self.statistics(reply).await,
             #[cfg(feature = "test-support")]
+            Command::SoundCheck(reply) => self.sound_check(reply),
+            #[cfg(feature = "test-support")]
             Command::SimulateFullReconnect => {
                 if let Some(room) = &self.room {
                     let scenario = livekit::SimulateScenario::FullReconnect;
@@ -709,6 +721,10 @@ impl Actor {
                     Ok((room, taken)) => {
                         self.room = Some(room);
                         *events = Some(taken);
+                        #[cfg(feature = "test-support")]
+                        {
+                            self.connected_at = Some(Instant::now());
+                        }
                         self.change(|state| state.connection = Connection::Connected);
                         self.open_playout();
                         self.sync_microphone();
