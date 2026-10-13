@@ -4,7 +4,7 @@
 
 Accepted
 
-Open: the calls to ScreenCaptureKit were not run. An automated run captures no screen and causes no permission question (ADR 0902), and the capture needs the permission of the application that the system holds responsible. A person runs the first share. The capture of Linux (ADR 0502) and of Windows is not built; on those systems the share button is disabled and says so.
+Open: the calls to ScreenCaptureKit were not run. An automated run captures no screen and causes no permission question (ADR 0902), and the capture needs the permission of the application that the system holds responsible. A person runs the first share. ADR 0751 records the Linux implementation and its verification status. The Windows capture is not built; its share button is disabled and says so.
 
 ## Context
 
@@ -16,7 +16,7 @@ Interface:
 
 - The media engine takes the capture through one interface: the state of the permission, the request for it, the opening of the settings of the system, the list of screens, windows and applications, and the start of a capture that gives pictures and interleaved sound to a sink until it is dropped or ends by itself.
 - The tests implement the interface with a picture of two known colours and a tone on each channel. The product implements it per system. A system without an implementation answers every request with "not supported".
-- A picture crosses the interface as a video buffer of the call library, so the pixel buffer of the system reaches the encoder without a copy.
+- A picture crosses the interface as a video buffer of the call library. The macOS buffer reaches the encoder without a copy; the Linux implementation validates and converts the portal's shared-memory pixels (ADR 0751).
 
 macOS:
 

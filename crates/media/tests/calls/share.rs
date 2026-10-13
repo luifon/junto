@@ -331,10 +331,23 @@ async fn a_share_with_sound_arrives_with_its_picture_and_its_sound() {
     ben.until_heard_afresh(&ann).await;
 }
 
+/// The longest time, in seconds, from a change of the watched share to the first of three
+/// seconds in a row with the full frame rate (ADR 0737).
+const FULL_RATE_WITHIN_SECONDS: usize = 20;
+
+/// The last three seconds hold at least 66 pictures of the full size: more than the 15 of
+/// the defaults of the call library, and more than the 45 that a layer of half the size
+/// gives at its 15 per second when a peer publishes one (this client publishes none,
+/// ADR 0773).
+fn full_rate(seconds: &[usize]) -> bool {
+    seconds.len() >= 3 && seconds[seconds.len() - 3..].iter().sum::<usize>() >= 66
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
 async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_with_its_sharer() {
-    let _media = MEDIA_SERVER.read().await;
+    // Keep the measured room isolated; whether contention causes the low counts is unproven.
+    let _media = MEDIA_SERVER.write().await;
     let (ann, ben, cal) = (Person::new(440.0), Person::new(880.0), Person::new(1320.0));
     let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
     let ben_at = room.member(&ann_at, &ben, "Ben").await;
@@ -361,6 +374,7 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
 
     // Ben shares a window with the sound of its application. Cal goes on watching Ann:
     // a share that starts does not replace what a person watches.
+    let share_started = tokio::time::Instant::now();
     ben.calls.start_share(window(player()));
     let info = ben.until_sharing().await;
     assert_eq!(
@@ -409,7 +423,38 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
     ben.until_heard_tone(SYSTEM.0).await;
 
     // Cal chooses the share of Ben: its picture, and its sound in place of the other one.
+    // The pictures of the share of Ben in its full size are counted from the change, in
+    // seconds, so that a small layer or a low rate in the first seconds after the change
+    // is measured and not waited out.
+    let before_switch = crate::statistics::snapshot(&ben, &cal, share_started).await;
+    let mut pictures = cal.calls.main_picture();
+    pictures.borrow_and_update();
     cal.calls.watch_share(ShareId::Of(ben_id));
+    let counted = tokio::spawn(async move {
+        let started = tokio::time::Instant::now();
+        let mut seconds: Vec<usize> = Vec::new();
+        while !full_rate(&seconds) && started.elapsed() < PATIENCE {
+            let end = started + Duration::from_secs(seconds.len() as u64 + 1);
+            let mut arrived = 0;
+            loop {
+                match tokio::time::timeout_at(end, pictures.changed()).await {
+                    Ok(Ok(())) => {
+                        let full = pictures.borrow_and_update().as_ref().is_some_and(|shown| {
+                            shown.share == ShareId::Of(ben_id) && shown.frame.source == (800, 600)
+                        });
+                        arrived += usize::from(full);
+                    }
+                    Ok(Err(_)) => {
+                        seconds.push(arrived);
+                        return seconds;
+                    }
+                    Err(_) => break,
+                }
+            }
+            seconds.push(arrived);
+        }
+        seconds
+    });
     cal.until("Cal watches the share of Ben", |view| {
         view.call
             .as_ref()
@@ -420,31 +465,30 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
     assert_eq!(picture.frame.source.0 * 3, picture.frame.source.1 * 4);
     // The share is sent at the frame rate that its sharer chose, 30 pictures per second.
     // The defaults of the call library send a picture of 800 pixels at 5 per second: in
-    // three seconds 15 pictures arrive with them. A sender lowers its cadence while its
-    // estimate of the bandwidth is low (ADR 0773), as in the first seconds of a stream on
-    // a busy machine, so the test counts spans of three seconds until one holds the
-    // pictures of the chosen rate.
-    let mut pictures = cal.calls.main_picture();
-    let counting = tokio::time::Instant::now();
-    let mut spans = Vec::new();
-    let arrived = loop {
-        pictures.borrow_and_update();
-        let mut arrived = 0;
-        let counted = tokio::time::timeout(Duration::from_secs(3), async {
-            while pictures.changed().await.is_ok() {
-                arrived += 1;
-            }
-        });
-        let _ = counted.await;
-        spans.push(arrived);
-        if arrived >= 36 || counting.elapsed() >= PATIENCE {
-            break arrived;
-        }
-    };
-    assert!(
-        arrived >= 36,
-        "{arrived} pictures in three seconds; the spans before: {spans:?}"
+    // three seconds 15 pictures arrive with them. A share has one encoding of the full
+    // size (ADR 0773), and a sender lowers its cadence while its estimate of the bandwidth
+    // is low, as in the first seconds of a stream on a busy machine. The time until three
+    // seconds in a row hold 66 pictures of the full size is printed in every run and has
+    // a bound (ADR 0737).
+    let seconds = counted.await.unwrap();
+    let delay = seconds.len().saturating_sub(3);
+    eprintln!(
+        "pictures of the full size in each second after the change of the watched share: \
+         {seconds:?}; the full rate began after {delay} s"
     );
+    if !full_rate(&seconds) || delay > FULL_RATE_WITHIN_SECONDS {
+        let after = crate::statistics::snapshot(&ben, &cal, share_started).await;
+        crate::statistics::frame_rate(
+            &cal,
+            seconds.iter().rev().take(3).sum(),
+            &before_switch,
+            &after,
+        );
+        panic!(
+            "the full frame rate began {delay} s after the change of the watched share, \
+             later than {FULL_RATE_WITHIN_SECONDS} s: {seconds:?}"
+        );
+    }
     cal.until_heard_tone(PLAYER.0).await;
     cal.until_silent_tone(SYSTEM.0).await;
 

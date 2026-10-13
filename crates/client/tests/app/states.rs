@@ -6,6 +6,7 @@ use gpui::TestAppContext;
 use junto_client::shell::Open;
 use junto_client::state::view::{Content, ServerStatus};
 use junto_client::text;
+use junto_client_core::Reach;
 use junto_client_core::book::ConnectionMode;
 use junto_client_core::flow::access::Notice;
 use junto_client_core::protocol::account::RecoverAccount;
@@ -56,7 +57,8 @@ fn a_ban_a_removal_and_a_forgotten_account_show_their_states(cx: &mut TestAppCon
     let world = World::new();
     let server = world.server("Harbor");
     let admin = world.owner(&server);
-    let (directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
     let account_id = window.view().person.account_id.unwrap();
     let api = admin.handle.api();
 
@@ -72,10 +74,29 @@ fn a_ban_a_removal_and_a_forgotten_account_show_their_states(cx: &mut TestAppCon
 
     // A second start shows the ban from the server book before any contact.
     window.close();
+    let checked_before = proxy.seen("/api/server").len();
+    proxy.hold("/api/server");
     let mut window = open(cx, directory.path());
     window.until("the ban is shown again", |window| window.shows("banned"));
+    window.until("the startup request is held", |_| {
+        proxy.seen("/api/server").len() > checked_before
+    });
+    let held = std::time::Instant::now();
+    while held.elapsed() < Duration::from_millis(200) {
+        window.view();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    proxy.release();
     window.until("the startup check has finished", |window| {
-        window.view().selected.is_some_and(|server| !server.busy)
+        let selected = window.view().selected;
+        selected.is_some_and(|selected| {
+            let checked = window.state.read_with(&window.cx, |state, _| {
+                state.server(selected.id).is_some_and(|server| {
+                    startup_check_finished(server.reach(), server.access().in_progress.is_some())
+                })
+            });
+            checked && !selected.busy
+        })
     });
 
     // "Check again" finds the unban, and the account is the same.
@@ -94,6 +115,9 @@ fn a_ban_a_removal_and_a_forgotten_account_show_their_states(cx: &mut TestAppCon
     // Joining again with a code creates a new account with the same key.
     let code = admin.invite(&world, 1);
     window.click("join-server");
+    window.until("the rejoin form is drawn", |window| {
+        window.shows("join-with-code")
+    });
     window.join_with_code(code.expose());
     window.until_ready();
     let again = window.view().person.account_id.unwrap();
@@ -615,4 +639,8 @@ fn a_long_name_of_a_server_moves_no_control_of_a_question(cx: &mut TestAppContex
     window.click("dialog-close");
     assert!(!window.shows("confirm-remove"));
     assert_eq!(window.view().servers.len(), 1);
+}
+
+fn startup_check_finished(reach: Reach, busy: bool) -> bool {
+    reach != Reach::Unknown && !busy
 }

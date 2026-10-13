@@ -2,7 +2,7 @@
 
 The Junto desktop application: a gpui window on `junto-client-core` and `junto-media`. The binary is `junto`. The design decisions are in [`docs/adr/`](../../docs/adr/README.md): ADR 0730 describes this crate, ADR 0731 its theme and components, ADR 0732 joining a server in the window, ADR 0733 the media engine, ADR 0734 the call of a client, ADR 0735 the screens of a voice call, ADR 0736 the screen capture, ADR 0737 shares in the media engine, ADR 0738 the screens of a share and of a recording, ADR 0739 the rules of a call, ADR 0740 the message list and the composer, ADR 0741 the thread panel, pins, permanent messages and direct conversations, ADR 0742 the notices, the notification settings and the system notifications, ADR 0743 the search, ADR 0744 the card of a recording and the transcript, ADRs 0760–0762 administration and archived channels, ADRs 0770–0773 cameras, direct calls, detached windows and screen shares, ADR 0780 the order of the server book and the update notice, ADR 0781 the account layer, ADR 0782 device linking, ADR 0783 the pictures of people, ADR 0784 the list of recordings, ADR 0785 the order of call state, ADR 0786 the condition waits of macOS, ADR 0790 the permissions that the server states, ADR 0791 the pages of the roles, ADR 0796 the followed threads and the follow control, ADR 0797 the administration after the last server requests, ADR 0798 the time zones, and ADR 0799 the logo of a server.
 
-This version shows the servers of the server book, their workspaces and channels, the people in voice channels, and the state of each server. It joins a server with a code or a request for access, and it holds a voice call in a voice channel: microphone, sound, mute, a volume per person, levels, push-to-talk and the choice of the sound devices. In a call a person shares a screen or a window with its sound, watches the shares of the others, starts and stops a recording, and uses the rules of the room: meeting mode with raised hands, the lock, the user limit, requests to enter, invitations, the menu of a person with blocks, removal and move. A person reads and writes messages in a text channel, in the chat of a voice channel and in a direct conversation: formatted text, replies, mentions, reactions, files, edits and deletions, with unread signs in the channel list. A person answers in the thread of a message, forks a thread into a channel, and pins messages. The application lists the notices of a person, takes the notification level of a server, a workspace and a channel, the mute of a place and the quiet times, and shows notifications of the system. It searches messages and transcripts. A finished recording is a card in the chat of its voice channel, with its files and its transcript. It supports cameras, direct-message calls and a detached call window. A person with the permissions manages workspaces, categories, channels, the permissions of a channel, members, bans, invites, join requests, access tokens and exports, and reads the audit log with filters that the server applies. An administrator removes a member from one workspace, sets the notification level of a workspace, and sets the logo of the server, which every window shows in the server book. A person follows a thread or stops following it, and finds the followed threads under their channel. A person orders the servers of the server book, changes the name and the picture of the account on a server, lists, renames and removes the devices of the account, links a second device on one server or on all servers, and sees the picture of each person who set one. A page lists the recordings of a workspace. It has no correction of a transcript. It is built and tested on macOS and builds for Linux, where the screen capture is not built yet; Windows is not supported yet.
+This version shows the servers of the server book, their workspaces and channels, the people in voice channels, and the state of each server. It joins a server with a code or a request for access, and it holds a voice call in a voice channel: microphone, sound, mute, a volume per person, levels, push-to-talk and the choice of the sound devices. In a call a person shares a screen or a window with its sound, watches the shares of the others, starts and stops a recording, and uses the rules of the room: meeting mode with raised hands, the lock, the user limit, requests to enter, invitations, the menu of a person with blocks, removal and move. A person reads and writes messages in a text channel, in the chat of a voice channel and in a direct conversation: formatted text, replies, mentions, reactions, files, edits and deletions, with unread signs in the channel list. A person answers in the thread of a message, forks a thread into a channel, and pins messages. The application lists the notices of a person, takes the notification level of a server, a workspace and a channel, the mute of a place and the quiet times, and shows notifications of the system. It searches messages and transcripts. A finished recording is a card in the chat of its voice channel, with its files and its transcript. It supports cameras, direct-message calls and a detached call window. A person with the permissions manages workspaces, categories, channels, the permissions of a channel, members, bans, invites, join requests, access tokens and exports, and reads the audit log with filters that the server applies. An administrator removes a member from one workspace, sets the notification level of a workspace, and sets the logo of the server, which every window shows in the server book. A person follows a thread or stops following it, and finds the followed threads under their channel. A person orders the servers of the server book, changes the name and the picture of the account on a server, lists, renames and removes the devices of the account, links a second device on one server or on all servers, and sees the picture of each person who set one. A page lists the recordings of a workspace. It has no correction of a transcript. It is built and tested on macOS and in Linux containers. The Linux capture implementation and its verification limits are described below and in ADR 0751; Windows is not supported yet.
 
 A media connection shows "Entering call…" until the server lists this place identity. Controls for a person inside the call become available after that confirmation; callbacks also check the current call identity and admission.
 
@@ -194,7 +194,7 @@ The generated camera tests check received frame colors, capture shutdown, reconn
 
 ## Sharing a window with sound between two instances
 
-Both instances are in one call (see above). In the first instance:
+These permission and source-list steps describe macOS. Linux uses the desktop chooser described in the Linux section below. Both instances are in one call (see above). In the first instance:
 
 1. Press the share button of the call strip (the screen icon between the camera and the hand). The dialog "Share your screen" opens.
 2. Without the permission of macOS the dialog says "Junto may not record the screen yet". Press "Open System Settings": macOS lists the application that started Junto under Privacy & Security, Screen & System Audio Recording. That is the terminal while Junto runs from `cargo run`. Turn it on. macOS can ask to quit and reopen that application; start both instances again afterwards. A terminal that has the permission already skips this step. "Check again" reads the permission again.
@@ -318,7 +318,6 @@ The variable `JUNTO_SCREENS_ONLY` limits the run to one set: `shares`, `rules`, 
 | `src/zones.rs` | The names of the time zones, the zone of the system, and the clock of a named zone. |
 | `src/bin/junto-screens.rs`, `src/bin/junto-screens/` | The tool that draws the screens. |
 
-
 ## Call movement and startup checks
 
 Drag another person from a voice channel onto a voice channel. With the move permission, this requests a move; otherwise the destination must be the current call and the action sends an invitation. The drop is checked against the current state. The server decides access and permission in both places, and a refusal is shown without changing the source call. Focus a person and press Shift+F10 for the same Invite or Move to actions, then use arrow keys and Enter.
@@ -332,3 +331,67 @@ tools/serial.sh sh tools/check-client-start.sh <empty-data-directory>
 ```
 
 This check opens a native window without activation. It is separate from the headless window tier and does not verify camera hardware, permission dialogs, native fullscreen or window ordering.
+
+## Building and checking Linux in containers
+
+`tools/linux-container.sh` builds the Linux toolchain image and runs a command with private PostgreSQL, LiveKit, D-Bus and PipeWire services. Use a separate launcher invocation for each full suite repetition so test databases do not accumulate between runs. The retained target volume is for one architecture and the debug profile. The image has arm64 and amd64 definitions; tests on one architecture do not establish results on the other. The shared lock script must provide its Linux `flock` path when the launcher runs on a Linux host. The launcher itself delegates to that script.
+
+```sh
+tools/linux-container.sh cargo check --workspace --all-targets
+tools/linux-container.sh cargo test --workspace --no-fail-fast
+tools/linux-container.sh cargo clippy --workspace --all-targets -- -D warnings
+tools/linux-container.sh cargo fmt --all -- --check
+```
+
+The window code can run on its test platform under a private X11 display or a headless Wayland compositor:
+
+```sh
+tools/linux-container.sh tools/linux/display.sh x11 \
+    cargo test -p junto-client --features test-support --test app
+tools/linux-container.sh tools/linux/display.sh wayland \
+    cargo test -p junto-client --features test-support --test app
+tools/linux-container.sh tools/linux/display.sh wayland \
+    cargo test -p junto-client --features test-support --test app live:: -- --ignored
+```
+
+The first two commands run ordinary window tests. The third runs calls and shares through the real test services, while their pictures, microphone and output remain synthetic. None uses a host microphone, speaker, display or permission dialog.
+
+To export the rendered screens:
+
+```sh
+JUNTO_LINUX_ARTIFACTS=/tmp/junto-linux-screens \
+    tools/linux-container.sh tools/linux/display.sh wayland \
+    cargo run -p junto-client --features test-support --bin junto-screens -- \
+    /tmp/junto-linux-artifacts
+```
+
+`tools/linux/window-smoke.sh` starts the real binary on a display created by `display.sh` and checks for a painted application surface. Build `junto` first in the same target volume. A successful gpui test-platform run alone does not prove that the real application presents a frame. The image uses Mesa 25.0.7 and the smoke test uses normal renderer selection. The smoke test repeats its check of the painted surface for up to 30 seconds. `JUNTO_LINUX_TEST_RENDERER=opengl` remains an explicit diagnostic override. These software-renderer results do not cover a hardware GPU driver.
+
+The software Vulkan driver of Mesa 22.3.6 presents a black window under X11. Before its first window under X11 the binary reads the Vulkan adapters, and it starts itself again without Vulkan drivers when that driver of a Mesa older than 25 is the adapter that gpui would use; gpui then draws with OpenGL (ADR 0705, `src/renderer.rs`). The image keeps that driver for this check:
+
+```sh
+tools/linux-container.sh sh -c 'cargo build -p junto-client --bin junto &&
+    JUNTO_LINUX_TEST_RENDERER=mesa22 tools/linux/display.sh x11 \
+    tools/linux/window-smoke.sh /tmp/junto-linux-artifacts/mesa22'
+```
+
+With `JUNTO_RENDERER_CHECKED=1` in the environment the binary skips its check, and this command then fails with a black window.
+
+`window_level::keep_above` is the interface by which a detached call window asks to stay above other windows (ADR 0507). The detached call window calls it when it opens with the choice "keep on top" and when the person changes the choice. On Linux the window is not opened again for the choice, and the choice is drawn only under X11. Under X11 it sends the window manager the request for the state "above"; for a Wayland window it answers that the system has no such request. Its tests need the private X11 display and its window manager:
+
+```sh
+tools/linux-container.sh tools/linux/display.sh x11 \
+    cargo test -p junto-client --lib window_level -- --ignored
+```
+
+The built-in fonts are used on both systems. The Linux image also supplies a colour emoji font. Window decorations, font rasterisation and colour rounding can differ between backends. Screenshot comparisons must distinguish those differences from missing controls or content.
+
+Linux call sound uses PipeWire directly; see [`junto-media`](../media/README.md). The share picker offers desktop screen/window selection and the available sound choices under ADR 0751. The desktop authorises each share after Share is pressed; a window selection does not implicitly choose an application's sound. Container checks cover native shared sound and portal screen pixels with the explicitly patched test backend described in the media README; a human chooser and an unmodified desktop backend remain unverified.
+
+Linux system notifications use the session bus's `org.freedesktop.Notifications` service behind the same policy interface as macOS. The private-service tests check replacement, withdrawal, activation, the markup capability, a service restart, a replaced session bus and an alert that waited too long, without showing a desktop notification:
+
+```sh
+tools/linux-container.sh cargo test -p junto-client --lib notify::linux::tests
+```
+
+Application tests and the screenshot tool retain the in-memory notifier. A real desktop daemon's visual presentation and a person's portal interaction require separate manual checks; fake-service and headless tests do not establish those results.

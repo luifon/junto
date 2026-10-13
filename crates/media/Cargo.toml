@@ -16,6 +16,8 @@ required-features = ["test-support"]
 # The synthetic sound devices and the tone analysis, for the tests of this crate and of the
 # desktop client.
 test-support = []
+# Tests that authorise only the runner's virtual Wayland output (ADR 0751).
+portal-tests = ["test-support"]
 
 [dependencies]
 junto-client-core = { path = "../client-core" }
@@ -33,6 +35,13 @@ tracing = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 # Call sound is played through a PipeWire connection of the client itself (ADR 0502).
 cpal = { version = "0.18.2", features = ["pipewire"] }
+# Portal authorisation, native capture and a bounded real-time hand-over (ADR 0751).
+# The later feature set requires codec constants absent from 0.3.65 headers.
+pipewire = { version = "0.10.1", features = ["v0_3_64"] }
+zbus = { version = "5.19", default-features = false, features = ["tokio"] }
+rtrb = "0.3.5"
+serde = { workspace = true }
+uuid = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-video = { version = "0.5.2", features = ["metal"] }
@@ -50,6 +59,10 @@ objc2-core-audio-types = { version = "0.3.2", default-features = false, features
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGDirectDisplay", "CGWindow"] }
 
+# Initialize the native call library's PipeWire symbols before the sound host uses them.
+[build-dependencies]
+cc = "1"
+
 [dev-dependencies]
 junto-media = { path = ".", features = ["test-support"] }
 sqlx = { workspace = true }
@@ -58,8 +71,8 @@ tokio = { workspace = true, features = ["io-util", "test-util"] }
 url = "2"
 uuid = { workspace = true }
 
-# The workspace forbids unsafe code. This crate denies it and allows it in the two modules
-# that call macOS: the microphone permission and the screen capture.
+# The workspace forbids unsafe code. This crate denies it and allows it only in modules
+# that call the platform APIs: macOS permissions and capture, and Linux audio initialisation.
 [lints.rust]
 unsafe_code = "deny"
 

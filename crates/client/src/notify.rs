@@ -1,10 +1,13 @@
 //! The notifications of the operating system, behind an interface (ADR 0742).
 //!
 //! The state of the application decides what is shown (`state::notices::alerts`) and tells
-//! it to a [`SystemNotifier`]. The binary gives the notifier of gpui, which shows a
+//! it to a [`SystemNotifier`]. The binary gives the notifier of the operating system, which shows a
 //! notification of the system. Every other start of the application state, such as a test
 //! and the screen tool, gets one that only keeps what it was told: no automated run shows
 //! a notification or makes the system ask for a permission.
+
+#[cfg(target_os = "linux")]
+mod linux;
 
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -67,6 +70,37 @@ impl SystemNotifier for PlatformNotifier {
             return;
         }
         cx.dismiss_system_notification(tag);
+    }
+}
+
+/// Brings the application to the front after a press on one of its notifications.
+pub fn bring_to_front(cx: &mut App) {
+    cx.activate(true);
+    // gpui activates no application on Linux. The main window, which is the first one, is
+    // asked instead: X11 gives it the focus, and a Wayland compositor decides by itself.
+    #[cfg(target_os = "linux")]
+    if let Some(window) = cx.windows().first() {
+        let _ = window.update(cx, |_, window, _| window.activate_window());
+    }
+}
+
+/// Installs the system backend and its activation route only for the real application.
+pub fn platform(
+    cx: &mut App,
+    pressed: impl Fn(&str, &mut App) + 'static,
+) -> std::rc::Rc<dyn SystemNotifier> {
+    #[cfg(target_os = "linux")]
+    {
+        std::rc::Rc::new(linux::DesktopNotifier::new(cx, pressed))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // Without an application bundle macOS has no notifications of the application,
+        // and nothing is asked of the system.
+        if PlatformNotifier::available() {
+            cx.on_system_notification_response(move |response, cx| pressed(&response.tag, cx));
+        }
+        std::rc::Rc::new(PlatformNotifier)
     }
 }
 

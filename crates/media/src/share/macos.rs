@@ -670,6 +670,8 @@ impl Content {
                 .map(|application| application_of(&application))
                 .collect();
             ShareSources {
+                portal: Vec::new(),
+                system_sound: true,
                 displays: displays
                     .iter()
                     .map(|display| {
@@ -700,6 +702,7 @@ impl Content {
         unsafe {
             let displays = self.content.displays();
             let (filter, source) = match request.picture {
+                PictureSource::Portal(_) => return Err(CaptureError::Unsupported),
                 PictureSource::Display(id) => {
                     let display = displays
                         .iter()

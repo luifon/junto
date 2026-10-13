@@ -790,6 +790,8 @@ fn capture() -> SyntheticCapture {
     );
     let capture = SyntheticCapture::new();
     capture.set_sources(ShareSources {
+        portal: Vec::new(),
+        system_sound: true,
         displays: vec![DisplaySource {
             id: 1,
             width: 1920,

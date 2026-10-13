@@ -223,13 +223,19 @@ fn push_to_talk_follows_both_windows(cx: &mut TestAppContext) {
     let fullscreen = detached.debug_bounds("call-fullscreen").unwrap();
     detached.simulate_click(fullscreen.center(), Modifiers::none());
     assert!(detached.update(|window, _| window.is_fullscreen()));
-    let top = detached.debug_bounds("call-on-top").unwrap();
-    detached.simulate_click(top.center(), Modifiers::none());
-    window.until("topmost changes without leaving", |window| {
-        window.state.read_with(&window.cx, |state, _| {
-            state.is_call_detached() && state.call_window_settings().keep_on_top
-        })
-    });
+    // The choice "keep on top" is drawn only where the system can keep a window above the
+    // others (ADR 0507).
+    if detached.update(|_, cx| junto_client::window_level::offered(cx)) {
+        let top = detached.debug_bounds("call-on-top").unwrap();
+        detached.simulate_click(top.center(), Modifiers::none());
+        window.until("topmost changes without leaving", |window| {
+            window.state.read_with(&window.cx, |state, _| {
+                state.is_call_detached() && state.call_window_settings().keep_on_top
+            })
+        });
+    } else {
+        assert!(detached.debug_bounds("call-on-top").is_none());
+    }
     assert_eq!(
         identity,
         window.state.read_with(&window.cx, |state, _| state

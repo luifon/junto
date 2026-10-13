@@ -97,7 +97,7 @@ impl MediaOptions {
     /// The devices, the permission and the screen capture of the machine.
     pub fn system() -> Self {
         Self {
-            host: Arc::new(crate::audio::cpal_host::CpalHost::new()),
+            host: crate::audio::system(),
             camera: crate::camera::system(),
             permission: Arc::new(crate::permission::SystemPermission),
             capture: crate::share::system(),
@@ -253,6 +253,10 @@ enum SessionCommand {
     SimulateFullReconnect,
     #[cfg(feature = "test-support")]
     SimulateConnectionLoss,
+    #[cfg(feature = "test-support")]
+    Statistics(crate::engine::statistics::Reply),
+    #[cfg(feature = "test-support")]
+    SoundCheck(crate::engine::statistics::SoundReply),
     /// Ends the call on this device. Who ends it gets the identity of the place and tells
     /// the server.
     End {
@@ -474,7 +478,24 @@ impl Calls {
 
     /// The screens, windows and applications that can be shared now.
     pub fn share_sources(&self) -> Pending<Result<ShareSources, CaptureError>> {
-        self.inner.options.capture.sources()
+        // The Linux capture reads its sources with work that needs the runtime of the
+        // client, and the window polls this future on a thread without one.
+        #[cfg(target_os = "linux")]
+        {
+            let reading = self
+                .inner
+                .runtime
+                .spawn(self.inner.options.capture.sources());
+            Box::pin(async move {
+                reading
+                    .await
+                    .map_err(|error| CaptureError::Failed(error.to_string()))?
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.inner.options.capture.sources()
+        }
     }
 
     /// Starts the share of this device in its call. The result is in the view of the
@@ -546,6 +567,32 @@ impl Calls {
     #[cfg(feature = "test-support")]
     pub fn simulate_connection_loss(&self) {
         self.inner.tell(SessionCommand::SimulateConnectionLoss);
+    }
+
+    /// Queries the connection statistics for a failed live test.
+    #[cfg(feature = "test-support")]
+    pub fn statistics(
+        &self,
+    ) -> impl Future<Output = Result<livekit::rtc_engine::SessionStats, String>> + Send + 'static
+    {
+        let (reply, stats) = oneshot::channel();
+        self.inner.tell(SessionCommand::Statistics(reply));
+        async move {
+            stats
+                .await
+                .unwrap_or_else(|_| Err("the call ended before its statistics answered".to_owned()))
+        }
+    }
+
+    /// What the engine of the call of this device knows of its sound now, for a live test
+    /// that failed. Nothing when this device has no call.
+    #[cfg(feature = "test-support")]
+    pub fn sound_check(
+        &self,
+    ) -> impl Future<Output = Option<crate::engine::statistics::SoundCheck>> + Send + 'static {
+        let (reply, check) = oneshot::channel();
+        self.inner.tell(SessionCommand::SoundCheck(reply));
+        async move { check.await.ok() }
     }
 
     /// The picture of the watched share of the call of this device.
@@ -1827,6 +1874,10 @@ impl Session {
             SessionCommand::ViewSize(width, height) => self.engine.set_view_size(width, height),
             SessionCommand::CameraViews(views) => self.engine.set_camera_views(views),
             #[cfg(feature = "test-support")]
+            SessionCommand::Statistics(reply) => self.engine.statistics(reply),
+            #[cfg(feature = "test-support")]
+            SessionCommand::SoundCheck(reply) => self.engine.sound_check(reply),
+            #[cfg(feature = "test-support")]
             SessionCommand::SimulateFullReconnect => self.engine.simulate_full_reconnect(),
             #[cfg(feature = "test-support")]
             SessionCommand::SimulateConnectionLoss => self.engine.simulate_connection_loss(),
@@ -2322,6 +2373,71 @@ mod tests {
             connection_phase(Connection::Connected, true, false, true),
             Phase::Connected
         );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[allow(clippy::unwrap_used)]
+    fn source_discovery_polled_by_a_window_uses_the_client_runtime() {
+        struct RuntimeCapture;
+        impl ScreenCapture for RuntimeCapture {
+            fn access(&self) -> ScreenAccess {
+                ScreenAccess::AskOnStart
+            }
+            fn request_access(&self) {}
+            fn open_settings(&self) {}
+            fn sources(&self) -> Pending<Result<ShareSources, CaptureError>> {
+                Box::pin(async {
+                    if tokio::runtime::Handle::try_current().is_err() {
+                        return Err(CaptureError::Failed(
+                            "source discovery has no client runtime".into(),
+                        ));
+                    }
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                    Ok(ShareSources::default())
+                })
+            }
+            fn start(
+                &self,
+                _: CaptureRequest,
+                _: Arc<dyn crate::share::CaptureSink>,
+            ) -> Pending<Result<crate::share::CaptureStream, CaptureError>> {
+                Box::pin(async { Err(CaptureError::Unsupported) })
+            }
+        }
+        assert!(tokio::runtime::Handle::try_current().is_err());
+        let directory = tempfile::Builder::new()
+            .prefix("junto-linux-source-runtime-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let client = Client::open(junto_client_core::ClientOptions::new(
+            directory.path().join("client"),
+        ))
+        .unwrap();
+        let calls = Calls::new(
+            client,
+            MediaOptions {
+                camera: Arc::new(crate::camera::synthetic::SyntheticCamera::new()),
+                host: Arc::new(crate::audio::synthetic::SyntheticHost::with_tone(440.0)),
+                permission: Arc::new(crate::permission::SystemPermission),
+                capture: Arc::new(RuntimeCapture),
+                timing: CallTiming::default(),
+            },
+        );
+        let mut reading = calls.share_sources();
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        let started = std::time::Instant::now();
+        loop {
+            if let std::task::Poll::Ready(result) = reading.as_mut().poll(&mut context) {
+                assert_eq!(result, Ok(ShareSources::default()));
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "source discovery did not finish"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     #[tokio::test(start_paused = true)]

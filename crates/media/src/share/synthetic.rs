@@ -110,6 +110,8 @@ impl SyntheticCapture {
             state: Arc::new(Mutex::new(State {
                 access: ScreenAccess::Allowed,
                 sources: ShareSources {
+                    portal: Vec::new(),
+                    system_sound: true,
                     displays: vec![DisplaySource {
                         id: 1,
                         width: 1280,
@@ -246,7 +248,7 @@ impl ScreenCapture for SyntheticCapture {
     fn sources(&self) -> Pending<Result<ShareSources, CaptureError>> {
         let state = self.lock();
         let result = match state.access {
-            ScreenAccess::Allowed => Ok(state.sources.clone()),
+            ScreenAccess::Allowed | ScreenAccess::AskOnStart => Ok(state.sources.clone()),
             ScreenAccess::NotAllowed => Err(CaptureError::NotAllowed),
         };
         Box::pin(async move { result })
@@ -271,6 +273,9 @@ impl ScreenCapture for SyntheticCapture {
                 return Err(error);
             }
             let source = match request.picture {
+                PictureSource::Portal(kind) => {
+                    state.sources.portal.contains(&kind).then_some((1280, 720))
+                }
                 PictureSource::Display(id) => state
                     .sources
                     .displays

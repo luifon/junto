@@ -12,6 +12,7 @@ use super::host::Format;
 use super::level::{LevelCell, Speaking};
 use super::processing::Processor;
 use super::rate::Span;
+use super::recent::Recent;
 use super::{FRAME_SAMPLES, SAMPLE_RATE, to_i16};
 
 /// What the engine and the thread of the input device share.
@@ -29,6 +30,18 @@ pub struct CaptureLink {
     pub sent: LevelCell,
     speaking: AtomicBool,
     dropped: AtomicU64,
+    /// The frames that the thread of the device made.
+    pub captured: Recent,
+    /// The frames that the media connection took.
+    pub taken: Taken,
+}
+
+/// The frames that the media connection took: with the sound of the microphone, and as
+/// silence while the gate was closed.
+#[derive(Debug, Default)]
+pub struct Taken {
+    pub sound: Recent,
+    pub silence: Recent,
 }
 
 impl CaptureLink {
@@ -79,11 +92,26 @@ pub struct Frame {
 pub struct FrameQueue {
     link: Arc<CaptureLink>,
     frames: mpsc::Receiver<Frame>,
+    /// The frame that `next` gave last was silence.
+    silent: bool,
 }
 
 impl FrameQueue {
     pub fn new(link: Arc<CaptureLink>, frames: mpsc::Receiver<Frame>) -> Self {
-        Self { link, frames }
+        Self {
+            link,
+            frames,
+            silent: false,
+        }
+    }
+
+    /// The media connection took the frame that `next` gave last.
+    pub fn taken(&self) {
+        if self.silent {
+            self.link.taken.silence.count();
+        } else {
+            self.link.taken.sound.count();
+        }
     }
 
     /// The next frame for the media connection. A frame that waited is sent as silence
@@ -95,7 +123,8 @@ impl FrameQueue {
             mut samples,
             closures,
         } = self.frames.recv().await?;
-        if !self.link.is_open() || closures != self.link.closures() {
+        self.silent = !self.link.is_open() || closures != self.link.closures();
+        if self.silent {
             samples.fill(0);
         }
         Some(samples)
@@ -186,6 +215,7 @@ impl CaptureChain {
     }
 
     fn send(&mut self, mut frame: Vec<i16>) {
+        self.link.captured.count();
         self.processor.capture(&mut frame);
         self.link.input.frame(&frame);
         // Read before the gate: a closure after this line makes the frame an old one.

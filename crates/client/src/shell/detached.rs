@@ -14,6 +14,27 @@ use gpui::{
 use gpui_base::Root;
 use junto_client_core::call_window::CallWindowSettings;
 
+/// On Linux the window manager takes the request to keep a window above the windows of
+/// other programs at any time, and the window kind of gpui does not make that request
+/// (ADR 0507): the call window keeps its kind and is not opened again for the choice. On
+/// the other systems the kind of the window decides, and the window is opened again with
+/// the other kind (ADR 0772).
+const ASKS_WINDOW_MANAGER: bool = cfg!(target_os = "linux");
+
+/// Asks the system to keep the call window above other windows, or to stop. Nothing of the
+/// call depends on the answer.
+fn ask_above(window: &mut Window, above: bool, cx: &mut App) {
+    match crate::window_level::keep_above(window, above, cx) {
+        crate::window_level::KeepAbove::Applied => {}
+        crate::window_level::KeepAbove::Unsupported => {
+            tracing::warn!("the window system keeps no window above the others");
+        }
+        crate::window_level::KeepAbove::Failed(failure) => {
+            tracing::warn!(%failure, "the call window was not kept above the others");
+        }
+    }
+}
+
 pub fn open(state: Entity<AppState>, cx: &mut App) {
     if state.read(cx).is_call_detached() {
         return;
@@ -58,7 +79,7 @@ pub fn open(state: Entity<AppState>, cx: &mut App) {
             display_id: display.map(|display| display.id()),
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: Some(size(px(480.0), px(320.0))),
-            kind: if saved.keep_on_top {
+            kind: if saved.keep_on_top && !ASKS_WINDOW_MANAGER {
                 WindowKind::Floating
             } else {
                 WindowKind::Normal
@@ -75,6 +96,9 @@ pub fn open(state: Entity<AppState>, cx: &mut App) {
                 closing.update(cx, |state, cx| state.closed_call_window(cx));
                 true
             });
+            if ASKS_WINDOW_MANAGER && saved.keep_on_top {
+                ask_above(window, true, cx);
+            }
             let shell = cx.new(|cx| {
                 let mut shell = Shell::new_window(held, true, window, cx);
                 shell._subscriptions.push(cx.observe_window_bounds(
@@ -87,7 +111,8 @@ pub fn open(state: Entity<AppState>, cx: &mut App) {
                                 y: Some(f32::from(bounds.origin.y) as i32),
                                 width: f32::from(bounds.size.width) as u32,
                                 height: f32::from(bounds.size.height) as u32,
-                                keep_on_top: saved.keep_on_top,
+                                // The choice can change while this window is open.
+                                keep_on_top: this.state.read(cx).call_window_settings().keep_on_top,
                             };
                             this.state
                                 .update(cx, |state, cx| state.save_call_window(settings, cx));
@@ -155,7 +180,9 @@ impl Shell {
             .items_center()
             .gap(u(6.0))
             .p(u(8.0))
-            .child(
+            // The choice is offered only where the system can keep a window above the
+            // others (ADR 0507).
+            .children(crate::window_level::offered(cx).then(|| {
                 Button::new("call-on-top")
                     .icon(crate::assets::Icon::Pin)
                     .tooltip(text::KEEP_ON_TOP)
@@ -165,8 +192,13 @@ impl Shell {
                         ButtonKind::Default
                     })
                     .selector("call-on-top")
-                    .on_click(cx.listener(move |_, _, _, cx| {
+                    .on_click(cx.listener(move |_, _, window, cx| {
                         let state = state.clone();
+                        if ASKS_WINDOW_MANAGER {
+                            state.update(cx, |state, cx| state.set_call_on_top(!top, cx));
+                            ask_above(window, !top, cx);
+                            return;
+                        }
                         cx.defer(move |cx| {
                             state.update(cx, |state, cx| {
                                 state.set_call_on_top(!top, cx);
@@ -174,8 +206,8 @@ impl Shell {
                             });
                             open(state, cx);
                         });
-                    })),
-            )
+                    }))
+            }))
             .child(self.return_call_button(cx))
             .child(
                 Button::new("call-fullscreen")

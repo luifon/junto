@@ -4,7 +4,7 @@
 
 Accepted, pending step 0
 
-Open: sound capture on Windows was not tested, so the sound choices of Windows are not decided. On macOS every capture ran from a program that used the permission of the terminal application that started it; a capture with the permission of the product's own application bundle was not run (`docs/step-0/README.md`, test 1). The macOS capture of the product is built (ADR 0736) and was not run by an automated test; the capture of Linux is not built in the product yet.
+Open: sound capture on Windows was not tested, so the sound choices of Windows are not decided. On macOS every capture ran from a program that used the permission of the terminal application that started it; a capture with the permission of the product's own application bundle was not run (`docs/step-0/README.md`, test 1). The macOS capture of the product is built (ADR 0736) and was not run by an automated test. ADR 0751 records the Linux product implementation and its verification status.
 
 ## Context
 
@@ -55,7 +55,7 @@ macOS:
 
 Linux:
 
-- The capture uses PipeWire directly. Junto creates one capture stream and links the output ports of the chosen playback streams to it. It keeps the links up to date from the events of the PipeWire registry, so a stream that starts later is linked and a removed stream is dropped. No session-manager policy, portal or external tool takes part.
+- Sound capture uses PipeWire directly. Junto creates one capture stream and links the output ports of the chosen playback streams to it. It keeps the links up to date from the events of the PipeWire registry, so a stream that starts later is linked and a removed stream is dropped. No session-manager policy, portal or external tool selects these sound links. Picture capture uses the desktop portal and its restricted PipeWire connection (ADR 0751).
 - Choices offered: this application, all system sound, none.
 - "This application" lists the applications that play sound at that moment, from the clients of the playback streams. On Wayland an application cannot read which process owns the window of another application, so the person chooses the application from this list also for a share of one window. This follows from the Wayland protocol and was not run.
 - An application is identified by the application identifier of its sandbox when PipeWire reports one, and otherwise by its binary name and its application name. The process identifier is not used: a sandboxed application reports the identifier inside its sandbox, two sandboxed applications reported the same value, and a rule that used it excluded the wrong application. The node identifier is not used either, because PipeWire reuses it.

@@ -3814,9 +3814,11 @@ dependencies = [
  "dirs",
  "emojis",
  "futures-channel",
+ "futures-util",
  "gpui-base",
  "gpui-pre",
  "gpui-pre-platform",
+ "gpui-pre-wgpu",
  "iana-time-zone",
  "image",
  "junto-client",
@@ -3824,6 +3826,7 @@ dependencies = [
  "junto-media",
  "junto-server",
  "objc2-foundation 0.3.2",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "sqlx",
@@ -3836,6 +3839,8 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "x11rb",
+ "zbus",
 ]
 
 [[package]]
@@ -3873,6 +3878,7 @@ name = "junto-media"
 version = "0.1.0"
 dependencies = [
  "block2 0.6.2",
+ "cc",
  "core-foundation 0.10.1",
  "core-video",
  "cpal",
@@ -3889,6 +3895,9 @@ dependencies = [
  "objc2-core-media",
  "objc2-foundation 0.3.2",
  "objc2-screen-capture-kit",
+ "pipewire",
+ "rtrb",
+ "serde",
  "sqlx",
  "tempfile",
  "thiserror 2.0.21",
@@ -3897,6 +3906,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "zbus",
 ]
 
 [[package]]
@@ -7973,6 +7983,7 @@ dependencies = [
  "signal-hook-registry",
  "socket2",
  "tokio-macros",
+ "tracing",
  "windows-sys 0.61.2",
 ]
 
@@ -9901,6 +9912,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_repr",
+ "tokio",
  "tracing",
  "uds_windows",
  "uuid",
