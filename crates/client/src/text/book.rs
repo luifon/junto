@@ -60,7 +60,13 @@ pub const CHECKING: &str = "Checking…";
 pub const NO_INSTALL: &str = "This version of Junto does not install updates by itself.";
 
 pub fn this_build(build: Version) -> String {
-    format!("This is Junto {build}.")
+    format!(
+        "This is Junto {}.",
+        junto_client_core::release_configuration::label(
+            &build.to_string(),
+            junto_client_core::releases::TEST_CONFIGURATION
+        )
+    )
 }
 
 /// The state of the update check as the settings state it.
@@ -71,6 +77,8 @@ pub fn check_shown(check: &CheckShown) -> String {
         CheckShown::Current => CURRENT.to_owned(),
         CheckShown::Available { version, .. } => update_available(*version),
         CheckShown::Failed => CHECK_FAILED.to_owned(),
+        CheckShown::Expired => EXPIRED.to_owned(),
+        CheckShown::UntrustedKeys => UNTRUSTED_KEYS.to_owned(),
     }
 }
 
@@ -81,6 +89,20 @@ pub fn needs_update(detail: &str, available: Option<Version>) -> String {
         Some(version) => format!("{detail} {}", update_available(version)),
         None => detail.to_owned(),
     }
+}
+
+pub const EXPIRED: &str = "No valid freshness statement is available. Check the system clock and try again after the source is refreshed. Try again when it has been refreshed.";
+pub const UNTRUSTED_KEYS: &str = "The update information is not signed by a key this version trusts. This version does not update itself. Take a newer version only from a source you have verified with whoever runs your server.";
+pub const MOVE_TO_UPDATE: &str =
+    "Move Junto to a writable directory of your account before updating.";
+pub const UPDATE: &str = "Update";
+pub const INSTALL_UPDATE: &str = "Install update";
+pub const INSTALLING: &str = "Downloading and verifying the update…";
+pub const INSTALLED: &str = "Update installed. Quit Junto and reopen it to use the new version. The previous version is kept for rollback.";
+pub const INSTALL_STOPPED: &str =
+    "The update task stopped. Check the installed version before trying again.";
+pub fn install_failed(error: &str) -> String {
+    format!("The update failed: {error}.")
 }
 
 #[cfg(test)]

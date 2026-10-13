@@ -4,7 +4,7 @@
 
 Accepted, pending step 0
 
-Open: the packaged install by the steps of the install instructions was not run (`docs/step-0/README.md`, test 8). After an update only the permission status was read; a microphone or screen capture after an update was not run. The identity of a signed build across updates is tested (test 4).
+Open: two certificate-signed product versions were built, with checks of local-source discovery, installation, equal designated requirements, retention of the previous version and rollback (ADRs 0724–0726). The product install on a clean system by the steps of the install instructions was not run (`docs/step-0/README.md`, test 8). Product bundle startup and real notifications were not run. After an update only the permission status was read in step 0; a microphone or screen capture after an update was not run. The identity of a signed build across updates is tested (test 4).
 
 ## Context
 

@@ -4,7 +4,7 @@
 
 Accepted, pending step 0
 
-Open: the packaged install on a clean system was not run on any system, and no package was built (`docs/step-0/README.md`, test 8). No test of step 0 has run on Windows.
+Open: certificate-signed macOS product bundles and first-install ZIPs were built, with update and rollback tests in a temporary directory (ADRs 0725–0726). The packaged install on a clean system was not run on any system (`docs/step-0/README.md`, test 8). No test of step 0 has run on Windows.
 
 ## Context
 

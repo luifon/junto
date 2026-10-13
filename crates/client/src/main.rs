@@ -23,6 +23,7 @@ options:
                            JUNTO_DATA_DIR, then the directory of the user.
   --scale <percent>        the interface scale of this start, from 90 to 150
   --no-activate            open the window without bringing it to the front
+  --rollback-update        restore the verified previous archive, then exit
   --version                print the version
   --help                   print this text
 
@@ -36,6 +37,7 @@ struct Arguments {
 enum Parsed {
     Run(Arguments),
     Print(String),
+    Rollback,
 }
 
 fn parse(mut values: impl Iterator<Item = String>) -> Result<Parsed, String> {
@@ -57,7 +59,10 @@ fn parse(mut values: impl Iterator<Item = String>) -> Result<Parsed, String> {
                 arguments.start.scale_percent = Some(percent);
             }
             "--no-activate" => arguments.start.activate = false,
-            "--version" => return Ok(Parsed::Print(env!("CARGO_PKG_VERSION").to_owned())),
+            "--rollback-update" => return Ok(Parsed::Rollback),
+            "--version" => {
+                return Ok(Parsed::Print(junto_client_core::releases::build_label()));
+            }
             "--help" | "-h" => return Ok(Parsed::Print(USAGE.to_owned())),
             other => return Err(format!("unknown argument: {other}")),
         }
@@ -89,6 +94,20 @@ fn data_dir(chosen: Option<PathBuf>) -> Result<PathBuf, String> {
 fn main() -> ExitCode {
     let arguments = match parse(std::env::args().skip(1)) {
         Ok(Parsed::Run(arguments)) => arguments,
+        Ok(Parsed::Rollback) => {
+            #[cfg(target_os = "macos")]
+            let result = junto_client_core::releases::macos::MacInstaller::running()
+                .and_then(|installer| installer.rollback());
+            #[cfg(not(target_os = "macos"))]
+            let result: Result<(), &str> = Err("rollback is not supported on this system");
+            return match result {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("{error}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
         Ok(Parsed::Print(text)) => {
             println!("{text}");
             return ExitCode::SUCCESS;
@@ -107,7 +126,14 @@ fn main() -> ExitCode {
         .with_max_level(level)
         .init();
     let client = data_dir(arguments.data_dir).and_then(|directory| {
-        Client::open(ClientOptions::new(directory)).map_err(|error| error.to_string())
+        let mut options = ClientOptions::new(directory);
+        options.update_source = junto_client_core::releases::HttpSource::compiled()
+            .map_err(|error| error.to_string())?
+            .map(|source| {
+                std::sync::Arc::new(source)
+                    as std::sync::Arc<dyn junto_client_core::updates::UpdateSource>
+            });
+        Client::open(options).map_err(|error| error.to_string())
     });
     let client = match client {
         Ok(client) => client,

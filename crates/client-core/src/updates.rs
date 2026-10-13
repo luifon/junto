@@ -42,9 +42,9 @@ pub struct InvalidVersion;
 impl Version {
     /// The version of the package that this build was made from.
     pub const THIS_BUILD: Self = Self::new(
-        number(env!("CARGO_PKG_VERSION_MAJOR")),
-        number(env!("CARGO_PKG_VERSION_MINOR")),
-        number(env!("CARGO_PKG_VERSION_PATCH")),
+        number(env!("JUNTO_BUILD_MAJOR")),
+        number(env!("JUNTO_BUILD_MINOR")),
+        number(env!("JUNTO_BUILD_PATCH")),
     );
 
     pub const fn new(major: u32, minor: u32, patch: u32) -> Self {
@@ -187,6 +187,10 @@ pub enum UpdateError {
     Unreachable,
     #[error("the answer of the source of releases cannot be used")]
     Invalid,
+    #[error("the release information has expired")]
+    Expired,
+    #[error("this build trusts none of the release signing keys")]
+    UntrustedKeys,
 }
 
 pub type NewestFuture = Pin<Box<dyn Future<Output = Result<Release, UpdateError>> + Send>>;
@@ -209,6 +213,8 @@ pub enum UpdateState {
     /// No check has succeeded. A check that fails after one that succeeded leaves the
     /// answer of that one.
     Failed,
+    Expired,
+    UntrustedKeys,
 }
 
 struct Shared {
@@ -236,6 +242,13 @@ impl Shared {
         let found = match answer {
             Ok(release) if release.version > self.build => Some(UpdateState::Available(release)),
             Ok(_) => Some(UpdateState::Current),
+            Err(UpdateError::Expired) => Some(UpdateState::Expired),
+            Err(UpdateError::UntrustedKeys) => {
+                tracing::warn!(
+                    "this build can no longer update automatically; install the current release"
+                );
+                Some(UpdateState::UntrustedKeys)
+            }
             Err(error) => {
                 tracing::debug!(%error, "the update check failed");
                 None
