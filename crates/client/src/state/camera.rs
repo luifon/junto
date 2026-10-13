@@ -9,33 +9,40 @@ impl AppState {
         self.calls.view()
     }
 
-    pub fn toggle_camera(&mut self, cx: &mut Context<Self>) {
-        if self.calls.view().call.is_some_and(|call| {
-            matches!(
-                call.camera,
-                junto_media::camera::CameraState::Starting
-                    | junto_media::camera::CameraState::Running
-            )
-        }) {
-            self.calls.stop_camera();
-        } else {
-            self.calls
-                .start_camera(self.known.media.voice.camera_device.clone());
+    /// What the camera control does as it is drawn now: it stops a camera that starts or
+    /// runs, and starts one at the seat of the call. Absent without a call.
+    pub fn camera_action(&self) -> Option<CameraAction> {
+        self.media_calls()
+            .call
+            .as_ref()
+            .map(CameraAction::drawn_for)
+    }
+
+    /// Does what the camera control showed when it was drawn. A start for another call or
+    /// seat than the one of the device now starts nothing (ADR 0788).
+    pub fn use_camera(&mut self, action: &CameraAction, cx: &mut Context<Self>) {
+        match action {
+            CameraAction::Stop => self.calls.stop_camera(),
+            CameraAction::Start(seat) => self
+                .calls
+                .start_camera_in(seat, self.known.media.voice.camera_device.clone()),
         }
         cx.notify();
     }
+
     pub fn choose_camera(&mut self, device: Option<String>, cx: &mut Context<Self>) {
-        let running = self.calls.view().call.is_some_and(|c| {
-            matches!(
-                c.camera,
-                junto_media::camera::CameraState::Running
-                    | junto_media::camera::CameraState::Starting
-            )
-        });
+        // A camera that runs starts again with the chosen device, at the seat where it
+        // runs.
+        let running = self
+            .calls
+            .view()
+            .call
+            .filter(camera_is_on)
+            .map(|call| call.seat());
         self.change_voice(cx, move |voice| voice.camera_device.clone_from(&device));
-        if running {
+        if let Some(seat) = running {
             self.calls
-                .start_camera(self.known.media.voice.camera_device.clone());
+                .start_camera_in(&seat, self.known.media.voice.camera_device.clone());
         }
     }
     pub fn camera_choices(&self) -> Vec<view::DeviceChoice> {
@@ -62,5 +69,24 @@ impl AppState {
             });
         }
         choices
+    }
+}
+
+fn camera_is_on(call: &ActiveCall) -> bool {
+    matches!(
+        call.camera,
+        junto_media::camera::CameraState::Starting | junto_media::camera::CameraState::Running
+    )
+}
+
+impl CameraAction {
+    /// What the camera control of a call does: it stops a camera that starts or runs, and
+    /// starts one at the seat of the call.
+    pub fn drawn_for(call: &ActiveCall) -> Self {
+        if camera_is_on(call) {
+            Self::Stop
+        } else {
+            Self::Start(call.seat())
+        }
     }
 }

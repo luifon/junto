@@ -11,6 +11,7 @@ use gpui::{
     StyledText, Window, canvas, div, img, prelude::FluentBuilder,
 };
 use junto_client_core::protocol::call::ShareAudio;
+use junto_media::calls::{ActiveCall, CallsView, Seat};
 use junto_media::engine::ShareId;
 use junto_media::share::picture::PictureFrame;
 use junto_media::share::{
@@ -59,10 +60,13 @@ pub(crate) struct SharePicker {
     scroll: ScrollHandle,
     /// Counts the reads of the lists. The answer of an earlier read is not used.
     read: u64,
+    /// The call and the seat that the dialog was opened for. What the person chooses in it
+    /// is shared there and nowhere else (ADR 0788).
+    seat: Seat,
 }
 
 impl SharePicker {
-    fn new(access: ScreenAccess, listed: Listed, read: u64) -> Self {
+    fn new(access: ScreenAccess, listed: Listed, read: u64, seat: Seat) -> Self {
         Self {
             access,
             listed,
@@ -71,7 +75,13 @@ impl SharePicker {
             application: None,
             scroll: ScrollHandle::new(),
             read,
+            seat,
         }
+    }
+
+    /// True while the device is in the call, at the seat, that the dialog was opened for.
+    pub(crate) fn belongs_to(&self, calls: &CallsView) -> bool {
+        calls.call.as_ref().map(ActiveCall::seat).as_ref() == Some(&self.seat)
     }
 
     /// Takes the picture that the person picked. The sound of one application names an
@@ -277,10 +287,9 @@ impl Shell {
     /// The share button of the strip of the call: it opens the dialog, or ends the share
     /// that runs.
     pub(crate) fn toggle_share(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The button does what it shows: the view that the window draws decides.
         let sharing = self
-            .state
-            .read(cx)
-            .view()
+            .drawn_view(cx)
             .call
             .is_some_and(|strip| strip.share != crate::state::view::OwnShare::Off);
         if sharing {
@@ -294,17 +303,30 @@ impl Shell {
     /// permission of the system the dialog tells how the person gives it, and nothing is
     /// read: the system would show its own question (ADR 0736).
     pub(crate) fn open_share_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The dialog belongs to the call that the window shows when the person opens it.
+        let Some(seat) = self.drawn_view(cx).controls.seat else {
+            return;
+        };
+        let now = self.state.read(cx).media_calls().call;
+        if now.as_ref().map(ActiveCall::seat).as_ref() != Some(&seat) {
+            // The device is in another call than the one that is drawn, or in none.
+            if now.is_some() {
+                let told = text::unused_action(junto_media::calls::Unused::Share);
+                self.state.update(cx, |state, cx| state.tell_call(told, cx));
+            }
+            return;
+        }
         let calls = self.state.read(cx).calls().clone();
         self.share_reads += 1;
         let read = self.share_reads;
         if !calls.can_share() {
             let listed = Listed::Failed(CaptureError::Unsupported);
-            let picker = SharePicker::new(ScreenAccess::NotAllowed, listed, read);
+            let picker = SharePicker::new(ScreenAccess::NotAllowed, listed, read, seat);
             self.open_layer(Layer::SharePicker(picker), window, cx);
             return;
         }
         let access = calls.screen_access();
-        let picker = SharePicker::new(access, Listed::Reading, read);
+        let picker = SharePicker::new(access, Listed::Reading, read, seat);
         self.open_layer(Layer::SharePicker(picker), window, cx);
         if access == ScreenAccess::NotAllowed {
             return;
@@ -387,13 +409,37 @@ impl Shell {
         }
     }
 
-    /// Starts the share that the dialog describes, and closes the dialog.
-    fn start_chosen_share(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((picture, sound)) = self.picker().and_then(|picker| picker.chosen()) else {
+    /// Starts the share that the dialog describes at the seat that the dialog was opened
+    /// for, and closes the dialog, as a click on its button does.
+    pub fn start_chosen_share(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(picker) = self.picker() else {
             return;
         };
+        let Some((picture, sound)) = picker.chosen() else {
+            return;
+        };
+        let seat = picker.seat.clone();
         self.state
-            .update(cx, |state, _| state.start_share(picture, sound));
+            .update(cx, |state, _| state.start_share(&seat, picture, sound));
+        self.close_layer(window, cx);
+    }
+
+    /// Closes the dialog of a share when the device is not in the call, at the seat, that
+    /// the dialog was opened for. When the device is in another call or at another seat,
+    /// the person is told that nothing is shared.
+    pub(crate) fn drop_stale_share_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Layer::SharePicker(picker) = &self.layer else {
+            return;
+        };
+        let calls = self.state.read(cx).media_calls();
+        if picker.belongs_to(&calls) {
+            return;
+        }
+        if calls.call.is_some() {
+            self.state.update(cx, |state, cx| {
+                state.tell_call(text::SHARE_DIALOG_CLOSED, cx)
+            });
+        }
         self.close_layer(window, cx);
     }
 
@@ -1285,6 +1331,11 @@ impl Shell {
 
 #[cfg(test)]
 mod tests {
+    use junto_client_core::protocol::call::CallPlace;
+    use junto_client_core::protocol::ids::{ChannelId, ServerId, WorkspaceId};
+    use junto_media::calls::{CallTarget, Phase};
+    use junto_media::engine::{MicrophoneState, OutputState, ShareState};
+    use junto_media::permission::MicrophoneAccess;
     use junto_media::share::{ApplicationSource, DisplaySource, WindowSource};
 
     use super::*;
@@ -1316,7 +1367,68 @@ mod tests {
                 name: "Player".to_owned(),
             }],
         };
-        SharePicker::new(ScreenAccess::Allowed, Listed::Sources(sources), 1)
+        SharePicker::new(ScreenAccess::Allowed, Listed::Sources(sources), 1, seat())
+    }
+
+    fn seat() -> Seat {
+        Seat {
+            target: CallTarget {
+                server_id: ServerId::generate(),
+                place: CallPlace::Channel {
+                    workspace_id: WorkspaceId::generate(),
+                    channel_id: ChannelId::generate(),
+                },
+            },
+            identity: "seat".to_owned(),
+        }
+    }
+
+    fn in_call(seat: &Seat) -> CallsView {
+        CallsView {
+            call: Some(ActiveCall {
+                camera: junto_media::camera::CameraState::Off,
+                cameras: Vec::new(),
+                target: seat.target,
+                identity: seat.identity.clone(),
+                phase: Phase::Connected,
+                interrupted_at: None,
+                microphone: MicrophoneState::Running,
+                access: MicrophoneAccess::Allowed,
+                input_device: None,
+                output: OutputState::Running,
+                output_device: None,
+                microphone_block: None,
+                sound_block: None,
+                share: ShareState::Off,
+                shares: Vec::new(),
+                watched: None,
+            }),
+            ..CallsView::default()
+        }
+    }
+
+    #[test]
+    fn a_share_dialog_belongs_to_the_call_and_the_seat_of_its_opening() {
+        let picker = picker();
+        let seat = picker.seat.clone();
+        assert!(picker.belongs_to(&in_call(&seat)));
+        // A token for the same seat keeps the dialog: the phase is another one.
+        let mut reconnecting = in_call(&seat);
+        reconnecting.call.as_mut().unwrap().phase = Phase::Reconnecting;
+        assert!(picker.belongs_to(&reconnecting));
+        // A moderator moved the person, or another window joined another call.
+        let moved = Seat {
+            target: self::seat().target,
+            ..seat.clone()
+        };
+        assert!(!picker.belongs_to(&in_call(&moved)));
+        // The same call at a new seat.
+        let replaced = Seat {
+            identity: "seat-2".to_owned(),
+            ..seat
+        };
+        assert!(!picker.belongs_to(&in_call(&replaced)));
+        assert!(!picker.belongs_to(&CallsView::default()));
     }
 
     #[test]

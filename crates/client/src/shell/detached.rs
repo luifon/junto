@@ -249,9 +249,15 @@ impl Shell {
                     }
                 }
                 .selector("detached-microphone")
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.state.update(cx, |state, _| state.toggle_microphone())
-                })),
+                .on_click({
+                    // The control does what it shows now, also when the call
+                    // is another one at the click (ADR 0788).
+                    let action = view.controls.microphone_action.clone();
+                    cx.listener(move |this, _, _, cx| {
+                        this.state
+                            .update(cx, |state, _| state.use_microphone(&action));
+                    })
+                }),
             )
             .child(
                 Button::new("detached-sound")
@@ -271,9 +277,12 @@ impl Shell {
                         crate::assets::Icon::Phones
                     })
                     .selector("detached-sound")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.state.update(cx, |state, _| state.toggle_sound())
-                    })),
+                    .on_click({
+                        let off = !view.controls.sound_off;
+                        cx.listener(move |this, _, _, cx| {
+                            this.state.update(cx, |state, _| state.set_sound_off(off));
+                        })
+                    }),
             );
         let controls = if let Some(panel) = view.workspace().and_then(|w| w.call.as_ref()) {
             controls.children(self.render_room_controls(&panel.room, &theme, cx))

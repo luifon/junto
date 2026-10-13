@@ -196,3 +196,102 @@ fn only_the_window_drawing_the_call_keeps_camera_pictures(cx: &mut TestAppContex
     });
     window.click("leave-call");
 }
+
+/// ADR 0788: the camera control does what it showed when it was drawn. A control that
+/// showed a running camera stops, and never starts a camera in another call.
+#[gpui::test]
+#[ignore = "needs PostgreSQL and LiveKit"]
+fn a_rendered_camera_stop_never_starts_a_replacement_call(cx: &mut TestAppContext) {
+    use junto_client::state::CameraAction;
+
+    let world = World::new();
+    let server = world.server_with_media("Camera and move");
+    let admin = world.owner(&server);
+    let caller = admin.caller(&world);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
+    voice_channel(&world, &admin, &mut window, ROOM);
+    let workspace_id = window.view().workspace().unwrap().id;
+    let daily = CallTarget {
+        server_id: admin.handle.id(),
+        place: CallPlace::Channel {
+            workspace_id,
+            channel_id: room(&mut window).id,
+        },
+    };
+    let focus = second_room(&world, &admin, &mut window, "Focus");
+    enter(&world, &caller, focus);
+    window.click_channel(ROOM);
+    window.click("join-call");
+    window.until("connected", |window| {
+        window
+            .view()
+            .call
+            .is_some_and(|call| call.phase == Phase::Connected)
+    });
+    let calls = window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().clone());
+    let camera = |calls: &junto_media::Calls| calls.view().call.unwrap().camera;
+    let drawn = |window: &Window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.camera_action())
+            .unwrap()
+    };
+    let used = |window: &mut Window, action: &CameraAction| {
+        let state = window.state.clone();
+        window.cx.update(|_, cx| {
+            state.update(cx, |state, cx| state.use_camera(action, cx));
+        });
+    };
+    let camera_runs = |window: &mut Window| {
+        window.click("call-camera");
+        window.until("camera running", |_| camera(&calls) == CameraState::Running);
+    };
+    let off = |view: &junto_media::calls::CallsView| {
+        view.call
+            .as_ref()
+            .is_some_and(|call| call.camera == CameraState::Off)
+    };
+
+    // The camera runs in the first call: the control that is drawn stops it. A moderator
+    // moves the person, and the person uses that control.
+    camera_runs(&mut window);
+    let stop = drawn(&window);
+    assert_eq!(stop, CameraAction::Stop);
+    moved_without_a_drawing(&world, &admin, &window, &daily, &focus);
+    used(&mut window, &stop);
+    stays(
+        &mut window,
+        "the camera is off in the call of the destination",
+        off,
+    );
+    assert!(caller.calls.view().call.unwrap().cameras.is_empty());
+    assert!(!window.shows("call-told"));
+
+    // The camera runs, and another window stops it before this one is drawn again.
+    camera_runs(&mut window);
+    let stop = drawn(&window);
+    calls.stop_camera();
+    let deadline = std::time::Instant::now() + PATIENCE;
+    while camera(&calls) != CameraState::Off {
+        assert!(std::time::Instant::now() < deadline, "the camera runs");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    used(&mut window, &stop);
+    stays(&mut window, "a stop does not start the camera", off);
+
+    // The control that is drawn starts the camera in this call. After a move it starts
+    // nothing in the other call, and the person is told.
+    let start = drawn(&window);
+    assert!(matches!(start, CameraAction::Start(_)));
+    moved_without_a_drawing(&world, &admin, &window, &focus, &daily);
+    used(&mut window, &start);
+    window.until("the person is told", |window| {
+        window.shows("call-told") || camera(&calls) != CameraState::Off
+    });
+    stays(&mut window, "the camera is off in the other call", off);
+    assert!(window.shows("call-told"));
+    window.click("leave-call");
+    world.run(caller.calls.leave());
+}

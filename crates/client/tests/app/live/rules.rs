@@ -21,9 +21,11 @@ use junto_client_core::protocol::structure::ChannelKind;
 use junto_media::calls::{CallTarget, EndReason, Outcome, Phase};
 use junto_media::share::{CaptureRequest, PictureSource, ShareQuality, SoundChoice};
 
-use super::{ROOM, enter, occupants, own, own_share, room};
+use super::{ROOM, enter, moved_without_a_drawing, occupants, own, own_share, room, second_room};
 use crate::calls::voice_channel;
-use crate::harness::{Admin, Caller, PATIENCE, Window, World, member};
+use crate::harness::{
+    Admin, Caller, HEARD_DBFS, PATIENCE, WINDOW_TONE_HZ, Window, World, heard, member,
+};
 
 /// One server with the administrator Ada, who is in calls without a window, and the
 /// window of the member Luca.
@@ -1050,4 +1052,145 @@ fn dragging_a_person_invites_or_moves_and_the_keyboard_reaches_the_same_actions(
         });
     scene.world.run(scene.caller.calls.leave());
     scene.window.click("leave-call");
+}
+
+/// ADR 0788: the control "Unmute" of meeting mode, and the microphone control, open the
+/// microphone in the call that they were drawn for and in no other call.
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn a_drawn_unmute_does_not_open_the_microphone_in_a_replacement_call(cx: &mut TestAppContext) {
+    use junto_client::state::view::MicrophoneAction;
+
+    let mut scene = scene(cx);
+    let api = scene.admin.handle.api();
+    let (voice, luca) = (scene.voice, scene.luca);
+    let daily = scene.target;
+    let focus = second_room(&scene.world, &scene.admin, &mut scene.window, "Focus");
+    enter(&scene.world, &scene.caller, daily);
+    scene.join_in_the_window();
+    let calls = scene
+        .window
+        .state
+        .read_with(&scene.window.cx, |state, _| state.calls().clone());
+
+    // Ada runs meeting mode and lets the person speak: the window draws "Unmute" for
+    // this call.
+    scene.ada_starts_a_meeting();
+    scene
+        .window
+        .until("the meeting holds the microphone", |window| {
+            window.view().controls.microphone == MicrophoneButton::Held
+        });
+    scene
+        .world
+        .run(api.unblock_microphone(voice, luca))
+        .unwrap();
+    scene.window.until("the person may speak", |window| {
+        window.shows("may-speak-unmute")
+            && window.view().controls.microphone == MicrophoneButton::Muted
+    });
+    let seat = scene.window.view().controls.seat.unwrap();
+    // A moderator moves the person, and the person uses the control of the first call.
+    moved_without_a_drawing(&scene.world, &scene.admin, &scene.window, &daily, &focus);
+    let state = scene.window.state.clone();
+    scene.window.cx.update(|_, cx| {
+        state.update(cx, |state, _| state.open_microphone(&seat));
+    });
+    scene.window.until("the unmute has its result", |window| {
+        window.shows("call-told") || !calls.view().muted
+    });
+    assert!(
+        calls.view().muted,
+        "the grant of the first call opened the microphone in the call of the destination"
+    );
+    assert!(scene.window.shows("call-told"));
+    scene.window.click("dismiss-call-told");
+
+    // The microphone control is drawn as closed in the call of the destination. After a
+    // move back, it opens nothing.
+    let drawn = scene.window.view().controls.microphone_action;
+    assert!(matches!(drawn, MicrophoneAction::Open(Some(_))));
+    moved_without_a_drawing(&scene.world, &scene.admin, &scene.window, &focus, &daily);
+    let state = scene.window.state.clone();
+    scene.window.cx.update(|_, cx| {
+        state.update(cx, |state, _| state.use_microphone(&drawn));
+    });
+    scene.window.until("the control has its result", |window| {
+        window.shows("call-told") || !calls.view().muted
+    });
+    assert!(calls.view().muted);
+    assert!(scene.window.shows("call-told"));
+    scene.world.run(scene.caller.calls.leave());
+    scene.window.click("leave-call");
+}
+
+/// ADR 0789: the row of the person in the call of this device says what the device does,
+/// also while the server lists the last report of the device.
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn the_own_tile_is_open_while_the_report_of_the_state_waits(cx: &mut TestAppContext) {
+    use crate::support::FaultProxy;
+
+    const REPORT: &str = "/api/v1/call/state";
+    let world = World::new();
+    let server = world.server_with_media("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let admin = world.owner(&server);
+    let caller = admin.caller(&world);
+    // The window reaches the server through the proxy.
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, ROOM);
+    let target = CallTarget {
+        server_id: admin.handle.id(),
+        place: CallPlace::Channel {
+            workspace_id: window.view().workspace().unwrap().id,
+            channel_id: room(&mut window).id,
+        },
+    };
+    let luca = window.view().person.account_id.unwrap();
+    super::turn_processing_off(&mut window);
+    enter(&world, &caller, target);
+    window.click_channel(ROOM);
+    window.click("join-call");
+    window.until("the call is connected", connected);
+    let listed_as_muted = || {
+        caller.handle.live().view().model.and_then(|model| {
+            model
+                .call_at(&target.place)
+                .and_then(|call| call.participant(luca))
+                .map(|own| own.muted)
+        })
+    };
+    // The person closes the microphone, and the server lists the report.
+    window.click("microphone");
+    window.until("the server lists the person as muted", |window| {
+        listed_as_muted() == Some(true)
+            && own(window).is_some_and(|own| own.microphone == Microphone::Closed)
+    });
+
+    // The next report waits on its way to the server. The person opens the microphone.
+    proxy.hold(REPORT);
+    let reports = proxy.seen(REPORT).len();
+    window.click("microphone");
+    window.until("the report is on its way", |_| {
+        proxy.seen(REPORT).len() > reports
+    });
+    window.until("the administrator hears the person", |_| {
+        heard(&caller.sound, WINDOW_TONE_HZ) > HEARD_DBFS
+    });
+    // The server still lists "muted", in its own state and in the state of the window.
+    assert_eq!(listed_as_muted(), Some(true));
+    let shown = own(&mut window).unwrap();
+    assert!(
+        matches!(shown.microphone, Microphone::Open { .. }),
+        "the device sends the microphone, and the tile of the person says {:?}",
+        shown.microphone
+    );
+    assert_eq!(window.view().controls.microphone, MicrophoneButton::Open);
+    proxy.release();
+    window.until("the server lists the open microphone", |_| {
+        listed_as_muted() == Some(false)
+    });
+    world.run(caller.calls.leave());
+    window.click("leave-call");
 }

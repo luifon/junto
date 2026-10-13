@@ -54,7 +54,7 @@ use junto_client_core::transfers::{Download, RecordingDownload, Upload};
 use junto_client_core::voice::{InputMode, ShareResolution, TalkKey, VoiceSettings};
 use junto_client_core::{Client, ServerHandle};
 use junto_media::audio::{DeviceId, Processing, level};
-use junto_media::calls::{CallTarget, Calls, MediaOptions};
+use junto_media::calls::{ActiveCall, CallTarget, Calls, MediaOptions, Seat};
 use junto_media::engine::{Levels, MicrophoneState, ShareId, VoiceConfig};
 use junto_media::permission::MicrophoneAccess;
 use junto_media::share::{CaptureRequest, PictureSource, Resolution, ShareQuality, SoundChoice};
@@ -62,8 +62,8 @@ use junto_media::share::{CaptureRequest, PictureSource, Resolution, ShareQuality
 use crate::text;
 use crate::theme;
 use view::{
-    INPUT_SEGMENTS, Known, LEVEL_SEGMENTS, MediaSnapshot, Selection, ServerSnapshot, ShellView,
-    Shown, ShownLevels,
+    INPUT_SEGMENTS, Known, LEVEL_SEGMENTS, MediaSnapshot, MicrophoneAction, Selection,
+    ServerSnapshot, ShellView, Shown, ShownLevels,
 };
 
 /// The times of the work that the application does by itself.
@@ -673,6 +673,12 @@ impl AppState {
             // own setting in the step before (ADR 0739), so nothing is told then.
             self.pending.call_told = Some(text::MICROPHONE_OPEN_AGAIN.to_owned());
         }
+        if let Some(unused) = view.unused {
+            // An action of the person named another call or seat, and opened nothing
+            // (ADR 0788). The person is told, and the calls put the statement away.
+            self.pending.call_told = Some(text::unused_action(unused).to_owned());
+            self.calls.dismiss_unused();
+        }
         self.known.media.calls = view;
         if entered {
             // The person is in a call: a request to enter another one is withdrawn, so
@@ -703,14 +709,21 @@ impl AppState {
             .map(|call| call.identity.clone())
     }
 
-    /// Starts the share of this device in its call, with the stored resolution and frame
-    /// rate. The result is in the view.
-    pub fn start_share(&mut self, picture: PictureSource, sound: SoundChoice) {
-        self.calls.start_share(CaptureRequest {
+    /// Tells the person something about the call that the person did not ask for.
+    pub fn tell_call(&mut self, told: &str, cx: &mut Context<Self>) {
+        self.pending.call_told = Some(told.to_owned());
+        cx.notify();
+    }
+
+    /// Starts the share of this device at the seat for which the person chose it, with
+    /// the stored resolution and frame rate. The result is in the view.
+    pub fn start_share(&mut self, seat: &Seat, picture: PictureSource, sound: SoundChoice) {
+        let request = CaptureRequest {
             picture,
             sound,
             quality: share_quality(&self.known.media.voice),
-        });
+        };
+        self.calls.start_share_in(seat, request);
     }
 
     /// Ends the share of this device, and puts away the statement that a share ended.
@@ -886,10 +899,11 @@ impl AppState {
         });
     }
 
-    /// Opens the microphone of the person. The person does this after the presenter of
-    /// meeting mode removed the block: the application never opens it by itself.
-    pub fn open_microphone(&mut self) {
-        self.calls.set_muted(false);
+    /// Opens the microphone of the person at the seat that the control was drawn for. The
+    /// person does this after the presenter of meeting mode removed the block: the
+    /// application never opens it by itself.
+    pub fn open_microphone(&mut self, seat: &Seat) {
+        self.calls.unmute_in(Some(seat));
     }
 
     /// Turns meeting mode on in the call of this device, or off (ADR 0505).
@@ -1405,14 +1419,18 @@ impl AppState {
         cx.spawn(async move |_, _| leaving.await).detach();
     }
 
-    /// Closes the microphone of the person, or opens it. The setting holds outside a call
-    /// too, for the next one.
-    pub fn toggle_microphone(&mut self) {
-        self.calls.set_muted(!self.calls.view().muted);
+    /// Does what the microphone control showed when it was drawn. The setting holds
+    /// outside a call too, for the next one.
+    pub fn use_microphone(&mut self, action: &MicrophoneAction) {
+        match action {
+            MicrophoneAction::Close => self.calls.mute(),
+            MicrophoneAction::Open(seat) => self.calls.unmute_in(seat.as_ref()),
+        }
     }
 
-    pub fn toggle_sound(&mut self) {
-        self.calls.set_deafened(!self.calls.view().deafened);
+    /// Turns the sound off or on, as the control showed when it was drawn.
+    pub fn set_sound_off(&mut self, off: bool) {
+        self.calls.set_deafened(off);
     }
 
     /// The push-to-talk key is held or released.
@@ -1420,8 +1438,10 @@ impl AppState {
         self.calls.set_talking(talking);
     }
 
-    pub fn retry_microphone(&mut self, cx: &mut Context<Self>) {
-        self.calls.retry_microphone();
+    pub fn retry_microphone(&mut self, seat: Option<&Seat>, cx: &mut Context<Self>) {
+        if let Some(seat) = seat {
+            self.calls.retry_microphone_in(seat);
+        }
         self.refresh_devices(cx);
     }
 
@@ -2217,6 +2237,14 @@ impl AppState {
         );
         cx.notify();
     }
+}
+
+/// What the camera control does when the person uses it, as it was drawn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CameraAction {
+    Stop,
+    /// Starts the camera at this seat.
+    Start(Seat),
 }
 
 #[derive(Clone)]

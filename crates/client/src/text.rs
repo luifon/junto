@@ -12,7 +12,7 @@ use junto_client_core::protocol::call::{BlockReason, LeaveReason, ShareAudio};
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::version::Incompatibility;
 use junto_client_core::voice::{ShareResolution, TalkKey};
-use junto_media::calls::EndReason;
+use junto_media::calls::{EndReason, Unused};
 use junto_media::permission::MicrophoneAccess;
 use junto_media::share::{CaptureError, ShareKind};
 
@@ -220,6 +220,20 @@ pub const UNMUTE: &str = "Unmute";
 pub const UNMUTE_HELP: &str = "Open your microphone. The app never opens it by itself.";
 pub const MICROPHONE_OPEN_AGAIN: &str = "The block of your microphone ended. Your microphone is open, and the people in the call \
      hear you.";
+pub const SHARE_DIALOG_CLOSED: &str = "The call changed while you chose what to share. Nothing is shared. Open the share dialog \
+     again to share in this call.";
+
+/// What the person is told when an action opened nothing, because the device is in another
+/// call, or at another seat, than the one that the control was drawn for.
+pub fn unused_action(unused: Unused) -> &'static str {
+    match unused {
+        Unused::Microphone => {
+            "The call changed before this took effect. Your microphone was not opened."
+        }
+        Unused::Camera => "The call changed before this took effect. Your camera was not started.",
+        Unused::Share => "The call changed before this took effect. Nothing is shared.",
+    }
+}
 
 /// "Room · Daily": the heading of the settings of the room of a call.
 pub fn room_section(channel: &str) -> String {

@@ -295,6 +295,24 @@ pub struct Shell {
 }
 
 impl Shell {
+    /// The call and the seat of this device in the view that the window draws. A control
+    /// that opens a microphone, a camera or a share holds them from its drawing
+    /// (ADR 0788).
+    pub(crate) fn drawn_seat(&self) -> Option<junto_media::calls::Seat> {
+        self.view
+            .as_ref()
+            .and_then(|view| view.controls.seat.clone())
+    }
+
+    /// The view that the window draws. Before the first drawing it is the view of now.
+    pub(crate) fn drawn_view(&self, cx: &gpui::App) -> ShellView {
+        match &self.view {
+            Some(view) => view.clone(),
+            None if self.detached => self.state.read(cx).call_view(),
+            None => self.state.read(cx).view(),
+        }
+    }
+
     fn call_listener<E: ?Sized>(
         &self,
         cx: &Context<Self>,
@@ -411,6 +429,8 @@ impl Shell {
                 }
             }),
             cx.observe_in(&state, window, |this, state, window, cx| {
+                // A share that is being chosen belongs to one call, in both windows.
+                this.drop_stale_share_picker(window, cx);
                 if this.detached {
                     this.view = Some(state.read(cx).call_view());
                     cx.notify();
@@ -1088,8 +1108,8 @@ impl Shell {
                         .workspace()
                         .is_none_or(|workspace| workspace.call.is_none())
             }
-            // A share belongs to the call of this device.
-            Layer::SharePicker(_) => view.call.is_none(),
+            // The observer of the state closes the dialog of a share by its call and seat.
+            Layer::SharePicker(_) => false,
             // The person left the voice channel, or the channel is no longer shown.
             Layer::PersonMenu(open) => view.person_menu(open.channel_id, open.account_id).is_none(),
             // The message is no longer among the shown ones.

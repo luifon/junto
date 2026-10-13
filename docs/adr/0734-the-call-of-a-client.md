@@ -40,7 +40,7 @@ Whether the place still exists:
 - An event that shows the place, followed by an event that the account is in no call, ends the place at once, also in the first seconds after the join.
 - Otherwise, after the state or an event has shown the place once, or 10 seconds after the join, a live state without the place means that the place has ended.
 - The engine is closed at once, and the person is told why. The reason is the one of the event `own_call_changed`; the client waits for that event for at most 500 ms in all. When the account is in a call with another identity, the reason is that.
-- While this client asks the same server for a place, by a join of the person or for a new token, another identity in the state is its own and ends nothing.
+- While this client asks the same server for a place, by a join of the person or for a new token, another identity on this device in the state is its own and ends nothing. A seat of the account on another device ends the call, and so does an end of the place by a rule of the server (ADR 0785).
 - While the event stream is not live, the state decides nothing.
 - A person who left by an action of their own is told nothing.
 
@@ -54,7 +54,7 @@ Reports:
 Blocks:
 
 - A call starts with the blocks that the server states in its answer to the join, and to a request for a new token (ADR 0510). From the moment the state of the server lists the person, the blocks are the ones of the state.
-- A microphone block closes the microphone and withdraws its track; without the block the microphone returns to the person's own setting. The permission of the participant in the room closes the microphone too (ADR 0733).
+- A microphone block closes the microphone and withdraws its track; without the block the microphone returns to the person's own setting. A block ends on the device when an event has told how it ended (ADR 0785). The permission of the participant in the room closes the microphone too (ADR 0733).
 - A sound block turns the sound off; the person cannot turn it on.
 - In a call that hides who is inside, the answer of the server states no block for a place whose device the server has not seen in the room, and its join token allows pictures only (ADR 0517). The calls keep the sound off from the start of the media connection until the state of the server lists the person with the identity of this place, so a sound block holds from the first moment as in every other call. A listing with the place of another device of the account does not end the wait. While the event stream is not live, the state lists nothing, and the sound stays off. The engine opens the microphone when the media server reports the changed permission (ADR 0733), which the admission check sets when it has seen the device.
 - An answer to a request for a new token that tells no blocks, for the same reason, leaves the blocks that the call holds.
@@ -69,7 +69,7 @@ Reconnect:
 - While the call library restores a connection, the call is shown as reconnecting.
 - When the connection has ended, the calls ask the server for a new token: first after 1 second, then with a doubled wait up to 5 seconds, until the media connection is made, the server ends the place, or the person leaves. The wait grows with each request, whether the server refused it or the media connection with its token failed, and starts at 1 second again when a media connection is made. A server that cannot be reached, a limit, and `media_unavailable` are waited for; another refusal ends the call with its reason.
 - A new token is asked for only while a live state of the server shows the place of this device. A place that the server ended, or has not shown yet, is not asked for, so a person whom a moderator removed does not return by this path.
-- A new token can name a new identity: the earlier place had ended. The call continues with it.
+- A new token can name a new identity: the earlier place had ended. The call continues with it when the server ended the earlier place because no media connection used it. After another end the device gives the new place up (ADR 0785).
 
 Sound settings:
 

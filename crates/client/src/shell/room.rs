@@ -320,9 +320,16 @@ impl Shell {
                             .accessible_label(text::UNMUTE_HELP)
                             .selector("may-speak-unmute")
                             .h(u(28.0))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.state.update(cx, |state, _| state.open_microphone());
-                            })),
+                            .on_click({
+                                // The grant belongs to the call that is drawn (ADR 0788).
+                                let seat = self.drawn_seat();
+                                cx.listener(move |this, _, _, cx| {
+                                    if let Some(seat) = &seat {
+                                        this.state
+                                            .update(cx, |state, _| state.open_microphone(seat));
+                                    }
+                                })
+                            }),
                     )
                     .into_any_element(),
             )
@@ -1307,9 +1314,15 @@ impl Shell {
                             .icon(Icon::Microphone)
                             .label(text::UNMUTE)
                             .selector("may-speak-unmute-notice")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.state.update(cx, |state, _| state.open_microphone());
-                            })),
+                            .on_click({
+                                let seat = view.controls.seat.clone();
+                                cx.listener(move |this, _, _, cx| {
+                                    if let Some(seat) = &seat {
+                                        this.state
+                                            .update(cx, |state, _| state.open_microphone(seat));
+                                    }
+                                })
+                            }),
                     ),
             ));
         }

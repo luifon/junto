@@ -20,6 +20,7 @@ use super::channels::occupant_name;
 use super::room::option_row;
 use super::{Layer, Shell};
 use crate::assets::Icon;
+use crate::state::CameraAction;
 use crate::state::view::{
     CallPanel, CallStrip, ChannelRow, DeviceChoice, INPUT_SEGMENTS, Microphone, MicrophoneLine,
     Occupant, OwnShare, Presence, Relation, ShellView, SoundWarning, VoiceState,
@@ -1122,6 +1123,7 @@ impl Shell {
             audio.microphone,
             MicrophoneLine::NoPermission | MicrophoneLine::Failed
         ) || audio.access == MicrophoneAccess::Refused;
+        let seat = self.drawn_seat();
         ScrollArea::new("call-settings", &self.call_settings_scroll, text::SETTINGS)
             .selector("call-settings")
             .child(camera)
@@ -1166,10 +1168,14 @@ impl Shell {
                                     .label(text::TRY_AGAIN)
                                     .icon(Icon::Retry)
                                     .selector("retry-microphone")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.state
-                                            .update(cx, |state, cx| state.retry_microphone(cx));
-                                    })),
+                                    .on_click({
+                                        let seat = seat.clone();
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.state.update(cx, |state, cx| {
+                                                state.retry_microphone(seat.as_ref(), cx);
+                                            });
+                                        })
+                                    }),
                             ),
                         )
                     })
@@ -1437,6 +1443,16 @@ impl Shell {
             }
             .selector("call-share")
             .on_click(cx.listener(|this, _, window, cx| this.toggle_share(window, cx)));
+            // One reading of the calls gives the look of the camera control and what it
+            // does: the control does what it shows, also when the call is another one at
+            // the click (ADR 0788).
+            let camera_call = self.state.read(cx).media_calls().call;
+            let camera = camera_call.as_ref().map(CameraAction::drawn_for);
+            let camera_on = camera == Some(CameraAction::Stop);
+            let camera_usable = camera_on
+                || camera_call
+                    .as_ref()
+                    .is_some_and(|call| call.phase == junto_media::calls::Phase::Connected);
             div()
                 .flex()
                 .flex_wrap()
@@ -1445,33 +1461,21 @@ impl Shell {
                 .mt(u(7.0))
                 .child(
                     Button::new("call-camera")
-                        .kind(
-                            if self.state.read(cx).media_calls().call.is_some_and(|call| {
-                                matches!(
-                                    call.camera,
-                                    junto_media::camera::CameraState::Running
-                                        | junto_media::camera::CameraState::Starting
-                                )
-                            }) {
-                                ButtonKind::CallOn
-                            } else {
-                                ButtonKind::Call
-                            },
-                        )
+                        .kind(if camera_on {
+                            ButtonKind::CallOn
+                        } else {
+                            ButtonKind::Call
+                        })
                         .icon(Icon::Camera)
                         .tooltip(text::CAMERA)
                         .accessible_label(text::CAMERA)
                         .selector("call-camera")
-                        .disabled(self.state.read(cx).media_calls().call.is_none_or(|call| {
-                            call.phase != junto_media::calls::Phase::Connected
-                                && !matches!(
-                                    call.camera,
-                                    junto_media::camera::CameraState::Starting
-                                        | junto_media::camera::CameraState::Running
-                                )
-                        }))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.state.update(cx, |state, cx| state.toggle_camera(cx))
+                        .disabled(!camera_usable)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(action) = &camera {
+                                this.state
+                                    .update(cx, |state, cx| state.use_camera(action, cx));
+                            }
                         })),
                 )
                 .child(
@@ -1580,6 +1584,7 @@ impl Shell {
             warning,
             SoundWarning::NoMicrophoneAccess | SoundWarning::MicrophoneFailed
         );
+        let seat = self.drawn_seat();
         let shown = match warning {
             SoundWarning::MicrophoneHeld { .. } => Icon::MicrophoneHeld,
             SoundWarning::NoMicrophoneAccess | SoundWarning::MicrophoneFailed => {
@@ -1630,10 +1635,14 @@ impl Shell {
                                     .label(text::TRY_AGAIN)
                                     .icon(Icon::Retry)
                                     .selector("warning-retry-microphone")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.state
-                                            .update(cx, |state, cx| state.retry_microphone(cx));
-                                    })),
+                                    .on_click({
+                                        let seat = seat.clone();
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.state.update(cx, |state, cx| {
+                                                state.retry_microphone(seat.as_ref(), cx);
+                                            });
+                                        })
+                                    }),
                             ),
                         )
                     }),

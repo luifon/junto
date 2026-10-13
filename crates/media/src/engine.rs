@@ -263,8 +263,20 @@ enum Internal {
     SharePictureSize(TrackSid, (u32, u32)),
 }
 
+/// What an engine was asked for, as a test of the calls reads it.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Asked {
+    Controls(Controls),
+    Camera,
+    Microphone,
+    Share,
+}
+
 /// The media connection of one call. Dropping it ends the connection.
 pub struct Engine {
+    #[cfg(test)]
+    asked: Arc<Mutex<Vec<Asked>>>,
     camera_pictures: watch::Receiver<HashMap<ShareId, Arc<crate::camera::CameraFrame>>>,
     commands: mpsc::UnboundedSender<Command>,
     state: watch::Receiver<EngineState>,
@@ -274,7 +286,26 @@ pub struct Engine {
 }
 
 impl Engine {
+    #[cfg(test)]
+    fn asked_for(&self, asked: Asked) {
+        self.asked
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(asked);
+    }
+
+    /// Everything that this engine was asked for, in its order.
+    #[cfg(test)]
+    pub(crate) fn asked(&self) -> Vec<Asked> {
+        self.asked
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
     pub fn start_camera(&self, device: Option<String>) {
+        #[cfg(test)]
+        self.asked_for(Asked::Camera);
         let _ = self.commands.send(Command::StartCamera(device));
     }
     pub fn stop_camera(&self) {
@@ -379,6 +410,8 @@ impl Engine {
         };
         runtime.spawn(actor.run(join, taken, internal_taken));
         Self {
+            #[cfg(test)]
+            asked: Arc::default(),
             camera_pictures: camera_seen,
             commands,
             state: state_seen,
@@ -400,6 +433,8 @@ impl Engine {
 
     /// Starts the share of this device. The result is in [`EngineState::share`].
     pub fn start_share(&self, request: CaptureRequest) {
+        #[cfg(test)]
+        self.asked_for(Asked::Share);
         let _ = self.commands.send(Command::StartShare(request));
     }
 
@@ -446,6 +481,8 @@ impl Engine {
     }
 
     pub fn set_controls(&self, controls: Controls) {
+        #[cfg(test)]
+        self.asked_for(Asked::Controls(controls));
         let _ = self.commands.send(Command::Controls(controls));
     }
 
@@ -471,6 +508,8 @@ impl Engine {
     /// Opens the microphone again after it failed or was refused: the person changed the
     /// permission or connected a device.
     pub fn retry_microphone(&self) {
+        #[cfg(test)]
+        self.asked_for(Asked::Microphone);
         let _ = self.commands.send(Command::RetryMicrophone);
     }
 

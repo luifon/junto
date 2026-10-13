@@ -610,9 +610,15 @@ impl Shell {
                                 .tooltip(text::MICROPHONE_HELD),
                         }
                         .selector("microphone")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.state.update(cx, |state, _| state.toggle_microphone());
-                        })),
+                        .on_click({
+                            // The control does what it shows now, also when the call
+                            // is another one at the click (ADR 0788).
+                            let action = view.controls.microphone_action.clone();
+                            cx.listener(move |this, _, _, cx| {
+                                this.state
+                                    .update(cx, |state, _| state.use_microphone(&action));
+                            })
+                        }),
                     )
                     .child(
                         if view.controls.sound_off {
@@ -627,9 +633,12 @@ impl Shell {
                                 .tooltip(text::SOUND_OUTPUT_ON)
                         }
                         .selector("sound-output")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.state.update(cx, |state, _| state.toggle_sound());
-                        })),
+                        .on_click({
+                            let off = !view.controls.sound_off;
+                            cx.listener(move |this, _, _, cx| {
+                                this.state.update(cx, |state, _| state.set_sound_off(off));
+                            })
+                        }),
                     )
                     .child(
                         Button::new("app-settings")
