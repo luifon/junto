@@ -143,6 +143,7 @@ async fn an_absent_staging_directory_does_not_stop_later_cleanup() {
         .ok::<Upload>(StatusCode::OK);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn one_unreadable_directory_does_not_block_later_staging_cleanup() {
     use std::os::unix::fs::PermissionsExt;

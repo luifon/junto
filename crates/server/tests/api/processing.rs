@@ -497,6 +497,7 @@ async fn an_attempt_after_a_failed_one_finishes_the_recording() {
 }
 
 /// The recorder reports the name of each file. The server never uses it as a path.
+#[cfg(unix)]
 #[tokio::test]
 async fn a_link_in_the_place_of_a_file_is_not_read() {
     let studio = Studio::open().await;
@@ -644,6 +645,7 @@ async fn the_tasks_process_and_transcribe_a_recording_after_its_stop() {
 /// The audio that was saved of a lost job is deleted only when the server has taken it. A
 /// directory of a recording that the server cannot write to keeps the saved files where
 /// they are.
+#[cfg(unix)]
 #[tokio::test]
 async fn saved_audio_that_could_not_be_taken_is_not_deleted() {
     use std::os::unix::fs::PermissionsExt;

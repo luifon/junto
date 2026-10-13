@@ -12,10 +12,11 @@ ADR 0210 gave the action `manage_members` the routes that assign and take server
 
 No role assignment and no unban with a token:
 
-- A request with an access token changes no role assignment and lifts no ban. These five routes are in the reach of no action and refuse every access token with `forbidden`, as every route outside the table does (ADR 0210):
+- A request with an access token changes no role assignment and lifts no ban. These six routes are in the reach of no action and refuse every access token with `forbidden`, as every route outside the table does (ADR 0210):
   - `PUT` and `DELETE /api/v1/accounts/{account_id}/server-roles/{role_id}`;
   - `PUT` and `DELETE /api/v1/workspaces/{workspace_id}/members/{account_id}/roles/{role_id}`;
-  - `DELETE /api/v1/accounts/{account_id}/ban`.
+  - `DELETE /api/v1/accounts/{account_id}/ban`;
+  - `POST /api/v1/workspaces/{workspace_id}/members/{account_id}/removal`.
 - They need a session of an account with the permission. The rule does not depend on the role or on the account: a token gives no role at all, also not a role without permissions, because a channel override can allow a permission to any role.
 
 What `manage_members` still reaches:
@@ -27,6 +28,7 @@ What `manage_members` still reaches:
 What `manage_structure` reaches:
 
 - The routes that change roles and channel overrides, and the route that applies changes of the structure (ADR 0211). A change of the permissions of a role, of an override or of the "everyone" role changes what the holders of that role read, and the deletion of a role removes its denies (ADR 0308). This is the purpose of the action: the setup tool writes the structure of a server with it (ADR 0204).
+- Deleting a role definition, including through the structure document, is different from changing the role assignments of a named account. Definition deletion still checks the creator’s rank and the grant ceiling on the role’s deny overrides (ADRs 0308 and 0309). Adding an existing workspace member preserves its assignments; no member route may replace or delete them with a token.
 - A token with `manage_structure` can therefore change what accounts read. It cannot choose one account: it names roles, and an account gets a role only through a session.
 
 What no token reaches:
@@ -39,4 +41,4 @@ What no token reaches:
 - A leaked token with `manage_structure` can open a private channel to the holders of a role, or to every member, by a change of an override or of a role. The audit log names the token in each of these entries (ADR 0210). An operator who gives this action to a program gives it the structure of the server.
 - A program that assigns roles to accounts cannot use a token. It needs a person with a session, or a later record that adds an action for it with its own rule.
 - The setup tool is not affected: the structure file names no account and no member (ADR 0211).
-- A test gives a token every action and requests each of the five routes; each answers `forbidden`, and the same request with the session of the creator is allowed.
+- A test gives a token every action and requests each of the six routes; each answers `forbidden`, and the same request with the session of the creator is allowed.

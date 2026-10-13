@@ -157,6 +157,29 @@ async fn audit_the_audit_log_does_not_name_the_person_who_records_in_a_hidden_vo
         .await
         .error(ErrorCode::NotFound);
 
+    for filter in [
+        "action=recording_started".to_owned(),
+        format!("actor_id={}", ann.account_id),
+        format!("target_id={}", started.id),
+    ] {
+        let page: junto_protocol::audit::AuditPage = server
+            .get(
+                owner,
+                &format!(
+                    "/api/v1/workspaces/{}/audit-log?{filter}",
+                    scene.workspace_id
+                ),
+            )
+            .await
+            .ok(StatusCode::OK);
+        assert!(
+            !page
+                .entries
+                .iter()
+                .any(|entry| entry.channel_id == Some(voice)
+                    && entry.actor_id == Some(ann.account_id))
+        );
+    }
     let entries = server.audit_actions(owner, scene.workspace_id).await;
     let named: Vec<String> = entries
         .iter()

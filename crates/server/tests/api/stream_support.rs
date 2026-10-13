@@ -88,6 +88,10 @@ pub struct Stream {
 
 /// What a stream yields next.
 #[derive(Debug, PartialEq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Test frames mirror the inline protocol reader and are consumed one at a time."
+)]
 pub enum Frame {
     Message(ServerMessage),
     Closed(Option<u16>),

@@ -54,10 +54,10 @@ pub async fn get_own_account(
     .map(Json)
 }
 
-/// Counts one change of the own profile or of the name of an own device. The four routes
-/// share one limit per account, because each of them can record an event (ADR 0119). A
+/// Counts one profile, device-name or server-logo change. The routes share one limit
+/// per account, because each can record an event (ADR 0119). A
 /// request whose transaction runs again counts once.
-fn limit_change(app: &AppState, access: &Access, counted: &mut bool) -> ApiResult<()> {
+pub(crate) fn limit_change(app: &AppState, access: &Access, counted: &mut bool) -> ApiResult<()> {
     if !*counted {
         proof::limit(&app.account_changes, access.account_id, app.now())?;
         *counted = true;
@@ -432,7 +432,8 @@ pub async fn remove_device(
             return Err(ApiError::not_found());
         }
         if device_ids.len() == 1 {
-            return Err(ApiError::conflict(
+            return Err(ApiError::new(
+                ErrorCode::LastDevice,
                 "the last device of an account cannot be removed",
             ));
         }

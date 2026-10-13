@@ -783,6 +783,22 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/ModerationReason"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
         "responses": {
           "204": {},
           "default": {
@@ -955,6 +971,22 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/ModerationReason"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
         "responses": {
           "204": {},
           "default": {
@@ -1449,9 +1481,56 @@
         "operationId": "get_server_audit_log",
         "parameters": [
           {
+            "name": "action",
+            "in": "query",
+            "description": "Exact action name. Unknown action names match no entries.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "actor_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/AccountId"
+            }
+          },
+          {
+            "name": "target_id",
+            "in": "query",
+            "description": "An identifier named by the event or its workspace, channel or call scope.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Inclusive start of the time interval.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "Exclusive end of the time interval.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
             "name": "before",
             "in": "query",
-            "description": "Return entries older than this one.",
+            "description": "Continue before this entry; time-filtered pages order by occurrence time then identifier.",
             "required": false,
             "schema": {
               "$ref": "#/components/schemas/AuditEntryId"
@@ -3516,6 +3595,67 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/SetChannelOverride"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelOverride"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "Changes one permission of a channel override with the grant ceiling on its delta.",
+        "operationId": "change_channel_override",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          },
+          {
+            "name": "role_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceRoleId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangeChannelOverride"
               }
             }
           },
@@ -6890,6 +7030,133 @@
         ]
       }
     },
+    "/api/v1/server/logo": {
+      "get": {
+        "tags": [
+          "server"
+        ],
+        "summary": "The public image advertised by the server information route.",
+        "operationId": "get_logo",
+        "responses": {
+          "200": {
+            "content": {
+              "image/png": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "image/webp": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The current image matches If-None-Match"
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "server"
+        ],
+        "summary": "Sets the public logo. The caller is a server administrator with a session.",
+        "operationId": "set_logo",
+        "requestBody": {
+          "content": {
+            "image/jpeg": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "image/png": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "image/webp": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Avatar"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "server"
+        ],
+        "summary": "Removes the public logo. An absent logo is unchanged.",
+        "operationId": "remove_logo",
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/snapshot": {
       "get": {
         "tags": [
@@ -7399,9 +7666,56 @@
             }
           },
           {
+            "name": "action",
+            "in": "query",
+            "description": "Exact action name. Unknown action names match no entries.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "actor_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/AccountId"
+            }
+          },
+          {
+            "name": "target_id",
+            "in": "query",
+            "description": "An identifier named by the event or its workspace, channel or call scope.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Inclusive start of the time interval.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "Exclusive end of the time interval.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
             "name": "before",
             "in": "query",
-            "description": "Return entries older than this one.",
+            "description": "Continue before this entry; time-filtered pages order by occurrence time then identifier.",
             "required": false,
             "schema": {
               "$ref": "#/components/schemas/AuditEntryId"
@@ -7973,6 +8287,67 @@
             }
           }
         ],
+        "responses": {
+          "204": {},
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/members/{account_id}/removal": {
+      "post": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "Removes one workspace membership and its roles. Server access and other memberships stay.",
+        "operationId": "remove_member",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          },
+          {
+            "name": "account_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/AccountId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/ModerationReason"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
         "responses": {
           "204": {},
           "default": {
@@ -9196,6 +9571,32 @@
             "type": "object",
             "required": [
               "invite_id",
+              "invite_created_by",
+              "removed_workspace_id",
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "invite_workspaces_changed"
+                ]
+              },
+              "invite_created_by": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "invite_id": {
+                "$ref": "#/components/schemas/InviteId"
+              },
+              "removed_workspace_id": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "invite_id",
               "action"
             ],
             "properties": {
@@ -9344,6 +9745,12 @@
                 "enum": [
                   "account_removed"
                 ]
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             }
           },
@@ -9369,6 +9776,12 @@
                 "items": {
                   "$ref": "#/components/schemas/InviteId"
                 }
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             }
           },
@@ -9761,6 +10174,31 @@
               },
               "role_id": {
                 "$ref": "#/components/schemas/WorkspaceRoleId"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "An administrator removed an account from the workspace.",
+            "required": [
+              "account_id",
+              "action"
+            ],
+            "properties": {
+              "account_id": {
+                "$ref": "#/components/schemas/AccountId"
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "workspace_member_removed"
+                ]
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             }
           },
@@ -10197,6 +10635,30 @@
                 "type": "integer",
                 "format": "int32",
                 "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "server_logo_changed"
+                ]
+              },
+              "logo": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/Avatar"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             }
           },
@@ -10918,6 +11380,17 @@
           "account_id": {
             "$ref": "#/components/schemas/AccountId"
           },
+          "avatar": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Avatar",
+                "description": "Metadata of the avatar, without its image bytes."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "deafened": {
             "type": "boolean",
             "description": "The person's own sound setting, as their client reports it."
@@ -11133,6 +11606,23 @@
           "join_request_status",
           "link_device"
         ]
+      },
+      "ChangeChannelOverride": {
+        "type": "object",
+        "description": "Changes exactly one permission, preserving every other bit of the override.",
+        "required": [
+          "permission",
+          "state"
+        ],
+        "properties": {
+          "permission": {
+            "$ref": "#/components/schemas/WorkspacePermission"
+          },
+          "state": {
+            "$ref": "#/components/schemas/OverrideState"
+          }
+        },
+        "additionalProperties": false
       },
       "Channel": {
         "type": "object",
@@ -11908,6 +12398,7 @@
           "exceeds_own_permissions",
           "not_found",
           "conflict",
+          "last_device",
           "limit_reached",
           "key_already_registered",
           "owner_already_claimed",
@@ -12323,6 +12814,13 @@
           },
           "created_by": {
             "$ref": "#/components/schemas/AccountId"
+          },
+          "created_by_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Current creator name in a list; the name at creation in an event."
           },
           "expires_at": {
             "type": "string",
@@ -12861,6 +13359,20 @@
           }
         }
       },
+      "ModerationReason": {
+        "type": "object",
+        "description": "An optional explanation retained in the moderation audit entry.",
+        "properties": {
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "At most 1000 characters without control characters. Empty means no reason."
+          }
+        },
+        "additionalProperties": false
+      },
       "MoveParticipant": {
         "type": "object",
         "required": [
@@ -13094,6 +13606,14 @@
         },
         "additionalProperties": false
       },
+      "OverrideState": {
+        "type": "string",
+        "enum": [
+          "allow",
+          "deny",
+          "inherit"
+        ]
+      },
       "OwnAccount": {
         "type": "object",
         "description": "The account of the caller.",
@@ -13162,6 +13682,13 @@
           "device_id": {
             "$ref": "#/components/schemas/DeviceId"
           },
+          "hides_occupants": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The retained hide setting, or unknown when an older server omitted it."
+          },
           "identity": {
             "type": "string"
           },
@@ -13186,6 +13713,13 @@
             "items": {
               "$ref": "#/components/schemas/EntryRequest"
             }
+          },
+          "inside": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "True after admission has observed this seat. Absent means not stated by the server (ADR 0517)."
           },
           "own": {
             "$ref": "#/components/schemas/OwnCall"
@@ -15949,6 +16483,17 @@
         "properties": {
           "account_id": {
             "$ref": "#/components/schemas/AccountId"
+          },
+          "avatar": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Avatar",
+                "description": "Metadata of the avatar, without its image bytes."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "name": {
             "type": "string"

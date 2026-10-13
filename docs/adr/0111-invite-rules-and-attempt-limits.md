@@ -54,6 +54,8 @@ Limits on attempts:
 - The counts are held in the memory of the server process. The window of a key starts at its first attempt.
 - Each limit holds at most 100 000 keys. The keys expire in the order in which their windows started, so each attempt drops the expired keys from the front of that order and scans nothing else. When a limit is full, the key whose window started first is dropped.
 
+An invite includes `created_by_name`, the creator's current retained display name in the list and its name at creation in `invite_created`. It has exactly the readers of that invite, including after its creator is removed; it does not grant access to the creator's profile or avatar. Older payloads omit this optional field. The list joins the creator by the account primary key.
+
 ## Consequences
 
 - Two simultaneous joins with a one-use code create one account; the other gets the error `invite_exhausted`.
@@ -64,3 +66,9 @@ Limits on attempts:
 - A restart of the server clears the counts of the address limits, the count of wrong signatures included.
 - Without a configured proxy address the server ignores `X-Forwarded-For`, so a client cannot choose the address that is counted.
 - The memory of the limits has a fixed upper bound. A party with more than 100 000 addresses in one window makes the limits forget the oldest addresses early; the ceilings for the whole server (ADR 0108, ADR 0112 and the 200 waiting join requests) still hold.
+
+Removal from a workspace withdraws that workspace from every invite created by the removed account, in the same transaction. An invite that then names no workspace is revoked and records `invite_revoked` and its audit entry. A multi-workspace invite keeps the other workspaces and records `invite_changed` with its current description and the server audit action `invite_workspaces_changed` with its identifier, creator and removed workspace. The event has the invite's current audience. Each database page contains at most 100 invites; all pages commit with the membership removal.
+
+There is no separate refusal for redeeming one's own invite: ordinary membership and validity rules apply. Another person's invite can readmit a removed member. Unlike server removal, a workspace has no ban, so removal must withdraw the removed person's own keys even when a new account would use them. Server removal deletes the account and its credentials and leaves its invites usable by new or existing accounts; the separate ban rule cancels its invites (ADR 0106).
+
+The creator's display name is part of the invite description for every invite reader, even when that reader cannot read the creator's profile. This is an explicit audience of the name under this record, including the retained name after server removal; profile and avatar routes still apply ADR 0119 separately.

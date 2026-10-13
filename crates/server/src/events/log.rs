@@ -346,6 +346,17 @@ pub(crate) async fn record_at_id(
     audience: &Audience,
     event: &Event,
 ) -> ApiResult<()> {
+    record_with_parent(connection, now, id, audience, event, None).await
+}
+
+pub(crate) async fn record_with_parent(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    id: Uuid,
+    audience: &Audience,
+    event: &Event,
+    parent: Option<Uuid>,
+) -> ApiResult<()> {
     if !audience.fits(event) {
         return Err(ApiError::internal(&format_args!(
             "the event {} cannot have this audience",
@@ -370,8 +381,8 @@ pub(crate) async fn record_at_id(
     sqlx::query(
         "insert into events
              (id, recorded_at, class, kind, audience, audience_account_id,
-              revalidates_account_id, payload)
-         values ($1, $2, $3, $4, $5, $6, $7, $8)",
+              revalidates_account_id, payload, retention_parent)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(id)
     .bind(now)
@@ -381,6 +392,7 @@ pub(crate) async fn record_at_id(
     .bind(audience.account_id())
     .bind(revalidated_account(audience, event))
     .bind(Json(event))
+    .bind(parent)
     .execute(connection)
     .await?;
     Ok(())
@@ -418,37 +430,42 @@ pub async fn state(connection: &mut PgConnection) -> ApiResult<LogState> {
     })
 }
 
-/// Removes the events that lie more than the kept number of positions behind the newest one,
-/// in batches (ADR 0207). Returns the number of removed events.
+/// Keeps the newest retention units, removing each message/notice pair together.
+/// A unit contains one event or one message followed by its notice (ADR 0207).
 pub async fn trim(app: &AppState) -> ApiResult<u64> {
     let kept = i64::from(app.config.limits.stream.events_kept);
-    let batch = i64::from(app.config.limits.maintenance_batch.max(1));
+    let batch = i64::from((app.config.limits.maintenance_batch / 2).max(1));
     let mut removed = 0;
     loop {
-        let deleted = transact!(app, |connection| {
-            let log = state(connection).await?;
-            let through = log.head - kept;
-            if through <= 0 {
-                return Ok(0);
-            }
-            if through > log.trimmed_through {
-                sqlx::query("update event_stream set trimmed_through = $1")
-                    .bind(through)
-                    .execute(&mut *connection)
-                    .await?;
-            }
-            let deleted = sqlx::query(
-                "delete from events where id in (
-                     select id from events where position <= $1 limit $2)",
+        let (deleted, units) = transact!(app, |connection| {
+            let through: Option<i64> = sqlx::query_scalar(
+                "select coalesce(notice.position,unit.position) from (
+                     select id,position from events where retention_parent is null
+                     order by position desc offset $1 limit 1) unit
+                 left join events notice on notice.retention_parent=unit.id",
             )
-            .bind(through)
-            .bind(batch)
-            .execute(&mut *connection)
+            .bind(kept)
+            .fetch_optional(&mut *connection)
             .await?;
-            Ok(deleted.rows_affected())
+            let Some(through) = through else {
+                return Ok((0i64, 0i64));
+            };
+            sqlx::query("update event_stream set trimmed_through=greatest(trimmed_through,$1)")
+                .bind(through)
+                .execute(&mut *connection)
+                .await?;
+            let counts: (i64,i64) = sqlx::query_as(
+                "with roots as materialized (
+                    select e.id, 1+(select count(*) from events n where n.retention_parent=e.id) as size
+                    from events e where e.retention_parent is null and e.position <= $1
+                    order by e.position limit $2),
+                 removed as (delete from events where id in(select id from roots) returning id)
+                 select coalesce(sum(roots.size),0)::bigint,count(*) from roots join removed using(id)"
+            ).bind(through).bind(batch).fetch_one(&mut *connection).await?;
+            Ok(counts)
         })?;
-        removed += deleted;
-        if i64::try_from(deleted).unwrap_or(i64::MAX) < batch {
+        removed += u64::try_from(deleted).map_err(|error| ApiError::internal(&error))?;
+        if units < batch {
             return Ok(removed);
         }
     }

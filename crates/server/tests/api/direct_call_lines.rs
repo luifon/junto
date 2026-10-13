@@ -854,3 +854,274 @@ async fn the_unread_count_reads_missed_calls_by_an_index() {
         assert!(visited_rows(&plan[0]["Plan"]) < 1000, "{plan}");
     }
 }
+
+#[tokio::test]
+async fn muted_and_unanswered_calls_consume_the_same_positions() {
+    let mut counts = Vec::new();
+    for cancelled in [false, true] {
+        for mode in 0..3 {
+            let silent = mode != 0;
+            let scene = Scene::start().await;
+            let (server, ann, ben) = (&scene.server, &scene.ann, &scene.ben);
+            if mode == 1 {
+                mute(server, ben, ann).await;
+            } else if mode == 2 {
+                settings(
+                    server,
+                    ben,
+                    uuid::Uuid::nil(),
+                    json!({"do_not_disturb":true}),
+                )
+                .await;
+            }
+            let before = server.snapshot(ann).await.cursor;
+            let join = ring(server, ann, ben).await.ok::<CallJoin>(StatusCode::OK);
+            let rung = server.snapshot(ann).await.cursor.position;
+            server.connect(join);
+            server.check().await;
+            if cancelled {
+                server.leave_call(ann).await;
+            } else {
+                pass_the_ring(server).await;
+            }
+            let expired = server.snapshot(ann).await.cursor.position;
+            if !cancelled {
+                server.leave_call(ann).await;
+            }
+            let ended = server.snapshot(ann).await.cursor.position;
+            let mut sender_stream = server.stream(ann).await;
+            sender_stream.subscribe(Level::Full, Some(before)).await;
+            let positions: Vec<_> = server
+                .traffic(ann, &mut sender_stream)
+                .await
+                .into_iter()
+                .map(|(position, event)| {
+                    (
+                        position - before.position,
+                        serde_json::to_value(event).unwrap()["type"].clone(),
+                    )
+                })
+                .collect();
+            let read = state(server, ann, ben).await;
+            counts.push((
+                rung - before.position,
+                expired - rung,
+                ended - expired,
+                positions,
+                read.unread,
+                history(server, ann, ben).await.len(),
+                notices(server, ann).await.len(),
+            ));
+            let received = events(server, ben, before, Level::Full).await;
+            assert_eq!(
+                received
+                    .iter()
+                    .any(|event| matches!(event, Event::CallInvited { .. })),
+                !silent
+            );
+            assert_eq!(
+                received
+                    .iter()
+                    .any(|event| matches!(event, Event::CallInvitationResolved { .. })),
+                !silent
+            );
+            assert_eq!(notices(server, ben).await.is_empty(), mode == 1);
+        }
+    }
+    for modes in counts.chunks(3) {
+        assert_eq!(modes[0], modes[1]);
+        assert_eq!(modes[0], modes[2]);
+    }
+}
+
+#[tokio::test]
+async fn a_sender_cannot_measure_a_mute_from_text_positions_or_counts() {
+    let mut observations = Vec::new();
+    for muted in [false, true] {
+        let scene = Scene::start().await;
+        let (server, ann, ben) = (&scene.server, &scene.ann, &scene.ben);
+        let conversation: Conversation = server
+            .post(
+                ann,
+                "/api/v1/conversations",
+                &json!({"account_id":ben.account_id}),
+            )
+            .await
+            .ok(StatusCode::OK);
+        if muted {
+            mute(server, ben, ann).await;
+        }
+        let before = server.snapshot(ann).await.cursor;
+        let sent: Message = server
+            .post(
+                ann,
+                &format!("/api/v1/conversations/{}/messages", conversation.id),
+                &text("Hello"),
+            )
+            .await
+            .ok(StatusCode::CREATED);
+        let after = server.snapshot(ann).await.cursor;
+        let mut stream = server.stream(ann).await;
+        stream.subscribe(Level::Full, Some(before)).await;
+        let positions: Vec<_> = server
+            .traffic(ann, &mut stream)
+            .await
+            .into_iter()
+            .map(|(position, event)| {
+                (
+                    position - before.position,
+                    serde_json::to_value(event).unwrap()["type"].clone(),
+                )
+            })
+            .collect();
+        let read = state(server, ann, ben).await;
+        observations.push((
+            after.position - before.position,
+            positions,
+            sent.position,
+            read.unread,
+            history(server, ann, ben).await.len(),
+            notices(server, ann).await.len(),
+        ));
+        assert_eq!(notices(server, ben).await.is_empty(), muted);
+    }
+    assert_eq!(observations[0], observations[1]);
+}
+
+#[tokio::test]
+async fn review2_sender_observations_match_for_all_text_variants() {
+    for in_channel in [false, true] {
+        let mut modes = Vec::new();
+        for mode in 0..3 {
+            let directory = crate::support::Scratch::new();
+            let fixture = crate::support::TestServer::start_with(|config| {
+                config.attachments_directory = Some(directory.0.clone());
+            })
+            .await;
+            fixture.state.attachment_space.use_disk(std::sync::Arc::new(
+                junto_server::storage::FakeDisk::new(crate::support::FREE_DISK),
+            ));
+            let author = fixture.owner().await;
+            let recipient = fixture.join(&author, "Recipient").await;
+            let (server, ann, ben) = (&fixture, &author, &recipient);
+            let (route, upload_place) = if in_channel {
+                let channel = crate::messages_support::channel(server, ann, "text").await;
+                settings(
+                    server,
+                    ben,
+                    channel.id,
+                    json!({"level":"all","mute":mode==1}),
+                )
+                .await;
+                (
+                    format!("/api/v1/channels/{}/messages", channel.id),
+                    json!({"channel_id":channel.id}),
+                )
+            } else {
+                let conversation: Conversation = server
+                    .post(
+                        ann,
+                        "/api/v1/conversations",
+                        &json!({"account_id":ben.account_id}),
+                    )
+                    .await
+                    .ok(StatusCode::OK);
+                if mode == 1 {
+                    mute(server, ben, ann).await;
+                }
+                (
+                    format!("/api/v1/conversations/{}/messages", conversation.id),
+                    json!({"conversation_id":conversation.id}),
+                )
+            };
+            if mode == 2 {
+                settings(
+                    server,
+                    ben,
+                    uuid::Uuid::nil(),
+                    json!({"do_not_disturb":true}),
+                )
+                .await;
+            }
+            let root: Message = server
+                .post(ann, &route, &text("root"))
+                .await
+                .ok(StatusCode::CREATED);
+            if in_channel {
+                server
+                    .put(
+                        ben,
+                        &format!("/api/v1/messages/{}/thread/follow", root.id),
+                        &json!({"following":true}),
+                    )
+                    .await
+                    .ok::<Value>(StatusCode::OK);
+            }
+            let uploaded =
+                crate::messages_support::upload(server, ann, upload_place, b"attachment").await;
+            let mut observations = Vec::new();
+            for variant in 0..4 {
+                if variant == 2 && !in_channel {
+                    continue;
+                }
+                let before = server.snapshot(ann).await.cursor;
+                let sent: Message = match variant {
+                    0 => server
+                        .post(ann, &route, &text("plain"))
+                        .await
+                        .ok(StatusCode::CREATED),
+                    1 => server
+                        .put(
+                            ann,
+                            &format!("/api/v1/messages/{}", root.id),
+                            &text("edited"),
+                        )
+                        .await
+                        .ok(StatusCode::OK),
+                    2 => server
+                        .post(
+                            ann,
+                            &format!("/api/v1/messages/{}/thread", root.id),
+                            &text("thread"),
+                        )
+                        .await
+                        .ok(StatusCode::CREATED),
+                    _ => server
+                        .post(
+                            ann,
+                            &route,
+                            &json!({"document":{"blocks":[]},"attachments":[uploaded.id]}),
+                        )
+                        .await
+                        .ok(StatusCode::CREATED),
+                };
+                let after = server.snapshot(ann).await.cursor;
+                let mut stream = server.stream(ann).await;
+                stream.subscribe(Level::Full, Some(before)).await;
+                let positions: Vec<_> = server
+                    .traffic(ann, &mut stream)
+                    .await
+                    .into_iter()
+                    .map(|(position, event)| (position - before.position, event.name()))
+                    .collect();
+                let read: MessageState = server
+                    .get(ann, &format!("{route}/read"))
+                    .await
+                    .ok(StatusCode::OK);
+                let history: MessagePage = server.get(ann, &route).await.ok(StatusCode::OK);
+                observations.push((
+                    after.position - before.position,
+                    positions,
+                    sent.position,
+                    read.unread,
+                    read.mentions,
+                    history.messages.len(),
+                    notices(server, ann).await.len(),
+                ));
+            }
+            modes.push(observations);
+        }
+        assert_eq!(modes[0], modes[1], "channel={in_channel}: mute");
+        assert_eq!(modes[0], modes[2], "channel={in_channel}: quiet");
+    }
+}

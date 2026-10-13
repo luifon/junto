@@ -45,10 +45,12 @@ pub async fn missed_call(
     id: MessageId,
     place: Uuid,
     account_id: AccountId,
+    message_event: Option<Uuid>,
 ) -> ApiResult<()> {
     let noticed = sqlx::query(
-        "insert into notifications (id, account_id, message_id, kind, created_at)
-         select $1, a.id, $1, 'missed_call', $3
+        "insert into notifications (id, account_id, message_id, kind, created_at, read_at)
+         select $1, a.id, $1, 'missed_call', $3,
+             (select read_at from notification_read_boundaries where account_id=a.id and read_until >= $3)
          from accounts a cross join lateral notification_policy(a.id, $4, $3) p
          where a.id = $2 and a.status = 'active' and not p.muted
          on conflict (account_id, message_id) do nothing",
@@ -60,9 +62,12 @@ pub async fn missed_call(
     .execute(&mut *connection)
     .await?
     .rows_affected();
-    if noticed > 0 {
-        publish(connection, now, id, &[(account_id, true)], true).await?;
-    }
+    let recipients = if noticed > 0 {
+        vec![(account_id, true)]
+    } else {
+        Vec::new()
+    };
+    publish_after(connection, now, id, &recipients, true, message_event).await?;
     Ok(())
 }
 
@@ -71,6 +76,7 @@ pub async fn create(
     now: OffsetDateTime,
     id: MessageId,
     added_mentions: Option<&[AccountId]>,
+    message_event: Uuid,
 ) -> ApiResult<()> {
     let (place_id, channel_id): (Uuid, Option<ChannelId>) = sqlx::query_as("select m.place_id,ch.id from messages m left join channels ch on ch.id=m.place_id where m.id=$1")
         .bind(id)
@@ -106,16 +112,17 @@ pub async fn create(
     .filter(|(_, places)| places.ids().contains(&place_id))
     .map(|(account, _)| account)
     .collect();
-    let inserted: Vec<(AccountId, String)> = sqlx::query_as("insert into notifications(id,account_id,message_id,kind,created_at) select m.id,a.id,m.id,case when cv.id
+    let inserted: Vec<(AccountId, String)> = sqlx::query_as("insert into notifications(id,account_id,message_id,kind,created_at,read_at) select m.id,a.id,m.id,case when cv.id
              is not null then 'direct' when notification_mentioned(a.id,m.id,p.roles,p.everyone) then 'mention' when
-             m.thread_root is not null then 'thread' else 'message' end,$2 from messages m left join conversations cv
+             m.thread_root is not null then 'thread' else 'message' end,$2,
+             (select read_at from notification_read_boundaries where account_id=a.id and read_until >= $2) from messages m left join conversations cv
              on cv.id=m.place_id cross join unnest($3::uuid[]) a(id) cross join lateral
              notification_policy(a.id,m.place_id,$2) p where m.id=$1 and m.author_id is not null and not m.deleted and
              (m.readers is null or a.id=any(m.readers)) and not p.muted and (cv.id is not null or (p.level<> 'nothing'
              and ( notification_mentioned(a.id,m.id,p.roles,p.everyone) or (not $4 and m.thread_root is not null and
              exists(select 1 from thread_reads tr where tr.root_id=m.thread_root and tr.account_id=a.id and coalesce(tr.follow_setting,tr.writer)))
              or (not $4 and m.thread_root is null and p.level= 'all' )))) on conflict(account_id,message_id) do update
-             set kind= 'mention' ,read_at=null,created_at=excluded.created_at where excluded.kind= 'mention' and
+             set kind= 'mention' ,read_at=excluded.read_at,created_at=excluded.created_at where excluded.kind= 'mention' and
              notifications.kind in ('message','thread') returning account_id,kind")
         .bind(id)
         .bind(now)
@@ -123,12 +130,12 @@ pub async fn create(
         .bind(added_mentions.is_some())
         .fetch_all(&mut *connection)
         .await?;
-    if !inserted.is_empty() {
+    {
         let recipients: Vec<_> = inserted
             .into_iter()
             .map(|(id, kind)| (id, kind == "mention" || kind == "direct"))
             .collect();
-        publish(connection, now, id, &recipients, true).await?;
+        publish_after(connection, now, id, &recipients, true, Some(message_event)).await?;
     }
     Ok(())
 }
@@ -190,6 +197,16 @@ pub async fn mark_all_read(
     until: OffsetDateTime,
     places: &crate::access::visibility::Places,
 ) -> ApiResult<u64> {
+    sqlx::query(
+        "insert into notification_read_boundaries(account_id,read_until,read_at) values($1,$2,$3)
+         on conflict(account_id) do update set read_until=excluded.read_until,read_at=excluded.read_at
+         where notification_read_boundaries.read_until <= excluded.read_until",
+    )
+    .bind(access.account_id)
+    .bind(until)
+    .bind(now)
+    .execute(&mut *connection)
+    .await?;
     Ok(sqlx::query(sqlx::AssertSqlSafe(mark_all_read_statement()))
         .bind(access.account_id)
         .bind(now)
@@ -330,32 +347,43 @@ pub async fn publish(
     recipients: &[(AccountId, bool)],
     alert: bool,
 ) -> ApiResult<()> {
+    publish_after(connection, now, id, recipients, alert, None).await
+}
+
+async fn publish_after(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    id: MessageId,
+    recipients: &[(AccountId, bool)],
+    alert: bool,
+    parent: Option<Uuid>,
+) -> ApiResult<()> {
     let notice_id = Uuid::now_v7();
-    events::log::record_at_id(
-        connection,
-        now,
-        notice_id,
-        &events::audience::Audience::Notification {
-            message_id: id,
-            notice_id,
-        },
-        &Event::NotificationChanged { message_id: id },
-    )
-    .await?;
     let accounts: Vec<_> = recipients.iter().map(|(id, _)| *id).collect();
     let background: Vec<_> = recipients
         .iter()
         .map(|(_, background)| *background)
         .collect();
-    sqlx::query("insert into notification_receivers(event_id,account_id,background,alert) select
+    let inserted = sqlx::query("insert into notification_receivers(event_id,account_id,background,alert) select
              $1,account_id,background,$4 from unnest($2::uuid[],$3::boolean[]) receivers(account_id,background) where
              not $4 or not notification_quiet(account_id,$5)")
-        .bind(notice_id)
-        .bind(accounts)
-        .bind(background)
-        .bind(alert)
-        .bind(now)
-        .execute(connection)
-        .await?;
-    Ok(())
+        .bind(notice_id).bind(accounts).bind(background).bind(alert).bind(now)
+        .execute(&mut *connection).await?.rows_affected();
+    let audience = if inserted == 0 {
+        events::audience::Audience::Suppressed
+    } else {
+        events::audience::Audience::Notification {
+            message_id: id,
+            notice_id,
+        }
+    };
+    events::log::record_with_parent(
+        connection,
+        now,
+        notice_id,
+        &audience,
+        &Event::NotificationChanged { message_id: id },
+        parent,
+    )
+    .await
 }

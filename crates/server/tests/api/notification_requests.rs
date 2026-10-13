@@ -1105,3 +1105,121 @@ async fn stored_offsets_become_windows_of_utc_with_the_same_instants() {
     assert_eq!(plain_kept.daily_quiet, None);
     assert_eq!(plain_kept.level, Some(NotificationLevel::Nothing));
 }
+
+#[tokio::test]
+async fn mark_all_and_a_late_notice_agree() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let reader = reader_of_everything(&server, &owner, "Reader").await;
+    let channel = channel(&server, &owner, "text").await;
+    send(&server, &owner, &channel, "already committed").await;
+    let before = server.snapshot(&reader).await.cursor;
+    server.gate().arm(0);
+    let route = format!("/api/v1/channels/{}/messages", channel.id);
+    let body = text("late commit at the same time");
+    let held = server.post(&owner, &route, &body);
+    tokio::pin!(held);
+    crate::support::drive_until(&mut held, server.gate().arrived()).await;
+    let marked = mark_all(&server, &reader, json!({})).await;
+    assert_eq!(marked.marked, 1);
+    server.gate().release();
+    let late: Message = held.await.ok(StatusCode::CREATED);
+    let listed = notices(&server, &reader).await;
+    let late_notice = listed.iter().find(|n| n.message_id == late.id).unwrap();
+    assert!(late_notice.created_at <= marked.until);
+    assert_eq!(late_notice.read_at, Some(marked.read_at));
+    let received = events(&server, &reader, before, Level::Full).await;
+    let event = received
+        .iter()
+        .find(|e| matches!(e, Event::NotificationsRead { .. }))
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(event).unwrap(),
+        json!({"type":"notifications_read", "until": serde_json::to_value(&marked).unwrap()["until"], "read_at": serde_json::to_value(&marked).unwrap()["read_at"]})
+    );
+    assert_eq!(notices(&server, &reader).await, listed);
+}
+
+#[tokio::test]
+async fn an_empty_mark_applies_to_late_notices_but_not_newer_ones() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let reader = reader_of_everything(&server, &owner, "Reader").await;
+    let channel = channel(&server, &owner, "text").await;
+    let marked = mark_all(&server, &reader, json!({})).await;
+    assert_eq!(marked.marked, 0);
+    let late = send(&server, &owner, &channel, "same timestamp").await;
+    server.clock.advance(time::Duration::seconds(1));
+    let newer = send(&server, &owner, &channel, "later timestamp").await;
+    let listed = notices(&server, &reader).await;
+    assert_eq!(
+        listed
+            .iter()
+            .find(|notice| notice.message_id == late.id)
+            .unwrap()
+            .read_at,
+        Some(marked.read_at)
+    );
+    assert_eq!(
+        listed
+            .iter()
+            .find(|notice| notice.message_id == newer.id)
+            .unwrap()
+            .read_at,
+        None
+    );
+}
+
+#[tokio::test]
+async fn notifications_read_keeps_the_version_one_fields() {
+    #[derive(serde::Deserialize)]
+    #[serde(tag = "type", rename_all = "snake_case")]
+    enum PreviousEvent {
+        NotificationsRead {
+            #[serde(with = "time::serde::rfc3339")]
+            until: OffsetDateTime,
+            #[serde(with = "time::serde::rfc3339")]
+            read_at: OffsetDateTime,
+        },
+    }
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    let reader = reader_of_everything(&server, &owner, "Reader").await;
+    let channel = channel(&server, &owner, "text").await;
+    send(&server, &owner, &channel, "notice").await;
+    let cursor = server.snapshot(&reader).await.cursor;
+    let marked = mark_all(&server, &reader, json!({})).await;
+    let frames = events(&server, &reader, cursor, Level::Full).await;
+    let frame = frames
+        .iter()
+        .find(|event| matches!(event, Event::NotificationsRead { .. }))
+        .unwrap();
+    let PreviousEvent::NotificationsRead { until, read_at } =
+        serde_json::from_value(serde_json::to_value(frame).unwrap()).unwrap();
+    assert_eq!((until, read_at), (marked.until, marked.read_at));
+}
+
+#[tokio::test]
+async fn the_read_boundary_is_an_indexed_account_lookup() {
+    let server = TestServer::start().await;
+    let owner = server.owner().await;
+    mark_all(&server, &owner, json!({})).await;
+    sqlx::query("with people as (insert into accounts(id,name,status,created_at) select gen_random_uuid(),'filler','active',$1 from generate_series(1,10000) returning id) insert into notification_read_boundaries(account_id,read_until,read_at) select id,$1,$1 from people")
+        .bind(server.clock.now()).execute(&server.db).await.unwrap();
+    analyze(&server.db, &["notification_read_boundaries"]).await;
+    let plan: Value = sqlx::query_scalar(explained(
+        "select read_at from notification_read_boundaries where account_id=$1 and read_until >= $2",
+    ))
+    .bind(owner.account_id)
+    .bind(server.clock.now())
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert!(
+        index_names(&plan)
+            .iter()
+            .any(|name| name == "notification_read_boundaries_pkey"),
+        "{plan}"
+    );
+    assert!(visited_rows(&plan[0]["Plan"]) < 10, "{plan}");
+}

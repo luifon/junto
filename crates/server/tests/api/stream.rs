@@ -386,15 +386,24 @@ async fn beyond_the_replay_bound_the_client_is_told_to_load_a_snapshot() {
     reconnected.subscribe(Level::Full, Some(start)).await;
     assert_eq!(names(&mut reconnected, 5).await.len(), 5);
 
-    server.category(&owner, workspace.id, "f", 5).await;
+    let last = server.category(&owner, workspace.id, "f", 5).await;
     reconnected
         .send(&junto_protocol::events::ClientMessage::Subscribe {
             level: Level::Full,
             cursor: Some(start),
         })
         .await;
+    let mut answer = reconnected.next().await;
+    if let Frame::Message(ServerMessage::Event {
+        event: Event::CategoryCreated { category },
+        ..
+    }) = &answer
+    {
+        assert_eq!(category.id, last.id);
+        answer = reconnected.next().await;
+    }
     assert_eq!(
-        reconnected.next().await,
+        answer,
         Frame::Message(ServerMessage::Resync {
             reason: ResyncReason::TooFarBehind
         })

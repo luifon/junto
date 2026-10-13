@@ -32,7 +32,8 @@ Seat and inside:
 What an account gets before it is inside:
 
 - The answer of a join, of an accepted invitation and of the join of a move, and `GET /api/v1/call`, carry the call as the account may read it at that moment. For a call that hides who is inside and an account that is not inside, the call has no participant, no lock, no meeting and no recording. The field `hides_occupants` of the call states that the call hides them.
-- A client reads `GET /api/v1/call` when `call_participant_joined` names its own account. That event is the first one of the call that the account receives.
+- `call_started` and `OwnCall` carry `hides_occupants`, the setting retained when the call was created. `OwnCallState.inside` from `GET /api/v1/call` states whether admission has observed the seat. The field is optional for readers: absence means not stated, not outside. Only an explicit false makes a client show an entering state and disable inside-only actions; when absent it keeps the earlier server behavior and relies on request refusals. `not_in_call` before admission is intentional.
+- A client reads `GET /api/v1/call` when `call_participant_joined` names its own account. At move completion `own_call_changed` naming the destination precedes that joined event, so the client reloads the destination. Both are written in the same transaction.
 - The join token of an account that is not inside a call that hides who is inside allows pictures only, whatever the state of the call. What an account may publish depends on meeting mode (ADR 0512), so the token of a seat would tell whether meeting mode is on. The admission check sets what the account may publish in the transaction and the requests in which it first sees the account in the room, as it sets it at every check (ADR 0509).
 - A repeated request for the same seat by the same session returns a new token and does not move the end of a seat that has not connected. A request after that end is a new entry: the earlier seat ends with the reason `never_connected`, the lock and the user limit apply again, and the account gets a new identity.
 
@@ -63,3 +64,9 @@ Events of a call:
 - A call that began before the setting was turned on stays visible until it ends. The people inside see the new setting on the channel and `hides_occupants: false` on the call.
 - The delivery of a batch reads one more statement when the batch holds an event about the inside of a call: the state of the calls that the batch names, through the primary key.
 - A device that was accepted or invited and waits longer than the 120 seconds in which a seat is usable gets a new seat with its next request; when the channel was locked in between, the request is refused as for a person outside.
+
+A successful media connection alone does not prove server admission: its usable seat must still belong to the current device and pass current permissions when the media participant is observed. This is why inside-only actions refuse `not_in_call` before that check. Snapshot `own_call` and `own_call_changed` describe the assigned seat; a client reads `GET /api/v1/call` for the currently observed admission state, also after its own participant-joined event.
+
+The added hide setting in `call_started` and `OwnCall` is optional for readers: an older server that omits it means unknown, not visible. This server always writes the retained boolean.
+
+Migration 0016 renews the event epoch once and does not rewrite historical payloads. Reconnecting clients receive `resync` and load a snapshot with the retained call setting and current admission state, rather than reconstructing these additions from older events that omitted them. The one-time snapshot cost replaces replay across this upgrade; stored payloads remain unchanged.

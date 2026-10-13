@@ -360,6 +360,7 @@ fn names_in(directory: &Path) -> Vec<String> {
 /// `rescued/` that no segment names when it is older than a day. A directory that a
 /// segment names stays for the processing, a young one stays for the script that may still
 /// write it, and nothing is deleted while a backup holds deletions (ADR 0606, ADR 0018).
+#[cfg(unix)]
 #[tokio::test]
 async fn audit_the_saved_audio_of_a_job_that_no_segment_names_is_deleted_after_a_day() {
     let studio = Studio::open().await;

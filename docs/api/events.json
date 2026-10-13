@@ -604,6 +604,12 @@
         "call_id": {
           "$ref": "#/components/schemas/CallId"
         },
+        "hides_occupants": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "place": {
           "$ref": "#/components/schemas/CallPlace"
         },
@@ -1076,6 +1082,25 @@
       ],
       "type": "object"
     },
+    "invite_changed": {
+      "description": "The workspaces granted by an existing invite were narrowed.",
+      "properties": {
+        "invite": {
+          "$ref": "#/components/schemas/Invite"
+        },
+        "type": {
+          "enum": [
+            "invite_changed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "invite",
+        "type"
+      ],
+      "type": "object"
+    },
     "invite_created": {
       "properties": {
         "invite": {
@@ -1363,7 +1388,7 @@
       "type": "object"
     },
     "notifications_read": {
-      "description": "The account of the recipient marked its notices read: every notice of it that was\ncreated at or before `until` and was not read is read at `read_at` (ADR 0412).",
+      "description": "Every visible notice created at or before `until` is read at `read_at` (ADR 0412).",
       "properties": {
         "read_at": {
           "format": "date-time",
@@ -1559,6 +1584,30 @@
               "type": "null"
             }
           ]
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "server_logo_changed": {
+      "properties": {
+        "logo": {
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/Avatar"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "enum": [
+            "server_logo_changed"
+          ],
+          "type": "string"
         }
       },
       "required": [
@@ -2296,6 +2345,17 @@
         "properties": {
           "account_id": {
             "$ref": "#/components/schemas/AccountId"
+          },
+          "avatar": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Avatar",
+                "description": "Metadata of the avatar, without its image bytes."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "deafened": {
             "description": "The person's own sound setting, as their client reports it.",
@@ -3082,6 +3142,25 @@
             "type": "object"
           },
           {
+            "description": "The workspaces granted by an existing invite were narrowed.",
+            "properties": {
+              "invite": {
+                "$ref": "#/components/schemas/Invite"
+              },
+              "type": {
+                "enum": [
+                  "invite_changed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "invite",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
             "properties": {
               "invite_id": {
                 "$ref": "#/components/schemas/InviteId"
@@ -3511,6 +3590,12 @@
             "properties": {
               "call_id": {
                 "$ref": "#/components/schemas/CallId"
+              },
+              "hides_occupants": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
               },
               "place": {
                 "$ref": "#/components/schemas/CallPlace"
@@ -4190,6 +4275,30 @@
           },
           {
             "properties": {
+              "logo": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/Avatar"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": {
+                "enum": [
+                  "server_logo_changed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
               "limits": {
                 "$ref": "#/components/schemas/AttachmentLimits"
               },
@@ -4558,7 +4667,7 @@
             "type": "object"
           },
           {
-            "description": "The account of the recipient marked its notices read: every notice of it that was\ncreated at or before `until` and was not read is read at `read_at` (ADR 0412).",
+            "description": "Every visible notice created at or before `until` is read at `read_at` (ADR 0412).",
             "properties": {
               "read_at": {
                 "format": "date-time",
@@ -4763,6 +4872,13 @@
           },
           "created_by": {
             "$ref": "#/components/schemas/AccountId"
+          },
+          "created_by_name": {
+            "description": "Current creator name in a list; the name at creation in an event.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "expires_at": {
             "format": "date-time",
@@ -5001,6 +5117,13 @@
           },
           "device_id": {
             "$ref": "#/components/schemas/DeviceId"
+          },
+          "hides_occupants": {
+            "description": "The retained hide setting, or unknown when an older server omitted it.",
+            "type": [
+              "boolean",
+              "null"
+            ]
           },
           "identity": {
             "type": "string"
@@ -5581,6 +5704,17 @@
         "properties": {
           "account_id": {
             "$ref": "#/components/schemas/AccountId"
+          },
+          "avatar": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Avatar",
+                "description": "Metadata of the avatar, without its image bytes."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "name": {
             "type": "string"

@@ -42,6 +42,7 @@ pub mod recordings;
 pub mod retention;
 pub mod search;
 pub mod server_info;
+pub mod server_logo;
 pub mod server_roles;
 pub mod snapshot;
 pub mod stream;
@@ -110,6 +111,11 @@ impl Modify for SessionSecurity {
 fn documented_routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::with_openapi(ApiDocument::openapi())
         .routes(routes!(server_info::get_server_info))
+        .routes(routes!(
+            server_logo::get_logo,
+            server_logo::set_logo,
+            server_logo::remove_logo
+        ))
         .routes(routes!(health::get_health))
         .routes(routes!(threads::history, threads::reply))
         .routes(routes!(threads::fork))
@@ -233,6 +239,7 @@ fn documented_routes() -> OpenApiRouter<AppState> {
         ))
         .routes(routes!(workspaces::list_members))
         .routes(routes!(workspaces::add_member))
+        .routes(routes!(workspaces::remove_member))
         .routes(routes!(
             workspace_roles::list_workspace_roles,
             workspace_roles::create_workspace_role
@@ -266,6 +273,7 @@ fn documented_routes() -> OpenApiRouter<AppState> {
         .routes(routes!(channels::get_channel_permissions))
         .routes(routes!(channels::list_channel_overrides))
         .routes(routes!(channels::set_channel_override))
+        .routes(routes!(channels::change_channel_override))
         .routes(routes!(calls::get_own_call, calls::leave_call))
         .routes(routes!(calls::report_call_state))
         .routes(routes!(calls::report_screen_share, calls::end_screen_share))

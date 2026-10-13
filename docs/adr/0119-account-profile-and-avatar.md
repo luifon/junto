@@ -51,6 +51,11 @@ Limit:
 - `PATCH /api/v1/account`, `PUT` and `DELETE /api/v1/account/avatar` and `PATCH /api/v1/account/devices/{device_id}` share one limit: 30 requests per account per minute. A further request gets `rate_limited` with a `Retry-After` header.
 - Reason: each of these requests can record an event, and an event uses one position of the log, which keeps a fixed number of positions (ADR 0207). A change of the profile is also delivered to every fellow member.
 
+Member and participant descriptions:
+
+- `WorkspaceMember.avatar` in the member list and `workspace_member_added`, and `CallParticipant.avatar` in call reads, snapshots and participant events, carry the same optional metadata as the profile. Older payloads without the field read it as absent. The image still requires the avatar route and its authorization.
+- These fields have exactly the audience of the containing member or participant; a hidden call exposes no additional participant. The database joins avatar metadata by account primary key, without reading image bytes or sending a request per profile. Profile change events remain the notification of a later image change.
+
 ## Consequences
 
 - A backup of the database contains the avatars.
@@ -59,3 +64,5 @@ Limit:
 - A person who leaves every common workspace of another person no longer sees that person's profile and receives no further event about it.
 - The name of a removed account stays readable for accounts with `ban_members` only, until messages refer to it.
 - An avatar larger than the largest request body (ADR 0013) gets `invalid_request`, not `image_too_large`.
+
+Avatar metadata in a member list or call participant has that containing resource’s audience, including a token with `read_structure` and a direct-call participant without a common workspace. This includes the hash; it grants no right to fetch image bytes. Clients must handle a forbidden or absent avatar despite receiving metadata. Invite creator names have the distinct invite audience of ADR 0111.

@@ -371,6 +371,7 @@ const MEMBER_COLUMNS: &str = "call_id, account_id, device_id, session_id, identi
 impl MemberRow {
     pub fn own_call(&self, call: &CallRow) -> OwnCall {
         OwnCall {
+            hides_occupants: Some(call.hides_occupants),
             call_id: call.id,
             place: call.place,
             device_id: self.device_id,
@@ -417,6 +418,7 @@ pub async fn occupancy(connection: &mut PgConnection, call_id: CallId) -> ApiRes
 
 #[derive(sqlx::FromRow)]
 struct ParticipantRecord {
+    avatar: Option<sqlx::types::Json<junto_protocol::account::Avatar>>,
     account_id: AccountId,
     identity: String,
     connected_at: OffsetDateTime,
@@ -446,6 +448,7 @@ fn participant(record: ParticipantRecord) -> ApiResult<CallParticipant> {
         _ => None,
     };
     Ok(CallParticipant {
+        avatar: record.avatar.map(|value| value.0),
         account_id: record.account_id,
         identity: record.identity,
         joined_at: record.connected_at,
@@ -468,8 +471,12 @@ pub async fn participants(
         "select m.account_id, m.identity, m.connected_at, m.self_muted, m.self_deafened,
                 m.hand_raised_at is not null as hand_raised, m.share_audio, m.share_started_at,
                 mb.blocked_by as microphone_blocked_by, mb.reason as microphone_block_reason,
-                sb.blocked_by as sound_blocked_by
+                sb.blocked_by as sound_blocked_by,
+                case when av.account_id is not null then jsonb_build_object(
+                    'hash', encode(av.hash, 'hex'), 'media_type', av.media_type,
+                    'bytes', octet_length(av.content), 'width', av.width, 'height', av.height) end as avatar
          from call_members m
+         left join account_avatars av on av.account_id = m.account_id
          left join call_microphone_blocks mb
              on mb.call_id = m.call_id and mb.account_id = m.account_id
          left join call_sound_blocks sb
@@ -972,6 +979,15 @@ pub async fn tell_invitation(
         outcome,
     };
     let at = [invitation.place];
+    if waiting.silent {
+        events::log::record(
+            connection,
+            now,
+            &events::audience::Audience::Suppressed,
+            &resolved,
+        )
+        .await?;
+    }
     for account_id in waiting.told() {
         events::tell_account_at(&mut *connection, now, account_id, &at, &resolved).await?;
     }

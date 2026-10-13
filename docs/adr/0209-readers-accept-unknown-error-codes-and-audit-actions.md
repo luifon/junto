@@ -31,6 +31,8 @@ Crate features:
 - Secret values of the crate erase their text when they are dropped: session token, owner code, invite code, link code and call token. A copy that a caller makes is not erased with the value.
 - The OpenAPI derivation of `junto-protocol` is the cargo feature `openapi`. The server enables it. A client does not, and then does not compile `utoipa`.
 
+The existing refusal to remove the last device changes from `conflict` to the more specific `last_device` within API version 1, with the same status 409. This is an accepted error-code addition under ADR 0205 and this record, not a change to a response field or to when removal is refused (ADR 0206). A reader that predates that code reads `unknown` and still recognizes the conflict status. The refusal changes no device or session.
+
 ## Consequences
 
 - A client of today shows an error of a later server by its status and its message, and shows a later audit entry without its details.

@@ -98,17 +98,27 @@ pub async fn line(
     .bind(notifies)
     .execute(&mut *connection)
     .await?;
-    super::changed(
+    let message_event = uuid::Uuid::now_v7();
+    super::changed_at(
         &mut *connection,
         now,
         place.value,
         id,
         u64::try_from(position).unwrap_or_default(),
         false,
+        message_event,
     )
     .await?;
     if let Some(account_id) = notifies {
-        notifications::missed_call(connection, now, id, place.id, account_id).await?;
+        notifications::missed_call(
+            connection,
+            now,
+            id,
+            place.id,
+            account_id,
+            Some(message_event),
+        )
+        .await?;
     }
     Ok(())
 }

@@ -192,6 +192,16 @@ pub struct RecoveryNotice {
     pub performed_at: OffsetDateTime,
 }
 
+/// An optional explanation retained in the moderation audit entry.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ModerationReason {
+    /// At most 1000 characters without control characters. Empty means no reason.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

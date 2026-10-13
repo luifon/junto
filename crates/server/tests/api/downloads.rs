@@ -185,6 +185,7 @@ async fn a_file_is_downloaded_by_the_rule_of_its_recording() {
     }
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn a_segment_without_a_file_and_a_link_in_its_place_give_no_download() {
     let studio = Studio::open().await;
@@ -439,6 +440,7 @@ async fn a_recording_that_runs_or_is_processed_is_not_removed() {
     assert_eq!(server.count("recordings").await, 0);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn a_failed_recording_is_removed_and_a_directory_that_cannot_be_deleted_stays_queued() {
     let studio = Studio::open().await;

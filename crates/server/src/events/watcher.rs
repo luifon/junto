@@ -14,11 +14,20 @@ use crate::state::AppState;
 
 const PAGE: i64 = 500;
 
-type Arrival = (i64, String, Option<AccountId>, Option<AccountId>);
+#[derive(sqlx::FromRow)]
+struct Arrival {
+    id: uuid::Uuid,
+    position: i64,
+    class: String,
+    addressed_to: Option<AccountId>,
+    revalidates: Option<AccountId>,
+    audience_kind: Option<String>,
+    low: Option<String>,
+    high: Option<String>,
+}
 
-/// Reads the events after `seen` and wakes the connections they can concern. Returns the new
-/// value of `seen`. On the first call it wakes every connection, because a connection can
-/// have read the log before the watcher did.
+/// Reads new events and wakes the connections of their recorded recipients. Current
+/// authorization is still checked by delivery. The first call covers a racing subscription.
 pub async fn advance(app: &AppState, seen: Option<i64>) -> ApiResult<i64> {
     let Some(mut seen) = seen else {
         let head = read!(app.unattended(), |connection| {
@@ -28,36 +37,68 @@ pub async fn advance(app: &AppState, seen: Option<i64>) -> ApiResult<i64> {
         return Ok(head);
     };
     loop {
-        let rows: Vec<Arrival> = read!(app.unattended(), |connection| {
-            Ok(sqlx::query_as(
-                "select position, class, audience_account_id, revalidates_account_id
-                 from events
-                 where position > $1
-                 order by position
-                 limit $2",
+        let (rows, receivers) = read!(app.unattended(), |connection| {
+            let rows: Vec<Arrival> = sqlx::query_as(
+                "select id, position, class, audience_account_id as addressed_to,
+                        revalidates_account_id as revalidates, audience->>'to' as audience_kind,
+                        audience->>'low_account_id' as low, audience->>'high_account_id' as high
+                 from events where position > $1 order by position limit $2",
             )
             .bind(seen)
             .bind(PAGE)
-            .fetch_all(connection)
-            .await?)
+            .fetch_all(&mut *connection)
+            .await?;
+            let notices: Vec<_> = rows
+                .iter()
+                .filter(|row| row.audience_kind.as_deref() == Some("notification"))
+                .map(|row| row.id)
+                .collect();
+            let connected = app.streams.connected_accounts();
+            let receivers: Vec<(AccountId, bool)> = if notices.is_empty() || connected.is_empty() {
+                Vec::new()
+            } else {
+                sqlx::query_as("select account_id, background from notification_receivers where event_id=any($1) and account_id=any($2)")
+                    .bind(notices).bind(&connected).fetch_all(&mut *connection).await?
+            };
+            Ok((rows, receivers))
         })?;
         let Some(last) = rows.last() else {
             return Ok(seen);
         };
-        seen = last.0;
+        seen = last.position;
         let full_page = i64::try_from(rows.len()).unwrap_or(i64::MAX) >= PAGE;
         let mut arrivals = Arrivals::default();
-        for (_, class, addressed_to, revalidates) in rows {
-            match addressed_to {
-                Some(account_id) => {
-                    arrivals.accounts.insert(account_id);
-                }
-                None if Class::from_stored(&class) == Some(Class::General) => {
-                    arrivals.general = true;
-                }
-                None => arrivals.other = true,
+        for (account, background) in receivers {
+            if background {
+                arrivals.accounts.insert(account);
+            } else {
+                arrivals.full_accounts.insert(account);
             }
-            arrivals.revalidate.extend(revalidates);
+        }
+        for row in rows {
+            match row.audience_kind.as_deref() {
+                Some("suppressed" | "notification") => continue,
+                Some("direct") => {
+                    if let (Some(low), Some(high)) = (
+                        row.low.and_then(|id| id.parse::<AccountId>().ok()),
+                        row.high.and_then(|id| id.parse::<AccountId>().ok()),
+                    ) {
+                        arrivals.accounts.extend([low, high]);
+                    } else {
+                        arrivals.other = true;
+                    }
+                }
+                _ => match row.addressed_to {
+                    Some(account_id) => {
+                        arrivals.accounts.insert(account_id);
+                    }
+                    None if Class::from_stored(&row.class) == Some(Class::General) => {
+                        arrivals.general = true;
+                    }
+                    None => arrivals.other = true,
+                },
+            }
+            arrivals.revalidate.extend(row.revalidates);
         }
         app.streams.wake(&arrivals);
         if !full_page {

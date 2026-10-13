@@ -16,7 +16,7 @@ Every notice in one request:
 - The request states a time and no notice identifier, because the identifier of a notice is the identifier of its message (ADR 0409).
 - A notice that no list returns to the account now, because the account cannot read its place or muted it (ADR 0409), stays as it is. The number that the answer states and the event therefore tell nothing of such a place.
 - One statement marks them. It reads the unread notices of the account through their index and decides each one as the list does. An account has at most 500 notices after each maintenance run (ADR 0409).
-- When a notice was marked, the account gets the event `notifications_read` with `until` and the time of reading, at every connection level. A client applies it to the notices that it holds.
+- When a notice was marked, the account gets `notifications_read` with `until` and `read_at` at every connection level. The HTTP response also returns the number changed by the request.
 - The request counts against the limit of message changes (ADR 0408).
 
 The choice to follow a thread:
@@ -48,10 +48,13 @@ The quiet time by time zone:
 ## Consequences
 
 - A client marks all notices read with one request and one event.
-- A notice whose message was sent in the instant of the request, with a time at or before `until`, and whose transaction ends after the request, stays unread on the server while a device that applied the event shows it as read, until that device reads the list again. A client that states `until` narrows this to a message sent before the newest notice that the person saw.
 - A person leaves a thread without leaving its channel, and follows a thread without writing in it.
 - A client shows "not set" for the default of a workspace and offers its removal.
 - A quiet time from 22:00 to 07:00 stays at these hours of the clock of the person through the year.
 - A quiet time that the migration converted shows hours of UTC until the person sets it again.
 - A client of the earlier form that sends `utc_offset_minutes` gets `invalid_request`.
 - The check of the quiet time is a database function with a handler for an unknown zone. It cannot be made part of the statement that calls it, as the earlier form could.
+
+The event `notifications_read` retains `until` and `read_at` in API version 1. The server stores the newest account read boundary and applies it when creating a notice whose timestamp is at or before that boundary, including a transaction that commits after the mark. Notice insertion reads that indexed boundary in the serializable transaction, so concurrent marks cause a retry where needed. Existing hidden notices are unchanged by mark-all-read, and creation still requires current visibility and notification policy. The HTTP count names rows changed by that request, not notices created by another transaction afterwards.
+
+The boundary uses the server timestamp captured at request start, not commit order. If that clock moves backward after a mark, notices timestamped within the already-read interval are read even when created later in real time. An older mark never moves the stored boundary backward. Concurrent notice creation and marks can retry under serializable isolation; the request retains its original timestamp on retry.

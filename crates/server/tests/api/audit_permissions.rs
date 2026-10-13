@@ -532,3 +532,139 @@ async fn the_deletion_of_an_administrator_role_tells_the_other_account() {
     server.get(&cy, &history).await.error(ErrorCode::NotFound);
     assert_eq!(notices_of(&server, &cy, &mut of_cy).await, 1);
 }
+
+#[tokio::test]
+async fn token_workspace_role_deletion_checks_rank_and_denies_or_the_structure_administrator_gate()
+{
+    for structured in [false, true] {
+        let server = TestServer::start().await;
+        let owner = server.owner().await;
+        let manager = server.join(&owner, "Manager").await;
+        let administrator = server
+            .grant_server(&owner, &manager, &[ServerPermission::Administrator])
+            .await;
+        let token = server.access_token(&manager, TokenAction::ALL).await;
+        server
+            .delete(
+                &owner,
+                &format!(
+                    "/api/v1/accounts/{}/server-roles/{administrator}",
+                    manager.account_id
+                ),
+            )
+            .await
+            .empty(StatusCode::NO_CONTENT);
+        let workspace = server.default_workspace(&owner).await;
+        let role_route = format!("/api/v1/workspaces/{}/roles", workspace.id);
+        let high: junto_protocol::roles::WorkspaceRole = server
+            .post(
+                &owner,
+                &role_route,
+                &json!({"name":"Higher","permissions":[]}),
+            )
+            .await
+            .ok(StatusCode::CREATED);
+        server
+            .grant_workspace(
+                &owner,
+                &manager,
+                workspace.id,
+                &[WorkspacePermission::ManageRoles],
+            )
+            .await;
+        let low: junto_protocol::roles::WorkspaceRole = server
+            .post(
+                &owner,
+                &role_route,
+                &json!({"name":"Lower","permissions":[]}),
+            )
+            .await
+            .ok(StatusCode::CREATED);
+        let channel = server.channel(&owner, workspace.id, "text").await;
+        server
+            .put(
+                &owner,
+                &format!("/api/v1/channels/{}/overrides/{}", channel.id, low.id),
+                &json!({"deny":["mute_members"]}),
+            )
+            .await
+            .ok::<Value>(StatusCode::OK);
+        for (role, expected) in [
+            (high.id, Some(ErrorCode::Forbidden)),
+            (low.id, Some(ErrorCode::ExceedsOwnPermissions)),
+            (low.id, None),
+        ] {
+            if expected.is_none() {
+                if structured {
+                    server
+                        .grant_server(&owner, &manager, &[ServerPermission::Administrator])
+                        .await;
+                }
+                server
+                    .grant_workspace(
+                        &owner,
+                        &manager,
+                        workspace.id,
+                        &[WorkspacePermission::MuteMembers],
+                    )
+                    .await;
+            }
+            let reply = if structured {
+                let revision = server.structure(&owner).await.revision;
+                server.with_token(Method::POST,"/api/v1/structure/changes",&token,Some(&json!({"revision":revision,"changes":[{"change":"delete_workspace_role","id":role}]}))).await
+            } else {
+                server
+                    .with_token(
+                        Method::DELETE,
+                        &format!("{role_route}/{role}"),
+                        &token,
+                        None,
+                    )
+                    .await
+            };
+            if let Some(code) = expected {
+                reply.error(if structured {
+                    ErrorCode::Forbidden
+                } else {
+                    code
+                });
+            } else if structured {
+                reply.ok::<Value>(StatusCode::OK);
+            } else {
+                reply.empty(StatusCode::NO_CONTENT);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn token_role_definition_deletion_never_bypasses_server_rank() {
+    for structured in [false, true] {
+        let server = TestServer::start().await;
+        let owner = server.owner().await;
+        let high: junto_protocol::roles::ServerRole = server
+            .post(
+                &owner,
+                "/api/v1/server-roles",
+                &json!({"name":"Higher","permissions":[]}),
+            )
+            .await
+            .ok(StatusCode::CREATED);
+        let admin = server.administrator(&owner, "Administrator").await;
+        let token = server.access_token(&admin, TokenAction::ALL).await;
+        let reply = if structured {
+            let revision = server.structure(&owner).await.revision;
+            server.with_token(Method::POST,"/api/v1/structure/changes",&token,Some(&json!({"revision":revision,"changes":[{"change":"delete_server_role","id":high.id}]}))).await
+        } else {
+            server
+                .with_token(
+                    Method::DELETE,
+                    &format!("/api/v1/server-roles/{}", high.id),
+                    &token,
+                    None,
+                )
+                .await
+        };
+        reply.error(ErrorCode::Forbidden);
+    }
+}

@@ -188,6 +188,14 @@ jobs:
           persist-credentials: false
           # deploy/tests/upgrade.sh reads the files of an earlier commit.
           fetch-depth: 0
+      - name: Fit Compose CPU limits to the runner
+        run: |
+          cpus=$(getconf _NPROCESSORS_ONLN)
+          sed -n 's/^[[:space:]]*cpus: ${\(JUNTO_[A-Z_]*_CPUS\):-\([0-9][0-9]*\)}/\1 \2/p' deploy/base.yaml |
+          while read -r setting limit; do
+            if [ "$limit" -gt "$cpus" ]; then limit=$cpus; fi
+            echo "${setting}=$limit" >> "$GITHUB_ENV"
+          done
       - name: Pinned versions agree
         run: tools/check-pins.sh
       - name: Workflow files

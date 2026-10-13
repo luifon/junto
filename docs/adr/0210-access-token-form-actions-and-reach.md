@@ -67,3 +67,5 @@ Role order and its action-specific exemptions are decided in ADR 0309.
 For role-order decisions, `GET /api/v1/server-roles` accepts either `read_structure` or
 `manage_members`; both still require the creator to hold `ban_members` or administrator.
 This exception grants no access to the complete structure document (ADR 0309).
+
+Workspace membership removal requires a session because it deletes the account’s workspace role assignments (ADR 0213). Role definition changes stay within manage_structure and its rank and grant checks.

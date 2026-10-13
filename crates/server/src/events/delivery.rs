@@ -356,6 +356,9 @@ pub async fn subscribe(
                         case when octet_length(audience::text) <= $5 then audience end
                  from events
                  where position > $1
+                   and audience->>'to' is distinct from 'suppressed'
+                   and (audience->>'to' is distinct from 'notification' or exists (
+                       select 1 from notification_receivers nr where nr.event_id=events.id and nr.account_id=$2))
                    and (audience_account_id is null or audience_account_id = $2)
                    and class = any($3)
                  order by position
@@ -452,7 +455,10 @@ pub async fn next_batch(
                             octet_length(payload::text) as payload_bytes
                      from events
                      where position > $1
-                       and (audience_account_id is null or audience_account_id = $2)
+                       and audience->>'to' is distinct from 'suppressed'
+                   and (audience->>'to' is distinct from 'notification' or exists (
+                       select 1 from notification_receivers nr where nr.event_id=events.id and nr.account_id=$2))
+                   and (audience_account_id is null or audience_account_id = $2)
                        and class = any($3)
                      order by position
                      limit $4
