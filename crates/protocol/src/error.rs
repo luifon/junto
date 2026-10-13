@@ -28,6 +28,7 @@ pub enum ErrorCode {
     ExceedsOwnPermissions,
     NotFound,
     Conflict,
+    LastDevice,
     LimitReached,
     KeyAlreadyRegistered,
     OwnerAlreadyClaimed,
@@ -93,6 +94,7 @@ impl ErrorCode {
         Self::ExceedsOwnPermissions,
         Self::NotFound,
         Self::Conflict,
+        Self::LastDevice,
         Self::LimitReached,
         Self::KeyAlreadyRegistered,
         Self::OwnerAlreadyClaimed,
@@ -145,6 +147,7 @@ impl ErrorCode {
             | Self::OriginRejected => 403,
             Self::NotFound | Self::InviteNotFound | Self::LinkCodeInvalid => 404,
             Self::Conflict
+            | Self::LastDevice
             | Self::LimitReached
             | Self::KeyAlreadyRegistered
             | Self::OwnerAlreadyClaimed

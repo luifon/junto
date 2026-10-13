@@ -289,6 +289,10 @@ pub enum Event {
     InviteCreated {
         invite: Invite,
     },
+    /// The workspaces granted by an existing invite were narrowed.
+    InviteChanged {
+        invite: Invite,
+    },
     InviteRevoked {
         invite_id: InviteId,
         revocation: InviteRevocation,
@@ -368,6 +372,8 @@ pub enum Event {
     /// The first person is in the room of a call: the voice channel is in use, or the
     /// direct-message call has begun.
     CallStarted {
+        #[serde(default)]
+        hides_occupants: Option<bool>,
         call_id: CallId,
         place: CallPlace,
         #[serde(with = "time::serde::rfc3339")]
@@ -537,6 +543,9 @@ pub enum Event {
     ConversationOpened {
         conversation: crate::message::Conversation,
     },
+    ServerLogoChanged {
+        logo: Option<crate::account::Avatar>,
+    },
     AttachmentLimitsChanged {
         limits: crate::message::AttachmentLimits,
     },
@@ -609,8 +618,7 @@ pub enum Event {
         export_id: crate::ids::ExportId,
         reason: crate::export::ExportRemoval,
     },
-    /// The account of the recipient marked its notices read: every notice of it that was
-    /// created at or before `until` and was not read is read at `read_at` (ADR 0412).
+    /// Every visible notice created at or before `until` is read at `read_at` (ADR 0412).
     NotificationsRead {
         #[serde(with = "time::serde::rfc3339")]
         until: OffsetDateTime,
@@ -655,6 +663,7 @@ impl Event {
         "access_token_revoked",
         "access_tokens_of_creator_revoked",
         "invite_created",
+        "invite_changed",
         "invite_revoked",
         "invite_used",
         "invites_of_creator_revoked",
@@ -704,6 +713,7 @@ impl Event {
         "message_read",
         "message_mentioned",
         "conversation_opened",
+        "server_logo_changed",
         "attachment_limits_changed",
         "notification_changed",
         "notification_settings_changed",
@@ -744,6 +754,7 @@ impl Event {
             Self::AccessTokenRevoked { .. } => "access_token_revoked",
             Self::AccessTokensOfCreatorRevoked { .. } => "access_tokens_of_creator_revoked",
             Self::InviteCreated { .. } => "invite_created",
+            Self::InviteChanged { .. } => "invite_changed",
             Self::InviteRevoked { .. } => "invite_revoked",
             Self::InviteUsed { .. } => "invite_used",
             Self::InvitesOfCreatorRevoked { .. } => "invites_of_creator_revoked",
@@ -796,6 +807,7 @@ impl Event {
             Self::RetentionChanged { .. } => "retention_changed",
             Self::MessageMentioned { .. } => "message_mentioned",
             Self::ConversationOpened { .. } => "conversation_opened",
+            Self::ServerLogoChanged { .. } => "server_logo_changed",
             Self::AttachmentLimitsChanged { .. } => "attachment_limits_changed",
             Self::ChannelArchived { .. } => "channel_archived",
             Self::ChannelRestored { .. } => "channel_restored",
@@ -815,6 +827,10 @@ impl Event {
 
 /// A server message as a client of this API version reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "The ordinary message stays inline; boxing it would allocate for every decoded frame and change the reader API."
+)]
 pub enum Received {
     Message(ServerMessage),
     /// An event of a type that this version does not know. The client moves its cursor to
@@ -889,6 +905,7 @@ mod tests {
             deletes_at: Some(time()),
         };
         let participant = CallParticipant {
+            avatar: None,
             account_id,
             identity: "seat".to_owned(),
             joined_at: time(),
@@ -936,6 +953,7 @@ mod tests {
             permissions: vec![junto_authz::ServerPermission::BanMembers],
         };
         let invite = Invite {
+            created_by_name: None,
             id: InviteId::generate(),
             created_by: account_id,
             created_at: time(),
@@ -1070,6 +1088,9 @@ mod tests {
             Event::InviteCreated {
                 invite: invite.clone(),
             },
+            Event::InviteChanged {
+                invite: invite.clone(),
+            },
             Event::InviteRevoked {
                 invite_id: invite.id,
                 revocation: InviteRevocation::Revoked,
@@ -1102,6 +1123,7 @@ mod tests {
             Event::WorkspaceMemberAdded {
                 workspace_id,
                 member: WorkspaceMember {
+                    avatar: None,
                     account_id,
                     name: "Newcomer".to_owned(),
                     role_ids: vec![],
@@ -1142,6 +1164,7 @@ mod tests {
                 deny: vec![WorkspacePermission::ViewChannel],
             },
             Event::CallStarted {
+                hides_occupants: Some(false),
                 call_id,
                 place,
                 started_at: time(),
@@ -1242,6 +1265,7 @@ mod tests {
             },
             Event::OwnCallChanged {
                 call: Some(OwnCall {
+                    hides_occupants: Some(false),
                     call_id,
                     place,
                     device_id,
@@ -1316,6 +1340,7 @@ mod tests {
                     high_account_id: other_account_id,
                 },
             },
+            Event::ServerLogoChanged { logo: None },
             Event::AttachmentLimitsChanged {
                 limits: crate::message::AttachmentLimits {
                     bytes_per_file: 100_000_000,

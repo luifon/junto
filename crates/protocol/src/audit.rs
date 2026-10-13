@@ -48,6 +48,11 @@ pub enum AuditEvent {
         max_uses: u32,
         workspace_ids: Vec<WorkspaceId>,
     },
+    InviteWorkspacesChanged {
+        invite_id: InviteId,
+        invite_created_by: AccountId,
+        removed_workspace_id: WorkspaceId,
+    },
     InviteRevoked {
         invite_id: InviteId,
         /// The account that created the invite. Absent in an entry that was written before
@@ -77,9 +82,13 @@ pub enum AuditEvent {
         join_request_id: JoinRequestId,
     },
     AccountRemoved {
+        #[serde(default)]
+        reason: Option<String>,
         account_id: AccountId,
     },
     AccountBanned {
+        #[serde(default)]
+        reason: Option<String>,
         account_id: AccountId,
         cancelled_invite_ids: Vec<InviteId>,
     },
@@ -154,6 +163,11 @@ pub enum AuditEvent {
     WorkspaceRoleUnassigned {
         role_id: WorkspaceRoleId,
         account_id: AccountId,
+    },
+    /// An administrator removed an account from the workspace.
+    WorkspaceMemberRemoved {
+        account_id: AccountId,
+        reason: Option<String>,
     },
     /// An administrator added an existing account to the workspace.
     WorkspaceMemberAdded {
@@ -242,6 +256,9 @@ pub enum AuditEvent {
     GlossaryReplaced {
         terms: u32,
     },
+    ServerLogoChanged {
+        logo: Option<crate::account::Avatar>,
+    },
     AttachmentLimitsChanged {
         bytes_per_file: u64,
         files_per_message: u32,
@@ -309,9 +326,11 @@ impl AuditEvent {
             Self::OwnerAccessRestored { .. } => "owner_access_restored",
             Self::EventEpochRenewed => "event_epoch_renewed",
             Self::InviteRedeemed { .. } => "invite_redeemed",
+            Self::WorkspaceMemberRemoved { .. } => "workspace_member_removed",
             Self::WorkspaceMemberAdded { .. } => "workspace_member_added",
             Self::InviteCreated { .. } => "invite_created",
             Self::InviteRevoked { .. } => "invite_revoked",
+            Self::InviteWorkspacesChanged { .. } => "invite_workspaces_changed",
             Self::AccountJoined { .. } => "account_joined",
             Self::JoinRequestApproved { .. } => "join_request_approved",
             Self::JoinRequestDenied { .. } => "join_request_denied",
@@ -353,6 +372,7 @@ impl AuditEvent {
             Self::TranscriptRequested { .. } => "transcript_requested",
             Self::GlossaryReplaced { .. } => "glossary_replaced",
             Self::PermanentMessageDeleted { .. } => "permanent_message_deleted",
+            Self::ServerLogoChanged { .. } => "server_logo_changed",
             Self::AttachmentLimitsChanged { .. } => "attachment_limits_changed",
             Self::NotificationDefaultChanged { .. } => "notification_default_changed",
             Self::NotificationDefaultRemoved => "notification_default_removed",
@@ -401,6 +421,32 @@ pub struct AuditPage {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 #[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
+pub struct AuditFilterQuery {
+    /// Exact action name. Unknown action names match no entries.
+    #[serde(default)]
+    pub action: Option<String>,
+    #[serde(default)]
+    pub actor_id: Option<AccountId>,
+    /// An identifier named by the event or its workspace, channel or call scope.
+    #[serde(default)]
+    pub target_id: Option<uuid::Uuid>,
+    /// Inclusive start of the time interval.
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub since: Option<OffsetDateTime>,
+    /// Exclusive end of the time interval.
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub until: Option<OffsetDateTime>,
+    /// Continue before this entry; time-filtered pages order by occurrence time then identifier.
+    #[serde(default)]
+    pub before: Option<AuditEntryId>,
+    /// The largest number of entries to return, from 1 to 200. Absent: 50.
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+#[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
 pub struct AuditQuery {
     /// Return entries older than this one.
     #[serde(default)]
@@ -420,9 +466,11 @@ mod tests {
         let events = [
             AuditEvent::OwnerClaimed { account_id },
             AuditEvent::AccountBanned {
+                reason: None,
                 account_id,
                 cancelled_invite_ids: vec![InviteId::generate()],
             },
+            AuditEvent::ServerLogoChanged { logo: None },
             AuditEvent::ChannelDeleted {
                 name: "general".to_owned(),
             },

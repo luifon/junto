@@ -164,6 +164,7 @@ fn routes_without_a_session_are_the_ones_a_device_uses_before_it_has_one() {
         [
             "get /api/server",
             "get /api/v1/health",
+            "get /api/v1/server/logo",
             "post /api/v1/auth/challenges",
             "post /api/v1/auth/sessions",
             "post /api/v1/device-links",
@@ -300,7 +301,7 @@ fn every_enum_of_the_generated_documents_lists_the_names_that_serde_writes() {
         FileCheck, FileProblem, RecordingFailure, RecordingState, RecordingStopReason,
         SegmentFailure, SegmentSource, SegmentState,
     };
-    use junto_protocol::structure::ChannelKind;
+    use junto_protocol::structure::{ChannelKind, OverrideState};
     use junto_protocol::structure_file::{StructureChange, StructureKind};
     use junto_protocol::transcript::{
         LineSource, SegmentReason, SegmentTranscription, SpeakerSeparation, SpeakersReason,
@@ -371,6 +372,7 @@ fn every_enum_of_the_generated_documents_lists_the_names_that_serde_writes() {
         MoveOutcome,
         NotificationKind,
         NotificationLevel,
+        OverrideState,
         RecordingFailure,
         RecordingState,
         RecordingStopReason,

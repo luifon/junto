@@ -370,6 +370,17 @@ impl Access {
         Self::require_rank(actor, target)
     }
 
+    pub async fn require_above_workspace_account(
+        &self,
+        connection: &mut PgConnection,
+        workspace: WorkspaceId,
+        account: AccountId,
+    ) -> ApiResult<()> {
+        let actor = self.rank(connection, Some(workspace)).await?;
+        let target = Self::rank_of(connection, account, self.owner_id, Some(workspace)).await?;
+        Self::require_rank(actor, target)
+    }
+
     pub fn require_rank(
         actor: junto_authz::RoleRank,
         target: junto_authz::RoleRank,

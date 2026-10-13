@@ -96,6 +96,9 @@ pub struct SoundBlock {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CallParticipant {
+    /// Metadata of the avatar, without its image bytes.
+    #[serde(default)]
+    pub avatar: Option<crate::account::Avatar>,
     pub account_id: AccountId,
     /// The identity of the person's participant in the room of the media server.
     pub identity: String,
@@ -170,6 +173,9 @@ pub struct ChannelCall {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct OwnCall {
+    /// The retained hide setting, or unknown when an older server omitted it.
+    #[serde(default)]
+    pub hides_occupants: Option<bool>,
     pub call_id: CallId,
     pub place: CallPlace,
     pub device_id: DeviceId,
@@ -216,6 +222,9 @@ pub struct LeaveCallQuery {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct OwnCallState {
+    /// True after admission has observed this seat. Absent means not stated by the server (ADR 0517).
+    #[serde(default)]
+    pub inside: Option<bool>,
     pub own: OwnCall,
     pub call: Call,
     pub entry_requests: Vec<EntryRequest>,
@@ -447,6 +456,7 @@ mod tests {
     #[test]
     fn a_block_and_the_own_setting_are_separate_fields() {
         let participant = CallParticipant {
+            avatar: None,
             account_id: AccountId::generate(),
             identity: "seat".to_owned(),
             joined_at: OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap(),

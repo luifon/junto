@@ -30,6 +30,8 @@ pub struct Shared {
     pub redemptions_by_address: RateLimiter,
     pub redemptions_by_account: RateLimiter<AccountId>,
     pub account_changes: RateLimiter<AccountId>,
+    pub logo_reads: RateLimiter,
+    pub audit_reads: RateLimiter<AccountId>,
     pub link_code_attempts: RateLimiter<AccountId>,
     pub outstanding_challenges: Outstanding,
     pub attachment_writes: RateLimiter<[u8; 32]>,
@@ -99,6 +101,20 @@ impl AppState {
             redemptions_by_address,
             redemptions_by_account,
             account_changes,
+            logo_reads: RateLimiter::with_capacity(
+                crate::config::RateLimit {
+                    attempts: 120,
+                    window: time::Duration::minutes(1),
+                },
+                entries,
+            ),
+            audit_reads: RateLimiter::with_capacity(
+                crate::config::RateLimit {
+                    attempts: 120,
+                    window: time::Duration::minutes(1),
+                },
+                entries,
+            ),
             link_code_attempts,
             outstanding_challenges,
             attachment_writes: RateLimiter::with_capacity(

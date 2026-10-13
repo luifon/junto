@@ -55,6 +55,7 @@ Stored sets:
 - A set of permissions is stored as one integer in which each permission has a fixed bit. A test fixes the bit and the name of every permission.
 - The database refuses an integer with a bit above the highest known one. A new permission needs a migration that widens that check.
 - Overrides exist for channels only. A category has no overrides.
+- `PATCH /api/v1/channels/{channel_id}/overrides/{role_id}` changes one named permission to `allow`, `deny` or `inherit`, preserving every other bit. It requires manage channel and applies the grant rule only to that permission's delta, without role order. The current override is locked and changed in the serializable transaction; retries preserve concurrent changes of other permissions. It uses the existing `channel_override_set` event and audit entry. The read uses the channel/role primary key and the write affects at most one row.
 
 ## Consequences
 

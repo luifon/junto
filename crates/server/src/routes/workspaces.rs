@@ -327,13 +327,17 @@ pub async fn list_members(
         let access = Access::open(connection, &bearer, now).await?;
         let scope = access.workspace(connection, workspace_id).await?;
         access.require(Request::ViewWorkspace(&scope))?;
-        let rows: Vec<(AccountId, String, Vec<WorkspaceRoleId>)> = sqlx::query_as(
+        let rows: Vec<MemberRow> = sqlx::query_as(
             "select m.account_id, a.name,
                     array(select r.role_id from member_roles r
                           where r.workspace_id = m.workspace_id and r.account_id = m.account_id
-                          order by r.role_id)
+                          order by r.role_id) as role_ids,
+                    case when av.account_id is not null then jsonb_build_object(
+                        'hash', encode(av.hash, 'hex'), 'media_type', av.media_type,
+                        'bytes', octet_length(av.content), 'width', av.width, 'height', av.height) end as avatar
              from workspace_members m
              join accounts a on a.id = m.account_id
+             left join account_avatars av on av.account_id = m.account_id
              where m.workspace_id = $1
              order by m.account_id",
         )
@@ -342,14 +346,23 @@ pub async fn list_members(
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(account_id, name, role_ids)| WorkspaceMember {
-                account_id,
-                name,
-                role_ids,
+            .map(|row| WorkspaceMember {
+                avatar: row.avatar.map(|value| value.0),
+                account_id: row.account_id,
+                name: row.name,
+                role_ids: row.role_ids,
             })
             .collect())
     })
     .map(Json)
+}
+
+#[derive(sqlx::FromRow)]
+struct MemberRow {
+    account_id: AccountId,
+    name: String,
+    role_ids: Vec<WorkspaceRoleId>,
+    avatar: Option<sqlx::types::Json<junto_protocol::account::Avatar>>,
 }
 
 /// Adds an existing account to a workspace. Only a server administrator can do this.
@@ -393,6 +406,103 @@ pub async fn add_member(
             .await?;
             store::announce_members(connection, now, account_id, &[workspace_id]).await?;
         }
+        Ok(())
+    })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Removes one workspace membership and its roles. Server access and other memberships stay.
+#[utoipa::path(
+    post,
+    path = "/api/v1/workspaces/{workspace_id}/members/{account_id}/removal",
+    tag = "workspaces",
+    params(("workspace_id" = WorkspaceId, Path), ("account_id" = AccountId, Path)),
+    request_body = Option<junto_protocol::account::ModerationReason>,
+    security(("session" = [])),
+    responses((status = 204), ApiError)
+)]
+pub async fn remove_member(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath((workspace_id, account_id)): ApiPath<(WorkspaceId, AccountId)>,
+    body: axum::body::Bytes,
+) -> ApiResult<StatusCode> {
+    let reason = super::moderation::moderation_reason(&body)?;
+    let now = app.now();
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        let scope = access.workspace(connection, workspace_id).await?;
+        access.require(Request::ViewWorkspace(&scope))?;
+        access.require(Request::Server(ServerPermission::Administrator))?;
+        access.require(Request::Moderate {
+            target: access.target(account_id),
+        })?;
+        access
+            .require_above_workspace_account(connection, workspace_id, account_id)
+            .await?;
+        let removed =
+            sqlx::query("delete from workspace_members where workspace_id=$1 and account_id=$2")
+                .bind(workspace_id)
+                .bind(account_id)
+                .execute(&mut *connection)
+                .await?;
+        if removed.rows_affected() == 0 {
+            return Err(ApiError::not_found());
+        }
+        super::invites::withdraw_workspace(
+            connection,
+            now,
+            access.account_id,
+            account_id,
+            workspace_id,
+        )
+        .await?;
+        if let Some(member) = crate::calls::store::member_of(connection, account_id, true).await?
+            && let Some(call) = crate::calls::store::call(
+                connection,
+                crate::calls::store::By::Id(member.call_id),
+                true,
+            )
+            .await?
+            && matches!(call.place, junto_protocol::call::CallPlace::Channel { workspace_id: id, .. } if id == workspace_id)
+        {
+            crate::calls::entry::leave(
+                connection,
+                now,
+                account_id,
+                junto_protocol::call::LeaveReason::AccessEnded,
+            )
+            .await?;
+            app.calls.mark(call.room.as_str());
+        }
+        store::contact_changed(connection, now, account_id).await?;
+        events::permissions_changed(
+            connection,
+            now,
+            events::log::Affected::Account(account_id),
+            Some(workspace_id),
+        )
+        .await?;
+        events::publish(
+            connection,
+            now,
+            &Event::WorkspaceMemberRemoved {
+                workspace_id,
+                account_id,
+            },
+        )
+        .await?;
+        audit::record(
+            connection,
+            now,
+            Some(access.account_id),
+            About::Workspace(workspace_id),
+            &AuditEvent::WorkspaceMemberRemoved {
+                account_id,
+                reason: reason.clone(),
+            },
+        )
+        .await?;
         Ok(())
     })?;
     Ok(StatusCode::NO_CONTENT)

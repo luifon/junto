@@ -280,6 +280,7 @@ pub async fn enter(
     if !seated {
         let own = Event::OwnCallChanged {
             call: Some(junto_protocol::call::OwnCall {
+                hides_occupants: Some(call.hides_occupants),
                 call_id: call.id,
                 place: call.place,
                 device_id: access.device_id,
@@ -389,6 +390,15 @@ async fn ring(
     let invited = Event::CallInvited {
         invitation: waiting.invitation.clone(),
     };
+    if waiting.silent {
+        events::log::record(
+            connection,
+            now,
+            &events::audience::Audience::Suppressed,
+            &invited,
+        )
+        .await?;
+    }
     for account_id in waiting.told() {
         events::tell_account(&mut *connection, now, account_id, &invited).await?;
     }

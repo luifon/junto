@@ -366,3 +366,146 @@ async fn a_profile_is_shown_only_to_the_accounts_that_may_see_the_account() {
         .await
         .error(ErrorCode::NotFound);
 }
+
+#[tokio::test]
+async fn members_and_call_participants_carry_avatar_descriptions() {
+    use crate::calls_support::Scene;
+    use crate::discovery_support::events;
+    let scene = Scene::start().await;
+    let (server, owner, ann, ben) = (&scene.server, &scene.owner, &scene.ann, &scene.ben);
+    let avatar: Avatar = server
+        .put_bytes(ann, AVATAR, None, samples::png(8, 8))
+        .await
+        .ok(StatusCode::OK);
+    let members: Vec<WorkspaceMember> = server
+        .get(
+            ben,
+            &format!("/api/v1/workspaces/{}/members", scene.workspace_id),
+        )
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(
+        members
+            .iter()
+            .find(|member| member.account_id == ann.account_id)
+            .unwrap()
+            .avatar
+            .as_ref(),
+        Some(&avatar)
+    );
+    let before = server.snapshot(ben).await.cursor;
+    server.enter_call(ann, scene.voice.id).await;
+    let snapshot = serde_json::to_value(server.snapshot(ben).await).unwrap();
+    let text = snapshot.to_string();
+    assert!(text.contains(&avatar.hash));
+    let sent = events(server, ben, before, Level::Full).await;
+    assert!(sent.iter().any(|event| matches!(event, Event::CallParticipantJoined { participant, .. } if participant.account_id == ann.account_id && participant.avatar.as_ref() == Some(&avatar))));
+    let own = server.own_call(ann).await.call.unwrap();
+    assert_eq!(own.call.participants[0].avatar.as_ref(), Some(&avatar));
+    server
+        .post(
+            owner,
+            &format!(
+                "/api/v1/workspaces/{}/members/{}/removal",
+                scene.workspace_id, ann.account_id
+            ),
+            &json!({}),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let before = server.snapshot(ben).await.cursor;
+    server
+        .put_empty(
+            owner,
+            &format!(
+                "/api/v1/workspaces/{}/members/{}",
+                scene.workspace_id, ann.account_id
+            ),
+        )
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let sent = events(server, ben, before, Level::Full).await;
+    assert!(sent.iter().any(|event| matches!(event, Event::WorkspaceMemberAdded { member, .. } if member.account_id == ann.account_id && member.avatar.as_ref() == Some(&avatar))));
+    server
+        .delete(ann, AVATAR)
+        .await
+        .empty(StatusCode::NO_CONTENT);
+    let members: Vec<WorkspaceMember> = server
+        .get(
+            ben,
+            &format!("/api/v1/workspaces/{}/members", scene.workspace_id),
+        )
+        .await
+        .ok(StatusCode::OK);
+    assert!(
+        members
+            .iter()
+            .find(|member| member.account_id == ann.account_id)
+            .unwrap()
+            .avatar
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn profile_metadata_joins_use_account_indexes() {
+    use crate::calls_support::Scene;
+    use crate::plan_support::{analyze, explained, index_names, visited_rows};
+    let scene = Scene::start().await;
+    let server = &scene.server;
+    server.enter_call(&scene.ann, scene.voice.id).await;
+    let call = server.own_call(&scene.ann).await.call.unwrap().call.id;
+    sqlx::query(
+        "insert into accounts(id,name,status,created_at)
+        select gen_random_uuid(),'Other','active',now() from generate_series(1,10000)",
+    )
+    .execute(&server.db)
+    .await
+    .unwrap();
+    sqlx::query("insert into account_avatars(account_id,media_type,content,hash,width,height,updated_at)
+        select id,'image/png',decode('00','hex'),decode(repeat('00',32),'hex'),1,1,now() from accounts")
+        .execute(&server.db).await.unwrap();
+    analyze(
+        &server.db,
+        &[
+            "accounts",
+            "account_avatars",
+            "workspace_members",
+            "call_members",
+            "invites",
+        ],
+    )
+    .await;
+    for (statement, scope) in [
+        (
+            "select m.account_id,av.hash,octet_length(av.content) from workspace_members m left join account_avatars av on av.account_id=m.account_id where m.workspace_id=$1 order by m.account_id",
+            scene.workspace_id.as_uuid(),
+        ),
+        (
+            "select m.account_id,av.hash,octet_length(av.content) from call_members m left join account_avatars av on av.account_id=m.account_id where m.call_id=$1 and m.connected_at is not null order by m.account_id",
+            call.as_uuid(),
+        ),
+    ] {
+        let plan: serde_json::Value = sqlx::query_scalar(explained(statement))
+            .bind(scope)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+        assert!(
+            index_names(&plan)
+                .iter()
+                .any(|name| name == "account_avatars_pkey"),
+            "{plan}"
+        );
+        assert!(visited_rows(&plan[0]["Plan"]) < 100, "{plan}");
+    }
+    let plan: serde_json::Value = sqlx::query_scalar(explained("select i.id,creator.name from invites i join accounts creator on creator.id=i.created_by order by i.id desc"))
+        .fetch_one(&server.db).await.unwrap();
+    assert!(
+        index_names(&plan)
+            .iter()
+            .any(|name| name == "accounts_pkey"),
+        "{plan}"
+    );
+    assert!(visited_rows(&plan[0]["Plan"]) < 100, "{plan}");
+}

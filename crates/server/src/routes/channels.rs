@@ -8,8 +8,9 @@ use junto_protocol::audit::AuditEvent;
 use junto_protocol::events::Event;
 use junto_protocol::ids::{CategoryId, ChannelId, WorkspaceId, WorkspaceRoleId};
 use junto_protocol::structure::{
-    Category, Channel, ChannelKind, ChannelList, ChannelOverride, ChannelPermissions,
-    CreateCategory, CreateChannel, SetChannelOverride, UpdateCategory, UpdateChannel,
+    Category, ChangeChannelOverride, Channel, ChannelKind, ChannelList, ChannelOverride,
+    ChannelPermissions, CreateCategory, CreateChannel, OverrideState, SetChannelOverride,
+    UpdateCategory, UpdateChannel,
 };
 use sqlx::PgConnection;
 use time::OffsetDateTime;
@@ -828,6 +829,66 @@ pub async fn set_channel_override(
             now,
             (channel_id, role_id),
             next,
+            false,
+        )
+        .await
+    })
+    .map(Json)
+}
+
+/// Changes one permission of a channel override with the grant ceiling on its delta.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/channels/{channel_id}/overrides/{role_id}",
+    tag = "channels",
+    params(("channel_id" = ChannelId, Path), ("role_id" = WorkspaceRoleId, Path)),
+    request_body = ChangeChannelOverride,
+    security(("session" = [])),
+    responses((status = 200, body = ChannelOverride), ApiError)
+)]
+pub async fn change_channel_override(
+    State(app): State<AppState>,
+    bearer: Bearer,
+    ApiPath((channel_id, role_id)): ApiPath<(ChannelId, WorkspaceRoleId)>,
+    ApiJson(body): ApiJson<ChangeChannelOverride>,
+) -> ApiResult<Json<ChannelOverride>> {
+    let now = app.now();
+    transact!(app, |connection| {
+        let access = Access::open(connection, &bearer, now).await?;
+        let (_, scope) = access.channel(connection, channel_id).await?;
+        access.require(Request::Channel {
+            scope: &scope,
+            permission: WorkspacePermission::ManageChannel,
+        })?;
+        let stored: Option<(i64, i64)> = sqlx::query_as(
+            "select allow, deny from channel_overrides
+             where channel_id=$1 and role_id=$2 for update",
+        )
+        .bind(channel_id)
+        .bind(role_id)
+        .fetch_optional(&mut *connection)
+        .await?;
+        let previous = match stored {
+            Some((allow, deny)) => stored_override(allow, deny)?,
+            None => Override::NONE,
+        };
+        let changed = WorkspacePermissions::from(body.permission);
+        let mut allow = previous.allow().difference(changed);
+        let mut deny = previous.deny().difference(changed);
+        match body.state {
+            OverrideState::Allow => allow = allow.union(changed),
+            OverrideState::Deny => deny = deny.union(changed),
+            OverrideState::Inherit => {}
+        }
+        let next = Override::new(allow, deny).map_err(|error| ApiError::internal(&error))?;
+        set_override_in(
+            connection,
+            &app.calls,
+            &access,
+            now,
+            (channel_id, role_id),
+            next,
+            true,
         )
         .await
     })
@@ -841,6 +902,7 @@ pub(crate) async fn set_override_in(
     now: OffsetDateTime,
     (channel_id, role_id): (ChannelId, WorkspaceRoleId),
     next: Override,
+    only_if_changed: bool,
 ) -> ApiResult<ChannelOverride> {
     let (allow, deny) = (next.allow(), next.deny());
     let result = ChannelOverride {
@@ -883,6 +945,9 @@ pub(crate) async fn set_override_in(
         granting: previous.granted_by_change_to(next),
     })?;
 
+    if only_if_changed && previous == next {
+        return Ok(result);
+    }
     if next.is_none() {
         sqlx::query("delete from channel_overrides where channel_id = $1 and role_id = $2")
             .bind(channel_id)

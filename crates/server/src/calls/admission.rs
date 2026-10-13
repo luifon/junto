@@ -358,10 +358,10 @@ async fn complete_move(
     .bind(member.self_deafened)
     .execute(&mut *connection)
     .await?;
-    seen_in_room(&mut *connection, now, destination, member.account_id).await?;
 
     let own = Event::OwnCallChanged {
         call: Some(OwnCall {
+            hides_occupants: Some(destination.hides_occupants),
             call_id: destination.id,
             place: destination.place,
             device_id: member.device_id,
@@ -370,6 +370,7 @@ async fn complete_move(
         left: Some(LeaveReason::Moved),
     };
     events::tell_account(&mut *connection, now, member.account_id, &own).await?;
+    seen_in_room(&mut *connection, now, destination, member.account_id).await?;
     store::tell_move(&mut *connection, now, pending, MoveOutcome::Completed).await?;
     let (account_id, mover) = (member.account_id, Some(pending.moved_by));
     for (place, entry) in [
@@ -414,6 +415,7 @@ async fn seen_in_room(
         let first = Some(account_id);
         store::note(&mut *connection, now, call, store::Note::CallStarted, first).await?;
         let started = Event::CallStarted {
+            hides_occupants: Some(call.hides_occupants),
             call_id: call.id,
             place: call.place,
             started_at: now,

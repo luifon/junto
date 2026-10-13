@@ -39,6 +39,7 @@ type InviteRow = (
     i32,
     Option<String>,
     Vec<WorkspaceId>,
+    String,
 );
 
 const INVITE_SELECT: &str = "select i.id, i.created_by, i.created_at, i.expires_at, i.max_uses, \
@@ -46,7 +47,7 @@ const INVITE_SELECT: &str = "select i.id, i.created_by, i.created_at, i.expires_
      array(select w.workspace_id from invite_workspaces w \
            join workspaces live on live.id = w.workspace_id and live.deleted_at is null \
            where w.invite_id = i.id order by w.workspace_id) \
-     from invites i";
+     , creator.name from invites i join accounts creator on creator.id = i.created_by";
 
 /// An invite and an approval name a bounded number of workspaces (ADR 0306).
 fn require_few_workspaces(app: &AppState, workspace_ids: &[WorkspaceId]) -> ApiResult<()> {
@@ -60,10 +61,21 @@ fn require_few_workspaces(app: &AppState, workspace_ids: &[WorkspaceId]) -> ApiR
 }
 
 fn invite(row: InviteRow) -> ApiResult<Invite> {
-    let (id, created_by, created_at, expires_at, max_uses, uses, revocation, workspace_ids) = row;
+    let (
+        id,
+        created_by,
+        created_at,
+        expires_at,
+        max_uses,
+        uses,
+        revocation,
+        workspace_ids,
+        creator_name,
+    ) = row;
     Ok(Invite {
         id,
         created_by,
+        created_by_name: Some(creator_name),
         created_at,
         expires_at,
         max_uses: db::count(max_uses)?,
@@ -199,6 +211,12 @@ pub async fn create_invite(
         let invite = Invite {
             id,
             created_by: access.account_id,
+            created_by_name: Some(
+                sqlx::query_scalar("select name from accounts where id = $1")
+                    .bind(access.account_id)
+                    .fetch_one(&mut *connection)
+                    .await?,
+            ),
             created_at: now,
             expires_at,
             max_uses,
@@ -424,6 +442,7 @@ pub async fn redeem_invite(
         access.require(Request::OwnAccount)?;
         let (invite_id, invite_created_by, granted) =
             use_invite(connection, &code_hash, now).await?;
+
         let workspace_ids: Vec<WorkspaceId> = sqlx::query_scalar(
             "insert into workspace_members (workspace_id, account_id, joined_at)
              select workspace_id, $2, $3 from unnest($1::uuid[]) as granted (workspace_id)
@@ -842,4 +861,97 @@ pub async fn deny_join_request(
         })
     })
     .map(Json)
+}
+
+/// Ends grants made by a removed workspace member, in the removal transaction.
+pub(crate) async fn withdraw_workspace(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    actor: AccountId,
+    creator: AccountId,
+    workspace: WorkspaceId,
+) -> ApiResult<()> {
+    let mut after = uuid::Uuid::nil();
+    loop {
+        let rows: Vec<InviteRow> = sqlx::query_as(sqlx::AssertSqlSafe(withdrawal_statement()))
+            .bind(creator)
+            .bind(after)
+            .fetch_all(&mut *connection)
+            .await?;
+        if rows.is_empty() {
+            return Ok(());
+        }
+        for row in rows {
+            let mut changed = invite(row)?;
+            after = changed.id.as_uuid();
+            if !changed.workspace_ids.contains(&workspace) {
+                continue;
+            }
+            if changed.workspace_ids.len() <= 1 {
+                sqlx::query("update invites set revoked_at=$2, revocation='revoked' where id=$1")
+                    .bind(changed.id)
+                    .bind(now)
+                    .execute(&mut *connection)
+                    .await?;
+                audit::record(
+                    connection,
+                    now,
+                    Some(actor),
+                    About::Server,
+                    &AuditEvent::InviteRevoked {
+                        invite_id: changed.id,
+                        invite_created_by: Some(creator),
+                    },
+                )
+                .await?;
+                announce(
+                    connection,
+                    now,
+                    creator,
+                    &changed.workspace_ids,
+                    &Event::InviteRevoked {
+                        invite_id: changed.id,
+                        revocation: InviteRevocation::Revoked,
+                    },
+                )
+                .await?;
+            } else {
+                sqlx::query("delete from invite_workspaces where invite_id=$1 and workspace_id=$2")
+                    .bind(changed.id)
+                    .bind(workspace)
+                    .execute(&mut *connection)
+                    .await?;
+                changed.workspace_ids.retain(|id| *id != workspace);
+                audit::record(
+                    connection,
+                    now,
+                    Some(actor),
+                    About::Server,
+                    &AuditEvent::InviteWorkspacesChanged {
+                        invite_id: changed.id,
+                        invite_created_by: creator,
+                        removed_workspace_id: workspace,
+                    },
+                )
+                .await?;
+                announce(
+                    connection,
+                    now,
+                    creator,
+                    &changed.workspace_ids,
+                    &Event::InviteChanged {
+                        invite: changed.clone(),
+                    },
+                )
+                .await?;
+            }
+        }
+    }
+}
+
+/// The fixed-size creator page used while withdrawing a workspace's grants.
+pub fn withdrawal_statement() -> String {
+    format!(
+        "{INVITE_SELECT} where i.created_by=$1 and i.revoked_at is null and i.id>$2 order by i.id limit 100"
+    )
 }

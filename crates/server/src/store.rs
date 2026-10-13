@@ -230,10 +230,12 @@ pub async fn announce_members(
         .bind(account_id)
         .fetch_one(&mut *connection)
         .await?;
+    let avatar = avatar_of(connection, account_id).await?;
     for workspace_id in workspace_ids {
         let added = Event::WorkspaceMemberAdded {
             workspace_id: *workspace_id,
             member: WorkspaceMember {
+                avatar: avatar.clone(),
                 account_id,
                 name: name.clone(),
                 role_ids: Vec::new(),

@@ -418,8 +418,8 @@ mod system {
     }
 }
 
-#[cfg(not(unix))]
-mod system {
+#[cfg(any(not(unix), test))]
+mod unsupported_system {
     use std::fs::File;
     use std::io;
     use std::path::Path;
@@ -483,6 +483,9 @@ mod system {
         unsupported()
     }
 }
+
+#[cfg(not(unix))]
+use unsupported_system as system;
 
 /// True for the error of a file or directory that is not there.
 pub fn is_absent(error: &io::Error) -> bool {
@@ -858,5 +861,57 @@ mod tests {
         assert!(root.join("kept/file").exists());
         assert!(std::fs::symlink_metadata(root.join("link")).is_err());
         remove(root, &Place(vec!["absent".to_owned()])).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod unsupported_system_tests {
+    use super::*;
+
+    #[test]
+    fn every_unsupported_storage_operation_refuses() {
+        let root = Path::new("unused-storage-root");
+        let place = Place::recording(RecordingId::generate());
+        let errors = [
+            unsupported_system::pieces(root, &place).unwrap_err(),
+            unsupported_system::listed(root, &place, |_| true).unwrap_err(),
+            unsupported_system::entries_after(root, &place, None, 1, |_| true).unwrap_err(),
+            unsupported_system::finish(root, &place, &place).unwrap_err(),
+            unsupported_system::create_directory(root, &place).unwrap_err(),
+            unsupported_system::rename(root, &place, &place).unwrap_err(),
+            unsupported_system::write_new(root, &place, b"").unwrap_err(),
+            unsupported_system::remove_if_empty(root, &place).unwrap_err(),
+        ];
+        assert!(
+            errors
+                .iter()
+                .all(|error| error.kind() == io::ErrorKind::Unsupported)
+        );
+    }
+
+    #[test]
+    fn recording_and_attachment_files_fail_closed_without_descriptor_operations() {
+        let root = Path::new("unused-storage-root");
+        for place in [
+            Place::recording(RecordingId::generate()),
+            Place::attachment(junto_protocol::ids::AttachmentId::generate()),
+        ] {
+            assert_eq!(
+                unsupported_system::open_file(root, &place)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::Unsupported
+            );
+            assert_eq!(
+                unsupported_system::create_file(root, &place)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::Unsupported
+            );
+            assert_eq!(
+                unsupported_system::remove(root, &place).unwrap_err().kind(),
+                io::ErrorKind::Unsupported
+            );
+        }
     }
 }

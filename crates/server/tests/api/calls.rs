@@ -77,6 +77,7 @@ async fn a_member_joins_a_voice_channel_with_a_short_token_for_one_room() {
         server.call_events(ann, &mut to_ann).await,
         [Event::OwnCallChanged {
             call: Some(junto_protocol::call::OwnCall {
+                hides_occupants: Some(false),
                 call_id: join.call.id,
                 place,
                 device_id: ann.device_id,

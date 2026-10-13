@@ -235,7 +235,7 @@ async fn a_device_can_remove_itself_but_the_last_device_stays() {
             &format!("/api/v1/account/devices/{}", owner.device_id),
         )
         .await
-        .error(ErrorCode::Conflict);
+        .error(ErrorCode::LastDevice);
 
     let second = link_second_device(&server, &owner).await;
     server

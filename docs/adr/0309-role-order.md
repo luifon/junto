@@ -54,7 +54,7 @@ roles, and other server roles contribute no position.
   account to a workspace, and revoking access tokens do not compare roles. They retain
   their existing permissions and visibility limits. Editing another person's message or
   profile has no route or permission. Account recovery and owner transfer keep their
-  owner-only rules. No workspace-only member-removal route exists.
+  owner-only rules. Workspace-only removal requires administrator, protects the owner and self, and compares the target's workspace rank strictly; it is ranked, unlike admission.
 - These exemptions preserve Discord's action-specific role order; role order is not a
   general immunity from moderation. Junto differs by having two role levels and by
   retaining its existing permission-grant ceilings, permanent-message rules and token

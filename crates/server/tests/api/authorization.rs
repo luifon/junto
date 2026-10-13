@@ -273,6 +273,20 @@ async fn world() -> World {
 
     let mut operations = vec![
         operation(
+            Method::PUT,
+            "/api/v1/server/logo",
+            &[],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::DELETE,
+            "/api/v1/server/logo",
+            &[],
+            none.clone(),
+            &forbidden,
+        ),
+        operation(
             Method::GET,
             "/api/v1/attachment-limits",
             &[],
@@ -682,6 +696,13 @@ async fn world() -> World {
             &[(Plain, NotFound)],
         ),
         operation(
+            Method::POST,
+            "/api/v1/workspaces/{workspace_id}/members/{account_id}/removal",
+            &[&closed_id, &outsider.account_id],
+            none.clone(),
+            &[(Caller::Plain, NotFound)],
+        ),
+        operation(
             Method::PUT,
             "/api/v1/workspaces/{workspace_id}/members/{account_id}",
             &[&closed_id, &plain.account_id],
@@ -763,6 +784,13 @@ async fn world() -> World {
             "/api/v1/channels/{channel_id}/overrides",
             &[&channel.id],
             none.clone(),
+            &forbidden,
+        ),
+        operation(
+            Method::PATCH,
+            "/api/v1/channels/{channel_id}/overrides/{role_id}",
+            &[&channel.id, &role.id],
+            json!({"permission":"manage_channel", "state":"allow"}),
             &forbidden,
         ),
         operation(
@@ -1498,6 +1526,15 @@ async fn send(
     operation: &Operation,
     token: Option<&str>,
 ) -> crate::support::Reply {
+    if operation.method == Method::PUT && operation.template == "/api/v1/server/logo" {
+        let mut request = reqwest::Client::new()
+            .put(format!("{}{}", server.base, operation.path))
+            .body(junto_server::image::samples::png(8, 8));
+        if let Some(token) = token {
+            request = request.bearer_auth(token);
+        }
+        return TestServer::reply(request).await;
+    }
     let body = (!operation.body.is_null()).then_some(&operation.body);
     server
         .send(operation.method.clone(), &operation.path, token, body, None)
@@ -1656,6 +1693,11 @@ fn token_reach() -> BTreeMap<(&'static str, &'static str), TokenAction> {
             ManageStructure,
         ),
         ("PATCH", "/api/v1/channels/{channel_id}", ManageStructure),
+        (
+            "PATCH",
+            "/api/v1/channels/{channel_id}/overrides/{role_id}",
+            ManageStructure,
+        ),
         ("DELETE", "/api/v1/channels/{channel_id}", ManageStructure),
         (
             "DELETE",
@@ -1780,7 +1822,8 @@ async fn the_reach_of_access_tokens_is_the_stated_list_of_documented_operations(
         // A request with a token changes no role assignment and lifts no ban (ADR 0213).
         let assigns_a_role = path.ends_with("/server-roles/{role_id}")
             && path.starts_with("/api/v1/accounts/")
-            || path.ends_with("/members/{account_id}/roles/{role_id}");
+            || path.ends_with("/members/{account_id}/roles/{role_id}")
+            || path.ends_with("/members/{account_id}/removal");
         let lifts_a_ban = *method == "DELETE" && path.ends_with("/ban");
         assert!(
             !closed.iter().any(|prefix| path.starts_with(prefix))

@@ -77,6 +77,7 @@ pub struct Arrivals {
     /// An event of another class that is not addressed to one account.
     pub other: bool,
     pub accounts: HashSet<AccountId>,
+    pub full_accounts: HashSet<AccountId>,
     pub revalidate: HashSet<AccountId>,
 }
 
@@ -315,14 +316,15 @@ impl Streams {
         }
         for (account_id, connections) in &registry.by_account {
             let addressed = arrivals.accounts.contains(account_id);
-            if !(addressed || arrivals.other || arrivals.general) {
+            let full_addressed = arrivals.full_accounts.contains(account_id);
+            if !(addressed || full_addressed || arrivals.other || arrivals.general) {
                 continue;
             }
             let in_call = self.calls.key_of(*account_id).is_some();
             for link in connections {
                 let wanted = match link.level.load(Ordering::SeqCst) {
                     FULL => true,
-                    BACKGROUND => addressed || arrivals.other || in_call,
+                    BACKGROUND => addressed || arrivals.other || (arrivals.general && in_call),
                     _ => false,
                 };
                 if wanted {
@@ -378,6 +380,11 @@ impl Streams {
     /// The connections whose tasks have not ended, the ones that are closing included.
     pub fn connections(&self) -> usize {
         lock(&self.registry).by_account.values().map(Vec::len).sum()
+    }
+
+    /// Accounts with a connection in this process, for indexed notice wake-ups.
+    pub fn connected_accounts(&self) -> Vec<AccountId> {
+        lock(&self.registry).by_account.keys().copied().collect()
     }
 
     pub fn connections_of(&self, account_id: AccountId) -> usize {
