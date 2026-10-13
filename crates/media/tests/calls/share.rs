@@ -331,6 +331,17 @@ async fn a_share_with_sound_arrives_with_its_picture_and_its_sound() {
     ben.until_heard_afresh(&ann).await;
 }
 
+/// The longest time, in seconds, from a change of the watched share to the first of three
+/// seconds in a row with the full frame rate (ADR 0737).
+const FULL_RATE_WITHIN_SECONDS: usize = 20;
+
+/// The last three seconds hold at least 66 pictures of the full size: more than the 45
+/// that the layer of half the size gives at its 15 per second, and more than the 15 of the
+/// defaults of the call library.
+fn full_rate(seconds: &[usize]) -> bool {
+    seconds.len() >= 3 && seconds[seconds.len() - 3..].iter().sum::<usize>() >= 66
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
 async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_with_its_sharer() {
@@ -401,8 +412,38 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
     ben.until_heard_tone(SYSTEM.0).await;
 
     // Cal chooses the share of Ben: its picture, and its sound in place of the other one.
+    // The pictures of the share of Ben in its full size are counted from the change, in
+    // seconds, so that a small layer or a low rate in the first seconds after the change
+    // is measured and not waited out.
     let before_switch = crate::statistics::snapshot(&ben, &cal, share_started).await;
+    let mut pictures = cal.calls.main_picture();
+    pictures.borrow_and_update();
     cal.calls.watch_share(ShareId::Of(ben_id));
+    let counted = tokio::spawn(async move {
+        let started = tokio::time::Instant::now();
+        let mut seconds: Vec<usize> = Vec::new();
+        while !full_rate(&seconds) && started.elapsed() < PATIENCE {
+            let end = started + Duration::from_secs(seconds.len() as u64 + 1);
+            let mut arrived = 0;
+            loop {
+                match tokio::time::timeout_at(end, pictures.changed()).await {
+                    Ok(Ok(())) => {
+                        let full = pictures.borrow_and_update().as_ref().is_some_and(|shown| {
+                            shown.share == ShareId::Of(ben_id) && shown.frame.source == (800, 600)
+                        });
+                        arrived += usize::from(full);
+                    }
+                    Ok(Err(_)) => {
+                        seconds.push(arrived);
+                        return seconds;
+                    }
+                    Err(_) => break,
+                }
+            }
+            seconds.push(arrived);
+        }
+        seconds
+    });
     cal.until("Cal watches the share of Ben", |view| {
         view.call
             .as_ref()
@@ -412,31 +453,27 @@ async fn the_sound_follows_the_share_that_the_viewer_watches_and_a_share_ends_wi
     let picture = cal.until_shown(ShareId::Of(ben_id), GREEN, YELLOW).await;
     assert_eq!(picture.frame.source.0 * 3, picture.frame.source.1 * 4);
     // The share is sent at the frame rate that its sharer chose, 30 pictures per second.
-    // The defaults of the call library send a picture of 800 pixels at 5 per second: in
-    // three seconds 15 pictures arrive with them, at any load. A busy processor lowers
-    // the frame rate for a time (ADR 0737), so the count is taken again until it holds.
-    let mut pictures = cal.calls.main_picture();
-    let started = tokio::time::Instant::now();
-    loop {
-        let before = crate::statistics::snapshot(&ben, &cal, share_started).await;
-        pictures.borrow_and_update();
-        let mut arrived = 0;
-        let counted = tokio::time::timeout(Duration::from_secs(3), async {
-            while pictures.changed().await.is_ok() {
-                arrived += 1;
-            }
-        });
-        let _ = counted.await;
+    // The defaults of the call library send a picture of 800 pixels at 5 per second, and
+    // the layer of half the size has at most 15. The media server changes the layer that
+    // it sends to Cal after the change; the time until three seconds in a row hold 66
+    // pictures of the full size is printed in every run and has a bound (ADR 0737).
+    let seconds = counted.await.unwrap();
+    let delay = seconds.len().saturating_sub(3);
+    eprintln!(
+        "pictures of the full size in each second after the change of the watched share: \
+         {seconds:?}; the full rate began after {delay} s"
+    );
+    if !full_rate(&seconds) || delay > FULL_RATE_WITHIN_SECONDS {
         let after = crate::statistics::snapshot(&ben, &cal, share_started).await;
-        if arrived >= 36 {
-            break;
-        }
-        let within_patience = started.elapsed() < PATIENCE;
-        crate::statistics::frame_rate(&cal, arrived, &before, &after);
-        eprintln!("before the watch changed: {before_switch:?}");
-        assert!(
-            within_patience,
-            "after {PATIENCE:?} still {arrived} pictures in three seconds"
+        crate::statistics::frame_rate(
+            &cal,
+            seconds.iter().rev().take(3).sum(),
+            &before_switch,
+            &after,
+        );
+        panic!(
+            "the full frame rate began {delay} s after the change of the watched share, \
+             later than {FULL_RATE_WITHIN_SECONDS} s: {seconds:?}"
         );
     }
     cal.until_heard_tone(PLAYER.0).await;

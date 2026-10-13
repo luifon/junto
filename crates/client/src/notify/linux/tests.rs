@@ -11,33 +11,57 @@ use super::*;
 struct Bus {
     process: Child,
     address: String,
+    directory: std::sync::Arc<tempfile::TempDir>,
 }
 
 impl Bus {
     fn new() -> Self {
+        let directory = tempfile::Builder::new()
+            .prefix("junto-notify-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        Self::at(std::sync::Arc::new(directory))
+    }
+
+    /// A bus daemon whose address is the socket in this directory.
+    fn at(directory: std::sync::Arc<tempfile::TempDir>) -> Self {
+        let socket = directory.path().join("bus");
+        let _ = std::fs::remove_file(&socket);
         let mut process = Process::new("dbus-daemon")
             .args(["--session", "--nofork", "--print-address=1"])
+            .arg(format!("--address=unix:path={}", socket.display()))
             .stdout(Stdio::piped())
             .spawn()
             .unwrap();
-        let mut address = String::new();
+        // The daemon prints its address when it listens. The printed address names this
+        // one daemon; the address of the socket alone also reaches its successor.
+        let mut printed = String::new();
         BufReader::new(process.stdout.take().unwrap())
-            .read_line(&mut address)
+            .read_line(&mut printed)
             .unwrap();
         Self {
             process,
-            address: address.trim().to_owned(),
+            address: format!("unix:path={}", socket.display()),
+            directory,
         }
     }
 
-    async fn connection(&self) -> Connection {
-        zbus::connection::Builder::address(self.address.as_str())
-            .unwrap()
-            .method_timeout(WAIT)
-            .build()
-            .await
-            .unwrap()
+    /// The worker of the application on this bus, as `DesktopNotifier` starts it.
+    fn worker(
+        &self,
+        commands: mpsc::UnboundedReceiver<Command>,
+        actions: futures_channel::mpsc::UnboundedSender<String>,
+    ) -> tokio::task::JoinHandle<()> {
+        let address = self.address.clone();
+        tokio::spawn(worker(move || connect(address.clone()), commands, actions))
     }
+}
+
+async fn connect(address: String) -> zbus::Result<Connection> {
+    zbus::connection::Builder::address(address.as_str())?
+        .method_timeout(WAIT)
+        .build()
+        .await
 }
 
 impl Drop for Bus {
@@ -62,7 +86,12 @@ enum Told {
 struct Service {
     told: mpsc::UnboundedSender<Told>,
     next: AtomicU32,
+    /// What the service answers about itself. `None`: it does not answer the question.
+    capabilities: Option<&'static [&'static str]>,
 }
+
+const MARKUP: Option<&[&str]> = Some(&["actions", "body", "body-markup"]);
+const PLAIN: Option<&[&str]> = Some(&["actions", "body"]);
 
 #[zbus::interface(name = "org.freedesktop.Notifications")]
 impl Service {
@@ -100,9 +129,24 @@ impl Service {
     fn close_notification(&self, id: u32) {
         self.told.send(Told::Close(id)).unwrap();
     }
+
+    async fn get_capabilities(&self) -> Vec<String> {
+        let Some(capabilities) = self.capabilities else {
+            tokio::time::sleep(Duration::from_secs(120)).await;
+            return Vec::new();
+        };
+        capabilities.iter().map(|name| (*name).to_owned()).collect()
+    }
 }
 
 async fn service(bus: &Bus) -> (Connection, mpsc::UnboundedReceiver<Told>) {
+    service_with(bus, MARKUP).await
+}
+
+async fn service_with(
+    bus: &Bus,
+    capabilities: Option<&'static [&'static str]>,
+) -> (Connection, mpsc::UnboundedReceiver<Told>) {
     let (told, receive) = mpsc::unbounded_channel();
     let connection = zbus::connection::Builder::address(bus.address.as_str())
         .unwrap()
@@ -113,6 +157,7 @@ async fn service(bus: &Bus) -> (Connection, mpsc::UnboundedReceiver<Told>) {
             Service {
                 told,
                 next: AtomicU32::new(7),
+                capabilities,
             },
         )
         .unwrap()
@@ -128,6 +173,10 @@ fn alert(tag: &str) -> Alert {
         title: "A message".into(),
         body: "<b> & friends".into(),
     }
+}
+
+fn show(tag: &str) -> Command {
+    Command::Show(alert(tag), Instant::now())
 }
 
 async fn told(receive: &mut mpsc::UnboundedReceiver<Told>) -> Told {
@@ -156,8 +205,8 @@ async fn the_service_replaces_dismisses_and_activates_only_known_notifications()
     let (service, mut seen) = service(&bus).await;
     let (send, receive) = mpsc::unbounded_channel();
     let (actions, mut pressed) = futures_channel::mpsc::unbounded();
-    let worker = tokio::spawn(run(bus.connection().await, receive, actions));
-    send.send(Command::Show(alert("one"))).unwrap();
+    let worker = bus.worker(receive, actions);
+    send.send(show("one")).unwrap();
     match told(&mut seen).await {
         Told::Show {
             replaced,
@@ -178,7 +227,7 @@ async fn the_service_replaces_dismisses_and_activates_only_known_notifications()
         }
         other => panic!("{other:?}"),
     }
-    send.send(Command::Show(alert("one"))).unwrap();
+    send.send(show("one")).unwrap();
     assert!(matches!(
         told(&mut seen).await,
         Told::Show { replaced: 7, .. }
@@ -195,7 +244,7 @@ async fn the_service_replaces_dismisses_and_activates_only_known_notifications()
     );
     send.send(Command::Dismiss("one".into())).unwrap();
     assert!(matches!(told(&mut seen).await, Told::Close(7)));
-    send.send(Command::Show(alert("two"))).unwrap();
+    send.send(show("two")).unwrap();
     assert!(matches!(
         told(&mut seen).await,
         Told::Show { replaced: 0, .. }
@@ -219,7 +268,7 @@ async fn the_service_replaces_dismisses_and_activates_only_known_notifications()
         )
         .await
         .unwrap();
-    send.send(Command::Show(alert("three"))).unwrap();
+    send.send(show("three")).unwrap();
     assert!(matches!(
         told(&mut seen).await,
         Told::Show { replaced: 0, .. }
@@ -237,7 +286,6 @@ async fn the_service_replaces_dismisses_and_activates_only_known_notifications()
     tokio::time::timeout(Duration::from_secs(20), worker)
         .await
         .unwrap()
-        .unwrap()
         .unwrap();
     assert!(pressed.next().await.is_none());
 }
@@ -248,8 +296,8 @@ async fn a_new_service_owner_never_receives_an_old_notification_identifier() {
     let (old, mut seen) = service(&bus).await;
     let (send, receive) = mpsc::unbounded_channel();
     let (actions, mut pressed) = futures_channel::mpsc::unbounded();
-    let worker = tokio::spawn(run(bus.connection().await, receive, actions));
-    send.send(Command::Show(alert("old"))).unwrap();
+    let worker = bus.worker(receive, actions);
+    send.send(show("old")).unwrap();
     assert!(matches!(
         told(&mut seen).await,
         Told::Show { replaced: 0, .. }
@@ -257,7 +305,7 @@ async fn a_new_service_owner_never_receives_an_old_notification_identifier() {
     old.release_name(SERVICE).await.unwrap();
     let (new, mut seen) = service(&bus).await;
     send.send(Command::Dismiss("old".into())).unwrap();
-    send.send(Command::Show(alert("new"))).unwrap();
+    send.send(show("new")).unwrap();
     // A Close(7) here would withdraw an unrelated notification from the new service.
     assert!(matches!(
         told(&mut seen).await,
@@ -276,7 +324,6 @@ async fn a_new_service_owner_never_receives_an_old_notification_identifier() {
     tokio::time::timeout(Duration::from_secs(20), worker)
         .await
         .unwrap()
-        .unwrap()
         .unwrap();
 }
 
@@ -285,14 +332,160 @@ async fn a_missing_desktop_service_does_not_prevent_worker_shutdown() {
     let bus = Bus::new();
     let (send, receive) = mpsc::unbounded_channel();
     let (actions, mut pressed) = futures_channel::mpsc::unbounded();
-    let worker = tokio::spawn(run(bus.connection().await, receive, actions));
-    send.send(Command::Show(alert("one"))).unwrap();
+    let worker = bus.worker(receive, actions);
+    send.send(show("one")).unwrap();
     send.send(Command::Dismiss("one".into())).unwrap();
     drop(send);
     tokio::time::timeout(Duration::from_secs(20), worker)
         .await
         .unwrap()
-        .unwrap()
         .unwrap();
     assert!(pressed.next().await.is_none());
+}
+
+#[tokio::test]
+async fn a_service_without_markup_receives_the_text_as_it_was_written() {
+    let bus = Bus::new();
+    let (_service, mut seen) = service_with(&bus, PLAIN).await;
+    let (send, receive) = mpsc::unbounded_channel();
+    let (actions, _pressed) = futures_channel::mpsc::unbounded();
+    let worker = bus.worker(receive, actions);
+    send.send(show("one")).unwrap();
+    match told(&mut seen).await {
+        Told::Show { body, .. } => assert_eq!(body, "<b> & friends"),
+        other => panic!("{other:?}"),
+    }
+    drop(send);
+    tokio::time::timeout(Duration::from_secs(20), worker)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn the_worker_serves_a_new_session_bus_at_the_same_address() {
+    let bus = Bus::new();
+    let (first, mut seen) = service(&bus).await;
+    let (send, receive) = mpsc::unbounded_channel();
+    let (actions, mut pressed) = futures_channel::mpsc::unbounded();
+    let worker = bus.worker(receive, actions);
+    send.send(show("before")).unwrap();
+    assert!(matches!(
+        told(&mut seen).await,
+        Told::Show { replaced: 0, .. }
+    ));
+    // The session bus ends, and another one takes its address.
+    let directory = bus.directory.clone();
+    drop(first);
+    drop(bus);
+    let bus = Bus::at(directory);
+    let (second, mut seen) = service(&bus).await;
+    // The alert is asked for while the worker has no connection. It has the tag of the
+    // alert that the first bus showed: an identifier of that bus must not be used here.
+    send.send(show("before")).unwrap();
+    assert!(matches!(
+        told(&mut seen).await,
+        Told::Show { replaced: 0, .. }
+    ));
+    action(&second, 7, "default").await;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(20), pressed.next())
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("before")
+    );
+    drop(send);
+    tokio::time::timeout(Duration::from_secs(20), worker)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn an_alert_that_waited_too_long_for_the_service_is_not_shown() {
+    let bus = Bus::new();
+    let (_service, mut seen) = service(&bus).await;
+    let (send, receive) = mpsc::unbounded_channel();
+    let (actions, _pressed) = futures_channel::mpsc::unbounded();
+    let worker = bus.worker(receive, actions);
+    let mut old = alert("old");
+    old.title = "An old message".into();
+    let asked = Instant::now()
+        .checked_sub(STALE + Duration::from_secs(1))
+        .unwrap();
+    send.send(Command::Show(old, asked)).unwrap();
+    send.send(show("fresh")).unwrap();
+    match told(&mut seen).await {
+        Told::Show { title, .. } => assert_eq!(title, "A message"),
+        other => panic!("{other:?}"),
+    }
+    drop(send);
+    tokio::time::timeout(Duration::from_secs(20), worker)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(seen.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn a_command_that_a_lost_connection_interrupted_is_served_first() {
+    let (send, commands) = mpsc::unbounded_channel();
+    let mut queue = Queue {
+        commands,
+        waiting: VecDeque::new(),
+    };
+    let mut later = alert("one");
+    later.title = "The later text".into();
+    // "one" was being shown when the connection was lost; its newer text arrived after.
+    queue.keep(Command::Show(later, Instant::now()));
+    queue.put_back(show("one"));
+    queue.put_back(Command::Dismiss("other".into()));
+    drop(send);
+    let mut titles = Vec::new();
+    while let Some(command) = queue.next().await {
+        match command {
+            Command::Show(alert, _) => titles.push(alert.title),
+            Command::Dismiss(tag) => panic!("{tag}"),
+        }
+    }
+    assert_eq!(titles, ["A message", "The later text"]);
+    // A dismissal that arrives without a connection takes back the alert that waits.
+    let (_send, commands) = mpsc::unbounded_channel();
+    let mut queue = Queue {
+        commands,
+        waiting: VecDeque::new(),
+    };
+    queue.keep(show("one"));
+    queue.keep(show("two"));
+    queue.keep(Command::Dismiss("one".into()));
+    assert!(matches!(
+        queue.waiting.make_contiguous(),
+        [Command::Show(alert, _)] if alert.tag == "two"
+    ));
+}
+
+#[tokio::test]
+async fn a_service_that_does_not_state_its_capabilities_is_asked_once() {
+    let bus = Bus::new();
+    let (_service, mut seen) = service_with(&bus, None).await;
+    let (send, receive) = mpsc::unbounded_channel();
+    let (actions, _pressed) = futures_channel::mpsc::unbounded();
+    let worker = bus.worker(receive, actions);
+    // The first alert waits for the answer that does not come, and is escaped.
+    send.send(show("one")).unwrap();
+    match told(&mut seen).await {
+        Told::Show { body, .. } => assert_eq!(body, "&lt;b&gt; &amp; friends"),
+        other => panic!("{other:?}"),
+    }
+    // The second alert does not wait again: the wait for an answer is 5 seconds.
+    let asked = Instant::now();
+    send.send(show("two")).unwrap();
+    assert!(matches!(told(&mut seen).await, Told::Show { .. }));
+    assert!(asked.elapsed() < WAIT / 2, "{:?}", asked.elapsed());
+    drop(send);
+    tokio::time::timeout(Duration::from_secs(20), worker)
+        .await
+        .unwrap()
+        .unwrap();
 }

@@ -3,6 +3,7 @@
 use std::io::Write;
 use std::path::Path;
 use std::process::{Child, Command};
+use std::sync::atomic::AtomicUsize;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -11,6 +12,10 @@ use crate::calls::MediaOptions;
 use crate::share::linux::{SoundClock, prepared};
 
 use super::*;
+
+/// The tests share one sound graph: a system capture of one test would hear the players of another.
+static GRAPH: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+const SINK: &str = "junto-shared-sound-test";
 
 fn pactl(arguments: &[&str]) -> String {
     let output = Command::new("pactl").args(arguments).output().unwrap();
@@ -35,14 +40,62 @@ impl Drop for Player {
 fn player(program: &str, file: &Path) -> Player {
     let mut command = Command::new(program);
     if program == "pw-play" {
-        command.args([
-            "--target=junto-linux1-shared-sound-test",
-            "--properties={ node.dont-fallback=true node.dont-reconnect=true }",
-        ]);
+        command
+            .arg(format!("--target={SINK}"))
+            .arg("--properties={ node.dont-fallback=true node.dont-reconnect=true }");
     } else {
-        command.arg("--device=junto-linux1-shared-sound-test");
+        command.arg(format!("--device={SINK}"));
     }
     Player(command.arg(file).spawn().unwrap())
+}
+
+/// A private null sink and a directory for the tone files.
+fn scene() -> (Sink, tempfile::TempDir) {
+    assert_eq!(
+        std::env::var("JUNTO_TEST_VIRTUAL_AUDIO").as_deref(),
+        Ok("1")
+    );
+    let sink = Sink(pactl(&[
+        "load-module",
+        "module-null-sink",
+        &format!("sink_name={SINK}"),
+        "sink_properties=device.description=Junto-Shared-Sound-Test",
+    ]));
+    // The session restores the mute of an earlier sink of this name, and the monitor of a
+    // muted sink is silent.
+    pactl(&["set-sink-mute", SINK, "0"]);
+    let data = tempfile::Builder::new()
+        .prefix("junto-share-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    (sink, data)
+}
+
+/// The level of a tone at the monitor of the test sink, in dBFS.
+fn monitor_level(frequency: f32) -> f64 {
+    let mut recorder = Command::new("parec")
+        .arg(format!("--device={SINK}.monitor"))
+        .args([
+            "--raw",
+            "--format=float32le",
+            "--rate=48000",
+            "--channels=1",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut output = recorder.stdout.take().unwrap();
+    let mut bytes = vec![0; 4 * 48_000 * 2];
+    std::io::Read::read_exact(&mut output, &mut bytes).unwrap();
+    recorder.kill().unwrap();
+    recorder.wait().unwrap();
+    let samples: Vec<f32> = bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|sample| f32::from_le_bytes(*sample))
+        .collect();
+    f64::from(tone_level(&samples[48_000..], 48_000, frequency))
 }
 
 fn tone(file: &Path, frequency: f32) {
@@ -104,6 +157,7 @@ impl Recording {
             next += Duration::from_millis(10);
             std::thread::sleep(next.saturating_duration_since(Instant::now()));
         }
+        eprintln!("steps of the sound clock so far: {}", self.clock.breaks);
         collected
     }
 }
@@ -116,27 +170,46 @@ impl Drop for Recording {
     }
 }
 
-fn levels(samples: &[f32]) -> [f64; 3] {
-    [440.0, 1000.0, 2500.0].map(|hz| f64::from(tone_level(samples, 48_000, hz)))
+const TONES: [f32; 3] = [440.0, 1000.0, 2500.0];
+
+/// The level of a tone in each half second. The delivery clock can change the pitch by
+/// one frame in a block of 480 for a second or longer while it follows the clock of the
+/// sound graph, so each half second is measured at the three possible pitches.
+fn half_seconds(samples: &[f32], hz: f32) -> impl Iterator<Item = f64> + '_ {
+    samples
+        .as_chunks::<24_000>()
+        .0
+        .iter()
+        .map(move |half_second| {
+            [hz * 479.0 / 480.0, hz, hz * 481.0 / 480.0]
+                .into_iter()
+                .map(|shifted| f64::from(tone_level(half_second, 48_000, shifted)))
+                .fold(f64::MIN, f64::max)
+        })
+}
+
+/// For each tone: the level that at least half of the half seconds reach, for a tone that
+/// must be there. One step of the delivery clock in the measured time does not hide the
+/// tone; a tone that plays for a small part of the time does not pass.
+fn usual(samples: &[f32]) -> [f64; 3] {
+    TONES.map(|hz| {
+        let mut levels: Vec<f64> = half_seconds(samples, hz).collect();
+        levels.sort_by(f64::total_cmp);
+        levels[(levels.len() - 1) / 2]
+    })
+}
+
+/// For each tone: its level in the half second in which it is strongest, for a tone that
+/// must never be there.
+fn strongest(samples: &[f32]) -> [f64; 3] {
+    TONES.map(|hz| half_seconds(samples, hz).fold(f64::MIN, f64::max))
 }
 
 #[tokio::test]
 #[ignore = "needs isolated virtual PipeWire devices: tools/linux-container.sh"]
 async fn selected_application_sound_and_system_sound_exclude_own_playback_and_ignore_sink_mute() {
-    assert_eq!(
-        std::env::var("JUNTO_TEST_VIRTUAL_AUDIO").as_deref(),
-        Ok("1")
-    );
-    let _sink = Sink(pactl(&[
-        "load-module",
-        "module-null-sink",
-        "sink_name=junto-linux1-shared-sound-test",
-        "sink_properties=device.description=Junto-Shared-Sound-Test",
-    ]));
-    let data = tempfile::Builder::new()
-        .prefix("junto-linux1-share-")
-        .tempdir_in("/tmp")
-        .unwrap();
+    let _graph = GRAPH.lock().await;
+    let (_sink, data) = scene();
     let wanted_file = data.path().join("wanted.wav");
     let other_file = data.path().join("other.wav");
     tone(&wanted_file, 440.0);
@@ -154,6 +227,9 @@ async fn selected_application_sound_and_system_sound_exclude_own_playback_and_ig
     let mut phase = 0.0_f32;
     let faults = Arc::new(std::sync::Mutex::new(Vec::new()));
     let reported = faults.clone();
+    // Without these two controls the exclusion would also hold for a tone that never plays.
+    let played = Arc::new(AtomicUsize::new(0));
+    let filled = played.clone();
     let _own = host
         .open_output(
             Some(&output.id),
@@ -163,11 +239,34 @@ async fn selected_application_sound_and_system_sound_exclude_own_playback_and_ig
                     phase = (phase + std::f32::consts::TAU * 2500.0 / format.sample_rate as f32)
                         % std::f32::consts::TAU;
                 }
+                filled.fetch_add(
+                    samples.len() / usize::from(format.channels),
+                    Ordering::Relaxed,
+                );
             }),
             Box::new(move |failure| reported.lock().unwrap().push(failure)),
         )
         .unwrap();
-    pactl(&["set-sink-mute", "junto-linux1-shared-sound-test", "1"]);
+    let started = Instant::now();
+    let own = loop {
+        let own = monitor_level(2500.0);
+        if own > -22.0 {
+            break own;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "the own tone is absent from the output: {own} dBFS"
+        );
+    };
+    eprintln!("own 2500 Hz tone at the monitor of its output: {own} dBFS");
+    let own_frames = |seconds: usize, before: usize| {
+        let frames = played.load(Ordering::Relaxed) - before;
+        assert!(
+            frames > seconds * 48_000 / 2,
+            "the own tone played only {frames} frames in {seconds} seconds"
+        );
+    };
+    pactl(&["set-sink-mute", SINK, "1"]);
     let started = Instant::now();
     let application = loop {
         let (_, apps) = sources().unwrap();
@@ -184,36 +283,105 @@ async fn selected_application_sound_and_system_sound_exclude_own_playback_and_ig
         std::thread::sleep(Duration::from_millis(50));
     };
     let mut system = Recording::start(SoundChoice::System).await;
+    let before = played.load(Ordering::Relaxed);
     let samples = system.sample(4);
-    let measured = levels(&samples[48_000..]);
-    eprintln!("system levels at 440, 1000 and own 2500 Hz: {measured:?}");
+    own_frames(4, before);
+    let (there, at_most) = (usual(&samples[48_000..]), strongest(&samples[48_000..]));
+    eprintln!("system levels at 440, 1000 and own 2500 Hz: {there:?}, at most {at_most:?}");
     assert!(
-        measured[0] > -22.0 && measured[1] > -22.0 && measured[2] < -50.0,
-        "{measured:?}"
+        there[0] > -22.0 && there[1] > -22.0 && at_most[2] < -50.0,
+        "{there:?}, at most {at_most:?}"
     );
     drop(system);
     let mut chosen = Recording::start(SoundChoice::Application(application)).await;
+    let before = played.load(Ordering::Relaxed);
     let samples = chosen.sample(3);
-    let measured = levels(&samples[48_000..]);
-    eprintln!("application levels at 440, 1000 and own 2500 Hz: {measured:?}");
+    own_frames(3, before);
+    let (there, at_most) = (usual(&samples[48_000..]), strongest(&samples[48_000..]));
+    eprintln!("application levels at 440, 1000 and own 2500 Hz: {there:?}, at most {at_most:?}");
     assert!(
-        measured[0] > -22.0 && measured[1] < -50.0 && measured[2] < -50.0,
-        "{measured:?}"
+        there[0] > -22.0 && at_most[1] < -50.0 && at_most[2] < -50.0,
+        "{there:?}, at most {at_most:?}"
     );
     drop(wanted);
     let pause = chosen.sample(2);
     assert!(pause[48_000..].iter().all(|value| value.abs() < 0.0001));
     let _again = player("pw-play", &wanted_file);
+    let before = played.load(Ordering::Relaxed);
     let restarted = chosen.sample(3);
-    let measured = levels(&restarted[48_000..]);
-    eprintln!("restarted application levels: {measured:?}");
+    own_frames(3, before);
+    let (there, at_most) = (usual(&restarted[48_000..]), strongest(&restarted[48_000..]));
+    eprintln!("restarted application levels: {there:?}, at most {at_most:?}");
     assert!(
         faults.lock().unwrap().is_empty(),
         "{:?}",
         faults.lock().unwrap()
     );
     assert!(
-        measured[0] > -22.0 && measured[1] < -50.0 && measured[2] < -50.0,
-        "{measured:?}"
+        there[0] > -22.0 && at_most[1] < -50.0 && at_most[2] < -50.0,
+        "{there:?}, at most {at_most:?}"
     );
+}
+
+#[tokio::test]
+#[ignore = "needs isolated virtual PipeWire devices: tools/linux-container.sh"]
+async fn a_player_that_ends_during_a_capture_releases_its_objects_and_the_capture_goes_on() {
+    let _graph = GRAPH.lock().await;
+    let (_sink, data) = scene();
+    let file = data.path().join("tone.wav");
+    tone(&file, 440.0);
+    let first = player("pw-play", &file);
+    let mut system = Recording::start(SoundChoice::System).await;
+    let samples = system.sample(2);
+    assert!(usual(&samples[48_000..])[0] > -22.0);
+    // PipeWire removes the node, its ports and the client of the player.
+    drop(first);
+    let pause = system.sample(2);
+    assert!(pause[48_000..].iter().all(|value| value.abs() < 0.0001));
+    let _second = player("pw-play", &file);
+    let samples = system.sample(3);
+    assert!(usual(&samples[48_000..])[0] > -22.0);
+}
+
+#[tokio::test]
+#[ignore = "needs isolated virtual PipeWire devices: tools/linux-container.sh"]
+async fn players_that_start_and_end_all_the_time_do_not_end_a_system_capture() {
+    let _graph = GRAPH.lock().await;
+    let (_sink, data) = scene();
+    let file = data.path().join("tone.wav");
+    tone(&file, 440.0);
+    let _steady = player("pw-play", &file);
+    let mut system = Recording::start(SoundChoice::System).await;
+    let started = Instant::now();
+    let mut round = 0_u64;
+    // A player that lives a few milliseconds can end between its announcement and its link.
+    while started.elapsed() < Duration::from_secs(30) {
+        let players: Vec<Player> = (0..3).map(|_| player("pw-play", &file)).collect();
+        std::thread::sleep(Duration::from_millis(round * 37 % 250));
+        drop(players);
+        system
+            .life
+            .result()
+            .unwrap_or_else(|failure| panic!("round {round}: {failure}"));
+        round += 1;
+    }
+    eprintln!("{round} rounds of three players");
+    let samples = system.sample(3);
+    assert!(usual(&samples[48_000..])[0] > -22.0);
+}
+
+#[tokio::test]
+#[ignore = "needs isolated virtual PipeWire devices: tools/linux-container.sh"]
+async fn a_system_capture_starts_while_nothing_plays_and_hears_a_later_player() {
+    let _graph = GRAPH.lock().await;
+    let (_sink, data) = scene();
+    let file = data.path().join("tone.wav");
+    tone(&file, 440.0);
+    // A stream without a link has no format yet; the start must not wait for one.
+    let mut system = Recording::start(SoundChoice::System).await;
+    let silence = system.sample(1);
+    assert!(silence.iter().all(|value| value.abs() < 0.0001));
+    let _player = player("pw-play", &file);
+    let samples = system.sample(3);
+    assert!(usual(&samples[48_000..])[0] > -22.0);
 }

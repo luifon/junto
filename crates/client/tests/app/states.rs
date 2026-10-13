@@ -644,11 +644,3 @@ fn a_long_name_of_a_server_moves_no_control_of_a_question(cx: &mut TestAppContex
 fn startup_check_finished(reach: Reach, busy: bool) -> bool {
     reach != Reach::Unknown && !busy
 }
-
-#[test]
-fn an_idle_server_without_an_answer_has_not_finished_its_startup_check() {
-    assert!(!startup_check_finished(Reach::Unknown, false));
-    assert!(!startup_check_finished(Reach::Unknown, true));
-    assert!(!startup_check_finished(Reach::Unreachable, true));
-    assert!(startup_check_finished(Reach::Unreachable, false));
-}

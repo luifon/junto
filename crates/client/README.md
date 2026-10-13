@@ -269,19 +269,36 @@ The first two commands run ordinary window tests. The third runs calls and share
 To export the rendered screens:
 
 ```sh
-JUNTO_LINUX_ARTIFACTS=/tmp/junto-linux1-screens \
+JUNTO_LINUX_ARTIFACTS=/tmp/junto-linux-screens \
     tools/linux-container.sh tools/linux/display.sh wayland \
     cargo run -p junto-client --features test-support --bin junto-screens -- \
-    /tmp/junto-linux1-artifacts
+    /tmp/junto-linux-artifacts
 ```
 
-`tools/linux/window-smoke.sh` starts the real binary on a display created by `display.sh` and checks for a painted application surface. Build `junto` first in the same target volume. A successful gpui test-platform run alone does not prove that the real application presents a frame. The image uses Mesa 25.0.7 and the smoke test uses normal renderer selection. The same binary painted a black application surface with Mesa 22.3.6 under both Xvfb and Xorg dummy, and painted correctly with Mesa 25.0.7 under both servers. `JUNTO_LINUX_TEST_RENDERER=opengl` remains an explicit diagnostic override. These software-renderer results do not cover a hardware GPU driver.
+`tools/linux/window-smoke.sh` starts the real binary on a display created by `display.sh` and checks for a painted application surface. Build `junto` first in the same target volume. A successful gpui test-platform run alone does not prove that the real application presents a frame. The image uses Mesa 25.0.7 and the smoke test uses normal renderer selection. The smoke test repeats its check of the painted surface for up to 30 seconds. `JUNTO_LINUX_TEST_RENDERER=opengl` remains an explicit diagnostic override. These software-renderer results do not cover a hardware GPU driver.
+
+The software Vulkan driver of Mesa 22.3.6 presents a black window under X11. Before its first window under X11 the binary reads the Vulkan adapters, and it starts itself again without Vulkan drivers when that driver of a Mesa older than 25 is the adapter that gpui would use; gpui then draws with OpenGL (ADR 0705, `src/renderer.rs`). The image keeps that driver for this check:
+
+```sh
+tools/linux-container.sh sh -c 'cargo build -p junto-client --bin junto &&
+    JUNTO_LINUX_TEST_RENDERER=mesa22 tools/linux/display.sh x11 \
+    tools/linux/window-smoke.sh /tmp/junto-linux-artifacts/mesa22'
+```
+
+With `JUNTO_RENDERER_CHECKED=1` in the environment the binary skips its check, and this command then fails with a black window.
+
+`window_level::keep_above` is the interface by which a detached call window asks to stay above other windows (ADR 0507). Nothing calls it until the client has that window. Under X11 it sends the window manager the request for the state "above"; for a Wayland window it answers that the system has no such request. Its tests need the private X11 display and its window manager:
+
+```sh
+tools/linux-container.sh tools/linux/display.sh x11 \
+    cargo test -p junto-client --lib window_level -- --ignored
+```
 
 The built-in fonts are used on both systems. The Linux image also supplies a colour emoji font. Window decorations, font rasterisation and colour rounding can differ between backends. Screenshot comparisons must distinguish those differences from missing controls or content.
 
 Linux call sound uses PipeWire directly; see [`junto-media`](../media/README.md). The share picker offers desktop screen/window selection and the available sound choices under ADR 0751. The desktop authorises each share after Share is pressed; a window selection does not implicitly choose an application's sound. Container checks cover native shared sound and portal screen pixels with the explicitly patched test backend described in the media README; a human chooser and an unmodified desktop backend remain unverified.
 
-Linux system notifications use the session bus's `org.freedesktop.Notifications` service behind the same policy interface as macOS. The private-service tests check replacement, withdrawal, activation and service restart without showing a desktop notification:
+Linux system notifications use the session bus's `org.freedesktop.Notifications` service behind the same policy interface as macOS. The private-service tests check replacement, withdrawal, activation, the markup capability, a service restart, a replaced session bus and an alert that waited too long, without showing a desktop notification:
 
 ```sh
 tools/linux-container.sh cargo test -p junto-client --lib notify::linux::tests

@@ -106,6 +106,8 @@ fn main() -> ExitCode {
         .with_writer(std::io::stderr)
         .with_max_level(level)
         .init();
+    #[cfg(target_os = "linux")]
+    junto_client::renderer::choose_before_the_first_window();
     let client = data_dir(arguments.data_dir).and_then(|directory| {
         Client::open(ClientOptions::new(directory)).map_err(|error| error.to_string())
     });

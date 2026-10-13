@@ -169,8 +169,8 @@ Status values:
 | [0743](0743-search-in-the-window.md) | Search in the window | Accepted | The field in the header sends on Enter; filters for a channel, an author and a time span; one search per window with its pages, at most 1,000 results; results of a place that left the state are not listed; a message result is read and then shown in its place, a transcript result opens the transcript. |
 | [0744](0744-recording-card-and-transcript-in-the-window.md) | The recording card and the transcript in the window | Accepted | The post of a finished recording is a card in the chat of its voice channel, with every job state, the files as downloads, "Open" through the player of the system, the first lines of the transcript with speaker labels and the whole transcript in the side panel; removal with the permission state. |
 | [0750](0750-linux-build-tests-and-sound.md) | Linux build, tests and call sound | Accepted, verification in progress | Pinned container toolchains for arm64 and amd64, isolated displays and sound devices, and a direct PipeWire sound host with shared native initialisation. |
-| [0751](0751-linux-screen-capture.md) | Linux screen capture | Proposed | Desktop portal authorisation for a screen or window, PipeWire video and explicit application or system sound choices. |
-| [0752](0752-linux-system-notifications.md) | Linux system notifications | Proposed | The desktop D-Bus notification service behind the existing interface, with ordered replacement, withdrawal and activation and private fake-service tests. |
+| [0751](0751-linux-screen-capture.md) | Linux screen capture | Accepted | Desktop portal authorisation for a screen or window, PipeWire video and explicit application or system sound choices. |
+| [0752](0752-linux-system-notifications.md) | Linux system notifications | Accepted | The desktop D-Bus notification service behind the existing interface, with ordered replacement, withdrawal and activation and private fake-service tests. |
 
 ## 0801–0899 Licence and reference code
 

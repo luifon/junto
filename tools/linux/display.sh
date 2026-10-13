@@ -16,14 +16,14 @@ case "$backend" in
     x11)
         unset WAYLAND_DISPLAY
         export DISPLAY=:99
-        Xvfb "$DISPLAY" -screen 0 1920x1080x24 -nolisten tcp >/tmp/junto-linux1-x11.log 2>&1 &
+        Xvfb "$DISPLAY" -screen 0 1920x1080x24 -nolisten tcp >/tmp/junto-linux-x11.log 2>&1 &
         display_pid=$!
         ready() { xdpyinfo >/dev/null 2>&1; }
         ;;
     xorg)
         unset WAYLAND_DISPLAY
         export DISPLAY=:99
-        cat > /tmp/junto-linux1-xorg.conf <<'CONFIG'
+        cat > /tmp/junto-linux-xorg.conf <<'CONFIG'
 Section "ServerFlags"
     Option "AutoAddDevices" "false"
     Option "AutoEnableDevices" "false"
@@ -53,8 +53,8 @@ Section "Screen"
 EndSection
 CONFIG
         /usr/lib/xorg/Xorg "$DISPLAY" -noreset -nolisten tcp -novtswitch \
-            -config /tmp/junto-linux1-xorg.conf -logfile /tmp/junto-linux1-xorg-server.log \
-            >/tmp/junto-linux1-xorg.log 2>&1 &
+            -config /tmp/junto-linux-xorg.conf -logfile /tmp/junto-linux-xorg-server.log \
+            >/tmp/junto-linux-xorg.log 2>&1 &
         display_pid=$!
         ready() { xdpyinfo >/dev/null 2>&1; }
         ;;
@@ -63,11 +63,11 @@ CONFIG
         export WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1
         export WLR_HEADLESS_OUTPUTS=1
         unset WAYLAND_DISPLAY
-        cat > /tmp/junto-linux1-sway.conf <<'CONFIG'
+        cat > /tmp/junto-linux-sway.conf <<'CONFIG'
 output HEADLESS-1 mode 1920x1080
 seat seat0 fallback true
 CONFIG
-        sway -c /tmp/junto-linux1-sway.conf >/tmp/junto-linux1-wayland.log 2>&1 &
+        sway -c /tmp/junto-linux-sway.conf >/tmp/junto-linux-wayland.log 2>&1 &
         display_pid=$!
         ready() {
             for socket in "$XDG_RUNTIME_DIR"/wayland-*; do
@@ -87,19 +87,19 @@ attempts=0
 until ready; do
     attempts=$((attempts + 1))
     if [ "$attempts" -ge 60 ] || ! kill -0 "$display_pid" 2>/dev/null; then
-        cat "/tmp/junto-linux1-$backend.log" >&2
+        cat "/tmp/junto-linux-$backend.log" >&2
         exit 1
     fi
     sleep 0.5
 done
 if [ "$backend" = x11 ] || [ "$backend" = xorg ]; then
-    openbox >/tmp/junto-linux1-openbox.log 2>&1 &
+    openbox >/tmp/junto-linux-openbox.log 2>&1 &
     manager_pid=$!
     attempts=0
     until xprop -root _NET_SUPPORTING_WM_CHECK | grep -q 'window id'; do
         attempts=$((attempts + 1))
         if [ "$attempts" -ge 60 ] || ! kill -0 "$manager_pid" 2>/dev/null; then
-            cat /tmp/junto-linux1-openbox.log >&2
+            cat /tmp/junto-linux-openbox.log >&2
             exit 1
         fi
         sleep 0.5

@@ -2,13 +2,13 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
-use std::sync::{Arc, mpsc};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
 
 use pipewire as pw;
 use pw::spa;
 
 use super::connection::Connection;
+use super::latest::Latest;
 use super::pixels::{Crop, Format, Frame};
 use super::portal::Video;
 use super::{Life, error};
@@ -43,53 +43,69 @@ fn parameters() -> Result<Vec<Vec<u8>>, CaptureError> {
             ))),
         )],
     };
-    let crop = spa::pod::Object {
+    let meta = |kind: u32, size: usize| spa::pod::Object {
         type_: SpaTypes::ObjectParamMeta.as_raw(),
         id: spa::param::ParamType::Meta.as_raw(),
         properties: vec![
-            Property::new(
-                spa::sys::SPA_PARAM_META_type,
-                Value::Id(Id(spa::sys::SPA_META_VideoCrop)),
-            ),
-            Property::new(
-                spa::sys::SPA_PARAM_META_size,
-                Value::Int(std::mem::size_of::<spa::buffer::meta::MetaVideoCrop>() as i32),
-            ),
+            Property::new(spa::sys::SPA_PARAM_META_type, Value::Id(Id(kind))),
+            Property::new(spa::sys::SPA_PARAM_META_size, Value::Int(size as i32)),
         ],
     };
-    Ok(vec![pod(buffers)?, pod(crop)?])
+    // A producer attaches only the metadata that the consumer asks for. The header states
+    // that a buffer is corrupted.
+    Ok(vec![
+        pod(buffers)?,
+        pod(meta(
+            spa::sys::SPA_META_VideoCrop,
+            std::mem::size_of::<spa::buffer::meta::MetaVideoCrop>(),
+        ))?,
+        pod(meta(
+            spa::sys::SPA_META_Header,
+            std::mem::size_of::<spa::buffer::meta::MetaHeader>(),
+        ))?,
+    ])
 }
 
-fn due(next: &mut Option<Instant>, now: Instant, frame_rate: u32) -> bool {
-    let period = Duration::from_secs_f64(1.0 / f64::from(frame_rate));
-    // Allow callback jitter around a deadline without halving a source at the requested rate.
-    if next.is_some_and(|deadline| now + period / 20 < deadline) {
-        return false;
-    }
-    let deadline = next.unwrap_or(now) + period;
-    *next = Some(if deadline < now {
-        now + period
-    } else {
-        deadline
-    });
-    true
+/// Whether a buffer holds no picture to send: its producer marked it, or it is empty.
+fn unusable(
+    header: Option<spa::buffer::meta::MetaHeaderFlags>,
+    chunk: spa::buffer::ChunkFlags,
+    size: u32,
+) -> bool {
+    use spa::buffer::meta::MetaHeaderFlags;
+    header.is_some_and(|flags| flags.intersects(MetaHeaderFlags::CORRUPTED | MetaHeaderFlags::GAP))
+        || chunk.contains(spa::buffer::ChunkFlags::CORRUPTED)
+        || size == 0
 }
+
+/// The answer to the start of the share. The stream listener and the end of the thread
+/// both hold it: whichever has the first picture or the first failure sends it.
+type Answer = Rc<Cell<Option<Ready>>>;
 
 struct Data {
     format: Option<((u32, u32), Format)>,
-    ready: Option<Ready>,
-    next: Option<Instant>,
+    ready: Answer,
 }
 
 pub(super) fn run(
     life: Arc<Life>,
     source: Video,
     quality: ShareQuality,
-    frames: mpsc::SyncSender<Frame>,
+    pictures: Arc<Latest<Frame>>,
     ready: Ready,
 ) {
-    let result = capture(life.clone(), source, quality, frames, ready);
+    let ready: Answer = Rc::new(Cell::new(Some(ready)));
+    let result = capture(life.clone(), source, quality, pictures, ready.clone());
+    finish(&life, &ready, result);
+}
+
+/// A failure is sent as the answer before the answer can be dropped without one, so the
+/// start never reads a closed channel in place of the reason.
+fn finish(life: &Life, ready: &Cell<Option<Ready>>, result: Result<(), CaptureError>) {
     if let Err(failure) = result {
+        if let Some(ready) = ready.take() {
+            let _ = ready.send(Err(failure.clone()));
+        }
         life.fail(failure);
     }
 }
@@ -98,8 +114,8 @@ fn capture(
     life: Arc<Life>,
     source: Video,
     quality: ShareQuality,
-    frames: mpsc::SyncSender<Frame>,
-    ready: Ready,
+    pictures: Arc<Latest<Frame>>,
+    ready: Answer,
 ) -> Result<(), CaptureError> {
     let connection = Connection::new(Some(source.fd), life.clone())?;
     let registry = connection.core.get_registry_rc().map_err(error)?;
@@ -143,8 +159,7 @@ fn capture(
     let listener = stream
         .add_local_listener_with_user_data(Data {
             format: None,
-            ready: Some(ready),
-            next: None,
+            ready,
         })
         .state_changed({
             let life = life.clone();
@@ -202,31 +217,17 @@ fn capture(
                 if life.stopped() {
                     return;
                 }
-                if buffer
+                let header = buffer
                     .find_meta::<spa::buffer::meta::MetaHeader>()
-                    .is_some_and(|header| {
-                        header.flags().intersects(
-                            spa::buffer::meta::MetaHeaderFlags::CORRUPTED
-                                | spa::buffer::meta::MetaHeaderFlags::GAP,
-                        )
-                    })
-                {
-                    return;
-                }
-                if buffer
-                    .datas_mut()
-                    .first()
-                    .is_some_and(|plane| plane.chunk().size() == 0)
-                {
+                    .map(|header| header.flags());
+                if buffer.datas_mut().first().is_some_and(|plane| {
+                    unusable(header, plane.chunk().flags(), plane.chunk().size())
+                }) {
                     return;
                 }
                 let Some((dimensions, format)) = data.format else {
                     return;
                 };
-                let now = Instant::now();
-                if !due(&mut data.next, now, quality.frame_rate) {
-                    return;
-                }
                 let crop = buffer
                     .find_meta::<spa::buffer::meta::MetaVideoCrop>()
                     .and_then(|crop| {
@@ -263,9 +264,8 @@ fn capture(
                 match result {
                     Ok(frame) => {
                         let size = quality.resolution.fit(frame.width, frame.height);
-                        if frames.try_send(frame).is_ok()
-                            && let Some(ready) = data.ready.take()
-                        {
+                        pictures.put(frame);
+                        if let Some(ready) = data.ready.take() {
                             let _ = ready.send(Ok(size));
                         }
                     }
@@ -318,6 +318,22 @@ fn capture(
                 num: quality.frame_rate,
                 denom: 1
             }
+        ),
+        // A source with a variable frame rate sends no more pictures than this.
+        spa::pod::property!(
+            spa::param::format::FormatProperties::VideoMaxFramerate,
+            Choice,
+            Range,
+            Fraction,
+            spa::utils::Fraction {
+                num: quality.frame_rate,
+                denom: 1
+            },
+            spa::utils::Fraction { num: 1, denom: 1 },
+            spa::utils::Fraction {
+                num: quality.frame_rate,
+                denom: 1
+            }
         )
     ))?;
     let mut params = [spa::pod::Pod::from_bytes(&format)
@@ -338,33 +354,66 @@ fn capture(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
+
     #[test]
-    fn callback_jitter_does_not_halve_the_selected_picture_rate() {
-        let start = Instant::now();
-        let mut next = None;
-        let mut accepted = 0;
-        for index in 0..300_u64 {
-            let jitter = if index.is_multiple_of(2) { 0 } else { 200_000 };
-            if due(
-                &mut next,
-                start + Duration::from_nanos(index * 1_000_000_000 / 30 + jitter),
-                30,
-            ) {
-                accepted += 1;
-            }
-        }
-        assert_eq!(accepted, 300);
-        let mut next = None;
-        let accepted = (0..600_u64)
-            .filter(|index| {
-                due(
-                    &mut next,
-                    start + Duration::from_nanos(index * 1_000_000_000 / 60),
-                    15,
-                )
+    fn a_failure_before_the_first_picture_is_the_answer_to_the_start() {
+        let life = Life::default();
+        let (ready, mut first_picture) = tokio::sync::oneshot::channel();
+        let ready = Cell::new(Some(ready));
+        finish(&life, &ready, Err(CaptureError::SourceGone));
+        assert!(matches!(
+            first_picture.try_recv(),
+            Ok(Err(CaptureError::SourceGone))
+        ));
+        assert!(matches!(life.result(), Err(CaptureError::SourceGone)));
+    }
+
+    #[test]
+    fn the_capture_asks_for_the_header_and_skips_a_buffer_that_its_producer_marked() {
+        use spa::buffer::ChunkFlags;
+        use spa::buffer::meta::MetaHeaderFlags;
+        // The kinds of metadata that the parameters ask a producer for.
+        let asked: Vec<u32> = parameters()
+            .unwrap()
+            .iter()
+            .filter_map(|bytes| {
+                let (_, value) =
+                    spa::pod::deserialize::PodDeserializer::deserialize_any_from(bytes).ok()?;
+                let spa::pod::Value::Object(object) = value else {
+                    return None;
+                };
+                object.properties.iter().find_map(|property| {
+                    match (property.key, &property.value) {
+                        (spa::sys::SPA_PARAM_META_type, spa::pod::Value::Id(kind)) => Some(kind.0),
+                        _ => None,
+                    }
+                })
             })
-            .count();
-        assert_eq!(accepted, 150);
+            .collect();
+        assert_eq!(
+            asked,
+            [spa::sys::SPA_META_VideoCrop, spa::sys::SPA_META_Header]
+        );
+        assert!(!unusable(None, ChunkFlags::empty(), 64));
+        assert!(!unusable(
+            Some(MetaHeaderFlags::empty()),
+            ChunkFlags::empty(),
+            64
+        ));
+        assert!(unusable(
+            Some(MetaHeaderFlags::CORRUPTED),
+            ChunkFlags::empty(),
+            64
+        ));
+        assert!(unusable(
+            Some(MetaHeaderFlags::GAP),
+            ChunkFlags::empty(),
+            64
+        ));
+        assert!(unusable(None, ChunkFlags::CORRUPTED, 64));
+        assert!(unusable(None, ChunkFlags::empty(), 0));
     }
 }

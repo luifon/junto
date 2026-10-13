@@ -9,8 +9,11 @@ pub mod assets;
 pub mod compose;
 pub mod highlight;
 pub mod notify;
+#[cfg(target_os = "linux")]
+pub mod renderer;
 pub mod shell;
 pub mod state;
 pub mod text;
 pub mod theme;
 pub mod ui;
+pub mod window_level;

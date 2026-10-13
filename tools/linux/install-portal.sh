@@ -1,8 +1,8 @@
 #!/bin/sh
 # The test backend accepts shared-memory output from the private Pixman compositor.
 set -eu
-portal_source=/tmp/junto-linux1-portal-source
-portal_archive=/tmp/junto-linux1-portal-source.tar.gz
+portal_source=/tmp/junto-linux-portal-source
+portal_archive=/tmp/junto-linux-portal-source.tar.gz
 cleanup() { rm -rf "$portal_source"; rm -f "$portal_archive"; }
 trap cleanup EXIT
 trap 'exit 130' INT TERM

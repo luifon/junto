@@ -69,7 +69,7 @@ pub fn state(client: Client, start: WindowStart, cx: &mut App) -> Entity<AppStat
     let held = state.downgrade();
     let notifier = crate::notify::platform(cx, move |tag, cx| {
         if let Some(state) = held.upgrade() {
-            cx.activate(true);
+            crate::notify::bring_to_front(cx);
             state.update(cx, |state, cx| state.alert_pressed(tag, cx));
         }
     });

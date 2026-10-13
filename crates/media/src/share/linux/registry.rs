@@ -1,10 +1,11 @@
 //! Bound registry objects and the explicit links owned by one sound capture.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use pipewire as pw;
+use pw::proxy::ProxyT;
 use pw::spa::utils::dict::DictRef;
 use pw::types::ObjectType;
 
@@ -12,12 +13,30 @@ use super::graph::{Client, Graph, Node, Port};
 use super::{Life, error};
 use crate::share::SoundChoice;
 
+/// A bound object and its listener. Rust releases fields in the order of their declaration,
+/// and the release of a listener writes into the object it listens to: the listener is first.
+struct Bound<P, L> {
+    _listener: L,
+    _proxy: P,
+}
+
+impl<P, L> Bound<P, L> {
+    fn new(proxy: P, listener: L) -> Self {
+        Self {
+            _listener: listener,
+            _proxy: proxy,
+        }
+    }
+}
+
 #[derive(Default)]
 struct Objects {
-    clients: BTreeMap<u32, (pw::client::Client, pw::client::ClientListener)>,
-    nodes: BTreeMap<u32, (pw::node::Node, pw::node::NodeListener)>,
-    ports: BTreeMap<u32, (pw::port::Port, pw::port::PortListener)>,
-    links: BTreeMap<(u32, u32), pw::link::Link>,
+    clients: BTreeMap<u32, Bound<pw::client::Client, pw::client::ClientListener>>,
+    nodes: BTreeMap<u32, Bound<pw::node::Node, pw::node::NodeListener>>,
+    ports: BTreeMap<u32, Bound<pw::port::Port, pw::port::PortListener>>,
+    links: BTreeMap<(u32, u32), Bound<pw::link::Link, pw::proxy::ProxyListener>>,
+    /// The links whose making the daemon refused, by their ports.
+    refused: Rc<RefCell<BTreeSet<(u32, u32)>>>,
 }
 
 pub(super) struct Registry {
@@ -81,9 +100,15 @@ fn reconcile(
             return;
         }
     };
-    objects.links.retain(|ports, _| wanted.contains(ports));
+    // A port can end between its announcement and the request for its link. The daemon
+    // then refuses the link; the object of the refused link is released here, outside its
+    // own event, and the link is asked for again while the graph still wants it.
+    let refused = std::mem::take(&mut *objects.refused.borrow_mut());
+    objects
+        .links
+        .retain(|ports, _| wanted.contains(ports) && !refused.contains(ports));
     for (output, input) in wanted {
-        if objects.links.contains_key(&(output, input)) {
+        if objects.links.contains_key(&(output, input)) || refused.contains(&(output, input)) {
             continue;
         }
         let (Some(from), Some(to)) = (graph.ports.get(&output), graph.ports.get(&input)) else {
@@ -96,7 +121,20 @@ fn reconcile(
         };
         match core.create_object::<pw::link::Link>("link-factory", &properties) {
             Ok(link) => {
-                objects.links.insert((output, input), link);
+                let listener = link
+                    .upcast_ref()
+                    .add_listener_local()
+                    .error({
+                        let refused = objects.refused.clone();
+                        move |_, _, message| {
+                            tracing::debug!(output, input, message, "a sound link was refused");
+                            refused.borrow_mut().insert((output, input));
+                        }
+                    })
+                    .register();
+                objects
+                    .links
+                    .insert((output, input), Bound::new(link, listener));
             }
             Err(failure) => {
                 objects.links.clear();
@@ -180,7 +218,10 @@ impl Registry {
                                     }
                                 })
                                 .register();
-                            objects.borrow_mut().clients.insert(id, (bound, listener));
+                            objects
+                                .borrow_mut()
+                                .clients
+                                .insert(id, Bound::new(bound, listener));
                         }
                         ObjectType::Node => {
                             let initial = node(props, false);
@@ -212,7 +253,10 @@ impl Registry {
                                     }
                                 })
                                 .register();
-                            objects.borrow_mut().nodes.insert(id, (bound, listener));
+                            objects
+                                .borrow_mut()
+                                .nodes
+                                .insert(id, Bound::new(bound, listener));
                         }
                         ObjectType::Port => {
                             let initial = port(props);
@@ -263,7 +307,10 @@ impl Registry {
                                     }
                                 })
                                 .register();
-                            objects.borrow_mut().ports.insert(id, (bound, listener));
+                            objects
+                                .borrow_mut()
+                                .ports
+                                .insert(id, Bound::new(bound, listener));
                         }
                         _ => {}
                     }

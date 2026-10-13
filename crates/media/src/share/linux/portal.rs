@@ -32,6 +32,8 @@ pub(super) struct Portal {
     connection: Connection,
     session: Option<OwnedObjectPath>,
     pending: std::sync::Mutex<Option<OwnedObjectPath>>,
+    /// The longest wait for the answer to a request that shows no dialog.
+    limit: Duration,
 }
 
 pub(super) struct Capabilities {
@@ -58,6 +60,7 @@ impl Portal {
             connection,
             session: None,
             pending: std::sync::Mutex::new(None),
+            limit: WAIT,
         })
     }
 
@@ -110,11 +113,14 @@ impl Portal {
             .map_err(error)
     }
 
+    /// Makes a request and waits for its response. `limit` bounds the wait for a request
+    /// that shows no dialog; the request that a person answers has none.
     async fn request<B: Serialize + Type>(
         &self,
         token: &str,
         method: &str,
         body: &B,
+        limit: Option<Duration>,
     ) -> Result<Results, CaptureError> {
         let path = self.path("request", token)?;
         *self
@@ -135,11 +141,14 @@ impl Portal {
         if returned != path {
             return Err(error("the portal returned a different request handle"));
         }
-        // Human authorisation has no timer. Dropping this future closes the private connection.
-        let response = responses
-            .next()
-            .await
-            .ok_or_else(|| error("the portal request ended without a response"))?;
+        // Dropping this future closes the private connection.
+        let response = match limit {
+            Some(limit) => tokio::time::timeout(limit, responses.next())
+                .await
+                .map_err(|_| error(format!("the desktop portal did not answer {method}")))?,
+            None => responses.next().await,
+        }
+        .ok_or_else(|| error("the portal request ended without a response"))?;
         let (code, results): (u32, Results) = response.body().deserialize().map_err(error)?;
         self.pending
             .lock()
@@ -170,14 +179,19 @@ impl Portal {
             .await
             .map_err(error)?;
         let mut closed = session.receive_signal("Closed").await.map_err(error)?;
+        // A portal process that ends sends neither a response nor the end of the session.
+        let service = self.proxy().await?;
+        let mut owners = service.receive_owner_changed().await.map_err(error)?;
+        let gone = || error("the desktop portal ended during the request");
         let options = HashMap::from([
             ("handle_token", Value::from(handle.as_str())),
             ("session_handle_token", Value::from(session_token.as_str())),
         ]);
         let create = (options,);
         let results = tokio::select! {
-            result = self.request(&handle, "CreateSession", &create) => result?,
+            result = self.request(&handle, "CreateSession", &create, Some(self.limit)) => result?,
             _ = closed.next() => return Err(CaptureError::SourceGone),
+            _ = owners.next() => return Err(gone()),
         };
         let value = results
             .get("session_handle")
@@ -219,15 +233,18 @@ impl Portal {
         }
         let select = (expected.clone(), options);
         tokio::select! {
-            result = self.request(&handle, "SelectSources", &select) => { result?; },
+            result = self.request(&handle, "SelectSources", &select, Some(self.limit)) => { result?; },
             _ = closed.next() => return Err(CaptureError::SourceGone),
+            _ = owners.next() => return Err(gone()),
         }
         let handle = token();
         let options = HashMap::from([("handle_token", Value::from(handle.as_str()))]);
         let start = (expected.clone(), "", options);
+        // The desktop shows its dialog now, and a person answers it: no limit.
         let mut results = tokio::select! {
-            result = self.request(&handle, "Start", &start) => result?,
+            result = self.request(&handle, "Start", &start, None) => result?,
             _ = closed.next() => return Err(CaptureError::SourceGone),
+            _ = owners.next() => return Err(gone()),
         };
         let streams = results
             .remove("streams")

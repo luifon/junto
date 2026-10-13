@@ -1,6 +1,5 @@
 //! A native capture with explicitly selected playback links and bounded sample storage.
 
-use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,7 +14,9 @@ use super::registry::Registry;
 use super::{Life, error};
 use crate::share::{ApplicationSource, CaptureError, SoundChoice};
 
-pub(super) const CAPACITY: usize = 48_000 / 5;
+/// The frames that the queue of captured sound holds: 400 ms. The delivery keeps far fewer
+/// in it; the room is for the portions of the sound graph and for a late reader.
+pub(super) const CAPACITY: usize = 48_000 * 2 / 5;
 const POSITIONS: [u32; 9] = [
     spa::sys::SPA_AUDIO_CHANNEL_FL,
     spa::sys::SPA_AUDIO_CHANNEL_FR,
@@ -123,7 +124,6 @@ fn capture(
     )
     .map_err(error)?;
     let malformed = Arc::new(AtomicBool::new(false));
-    let negotiated = Rc::new(Cell::new(false));
     let listener = stream
         .add_local_listener::<()>()
         .state_changed({
@@ -142,7 +142,6 @@ fn capture(
             }
         })
         .param_changed({
-            let negotiated = negotiated.clone();
             let life = life.clone();
             move |_, _, id, param| {
                 if id != spa::param::ParamType::Format.as_raw() {
@@ -161,9 +160,7 @@ fn capture(
                     life.fail(error(
                         "PipeWire selected an unsupported shared-sound format",
                     ));
-                    return;
                 }
-                negotiated.set(true);
             }
         })
         .process({
@@ -214,20 +211,23 @@ fn capture(
             &mut params,
         )
         .map_err(error)?;
-    connection.drive(life.clone(), Some(Duration::from_secs(15)), {
+    // The capture is ready when its stream has the ports that links need. The stream gets
+    // its format only with its first link, so a start while nothing plays cannot wait for
+    // the format; a format that arrives later is checked when it arrives.
+    let prepared = connection.drive(life.clone(), Some(Duration::from_secs(15)), {
         let registry = registry.clone();
-        move || {
-            let graph = registry.graph.borrow();
-            negotiated.get()
-                && graph.capture.is_some_and(|node| {
-                    CHANNELS.iter().all(|channel| {
-                        graph.ports.values().any(|port| {
-                            port.node == node && !port.output && port.channel == *channel
-                        })
-                    })
-                })
-        }
-    })?;
+        move || registry.graph.borrow().capture_ports() == CHANNELS.len()
+    });
+    if let Err(failure) = prepared {
+        return Err(match failure {
+            CaptureError::Failed(reason) => error(format!(
+                "{reason}: the sound stream has {} of {} ports",
+                registry.graph.borrow().capture_ports(),
+                CHANNELS.len(),
+            )),
+            other => other,
+        });
+    }
     if let Some(ready) = ready.take() {
         let _ = ready.send(Ok(()));
     }

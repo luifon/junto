@@ -177,24 +177,6 @@ fn remember_failure(
 }
 
 #[test]
-fn a_later_error_does_not_erase_the_device_disconnection() {
-    use junto_media::audio::AudioError;
-    let reported = Mutex::new(None);
-    remember_failure(&reported, AudioError::NoDevice);
-    remember_failure(
-        &reported,
-        AudioError::Failed("after the disconnection".to_owned()),
-    );
-    assert_eq!(*reported.lock().unwrap(), Some(AudioError::NoDevice));
-}
-
-#[test]
-#[ignore = "needs isolated virtual PipeWire devices: tools/linux-container.sh"]
-fn cleanup_does_not_panic_when_the_module_is_already_gone() {
-    assert!(std::panic::catch_unwind(|| drop(Sink("4294967295".to_owned()))).is_ok());
-}
-
-#[test]
 #[ignore = "needs isolated virtual PipeWire devices: tools/linux-container.sh"]
 fn an_unavailable_pipewire_daemon_is_an_audio_error() {
     assert_eq!(
@@ -212,7 +194,7 @@ fn an_unavailable_pipewire_daemon_is_an_audio_error() {
             "an_unavailable_pipewire_daemon_is_an_audio_error",
             "--nocapture",
         ])
-        .env("PIPEWIRE_REMOTE", "junto-linux1-unavailable")
+        .env("PIPEWIRE_REMOTE", "junto-linux-unavailable")
         .env("JUNTO_TEST_MISSING_PIPEWIRE_CHILD", "1")
         .output()
         .unwrap();

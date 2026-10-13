@@ -445,15 +445,24 @@ impl Calls {
 
     /// The screens, windows and applications that can be shared now.
     pub fn share_sources(&self) -> Pending<Result<ShareSources, CaptureError>> {
-        let reading = self
-            .inner
-            .runtime
-            .spawn(self.inner.options.capture.sources());
-        Box::pin(async move {
-            reading
-                .await
-                .map_err(|error| CaptureError::Failed(error.to_string()))?
-        })
+        // The Linux capture reads its sources with work that needs the runtime of the
+        // client, and the window polls this future on a thread without one.
+        #[cfg(target_os = "linux")]
+        {
+            let reading = self
+                .inner
+                .runtime
+                .spawn(self.inner.options.capture.sources());
+            Box::pin(async move {
+                reading
+                    .await
+                    .map_err(|error| CaptureError::Failed(error.to_string()))?
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.inner.options.capture.sources()
+        }
     }
 
     /// Starts the share of this device in its call. The result is in the view of the
@@ -1833,6 +1842,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(target_os = "linux")]
     #[allow(clippy::unwrap_used)]
     fn source_discovery_polled_by_a_window_uses_the_client_runtime() {
         struct RuntimeCapture;
@@ -1863,7 +1873,7 @@ mod tests {
         }
         assert!(tokio::runtime::Handle::try_current().is_err());
         let directory = tempfile::Builder::new()
-            .prefix("junto-linux1-source-runtime-")
+            .prefix("junto-linux-source-runtime-")
             .tempdir_in("/tmp")
             .unwrap();
         let client = Client::open(junto_client_core::ClientOptions::new(

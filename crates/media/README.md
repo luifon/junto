@@ -4,7 +4,7 @@ The native client's sound devices, media connection and screen-share capture. Th
 
 ## Linux build and tests
 
-The container runner needs Docker and the shared build lock. Its image uses Rust 1.98.1, pinned system packages and an architecture-specific LLVM installation. It has arm64 and amd64 toolchain definitions. A successful image build is not a workspace test on that architecture.
+The container runner needs Docker and the shared build lock. Its image uses Rust 1.98.1 and system packages with exact versions, all from one dated snapshot of the Debian archives, which keeps every version. The call library needs clang 21 or later; the image installs Debian's clang 22 for this release, one version for arm64 and amd64. It has arm64 and amd64 toolchain definitions. A successful image build is not a workspace test on that architecture.
 
 ```sh
 tools/linux-container.sh cargo check --workspace --all-targets
@@ -33,6 +33,17 @@ The native call library supplies PipeWire stubs that also intercept calls made b
 
 The tests do not prove physical microphone or loudspeaker behaviour. Tests that use virtual devices require `JUNTO_TEST_VIRTUAL_AUDIO=1`, which the isolated runner supplies. Do not set it to run them against an ordinary desktop session.
 
+### Address check of the sound capture
+
+The sound capture holds PipeWire objects through a safe Rust interface, and a wrong order of release writes into freed memory without a failing test: the standard allocator hides it. This check runs the Linux sound-capture tests with the address checking of the compiler (`-Zsanitizer=address`), which reports such a write and ends the test:
+
+```sh
+tools/linux-container.sh tools/linux/display.sh wayland tools/linux/portal.sh \
+    tools/linux/address-check.sh
+```
+
+The script installs the nightly toolchain `nightly-2026-10-01` into a temporary directory of the container, builds `junto-media` for the host target with the checking into a directory of the container, and runs the ignored tests of `share::linux::audio::tests` and, under the virtual portal of this command, the picture capture test `share::linux::live`. Without the display and portal scripts it runs the sound tests only. The toolchain and the build end with the container; the build volume is not used. Run it after a change of `src/share/linux/registry.rs`, `connection.rs`, `audio.rs` or `video.rs`, and after a new version of the `pipewire` crate. A run takes a full build of the dependencies of `junto-media`.
+
 ## macOS tests
 
 ```sh
@@ -51,7 +62,7 @@ macOS uses ScreenCaptureKit. Linux asks the desktop portal to choose and authori
 
 Linux shared sound uses explicit playback links, excludes Junto's own process and forwarding nodes, and keeps application identity across stream and process restarts. The direct PipeWire socket must be accessible for those sound choices. A sandbox with portal access but no graph access can offer video with no sound. There is no hardware-device capture path for applications that bypass PipeWire.
 
-The fake portal tests and pixel, identity, routing and clock tests run with the ordinary media unit tests. The ignored audio test uses native and PulseAudio players directed only to a private null sink, and checks selection, own-sound exclusion, mute, pause and restart. A separate test feature enables the real portal test because it needs a particular virtual Wayland session:
+The fake portal tests and pixel, identity, routing and clock tests run with the ordinary media unit tests. The ignored audio tests use native and PulseAudio players directed only to a private null sink. One checks selection, own-sound exclusion, mute, pause and restart; it first measures Junto's own tone at the monitor of its output and counts the frames that its output played, so that it cannot pass while the own tone does not play. One ends a player during a capture, one starts and ends players for 30 seconds during a capture, and one starts a capture while nothing plays and then hears a player. A separate test feature enables the real portal test because it needs a particular virtual Wayland session:
 
 ```sh
 tools/linux-container.sh tools/linux/display.sh wayland tools/linux/portal.sh \
@@ -67,6 +78,6 @@ The test image builds a SHA-256-pinned wlr 0.7.1 portal backend with the shared-
 
 With `test-support`, a live test can query connection statistics. A deficient frame-rate interval prints snapshots from its boundaries, the selected share and the share's age. Add `--show-output` to see diagnostics from a deficient interval that recovered before the test ended. Successful intervals do not print statistics.
 
-The image `junto-linux1-build:1` and volumes `junto-linux1-cargo` and `junto-linux1-target` remain for later commands. Keep the target volume to one architecture and the debug profile. An emulated architecture check needs a temporary target volume, removed when the check finishes. The runner removes its containers and network after each command. It refuses an existing resource name rather than replacing another run. On Linux it builds with the invoking user's user and group identifiers. `JUNTO_DOCKER_SOCKET` supplies a nonstandard local Docker socket, such as a rootless daemon's socket.
+The image `junto-linux-build:1` and volumes `junto-linux-cargo` and `junto-linux-target` remain for later commands. `JUNTO_LINUX_PREFIX` replaces the prefix `junto-linux` in the names of the image, the volumes, the containers and the network, for two checkouts on one machine. Keep the target volume to one architecture and the debug profile. An emulated architecture check needs a temporary target volume, removed when the check finishes. The runner removes its containers and network after each command. It refuses an existing resource name rather than replacing another run. On Linux it builds with the invoking user's user and group identifiers. `JUNTO_DOCKER_SOCKET` supplies a nonstandard local Docker socket, such as a rootless daemon's socket.
 
-`JUNTO_LINUX_ARTIFACTS` names a host directory to receive `/tmp/junto-linux1-artifacts` from the build container. The command must create that container directory when it produces artifacts. A copy failure is reported and does not replace an earlier command failure with a different exit status.
+`JUNTO_LINUX_ARTIFACTS` names a host directory to receive `/tmp/junto-linux-artifacts` from the build container. The command must create that container directory when it produces artifacts. A copy failure is reported and does not replace an earlier command failure with a different exit status.

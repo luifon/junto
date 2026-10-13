@@ -59,6 +59,10 @@ struct State {
     events: mpsc::UnboundedSender<Event>,
     mode: AtomicU32,
 }
+/// The portal never answers the request that selects the sources.
+const SILENT_SELECTION: u32 = 5;
+/// The portal process ends while the person's dialog is open.
+const ENDS_DURING_START: u32 = 6;
 struct ScreenCast(Arc<State>);
 struct Session(Arc<State>);
 struct Request(Arc<State>);
@@ -168,7 +172,9 @@ impl ScreenCast {
                 u32::try_from(options.get("persist_mode").unwrap()).unwrap(),
             ))
             .unwrap();
-        response(connection, &request, 0, HashMap::new()).await;
+        if self.0.mode.load(Ordering::Relaxed) != SILENT_SELECTION {
+            response(connection, &request, 0, HashMap::new()).await;
+        }
         request
     }
 
@@ -213,6 +219,8 @@ impl ScreenCast {
             response(connection, &request, 1, HashMap::new()).await;
         } else if mode == 4 {
             response(connection, &request, 2, HashMap::new()).await;
+        } else if mode == ENDS_DURING_START {
+            connection.release_name(SERVICE).await.unwrap();
         } else if mode == 3 {
             connection
                 .emit_signal(
@@ -261,6 +269,7 @@ async fn setup(bus: &Bus, mode: u32) -> (Connection, Portal, mpsc::UnboundedRece
         connection: bus.connection().await,
         session: None,
         pending: std::sync::Mutex::new(None),
+        limit: Duration::from_secs(1),
     };
     (service, portal, receive)
 }
@@ -360,4 +369,46 @@ async fn a_revoked_session_ends_even_when_the_chooser_has_not_responded() {
     drop(portal);
     assert!(matches!(event(&mut events).await, Event::CloseRequest));
     assert!(matches!(event(&mut events).await, Event::CloseSession));
+}
+
+#[tokio::test]
+async fn a_portal_that_does_not_answer_a_request_without_a_dialog_fails_the_start() {
+    let bus = Bus::new();
+    let (_service, mut portal, mut events) = setup(&bus, SILENT_SELECTION).await;
+    let started = std::time::Instant::now();
+    let result = tokio::time::timeout(Duration::from_secs(30), portal.start(ShareKind::Screen))
+        .await
+        .unwrap();
+    assert!(
+        matches!(&result, Err(CaptureError::Failed(reason)) if reason.contains("SelectSources")),
+        "{:?}",
+        result.err()
+    );
+    // The limit of the test is one second; the person's dialog was never reached.
+    assert!(started.elapsed() < Duration::from_secs(20));
+    assert!(matches!(
+        event(&mut events).await,
+        Event::Select(1, false, 2, 0)
+    ));
+    drop(portal);
+    assert!(matches!(event(&mut events).await, Event::CloseSession));
+}
+
+#[tokio::test]
+async fn a_portal_that_ends_during_the_dialog_fails_the_start() {
+    let bus = Bus::new();
+    let (_service, mut portal, mut events) = setup(&bus, ENDS_DURING_START).await;
+    let result = tokio::time::timeout(Duration::from_secs(30), portal.start(ShareKind::Screen))
+        .await
+        .unwrap();
+    assert!(
+        matches!(&result, Err(CaptureError::Failed(reason)) if reason.contains("ended")),
+        "{:?}",
+        result.err()
+    );
+    assert!(matches!(
+        event(&mut events).await,
+        Event::Select(1, false, 2, 0)
+    ));
+    assert!(matches!(event(&mut events).await, Event::Start));
 }

@@ -1,11 +1,11 @@
 //! Validated packed pixels, copied before the PipeWire buffer returns to its owner.
 
-use livekit::webrtc::native::yuv_helper::argb_to_i420;
+use livekit::webrtc::native::yuv_helper::{abgr_to_i420, argb_to_i420};
 use livekit::webrtc::video_frame::I420Buffer;
 
 use crate::share::{CaptureError, Resolution};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Format {
     Bgra,
     Bgrx,
@@ -21,10 +21,13 @@ pub(super) struct Crop {
     pub height: u32,
 }
 
+/// The cropped rows of a captured picture without their padding, in the byte order of the
+/// capture.
 pub(super) struct Frame {
     pub width: u32,
     pub height: u32,
-    bgra: Vec<u8>,
+    format: Format,
+    packed: Vec<u8>,
 }
 
 impl Frame {
@@ -71,40 +74,45 @@ impl Frame {
         {
             return Err(invalid());
         }
-        let mut bgra = Vec::with_capacity(crop.width as usize * crop.height as usize * 4);
+        // This runs on the thread of the capture: rows are copied whole, and every step
+        // for a pixel is left to `convert`.
+        let mut packed = Vec::with_capacity(crop.width as usize * crop.height as usize * 4);
         for row in y..y + crop.height {
             let start = row as usize * stride + x as usize * 4;
-            for pixel in bytes[start..start + crop.width as usize * 4]
-                .as_chunks::<4>()
-                .0
-            {
-                let (blue, green, red, alpha) = match format {
-                    Format::Bgra => (pixel[0], pixel[1], pixel[2], pixel[3]),
-                    Format::Bgrx => (pixel[0], pixel[1], pixel[2], 255),
-                    Format::Rgba => (pixel[2], pixel[1], pixel[0], pixel[3]),
-                    Format::Rgbx => (pixel[2], pixel[1], pixel[0], 255),
-                };
-                // Do not transmit hidden RGB in a fully transparent window pixel.
-                if alpha == 0 {
-                    bgra.extend_from_slice(&[0, 0, 0, 255]);
-                } else {
-                    bgra.extend_from_slice(&[blue, green, red, 255]);
-                }
-            }
+            packed.extend_from_slice(&bytes[start..start + crop.width as usize * 4]);
         }
         Ok(Self {
             width: crop.width,
             height: crop.height,
-            bgra,
+            format,
+            packed,
         })
     }
 
-    pub fn convert(self, resolution: Resolution) -> I420Buffer {
+    /// Do not transmit hidden RGB in a fully transparent window pixel.
+    fn hide_transparent(&mut self) {
+        if matches!(self.format, Format::Bgrx | Format::Rgbx) {
+            return;
+        }
+        for pixel in self.packed.as_chunks_mut::<4>().0 {
+            if pixel[3] == 0 {
+                *pixel = [0, 0, 0, 255];
+            }
+        }
+    }
+
+    pub fn convert(mut self, resolution: Resolution) -> I420Buffer {
+        self.hide_transparent();
         let mut buffer = I420Buffer::new(self.width, self.height);
         let (stride_y, stride_u, stride_v) = buffer.strides();
         let (y, u, v) = buffer.data_mut();
-        argb_to_i420(
-            &self.bgra,
+        // The call library names a format by its bytes from the highest to the lowest.
+        let to_i420 = match self.format {
+            Format::Bgra | Format::Bgrx => argb_to_i420,
+            Format::Rgba | Format::Rgbx => abgr_to_i420,
+        };
+        to_i420(
+            &self.packed,
             self.width * 4,
             y,
             stride_y,
@@ -142,7 +150,8 @@ mod tests {
         };
         let frame = Frame::copy(&bytes, (2, 2), 12, Some(crop), Format::Rgba).unwrap();
         assert_eq!((frame.width, frame.height), (1, 2));
-        assert_eq!(frame.bgra, [30, 20, 10, 255, 60, 50, 40, 255]);
+        assert_eq!(frame.format, Format::Rgba);
+        assert_eq!(frame.packed, [10, 20, 30, 255, 40, 50, 60, 255]);
     }
 
     #[test]
@@ -180,10 +189,79 @@ mod tests {
 
     #[test]
     fn a_transparent_pixel_cannot_disclose_its_hidden_colour() {
-        let frame = Frame::copy(&[99, 98, 97, 0], (1, 1), 4, None, Format::Bgra).unwrap();
-        assert_eq!(frame.bgra, [0, 0, 0, 255]);
-        let frame = Frame::copy(&[99, 98, 97, 0], (1, 1), 4, None, Format::Rgbx).unwrap();
-        assert_eq!(frame.bgra, [97, 98, 99, 255]);
+        for format in [Format::Bgra, Format::Rgba] {
+            let mut frame = Frame::copy(&[99, 98, 97, 0], (1, 1), 4, None, format).unwrap();
+            frame.hide_transparent();
+            assert_eq!(frame.packed, [0, 0, 0, 255]);
+        }
+        // The fourth byte of a format without transparency is padding.
+        let mut frame = Frame::copy(&[99, 98, 97, 0], (1, 1), 4, None, Format::Rgbx).unwrap();
+        frame.hide_transparent();
+        assert_eq!(frame.packed, [99, 98, 97, 0]);
+        // The conversion applies the step: a transparent red pixel arrives black.
+        let pixels = [0, 0, 200, 0].repeat(16 * 16);
+        let frame = Frame::copy(&pixels, (16, 16), 64, None, Format::Bgra).unwrap();
+        let buffer = frame.convert(Resolution::P720);
+        let picture = crate::share::picture::convert(&buffer, (16, 16)).unwrap();
+        let (red, green, blue) = picture.pixel(8, 8).unwrap();
+        assert!(red < 4 && green < 4 && blue < 4, "{red} {green} {blue}");
+    }
+
+    #[test]
+    fn both_byte_orders_keep_their_colours() {
+        for (format, pixel) in [
+            (Format::Bgrx, [20, 60, 180, 0]),
+            (Format::Bgra, [20, 60, 180, 255]),
+            (Format::Rgbx, [180, 60, 20, 0]),
+            (Format::Rgba, [180, 60, 20, 255]),
+        ] {
+            let pixels = pixel.repeat(64 * 64);
+            let frame = Frame::copy(&pixels, (64, 64), 64 * 4, None, format).unwrap();
+            let buffer = frame.convert(Resolution::P720);
+            let picture = crate::share::picture::convert(&buffer, (64, 64)).unwrap();
+            let (red, green, blue) = picture.pixel(32, 32).unwrap();
+            assert!((i16::from(red) - 180).abs() < 4, "{format:?}: red {red}");
+            assert!(
+                (i16::from(green) - 60).abs() < 4,
+                "{format:?}: green {green}"
+            );
+            assert!((i16::from(blue) - 20).abs() < 4, "{format:?}: blue {blue}");
+        }
+    }
+
+    #[test]
+    fn the_copy_on_the_capture_thread_costs_about_one_plain_copy_of_the_picture() {
+        // 3840 by 2160 with padded rows, as a compositor can give them.
+        let (width, height, stride) = (3840_usize, 2160_usize, 3840 * 4 + 64);
+        let source = vec![7_u8; stride * height];
+        let measure = |work: &dyn Fn() -> usize| {
+            (0..5)
+                .map(|_| {
+                    let started = std::time::Instant::now();
+                    assert_eq!(work(), width * height * 4);
+                    started.elapsed()
+                })
+                .min()
+                .unwrap()
+        };
+        let plain = measure(&|| source[..width * height * 4].to_vec().len());
+        let copied = measure(&|| {
+            Frame::copy(
+                &source,
+                (width as u32, height as u32),
+                stride as i32,
+                None,
+                Format::Bgra,
+            )
+            .unwrap()
+            .packed
+            .len()
+        });
+        eprintln!("3840 by 2160: plain copy {plain:?}, copy of the capture {copied:?}");
+        assert!(
+            copied < plain * 4 + std::time::Duration::from_millis(5),
+            "plain copy {plain:?}, copy of the capture {copied:?}"
+        );
     }
 
     #[test]

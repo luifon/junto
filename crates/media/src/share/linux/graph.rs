@@ -65,7 +65,10 @@ impl Graph {
             .map(|(id, client)| (*id, client))
     }
 
-    fn application(&self, node: &Node) -> Option<(&Client, ApplicationId)> {
+    /// The client of a playback stream that is certainly not Junto's own: the daemon states
+    /// the process of its socket, and that process, its sandbox identifier and its binary
+    /// are not the ones of this capture. Anything unknown gives no client.
+    fn foreign(&self, node: &Node) -> Option<&Client> {
         if !node.known || !node.playback || node.forwarding {
             return None;
         }
@@ -81,7 +84,23 @@ impl Graph {
         {
             return None;
         }
+        Some(client)
+    }
+
+    /// A foreign stream whose client also states which application it is. System sound
+    /// needs no such statement; the list of applications and the choice of one do.
+    fn application(&self, node: &Node) -> Option<(&Client, ApplicationId)> {
+        let client = self.foreign(node)?;
         Some((client, client.identity()?))
+    }
+
+    fn unsupported_layout(&self, node_id: u32) -> bool {
+        self.ports.values().any(|port| {
+            port.node == node_id
+                && port.output
+                && !port.monitor
+                && !CHANNELS.contains(&port.channel.as_str())
+        })
     }
 
     fn unsupported_applications(&self) -> BTreeSet<String> {
@@ -89,21 +108,17 @@ impl Graph {
             .iter()
             .filter_map(|(node_id, node)| {
                 let (_, application) = self.application(node)?;
-                self.ports
-                    .values()
-                    .any(|port| {
-                        port.node == *node_id
-                            && port.output
-                            && !port.monitor
-                            && !CHANNELS.contains(&port.channel.as_str())
-                    })
+                self.unsupported_layout(*node_id)
                     .then_some(application.bundle_id)
             })
             .collect()
     }
 
     pub fn system_available(&self) -> bool {
-        self.ready() && self.unsupported_applications().is_empty()
+        self.ready()
+            && !self.nodes.iter().any(|(node_id, node)| {
+                self.foreign(node).is_some() && self.unsupported_layout(*node_id)
+            })
     }
 
     pub fn applications(&self) -> Vec<ApplicationSource> {
@@ -127,6 +142,21 @@ impl Graph {
             }
         }
         applications.into_values().collect()
+    }
+
+    /// How many of the named input channels the capture stream has as ports.
+    pub fn capture_ports(&self) -> usize {
+        let Some(capture) = self.capture else {
+            return 0;
+        };
+        CHANNELS
+            .iter()
+            .filter(|channel| {
+                self.ports
+                    .values()
+                    .any(|port| port.node == capture && !port.output && port.channel == **channel)
+            })
+            .count()
     }
 
     pub fn ready(&self) -> bool {
@@ -156,13 +186,13 @@ impl Graph {
             let Some(node) = self.nodes.get(&port.node) else {
                 continue;
             };
-            let Some((_, application)) = self.application(node) else {
+            let Some(client) = self.foreign(node) else {
                 continue;
             };
             let selected = match choice {
                 SoundChoice::None => false,
                 SoundChoice::System => true,
-                SoundChoice::Application(chosen) => chosen == &application,
+                SoundChoice::Application(chosen) => client.identity().as_ref() == Some(chosen),
             };
             if !selected {
                 continue;
@@ -300,6 +330,30 @@ mod tests {
         graph.clients.get_mut(&2).unwrap().socket_pid = Some(90);
         graph.clients.get_mut(&1).unwrap().socket_pid = None;
         assert!(graph.links(&SoundChoice::System).unwrap().is_empty());
+    }
+
+    #[test]
+    fn system_sound_includes_a_stream_without_an_application_name_and_the_list_does_not() {
+        let mut graph = scene();
+        let unnamed = graph.clients.get_mut(&2).unwrap();
+        unnamed.binary.clear();
+        unnamed.name.clear();
+        assert!(graph.applications().is_empty());
+        assert!(graph.system_available());
+        assert_eq!(
+            graph.links(&SoundChoice::System).unwrap(),
+            BTreeSet::from([(200, 100)])
+        );
+        // Without the process of its socket the stream could be Junto's own.
+        graph.clients.get_mut(&2).unwrap().socket_pid = None;
+        assert!(graph.links(&SoundChoice::System).unwrap().is_empty());
+        graph.clients.get_mut(&2).unwrap().socket_pid = Some(80);
+        assert!(graph.links(&SoundChoice::System).unwrap().is_empty());
+        // Its layout counts for system sound as the layout of a named application does.
+        graph.clients.get_mut(&2).unwrap().socket_pid = Some(90);
+        graph.ports.get_mut(&200).unwrap().channel = "AUX0".into();
+        assert!(!graph.system_available());
+        assert!(graph.links(&SoundChoice::System).is_err());
     }
 
     #[test]

@@ -1,12 +1,29 @@
 FROM rust:1.98.1-slim-bookworm@sha256:ff521445a372125ed4f76e1453a1f8098f2d05332d1601d30db1c1f62757e730
 
+# Every package comes from one dated snapshot of the Debian archives. A snapshot keeps every
+# version of a package; the archives themselves remove a version when an update replaces
+# it, and a build with exact versions then fails.
+RUN rm -f /etc/apt/sources.list.d/debian.sources \
+    && printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/%s %s main\n' \
+        debian/20261010T000000Z bookworm \
+        debian/20261010T000000Z bookworm-updates \
+        debian/20261010T000000Z bookworm-backports \
+        debian-security/20261010T000000Z bookworm-security \
+        > /etc/apt/sources.list \
+    && printf 'Acquire::Retries "5";\n' > /etc/apt/apt.conf.d/80-retries
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl=7.88.1-10+deb12u15 \
     ca-certificates=20250419~deb12u1 \
     && rm -rf /var/lib/apt/lists
 
-COPY install-llvm.sh llvm-arm64.sha256 llvm-amd64.sha256 /opt/junto-linux/
-RUN sh /opt/junto-linux/install-llvm.sh
+# The call library needs clang 21 or later. The compiler is Debian's build for this release,
+# one version for both architectures.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    clang-22=1:22.1.8-1~deb12u1 lld-22=1:22.1.8-1~deb12u1 libclang-22-dev=1:22.1.8-1~deb12u1 \
+    llvm-22=1:22.1.8-1~deb12u1 libclang-common-22-dev=1:22.1.8-1~deb12u1 libclang-cpp22=1:22.1.8-1~deb12u1 \
+    libclang1-22=1:22.1.8-1~deb12u1 libllvm22=1:22.1.8-1~deb12u1 llvm-22-linker-tools=1:22.1.8-1~deb12u1 \
+    llvm-22-runtime=1:22.1.8-1~deb12u1 \
+    && rm -rf /var/lib/apt/lists
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config=1.8.1-1 cmake=3.25.1-1 \
     libfontconfig1-dev=2.14.1-4 libxcb1-dev=1.15-1 \
@@ -32,8 +49,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xserver-xorg-core=2:21.1.7-3+deb12u13 xserver-xorg-video-dummy=1:0.4.0-1 \
     xdg-desktop-portal=1.16.0-2 swaybg=1.2.0-1 \
     && rm -rf /var/lib/apt/lists
-RUN echo 'deb http://deb.debian.org/debian bookworm-backports main' > /etc/apt/sources.list.d/backports.list \
-    && apt-get update && apt-get install -y --no-install-recommends -t bookworm-backports \
+# The Mesa 22 software Vulkan driver stays beside Mesa 25 for the old-driver window check.
+RUN mkdir -p /opt/junto-linux/mesa22 \
+    && cp /usr/lib/*-linux-gnu/libvulkan_lvp.so /opt/junto-linux/mesa22/ \
+    && sed 's|"library_path": *"[^"]*"|"library_path": "/opt/junto-linux/mesa22/libvulkan_lvp.so"|' \
+        /usr/share/vulkan/icd.d/lvp_icd.*.json > /opt/junto-linux/mesa22/lvp_icd.json \
+    && grep -q /opt/junto-linux/mesa22/libvulkan_lvp.so /opt/junto-linux/mesa22/lvp_icd.json
+RUN apt-get update && apt-get install -y --no-install-recommends -t bookworm-backports \
     mesa-vulkan-drivers=25.0.7-2~bpo12+1 libgl1-mesa-dri=25.0.7-2~bpo12+1 \
     libegl-mesa0=25.0.7-2~bpo12+1 libglx-mesa0=25.0.7-2~bpo12+1 \
     libgbm-dev=25.0.7-2~bpo12+1 libdrm-dev=2.4.123-1~bpo12+1 \
@@ -46,11 +68,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists
 COPY install-portal.sh /opt/junto-linux/
 RUN sh /opt/junto-linux/install-portal.sh
-ENV CC=clang-21 CXX=clang++-21 LIBCLANG_PATH=/usr/lib/llvm-21/lib
+ENV CC=clang-22 CXX=clang++-22 LIBCLANG_PATH=/usr/lib/llvm-22/lib
 ENV CARGO_BUILD_JOBS=4 CARGO_TARGET_DIR=/target
-ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=clang-21
-ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang-21
-ENV RUSTFLAGS="-C link-arg=-fuse-ld=lld-21"
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=clang-22
+ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang-22
+ENV RUSTFLAGS="-C link-arg=-fuse-ld=lld-22"
 COPY session.sh docker-control.py /opt/junto-linux/
 COPY docker /usr/local/bin/docker
 ARG BUILD_UID=1000

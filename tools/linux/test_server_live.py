@@ -10,7 +10,7 @@ import unittest
 class ParticipantProfile(unittest.TestCase):
     def test_the_server_path_uses_the_debug_participant(self):
         helper = Path(__file__).with_name("server-live.sh").resolve()
-        with tempfile.TemporaryDirectory(prefix="junto-linux1-participant-", dir="/tmp") as directory:
+        with tempfile.TemporaryDirectory(prefix="junto-linux-participant-", dir="/tmp") as directory:
             root = Path(directory)
             target = root / "spikes/test-participant/target"
             cargo = root / "cargo"

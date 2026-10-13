@@ -43,6 +43,17 @@ impl SystemNotifier for PlatformNotifier {
     }
 }
 
+/// Brings the application to the front after a press on one of its notifications.
+pub fn bring_to_front(cx: &mut App) {
+    cx.activate(true);
+    // gpui activates no application on Linux. The main window, which is the first one, is
+    // asked instead: X11 gives it the focus, and a Wayland compositor decides by itself.
+    #[cfg(target_os = "linux")]
+    if let Some(window) = cx.windows().first() {
+        let _ = window.update(cx, |_, window, _| window.activate_window());
+    }
+}
+
 /// Installs the system backend and its activation route only for the real application.
 pub fn platform(
     cx: &mut App,

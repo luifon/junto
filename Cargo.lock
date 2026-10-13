@@ -3806,11 +3806,13 @@ dependencies = [
  "gpui-base",
  "gpui-pre",
  "gpui-pre-platform",
+ "gpui-pre-wgpu",
  "image",
  "junto-client",
  "junto-client-core",
  "junto-media",
  "junto-server",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "sqlx",
@@ -3823,6 +3825,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "x11rb",
  "zbus",
 ]
 

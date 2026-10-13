@@ -19,6 +19,20 @@ pub(super) struct Connection {
     pub nonce: String,
 }
 
+/// Whether an error that the daemon reports on the connection ends the capture.
+///
+/// The daemon reports every error here: a link that it refused, with the identifier of
+/// the link, and a request for an object that it had already removed, with the identifier
+/// of the connection. Only the loss of the connection ends the capture, which is also the
+/// rule of the stream of the PipeWire library. A stream reports its own error through its
+/// state, and a link that could not be made is made again (registry.rs).
+fn ends_the_capture(id: u32, result: i32) -> bool {
+    let lost = result.checked_neg().is_some_and(|code| {
+        std::io::Error::from_raw_os_error(code).kind() == std::io::ErrorKind::BrokenPipe
+    });
+    id == pw::core::PW_ID_CORE && lost
+}
+
 impl Connection {
     pub fn new(fd: Option<OwnedFd>, life: Arc<Life>) -> Result<Self, CaptureError> {
         if !crate::audio::linux::initialise() {
@@ -38,7 +52,18 @@ impl Connection {
         .map_err(error)?;
         let errors = core
             .add_listener_local()
-            .error(move |_, _, _, message| life.fail(error(message)))
+            .error(move |id, _, result, message| {
+                if ends_the_capture(id, result) {
+                    life.fail(error(message));
+                } else {
+                    tracing::debug!(
+                        id,
+                        result,
+                        message,
+                        "the PipeWire daemon reported an error that does not end the capture"
+                    );
+                }
+            })
             .register();
         Ok(Self {
             _errors: errors,
@@ -100,5 +125,23 @@ impl Connection {
         let result = self.drive(life, Some(Duration::from_secs(10)), move || done.get());
         drop(listener);
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_loss_of_the_connection_ends_the_capture() {
+        let (lost, absent) = (-32, -2);
+        assert!(ends_the_capture(pw::core::PW_ID_CORE, lost));
+        // "unknown resource": a request that crossed the removal of its object.
+        assert!(!ends_the_capture(pw::core::PW_ID_CORE, absent));
+        // The error of another object, such as a link that the daemon refused.
+        assert!(!ends_the_capture(57, absent));
+        assert!(!ends_the_capture(57, lost));
+        assert!(!ends_the_capture(pw::core::PW_ID_CORE, 0));
+        assert!(!ends_the_capture(pw::core::PW_ID_CORE, i32::MIN));
     }
 }

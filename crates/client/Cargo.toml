@@ -75,6 +75,13 @@ tracing-subscriber = { workspace = true }
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 tokio = { workspace = true }
 futures-util = { workspace = true }
+# The Vulkan adapters of the machine, read before the first window with the graphics
+# library of gpui in its version (ADR 0705).
+gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.8" }
+# The X11 window of a gpui window, and the request to the window manager that keeps it
+# above other windows (ADR 0507). gpui uses the same crates.
+raw-window-handle = "0.6"
+x11rb = "0.13"
 
 [lints]
 workspace = true

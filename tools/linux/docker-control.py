@@ -1,7 +1,10 @@
 """Only the test LiveKit container can be stopped and started by the live tests."""
 import http.client
 import http.server
+import os
 import socket
+
+CONTAINER = os.environ["JUNTO_TEST_LIVEKIT_CONTAINER"]
 
 
 class DockerConnection(http.client.HTTPConnection):
@@ -13,8 +16,8 @@ class DockerConnection(http.client.HTTPConnection):
 class Control(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         routes = {
-            '/stop': '/containers/junto-linux1-livekit/stop?t=1',
-            '/start': '/containers/junto-linux1-livekit/start',
+            '/stop': f'/containers/{CONTAINER}/stop?t=1',
+            '/start': f'/containers/{CONTAINER}/start',
         }
         if self.path not in routes:
             self.send_error(403)

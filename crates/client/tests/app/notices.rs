@@ -643,3 +643,17 @@ fn two_marks_asked_for_one_after_the_other_are_both_sent(cx: &mut TestAppContext
         window.unread_notices() == 0
     });
 }
+
+/// gpui has no activation of the application on Linux, so the press asks the window.
+#[cfg(target_os = "linux")]
+#[gpui::test]
+fn a_pressed_notification_brings_the_window_to_the_front(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let mut window = crate::harness::open(cx, directory.path());
+    window.cx.deactivate_window();
+    assert!(!window.cx.update(|window, _| window.is_window_active()));
+    TestAppContext::update(&window.cx, junto_client::notify::bring_to_front);
+    window.cx.run_until_parked();
+    assert!(window.cx.update(|window, _| window.is_window_active()));
+    window.close();
+}
