@@ -33,8 +33,9 @@ The `docker compose` commands of this document run in the directory `deploy/`, w
 - `git` and `openssl` on the host.
 - A domain with three names that point to the public address of the host (of the public host in the two-host form), for example `chat.example.test`, `livekit.example.test` and `turn.example.test`. Each needs an A record, and an AAAA record when the host has IPv6.
 - The public IPv4 address of that host.
-- Memory: the default limits of all containers add up to 14.4 GB. Measured use: the recorder 1.6 GiB for one recording of 1080p, the worker 3.2 GB for a transcription on a CPU, the media server up to 0.5 GiB. Each limit is a setting in `deploy/.env`.
+- Memory: the default limits of all containers add up to 14.4 GB; in the two-host form, to 12.3 GB on the data host and 2.7 GB on the public host. Measured use: the recorder 1.6 GiB for one recording of 1080p, the worker 3.2 GB for a transcription on a CPU, the media server up to 0.5 GiB. Each limit is a setting in `deploy/.env`.
 - CPU: one recording used 2.5 to 3.9 cores of the recorder. The server records two calls at a time. A transcription does not start while a call is recorded.
+- CPU limits: Docker creates no container whose CPU limit is above the number of CPUs of its host. `up` stops with the message `range of CPUs is from 0.01 to 1.00, as there are only 1 CPUs available`, with the numbers of the host. The largest default is 6 CPUs, for the recorder; on the public host of the two-host form it is 2, for the media server. On a host with fewer CPUs, set each limit that is above that number to that number in `deploy/.env`. `deploy/check-limits.sh <form file>` compares the limits of a form with the host and prints the line for each of them. A public host with one CPU needs `JUNTO_LIVEKIT_CPUS=1`.
 - Disk: the server keeps 5 GiB free on the volume of the recordings and reserves 8 GiB for each recording, so a recording starts only with 13 GiB free. The transcription models need 1.7 GB. An export, an upgrade and a restore need further space for a time (see "Exports", "Upgrade" and "Restore").
 
 ### Ports
@@ -54,14 +55,32 @@ Keep every other port closed. The media server and the entry use the network of 
 
 A port that Docker publishes is reachable even when the host firewall has no rule for it (ADR 0003). In these files only the link publishes a port, 51820/udp, which is meant to be public. PostgreSQL, Redis and the server publish no port.
 
+### The API port of the media server and the host firewall
+
+One connection goes from a container to an address of the host: the request to the API of the media server, port 7880 at the address of the host in the network `backend` (`JUNTO_BACKEND_GATEWAY`, 172.31.240.1). In the one-host form the container `server` opens it. On the public host of the two-host form the container `link` opens it, for the server on the data host. For the firewall of the host this is an incoming connection that arrives from the bridge of that network. A firewall that drops incoming connections by default, as `ufw` does, drops it. No rule of the table above allows it, and none may: port 7880 stays closed from outside. Add one rule for the one source address:
+
+| Form | Source | Destination |
+|---|---|---|
+| One host | 172.31.240.10, the server (`JUNTO_BACKEND_SERVER`) | 172.31.240.1, port 7880/tcp |
+| Two hosts, on the public host | 172.31.240.12, the link (`JUNTO_BACKEND_LINK`) | 172.31.240.1, port 7880/tcp |
+
+```sh
+sudo ufw allow from 172.31.240.10 to 172.31.240.1 port 7880 proto tcp    # one host
+sudo ufw allow from 172.31.240.12 to 172.31.240.1 port 7880 proto tcp    # the public host of two hosts
+```
+
+With `firewalld`, Docker puts the bridges of its networks into a zone of its own, which accepts these connections; no rule is needed. To verify on any host: the health route (step 8) states `"media_server":true` when the server reaches the API, and `"media_server":false` when it does not.
+
 ### Kernel setting of the media host
 
 The media server asks for UDP buffers of 5,000,000 bytes (ADR 0003). On the host that runs `livekit`:
 
 ```sh
 printf 'net.core.rmem_max=5000000\nnet.core.wmem_max=5000000\n' | sudo tee /etc/sysctl.d/90-junto.conf
-sudo sysctl --system
+sudo sysctl -p /etc/sysctl.d/90-junto.conf
 ```
+
+The second command applies the two values of this file. `sysctl --system` would apply every settings file of the host again.
 
 ## One host: from an empty host to the first login
 
@@ -86,13 +105,19 @@ sudo sysctl --system
    ```sh
    docker compose -f one-host.yaml build worker
    sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 /srv/junto/models
-   docker run --rm --user "$(id -u):$(id -g)" -v /srv/junto/models:/models junto-worker models fetch --dir /models
-   docker run --rm --network none -v /srv/junto/models:/models:ro junto-worker models verify --dir /models
+   docker run --rm --user "$(id -u):$(id -g)" --memory 2g --cpus 1 --pids-limit 256 \
+       -v /srv/junto/models:/models junto-worker models fetch --dir /models
+   docker run --rm --network none --memory 2g --cpus 1 --pids-limit 256 \
+       -v /srv/junto/models:/models:ro junto-worker models verify --dir /models
    ```
 
-   The download is 1.7 GB. The worker's user (10001) reads the directory and cannot write to it. To run without transcripts, set `JUNTO_TRANSCRIBE_COMMAND=` (empty) in `.env`, point `JUNTO_MODELS_DIR` to any empty directory, and add `--scale worker=0` to the `up` command.
+   These two containers are no services of a Compose file, so the commands name their limits. The download is 1.7 GB. The worker's user (10001) reads the directory and cannot write to it. To run without transcripts, set `JUNTO_TRANSCRIBE_COMMAND=` (empty) in `.env`, point `JUNTO_MODELS_DIR` to any empty directory, and add `--scale worker=0` to the `up` command.
 
-4. Apply the kernel setting and the firewall rules above. Check that the three DNS names resolve to the host.
+4. Apply the kernel setting and the firewall rules above, with the rule for the API port of the media server. Check that the three DNS names resolve to the host. Compare the CPU limits with the host; the command prints nothing when every limit fits:
+
+   ```sh
+   ./check-limits.sh one-host.yaml
+   ```
 
 5. Build and start:
 
@@ -129,8 +154,8 @@ sudo sysctl --system
 
 Both hosts get the repository and a `deploy/.env`. The LiveKit key, the LiveKit secret and the Redis password are the same on both hosts; the PostgreSQL password is needed on the data host only.
 
-1. On the data host: `umask 077 && cp env.example .env && ./generate-secrets.sh >> .env`. Copy the lines `JUNTO_LIVEKIT_API_KEY`, `JUNTO_LIVEKIT_API_SECRET` and `JUNTO_REDIS_PASSWORD` to the `.env` of the public host over a channel that you trust.
-2. On both hosts: set the names and `JUNTO_PUBLIC_IP` in `.env`. The public host needs `JUNTO_TURN_HOST` and `JUNTO_ACME_EMAIL`; the data host needs `JUNTO_MODELS_DIR`.
+1. On the data host: `umask 077 && cp env.example .env && ./generate-secrets.sh >> .env`. On the public host: `umask 077 && cp env.example .env`. Copy the lines `JUNTO_LIVEKIT_API_KEY`, `JUNTO_LIVEKIT_API_SECRET` and `JUNTO_REDIS_PASSWORD` of the data host to the end of the `.env` of the public host, over a channel that you trust.
+2. On both hosts: set the names and `JUNTO_PUBLIC_IP` in `.env`. The public host needs `JUNTO_TURN_HOST` and `JUNTO_ACME_EMAIL`; the data host needs `JUNTO_MODELS_DIR`. Then compare the CPU limits with each host: `./check-limits.sh two-hosts-public.yaml` on the public host and `./check-limits.sh two-hosts-data.yaml` on the data host. A public host with one CPU needs `JUNTO_LIVEKIT_CPUS=1` (see "Requirements").
 3. Create the key of each end of the link. The private key stays in a volume of its host; the command prints the public key.
 
    ```sh
@@ -139,8 +164,8 @@ Both hosts get the repository and a `deploy/.env`. The LiveKit key, the LiveKit 
    ```
 
    Put the key that the data host printed into the `.env` of the public host as `JUNTO_LINK_DATA_PUBLIC_KEY`, and the key that the public host printed into the `.env` of the data host as `JUNTO_LINK_PUBLIC_PUBLIC_KEY`. A link container does not start while its line is missing, and its log names the setting.
-4. On the public host: the kernel setting, the firewall rules including 51820/udp, then `docker compose -f two-hosts-public.yaml up -d --build`.
-5. On the data host: the transcription models as in step 3 of the one-host form (the image is `junto-data-worker`), then `docker compose -f two-hosts-data.yaml up -d --build`. The data host needs outbound connections to the public host: UDP to port 51820, and the media ports, because the recorder connects to the media server on its public address.
+4. On the public host: the kernel setting, the firewall rules including 51820/udp and the rule for the API port of the media server, then `docker compose -f two-hosts-public.yaml up -d --build`.
+5. On the data host: the transcription models as in step 3 of the one-host form (the image is `junto-data-worker`), then `docker compose -f two-hosts-data.yaml up -d --build`. The data host needs outbound connections to the public host: UDP to port 51820 for the link, and what a client of a call needs, because the recorder connects to the media server on its public name: TCP to port 443, UDP to the ports 7882 and 3478, and TCP to port 7881.
 6. Continue with step 6 of the one-host form, with `two-hosts-data.yaml`.
 
 The server is unavailable while the link is down, because the entry reaches the server through it. Calls and recordings continue during a short loss of the link (ADR 0003).
@@ -377,13 +402,27 @@ docker compose -f one-host.yaml down -v       # also deletes every volume: datab
 docker image rm junto-server junto-init junto-worker
 ```
 
+In the two-host form, on each host:
+
+```sh
+docker compose -f two-hosts-data.yaml down -v      # on the data host
+docker image rm junto-data-server junto-data-init junto-data-worker junto-data-link
+docker compose -f two-hosts-public.yaml down -v    # on the public host
+docker image rm junto-public-link
+```
+
 Then remove the model directory, `/etc/sysctl.d/90-junto.conf`, the firewall rules and the DNS records. `down -v` cannot be undone.
+
+The images that were pulled stay; `docker compose -f <form file> config --images` names the images of a form, before `down`. The layers of the builds stay in the build cache of Docker. `docker buildx du` shows it, and `docker builder prune` deletes the unused cache of every project of the host.
 
 ## What was not run
 
 - The entry was tested with certificates that it signed itself (`deploy/tests/entry.sh`). A certificate request to a public authority, and a call over TURN on port 443, were not run (ADR 0004).
 - `one-host.yaml` and the two files of the two-host form were started on one machine, with certificates that the entry signed itself (`deploy/tests/one-host.sh`, `deploy/tests/two-hosts.sh`). They were not started on a host with a public address, and no call ran through them.
 - `worker-gpu.yaml` was checked as a rendered configuration only.
+- The rule of the host firewall for the API port of the media server follows from the rules that `ufw` writes on a host. No form was started on a host with `ufw` that had no other rule for port 7880.
+- `deploy/check-limits.sh` was run with a stated number of CPUs (`deploy/tests/compose-config.sh`), and Docker's refusal was seen with a limit above the CPUs of a machine with eight. No form was started on a host with one CPU.
+- The two commands for the transcription models were run without limits. They were not run with the memory, CPU and process limits that step 3 names.
 - The address that the server sees for a request of the entry was not observed on a Linux host. `JUNTO_TRUSTED_PROXIES` names the address of the host in the container network. The setting also takes a network; the forms name one address, because the recorder and Redis are containers of the same network.
 - The backup, the restore, the upgrade and `deploy/database-user.sh` were run in the local form only (`deploy/tests/backup-restore.sh`, `deploy/tests/upgrade.sh`), with recordings that the test wrote as rows and files, not with the recorder. In the one-host form and on the data host, the commands of the server binary run in the container of the server, which has a fixed address there.
 - The way back to a release that has the command `unnamed-files` was run with a copy that the test made by hand, because no later release exists. The scripts of an earlier checkout were not run on a deployment that has the role `junto_server`, except the server of that checkout and `upgrade-undo.sh`.

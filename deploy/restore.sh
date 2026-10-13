@@ -102,7 +102,8 @@ esac
 # container is stopped. The image is the one that the staging runs, which can be another
 # than the image of a server that runs. Its container gets no network: a second container
 # of the service cannot start beside a running server in the forms that give the server a
-# fixed address.
+# fixed address. It is no container of a service, so this command names its limits and gives
+# it a name of the project (ADR 0015).
 if [ -f "$backup/schema" ]; then
     of_backup=$(sed -n 's/^schema \([0-9][0-9]*\)$/\1/p' "$backup/schema")
     if [ -z "$of_backup" ] || [ "$(wc -l < "$backup/schema" | tr -d ' ')" != 1 ]; then
@@ -117,7 +118,10 @@ if [ -f "$backup/schema" ]; then
     if ! docker image inspect "$image" > /dev/null 2>&1; then
         compose build server
     fi
-    stated=$(docker run --rm --network none "$image" schema-version < /dev/null) || stated=""
+    named=$(compose config | sed -n 's/^name: //p' | head -n 1 | tr -d '"')
+    stated=$(docker run --rm --network none --name "${named:-junto}-server-schema-$$" \
+        --memory 64m --cpus 0.5 --pids-limit 32 --read-only --cap-drop ALL \
+        --security-opt no-new-privileges:true "$image" schema-version < /dev/null) || stated=""
     of_server=$(printf '%s\n' "$stated" | sed -n 's/^schema \([0-9][0-9]*\)$/\1/p')
     if [ -z "$of_server" ]; then
         echo "restore: the server image $image does not state its schema (junto-server schema-version). Build the image of this checkout: docker compose -f $form build server" >&2

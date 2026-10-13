@@ -79,6 +79,25 @@ server_id() {
 sql() {
     compose exec -T postgres psql -U junto -d postgres -At -c "$1" < /dev/null
 }
+# A step of the driver that ends with a failure is one failed check of this script. The
+# driver prints "FAIL" for a check of its own, and a Python error for a request that the
+# server refused.
+driver_check() {
+    if ! driver "$@"; then
+        echo "FAIL  the step \"$1\" of the content driver ended with a failure, which it printed before this line"
+        failures=$((failures + 1))
+    fi
+}
+# The server refuses a new file while the free space of its volumes is at its reserve of
+# 5 GiB or below (ADR 0605). This test writes attachments, so with that little space it ends
+# here and states the space, and not later with an upload that the server refused.
+storage() {
+    if curl -fsS --max-time 10 "http://127.0.0.1:$port/api/v1/health" | grep -q '"storage_low":true'; then
+        echo "FAIL  $1: the server states storage_low. The disk of its volumes has 5 GiB or less of free space, and the server refuses new files (ADR 0605). The free space of that disk:"
+        compose exec -T server df -h /var/lib/junto/attachments < /dev/null || true
+        exit 1
+    fi
+}
 checksums() {
     (cd "$1" && shift && { sha256sum "$@" 2>/dev/null || shasum -a 256 "$@"; } > SHA256SUMS)
 }
@@ -109,6 +128,7 @@ EOF
 }
 
 compose up -d --build --wait --wait-timeout 600 postgres server
+storage "before the first message"
 first_id=$(server_id)
 driver prepare
 
@@ -118,7 +138,7 @@ driver prepare
 driver write &
 writer=$!
 tries=0
-until [ "$(wc -l < "$work/stop.sent" 2>/dev/null || echo 0)" -ge 3 ]; do
+until [ -f "$work/stop.sent" ] && [ "$(wc -l < "$work/stop.sent")" -ge 3 ]; do
     tries=$((tries + 1))
     if [ "$tries" -ge 60 ]; then
         echo "FAIL  no message was written before the backup"
@@ -145,7 +165,7 @@ check "the backup is readable for its owner only" \
     "$(find "$work/backup" \( -perm -040 -o -perm -020 -o -perm -010 -o -perm -004 -o -perm -002 -o -perm -001 \) | wc -l | tr -d ' ')" "0"
 check "the output of the backup holds no secret" "$(secrets_in "$work/env" "$work/backup.log")" "0"
 check "the backup states no directory that is not on the disk" "$(grep -c 'not on the disk' "$work/backup.log" || true)" "0"
-driver released --backup "$work/backup" || failures=$((failures + 1))
+driver_check released --backup "$work/backup"
 
 # A backup whose archive ends inside a file is refused before a container is stopped.
 cp -R "$work/backup" "$work/cut-archive"
@@ -189,8 +209,11 @@ status=0
 check "a restore without a checksum of the archive is refused" "$([ "$status" -ne 0 ] && grep -c 'has no checksum of files.tar' "$work/restore.log")" "1"
 
 # A backup of another schema than the one of the server binary is refused before a
-# container is stopped (ADR 0018).
+# container is stopped (ADR 0018). The container that states the schema of the image is no
+# container of a service: the call that starts it is kept, for its name and its limits
+# (ADR 0015).
 of_server=$(sed -n 's/^schema //p' "$work/backup/schema")
+in_front "schema-version" "        printf '%s\\n' \"\$*\" > '$work/schema-call'"
 for other in newer earlier; do
     cp -R "$work/backup" "$work/$other"
     if [ "$other" = newer ]; then
@@ -200,12 +223,14 @@ for other in newer earlier; do
     fi
     checksums "$work/$other" database.dump files.tar env left-out schema
     status=0
-    ./restore.sh local.yaml "$work/$other" > "$work/restore.log" 2>&1 || status=$?
+    PATH="$work/bin:$PATH" ./restore.sh local.yaml "$work/$other" > "$work/restore.log" 2>&1 || status=$?
     check "a restore of a backup with the schema of a release that is $other is refused" \
         "$([ "$status" -ne 0 ] && grep -c "a\(n\)\{0,1\} $other release wrote the backup. Nothing was changed" "$work/restore.log")" "1"
     check "that restore stopped nothing" "$(compose ps --status running --format '{{.Service}}' server)" "server"
     rm -rf "${work:?}/$other"
 done
+check "the container that states the schema has a name of the project, a memory limit, a CPU limit and a limit of processes" \
+    "$(grep -c -E -- "--name $project-server-schema-[0-9]+ .*--memory [^ ]+ --cpus [^ ]+ --pids-limit [0-9]+ " "$work/schema-call" || true)" "1"
 cp -R "$work/backup" "$work/unlisted-schema"
 checksums "$work/unlisted-schema" database.dump files.tar env left-out
 status=0
@@ -274,13 +299,14 @@ check "the second run of the restore ends" "$(grep -c 'restore: done' "$work/res
 check "the output of the restore holds no secret" "$(secrets_in "$work/env" "$work/restore.log")" "0"
 compose up -d --wait --wait-timeout 300 postgres server
 check "after the restore the server has the identifier of the backup" "$(server_id)" "$first_id"
+storage "after the restore"
 check "the role of the server owns the restored database, and every table, sequence and routine in it" \
     "$(compose exec -T postgres psql -U junto -d junto -At -c "select (select datdba::regrole from pg_database where datname = 'junto'), (select count(*) from pg_class where relnamespace = 'public'::regnamespace and relowner = r) > 0, (select count(*) from pg_class where relnamespace = 'public'::regnamespace and relowner <> r) + (select count(*) from pg_proc where pronamespace = 'public'::regnamespace and proowner <> r) from (select 'junto_server'::regrole::oid as r) role" < /dev/null)" \
     "junto_server|t|0"
 check "the restore emptied the spool of transcription jobs" "$(compose exec -T server sh -c 'cd /var/lib/junto/spool && ls -A | wc -l' < /dev/null | tr -d ' ')" "0"
 check "the restore emptied the temporary directory of the recorder" \
     "$(compose run --rm --no-deps -T --entrypoint sh recorder -c 'cd /home/egress/tmp && ls -A | wc -l' < /dev/null 2>/dev/null | tr -d ' ')" "0"
-driver verify --set "backup_started=$started" --backup "$work/backup" --restore-log "$work/restore.log" || failures=$((failures + 1))
+driver_check verify --set "backup_started=$started" --backup "$work/backup" --restore-log "$work/restore.log"
 check "the restore explains the directories that were changed in the last 24 hours" \
     "$(grep -c 'restore: a line "skip ... changed_recently" names a directory that was changed in the last 24 hours' "$work/restore.log")" "1"
 
