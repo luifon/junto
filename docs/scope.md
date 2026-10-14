@@ -97,6 +97,11 @@ Client:
 - A browser client
 - Mobile clients
 - An RPM package
+- An API for bots and bridges that receives the events of chosen channels, and with it a bridge to Matrix
+- Login through an organisation's identity provider (OpenID Connect)
+- Optional end-to-end encryption for direct conversations and calls; the server cannot search, record, transcribe or apply retention to them
+- A push gateway for mobile clients that receives only event identifiers, never content
+- Loading only a window of channels at the first start, if measurements show that large servers load too slowly
 
 ## Not planned
 
