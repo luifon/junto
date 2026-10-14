@@ -5,14 +5,16 @@
 use gpui::TestAppContext;
 use junto_client::shell::{EmojiTarget, Pane};
 use junto_client::state::feed::{Feed, FeedRow, MessageRow, QuoteText, plain_text};
+use junto_client::state::view::ServerStatus;
 use junto_client::text;
 use junto_client_core::model::PlaceId;
-use junto_client_core::protocol::ids::{AccountId, ChannelId, MessageId};
+use junto_client_core::protocol::ids::{AccountId, AttachmentId, ChannelId, MessageId};
 use junto_client_core::protocol::message::{Block, Document, Inline, Message, SendMessage};
 use junto_client_core::protocol::structure::ChannelKind;
-use junto_client_core::transfers::{DownloadStage, UploadStage};
+use junto_client_core::transfers::{DownloadStage, UploadSource, UploadStage};
 
 use crate::harness::{Admin, Window, World, member};
+use crate::support::FaultProxy;
 
 pub fn document(text: &str) -> Document {
     Document {
@@ -545,4 +547,348 @@ fn a_quoted_message_that_is_not_loaded_follows_its_changes(cx: &mut TestAppConte
             Some(QuoteText::Deleted | QuoteText::Unknown)
         )
     });
+}
+
+impl Window {
+    /// How many requests of the window for a change of a message have no answer yet.
+    fn message_asks_flying(&mut self) -> usize {
+        self.state
+            .read_with(&self.cx, |state, _| state.message_asks_flying())
+    }
+
+    fn holds_message(&mut self, message_id: MessageId) -> bool {
+        self.messages()
+            .iter()
+            .any(|row| row.message.id == message_id)
+    }
+
+    /// The person writes a message and changes it. The server stores the change, and its
+    /// answer to the request waits at the proxy. The window shows the change, which the
+    /// event told. Then the administrator deletes the message, and the window shows that.
+    fn edit_with_a_held_answer_and_delete(
+        &mut self,
+        world: &World,
+        proxy: &FaultProxy,
+        admin: &Admin,
+        text: &str,
+    ) -> MessageId {
+        self.write(text);
+        let message_id = self.until_message(text).message.id;
+        proxy.hold_answer_ending("PUT", &format!("/messages/{message_id}"));
+        self.in_shell(|shell, window, cx| shell.edit_message(Pane::Main, message_id, window, cx));
+        let changed = format!("{text}, changed");
+        self.write(&changed);
+        self.until("the answer to the edit waits at the proxy", |_| {
+            proxy.answers_waiting() == 1
+        });
+        assert_eq!(self.until_message(&changed).message.id, message_id);
+        world
+            .run(admin.handle.api().delete_message(message_id))
+            .unwrap();
+        self.until("the deleted message is gone", |window| {
+            !window.holds_message(message_id)
+        });
+        assert_eq!(self.message_asks_flying(), 1);
+        message_id
+    }
+}
+
+#[gpui::test]
+fn a_late_edit_answer_cannot_restore_deleted_content(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let proxy = world.run(FaultProxy::start(&server));
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    window.until("the messages are read", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let message_id = window.edit_with_a_held_answer_and_delete(&world, &proxy, &admin, "one");
+
+    // The answer to the edit arrives after the deletion. It holds the message as it was
+    // before the deletion, and nothing of it enters the list.
+    proxy.release();
+    window.until("the answer to the edit has arrived", |window| {
+        window.message_asks_flying() == 0
+    });
+    assert!(!window.holds_message(message_id));
+    assert!(window.texts().iter().all(|text| text != "one, changed"));
+    // The list follows the place as before.
+    window.write("two");
+    window.until_message("two");
+    assert!(!window.holds_message(message_id));
+}
+
+#[gpui::test]
+fn a_late_edit_answer_cannot_restore_deleted_content_for_the_next_account(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let proxy = world.run(FaultProxy::start(&server));
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    window.until("the messages are read", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let first = window.own_account();
+    let message_id = window.edit_with_a_held_answer_and_delete(&world, &proxy, &admin, "one");
+
+    // The account is removed, and the person joins again: the entry of the server has a
+    // new account, which reads the place.
+    world.run(admin.handle.api().remove_account(first)).unwrap();
+    window.until("the removal is shown", |window| window.shows("no-account"));
+    let code = admin.invite(&world, 1);
+    window.click("join-server");
+    window.join_with_code(code.expose());
+    window.until_ready();
+    assert_ne!(window.own_account(), first);
+    window.until("the messages are read for the new account", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    assert!(!window.holds_message(message_id));
+
+    // The answer to the edit of the account before arrives now.
+    proxy.release();
+    window.until("the answer to the edit has arrived", |window| {
+        window.message_asks_flying() == 0
+    });
+    assert!(!window.holds_message(message_id));
+    assert!(window.texts().iter().all(|text| text != "one, changed"));
+    window.write("of the new account");
+    window.until_message("of the new account");
+    assert!(!window.holds_message(message_id));
+}
+
+#[gpui::test]
+fn a_pending_file_picker_cannot_retarget_an_upload(cx: &mut TestAppContext) {
+    let world = World::new();
+    let first = world.server("Acme Studio");
+    let second = world.server("Harbor");
+    let proxy = world.run(FaultProxy::start(&second));
+    let first_admin = world.owner(&first);
+    let second_admin = world.owner(&second);
+    let (_directory, mut window) = member(cx, &world, &first.address(), &first_admin, "Luca");
+    let code = second_admin.invite(&world, 1);
+    window.find_server(&proxy.address());
+    window.join_with_code(code.expose());
+    window.until("the second server is shown", |window| {
+        let view = window.view();
+        view.servers.len() == 2
+            && view.servers[1].selected
+            && view.servers[1].status == ServerStatus::Ready
+            && view.workspace().is_some()
+    });
+    let shows = |window: &mut Window, name: &str| {
+        let view = window.view();
+        view.selected
+            .as_ref()
+            .is_some_and(|server| server.name == name)
+            && window.feed().is_some_and(|feed| feed.loaded)
+            && window.shows("composer")
+    };
+    window.click("server-0");
+    window.until("the first server is shown", |window| {
+        shows(window, "Acme Studio")
+    });
+
+    // The person opens the file dialog for a message on the first server.
+    let files = tempfile::tempdir().unwrap();
+    let path = files.path().join("for the first server.txt");
+    std::fs::write(&path, b"what the person wrote for the first server").unwrap();
+    assert!(!window.cx.did_prompt_for_paths());
+    window.click("attach-file");
+    assert!(window.cx.did_prompt_for_paths());
+
+    // The dialog does not stop the window. The person selects the second server, and
+    // chooses the file in the dialog afterwards.
+    window.click("server-1");
+    window.until("the second server is shown", |window| {
+        shows(window, "Harbor")
+    });
+    let chosen = path.clone();
+    window
+        .cx
+        .simulate_path_prompt_response(move |_| Some(vec![chosen]));
+    window.cx.run_until_parked();
+
+    // Nothing is attached and nothing is uploaded, and the composer says why.
+    assert_eq!(
+        window.in_shell(|shell, _, _| shell.composer_problem(Pane::Main).map(str::to_owned)),
+        Some(text::FILES_OF_ANOTHER_PLACE.to_owned())
+    );
+    assert!(window.view().workspace().unwrap().draft.is_empty());
+    window.write("a message on the second server");
+    let sent = window.until_message("a message on the second server");
+    assert!(sent.message.attachments.is_empty());
+    let uploads = |proxy: &FaultProxy| {
+        proxy
+            .all()
+            .iter()
+            .filter(|seen| seen.path.starts_with("/api/v1/attachments"))
+            .count()
+    };
+    assert_eq!(uploads(&proxy), 0, "the second server got no file");
+    window.click("server-0");
+    window.until("the first server is shown again", |window| {
+        shows(window, "Acme Studio")
+    });
+    assert!(window.view().workspace().unwrap().draft.is_empty());
+
+    // The same holds for another place of one server: the dialog is opened in the text
+    // channel and answered in the chat of the voice channel.
+    let text_channel = window.selected_channel();
+    let voice = window
+        .channels()
+        .into_iter()
+        .find(|row| row.kind == ChannelKind::Voice)
+        .unwrap();
+    window.click("attach-file");
+    window.click_channel(&voice.name);
+    window.until("the chat of the voice channel is shown", |window| {
+        window
+            .feed()
+            .is_some_and(|feed| feed.loaded && feed.place == PlaceId::Channel(voice.id))
+            && window.shows("composer")
+    });
+    let chosen = path.clone();
+    window
+        .cx
+        .simulate_path_prompt_response(move |_| Some(vec![chosen]));
+    window.cx.run_until_parked();
+    assert_eq!(
+        window.in_shell(|shell, _, _| shell.composer_problem(Pane::Main).map(str::to_owned)),
+        Some(text::FILES_OF_ANOTHER_PLACE.to_owned())
+    );
+    assert!(window.view().workspace().unwrap().draft.is_empty());
+    let text_row = window
+        .channels()
+        .into_iter()
+        .find(|row| row.id == text_channel)
+        .unwrap();
+    window.click_channel(&text_row.name);
+    window.until("the text channel is shown again", |window| {
+        window
+            .feed()
+            .is_some_and(|feed| feed.loaded && feed.place == PlaceId::Channel(text_channel))
+            && window.shows("composer")
+    });
+    assert!(window.view().workspace().unwrap().draft.is_empty());
+
+    // A dialog that is answered while the composer still shows its place attaches.
+    window.click("attach-file");
+    let chosen = path.clone();
+    window
+        .cx
+        .simulate_path_prompt_response(move |_| Some(vec![chosen]));
+    window.until("the upload to the first server is complete", |window| {
+        window.view().workspace().is_some_and(|workspace| {
+            workspace.draft.len() == 1
+                && matches!(workspace.draft[0].progress.stage, UploadStage::Complete(_))
+        })
+    });
+    assert_eq!(uploads(&proxy), 0);
+}
+
+/// A PNG image of one colour.
+fn png(side: u32) -> Vec<u8> {
+    let picture = image::RgbaImage::from_pixel(side, side, image::Rgba([200, 90, 40, 255]));
+    let mut bytes = Vec::new();
+    picture
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+    bytes
+}
+
+#[gpui::test]
+fn the_picture_of_a_message_is_read_again_for_the_next_account_of_the_server(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let proxy = world.run(FaultProxy::start(&server));
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    window.until("the messages are read", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let first = window.own_account();
+    let place = PlaceId::Channel(window.selected_channel());
+
+    // The administrator sends a message with a picture.
+    let attachment_id: AttachmentId = world.run(async {
+        let source = UploadSource::Bytes {
+            name: "chart.png".to_owned(),
+            bytes: std::sync::Arc::new(png(32)),
+        };
+        let attachment_id = admin
+            .handle
+            .transfers()
+            .upload(place, source)
+            .finished()
+            .await
+            .unwrap();
+        let message = SendMessage {
+            document: document("A chart"),
+            reply_to: None,
+            attachments: vec![attachment_id],
+        };
+        admin
+            .handle
+            .api()
+            .send_message(place, &message)
+            .await
+            .unwrap();
+        attachment_id
+    });
+    window.until_message("A chart");
+    let owners =
+        |window: &mut Window| window.in_shell(|shell, _, _| shell.owners_of_picture(attachment_id));
+    let file = format!("/api/v1/attachments/{attachment_id}/file");
+    window.until("the picture is read", |window| owners(window).len() == 1);
+    assert_eq!(owners(&mut window)[0].account_id, first);
+    assert_eq!(proxy.seen(&file).len(), 1);
+    // The person also saves the file.
+    let downloads = tempfile::tempdir().unwrap();
+    let server_id = window.view().selected.unwrap().id;
+    let saved_file = window.until_message("A chart").message.attachments[0].clone();
+    let target = downloads.path().to_path_buf();
+    window.in_shell(move |shell, _, cx| {
+        shell.state().clone().update(cx, |state, cx| {
+            state.set_download_directory(target);
+            state.download(server_id, &saved_file, cx);
+        });
+    });
+    window.until("the file is saved", |window| {
+        window
+            .view()
+            .downloads
+            .values()
+            .any(|progress| matches!(progress.stage, DownloadStage::Saved(_)))
+    });
+    assert_eq!(proxy.seen(&file).len(), 2);
+
+    // The account is removed, and the person joins again. The window holds no picture of
+    // the account before, and the new account reads the picture from the server.
+    world.run(admin.handle.api().remove_account(first)).unwrap();
+    window.until("the removal is shown", |window| window.shows("no-account"));
+    assert!(owners(&mut window).is_empty());
+    assert!(
+        window.view().downloads.is_empty(),
+        "the window shows no download of the account before"
+    );
+    let code = admin.invite(&world, 1);
+    window.click("join-server");
+    window.join_with_code(code.expose());
+    window.until_ready();
+    let second = window.own_account();
+    assert_ne!(second, first);
+    window.until_message("A chart");
+    window.until("the picture is read for the new account", |window| {
+        owners(window).len() == 1
+    });
+    assert_eq!(owners(&mut window)[0].account_id, second);
+    assert_eq!(proxy.seen(&file).len(), 3);
+    assert!(window.view().downloads.is_empty());
 }

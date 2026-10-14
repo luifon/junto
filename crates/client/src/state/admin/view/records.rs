@@ -2799,6 +2799,28 @@ mod tests {
     }
 
     #[test]
+    fn an_entry_at_the_last_moment_of_the_range_of_dates_is_shown() {
+        use time::format_description::well_known::Rfc3339;
+
+        // East of UTC that moment lies in the year 10000, which no date of the client
+        // states: the entry shows the moment as the server wrote it.
+        let scene = scene().administrator();
+        let model = scene.model(AdminModel::default());
+        let mut last = entry(None, AuditEvent::EventEpochRenewed);
+        last.occurred_at = OffsetDateTime::parse("9999-12-31T23:59:59Z", &Rfc3339).unwrap();
+        let admin = log(scene.server_id, AuditScope::Server, vec![last]);
+        let east = Known {
+            zone: Zone::Fixed(UtcOffset::from_hms(2, 0, 0).unwrap()),
+            ..Known::default()
+        };
+        let page = audit(scene.server_id, &model, None, &east, &admin);
+        assert_eq!(
+            txt::audit_head(&page.rows[0]),
+            "31 December 9999, 23:59 · The server"
+        );
+    }
+
+    #[test]
     fn an_entry_states_an_access_token_the_server_as_its_actor_and_what_it_is_about() {
         let scene = scene().administrator();
         let model = scene.model(AdminModel::default());

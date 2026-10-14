@@ -2,7 +2,7 @@
 //! drawn in a list that measures a row when it is shown and keeps its position while
 //! rows are added before and after it.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -21,6 +21,7 @@ use junto_client_core::protocol::message::{
 };
 use junto_client_core::transfers::{DownloadStage, UploadStage};
 
+use super::pictures::{MOST_PICTURES, Picture, PictureKey, Pictures};
 use super::{EmojiTarget, Layer, Pane, Shell};
 use crate::assets::Icon;
 use crate::compose;
@@ -41,8 +42,6 @@ use crate::ui::{
 /// The widest picture of a message, and the tallest, in design pixels.
 const PICTURE_WIDTH: f32 = 292.0;
 const PICTURE_HEIGHT: f32 = 220.0;
-/// How many pictures of messages the window holds decoded.
-const MOST_PICTURES: usize = 48;
 /// The rows from an end of the list at which the next page is read.
 const PAGE_MARGIN: usize = 4;
 
@@ -153,18 +152,24 @@ impl FeedList {
     }
 }
 
-/// A picture of a message in the window.
-enum Picture {
-    Reading,
-    Ready(Arc<RenderImage>),
-    Failed,
-}
-
-/// The pictures of messages that the window holds decoded, the oldest first.
+/// The pictures of messages that the window holds decoded.
 #[derive(Default)]
 pub(crate) struct MessagePictures {
-    held: HashMap<AttachmentId, Picture>,
-    order: VecDeque<AttachmentId>,
+    held: Pictures<Arc<RenderImage>>,
+    /// The pictures that the drawing which runs asked for and that are not held.
+    waiting: Vec<(PictureKey, Attachment)>,
+    /// The step that starts the reads of the waiting pictures is on its way.
+    starting: bool,
+    /// The pictures that the screen tool draws for files of its own, which no server has.
+    #[cfg(feature = "test-support")]
+    shown: HashMap<AttachmentId, Picture<Arc<RenderImage>>>,
+}
+
+impl MessagePictures {
+    /// A drawing of the window starts (see [`Pictures::drawing_starts`]).
+    pub(crate) fn drawing_starts(&mut self) {
+        self.held.drawing_starts();
+    }
 }
 
 /// What a pane draws: its feed, the files of its next message, and what it says of a
@@ -545,6 +550,7 @@ impl Shell {
             self.thread_feed.drawn = false;
         }
         self.composer_follows(view, window, cx);
+        self.keep_pictures_of_present_owners(cx);
         self.feed_seen(Pane::Main, main, window, cx);
         self.feed_seen(Pane::Thread, thread, window, cx);
     }
@@ -1313,49 +1319,87 @@ impl Shell {
     #[cfg(feature = "test-support")]
     pub fn show_picture(&mut self, attachment_id: AttachmentId, bytes: &[u8]) {
         let picture = decode(bytes).map_or(Picture::Failed, Picture::Ready);
-        self.message_pictures.held.insert(attachment_id, picture);
+        self.message_pictures.shown.insert(attachment_id, picture);
     }
 
-    /// Reads a picture of a message once, and decodes it away from the window.
+    /// The owners for which the window holds the read picture of a file. A test uses it.
+    #[cfg(feature = "test-support")]
+    pub fn owners_of_picture(&self, attachment_id: AttachmentId) -> Vec<junto_client_core::Owner> {
+        self.message_pictures.held.ready_of(attachment_id)
+    }
+
+    /// The pictures of an account that a server has no more, and of a server that was
+    /// removed, are dropped (ADR 0745).
+    fn keep_pictures_of_present_owners(&mut self, cx: &mut Context<Self>) {
+        let state = self.state.read(cx);
+        self.message_pictures
+            .held
+            .keep(|owner| state.owner(owner.entry.server_id) == Some(*owner));
+        self.release_dropped_pictures(cx);
+    }
+
+    fn release_dropped_pictures(&mut self, cx: &mut Context<Self>) {
+        for image in self.message_pictures.held.take_dropped() {
+            cx.drop_image(image, None);
+        }
+    }
+
+    /// A drawing asks for a picture of a message. Returns what the window holds the
+    /// picture under. `None` when the device has no account on the server. A picture that
+    /// is not held is read after the drawing (see [`Shell::start_pictures`]).
     fn want_picture(
         &mut self,
         server_id: ServerId,
         attachment: &Attachment,
         cx: &mut Context<Self>,
-    ) {
-        let attachment_id = attachment.id;
-        if self.message_pictures.held.contains_key(&attachment_id) {
-            return;
+    ) -> Option<PictureKey> {
+        let owner = self.state.read(cx).owner(server_id)?;
+        let key = PictureKey::of(owner, attachment);
+        let pictures = &mut self.message_pictures;
+        if pictures.held.touch(&key) {
+            return Some(key);
         }
-        let Some(reading) = self.state.read(cx).picture(server_id, attachment) else {
-            return;
-        };
-        self.message_pictures
-            .held
-            .insert(attachment_id, Picture::Reading);
-        self.message_pictures.order.push_back(attachment_id);
-        // The window holds a bounded number of pictures: the oldest gives way.
-        while self.message_pictures.order.len() > MOST_PICTURES {
-            let Some(oldest) = self.message_pictures.order.pop_front() else {
-                break;
-            };
-            if let Some(Picture::Ready(image)) = self.message_pictures.held.remove(&oldest) {
-                cx.drop_image(image, None);
-            }
+        if pictures.waiting.len() < MOST_PICTURES
+            && pictures.waiting.iter().all(|(waiting, _)| *waiting != key)
+        {
+            pictures.waiting.push((key.clone(), attachment.clone()));
         }
-        cx.spawn(async move |this, cx| {
-            let decoded = match reading.await {
-                Some(bytes) => cx.background_spawn(async move { decode(&bytes) }).await,
-                None => None,
+        if !std::mem::replace(&mut pictures.starting, true) {
+            cx.spawn(async move |this, cx| {
+                let _ = this.update(cx, |this, cx| this.start_pictures(cx));
+            })
+            .detach();
+        }
+        Some(key)
+    }
+
+    /// After a drawing: reads the pictures that the drawing asked for and that are not
+    /// held, each once for its owner, and decodes them away from the window. A picture
+    /// that finds no read and no place stays unread until a later drawing asks again.
+    fn start_pictures(&mut self, cx: &mut Context<Self>) {
+        self.message_pictures.starting = false;
+        for (key, attachment) in std::mem::take(&mut self.message_pictures.waiting) {
+            let Some(number) = self.message_pictures.held.start(&key) else {
+                continue;
             };
-            let _ = this.update(cx, |this, cx| {
-                if let Some(held) = this.message_pictures.held.get_mut(&attachment_id) {
-                    *held = decoded.map_or(Picture::Failed, Picture::Ready);
+            let reading = self.state.read(cx).picture(key.owner, &attachment);
+            cx.spawn(async move |this, cx| {
+                let decoded = match reading.await {
+                    Some(bytes) => cx.background_spawn(async move { decode(&bytes) }).await,
+                    None => None,
+                };
+                let _ = this.update(cx, |this, cx| {
+                    // An answer for a picture that is not held any more, or that was asked
+                    // for again since, changes no picture. The window is drawn in both
+                    // cases: a read has ended, and a picture that waited can start its own.
+                    this.message_pictures.held.settle(&key, number, decoded);
+                    this.release_dropped_pictures(cx);
                     cx.notify();
-                }
-            });
-        })
-        .detach();
+                });
+            })
+            .detach();
+        }
+        self.release_dropped_pictures(cx);
     }
 
     /// The files of a message: a picture inline, every other file as a row with its size
@@ -1380,9 +1424,14 @@ impl Shell {
                 let name: SharedString = attachment.name.clone().into();
                 let size: SharedString = text::file_size(attachment.bytes).into();
                 if is_picture(attachment) {
-                    self.want_picture(server_id, attachment, cx);
+                    let key = self.want_picture(server_id, attachment, cx);
+                    let held = key
+                        .as_ref()
+                        .and_then(|key| self.message_pictures.held.get(key));
+                    #[cfg(feature = "test-support")]
+                    let held = held.or_else(|| self.message_pictures.shown.get(&attachment.id));
                     let (width, height) = picture_size(attachment);
-                    let picture: AnyElement = match self.message_pictures.held.get(&attachment.id) {
+                    let picture: AnyElement = match held {
                         Some(Picture::Ready(image)) => img(image.clone())
                             .size_full()
                             .object_fit(ObjectFit::Contain)

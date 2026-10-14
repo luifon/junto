@@ -563,7 +563,16 @@ impl Shell {
         );
     }
 
+    /// Opens the file dialog for the next message of the place that the composer writes
+    /// to. The dialog does not stop the window: the person, and an event of a server, can
+    /// change what the composer shows before the dialog is answered.
     fn choose_files(&mut self, pane: Pane, cx: &mut Context<Self>) {
+        let Some(asked) = self.pen(pane).place else {
+            return;
+        };
+        let Some(owner) = self.state.read(cx).owner(asked.0) else {
+            return;
+        };
         let chosen = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -572,10 +581,34 @@ impl Shell {
         });
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = chosen.await {
-                let _ = this.update(cx, |this, cx| this.attach_paths(pane, paths, cx));
+                let _ = this.update(cx, |this, cx| {
+                    this.attach_chosen(pane, (asked, owner), paths, cx);
+                });
             }
         })
         .detach();
+    }
+
+    /// Takes the files of a file dialog that was opened for `asked`: a place of a server
+    /// and the owner that writes there. They are attached only while the composer still
+    /// writes to that place and the server still has that owner (ADR 0746). Otherwise
+    /// nothing is uploaded, and the composer says so, because the person chose the files
+    /// for another place.
+    fn attach_chosen(
+        &mut self,
+        pane: Pane,
+        asked: (Desk, junto_client_core::Owner),
+        paths: Vec<std::path::PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        let (asked, owner) = asked;
+        let same_owner = self.state.read(cx).owner(asked.0) == Some(owner);
+        if self.pen(pane).place != Some(asked) || !same_owner {
+            self.pen_mut(pane).problem = Some(text::FILES_OF_ANOTHER_PLACE.to_owned());
+            cx.notify();
+            return;
+        }
+        self.attach_paths(pane, paths, cx);
     }
 
     /// Puts marks around the selected text, or around the place of the cursor.

@@ -1,0 +1,9 @@
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+# The most bytes of stack that clippy counts for the values of one function before
+# `large_stack_frames` refuses it: one eighth of the 2 MiB of a thread (ADR 0906). Clippy
+# reads only the nearest clippy.toml, so this crate states the bound of the workspace file.
+stack-size-threshold = 262144
+disallowed-methods = [
+    { path = "time::OffsetDateTime::to_offset", reason = "it ends the program for a moment at the end of the range of dates, which a server can state (ADR 0747); use `checked_to_offset`, or `moment::in_offset` in the window" },
+]

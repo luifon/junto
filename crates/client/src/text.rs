@@ -633,7 +633,7 @@ pub fn recording_flag(problem: &RecordingProblem) -> &'static str {
 /// rest.
 pub fn recording_details(problem: &RecordingProblem) -> (String, String) {
     let clock = |at: time::OffsetDateTime| {
-        let at = at.to_offset(time::UtcOffset::UTC);
+        let at = crate::moment::in_utc(at);
         format!("{:02}:{:02} UTC", at.hour(), at.minute())
     };
     let at = problem
@@ -745,7 +745,7 @@ pub fn voice_channel_topic(inside: usize, hidden: bool) -> String {
 pub fn connection_dropped(at: Option<time::OffsetDateTime>, channel: &str) -> String {
     let when = match at {
         Some(at) => {
-            let at = at.to_offset(time::UtcOffset::UTC);
+            let at = crate::moment::in_utc(at);
             format!(" at {:02}:{:02} UTC", at.hour(), at.minute())
         }
         None => String::new(),
@@ -1682,6 +1682,10 @@ pub fn compose_problem(problem: crate::compose::Problem) -> String {
         ),
     }
 }
+
+/// The file dialog was answered after the composer had changed to another place or to
+/// another account.
+pub const FILES_OF_ANOTHER_PLACE: &str = "The files were not attached: the composer shows another place than the one that they were chosen for.";
 
 /// Why a file was not attached to a message.
 pub fn attach_refusal(refusal: &crate::state::AttachRefusal) -> String {

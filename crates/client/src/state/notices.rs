@@ -340,7 +340,7 @@ impl MuteFor {
             Self::UntilTomorrow => {
                 let local = zone.local(now);
                 let midnight = local.replace_time(time::Time::MIDNIGHT) + time::Duration::days(1);
-                Some(midnight.to_offset(time::UtcOffset::UTC))
+                Some(crate::moment::in_utc(midnight))
             }
             Self::UntilTurnedOff => None,
         }

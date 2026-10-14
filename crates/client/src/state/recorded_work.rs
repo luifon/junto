@@ -217,6 +217,11 @@ impl AppState {
         open: bool,
         cx: &mut Context<Self>,
     ) {
+        // What the window holds of the downloads of a server belongs to its present owner.
+        self.follow_owners();
+        if !self.owners.contains_key(&server_id) {
+            return;
+        }
         let key = (server_id, recording_id, file);
         if let Some(held) = self.recording_downloads.get(&key) {
             let progress = held.progress();
@@ -365,6 +370,22 @@ impl AppState {
         self.opening.remove(&key);
         self.show_recording_downloads();
         self.changed(cx);
+    }
+
+    /// Ends the downloads of files of recordings of a server and puts away what the
+    /// window shows of them: the server has another owner than the one that started them
+    /// (ADR 0745).
+    pub(super) fn forget_recording_downloads_of(&mut self, server_id: ServerId) {
+        self.recording_downloads.retain(|key, download| {
+            if key.0 == server_id {
+                download.cancel();
+            }
+            key.0 != server_id
+        });
+        self.recording_download_numbers
+            .retain(|key, _| key.0 != server_id);
+        self.opening.retain(|key| key.0 != server_id);
+        self.show_recording_downloads();
     }
 
     /// Puts the progress of every download of a file of a recording into what the view

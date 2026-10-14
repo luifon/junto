@@ -45,11 +45,9 @@ impl DateFilter {
     pub fn from(self, now: OffsetDateTime, zone: Zone) -> Option<OffsetDateTime> {
         match self {
             Self::AnyTime => None,
-            Self::Today => Some(
-                zone.local(now)
-                    .replace_time(time::Time::MIDNIGHT)
-                    .to_offset(time::UtcOffset::UTC),
-            ),
+            Self::Today => Some(crate::moment::in_utc(
+                zone.local(now).replace_time(time::Time::MIDNIGHT),
+            )),
             Self::Last7Days => Some(now - time::Duration::days(7)),
             Self::Last30Days => Some(now - time::Duration::days(30)),
         }

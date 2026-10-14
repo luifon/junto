@@ -18,7 +18,9 @@ use junto_client_core::protocol::recording::{
 use junto_client_core::protocol::secret::OwnerCode;
 use junto_client_core::protocol::structure::{ChannelKind, SetChannelOverride};
 use junto_client_core::protocol::transcript::{LineSource, TranscriptState};
-use junto_client_core::transfers::{DownloadStage, TransferFailure, segment_file_name};
+use junto_client_core::transfers::{
+    DownloadStage, Stored, StoredKind, TransferFailure, part_file, segment_file_name,
+};
 
 use crate::recording_server::{RecordingServer, Spoken};
 use crate::stream::{channel, live, model_when, pair};
@@ -170,8 +172,15 @@ async fn a_client_reads_a_recording_its_files_and_its_transcript_and_follows_ano
     assert_eq!(video.source, SegmentSource::Composite);
     let held = on_disk(&server, id, video);
     let half = held.len() / 2;
-    let part = format!("Daily again.mp4.{}.part", video.id.as_uuid().simple());
-    std::fs::write(target.path().join(&part), vec![0u8; half]).unwrap();
+    let stored = Stored {
+        owner: member.owner().unwrap(),
+        kind: StoredKind::RecordingSegment,
+        id: video.id.as_uuid(),
+        bytes: Some(held.len() as u64),
+        sha256: None,
+    };
+    let part = part_file(target.path(), "Daily again.mp4", &stored);
+    std::fs::write(&part, vec![0u8; half]).unwrap();
     let again = transfers
         .download_segment(id, video, "Daily again", target.path().into())
         .unwrap();
@@ -180,7 +189,7 @@ async fn a_client_reads_a_recording_its_files_and_its_transcript_and_follows_ano
     assert_eq!(continued.len(), held.len());
     assert!(continued[..half].iter().all(|byte| *byte == 0));
     assert!(continued[half..] == held[half..]);
-    assert!(!target.path().join(&part).exists());
+    assert!(!part.exists());
 
     // The worker writes the transcript. The open recording follows `recording_updated`.
     let spoken = |account_id, speaker, start_ms, end_ms, text: &str| Spoken {

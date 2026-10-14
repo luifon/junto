@@ -24,7 +24,7 @@ use crate::api::{
     RetryPolicy, ServerApi, Transport, TransportError, TransportErrorKind, logo_at, server_info,
 };
 use crate::book::{
-    BookError, ConnectionMode, EntryKey, Membership, ProfileSync, ServerBook, ServerEntry,
+    BookError, ConnectionMode, EntryKey, Membership, Owner, ProfileSync, ServerBook, ServerEntry,
 };
 use crate::events::{ConnectionLevel, EventStreams, StreamTarget};
 use crate::flow::access::{
@@ -774,6 +774,20 @@ impl ServerHandle {
             .map(|held| held.account_id)
     }
 
+    /// The entry of the server book and the account that the access flow shows as logged
+    /// in. Absent in every other state of the flow, and for an entry that was removed from
+    /// the book. The owner stays while an ended session of the same account is renewed.
+    pub fn owner(&self) -> Option<Owner> {
+        let state = lock(&self.server.state);
+        match state.access {
+            AccessState::LoggedIn { account_id, .. } if !state.retired => Some(Owner {
+                entry: self.server.key,
+                account_id,
+            }),
+            _ => None,
+        }
+    }
+
     /// The operations of the logged-in account. Each request belongs to the account that
     /// the device has when the request starts. A session that ended is renewed with the
     /// device key once; a ban or a removal found then changes the state of the access
@@ -837,10 +851,14 @@ impl ServerHandle {
     /// The files of the messages of this server: uploads, downloads, and the sending of
     /// a message with files (ADR 0721).
     pub fn transfers(&self) -> crate::transfers::Transfers {
+        let handle = self.clone();
         crate::transfers::Transfers {
-            api: self.api(),
             live: self.live(),
             runtime: self.server.core.runtime.clone(),
+            owned: Arc::new(move || {
+                let owner = handle.owner()?;
+                Some((owner, handle.api_for(owner.account_id)))
+            }),
         }
     }
 

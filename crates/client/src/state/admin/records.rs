@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use futures_channel::oneshot;
 use gpui::Context;
+use junto_client_core::Owner;
 use junto_client_core::api::{ApiError, ErrorCategory, ServerApi};
 use junto_client_core::protocol::access_token::CreateAccessToken;
 use junto_client_core::protocol::audit::{AuditEntry, AuditFilterQuery};
@@ -20,6 +21,7 @@ use junto_client_core::protocol::export::ExportState;
 use junto_client_core::protocol::ids::{
     AccessTokenId, AccountId, AuditEntryId, ExportId, ServerId, WorkspaceId,
 };
+use junto_client_core::transfers::{Stored, StoredKind, part_file};
 
 use super::view::records::{
     AUDIT_PAGE, ExportSave, MOST_AUDIT_ENTRIES, export_file_name, export_of,
@@ -42,6 +44,7 @@ const LONGEST_WAIT: Duration = Duration::from_secs(16);
 /// How often the page reads the progress of a file that is saved.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
 /// The ending of the name of the unfinished file of a save.
+#[cfg(test)]
 const PART_ENDING: &str = ".part";
 
 /// The number of the last read of the audit log. It does not start again when the log is
@@ -423,10 +426,13 @@ async fn receive(
 }
 
 /// Saves the file of an export into `directory` under `name`, or under that name with a
-/// number when a file has it. The bytes go to an unfinished file beside it first. A save
-/// that is stopped gives the file no name.
+/// number when a file has it. The bytes go to an unfinished file beside it first, whose
+/// name states the owner of the save (ADR 0745). A save that is stopped gives the file no
+/// name.
+#[allow(clippy::too_many_arguments)]
 async fn save(
     api: &ServerApi,
+    owner: Owner,
     export_id: ExportId,
     bytes: u64,
     directory: &Path,
@@ -434,11 +440,14 @@ async fn save(
     progress: &Progress,
     wait: &Wait,
 ) -> Result<PathBuf, SaveFailure> {
-    let part = directory.join(format!(
-        "{name}.{}{PART_ENDING}",
-        export_id.as_uuid().simple()
-    ));
-    let mut part = Part::create(part)?;
+    let stored = Stored {
+        owner,
+        kind: StoredKind::Export,
+        id: export_id.as_uuid(),
+        bytes: Some(bytes),
+        sha256: None,
+    };
+    let mut part = Part::create(part_file(directory, name, &stored))?;
     receive(api, export_id, bytes, &mut part.file, progress, wait).await?;
     if progress.is_stopped() {
         return Err(SaveFailure::Stopped);
@@ -539,9 +548,10 @@ impl AppState {
         let Some(server) = self.client.server(server_id) else {
             return;
         };
-        let Some(account_id) = server.account() else {
+        let Some(owner) = server.owner() else {
             return;
         };
+        let account_id = owner.account_id;
         let Some(model) = server.live().view().model else {
             return;
         };
@@ -607,7 +617,10 @@ impl AppState {
         );
         let saving = progress.clone();
         drop(handle.spawn(async move {
-            let result = save(&api, export_id, bytes, &directory, &name, &saving, &wait).await;
+            let result = save(
+                &api, owner, export_id, bytes, &directory, &name, &saving, &wait,
+            )
+            .await;
             let _ = ended.send(result);
         }));
         cx.spawn(async move |this, cx| {
@@ -1165,6 +1178,17 @@ mod tests {
 
     const NAME: &str = "junto-export-general-2027-01-15.zip";
 
+    /// A saved server and an account on it.
+    fn owner() -> Owner {
+        Owner {
+            entry: junto_client_core::EntryKey {
+                server_id: junto_client_core::protocol::ids::ServerId::generate(),
+                generation: 1,
+            },
+            account_id: AccountId::generate(),
+        }
+    }
+
     #[test]
     fn a_server_that_answers_every_request_with_one_byte_of_the_whole_file_ends_the_save() {
         // The export has 100 bytes. Every answer is the whole file, holds one byte and
@@ -1175,6 +1199,7 @@ mod tests {
         let progress = Progress::default();
         let saved = run(save(
             &api,
+            owner(),
             ExportId::generate(),
             100,
             directory.path(),
@@ -1235,6 +1260,56 @@ mod tests {
     }
 
     #[test]
+    fn a_save_leaves_the_unfinished_file_of_another_owner_as_it_is() {
+        // A save of one owner runs. The server of the test reads the name of its
+        // unfinished file from the directory while it answers.
+        let export_id = ExportId::generate();
+        let file = content(100);
+        let directory = tempfile::tempdir().unwrap();
+        let seen: Arc<Mutex<Vec<String>>> = Arc::default();
+        let (whole, at, found) = (file.clone(), directory.path().to_path_buf(), seen.clone());
+        let (_, api) = server(move |_, _| {
+            found.lock().unwrap().extend(names_in(&at));
+            Answer::whole(&whole)
+        });
+        let (_, wait) = no_wait();
+        let progress = Progress::default();
+        let first = run(save(
+            &api,
+            owner(),
+            export_id,
+            100,
+            directory.path(),
+            NAME,
+            &progress,
+            &wait,
+        ))
+        .unwrap();
+        let unfinished = directory.path().join(&seen.lock().unwrap()[0]);
+        assert!(unfinished.to_string_lossy().ends_with(PART_ENDING));
+        assert!(!unfinished.exists());
+
+        // The save of that owner runs again, and its unfinished file is in the directory.
+        // Another saved server states an export with the same identifier, the same name
+        // and the same length, and saves it: the file of the first owner stays as it is.
+        std::fs::write(&unfinished, b"of the first owner").unwrap();
+        let second = run(save(
+            &api,
+            owner(),
+            export_id,
+            100,
+            directory.path(),
+            NAME,
+            &progress,
+            &wait,
+        ))
+        .unwrap();
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read(second).unwrap(), file);
+        assert_eq!(std::fs::read(&unfinished).unwrap(), b"of the first owner");
+    }
+
+    #[test]
     fn a_large_file_arrives_over_a_connection_that_is_cut_again_and_again() {
         // The export has 10 MiB. Each answer brings 8 parts of 100 KiB, and then the
         // connection fails.
@@ -1245,6 +1320,7 @@ mod tests {
         let progress = Progress::default();
         let saved = run(save(
             &api,
+            owner(),
             ExportId::generate(),
             file.len() as u64,
             directory.path(),
@@ -1296,6 +1372,7 @@ mod tests {
         let progress = Progress::default();
         let saved = run(save(
             &api,
+            owner(),
             ExportId::generate(),
             file.len() as u64,
             directory.path(),
@@ -1340,6 +1417,7 @@ mod tests {
         progress.stopped.store(true, Ordering::Relaxed);
         let saved = run(save(
             &api,
+            owner(),
             ExportId::generate(),
             100,
             directory.path(),
@@ -1368,6 +1446,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let saved = run(save(
             &api,
+            owner(),
             ExportId::generate(),
             100,
             directory.path(),
@@ -1398,6 +1477,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let saved = run(save(
             &api,
+            owner(),
             ExportId::generate(),
             100,
             directory.path(),
@@ -1499,6 +1579,7 @@ mod tests {
         let progress = Progress::default();
         let saved = run(save(
             &api,
+            owner(),
             ExportId::generate(),
             100,
             directory.path(),
@@ -1527,6 +1608,7 @@ mod tests {
             let progress = Progress::default();
             let saved = run(save(
                 &api,
+                owner(),
                 ExportId::generate(),
                 100,
                 directory.path(),
@@ -1559,6 +1641,7 @@ mod tests {
         let progress = Progress::default();
         let saved = run(save(
             &api,
+            owner(),
             ExportId::generate(),
             100,
             directory.path(),
@@ -1583,6 +1666,7 @@ mod tests {
             let progress = Progress::default();
             let saved = run(save(
                 &api,
+                owner(),
                 export_id,
                 100,
                 directory.path(),
@@ -1638,6 +1722,7 @@ mod tests {
         let progress = Progress::default();
         let saved = run(save(
             &api,
+            owner(),
             ExportId::generate(),
             100,
             directory.path(),
@@ -1662,6 +1747,7 @@ mod tests {
         let progress = Progress::default();
         let saved = run(save(
             &api,
+            owner(),
             ExportId::generate(),
             100,
             directory.path(),

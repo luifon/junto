@@ -126,6 +126,15 @@ pub struct EntryKey {
     pub generation: u64,
 }
 
+/// One entry of the book and the account that this device has on its server. What the
+/// client stores of a server belongs to one owner, and its key names that owner: a file,
+/// an entry of a cache, a remembered choice and a prompt that waits (ADR 0745).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Owner {
+    pub entry: EntryKey,
+    pub account_id: AccountId,
+}
+
 /// One saved server.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerEntry {

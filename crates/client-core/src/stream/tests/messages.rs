@@ -503,6 +503,75 @@ async fn the_reads_of_single_messages_are_bounded() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn http_message_bodies_count_toward_the_retained_budget() {
+    use crate::model::message_tests::heavy;
+    use crate::model::{MOST_LOADED_WEIGHT, MOST_MESSAGE_WEIGHT, ReadFailure, weight};
+
+    let room = room().await;
+    let (rig, place) = (&room.rig, room.place);
+    // Small events name new messages. The answer to the read of each one is a message
+    // close to the most that one message weighs, far below the bound of one answer.
+    let each = MOST_MESSAGE_WEIGHT - 4096;
+    let count = (MOST_LOADED_WEIGHT / each) as u64 + 8;
+    for index in 0..count {
+        let held = heavy(rig.scene.text_place(), 4 + index, each);
+        room.chat(|chat| chat.messages.push(held.clone()));
+        room.changed(41 + index, &held, false).await;
+    }
+    let last = room.held(4 + count, "an ordinary message");
+    room.chat(|chat| chat.messages.push(last.clone()));
+    room.changed(41 + count, &last, false).await;
+    let model = rig
+        .model_when("the last message", |model| {
+            positions(model, place).last() == Some(&last.position)
+                && positions(model, place).len() as u64 > count - 9
+        })
+        .await;
+    // The timeline holds the weight that it may hold, and the oldest messages gave way:
+    // what is held is the end of the history without a hole.
+    let timeline = model.timeline(place).unwrap();
+    let held: usize = timeline.messages.iter().map(|held| weight(held)).sum();
+    assert!(held <= MOST_LOADED_WEIGHT, "{held}");
+    assert!(timeline.more_before && !timeline.more_after);
+    let shown = positions(&model, place);
+    let first = last.position + 1 - shown.len() as u64;
+    assert_eq!(shown, (first..=last.position).collect::<Vec<u64>>());
+    assert!(first > 4, "the messages before the heavy ones gave way");
+
+    // A message above the bound of one message is no answer that the client reads: it is
+    // not held, the read is not sent again, and the timeline says that it is not current.
+    let above = heavy(rig.scene.text_place(), last.position + 1, 3 * 1024 * 1024);
+    room.chat(|chat| chat.messages.push(above.clone()));
+    let asked = room.sent_to(&format!("/api/v1/messages/{}", above.id));
+    room.changed(42 + count, &above, false).await;
+    let model = rig
+        .model_when("the failed read", |model| {
+            model
+                .timeline(place)
+                .is_some_and(|timeline| timeline.failed == Some(ReadFailure::NoAnswer))
+        })
+        .await;
+    assert!(model.timeline(place).unwrap().message(above.id).is_none());
+    // A read that got no answer is sent again after 2 seconds.
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    assert_eq!(
+        room.sent_to(&format!("/api/v1/messages/{}", above.id)),
+        asked + 1
+    );
+
+    // The messages after it are read as before.
+    let next = room.held(last.position + 2, "the next message");
+    room.chat(|chat| chat.messages.push(next.clone()));
+    room.changed(43 + count, &next, false).await;
+    rig.model_when("the next message", |model| {
+        model
+            .timeline(place)
+            .is_some_and(|timeline| timeline.message(next.id).is_some())
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
 async fn the_read_position_is_sent_one_request_at_a_time_with_the_newest_position() {
     let room = room().await;
     let (rig, place) = (&room.rig, room.place);

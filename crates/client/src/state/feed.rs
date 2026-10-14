@@ -34,19 +34,21 @@ pub enum Zone {
 }
 
 impl Zone {
-    /// A moment as the clock of the zone shows it.
+    /// A moment as the clock of the zone shows it. A moment that this clock cannot state
+    /// is shown on the clock that the server wrote it with (ADR 0747).
     pub fn local(self, at: OffsetDateTime) -> OffsetDateTime {
-        match self {
-            Self::Fixed(offset) => at.to_offset(offset),
+        let offset = match self {
+            Self::Fixed(offset) => offset,
             Self::System => {
                 use chrono::{Offset as _, TimeZone as _};
                 let seconds = chrono::Local
                     .timestamp_opt(at.unix_timestamp(), 0)
                     .single()
                     .map_or(0, |local| local.offset().fix().local_minus_utc());
-                at.to_offset(UtcOffset::from_whole_seconds(seconds).unwrap_or(UtcOffset::UTC))
+                UtcOffset::from_whole_seconds(seconds).unwrap_or(UtcOffset::UTC)
             }
-        }
+        };
+        crate::moment::in_offset(at, offset)
     }
 }
 
@@ -62,6 +64,55 @@ pub enum Quoted {
     Read(Arc<Message>),
     /// The server holds no such message for the account.
     Gone,
+    /// The message is not held: the quoted messages of the window weigh as much as they
+    /// may, or the answer of the server was a refusal or no answer that the client reads
+    /// (ADR 0747). The reply shows no text of it, and the message is not read again until
+    /// an event names it or the state is loaded again.
+    NotHeld,
+}
+
+/// What the window holds for a quoted message whose read failed. `None` when the same
+/// read can succeed later: no answer, `busy`, a limit on attempts, a failure of the
+/// server, and a request that was not sent because the device has no session at that
+/// moment. That read is sent again with a later change of the state. Every other answer
+/// of the server is final for the message as it is now.
+pub fn quote_without_answer(error: &junto_client_core::api::ApiError) -> Option<Quoted> {
+    use junto_client_core::api::{ApiError, ErrorCategory};
+    match error {
+        _ if error.category() == Some(ErrorCategory::NotFound) => Some(Quoted::Gone),
+        _ if error.category() == Some(ErrorCategory::Limited) || error.is_unavailable() => None,
+        ApiError::Rejected(_) | ApiError::InvalidResponse { .. } => Some(Quoted::NotHeld),
+        _ => None,
+    }
+}
+
+/// The weight of the quoted messages that the window holds at most, in the measure of
+/// [`junto_client_core::model::weight`].
+pub const MOST_QUOTED_WEIGHT: usize = 8 * 1024 * 1024;
+
+/// Puts a quoted message that was read into the quoted messages of the window, when
+/// they stay inside their weight with it.
+pub fn hold_quote(
+    quoted: &mut HashMap<(ServerId, MessageId), Quoted>,
+    key: (ServerId, MessageId),
+    message: Message,
+) {
+    use junto_client_core::model::weight;
+    let held: usize = quoted
+        .iter()
+        .filter(|(of, _)| **of != key)
+        .map(|(_, quoted)| match quoted {
+            Quoted::Read(message) => weight(message),
+            Quoted::Gone | Quoted::NotHeld => 0,
+        })
+        .sum();
+    let fits = held.saturating_add(weight(&message)) <= MOST_QUOTED_WEIGHT;
+    let entry = if fits {
+        Quoted::Read(Arc::new(message))
+    } else {
+        Quoted::NotHeld
+    };
+    quoted.insert(key, entry);
 }
 
 /// What a reply shows of the message that it answers.
@@ -517,7 +568,7 @@ fn quote<'a>(source: &Source<'a>, loaded: &mut Loaded<'a>, message_id: MessageId
     match source.quoted.get(&(source.server_id, message_id)) {
         Some(Quoted::Read(message)) => quote_of(message, &source.names),
         Some(Quoted::Gone) => unknown(QuoteText::Deleted),
-        None => unknown(QuoteText::Unknown),
+        Some(Quoted::NotHeld) | None => unknown(QuoteText::Unknown),
     }
 }
 
@@ -1042,6 +1093,109 @@ mod tests {
                 today: Some(morning().date()),
                 cards: None,
             })
+        }
+    }
+
+    #[test]
+    fn the_quoted_messages_of_the_window_hold_a_bounded_weight() {
+        use junto_client_core::model::{MOST_MESSAGE_WEIGHT, weight};
+
+        // Each quoted message has a text close to the most that one message weighs.
+        let scene = scene();
+        let server_id = scene.server_id;
+        let heavy = |position: u64| {
+            let mut message = scene.message(position, scene.ana, 0, "");
+            message.document = Some(Document {
+                blocks: vec![Block::Code {
+                    text: "x".repeat(MOST_MESSAGE_WEIGHT - 4096),
+                    language: None,
+                }],
+            });
+            message
+        };
+        let each = weight(&heavy(1));
+        assert!(each <= MOST_MESSAGE_WEIGHT);
+        let fit = MOST_QUOTED_WEIGHT / each;
+        let mut quoted = HashMap::new();
+        let mut keys = Vec::new();
+        for position in 0..fit as u64 + 5 {
+            let message = heavy(position);
+            keys.push((server_id, message.id));
+            hold_quote(&mut quoted, (server_id, message.id), message);
+        }
+        let held = |quoted: &HashMap<(ServerId, MessageId), Quoted>| {
+            quoted
+                .values()
+                .filter(|held| matches!(held, Quoted::Read(_)))
+                .count()
+        };
+        assert_eq!(held(&quoted), fit);
+        // Each of the others has an entry, so it is not read again, and shows no text.
+        assert_eq!(quoted.len(), fit + 5);
+        assert_eq!(quoted[&keys[fit]], Quoted::NotHeld);
+
+        // A message that is read again takes the place that it had.
+        let again = heavy(0);
+        hold_quote(&mut quoted, keys[0], again);
+        assert_eq!(held(&quoted), fit);
+        assert!(matches!(quoted[&keys[0]], Quoted::Read(_)));
+    }
+
+    #[test]
+    fn a_quoted_message_that_the_client_cannot_read_is_not_asked_for_again() {
+        use junto_client_core::api::ApiError;
+
+        // An answer with a message above the bounds, and an answer in another form.
+        let unreadable = ApiError::InvalidResponse {
+            status: 200,
+            reason: "a message above the bounds of a message",
+        };
+        assert_eq!(quote_without_answer(&unreadable), Some(Quoted::NotHeld));
+        // A request that was not sent, as while a session is renewed, is sent again.
+        assert_eq!(quote_without_answer(&ApiError::NotLoggedIn), None);
+        assert_eq!(quote_without_answer(&ApiError::Stopped), None);
+        // A failure of the server passes: the read is sent again.
+        let failing = ApiError::InvalidResponse {
+            status: 502,
+            reason: "unexpected body",
+        };
+        assert_eq!(quote_without_answer(&failing), None);
+    }
+
+    #[test]
+    fn remote_boundary_dates_do_not_panic_view_derivation() {
+        // The last moment that the form of dates of the protocol can state, read from the
+        // text of a server. One hour east of UTC it lies in the year 10000.
+        let scene = scene();
+        let mut text =
+            serde_json::to_value(scene.message(1, scene.ana, 0, "the last one")).unwrap();
+        text["created_at"] = "9999-12-31T23:59:59Z".into();
+        text["edited_at"] = "9999-12-31T23:59:59Z".into();
+        let last: Message = serde_json::from_value(text).unwrap();
+        let timeline = scene.timeline(vec![scene.message(1, scene.ana, 0, "first"), last]);
+        for hours in [1, 14, -3] {
+            let feed = derive(&Source {
+                server_id: scene.server_id,
+                model: &scene.model,
+                timeline: &timeline,
+                names: scene.names.clone(),
+                own_roles: &[scene.role],
+                may_manage: false,
+                open_thread: None,
+                target: None,
+                threads: true,
+                quoted: &scene.quoted,
+                zone: Zone::Fixed(UtcOffset::from_hms(hours, 0, 0).unwrap()),
+                today: Some(morning().date()),
+                cards: None,
+            });
+            let Some(FeedRow::Message(row)) = feed.rows.last() else {
+                panic!("no message");
+            };
+            // East of UTC the moment is shown as the server wrote it, and west of UTC on
+            // the clock of the zone.
+            let shown = if hours > 0 { "23:59" } else { "20:59" };
+            assert_eq!(row.time, shown, "{hours} hours from UTC");
         }
     }
 

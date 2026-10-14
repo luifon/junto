@@ -653,3 +653,305 @@ fn events_during_a_read_name_the_reads_that_follow_its_answer() {
     assert!(Part::AttachmentLimits.is_read_again());
     assert!(!Part::OwnCall.is_read_again());
 }
+
+/// A message whose document is one block of code with `bytes` bytes.
+pub(crate) fn heavy(place: MessagePlace, position: u64, bytes: usize) -> Message {
+    let mut heavy = message(place, position, AccountId::generate(), "");
+    heavy.document = Some(Document {
+        blocks: vec![Block::Code {
+            text: "x".repeat(bytes),
+            language: None,
+        }],
+    });
+    heavy
+}
+
+fn weight_of(messages: &[std::sync::Arc<Message>]) -> usize {
+    messages.iter().map(|held| weight(held)).sum()
+}
+
+#[test]
+fn a_message_inside_the_bounds_of_the_server_fits_and_one_above_them_does_not() {
+    use junto_protocol::message::Reaction;
+
+    let scene = scene();
+    let place = scene.text_place();
+    let plain = message(place, 1, AccountId::generate(), "text");
+    assert!(fits(&plain));
+
+    // The most that a server of ADR 0408 stores in one message: a document of 16 KiB with
+    // 100 blocks and 1,000 inline nodes, 100 files with the longest name, 20 reactions.
+    let mut most = plain.clone();
+    let node = |text: &str| Inline::Text {
+        text: text.to_owned(),
+        marks: Vec::new(),
+    };
+    most.document = Some(Document {
+        blocks: (0..MOST_BLOCKS)
+            .map(|_| Block::Paragraph {
+                content: (0..MOST_INLINE_NODES / MOST_BLOCKS)
+                    .map(|_| node("sixteen bytes..."))
+                    .collect(),
+            })
+            .collect(),
+    });
+    most.attachments = (0..MOST_FILES)
+        .map(|_| Attachment {
+            id: AttachmentId::generate(),
+            name: "é".repeat(200),
+            bytes: 1,
+            sha256: "a".repeat(64),
+            media_type: "application/octet-stream".to_owned(),
+            width: None,
+            height: None,
+        })
+        .collect();
+    most.reactions = (0..MOST_REACTIONS)
+        .map(|_| Reaction {
+            emoji: "\u{1f44d}".to_owned(),
+            count: 1,
+            own: false,
+        })
+        .collect();
+    assert!(fits(&most));
+    assert!(weight(&most) < MOST_MESSAGE_WEIGHT / 2);
+
+    // A list of empty items is the document with the most structure in 16 KiB.
+    let mut items = plain.clone();
+    items.document = Some(Document {
+        blocks: vec![Block::List {
+            ordered: false,
+            items: vec![Vec::new(); 5_400],
+        }],
+    });
+    assert!(fits(&items));
+    assert!(weight(&items) < MOST_MESSAGE_WEIGHT / 2);
+
+    let mut more_items = items.clone();
+    more_items.document = Some(Document {
+        blocks: vec![Block::List {
+            ordered: true,
+            items: vec![Vec::new(); MOST_LIST_ITEMS + 1],
+        }],
+    });
+    assert!(!fits(&more_items));
+
+    // One part more than a server stores, in each kind.
+    let mut blocks = most.clone();
+    if let Some(document) = &mut blocks.document {
+        document.blocks.push(Block::Paragraph {
+            content: Vec::new(),
+        });
+    }
+    assert!(!fits(&blocks));
+    let mut nodes = most.clone();
+    if let Some(Block::Paragraph { content }) = nodes
+        .document
+        .as_mut()
+        .and_then(|document| document.blocks.first_mut())
+    {
+        content.push(node(""));
+    }
+    assert!(!fits(&nodes));
+    let mut files = most.clone();
+    files.attachments.push(most.attachments[0].clone());
+    assert!(!fits(&files));
+    let mut reactions = most.clone();
+    reactions.reactions.push(most.reactions[0].clone());
+    assert!(!fits(&reactions));
+
+    // A text that no server of ADR 0408 stores, in a structure that it would store.
+    assert!(fits(&heavy(place, 1, MOST_MESSAGE_WEIGHT - 4096)));
+    assert!(!fits(&heavy(place, 1, MOST_MESSAGE_WEIGHT)));
+    let mut name = plain.clone();
+    name.author_name = Some("n".repeat(MOST_MESSAGE_WEIGHT));
+    assert!(!fits(&name));
+    let mut list = plain;
+    list.document = Some(Document {
+        blocks: vec![Block::Checklist {
+            items: vec![
+                junto_protocol::message::CheckItem {
+                    checked: false,
+                    content: Vec::new(),
+                };
+                MOST_MESSAGE_WEIGHT / 16
+            ],
+        }],
+    });
+    assert!(!fits(&list));
+}
+
+#[test]
+fn a_timeline_holds_a_bounded_weight_of_messages() {
+    let scene = scene();
+    let place = general(&scene);
+    let mut model = scene.model();
+    model.open_timeline(place);
+    // Each message is close to the most that one message weighs.
+    let each = MOST_MESSAGE_WEIGHT - 4096;
+    let many = |from: u64, count: u64| -> Vec<Message> {
+        (from..from + count)
+            .map(|position| heavy(scene.text_place(), position, each))
+            .collect()
+    };
+    let fit = (MOST_LOADED_WEIGHT / weight(&many(1, 1)[0])) as u64;
+
+    // The page that opens the place holds more than the timeline may weigh: the start of
+    // the page gives way, and the history has more there.
+    let timeline = model.timeline_mut(place).unwrap();
+    timeline.replace(many(1_000, fit + 10), false, false);
+    assert_eq!(timeline.messages.len() as u64, fit);
+    assert!(weight_of(&timeline.messages) <= MOST_LOADED_WEIGHT);
+    assert_eq!(timeline.messages[0].position, 1_010);
+    assert!(timeline.more_before && !timeline.more_after);
+
+    // A page before the first message drops messages at the end.
+    timeline.add_older(MessagePage {
+        messages: many(990, 5),
+        has_more: true,
+    });
+    assert!(weight_of(&timeline.messages) <= MOST_LOADED_WEIGHT);
+    assert_eq!(timeline.messages[0].position, 990);
+    assert_eq!(timeline.messages.len() as u64, fit);
+    assert!(timeline.more_after);
+
+    // A page after the last message drops messages at the start.
+    let last = timeline.messages.last().unwrap().position;
+    timeline.add_newer(MessagePage {
+        messages: many(last + 1, 3),
+        has_more: false,
+    });
+    assert!(weight_of(&timeline.messages) <= MOST_LOADED_WEIGHT);
+    assert_eq!(timeline.messages.last().unwrap().position, last + 3);
+    assert_eq!(timeline.messages[0].position, 993);
+
+    // Single messages that events name: a new one at the end, and a held one whose new
+    // copy weighs more than the one before.
+    let timeline = model.timeline_mut(place).unwrap();
+    timeline.replace(
+        (1..=100)
+            .map(|position| message(scene.text_place(), position, AccountId::generate(), "m"))
+            .collect(),
+        false,
+        false,
+    );
+    assert_eq!(timeline.messages.len(), 100);
+    for position in 101..=100 + fit + 5 {
+        assert!(model.put_message(heavy(scene.text_place(), position, each)));
+        let timeline = model.timeline(place).unwrap();
+        assert!(weight_of(&timeline.messages) <= MOST_LOADED_WEIGHT);
+        assert_eq!(timeline.messages.last().unwrap().position, position);
+    }
+    let timeline = model.timeline(place).unwrap();
+    assert_eq!(timeline.messages.len() as u64, fit);
+    assert!(timeline.more_before);
+    let small = message(scene.text_place(), 5_000, AccountId::generate(), "m");
+    assert!(model.put_message(small.clone()));
+    let mut grown = heavy(scene.text_place(), 5_000, each);
+    grown.id = small.id;
+    assert!(model.put_message(grown));
+    let timeline = model.timeline(place).unwrap();
+    assert!(weight_of(&timeline.messages) <= MOST_LOADED_WEIGHT);
+    assert_eq!(timeline.messages.last().unwrap().id, small.id);
+    assert_eq!(timeline.messages.len() as u64, fit);
+
+    // The timeline holds the end of the history. A held message near its start gets a
+    // heavier copy, such as a reaction: the start gives way, the end stays, and the new
+    // messages of the place still arrive.
+    let tiny = message(scene.text_place(), 2, AccountId::generate(), "m");
+    let base = weight(&heavy(scene.text_place(), 1, 0));
+    let heavy_weight = base + each;
+    // The first message fills the timeline up to 2 KiB below what it may weigh.
+    let filler = MOST_LOADED_WEIGHT - (fit as usize - 1) * heavy_weight - weight(&tiny) - 2048;
+    let timeline = model.timeline_mut(place).unwrap();
+    timeline.replace(
+        [heavy(scene.text_place(), 1, filler - base), tiny]
+            .into_iter()
+            .chain((3..=fit + 1).map(|position| heavy(scene.text_place(), position, each)))
+            .collect(),
+        false,
+        false,
+    );
+    assert_eq!(timeline.messages.len() as u64, fit + 1);
+    assert!(!timeline.more_after && !timeline.more_before);
+    let second = timeline.messages[1].as_ref().clone();
+    let mut grown = heavy(scene.text_place(), second.position, each);
+    grown.id = second.id;
+    assert!(model.put_message(grown));
+    let timeline = model.timeline(place).unwrap();
+    assert!(weight_of(&timeline.messages) <= MOST_LOADED_WEIGHT);
+    assert!(!timeline.more_after, "the end of the history stays");
+    assert!(timeline.more_before);
+    assert_eq!(timeline.messages.last().unwrap().position, fit + 1);
+    assert_eq!(timeline.messages[0].id, second.id);
+    let next = message(scene.text_place(), fit + 2, AccountId::generate(), "new");
+    assert!(model.put_message(next.clone()));
+    assert!(model.timeline(place).unwrap().message(next.id).is_some());
+}
+
+#[test]
+fn a_pin_list_and_the_named_messages_hold_a_bounded_weight() {
+    use junto_protocol::message::{ThreadState, UnreadThreads};
+
+    let scene = scene();
+    let mut model = scene.model();
+    let each = MOST_MESSAGE_WEIGHT - 4096;
+    let pinned = |position: u64| {
+        let mut pin = heavy(scene.text_place(), position, each);
+        pin.pinned = true;
+        pin
+    };
+    let fit = MOST_PINNED_WEIGHT / weight(&pinned(1));
+
+    // The answer of the pin route holds more than the list may weigh: the oldest pins
+    // give way.
+    model.open_pins(scene.general);
+    let pins: Vec<Message> = (1..=fit as u64 + 4).map(pinned).collect();
+    model.set_pins(scene.general, pins);
+    let held = |model: &ServerModel| {
+        model
+            .pin_list(scene.general)
+            .and_then(|list| list.messages.loaded())
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(held(&model).len(), fit);
+    assert_eq!(held(&model)[0].position, 5);
+    // A message that an event names is pinned: it is added, and the oldest pin leaves.
+    model.put_message(pinned(1_000));
+    assert_eq!(held(&model).len(), fit);
+    assert_eq!(held(&model)[0].position, 6);
+    assert_eq!(held(&model).last().unwrap().position, 1_000);
+    assert!(weight_of(&held(&model)) <= MOST_PINNED_WEIGHT);
+
+    // The roots of the unread threads are named messages. The ones that pass the weight
+    // are not held, and their entries say that the read failed.
+    let roots: Vec<Message> = (1..=MOST_NAMED_WEIGHT as u64 / weight(&pinned(1)) as u64 + 3)
+        .map(|position| heavy(scene.text_place(), 2_000 + position, each))
+        .collect();
+    model.set_threads(UnreadThreads {
+        threads: roots
+            .iter()
+            .map(|root| ThreadState {
+                root_id: root.id,
+                last_read: 0,
+                latest: 1,
+                unread: 1,
+                mentions: 0,
+                following: true,
+                follow_setting: None,
+            })
+            .collect(),
+        more: false,
+        next: None,
+    });
+    for root in &roots {
+        model.put_message(root.clone());
+    }
+    let read = roots
+        .iter()
+        .filter(|root| matches!(model.named(root.id), Some(Named::Read(_))))
+        .count();
+    assert_eq!(read, roots.len() - 3);
+    assert_eq!(model.named(roots.last().unwrap().id), Some(&Named::Failed));
+}

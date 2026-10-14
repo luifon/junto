@@ -5,8 +5,8 @@
 use std::path::PathBuf;
 
 use gpui::Context;
-use junto_client_core::ServerHandle;
-use junto_client_core::api::{ApiError, ErrorCategory, ServerApi};
+use junto_client_core::Owner;
+use junto_client_core::api::{ApiError, ServerApi};
 use junto_client_core::flow::FlowError;
 use junto_client_core::flow::access::AccessState;
 use junto_client_core::live::LoadError;
@@ -16,7 +16,7 @@ use junto_client_core::protocol::message::{Attachment, Block, Document, Message}
 use junto_client_core::transfers::{Upload, UploadSource, UploadStage};
 
 use super::AppState;
-use super::feed::{self, Quoted};
+use super::feed;
 use super::view::{DraftFile, Shown};
 use crate::text;
 
@@ -186,19 +186,18 @@ impl AppState {
                         return;
                     }
                     match read {
-                        Ok(message) => {
-                            this.known
-                                .quoted
-                                .insert(key, Quoted::Read(std::sync::Arc::new(message)));
-                        }
-                        Err(error) if error.category() == Some(ErrorCategory::NotFound) => {
-                            this.known.quoted.insert(key, Quoted::Gone);
-                        }
-                        // No answer: the message is asked for again with a later change.
-                        Err(_) => {
-                            this.asked_quotes.remove(&key);
-                            return;
-                        }
+                        Ok(message) => feed::hold_quote(&mut this.known.quoted, key, message),
+                        Err(error) => match feed::quote_without_answer(&error) {
+                            Some(quoted) => {
+                                this.known.quoted.insert(key, quoted);
+                            }
+                            // No answer: the message is asked for again with a later
+                            // change.
+                            None => {
+                                this.asked_quotes.remove(&key);
+                                return;
+                            }
+                        },
                     }
                     this.changed(cx);
                 });
@@ -225,6 +224,13 @@ impl AppState {
         if self.known.quoted.len() + self.asked_quotes.len() != before {
             self.changed(cx);
         }
+    }
+
+    /// The entry of the server book and the account that the device has on a server now.
+    /// What the window keeps of a server is kept for one owner, and what an owner asked
+    /// for is taken only while the server still has that owner (ADR 0745, ADR 0746).
+    pub fn owner(&self, server_id: ServerId) -> Option<Owner> {
+        self.client.server(server_id)?.owner()
     }
 
     /// The account that this device has on a server.
@@ -272,14 +278,44 @@ impl AppState {
         }
     }
 
-    /// Asks a server for a change of a message. A refusal is told in
-    /// [`super::Pending::message_refused`]; the result of a change arrives with the state.
+    /// Looks at the owner of each server. For a server whose owner is another one than at
+    /// the last look, or none, the window ends the downloads that it follows and forgets
+    /// what it shows of them and the quoted messages that it read: the next owner sees
+    /// neither the progress, nor the path of a saved file, nor a text of the owner before.
+    pub(super) fn follow_owners(&mut self) {
+        let present: std::collections::HashMap<ServerId, Owner> = self
+            .client
+            .servers()
+            .iter()
+            .filter_map(|server| Some((server.id(), server.owner()?)))
+            .collect();
+        let before = std::mem::replace(&mut self.owners, present);
+        for (server_id, owner) in before {
+            if self.owners.get(&server_id) == Some(&owner) {
+                continue;
+            }
+            self.downloads.retain(|key, download| {
+                if key.0 == server_id {
+                    download.cancel();
+                }
+                key.0 != server_id
+            });
+            self.known.downloads.retain(|key, _| key.0 != server_id);
+            self.known.quoted.retain(|key, _| key.0 != server_id);
+            self.asked_quotes.retain(|key, _| key.0 != server_id);
+            self.forget_recording_downloads_of(server_id);
+        }
+    }
+
+    /// Asks a server for a change of a message, for the account that the device has on it
+    /// now. A refusal is told in [`super::Pending::message_refused`]. The answer of the
+    /// server is not content of the state: the change arrives with its event, in the
+    /// order of the events (ADR 0746).
     fn ask_messages<F, R>(
         &mut self,
         server_id: ServerId,
         cx: &mut Context<Self>,
         ask: impl FnOnce(ServerApi) -> F,
-        done: impl FnOnce(&ServerHandle, R) + 'static,
     ) where
         F: Future<Output = Result<R, ApiError>> + 'static,
         R: 'static,
@@ -287,27 +323,41 @@ impl AppState {
         let Some(server) = self.client.server(server_id) else {
             return;
         };
-        let asking = ask(server.api());
+        let Some(owner) = server.owner() else {
+            // The person is told that nothing was sent.
+            self.pending.message_refused =
+                Some(text::flow_error(&FlowError::from(&ApiError::NotLoggedIn)));
+            cx.notify();
+            return;
+        };
+        let asking = ask(server.api_for(owner.account_id));
         self.message_asks += 1;
+        self.message_asks_flying += 1;
         let number = self.message_asks;
         self.pending.message_refused = None;
         cx.spawn(async move |this, cx| {
             let result = asking.await;
-            let _ = this.update(cx, |this, cx| match result {
-                Ok(answer) => done(&server, answer),
-                Err(error) => {
-                    // A late refusal of an earlier request does not replace what the
-                    // person did afterwards.
-                    if this.message_asks == number {
-                        this.pending.message_refused =
-                            Some(text::flow_error(&FlowError::from(&error)));
-                        cx.notify();
-                    }
+            let _ = this.update(cx, |this, cx| {
+                this.message_asks_flying -= 1;
+                // A late refusal of an earlier request does not replace what the person
+                // did afterwards, and a refusal for an account that the device has no
+                // more is not told to the next one.
+                if let Err(error) = result
+                    && this.message_asks == number
+                    && this.owner(server_id) == Some(owner)
+                {
+                    this.pending.message_refused = Some(text::flow_error(&FlowError::from(&error)));
+                    cx.notify();
                 }
             });
         })
         .detach();
         cx.notify();
+    }
+
+    /// How many requests for a change of a message have no answer yet.
+    pub fn message_asks_flying(&self) -> usize {
+        self.message_asks_flying
     }
 
     pub fn dismiss_message_refusal(&mut self, cx: &mut Context<Self>) {
@@ -379,13 +429,9 @@ impl AppState {
         document: Document,
         cx: &mut Context<Self>,
     ) {
-        self.ask_messages(
-            server_id,
-            cx,
-            move |api| async move { api.edit_message(message_id, document).await },
-            // The answer is the message as the server holds it now.
-            |server, message: Message| server.live().put_message(message),
-        );
+        self.ask_messages(server_id, cx, move |api| async move {
+            api.edit_message(message_id, document).await
+        });
     }
 
     pub fn delete_message(
@@ -394,12 +440,9 @@ impl AppState {
         message_id: MessageId,
         cx: &mut Context<Self>,
     ) {
-        self.ask_messages(
-            server_id,
-            cx,
-            move |api| async move { api.delete_message(message_id).await },
-            |_, ()| {},
-        );
+        self.ask_messages(server_id, cx, move |api| async move {
+            api.delete_message(message_id).await
+        });
     }
 
     /// Adds the reaction of the person to a message, or takes it away.
@@ -411,18 +454,13 @@ impl AppState {
         add: bool,
         cx: &mut Context<Self>,
     ) {
-        self.ask_messages(
-            server_id,
-            cx,
-            move |api| async move {
-                if add {
-                    api.add_reaction(message_id, &emoji).await
-                } else {
-                    api.remove_reaction(message_id, &emoji).await
-                }
-            },
-            |_, ()| {},
-        );
+        self.ask_messages(server_id, cx, move |api| async move {
+            if add {
+                api.add_reaction(message_id, &emoji).await
+            } else {
+                api.remove_reaction(message_id, &emoji).await
+            }
+        });
     }
 
     /// Ticks a check box of a message of the person, or clears it. This is an edit of the
@@ -676,6 +714,14 @@ impl AppState {
         attachment: &Attachment,
         cx: &mut Context<Self>,
     ) {
+        // What the window holds of the downloads of a server belongs to its present owner.
+        self.follow_owners();
+        if !self.owners.contains_key(&server_id) {
+            self.pending.message_refused =
+                Some(text::flow_error(&FlowError::from(&ApiError::NotLoggedIn)));
+            cx.notify();
+            return;
+        }
         let key = (server_id, attachment.id);
         if self.downloads.contains_key(&key) {
             return;
@@ -762,17 +808,17 @@ impl AppState {
         self.download_directory = Some(directory);
     }
 
-    /// Reads a picture of a message into memory, for the window to draw it.
+    /// Reads a picture of a message into memory for its owner, for the window to draw
+    /// it. Nothing is read when the server has another owner by now.
     pub fn picture(
         &self,
-        server_id: ServerId,
+        owner: Owner,
         attachment: &Attachment,
-    ) -> Option<impl Future<Output = Option<Vec<u8>>> + 'static + use<>> {
+    ) -> impl Future<Output = Option<Vec<u8>>> + 'static + use<> {
         let reading = self
             .client
-            .server(server_id)?
-            .transfers()
-            .picture(attachment);
-        Some(async move { reading.await.ok() })
+            .server(owner.entry.server_id)
+            .map(|server| server.transfers().picture(owner, attachment));
+        async move { reading?.await.ok() }
     }
 }

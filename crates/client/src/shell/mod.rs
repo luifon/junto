@@ -19,6 +19,7 @@ mod main_area;
 mod notices;
 mod people;
 mod person_drag;
+mod pictures;
 mod rail;
 mod recorded;
 pub mod room;
@@ -1028,6 +1029,7 @@ impl Render for Shell {
         {
             self.draws += 1;
         }
+        self.message_pictures.drawing_starts();
         if self.detached {
             return self.render_detached(window, cx);
         }

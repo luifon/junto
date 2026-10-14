@@ -420,6 +420,11 @@ struct ProxyState {
     held: Vec<String>,
     /// A request whose path ends with one of these texts waits too.
     held_ending: Vec<String>,
+    /// The answer to a request with this method whose path ends with this text waits at
+    /// the proxy, after the server gave it.
+    held_answers: Vec<(String, String)>,
+    /// How many answers wait at the proxy now.
+    answers_waiting: usize,
 }
 
 /// An HTTP proxy in front of one server. It passes every request on unless a fault is
@@ -506,12 +511,32 @@ impl FaultProxy {
         self.state.lock().unwrap().held_ending.push(end.to_owned());
     }
 
-    /// Passes on every request that waits, and holds no further one.
+    /// From now on the answer to a request with `method` whose path ends with `end` waits
+    /// at the proxy until [`FaultProxy::release`]. The server has handled the request by
+    /// then. A test of the window uses it to act between a change on the server and its
+    /// answer.
+    #[allow(dead_code)]
+    pub fn hold_answer_ending(&self, method: &str, end: &str) {
+        self.state
+            .lock()
+            .unwrap()
+            .held_answers
+            .push((method.to_owned(), end.to_owned()));
+    }
+
+    /// How many answers of the server wait at the proxy now.
+    #[allow(dead_code)]
+    pub fn answers_waiting(&self) -> usize {
+        self.state.lock().unwrap().answers_waiting
+    }
+
+    /// Passes on every request and every answer that waits, and holds no further one.
     pub fn release(&self) {
         {
             let mut state = self.state.lock().unwrap();
             state.held.clear();
             state.held_ending.clear();
+            state.held_answers.clear();
         }
         self.released.send_modify(|releases| *releases += 1);
     }
@@ -637,7 +662,7 @@ async fn serve(
     let (index, fault) = {
         let mut state = state.lock().unwrap();
         state.seen.push(Seen {
-            method,
+            method: method.clone(),
             path: path.clone(),
             body,
             answer: None,
@@ -700,6 +725,23 @@ async fn serve(
     upstream.read_to_end(&mut response).await?;
     if fault == Some(Fault::LoseAnswer) {
         return Ok(());
+    }
+    let answer_held = |state: &ProxyState| {
+        state
+            .held_answers
+            .iter()
+            .any(|(of, end)| *of == method && path.ends_with(end.as_str()))
+    };
+    if answer_held(&state.lock().unwrap()) {
+        state.lock().unwrap().answers_waiting += 1;
+        let mut open = true;
+        while open && answer_held(&state.lock().unwrap()) {
+            open = released.changed().await.is_ok();
+        }
+        state.lock().unwrap().answers_waiting -= 1;
+        if !open {
+            return Ok(());
+        }
     }
     let text = String::from_utf8_lossy(&response);
     let status = text
