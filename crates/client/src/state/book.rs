@@ -53,7 +53,11 @@ pub fn available(known: &UpdatesKnown) -> Option<Available> {
         UpdateState::Available(release) => Some(Available {
             version: release.version,
         }),
-        UpdateState::NotChecked | UpdateState::Current | UpdateState::Failed => None,
+        UpdateState::NotChecked
+        | UpdateState::Current
+        | UpdateState::Failed
+        | UpdateState::Expired
+        | UpdateState::UntrustedKeys => None,
     }
 }
 
@@ -72,6 +76,8 @@ pub enum CheckShown {
     },
     /// No check has succeeded.
     Failed,
+    Expired,
+    UntrustedKeys,
 }
 
 /// The section "Version" of the settings.
@@ -94,6 +100,8 @@ pub fn version_view(known: &UpdatesKnown) -> VersionView {
         (UpdateState::NotChecked, true) => CheckShown::NotChecked,
         (UpdateState::Current, true) => CheckShown::Current,
         (UpdateState::Failed, true) => CheckShown::Failed,
+        (UpdateState::Expired, true) => CheckShown::Expired,
+        (UpdateState::UntrustedKeys, true) => CheckShown::UntrustedKeys,
     };
     VersionView {
         build: known.build,

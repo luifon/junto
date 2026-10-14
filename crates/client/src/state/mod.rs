@@ -25,6 +25,7 @@ pub mod recording;
 pub mod search;
 mod searching;
 mod threads;
+mod update_install;
 pub mod view;
 
 pub use messages::AttachRefusal;
@@ -281,6 +282,7 @@ pub struct AppState {
     /// What the person did with the update notice, and a move of a server that failed
     /// (ADR 0780).
     book: book::BookState,
+    update_install: update_install::InstallState,
     /// What the window showed after the last change. Side effects follow a change of it.
     shown: Shown,
     /// The picture of the profile preset, and where a change of it stands.
@@ -551,6 +553,7 @@ impl AppState {
             account: account::AccountState::default(),
             linking: linking::LinkingState::default(),
             book: book::BookState::default(),
+            update_install: update_install::InstallState::new(),
             shown: Shown::default(),
             preset_picture: people::PresetPicture::default(),
             logos: logo::Logos::default(),

@@ -165,6 +165,7 @@ impl Shell {
     ) -> Option<AnyElement> {
         self.settings_closed();
         let update = view.update?;
+        let install = self.state.read(cx).supports_update_install();
         let colors = theme.colors;
         let ring = focus_ring(colors.terracotta_deep, theme.metrics.focus_ring);
         // The sentence of the line names no version: the name and the tooltip do.
@@ -195,6 +196,7 @@ impl Shell {
                 .cursor_pointer()
                 .focus_visible(move |style| style.shadow(ring))
                 .on_click(cx.listener(|this, _, window, cx| {
+                    this.state.update(cx, |state, cx| state.install_update(cx));
                     this.open_version_settings(window, cx);
                 }))
                 .child(icon(Icon::Download, 14.0, colors.cypress))
@@ -204,7 +206,7 @@ impl Shell {
                         .flex_none()
                         .font_weight(FontWeight::BOLD)
                         .underline()
-                        .child(txt::DETAILS),
+                        .child(if install { txt::UPDATE } else { txt::DETAILS }),
                 )
                 .into_any_element(),
         )
@@ -344,11 +346,52 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        parts.push(
-            sentence(txt::NO_INSTALL.into(), "version-no-install")
+        if self.state.read(cx).supports_update_install()
+            && matches!(
+                version.check,
+                crate::state::book::CheckShown::Available { .. }
+            )
+        {
+            let can_install = self.state.read(cx).can_install_update();
+            parts.push(
+                Button::new("install-update")
+                    .label(txt::INSTALL_UPDATE)
+                    .disabled(!can_install)
+                    .selector("install-update")
+                    .h(u(30.0))
+                    .px(u(12.0))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.state.update(cx, |state, cx| state.install_update(cx));
+                    }))
+                    .into_any_element(),
+            );
+            if let Some(status) = self
+                .state
+                .read(cx)
+                .update_install_status()
+                .map(str::to_owned)
+            {
+                parts.push(
+                    sentence(status.into(), "update-install-status")
+                        .mt(u(8.0))
+                        .into_any_element(),
+                );
+            }
+        } else {
+            parts.push(
+                sentence(
+                    self.state
+                        .read(cx)
+                        .update_install_status()
+                        .unwrap_or(txt::NO_INSTALL)
+                        .to_owned()
+                        .into(),
+                    "version-no-install",
+                )
                 .mt(u(8.0))
                 .into_any_element(),
-        );
+            );
+        }
         parts
     }
 

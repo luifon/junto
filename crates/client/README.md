@@ -56,7 +56,7 @@ Start a second development server on another port and with another name (`tools/
 - **Link a second device on one server.** In the second instance, with a data directory of its own, add the server and choose "I already have an account: link this device" in the dialog "Join a server". It shows a link code and the key of the device. In the first instance open "Your account", "Devices", "Link a new device", type the code, compare the key with the one of the second instance, and press "Approve". The second instance logs in by itself within 5 seconds.
 - **Link a device on all servers.** The settings (the gear beside the name) have "Devices". The first instance chooses "Link a new device to all my servers" and copies the offer text; the second chooses "Link this device to my servers", pastes the offer, and copies the request text back; the first pastes it, compares the fingerprint of both instances, and presses "Approve".
 - **Pictures.** The settings hold the picture of the profile preset, which a new account gets. A picture that a person set on a server is shown wherever the window shows that person.
-- **Version.** The settings state the version of the build. This version has no source of releases and installs nothing: the notice about a newer version is built and shown only in the tests and in `junto-screens`.
+- **Version.** The settings state the version of the build and whether a release source was configured at build time. A configured macOS bundle offers Update for a newer authenticated release, keeps the previous application for rollback, and asks you to quit and reopen after installation. A build without a source makes no update request.
 - **Recordings.** "Administration" has the page "Recordings" with the recordings of the shown workspace that the account may see. The development server has no recorder, so the list is empty there.
 
 ## Messages between two instances
@@ -395,3 +395,7 @@ tools/linux-container.sh cargo test -p junto-client --lib notify::linux::tests
 ```
 
 Application tests and the screenshot tool retain the in-memory notifier. A real desktop daemon's visual presentation and a person's portal interaction require separate manual checks; fake-service and headless tests do not establish those results.
+
+## macOS bundles and updates
+
+See [the macOS installation instructions](../../docs/client-macos.md) and [release tooling](../../packaging/README.md). A configured bundle checks the build-time release source, verifies signed metadata and downloads, and installs only a newer bundle with the same code-signing identity. The update notice and Version settings offer the explicit install action; after success, quit and reopen Junto. Without a source, Version states that none is configured. Recovery verifies and restores the retained archive; the documented standalone command works even when the new executable cannot start. `--rollback-update` invokes the same checks from a working application and exits without a window.

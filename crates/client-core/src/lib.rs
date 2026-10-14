@@ -15,6 +15,8 @@ pub mod manager;
 pub mod model;
 pub mod paths;
 pub mod profile;
+pub mod release_configuration;
+pub mod releases;
 pub mod runtime;
 pub mod secret;
 pub mod settings;

@@ -57,6 +57,8 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Tests with PostgreSQL
         run: tools/with-test-postgres.sh cargo test --workspace --locked
+      - name: Packaging unit tests
+        run: python3 -m unittest discover -s packaging -p "test_*.py"
       - name: The committed API documents equal the generated ones
         run: |
           cargo run --locked -p junto-server --bin junto-openapi
@@ -103,7 +105,19 @@ jobs:
       - name: Tests that need no database
         run: |
           cargo test --locked -p junto-authz -p junto-protocol
-          cargo test --locked -p junto-client-core --lib --bins
+          cargo test --locked -p junto-client-core --lib --bins --test releases --test release_corrections --test release_review2 --test release_downloads --test update_archives --test release_tool
+      - name: Packaging unit tests
+        run: python3 -m unittest discover -s packaging -p "test_*.py"
+      - name: macOS signing and installation checks
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          temporary=$(mktemp -d)
+          trap 'rm -rf "$temporary"' EXIT
+          export TMPDIR="$temporary"
+          python3 packaging/check_signing.py
+          python3 packaging/check_update.py target/debug/junto-release
+          cargo clippy --locked -p junto-client-core --all-targets -- -D warnings
 
   licences:
     name: Licences of the Rust dependencies
