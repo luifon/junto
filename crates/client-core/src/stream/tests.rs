@@ -1158,6 +1158,7 @@ async fn the_call_of_the_account_is_read_with_its_requests_and_reported_to_the_c
     };
     rig.http.routes.lock().unwrap().own_call = Some(OwnCallState {
         inside: None,
+        meeting_grant: None,
         own: own.clone(),
         call: Call {
             id: call_id,
@@ -1607,6 +1608,7 @@ async fn a_new_session_reads_again_every_part_that_was_on_its_way() {
     let inside = participant(AccountId::generate());
     rig.http.routes.lock().unwrap().own_call = Some(OwnCallState {
         inside: None,
+        meeting_grant: None,
         own: own.clone(),
         call: Call {
             id: call_id,
@@ -1669,6 +1671,7 @@ async fn the_call_of_the_account_is_read_again_when_the_server_has_seen_its_devi
     let answer = |participants: Vec<junto_protocol::call::CallParticipant>,
                   entry_requests: Vec<EntryRequest>| OwnCallState {
         inside: None,
+        meeting_grant: None,
         own: own.clone(),
         call: Call {
             id: call_id,
@@ -1766,6 +1769,7 @@ async fn a_read_of_the_own_call_that_failed_is_sent_again_while_the_account_is_i
     let inside = participant(AccountId::generate());
     rig.http.routes.lock().unwrap().own_call = Some(OwnCallState {
         inside: None,
+        meeting_grant: None,
         own: own.clone(),
         call: Call {
             id: call_id,

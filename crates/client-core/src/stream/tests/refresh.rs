@@ -59,6 +59,7 @@ async fn a_refresh_cancels_an_own_call_read_from_before_its_snapshot() {
     assert_eq!(cursor.position, 60);
     rig.http.routes.lock().unwrap().own_call = Some(OwnCallState {
         inside: None,
+        meeting_grant: None,
         own: own.clone(),
         call: Call {
             id: own.call_id,
@@ -153,6 +154,7 @@ async fn an_own_call_read_keeps_its_blocks_over_older_and_later_delivery_of_incl
         let mut routes = rig.http.routes.lock().unwrap();
         routes.own_call = Some(OwnCallState {
             inside: None,
+            meeting_grant: None,
             own: own.clone(),
             call: Call {
                 id: call_id,
@@ -278,6 +280,7 @@ async fn what_an_own_call_answer_says_of_the_seat_is_ordered_with_the_events() {
     let answer =
         |inside: bool, participants: Vec<junto_protocol::call::CallParticipant>| OwnCallState {
             inside: Some(inside),
+            meeting_grant: None,
             own: own.clone(),
             call: Call {
                 id: call_id,
@@ -403,6 +406,7 @@ async fn events_newer_than_a_held_own_call_answer_survive_its_installation() {
         });
         routes.own_call = Some(OwnCallState {
             inside: None,
+            meeting_grant: None,
             own: own.clone(),
             call: Call {
                 id: call_id,
@@ -481,6 +485,7 @@ async fn an_own_call_answer_without_a_position_is_used_as_before_the_positions()
         routes.own_call_unplaced = true;
         routes.own_call = Some(OwnCallState {
             inside: None,
+            meeting_grant: None,
             own: own.clone(),
             call: Call {
                 id: call_id,
@@ -576,6 +581,7 @@ async fn an_included_leave_removes_the_speaking_mark_that_an_own_call_answer_kep
         let mut routes = rig.http.routes.lock().unwrap();
         routes.own_call = Some(OwnCallState {
             inside: None,
+            meeting_grant: None,
             own,
             call: Call {
                 id: call_id,

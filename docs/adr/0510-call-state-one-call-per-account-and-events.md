@@ -35,6 +35,7 @@ Who is in a call:
 One call per account, and the transfer rule:
 
 - A request to enter by the device that holds the place returns a new token for the same identity. It does not move the end of a seat that has not connected; a request after that end is a new entry (ADR 0517).
+- A request that names the seat that it renews (`renews`) gets a token for that seat or `seat_ended`, and makes, ends and takes no seat (ADR 0520).
 - A request to enter the same call by another device of the account moves the call to that device: the earlier identity is no longer allowed, the account keeps its place, and the lock and the user limit do not apply. Others see the person leave and join.
 - A request to enter another call ends the membership in the first call. The lock and the user limit of the new place apply.
 - The earlier identity is removed from its room by the admission check.

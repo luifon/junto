@@ -65,6 +65,7 @@ pub struct Entered {
     pub entry_requests: Vec<EntryRequest>,
     pub microphone_block: Option<MicrophoneBlock>,
     pub sound_block: Option<SoundBlock>,
+    pub meeting_grant: Option<bool>,
 }
 
 impl Entered {
@@ -80,6 +81,7 @@ impl Entered {
         let (microphone_block, sound_block) =
             store::blocks_at_join(&mut *connection, &call, account_id).await?;
         Ok(Self {
+            meeting_grant: store::meeting_grant(&mut *connection, &call, account_id).await?,
             publishing: store::publishing_at_join(&mut *connection, &call, account_id).await?,
             entry_requests: if shows_requests {
                 store::entry_requests(&mut *connection, now, &call, account_id).await?
@@ -129,6 +131,7 @@ impl Entered {
             entry_requests: self.entry_requests,
             microphone_block: self.microphone_block,
             sound_block: self.sound_block,
+            meeting_grant: self.meeting_grant,
         })
     }
 }
@@ -151,6 +154,14 @@ pub fn not_in_call() -> ApiError {
     ApiError::new(ErrorCode::NotInCall, "the caller is not in this call")
 }
 
+pub fn seat_ended(left: Option<LeaveReason>) -> ApiError {
+    ApiError::new(
+        ErrorCode::SeatEnded,
+        "the seat that the request renews cannot be used any longer; no seat was given",
+    )
+    .left(left)
+}
+
 /// Lets the caller into the call at `place`. The caller must already have passed the
 /// permission check for the place.
 ///
@@ -159,6 +170,9 @@ pub fn not_in_call() -> ApiError {
 /// changes, so the earlier device is no longer allowed in the room. A seat belongs to one
 /// session: only the session that got it gets a token for it again, and another session of
 /// the same device gets a new seat.
+///
+/// With `renews`, the request gives a token for that seat of the caller or `seat_ended`; it
+/// makes, ends and takes no seat (ADR 0520).
 #[allow(clippy::too_many_arguments)]
 pub async fn enter(
     connection: &mut PgConnection,
@@ -169,6 +183,7 @@ pub async fn enter(
     user_limit: Option<u32>,
     fresh: &Fresh,
     pass: Pass,
+    renews: Option<&str>,
 ) -> ApiResult<Entered> {
     let limits = &app.config.limits.calls;
     let usable_until = now + limits.token_lifetime + limits.token_tolerance;
@@ -177,6 +192,17 @@ pub async fn enter(
     app.calls.admitting_into(&call.room)?;
     app.calls.mark(call.room.as_str());
     let existing = store::member_of(&mut *connection, access.account_id, true).await?;
+    if let Some(renewed) = renews {
+        renewable(
+            &mut *connection,
+            now,
+            access,
+            &call,
+            existing.as_ref(),
+            renewed,
+        )
+        .await?;
+    }
 
     let mut identity = fresh.identity(access.account_id);
     let mut left = None;
@@ -295,6 +321,48 @@ pub async fn enter(
     }
 
     Entered::read(connection, now, call, access.account_id, identity, true).await
+}
+
+/// Refuses a request that renews the seat `renewed` unless the caller holds that seat in
+/// `call` with the device and the session of the request, and the seat is usable. The
+/// refusal states why: the seat ended by a move (`moved`), another seat of the account
+/// exists (`switched`), the time of the token of the seat ended without a connection
+/// (`never_connected`), or the reason with which the seat ended.
+async fn renewable(
+    connection: &mut PgConnection,
+    now: OffsetDateTime,
+    access: &Access,
+    call: &CallRow,
+    existing: Option<&store::MemberRow>,
+    renewed: &str,
+) -> ApiResult<()> {
+    match existing {
+        Some(member)
+            if member.identity == renewed
+                && member.call_id == call.id
+                && member.device_id == access.device_id
+                && member.session_id == access.session_id =>
+        {
+            if member.connected_at.is_some() || now < member.usable_until {
+                Ok(())
+            } else {
+                Err(seat_ended(Some(LeaveReason::NeverConnected)))
+            }
+        }
+        Some(_) => {
+            let ended = store::seat_end(connection, access.account_id, renewed).await?;
+            let moved = ended == Some(LeaveReason::Moved);
+            Err(seat_ended(Some(if moved {
+                LeaveReason::Moved
+            } else {
+                LeaveReason::Switched
+            })))
+        }
+        None => {
+            let ended = store::seat_end(connection, access.account_id, renewed).await?;
+            Err(seat_ended(ended))
+        }
+    }
 }
 
 /// The account is in the call: an invitation of it into this call is accepted, and a

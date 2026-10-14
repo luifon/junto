@@ -101,6 +101,7 @@ fn fixture() -> Fixture {
         token_expires_at: OffsetDateTime::UNIX_EPOCH,
         identity: "seat".into(),
         entry_requests: vec![],
+        meeting_grant: None,
         microphone_block: None,
         sound_block: None,
     };

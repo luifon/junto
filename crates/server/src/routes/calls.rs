@@ -7,10 +7,10 @@ use axum::http::StatusCode;
 use junto_authz::{ChannelScope, Participation, Request, WorkspacePermission};
 use junto_protocol::audit::AuditEvent;
 use junto_protocol::call::{
-    AnswerEntryRequest, CallInvitation, CallJoin, CallMove, CallPlace, ChannelCall, DirectMute,
-    EntryOutcome, EntryRequest, InvitationOutcome, InviteToCall, LeaveCallQuery, LeaveReason,
-    MeetingEnd, MoveOutcome, MoveParticipant, MuteDirectConversation, OwnCallState, OwnCallView,
-    ReportCallState, ReportScreenShare, ReportSpeaking, UpdateCallSettings,
+    AnswerEntryRequest, CallInvitation, CallJoin, CallJoinQuery, CallMove, CallPlace, ChannelCall,
+    DirectMute, EntryOutcome, EntryRequest, InvitationOutcome, InviteToCall, LeaveCallQuery,
+    LeaveReason, MeetingEnd, MoveOutcome, MoveParticipant, MuteDirectConversation, OwnCallState,
+    OwnCallView, ReportCallState, ReportScreenShare, ReportSpeaking, UpdateCallSettings,
 };
 use junto_protocol::events::{Cursor, Event};
 use junto_protocol::ids::{AccountId, CallInvitationId, CallMoveId, ChannelId, EntryRequestId};
@@ -199,6 +199,7 @@ pub async fn get_own_call(
             cursor,
             call: Some(OwnCallState {
                 inside: Some(store::is_inside(connection, call.id, access.account_id).await?),
+                meeting_grant: store::meeting_grant(connection, &call, access.account_id).await?,
                 own: member.own_call(&call),
                 entry_requests: store::entry_requests(connection, now, &call, access.account_id)
                     .await?,
@@ -264,13 +265,15 @@ pub async fn report_call_state(
         let (call, member) = own(connection, &access).await?;
         if (member.self_muted, member.self_deafened) != (body.muted, body.deafened) {
             sqlx::query(
-                "update call_members set self_muted = $3, self_deafened = $4
+                "update call_members set self_muted = $3, self_deafened = $4,
+                     meeting_grant = meeting_grant and not ($5 and not $3)
                  where call_id = $1 and account_id = $2",
             )
             .bind(call.id)
             .bind(access.account_id)
             .bind(body.muted)
             .bind(body.deafened)
+            .bind(member.self_muted)
             .execute(&mut *connection)
             .await?;
             store::announce_participant(connection, now, &call, access.account_id).await?;
@@ -586,7 +589,7 @@ pub(crate) async fn update_call_settings_in(
     post,
     path = "/api/v1/channels/{channel_id}/call/join",
     tag = "calls",
-    params(("channel_id" = ChannelId, Path)),
+    params(("channel_id" = ChannelId, Path), CallJoinQuery),
     security(("session" = [])),
     responses((status = 200, body = CallJoin), ApiError)
 )]
@@ -594,6 +597,7 @@ pub async fn join_channel_call(
     State(app): State<AppState>,
     bearer: Bearer,
     ApiPath(channel_id): ApiPath<ChannelId>,
+    ApiQuery(query): ApiQuery<CallJoinQuery>,
 ) -> ApiResult<Json<CallJoin>> {
     let now = app.now();
     proof::limit(&app.calls.actions, bearer.0, now)?;
@@ -603,10 +607,11 @@ pub async fn join_channel_call(
         let voice = voice(connection, &access, channel_id).await?;
         app.calls.admitting()?;
         let limit = voice.record.channel.user_limit;
-        let place = voice.place;
-        let none = Pass::None;
-        let entered =
-            entry::enter(connection, &app, now, &access, place, limit, &fresh, none).await?;
+        let (place, none, renews) = (voice.place, Pass::None, query.renews.as_deref());
+        let entered = entry::enter(
+            connection, &app, now, &access, place, limit, &fresh, none, renews,
+        )
+        .await?;
         Ok((entered, access.account_id))
     })?;
     let media = app.calls.admitting()?.clone();
@@ -1152,8 +1157,10 @@ pub async fn accept_call_invitation(
         }
         app.calls.admitting()?;
         let (place, invited) = (call.place, Pass::Invitation);
-        let entered =
-            entry::enter(connection, &app, now, &access, place, None, &fresh, invited).await?;
+        let entered = entry::enter(
+            connection, &app, now, &access, place, None, &fresh, invited, None,
+        )
+        .await?;
         Ok((entered, access.account_id))
     })?;
     let media = app.calls.admitting()?.clone();
@@ -1688,6 +1695,21 @@ async fn remove_block(
         if removed.rows_affected() == 0 {
             return Err(ApiError::not_found());
         }
+        let grants = block == Block::Microphone
+            && call
+                .meeting
+                .as_ref()
+                .is_some_and(|meeting| meeting.presenter != account_id);
+        if grants {
+            sqlx::query(
+                "update call_members set meeting_grant = true
+                 where call_id = $1 and account_id = $2",
+            )
+            .bind(call.id)
+            .bind(account_id)
+            .execute(&mut *connection)
+            .await?;
+        }
         app.calls.mark(call.room.as_str());
         let unblocked = match block {
             Block::Microphone => AuditEvent::CallMicrophoneUnblocked { account_id },
@@ -1878,7 +1900,7 @@ async fn direct_place(
     post,
     path = "/api/v1/direct-calls/{account_id}/join",
     tag = "calls",
-    params(("account_id" = AccountId, Path)),
+    params(("account_id" = AccountId, Path), CallJoinQuery),
     security(("session" = [])),
     responses((status = 200, body = CallJoin), ApiError)
 )]
@@ -1886,6 +1908,7 @@ pub async fn join_direct_call(
     State(app): State<AppState>,
     bearer: Bearer,
     ApiPath(account_id): ApiPath<AccountId>,
+    ApiQuery(query): ApiQuery<CallJoinQuery>,
 ) -> ApiResult<Json<CallJoin>> {
     let now = app.now();
     proof::limit(&app.calls.actions, bearer.0, now)?;
@@ -1894,9 +1917,11 @@ pub async fn join_direct_call(
         let access = Access::open(connection, &bearer, now).await?;
         let place = direct_place(connection, &access, account_id).await?;
         app.calls.admitting()?;
-        let none = Pass::None;
-        let entered =
-            entry::enter(connection, &app, now, &access, place, None, &fresh, none).await?;
+        let (none, renews) = (Pass::None, query.renews.as_deref());
+        let entered = entry::enter(
+            connection, &app, now, &access, place, None, &fresh, none, renews,
+        )
+        .await?;
         Ok((entered, access.account_id))
     })?;
     let media = app.calls.admitting()?.clone();
