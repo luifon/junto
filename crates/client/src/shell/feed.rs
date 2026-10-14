@@ -15,7 +15,9 @@ use gpui::{
 };
 use gpui_base::{Scrollbar, ScrollbarMode};
 use junto_client_core::model::{PlaceId, ReadFailure, SendState};
-use junto_client_core::protocol::ids::{AttachmentId, MessageId, ServerId};
+#[cfg(feature = "test-support")]
+use junto_client_core::protocol::ids::AttachmentId;
+use junto_client_core::protocol::ids::{MessageId, ServerId};
 use junto_client_core::protocol::message::{
     Attachment, Block, Document, Inline, Mark, Message, Reaction,
 };
