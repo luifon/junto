@@ -2,7 +2,7 @@
 //! channels (ADR 0511) and meeting mode (ADR 0505, ADR 0512).
 
 use junto_client_core::protocol::call::{BlockReason, CallPlace};
-use junto_media::calls::{Outcome, Phase};
+use junto_media::calls::{Outcome, Phase, Unused};
 use junto_media::engine::ShareState;
 use junto_media::share::{CaptureRequest, PictureSource, ShareQuality, SoundChoice};
 
@@ -225,4 +225,84 @@ async fn a_person_whom_the_presenter_allows_to_speak_opens_the_own_microphone() 
         .await;
     assert!(!view.muted);
     ann.until_heard_afresh(&ben).await;
+}
+
+/// ADR 0788: a share that was asked for at one seat does not start at another.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn a_share_asked_for_in_one_call_does_not_start_in_the_next() {
+    let _media = MEDIA_SERVER.read().await;
+    let (ann, ben) = (Person::new(440.0), Person::new(880.0));
+    let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+    let ben_at = room.member(&ann_at, &ben, "Ben").await;
+    let ben_id = account(&ben_at);
+    let focus = room.second_voice(&ann_at, "Focus").await;
+    let CallPlace::Channel {
+        channel_id: focus_id,
+        ..
+    } = focus.place
+    else {
+        panic!("a voice channel");
+    };
+    // Ann is in the call of the destination and gets what is shared there.
+    ann.enter(focus).await;
+    ben.enter(room.target).await;
+    let asked_at = ben.calls.seat().unwrap();
+    let request = || CaptureRequest {
+        picture: PictureSource::Display(1),
+        sound: SoundChoice::System,
+        quality: ShareQuality::default(),
+    };
+
+    // Ann moves Ben. The share that Ben chose in the first call is confirmed after it.
+    ann_at
+        .api()
+        .move_participant(room.voice, ben_id, focus_id)
+        .await
+        .unwrap();
+    ben.until("Ben is in the call of the destination", |view| {
+        view.call
+            .as_ref()
+            .is_some_and(|call| call.target == focus && call.phase == Phase::Connected)
+    })
+    .await;
+    ben.calls.start_share_in(&asked_at, request());
+    let view = ben
+        .until("the share has its result", |view| {
+            view.unused.is_some()
+                || view
+                    .call
+                    .as_ref()
+                    .is_some_and(|call| call.share != ShareState::Off)
+        })
+        .await;
+    assert_eq!(
+        view.call.unwrap().share,
+        ShareState::Off,
+        "the share of the first call started in the call of the destination"
+    );
+    assert_eq!(view.unused, Some(Unused::Share));
+    ben.calls.dismiss_unused();
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    assert_eq!(ben.calls.view().call.unwrap().share, ShareState::Off);
+    assert!(ben.capture.started().is_empty());
+    assert!(ann.calls.view().call.unwrap().shares.is_empty());
+
+    // A share that is asked for at the seat that Ben holds starts.
+    let held = ben.calls.seat().unwrap();
+    assert_ne!(held, asked_at);
+    ben.calls.start_share_in(&held, request());
+    ben.until("the share runs", |view| {
+        view.call
+            .as_ref()
+            .is_some_and(|call| matches!(call.share, ShareState::Running(_)))
+    })
+    .await;
+    ann.until("Ann sees the share", |view| {
+        view.call
+            .as_ref()
+            .is_some_and(|call| call.shares.len() == 1)
+    })
+    .await;
+    assert_eq!(ben.calls.view().unused, None);
 }

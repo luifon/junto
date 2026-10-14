@@ -225,6 +225,16 @@ impl Shell {
             header
         };
         body = body.child(header);
+        // What the main window tells about the call is told here too: the person can use
+        // this window alone (ADR 0772).
+        let meeting = view
+            .workspace()
+            .and_then(|workspace| workspace.call.as_ref())
+            .and_then(|panel| panel.room.meeting.as_ref())
+            .map(|meeting| self.render_meeting_bar(meeting, &theme, cx));
+        body = body
+            .children(meeting)
+            .children(self.render_call_notices(&view, cx));
         if let Some(workspace) = view.workspace()
             && let (Some(channel), Some(panel)) = (&workspace.channel, &workspace.call)
         {
@@ -281,9 +291,15 @@ impl Shell {
                     }
                 }
                 .selector("detached-microphone")
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.state.update(cx, |state, _| state.toggle_microphone())
-                })),
+                .on_click({
+                    // The control does what it shows now, also when the call
+                    // is another one at the click (ADR 0788).
+                    let action = view.controls.microphone_action.clone();
+                    cx.listener(move |this, _, _, cx| {
+                        this.state
+                            .update(cx, |state, _| state.use_microphone(&action));
+                    })
+                }),
             )
             .child(
                 Button::new("detached-sound")
@@ -303,9 +319,12 @@ impl Shell {
                         crate::assets::Icon::Phones
                     })
                     .selector("detached-sound")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.state.update(cx, |state, _| state.toggle_sound())
-                    })),
+                    .on_click({
+                        let off = !view.controls.sound_off;
+                        cx.listener(move |this, _, _, cx| {
+                            this.state.update(cx, |state, _| state.set_sound_off(off));
+                        })
+                    }),
             );
         let controls = if let Some(panel) = view.workspace().and_then(|w| w.call.as_ref()) {
             controls.children(self.render_room_controls(&panel.room, &theme, cx))
@@ -313,6 +332,9 @@ impl Shell {
             controls
         };
         body = body.child(controls);
+        if let Some(warning) = &view.controls.warning {
+            body = body.child(self.render_sound_warning(warning, &theme, cx));
+        }
         if let Some(strip) = &view.call {
             body = body.child(self.render_call_strip(strip, &theme, cx));
         }

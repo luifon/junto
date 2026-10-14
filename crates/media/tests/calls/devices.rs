@@ -3,6 +3,7 @@
 
 use junto_media::audio::synthetic::Tone;
 use junto_media::audio::{AudioError, DeviceId};
+use junto_media::calls::MicrophoneClosed;
 use junto_media::engine::{MicrophoneState, OutputState};
 use junto_media::permission::{FixedPermission, MicrophoneAccess};
 
@@ -90,7 +91,9 @@ async fn the_chosen_devices_are_opened_and_a_missing_one_gives_way_to_the_defaul
     .await;
     ann.until_heard_afresh(&ben).await;
 
-    // The open microphone is disconnected: the client opens the default again.
+    // The open microphone is disconnected: the client opens the default again, and sends
+    // nothing from it. The person did not choose that microphone for the call: the
+    // setting of the person is closed, and the person is told why (ADR 0794).
     voice.input_device = id("desk");
     ann.calls.set_voice(voice);
     ben.until_level(660.0, "the desk microphone again", |level| {
@@ -98,20 +101,36 @@ async fn the_chosen_devices_are_opened_and_a_missing_one_gives_way_to_the_defaul
     })
     .await;
     let opened = ann.host.opened_inputs().len();
+    ben.host.clear_played();
     ann.host.remove_input("desk");
     ann.host.break_input(AudioError::NoDevice);
     until("the default microphone is opened again", || {
         ann.host.opened_inputs().len() == opened + 1
     })
     .await;
+    let view = ann
+        .until("the setting of Ann is closed", |view| view.muted)
+        .await;
+    assert_eq!(view.closed, Some(MicrophoneClosed::DeviceChanged));
+    assert_eq!(
+        view.call.unwrap().input_device.unwrap().name,
+        "Tone microphone"
+    );
+    // Nothing of the default microphone was sent, from the failure on.
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let (played, rate) = ben.host.played_since_clear();
+    let heard = junto_media::audio::synthetic::tone_level(&played, rate, AFTER_HZ);
+    assert!(
+        heard < ABSENT_DBFS,
+        "the default microphone was sent without an action of the person: {heard} dBFS"
+    );
+    // Ann opens the microphone: the default microphone is the one of the call now.
+    ann.calls.dismiss_closed();
+    ann.calls.set_muted(false);
     ben.until_level(AFTER_HZ, "the tone of the default microphone", |level| {
         level > HEARD_DBFS
     })
     .await;
-    assert_eq!(
-        ann.calls.view().call.unwrap().input_device.unwrap().name,
-        "Tone microphone"
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -294,4 +313,86 @@ async fn the_first_use_of_the_microphone_asks_the_system_once() {
     assert_eq!(cal.permission.asked(), 1);
     assert!(cal.host.opened_inputs().is_empty());
     cal.until_heard(&ann).await;
+}
+
+/// ADR 0794: a microphone that takes the place of the microphone of the call sends nothing
+/// by itself, also when the chosen one is gone at a new media connection.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn a_microphone_that_is_gone_at_a_new_connection_is_not_replaced_without_the_person() {
+    let _media = MEDIA_SERVER.read().await;
+    let (ann, ben) = (Person::new(440.0), Person::new(880.0));
+    let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+    room.member(&ann_at, &ben, "Ben").await;
+    ann.host
+        .add_input("desk", "Desk microphone", Tone::new(660.0));
+    let mut voice = plain_voice();
+    voice.input_device = id("desk");
+    ann.calls.set_voice(voice);
+    ann.enter(room.target).await;
+    ben.enter(room.target).await;
+    ben.until_level(660.0, "the tone of the desk microphone", |level| {
+        level > HEARD_DBFS
+    })
+    .await;
+
+    // The media connection ends, and the desk microphone is gone when the next one is
+    // made: the default microphone, with the tone of 440 Hz, is opened in its place.
+    ben.host.clear_played();
+    ann.host.remove_input("desk");
+    ann.calls.simulate_connection_loss();
+    let view = ann
+        .until("the setting of Ann is closed", |view| {
+            view.muted
+                && view
+                    .call
+                    .as_ref()
+                    .is_some_and(|call| call.phase == junto_media::calls::Phase::Connected)
+        })
+        .await;
+    assert_eq!(view.closed, Some(MicrophoneClosed::DeviceChanged));
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let (played, rate) = ben.host.played_since_clear();
+    let heard = junto_media::audio::synthetic::tone_level(&played, rate, ann.hz);
+    assert!(
+        heard < ABSENT_DBFS,
+        "the default microphone was sent without an action of the person: {heard} dBFS"
+    );
+    ann.calls.set_muted(false);
+    ben.until_heard(&ann).await;
+}
+
+/// ADR 0794: a chosen microphone that was absent when the call began and is there at a new
+/// media connection is the choice of the person. The call sends from it, and the setting
+/// of the person stays open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn a_chosen_microphone_that_is_there_again_is_used_and_the_setting_stays_open() {
+    let _media = MEDIA_SERVER.read().await;
+    let (ann, ben) = (Person::new(440.0), Person::new(880.0));
+    let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+    room.member(&ann_at, &ben, "Ben").await;
+    // The desk microphone is chosen and is not connected: the default one is opened.
+    let mut voice = plain_voice();
+    voice.input_device = id("desk");
+    ann.calls.set_voice(voice);
+    ann.enter(room.target).await;
+    ben.enter(room.target).await;
+    ben.until_heard(&ann).await;
+
+    // The desk microphone is connected, and a new media connection opens it.
+    ann.host
+        .add_input("desk", "Desk microphone", Tone::new(660.0));
+    ben.host.clear_played();
+    ann.calls.simulate_connection_loss();
+    ben.until_level(660.0, "the tone of the desk microphone", |level| {
+        level > HEARD_DBFS
+    })
+    .await;
+    let view = ann.calls.view();
+    assert!(
+        !view.muted,
+        "the microphone that the person chose closed the setting"
+    );
+    assert_eq!(view.closed, None);
 }

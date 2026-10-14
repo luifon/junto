@@ -3,6 +3,7 @@
 //! about the watched share, its picture, and the strip of the people.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 
 use gpui::{
@@ -11,6 +12,7 @@ use gpui::{
     StyledText, Window, canvas, div, img, prelude::FluentBuilder,
 };
 use junto_client_core::protocol::call::ShareAudio;
+use junto_media::calls::{ActiveCall, CallsView, Seat};
 use junto_media::engine::ShareId;
 use junto_media::share::picture::PictureFrame;
 use junto_media::share::{
@@ -59,10 +61,13 @@ pub(crate) struct SharePicker {
     scroll: ScrollHandle,
     /// Counts the reads of the lists. The answer of an earlier read is not used.
     read: u64,
+    /// The call and the seat that the dialog was opened for. What the person chooses in it
+    /// is shared there and nowhere else (ADR 0788).
+    seat: Seat,
 }
 
 impl SharePicker {
-    fn new(access: ScreenAccess, listed: Listed, read: u64) -> Self {
+    fn new(access: ScreenAccess, listed: Listed, read: u64, seat: Seat) -> Self {
         Self {
             access,
             listed,
@@ -71,7 +76,13 @@ impl SharePicker {
             application: None,
             scroll: ScrollHandle::new(),
             read,
+            seat,
         }
+    }
+
+    /// True while the device is in the call, at the seat, that the dialog was opened for.
+    pub(crate) fn belongs_to(&self, calls: &CallsView) -> bool {
+        calls.call.as_ref().map(ActiveCall::seat).as_ref() == Some(&self.seat)
     }
 
     /// Takes the picture that the person picked. The sound of one application names an
@@ -159,6 +170,41 @@ pub(crate) struct ShownPictures {
     pub small: HashMap<ShareId, (Arc<PictureFrame>, Arc<RenderImage>)>,
 }
 
+/// Waits until one of the three sources of pictures has a newer one, and returns which
+/// have. Absent when a source has ended: the calls are gone.
+async fn newer_pictures<E>(
+    main: impl Future<Output = Result<(), E>>,
+    small: impl Future<Output = Result<(), E>>,
+    cameras: impl Future<Output = Result<(), E>>,
+) -> Option<[bool; 3]> {
+    use std::task::Poll;
+    let (mut main, mut small, mut cameras) = (
+        std::pin::pin!(main),
+        std::pin::pin!(small),
+        std::pin::pin!(cameras),
+    );
+    std::future::poll_fn(|cx| {
+        let polled = [
+            main.as_mut().poll(cx),
+            small.as_mut().poll(cx),
+            cameras.as_mut().poll(cx),
+        ];
+        if polled
+            .iter()
+            .any(|source| matches!(source, Poll::Ready(Err(_))))
+        {
+            return Poll::Ready(None);
+        }
+        let newer = polled.map(|source| source.is_ready());
+        if newer.contains(&true) {
+            Poll::Ready(Some(newer))
+        } else {
+            Poll::Pending
+        }
+    })
+    .await
+}
+
 /// A picture of the media engine as an image of the window.
 pub(crate) fn render_image(frame: &PictureFrame) -> Option<Arc<RenderImage>> {
     let buffer = image::RgbaImage::from_raw(frame.width, frame.height, frame.bgra.to_vec())?;
@@ -166,71 +212,116 @@ pub(crate) fn render_image(frame: &PictureFrame) -> Option<Arc<RenderImage>> {
 }
 
 impl Shell {
-    /// Follows the pictures of the call of this device. An image that is replaced is
-    /// released: the window keeps each image that it drew until it is told otherwise.
-    pub(crate) fn follow_pictures(&mut self, cx: &mut Context<Self>) {
+    /// Follows the pictures of the call of this device: the watched share, the small
+    /// pictures of the shares and the cameras. A picture that arrives asks for the next
+    /// frame of the display, and that frame takes the newest picture of each source that
+    /// has a new one. The pictures of all sources together cause at most one drawing per
+    /// frame, and a picture that a newer one replaced before the frame is not drawn
+    /// (ADR 0793). An image that is replaced is released: the window keeps each image
+    /// that it drew until it is told otherwise.
+    pub(crate) fn follow_pictures(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let calls = self.state.read(cx).calls().clone();
-        let mut main = calls.main_picture();
-        let follow_main = cx.spawn(async move |this, cx| {
-            while main.changed().await.is_ok() {
-                let picture = main.borrow_and_update().clone();
-                if this
-                    .update(cx, |this, cx| {
-                        if this.draws_call(cx) {
-                            let shown = picture.and_then(|picture| {
-                                Some((picture.share, render_image(&picture.frame)?))
-                            });
-                            this.show_main(shown, cx);
-                        }
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        });
-        let mut small = calls.small_pictures();
-        let follow_small = cx.spawn(async move |this, cx| {
-            while small.changed().await.is_ok() {
-                let pictures = small.borrow_and_update().clone();
-                if this
-                    .update(cx, |this, cx| {
-                        if this.draws_call(cx) {
-                            this.show_small(&pictures, cx);
-                        }
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        });
-        let mut cameras = calls.camera_pictures();
+        let (mut main, mut small, mut cameras) = (
+            calls.main_picture(),
+            calls.small_pictures(),
+            calls.camera_pictures(),
+        );
         let software_video = self.software_video;
-        let follow_cameras = cx.spawn(async move |this, cx| {
+        let follow = cx.spawn_in(window, async move |this, cx| {
+            // Without a graphics processor the cameras are taken at most once in 200 ms,
+            // whatever the shares do: after a take the cameras rest for that time, and
+            // the pictures of the shares are taken as they arrive.
+            let mut rest = None;
             loop {
-                if software_video {
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_millis(200))
-                        .await;
-                }
-                let pictures = cameras.borrow_and_update().clone();
-                if this
-                    .update(cx, |this, cx| {
-                        if this.draws_call(cx) {
-                            this.show_cameras(&pictures, cx);
+                let cameras_newer = async {
+                    match rest.as_mut() {
+                        Some(rest) => {
+                            rest.await;
+                            Ok(())
                         }
-                    })
-                    .is_err()
-                {
+                        None => cameras.changed().await,
+                    }
+                };
+                let Some(mut sources) =
+                    newer_pictures(main.changed(), small.changed(), cameras_newer).await
+                else {
                     break;
+                };
+                if sources[2] {
+                    if rest.take().is_some() {
+                        // The rest has ended. A picture of a camera that arrived in it is
+                        // found in the next turn.
+                        sources[2] = false;
+                    } else if software_video {
+                        rest = Some(
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(200)),
+                        );
+                    }
                 }
-                if cameras.changed().await.is_err() {
+                if sources == [false; 3] {
+                    continue;
+                }
+                let (taken, frame) = futures_channel::oneshot::channel::<()>();
+                let asked = this.update_in(cx, |this, window, cx| {
+                    for (pending, newer) in this.pictures_pending.iter_mut().zip(sources) {
+                        *pending |= newer;
+                    }
+                    let shell = cx.entity().downgrade();
+                    window.on_next_frame(move |_, cx| {
+                        let _ = shell.update(cx, |this, cx| this.take_pictures(cx));
+                        let _ = taken.send(());
+                    });
+                });
+                // Until the frame has taken the pictures, further ones ask for nothing.
+                if asked.is_err() || frame.await.is_err() {
                     break;
                 }
             }
         });
-        self.picture_tasks = vec![follow_main, follow_small, follow_cameras];
+        self.picture_tasks = vec![follow];
+    }
+
+    /// Takes the newest picture of each source that has a new one, in the frame of the
+    /// display that was asked for.
+    fn take_pictures(&mut self, cx: &mut Context<Self>) {
+        let [main, small, cameras] = std::mem::take(&mut self.pictures_pending);
+        if !self.draws_call(cx) {
+            return;
+        }
+        let calls = self.state.read(cx).calls().clone();
+        let mut drawn = false;
+        if main {
+            let picture = calls.main_picture().borrow().clone();
+            let frame = picture.as_ref().map(|picture| picture.frame.clone());
+            // A frame that was asked for a picture that an earlier frame took draws nothing.
+            let same = match (&frame, &self.main_taken) {
+                (Some(now), Some(taken)) => Arc::ptr_eq(now, taken),
+                (None, None) => true,
+                _ => false,
+            };
+            if !same {
+                self.main_taken = frame;
+                let shown = picture
+                    .and_then(|picture| Some((picture.share, render_image(&picture.frame)?)));
+                self.show_main(shown, cx);
+                drawn = true;
+            }
+        }
+        if small {
+            let pictures = calls.small_pictures().borrow().clone();
+            drawn |= self.show_small(&pictures, cx);
+        }
+        if cameras {
+            let pictures = calls.camera_pictures().borrow().clone();
+            drawn |= self.show_cameras(&pictures, cx);
+        }
+        #[cfg(feature = "test-support")]
+        {
+            self.picture_draws += usize::from(drawn);
+        }
+        #[cfg(not(feature = "test-support"))]
+        let _ = drawn;
     }
 
     pub(crate) fn refresh_picture_owner(&mut self, cx: &mut Context<Self>) {
@@ -268,11 +359,12 @@ impl Shell {
         cx.notify();
     }
 
+    /// Returns whether the window holds other pictures than before, and is drawn for them.
     pub(crate) fn show_small(
         &mut self,
         pictures: &HashMap<ShareId, Arc<PictureFrame>>,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let mut released = Vec::new();
         self.pictures.small.retain(|share, (frame, image)| {
             let kept = pictures
@@ -283,26 +375,30 @@ impl Shell {
             }
             kept
         });
+        let mut changed = !released.is_empty();
         for (share, frame) in pictures {
             if !self.pictures.small.contains_key(share)
                 && let Some(image) = render_image(frame)
             {
                 self.pictures.small.insert(*share, (frame.clone(), image));
+                changed = true;
             }
         }
         for image in released {
             cx.drop_image(image, None);
         }
-        cx.notify();
+        if changed {
+            cx.notify();
+        }
+        changed
     }
 
     /// The share button of the strip of the call: it opens the dialog, or ends the share
     /// that runs.
     pub(crate) fn toggle_share(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The button does what it shows: the view that the window draws decides.
         let sharing = self
-            .state
-            .read(cx)
-            .view()
+            .drawn_view(cx)
             .call
             .is_some_and(|strip| strip.share != crate::state::view::OwnShare::Off);
         if sharing {
@@ -316,17 +412,30 @@ impl Shell {
     /// permission of the system the dialog tells how the person gives it, and nothing is
     /// read: the system would show its own question (ADR 0736).
     pub(crate) fn open_share_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The dialog belongs to the call that the window shows when the person opens it.
+        let Some(seat) = self.drawn_view(cx).controls.seat else {
+            return;
+        };
+        let now = self.state.read(cx).media_calls().call;
+        if now.as_ref().map(ActiveCall::seat).as_ref() != Some(&seat) {
+            // The device is in another call than the one that is drawn, or in none.
+            if now.is_some() {
+                let told = text::unused_action(junto_media::calls::Unused::Share);
+                self.state.update(cx, |state, cx| state.tell_call(told, cx));
+            }
+            return;
+        }
         let calls = self.state.read(cx).calls().clone();
         self.share_reads += 1;
         let read = self.share_reads;
         if !calls.can_share() {
             let listed = Listed::Failed(CaptureError::Unsupported);
-            let picker = SharePicker::new(ScreenAccess::NotAllowed, listed, read);
+            let picker = SharePicker::new(ScreenAccess::NotAllowed, listed, read, seat);
             self.open_layer(Layer::SharePicker(picker), window, cx);
             return;
         }
         let access = calls.screen_access();
-        let picker = SharePicker::new(access, Listed::Reading, read);
+        let picker = SharePicker::new(access, Listed::Reading, read, seat);
         self.open_layer(Layer::SharePicker(picker), window, cx);
         if access == ScreenAccess::NotAllowed {
             return;
@@ -409,13 +518,36 @@ impl Shell {
         }
     }
 
-    /// Starts the share that the dialog describes, and closes the dialog.
-    fn start_chosen_share(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((picture, sound)) = self.picker().and_then(|picker| picker.chosen()) else {
+    /// Starts the share that the dialog describes at the seat that the dialog was opened
+    /// for, and closes the dialog, as a click on its button does.
+    pub fn start_chosen_share(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(picker) = self.picker() else {
             return;
         };
+        let Some((picture, sound)) = picker.chosen() else {
+            return;
+        };
+        let seat = picker.seat.clone();
         self.state
-            .update(cx, |state, _| state.start_share(picture, sound));
+            .update(cx, |state, _| state.start_share(&seat, picture, sound));
+        self.close_layer(window, cx);
+    }
+
+    /// Closes the dialog of a share when the device is not in the call, at the seat, that
+    /// the dialog was opened for, and tells the person that nothing is shared.
+    pub(crate) fn drop_stale_share_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Layer::SharePicker(picker) = &self.layer else {
+            return;
+        };
+        // The calls as the state of the application has taken them: the state puts away
+        // what it told about a call when the call ends, and that is done by then.
+        let calls = self.state.read(cx).shown_calls();
+        if picker.belongs_to(&calls) {
+            return;
+        }
+        self.state.update(cx, |state, cx| {
+            state.tell_call(text::SHARE_DIALOG_CLOSED, cx)
+        });
         self.close_layer(window, cx);
     }
 
@@ -1358,6 +1490,11 @@ impl Shell {
 
 #[cfg(test)]
 mod tests {
+    use junto_client_core::protocol::call::CallPlace;
+    use junto_client_core::protocol::ids::{ChannelId, ServerId, WorkspaceId};
+    use junto_media::calls::{CallTarget, Phase};
+    use junto_media::engine::{MicrophoneState, OutputState, ShareState};
+    use junto_media::permission::MicrophoneAccess;
     use junto_media::share::{ApplicationSource, DisplaySource, WindowSource};
 
     use super::*;
@@ -1391,7 +1528,68 @@ mod tests {
                 name: "Player".to_owned(),
             }],
         };
-        SharePicker::new(ScreenAccess::Allowed, Listed::Sources(sources), 1)
+        SharePicker::new(ScreenAccess::Allowed, Listed::Sources(sources), 1, seat())
+    }
+
+    fn seat() -> Seat {
+        Seat {
+            target: CallTarget {
+                server_id: ServerId::generate(),
+                place: CallPlace::Channel {
+                    workspace_id: WorkspaceId::generate(),
+                    channel_id: ChannelId::generate(),
+                },
+            },
+            identity: "seat".to_owned(),
+        }
+    }
+
+    fn in_call(seat: &Seat) -> CallsView {
+        CallsView {
+            call: Some(ActiveCall {
+                camera: junto_media::camera::CameraState::Off,
+                cameras: Vec::new(),
+                target: seat.target,
+                identity: seat.identity.clone(),
+                phase: Phase::Connected,
+                interrupted_at: None,
+                microphone: MicrophoneState::Running,
+                access: MicrophoneAccess::Allowed,
+                input_device: None,
+                output: OutputState::Running,
+                output_device: None,
+                microphone_block: None,
+                sound_block: None,
+                share: ShareState::Off,
+                shares: Vec::new(),
+                watched: None,
+            }),
+            ..CallsView::default()
+        }
+    }
+
+    #[test]
+    fn a_share_dialog_belongs_to_the_call_and_the_seat_of_its_opening() {
+        let picker = picker();
+        let seat = picker.seat.clone();
+        assert!(picker.belongs_to(&in_call(&seat)));
+        // A token for the same seat keeps the dialog: the phase is another one.
+        let mut reconnecting = in_call(&seat);
+        reconnecting.call.as_mut().unwrap().phase = Phase::Reconnecting;
+        assert!(picker.belongs_to(&reconnecting));
+        // A moderator moved the person, or another window joined another call.
+        let moved = Seat {
+            target: self::seat().target,
+            ..seat.clone()
+        };
+        assert!(!picker.belongs_to(&in_call(&moved)));
+        // The same call at a new seat.
+        let replaced = Seat {
+            identity: "seat-2".to_owned(),
+            ..seat
+        };
+        assert!(!picker.belongs_to(&in_call(&replaced)));
+        assert!(!picker.belongs_to(&CallsView::default()));
     }
 
     #[test]
@@ -1512,7 +1710,12 @@ mod tests {
             ],
             ..ShareSources::default()
         };
-        let mut picker = SharePicker::new(ScreenAccess::AskOnStart, Listed::Sources(sources), 1);
+        let mut picker = SharePicker::new(
+            ScreenAccess::AskOnStart,
+            Listed::Sources(sources),
+            1,
+            seat(),
+        );
         picker.pick_picture(PictureSource::Portal(ShareKind::Window));
         assert!(picker.chosen().is_none());
         assert_eq!(

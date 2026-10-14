@@ -15,6 +15,11 @@ path = "src/bin/junto-cli/main.rs"
 name = "e2e"
 path = "tests/e2e/main.rs"
 
+[features]
+# For a test of a crate that reads the state of a server: the test publishes a state, a
+# notice and a state of the access flow without a server.
+test-support = []
+
 [dependencies]
 # Role order by the functions that the server uses (ADR 0791). No permission is computed
 # with it: the server states the permissions of the account (ADR 0790).

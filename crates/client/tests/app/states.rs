@@ -644,3 +644,46 @@ fn a_long_name_of_a_server_moves_no_control_of_a_question(cx: &mut TestAppContex
 fn startup_check_finished(reach: Reach, busy: bool) -> bool {
     reach != Reach::Unknown && !busy
 }
+
+/// The outcome of a direct call belongs to the account that made the call: it is not kept
+/// for the next account of the device on the same server.
+#[gpui::test]
+fn the_history_of_direct_calls_ends_with_the_account_of_the_device(cx: &mut TestAppContext) {
+    use junto_client::state::direct::RingOutcome;
+
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let account_id = window.view().person.account_id.unwrap();
+    let server_id = window.view().selected.as_ref().unwrap().id;
+    let other = admin.handle.account().unwrap();
+    let state = window.state.clone();
+    window.cx.update(|_, cx| {
+        state.update(cx, |state, cx| {
+            state.finish_direct_fixture(server_id, other, RingOutcome::Missed);
+            cx.notify();
+        });
+    });
+    let held = |window: &Window| {
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.direct_calls().finished.len())
+    };
+    // The account stays: what is held stays.
+    world
+        .run(admin.handle.api().create_invite(&Default::default()))
+        .unwrap();
+    window.settle();
+    assert_eq!(held(&window), 1);
+    // The owner removes the account from the server.
+    world
+        .run(admin.handle.api().remove_account(account_id))
+        .unwrap();
+    window.until("the removal is shown", |window| {
+        window.status() == Some(ServerStatus::NoAccount(Some(Notice::Removed)))
+    });
+    window.until("the history of the account is dropped", |window| {
+        held(window) == 0
+    });
+}

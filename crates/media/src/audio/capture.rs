@@ -34,6 +34,12 @@ pub struct CaptureLink {
     pub captured: Recent,
     /// The frames that the media connection took.
     pub taken: Taken,
+    /// How often the microphone was closed from outside the engine task: by the person,
+    /// by a rule of the server, or by the end of the call. Such a close does not wait for
+    /// the engine task (ADR 0794).
+    stops: AtomicU64,
+    /// The number of those closes that the engine task has taken into what it holds.
+    stops_taken: AtomicU64,
 }
 
 /// The frames that the media connection took: with the sound of the microphone, and as
@@ -55,8 +61,38 @@ impl CaptureLink {
         self.closures.load(Ordering::Relaxed)
     }
 
+    /// The frames of the microphone are sent: the engine opened the gate, and no close
+    /// from outside the engine task is later than what the engine holds.
     pub fn is_open(&self) -> bool {
         self.open.load(Ordering::Relaxed)
+            && self.stops_taken.load(Ordering::Relaxed) == self.stops.load(Ordering::Relaxed)
+    }
+
+    /// Closes the gate at once, from any thread. It stays closed until the engine task has
+    /// taken a command that was sent at or after this close. Returns the number of closes.
+    pub fn stop_now(&self) -> u64 {
+        let stops = self.stops.fetch_add(1, Ordering::Relaxed) + 1;
+        self.closures.fetch_add(1, Ordering::Relaxed);
+        stops
+    }
+
+    /// The number of closes from outside the engine task.
+    pub fn stops(&self) -> u64 {
+        self.stops.load(Ordering::Relaxed)
+    }
+
+    /// The count that a command for the engine task carries. A command that closes the
+    /// microphone closes the gate here and carries the new count. A command that opens
+    /// carries `read`, the count from the moment at which its sender read what it tells:
+    /// a close after that moment is later than the command, and the gate stays closed.
+    pub fn count_for(&self, closes: bool, read: u64) -> u64 {
+        if closes { self.stop_now() } else { read }
+    }
+
+    /// The engine task holds what a command told that was sent when the number of closes
+    /// was `stops`.
+    pub fn take_stops(&self, stops: u64) {
+        self.stops_taken.fetch_max(stops, Ordering::Relaxed);
     }
 
     /// The person speaks: the level of what is sent is above the threshold, or was a

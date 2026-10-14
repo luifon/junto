@@ -34,7 +34,7 @@ use junto_client_core::version::Incompatibility;
 use junto_client_core::voice::{ShareResolution, VOLUME_DEFAULT_PERCENT, VoiceSettings};
 use junto_client_core::{Reach, ServerHandle};
 use junto_media::audio::{DeviceInfo, Devices};
-use junto_media::calls::{ActiveCall, CallTarget, CallsView, EndReason, Outcome, Phase};
+use junto_media::calls::{ActiveCall, CallTarget, CallsView, EndReason, Outcome, Phase, Seat};
 use junto_media::engine::{MicrophoneState, OutputState, ShareId, ShareState};
 use junto_media::permission::MicrophoneAccess;
 use junto_media::share::{CaptureError, ShareKind};
@@ -1193,13 +1193,26 @@ pub enum SoundWarning {
     OutputFailed,
 }
 
+/// What the microphone control does when the person uses it. A control holds the action
+/// from its drawing: the call can be another one when the person uses it (ADR 0788).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum MicrophoneAction {
+    #[default]
+    Close,
+    /// Opens the microphone at this seat. Absent: the device was in no call.
+    Open(Option<Seat>),
+}
+
 /// The person's own controls, in a call and outside one.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Controls {
     pub microphone: MicrophoneButton,
+    pub microphone_action: MicrophoneAction,
     /// The person turned the sound off.
     pub sound_off: bool,
     pub warning: Option<SoundWarning>,
+    /// The call and the seat of this device that the controls were derived for.
+    pub seat: Option<Seat>,
 }
 
 /// The call of this device, as the strip above the profile strip shows it. It is shown
@@ -1459,25 +1472,41 @@ fn voice_state(
         Presence::Here => Presence::Connecting,
         other => other,
     };
-    let own_row = |held: Option<&junto_client_core::protocol::call::MicrophoneBlock>| Occupant {
-        account_id: own,
-        name: name_of(own),
-        is_self: true,
-        microphone: match (held, media.calls.muted) {
-            (Some(block), _) => Microphone::Held(block.reason),
-            (None, true) => Microphone::Closed,
-            (None, false) => Microphone::Open {
-                speaking: media.levels.own.1,
+    // The row of the person in the call of this device says what the device does, read
+    // from the calls of the device: the person's own setting, the microphone of the
+    // engine and the share of the device. A block is a rule of the server and is shown as
+    // one, from the calls or from the list of the server. The settings that the server
+    // lists for the person are a report that the device sent, and can be older; they are
+    // not shown for this device (ADR 0789). The hand is held by the server.
+    type Listed = junto_client_core::protocol::call::CallParticipant;
+    let own_row = |active: &ActiveCall, listed: Option<&Listed>, presence: Presence| {
+        let held = active
+            .microphone_block
+            .as_ref()
+            .or(listed.and_then(|listed| listed.microphone_block.as_ref()));
+        let sound_blocked = active.sound_block.is_some()
+            || listed.is_some_and(|listed| listed.sound_block.is_some());
+        let sends = !media.calls.muted && active.microphone == MicrophoneState::Running;
+        Occupant {
+            account_id: own,
+            name: name_of(own),
+            is_self: true,
+            microphone: match held {
+                Some(block) => Microphone::Held(block.reason),
+                None if sends => Microphone::Open {
+                    speaking: media.levels.own.1,
+                },
+                None => Microphone::Closed,
             },
-        },
-        held_by: held.and_then(|block| name_of(block.by)),
-        sharing: active.is_some_and(|call| matches!(call.share, ShareState::Running(_))),
-        hand_raised: false,
-        sound_off: media.calls.deafened,
-        sound_blocked: active.is_some_and(|call| call.sound_block.is_some()),
-        level: Some(media.levels.own.0),
-        presence: unlisted,
-        volume: VOLUME_DEFAULT_PERCENT,
+            held_by: held.and_then(|block| name_of(block.by)),
+            sharing: matches!(active.share, ShareState::Running(_)),
+            hand_raised: listed.is_some_and(|listed| listed.hand_raised),
+            sound_off: media.calls.deafened || sound_blocked,
+            sound_blocked,
+            level: Some(media.levels.own.0),
+            presence,
+            volume: VOLUME_DEFAULT_PERCENT,
+        }
     };
     let entry = known
         .entry
@@ -1509,7 +1538,7 @@ fn voice_state(
             closed: refused.filter(|_| outside && channel.in_use),
             user_limit: channel.channel.user_limit,
             occupants: active
-                .map(|active| vec![own_row(active.microphone_block.as_ref())])
+                .map(|active| vec![own_row(active, None, unlisted)])
                 .unwrap_or_default(),
             ..VoiceState::default()
         };
@@ -1519,17 +1548,16 @@ fn voice_state(
         .iter()
         .map(|participant| {
             let is_self = participant.account_id == own;
+            if is_self && let Some(active) = active {
+                return own_row(active, Some(participant), own_presence);
+            }
             let measured = active.map(|_| {
-                if is_self {
-                    media.levels.own
-                } else {
-                    media
-                        .levels
-                        .people
-                        .get(&participant.account_id)
-                        .copied()
-                        .unwrap_or_default()
-                }
+                media
+                    .levels
+                    .people
+                    .get(&participant.account_id)
+                    .copied()
+                    .unwrap_or_default()
             });
             Occupant {
                 account_id: participant.account_id,
@@ -1551,20 +1579,12 @@ fn voice_state(
                     .microphone_block
                     .as_ref()
                     .and_then(|block| name_of(block.by)),
-                // The share of this device is shown from the moment its track is sent;
-                // the server tells it a moment later.
-                sharing: participant.screen_share.is_some()
-                    || (is_self
-                        && active.is_some_and(|call| matches!(call.share, ShareState::Running(_)))),
+                sharing: participant.screen_share.is_some(),
                 hand_raised: participant.hand_raised,
                 sound_off: participant.deafened || participant.sound_block.is_some(),
                 sound_blocked: participant.sound_block.is_some(),
                 level: measured.map(|(level, _)| level),
-                presence: if is_self {
-                    own_presence
-                } else {
-                    Presence::Here
-                },
+                presence: Presence::Here,
                 volume: media.voice.volume(server_id, participant.account_id),
             }
         })
@@ -1572,7 +1592,7 @@ fn voice_state(
     if let Some(active) = active
         && !occupants.iter().any(|occupant| occupant.is_self)
     {
-        occupants.push(own_row(active.microphone_block.as_ref()));
+        occupants.push(own_row(active, None, unlisted));
     }
     let in_use = channel.in_use;
     // A lock can be in the state before the first person of a call is seen (ADR 0719). It
@@ -2721,6 +2741,7 @@ fn controls(servers: &[ServerSnapshot], known: &Known) -> Controls {
             _ => None,
         }
     };
+    let seat = active.map(ActiveCall::seat);
     Controls {
         microphone: if held.is_some() {
             MicrophoneButton::Held
@@ -2729,8 +2750,14 @@ fn controls(servers: &[ServerSnapshot], known: &Known) -> Controls {
         } else {
             MicrophoneButton::Open
         },
+        microphone_action: if calls.muted {
+            MicrophoneAction::Open(seat.clone())
+        } else {
+            MicrophoneAction::Close
+        },
         sound_off: calls.deafened,
         warning,
+        seat,
     }
 }
 

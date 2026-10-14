@@ -213,6 +213,17 @@ pub struct Shell {
     pub(crate) cameras: camera::ShownCameras,
     drawing_call: bool,
     pub(crate) picture_tasks: Vec<Task<()>>,
+    /// The sources of pictures that have a newer picture than the window took: the
+    /// watched share, the small pictures, the cameras. The next frame takes them.
+    pub(crate) pictures_pending: [bool; 3],
+    /// The picture of the watched share that the window took last.
+    pub(crate) main_taken: Option<std::sync::Arc<junto_media::share::picture::PictureFrame>>,
+    /// How often the window was drawn.
+    #[cfg(feature = "test-support")]
+    draws: usize,
+    /// How often received pictures asked for a drawing of the window.
+    #[cfg(feature = "test-support")]
+    pub(crate) picture_draws: usize,
     /// The number of dialogs of a share that this window has opened.
     pub(crate) share_reads: u64,
     /// The volume control of the sound of the watched share.
@@ -295,6 +306,24 @@ pub struct Shell {
 }
 
 impl Shell {
+    /// The call and the seat of this device in the view that the window draws. A control
+    /// that opens a microphone, a camera or a share holds them from its drawing
+    /// (ADR 0788).
+    pub(crate) fn drawn_seat(&self) -> Option<junto_media::calls::Seat> {
+        self.view
+            .as_ref()
+            .and_then(|view| view.controls.seat.clone())
+    }
+
+    /// The view that the window draws. Before the first drawing it is the view of now.
+    pub(crate) fn drawn_view(&self, cx: &gpui::App) -> ShellView {
+        match &self.view {
+            Some(view) => view.clone(),
+            None if self.detached => self.state.read(cx).call_view(),
+            None => self.state.read(cx).view(),
+        }
+    }
+
     fn call_listener<E: ?Sized>(
         &self,
         cx: &Context<Self>,
@@ -411,6 +440,8 @@ impl Shell {
                 }
             }),
             cx.observe_in(&state, window, |this, state, window, cx| {
+                // A share that is being chosen belongs to one call, in both windows.
+                this.drop_stale_share_picker(window, cx);
                 if this.detached {
                     this.view = Some(state.read(cx).call_view());
                     cx.notify();
@@ -516,6 +547,12 @@ impl Shell {
             cameras: HashMap::new(),
             drawing_call: false,
             picture_tasks: Vec::new(),
+            pictures_pending: [false; 3],
+            main_taken: None,
+            #[cfg(feature = "test-support")]
+            draws: 0,
+            #[cfg(feature = "test-support")]
+            picture_draws: 0,
             share_reads: 0,
             share_volume: None,
             recording_details_open: false,
@@ -560,7 +597,7 @@ impl Shell {
             drawn: None,
             _subscriptions: subscriptions,
         };
-        shell.follow_pictures(cx);
+        shell.follow_pictures(window, cx);
         let active = window.is_window_active();
         if !detached {
             shell
@@ -658,6 +695,18 @@ impl Shell {
     #[cfg(feature = "test-support")]
     pub fn drawn(&self) -> Option<&ShellView> {
         self.drawn.as_ref()
+    }
+
+    /// How often the window was drawn for any cause, how often received pictures asked
+    /// for a drawing, and the width of the picture of the watched share that the window
+    /// holds.
+    #[cfg(feature = "test-support")]
+    pub fn draws(&self) -> (usize, usize, Option<u32>) {
+        let width = self.pictures.main.as_ref().map(|(_, image)| {
+            let size = image.size(0);
+            u32::try_from(size.width.0).unwrap_or_default()
+        });
+        (self.draws, self.picture_draws, width)
     }
 
     /// True when the settings mark the text of the name field as the stored name.
@@ -975,6 +1024,10 @@ fn logical_width(window: &Window) -> f32 {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(feature = "test-support")]
+        {
+            self.draws += 1;
+        }
         if self.detached {
             return self.render_detached(window, cx);
         }
@@ -1088,8 +1141,8 @@ impl Shell {
                         .workspace()
                         .is_none_or(|workspace| workspace.call.is_none())
             }
-            // A share belongs to the call of this device.
-            Layer::SharePicker(_) => view.call.is_none(),
+            // The observer of the state closes the dialog of a share by its call and seat.
+            Layer::SharePicker(_) => false,
             // The person left the voice channel, or the channel is no longer shown.
             Layer::PersonMenu(open) => view.person_menu(open.channel_id, open.account_id).is_none(),
             // The message is no longer among the shown ones.

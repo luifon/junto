@@ -17,6 +17,7 @@ use junto_client::state::view::{
 };
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::call::{BlockReason, CallPlace, ShareAudio};
+use junto_client_core::protocol::ids::ChannelId;
 use junto_client_core::protocol::roles::UpdateWorkspaceRole;
 use junto_client_core::protocol::structure::ChannelKind;
 use junto_media::calls::{CallTarget, Phase};
@@ -29,8 +30,8 @@ use junto_media::share::{
 
 use crate::calls::{voice_channel, voice_file};
 use crate::harness::{
-    ABSENT_DBFS, ADMIN_TONE_HZ, Caller, HEARD_DBFS, PATIENCE, WINDOW_TONE_HZ, Window, World, heard,
-    member,
+    ABSENT_DBFS, ADMIN_TONE_HZ, Admin, Caller, HEARD_DBFS, PATIENCE, WINDOW_TONE_HZ, Window, World,
+    heard, member,
 };
 
 mod cameras;
@@ -170,6 +171,90 @@ fn enter(world: &World, caller: &Caller, target: CallTarget) {
             "after {PATIENCE:?} the server does not list the administrator in the call"
         );
         world.run(async { tokio::time::sleep(Duration::from_millis(20)).await });
+    }
+}
+
+/// A second voice channel of the server, and its place as the target of a join.
+fn second_room(world: &World, admin: &Admin, window: &mut Window, name: &str) -> CallTarget {
+    voice_channel(world, admin, window, name);
+    let workspace_id = window.view().workspace().unwrap().id;
+    let row = window
+        .channels()
+        .into_iter()
+        .find(|row| row.kind == ChannelKind::Voice && row.name == name)
+        .unwrap();
+    CallTarget {
+        server_id: admin.handle.id(),
+        place: CallPlace::Channel {
+            workspace_id,
+            channel_id: row.id,
+        },
+    }
+}
+
+fn channel_of(target: &CallTarget) -> ChannelId {
+    let CallPlace::Channel { channel_id, .. } = target.place else {
+        unreachable!("a voice channel");
+    };
+    channel_id
+}
+
+/// The administrator moves the person of the window from one voice channel to another,
+/// and the device of the person enters the call of the destination. The window is not
+/// drawn meanwhile: it shows the first call, and its controls are the ones that were
+/// drawn for the first call.
+fn moved_without_a_drawing(
+    world: &World,
+    admin: &Admin,
+    window: &Window,
+    from: &CallTarget,
+    to: &CallTarget,
+) {
+    let (calls, member) = window.state.read_with(&window.cx, |state, _| {
+        (
+            state.calls().clone(),
+            state.view().person.account_id.unwrap(),
+        )
+    });
+    world
+        .run(
+            admin
+                .handle
+                .api()
+                .move_participant(channel_of(from), member, channel_of(to)),
+        )
+        .unwrap();
+    let deadline = std::time::Instant::now() + PATIENCE;
+    while !calls
+        .view()
+        .call
+        .is_some_and(|call| call.target.place == to.place && call.phase == Phase::Connected)
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "after {PATIENCE:?} the device is not in the call of the destination: {:?}",
+            calls.view()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Reads the calls of the window for a time in which a camera or a share would have
+/// started, and requires that `holds` the whole time.
+#[track_caller]
+fn stays(window: &mut Window, what: &str, holds: impl Fn(&junto_media::calls::CallsView) -> bool) {
+    let calls = window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().clone());
+    let end = std::time::Instant::now() + Duration::from_secs(2);
+    while std::time::Instant::now() < end {
+        window.cx.run_until_parked();
+        let view = calls.view();
+        assert!(
+            holds(&view),
+            "this did not hold: {what}; the calls: {view:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 

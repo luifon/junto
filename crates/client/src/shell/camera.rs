@@ -142,6 +142,7 @@ pub(crate) fn failure(state: &junto_media::camera::CameraState) -> Option<&'stat
 }
 
 impl super::Shell {
+    /// Returns whether the window holds other pictures than before, and is drawn for them.
     pub(crate) fn show_cameras(
         &mut self,
         frames: &std::collections::HashMap<
@@ -149,8 +150,9 @@ impl super::Shell {
             std::sync::Arc<junto_media::camera::CameraFrame>,
         >,
         cx: &mut gpui::Context<Self>,
-    ) {
+    ) -> bool {
         let mut released = Vec::new();
+        let mut changed = false;
         self.cameras.retain(|id, (old, picture)| {
             let keep = frames
                 .get(id)
@@ -158,6 +160,7 @@ impl super::Shell {
             if !keep && let Some(image) = picture.image() {
                 released.push(image.clone());
             }
+            changed |= !keep;
             keep
         });
         for (id, frame) in frames {
@@ -171,13 +174,17 @@ impl super::Shell {
                         .map(crate::ui::tile::CameraPicture::Image)
                 }) {
                     self.cameras.insert(*id, (frame.clone(), picture));
+                    changed = true;
                 }
             }
         }
         for image in released {
             cx.drop_image(image, None);
         }
-        cx.notify();
+        if changed {
+            cx.notify();
+        }
+        changed
     }
 }
 

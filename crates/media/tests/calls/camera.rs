@@ -331,3 +331,47 @@ async fn camera_frames_follow_the_visible_tile_size_and_stop_when_hidden() {
     one.calls.leave().await;
     two.calls.leave().await;
 }
+
+/// A camera whose media connection is lost is captured for a bounded time, and the
+/// camera of a device is published only at a seat that the server lists.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn a_camera_without_a_media_connection_ends_after_its_limit() {
+    use crate::support::FaultProxy;
+
+    let _media = MEDIA_SERVER.read().await;
+    let one = Person::new(440.0);
+    let two = Person::new(880.0);
+    let (room, owner) = Room::new("Camera limit", &one, "One").await;
+    let proxy = FaultProxy::start(&room.server).await;
+    let _peer = room.member_at(&owner, &two, "Two", &proxy.address()).await;
+    one.enter(room.target).await;
+    two.enter(room.target).await;
+    two.calls.start_camera(None);
+    two.until("the camera runs", |view| {
+        view.call
+            .as_ref()
+            .is_some_and(|call| call.camera == CameraState::Running)
+    })
+    .await;
+    assert_eq!(two.camera.active(), 1);
+    // The media connection ends, and the request for a new token gets no answer.
+    proxy.hold(&Room::join_path(&room.target));
+    two.calls.simulate_connection_loss();
+    let view = two
+        .until("the camera has ended", |view| {
+            view.call
+                .as_ref()
+                .is_some_and(|call| matches!(call.camera, CameraState::Failed(_)))
+        })
+        .await;
+    assert_eq!(
+        view.call.unwrap().camera,
+        CameraState::Failed(CameraError::Interrupted)
+    );
+    crate::scene::until("the capture of the camera has stopped", || {
+        two.camera.active() == 0
+    })
+    .await;
+    proxy.release();
+}

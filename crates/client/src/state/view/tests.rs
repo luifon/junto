@@ -1020,6 +1020,110 @@ mod calls {
         }
     }
 
+    /// ADR 0789: the row of the person in the call of this device says what the device
+    /// does. What the server lists for the person is the last report of the device.
+    #[test]
+    fn the_listed_own_tile_tracks_local_controls_before_server_reports() {
+        let mut scene = scene();
+        let (own, daily) = (scene.own, scene.daily);
+        scene.studio_mut().calls.clear();
+        // The server lists the person with the microphone closed, the sound off and a
+        // share: the report of the device from before the person changed all three.
+        let mut listed = participant(own);
+        listed.muted = true;
+        listed.deafened = true;
+        listed.hand_raised = true;
+        listed.screen_share = Some(ScreenShare {
+            audio: ShareAudio::None,
+            started_at: time(),
+        });
+        scene.call(daily, vec![listed]);
+        let server = server(
+            "Acme Studio",
+            Some(scene.model()),
+            logged_in(own, Vec::new()),
+        );
+        let servers = std::slice::from_ref(&server);
+        let own_row = |known: &Known| {
+            let view = derive(servers, &selected(&scene, daily), known);
+            occupant(&view, "Daily", own)
+        };
+
+        // The device sends the microphone, plays the sound and shares nothing.
+        let mut known = in_call(active(target(&server, &scene, daily)));
+        known.media.levels.own = (3, true);
+        let shown = own_row(&known);
+        assert_eq!(
+            shown.microphone,
+            Microphone::Open { speaking: true },
+            "the tile of the person says closed while the device sends the microphone"
+        );
+        assert!(!shown.sound_off, "the tile says that the sound is off");
+        assert!(
+            !shown.sharing,
+            "the tile shows a share that the device ended"
+        );
+        assert_eq!(shown.level, Some(3));
+        // The hand is held by the server.
+        assert!(shown.hand_raised);
+
+        // The person closes the microphone and turns the sound off, and the share of the
+        // device runs. The list of the server is the same.
+        known.media.calls.muted = true;
+        known.media.calls.deafened = true;
+        known.media.calls.call.as_mut().unwrap().share = running_share();
+        let shown = own_row(&known);
+        assert_eq!(shown.microphone, Microphone::Closed);
+        assert!(shown.sound_off && shown.sharing);
+
+        // An open setting with a microphone that does not run sends nothing.
+        known.media.calls.muted = false;
+        for state in [
+            MicrophoneState::Closed,
+            MicrophoneState::Asking,
+            MicrophoneState::NoPermission,
+            MicrophoneState::Failed(AudioError::NoDevice),
+        ] {
+            known.media.calls.call.as_mut().unwrap().microphone = state;
+            assert_eq!(own_row(&known).microphone, Microphone::Closed);
+        }
+
+        // The device is not in the call: the row is the seat of the account on another
+        // device, as the server lists it.
+        let elsewhere = own_row(&Known::default());
+        assert_eq!(elsewhere.microphone, Microphone::Closed);
+        assert!(elsewhere.sound_off && elsewhere.sharing);
+    }
+
+    #[test]
+    fn the_controls_hold_the_action_and_the_seat_that_they_show() {
+        let scene = scene();
+        let server = server(
+            "Acme",
+            Some(scene.model()),
+            logged_in(scene.own, Vec::new()),
+        );
+        let servers = std::slice::from_ref(&server);
+        let call = active(target(&server, &scene, scene.daily));
+        let seat = call.seat();
+        let mut known = in_call(call);
+        let controls = derive(servers, &Selection::default(), &known).controls;
+        assert_eq!(controls.microphone_action, MicrophoneAction::Close);
+        assert_eq!(controls.seat, Some(seat.clone()));
+        known.media.calls.muted = true;
+        let controls = derive(servers, &Selection::default(), &known).controls;
+        assert_eq!(
+            controls.microphone_action,
+            MicrophoneAction::Open(Some(seat))
+        );
+        // Outside a call the setting is the one of the next call.
+        let mut outside = Known::default();
+        outside.media.calls.muted = true;
+        let controls = derive(servers, &Selection::default(), &outside).controls;
+        assert_eq!(controls.microphone_action, MicrophoneAction::Open(None));
+        assert_eq!(controls.seat, None);
+    }
+
     #[test]
     fn a_stale_call_snapshot_cannot_authorize_an_inside_action() {
         let scene = scene();

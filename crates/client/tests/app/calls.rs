@@ -235,3 +235,163 @@ fn each_unsuccessful_move_outcome_is_shown_and_dismissible(cx: &mut gpui::TestAp
         );
     }
 }
+
+/// ADR 0793: received pictures are drawn once per frame of the display, whatever their
+/// number, and the picture that is drawn is the newest one.
+#[gpui::test]
+fn received_pictures_cause_one_drawing_per_frame_of_the_display(cx: &mut TestAppContext) {
+    use junto_client::state::view::MediaSnapshot;
+    use junto_client_core::protocol::call::CallPlace;
+    use junto_media::calls::{ActiveCall, CallTarget, CallsView, Phase};
+    use junto_media::engine::{MainPicture, MicrophoneState, OutputState, ShareId, ShareState};
+    use junto_media::share::picture::PictureFrame;
+
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    // The window draws a call of this device in the shown channel, without a media server.
+    let view = window.view();
+    let row = (window.channels().into_iter())
+        .find(|row| row.name == "Daily")
+        .unwrap();
+    let call = ActiveCall {
+        camera: junto_media::camera::CameraState::Off,
+        cameras: Vec::new(),
+        target: CallTarget {
+            server_id: view.selected.as_ref().unwrap().id,
+            place: CallPlace::Channel {
+                workspace_id: view.workspace().unwrap().id,
+                channel_id: row.id,
+            },
+        },
+        identity: "seat".to_owned(),
+        phase: Phase::Connected,
+        interrupted_at: None,
+        microphone: MicrophoneState::Running,
+        access: junto_media::permission::MicrophoneAccess::Allowed,
+        input_device: None,
+        output: OutputState::Running,
+        output_device: None,
+        microphone_block: None,
+        sound_block: None,
+        share: ShareState::Off,
+        shares: Vec::new(),
+        watched: None,
+    };
+    let media = MediaSnapshot {
+        calls: CallsView {
+            call: Some(call),
+            ..CallsView::default()
+        },
+        ..MediaSnapshot::default()
+    };
+    let state = window.state.clone();
+    window.cx.update(|_, cx| {
+        state.update(cx, |state, cx| state.show_media_fixture(media, cx));
+    });
+    window.settle();
+    let calls = window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().clone());
+    // A picture of a share, `width` pixels wide.
+    let picture = |width: u32| MainPicture {
+        share: ShareId::Own,
+        frame: std::sync::Arc::new(PictureFrame {
+            width,
+            height: 2,
+            bgra: vec![255; (width * 2 * 4) as usize].into(),
+            source: (width, 2),
+        }),
+    };
+    // (every drawing of the window, the drawings that pictures asked for, the width held)
+    let draws = |window: &Window| window.shell.read_with(&window.cx, |shell, _| shell.draws());
+    // The window can still hold work for a frame from what it loaded before: it is given
+    // some frames, until it holds none.
+    for _ in 0..20 {
+        if window.frame() == 0 {
+            break;
+        }
+        window.park();
+    }
+
+    // Fifty pictures arrive, and the application does its work after each one. No frame
+    // of the display passes: no picture asks for a drawing, and the application comes to
+    // rest each time. Another cause can draw the window in this time (an event of the
+    // server); the pictures do not, so the drawings stay far below one per picture.
+    let (all, before, _) = draws(&window);
+    for width in 1..=50 {
+        calls.show_main_picture_for_test(Some(picture(width)));
+        window.park();
+    }
+    let (all_after, asked, _) = draws(&window);
+    assert_eq!(
+        asked, before,
+        "a picture was drawn without a frame of the display"
+    );
+    assert!(
+        all_after - all < 10,
+        "the window was drawn {} times for fifty pictures without a frame",
+        all_after - all
+    );
+    // One frame: one drawing, with the newest picture.
+    assert_eq!(window.frame(), 1);
+    window.park();
+    let (_, asked, width) = draws(&window);
+    assert_eq!((asked, width), (before + 1, Some(50)));
+    // Without a newer picture a frame draws nothing more.
+    window.frame();
+    window.park();
+    assert_eq!(draws(&window).1, before + 1);
+    // Pictures between two frames: the frame takes the last one only.
+    for width in 51..=60 {
+        calls.show_main_picture_for_test(Some(picture(width)));
+        window.park();
+        if width % 5 == 0 {
+            window.frame();
+            window.park();
+        }
+    }
+    let (all_end, asked, width) = draws(&window);
+    assert_eq!((asked, width), (before + 3, Some(60)));
+    eprintln!(
+        "drawings of the window for any cause: {} for fifty pictures without a frame, {} in the whole test",
+        all_after - all,
+        all_end - all
+    );
+}
+
+/// Sound settings that cannot be read are not replaced by an open microphone without a
+/// statement: the person is told, and the microphone setting is closed.
+#[gpui::test]
+fn sound_settings_that_cannot_be_read_are_told_and_close_the_microphone(cx: &mut TestAppContext) {
+    // A first start makes the data directory. The file of the sound settings is damaged
+    // before the second start.
+    let directory = tempfile::tempdir().unwrap();
+    open(cx, directory.path()).close();
+    let file = voice_file(directory.path());
+    std::fs::write(&file, "{ this is not the file of the sound settings").unwrap();
+    let window = open(cx, directory.path());
+    let (failure, muted, told) = window.state.read_with(&window.cx, |state, _| {
+        (
+            state.voice_error().map(str::to_owned),
+            state.calls().view().muted,
+            state.pending().call_told.clone(),
+        )
+    });
+    assert!(
+        failure.is_some(),
+        "nothing tells that the settings were not read"
+    );
+    assert!(
+        muted,
+        "the microphone setting is open with settings that were not read"
+    );
+    // The person reads why the microphone is closed, outside the settings too.
+    assert!(
+        told.is_some_and(|told| told.contains("sound settings")),
+        "no notice tells that the microphone was closed"
+    );
+}

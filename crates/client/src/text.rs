@@ -12,7 +12,7 @@ use junto_client_core::protocol::call::{BlockReason, LeaveReason, ShareAudio};
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::version::Incompatibility;
 use junto_client_core::voice::{ShareResolution, TalkKey};
-use junto_media::calls::EndReason;
+use junto_media::calls::{EndReason, MicrophoneClosed, Unused};
 use junto_media::permission::MicrophoneAccess;
 use junto_media::share::{CaptureError, ShareKind};
 
@@ -220,6 +220,38 @@ pub const UNMUTE: &str = "Unmute";
 pub const UNMUTE_HELP: &str = "Open your microphone. The app never opens it by itself.";
 pub const MICROPHONE_OPEN_AGAIN: &str = "The block of your microphone ended. Your microphone is open, and the people in the call \
      hear you.";
+pub const SOUND_SETTINGS_NOT_READ: &str = "The sound settings of the app could not be read. The app uses the defaults, and your \
+     microphone is closed. Open it to speak.";
+pub const SHARE_DIALOG_CLOSED: &str =
+    "The call ended or changed while you chose what to share. Nothing is shared.";
+
+/// What the person is told when the app closed the microphone setting without an action
+/// of the person.
+pub fn microphone_closed(why: MicrophoneClosed) -> &'static str {
+    match why {
+        MicrophoneClosed::EndOfBlockNotRead => {
+            "The block of your microphone ended, and the app could not read whether you were \
+             allowed to speak. Your microphone is closed. Open it to speak."
+        }
+        MicrophoneClosed::DeviceChanged => {
+            "The microphone of the call stopped, and the call uses another microphone now. \
+             Your microphone is closed. Open it to speak with that microphone, or choose one \
+             in the settings."
+        }
+    }
+}
+
+/// What the person is told when an action opened nothing, because the device is in another
+/// call, or at another seat, than the one that the control was drawn for.
+pub fn unused_action(unused: Unused) -> &'static str {
+    match unused {
+        Unused::Microphone => {
+            "The call changed before this took effect. Your microphone was not opened."
+        }
+        Unused::Camera => "The call changed before this took effect. Your camera was not started.",
+        Unused::Share => "The call changed before this took effect. Nothing is shared.",
+    }
+}
 
 /// "Room · Daily": the heading of the settings of the room of a call.
 pub fn room_section(channel: &str) -> String {
@@ -823,6 +855,7 @@ pub fn call_notice(notice: &CallNotice) -> String {
             EndReason::Server(Some(LeaveReason::ConnectionLost | LeaveReason::NeverConnected)) => "The direct call ended because this device lost its media connection.".to_owned(),
             EndReason::Elsewhere => "This device left the direct call because your account entered a call on another device.".to_owned(),
             EndReason::Refused(error) => format!("The direct call could not reconnect. {}", flow_error(error)),
+            EndReason::NotRead => "The direct call ended for this device: the media connection was lost, and the app could not read why your place had ended. Call again to continue.".to_owned(),
             EndReason::Server(_) => "The direct call ended for this device.".to_owned(),
         },
         CallNotice::JoinFailed { channel, error } => {
@@ -871,6 +904,11 @@ pub fn call_notice(notice: &CallNotice) -> String {
                 EndReason::Elsewhere => format!(
                     "This device left the call in {channel}: your account is in a call with \
                      another device."
+                ),
+                EndReason::NotRead => format!(
+                    "You are no longer in the call in {channel}: the media connection was \
+                     lost, and the app could not read why your place had ended. Join again \
+                     to continue."
                 ),
                 EndReason::Refused(error) => format!(
                     "The connection to the call in {channel} was lost, and the server gave \
@@ -2570,6 +2608,10 @@ mod tests {
             CallNotice::Ended {
                 channel: daily.clone(),
                 reason: EndReason::Elsewhere,
+            },
+            CallNotice::Ended {
+                channel: daily.clone(),
+                reason: EndReason::NotRead,
             },
             CallNotice::Ended {
                 channel: daily.clone(),
