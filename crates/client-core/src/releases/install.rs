@@ -47,13 +47,7 @@ fn private_directory(path: &Path) -> Result<(), Error> {
         }
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let mut builder = fs::DirBuilder::new();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::DirBuilderExt;
-                builder.mode(0o700);
-            }
-            builder.create(path)?;
+            super::create_private_directory(path)?;
         }
         Err(error) => return Err(error.into()),
     }
@@ -149,13 +143,7 @@ impl<S: System> BundleInstaller<S> {
         let path = self
             .parent()?
             .join(format!(".Junto.stage-{}", super::hex(&random)));
-        let mut builder = fs::DirBuilder::new();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
-        }
-        builder.create(&path)?;
+        super::create_private_directory(&path)?;
         Ok(Directory { path, remove: true })
     }
     fn lock(&self) -> Result<File, Error> {
@@ -265,6 +253,8 @@ impl<S: System> Installer for BundleInstaller<S> {
         let mut file = options.open(&old_archive)?;
         archive::pack_bundle(&self.application, &mut file)?;
         file.sync_all()?;
+        // Windows refuses to rename a directory while a file in it is open.
+        drop(file);
         super::verify_archive(&old_archive, &old_manifest, &archive.keys)?;
         write_atomic(&backup.join("release.json"), &old_wire)?;
         write_atomic(&backup.join("installed.json"), &archive.wire)?;

@@ -99,13 +99,7 @@ fn write_directory(
 
 /// Extract into a new directory under a caller-controlled parent. Errors remove it.
 pub fn unpack(input: &mut impl Read, destination: &Path) -> Result<(), Error> {
-    let mut builder = fs::DirBuilder::new();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
-    builder.create(destination)?;
+    super::create_private_directory(destination)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

@@ -26,6 +26,7 @@ printf '%s\\n' "$*" >> "$COMMAND_LOG"
 case "$*" in
     "container inspect "*) exit 1 ;;
     "network inspect "*) [ "$SCENARIO" = stale_network ]; exit $? ;;
+    "info "*) if [ "$SCENARIO" = two_processors ]; then echo 2; fi; exit 0 ;;
     "network create "*) [ "$SCENARIO" != stale_network ]; exit $? ;;
     "cp "*) exit 1 ;;
     "run --name junto-linux-build "*)
@@ -92,7 +93,15 @@ exit 0
         build = [line for line in result.commands.splitlines() if line.startswith("run --name junto-linux-build ")]
         self.assertEqual(len(build), 1, result.commands)
         self.assertIn(" --cpuset-cpus 0-3 ", build[0])
+        self.assertIn(" -e CARGO_BUILD_JOBS=4 ", build[0])
         self.assertNotIn(" --cpus ", build[0])
+
+    def test_a_machine_with_fewer_processors_runs_as_many_build_jobs(self):
+        result = self.run_script("two_processors")
+        build = [line for line in result.commands.splitlines() if line.startswith("run --name junto-linux-build ")]
+        self.assertEqual(len(build), 1, result.commands)
+        self.assertIn(" --cpuset-cpus 0-1 ", build[0])
+        self.assertIn(" -e CARGO_BUILD_JOBS=2 ", build[0])
 
     @unittest.skipUnless("flock" in SERIAL.read_text(), "the lock script has no flock path yet")
     def test_the_launcher_runs_on_a_host_without_lockf(self):

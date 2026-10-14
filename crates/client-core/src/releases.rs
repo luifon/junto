@@ -531,6 +531,20 @@ pub fn write_atomic(destination: &Path, bytes: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
+/// Creates a new directory. On Unix only its owner can read, write and enter it from its
+/// creation on.
+fn create_private_directory(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().mode(0o700).create(path)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::DirBuilder::new().create(path)
+    }
+}
+
 struct RemoveFile(PathBuf);
 impl Drop for RemoveFile {
     fn drop(&mut self) {

@@ -1,6 +1,7 @@
 # The checks of every commit (ADR 0902, ADR 0905). Every action is named by its commit hash,
 # every container image by its digest, and every package that a step installs with apt-get
-# by its version; tools/check-pins.sh fails when one is not.
+# or that the Linux build image installs by its version; tools/check-pins.sh fails when one
+# is not.
 
 name: CI
 
@@ -28,40 +29,38 @@ jobs:
     # A pull request from a branch of this repository is already checked by its push.
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 120
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install the Rust version of rust-toolchain.toml
-        shell: bash
+      # The image of the Linux container, its PostgreSQL and LiveKit images and the target
+      # directory of the workspace need more disk space than the runner has free.
+      - name: Free disk space of the runner
         run: |
-          version=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
-          rustup toolchain install "$version" --profile minimal --component rustfmt --component clippy
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            target
-          key: rust-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
-      - name: Install ffmpeg, which the tests of recordings run
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg=7:6.1.1-3ubuntu5
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/hostedtoolcache/CodeQL /usr/local/.ghcup /usr/share/swift
+          df -h /
+      # The Rust steps run in the image of tools/linux/Dockerfile (ADR 0750): the system
+      # libraries of the client, the clang version of the call library, PipeWire for the sound
+      # tests and ffmpeg for the tests of recordings, each pinned by a dated Debian snapshot.
+      # Each command gets a new PostgreSQL and LiveKit server; Cargo's registry and target
+      # directory stay in Docker volumes between the steps.
+      - name: Build the Linux image and start its services
+        run: tools/linux-container.sh true
       - name: Format
-        run: cargo fmt --all --check
+        run: tools/linux-container.sh cargo fmt --all --check
       - name: Lint
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: tools/linux-container.sh cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Tests with PostgreSQL
-        run: tools/with-test-postgres.sh cargo test --workspace --locked
+        run: tools/linux-container.sh cargo test --workspace --locked
       - name: Packaging unit tests
         run: python3 -m unittest discover -s packaging -p "test_*.py"
       - name: The committed API documents equal the generated ones
         run: |
-          cargo run --locked -p junto-server --bin junto-openapi
+          tools/linux-container.sh cargo run --locked -p junto-server --bin junto-openapi
           git diff --exit-code -- docs/api
 
   rust-other-systems:
@@ -102,7 +101,10 @@ jobs:
           tools/check-condition-wait.sh target/debug/junto
           cargo test --locked -p junto-media --lib condition_wait
       # The tests that need PostgreSQL run on Linux only (ADR 0905).
+      # Bash ends the step at the first command that fails; PowerShell, the default shell on
+      # Windows, takes the exit code of the last command only.
       - name: Tests that need no database
+        shell: bash
         run: |
           cargo test --locked -p junto-authz -p junto-protocol
           cargo test --locked -p junto-client-core --lib --bins --test releases --test release_corrections --test release_review2 --test release_downloads --test update_archives --test release_tool
@@ -239,6 +241,7 @@ jobs:
           koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d
           --severity=warning
           tools/serial.sh tools/check-pins.sh tools/with-test-postgres.sh tools/with-test-livekit.sh
+          tools/linux-container.sh tools/linux/run.sh tools/linux/session.sh
           deploy/generate-secrets.sh deploy/backup.sh deploy/restore.sh deploy/upgrade-undo.sh
           deploy/database-user.sh deploy/check-limits.sh
           deploy/images/server/junto-transcribe-handover

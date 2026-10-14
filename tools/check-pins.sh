@@ -19,6 +19,7 @@ same() {
 }
 
 server=deploy/images/server/Dockerfile
+linux=tools/linux/Dockerfile
 worker=workers/transcription/docker/Dockerfile
 speech=workers/transcription/tests/speech/Dockerfile
 argument() {
@@ -28,6 +29,8 @@ argument() {
 toolchain=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
 image_rust=$(argument "$server" RUST_IMAGE | sed -n 's/^rust:\([0-9.]*\)-.*/\1/p')
 same "Rust version of rust-toolchain.toml and of the server image" "$toolchain" "$image_rust"
+same "Rust version of rust-toolchain.toml and of the Linux build image" "$toolchain" \
+    "$(sed -n 's/^FROM rust:\([0-9.]*\)-.*/\1/p' "$linux")"
 same "FFmpeg version of the server image and of the worker image" \
     "$(argument "$server" FFMPEG_VERSION)" "$(argument "$worker" FFMPEG_VERSION)"
 same "FFmpeg checksum of the server image and of the worker image" \
@@ -97,6 +100,40 @@ for file in "$server" "$speech"; do
         echo "ok    every Debian package of $file comes from the dated snapshot of its build stage"
     fi
 done
+
+# The Linux build image, in which the Rust steps of CI on Linux run (ADR 0750): its base image
+# has a digest, and each word after "apt-get install" that is not an option names a package
+# with one exact version of the dated snapshot that the image reads.
+unpinned=$(grep -n '^FROM ' "$linux" | grep -v "$digest" || true)
+if [ -n "$unpinned" ]; then
+    echo "$unpinned"
+    fail "$linux names an image without a digest"
+else
+    echo "ok    the base image of $linux has a digest"
+fi
+unpinned=$(awk '
+    { instruction = instruction $0 }
+    /\\$/ { sub(/\\$/, "", instruction); next }
+    { print instruction; instruction = "" }
+' "$linux" | awk '
+    {
+        listing = 0
+        for (i = 1; i <= NF; i++) {
+            if ($i == "install" && $(i - 1) == "apt-get") { listing = 1; continue }
+            if (!listing) continue
+            if ($i == "&&") { listing = 0; continue }
+            if ($i == "-t") { i++; continue }
+            if ($i ~ /^-/) continue
+            if ($i !~ /^[a-z0-9][a-z0-9+.-]*=[0-9][0-9A-Za-z.+~:-]*$/) print $i
+        }
+    }
+')
+if [ -n "$unpinned" ]; then
+    echo "$unpinned"
+    fail "$linux installs a Debian package without a version"
+else
+    echo "ok    every Debian package of $linux has a version"
+fi
 
 # The words after "pip install" that are not options: each names a package with one exact
 # version.

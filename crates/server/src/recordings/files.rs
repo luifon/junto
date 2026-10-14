@@ -10,8 +10,6 @@ use std::path::{Path, PathBuf};
 
 use junto_protocol::ids::{RecordingId, RecordingSegmentId};
 
-use crate::recorder::COMPOSITE_PIECE_PREFIX;
-
 /// The directory in which the start script of the recorder saves the files that a lost
 /// recorder left, one directory for each job.
 pub const RESCUED: &str = "rescued";
@@ -21,7 +19,6 @@ pub const JOB_FILE: &str = "job.json";
 pub const JOB_TRANSCRIPT: &str = "transcript.json";
 const TRACK_EXTENSION: &str = "ogg";
 const VIDEO_EXTENSION: &str = "mp4";
-const PIECE_EXTENSION: &str = "ts";
 /// The end of the name of a file that the server has not finished writing.
 const UNFINISHED: &str = ".partial";
 
@@ -142,17 +139,6 @@ impl Place {
     }
 }
 
-/// The number of a piece of a composite, from its file name `part_<number>.ts`.
-fn piece_number(name: &str) -> Option<u64> {
-    let stem = name.strip_suffix(PIECE_EXTENSION)?.strip_suffix('.')?;
-    let digits = stem
-        .strip_prefix(COMPOSITE_PIECE_PREFIX)?
-        .strip_prefix('_')?;
-    (!digits.is_empty() && digits.len() <= 12 && digits.bytes().all(|byte| byte.is_ascii_digit()))
-        .then(|| digits.parse().ok())
-        .flatten()
-}
-
 #[cfg(unix)]
 mod system {
     use rustix::fs::{
@@ -165,10 +151,25 @@ mod system {
     use std::os::fd::OwnedFd;
     use std::path::Path;
 
-    use super::{Place, piece_number};
+    use super::Place;
+    use crate::recorder::COMPOSITE_PIECE_PREFIX;
 
     /// The deepest tree that a removal deletes. The server creates at most three levels.
     const DEEPEST: usize = 16;
+    const PIECE_EXTENSION: &str = "ts";
+
+    /// The number of a piece of a composite, from its file name `part_<number>.ts`.
+    fn piece_number(name: &str) -> Option<u64> {
+        let stem = name.strip_suffix(PIECE_EXTENSION)?.strip_suffix('.')?;
+        let digits = stem
+            .strip_prefix(COMPOSITE_PIECE_PREFIX)?
+            .strip_prefix('_')?;
+        (!digits.is_empty()
+            && digits.len() <= 12
+            && digits.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| digits.parse().ok())
+        .flatten()
+    }
 
     fn directory_flags() -> OFlags {
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC

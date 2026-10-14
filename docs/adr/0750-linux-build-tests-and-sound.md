@@ -4,7 +4,7 @@
 
 Accepted, with the container verification limits below.
 
-The container checks run on arm64. That is additional build coverage, not evidence for the x86-64 release target of ADR 0705. The image was built for x86-64 under emulation, and its compiler, its linker and a small Rust and C++ program were checked in it. The workspace was not compiled or tested on x86-64. Hardware devices and hardware graphics drivers require separate tests.
+The local container checks run on arm64. That is additional build coverage, not evidence for the x86-64 release target of ADR 0705. The Linux job of CI builds and tests the workspace in the same image on x86-64 (ADR 0905). Hardware devices and hardware graphics drivers require separate tests.
 
 ## Context
 
@@ -24,7 +24,8 @@ The native client depends on system libraries for its window, text, sound and ca
 - Device listing refreshes a registry snapshot. Opening devices uses that snapshot, and a retained host keeps CPAL's PipeWire initialisation alive between operations. An explicit device identifier that the host cannot open returns an error. The engine retains the default-device selection and retry policy of ADR 0733.
 - The Linux build baseline is PipeWire 0.3.65 or newer. PipeWire has supported paired, repeated initialisation and deinitialisation since 0.3.49. Older library versions are outside the supported baseline. The capture library keeps its own initialisation alive while CPAL retains and releases its guards.
 - The sound capture is checked with the address checking of the compiler in a run of its own (`tools/linux/address-check.sh`, `crates/media/README.md`). The PipeWire library frees an object when the capture releases it, and a write into a freed object does not fail a test with the standard allocator.
-- The build container gets at most four processors as a processor set and not as a processor quota. With a quota of four processors on a machine with eight, the live tier of the window used up the quota in two of three periods of 100 ms, and every thread of the test process was stopped for the rest of each such period: the tone of a call had gaps of 40 to 200 ms at capture, sending, reception and playback at the same moments, and a test that read the level of one half second failed in 5 of 11 runs. A processor set bounds the use in the same way and stops no thread.
+- The Linux job of CI runs its Rust steps in this image through the same runner (ADR 0905), so the image is the one list of system packages for local checks and for CI.
+- The build container gets at most four processors as a processor set and not as a processor quota. With a quota of four processors on a machine with eight, the live tier of the window used up the quota in two of three periods of 100 ms, and every thread of the test process was stopped for the rest of each such period: the tone of a call had gaps of 40 to 200 ms at capture, sending, reception and playback at the same moments, and a test that read the level of one half second failed in 5 of 11 runs. A processor set bounds the use in the same way and stops no thread. Cargo runs one job for each processor of the set: the hosted CI runner of a private repository has two processors, and four jobs there would only add memory.
 - Failure statistics of the live media tests are available only with `test-support`. A measured video interval records counters at both boundaries and the age of the share. A deficient interval prints those records even when a later retry recovers. The measurement does not infer a cause from a single cumulative snapshot.
 
 ## Consequences

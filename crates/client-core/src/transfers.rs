@@ -763,10 +763,12 @@ fn open_part(part: &Path, bytes: u64) -> std::io::Result<(std::fs::File, u64)> {
         Err(error) => Err(error),
     };
     regular(part)?;
-    let file = std::fs::OpenOptions::new()
+    // Not in append mode: Windows refuses `set_len` on a file that was opened to append.
+    let mut file = std::fs::OpenOptions::new()
         .read(true)
+        .write(true)
         .create(true)
-        .append(true)
+        .truncate(false)
         .open(part)?;
     // Opening wrote nothing. The path is read again: it still names the opened file.
     let held = file.metadata()?;
@@ -779,10 +781,18 @@ fn open_part(part: &Path, bytes: u64) -> std::io::Result<(std::fs::File, u64)> {
         std::fs::TryLockError::Error(error) => error,
     })?;
     if held.len() > bytes {
-        file.set_len(0)?;
+        empty(&mut file)?;
         return Ok((file, 0));
     }
+    file.seek(SeekFrom::End(0))?;
     Ok((file, held.len()))
+}
+
+/// Removes every byte of an unfinished file; the next write is its first byte.
+fn empty(file: &mut std::fs::File) -> std::io::Result<()> {
+    file.set_len(0)?;
+    file.seek(SeekFrom::Start(0))?;
+    Ok(())
 }
 
 /// Receives the `bytes` bytes of a file into its unfinished file, from the byte after the
@@ -830,7 +840,7 @@ where
         }
         if !opened.partial && received > 0 {
             // The answer is the whole file: what is held is replaced.
-            file.set_len(0)?;
+            empty(&mut file)?;
             received = 0;
         }
         let mut body = opened.body;
@@ -915,7 +925,7 @@ where
     // connection that is cut at every try never completes it.
     let mut cuts = 0u8;
     loop {
-        file.set_len(0)?;
+        empty(&mut file)?;
         let mut received = 0u64;
         shared
             .progress

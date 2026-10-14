@@ -31,6 +31,7 @@ const EXIT_NOT_READY: i32 = 3;
 /// The longest line of the worker's log that the server passes on.
 const LONGEST_LOG_LINE: usize = 512;
 /// The interval at which the server looks whether the worker has ended.
+#[cfg(unix)]
 const ENDED_CHECK: std::time::Duration = std::time::Duration::from_millis(50);
 /// The time in which the log of a run that has ended closes.
 const LOG_GRACE: std::time::Duration = std::time::Duration::from_secs(5);

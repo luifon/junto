@@ -9,6 +9,11 @@ import sys
 
 from keychains import run, session, security_secret
 
+# The OpenSSL of the system with the configuration of this directory: another OpenSSL in PATH
+# can have another default configuration, which adds extensions to the certificate.
+OPENSSL = "/usr/bin/openssl"
+CONFIGURATION = pathlib.Path(__file__).with_name("code-signing.cnf")
+
 
 def create(directory):
     directory = pathlib.Path(directory).resolve()
@@ -31,10 +36,9 @@ def create_locked(directory):
         created = True
         password = secrets.token_hex(32)
         (directory / "keychain-password").write_text(password)
-        run("openssl", "req", "-x509", "-newkey", "rsa:2048", "-sha256", "-days", "3650", "-nodes",
-            "-keyout", str(directory / "private-key.pem"), "-out", str(directory / "certificate.pem"),
-            "-subj", "/CN=Junto Code Signing", "-addext", "basicConstraints=critical,CA:FALSE",
-            "-addext", "keyUsage=critical,digitalSignature", "-addext", "extendedKeyUsage=critical,codeSigning")
+        run(OPENSSL, "req", "-x509", "-config", str(CONFIGURATION), "-newkey", "rsa:2048", "-sha256",
+            "-days", "3650", "-nodes", "-keyout", str(directory / "private-key.pem"),
+            "-out", str(directory / "certificate.pem"))
         security_secret("create-keychain", "-p", password, str(keychain))
         keychain_created = True
         run("security", "set-keychain-settings", str(keychain))
@@ -42,7 +46,7 @@ def create_locked(directory):
         run("security", "import", str(directory / "private-key.pem"), "-k", str(keychain), "-T", "/usr/bin/codesign")
         run("security", "import", str(directory / "certificate.pem"), "-k", str(keychain))
         security_secret("set-key-partition-list", "-S", "apple-tool:,apple:,codesign:", "-s", "-k", password, str(keychain))
-        fingerprint = run("openssl", "x509", "-in", str(directory / "certificate.pem"), "-noout", "-fingerprint", "-sha1")
+        fingerprint = run(OPENSSL, "x509", "-in", str(directory / "certificate.pem"), "-noout", "-fingerprint", "-sha1")
         return fingerprint.strip().split("=", 1)[1].replace(":", "")
     except BaseException:
         try:

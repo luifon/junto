@@ -1,7 +1,7 @@
 #!/bin/sh
 # Called by linux-container.sh with the build lock held.
 set -eu
-root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 # One prefix names every Docker resource of the runner.
 prefix=${JUNTO_LINUX_PREFIX:-junto-linux}
 image=$prefix-build:1
@@ -83,7 +83,8 @@ created="$build $created"
 mkdir -p "$root/spikes/test-participant/target"
 # The build gets at most four processors as a set and not as a quota. A quota stops every
 # thread of the container for the rest of each 100 ms in which it is used up, and a test
-# that measures sound in real time then measures those stops.
+# that measures sound in real time then measures those stops. Cargo runs one job for each
+# processor of the set; more jobs than processors only add memory.
 processors=$(docker info --format '{{.NCPU}}' 2>/dev/null || true)
 case "$processors" in ''|*[!0-9]*|0) processors=4 ;; esac
 if [ "$processors" -gt 4 ]; then processors=4; fi
@@ -94,7 +95,7 @@ docker run --name "$build" --network "$network" --memory 6g --cpuset-cpus "0-$((
     --mount "type=volume,src=$cargo_volume,dst=/usr/local/cargo/registry" \
     --mount "type=volume,src=$target_volume,dst=/target" \
     --mount "type=volume,src=$target_volume,dst=/src/spikes/test-participant/target" \
-    -e CARGO_BUILD_JOBS=4 -e CARGO_TARGET_DIR=/target -e CARGO_INCREMENTAL -e CARGO_TERM_COLOR \
+    -e "CARGO_BUILD_JOBS=$processors" -e CARGO_TARGET_DIR=/target -e CARGO_INCREMENTAL -e CARGO_TERM_COLOR \
     -e JUNTO_TEST_DATABASE_URL=postgres://postgres@postgres/postgres \
     -e JUNTO_TEST_LIVEKIT_API_URL=http://livekit:7880 \
     -e JUNTO_TEST_LIVEKIT_URL=ws://livekit:7880 \

@@ -26,6 +26,22 @@ class IdentityTests(unittest.TestCase):
             module.create(pathlib.Path(__file__).resolve().parent / "forbidden-key")
 
 
+class CertificateTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "darwin", "real macOS code signatures")
+    def test_signing_works_when_the_default_openssl_configuration_adds_extensions(self):
+        # The default configuration of OpenSSL 1.1 adds the extensions of a certificate
+        # authority to every self-signed certificate.
+        import tempfile
+        from unittest.mock import patch
+        import check_signing
+        with tempfile.TemporaryDirectory(prefix="junto-openssl-") as temporary:
+            configuration = pathlib.Path(temporary) / "authority.cnf"
+            configuration.write_text("[ req ]\ndistinguished_name = name\nx509_extensions = authority\n"
+                                     "[ name ]\n[ authority ]\nbasicConstraints = critical,CA:true\n")
+            with patch.dict(os.environ, {"OPENSSL_CONF": str(configuration)}):
+                check_signing.check()
+
+
 class EmptyIdentityTests(unittest.TestCase):
     def test_empty_identity(self):
         import sign

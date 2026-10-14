@@ -1,0 +1,15 @@
+# The certificate of the code-signing identity (ADR 0725). create_identity.py gives this file
+# to OpenSSL, so no default configuration of a machine adds or changes an extension.
+[ req ]
+distinguished_name = name
+x509_extensions = code_signing
+prompt = no
+
+[ name ]
+CN = Junto Code Signing
+
+[ code_signing ]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature
+extendedKeyUsage = critical,codeSigning
+subjectKeyIdentifier = hash

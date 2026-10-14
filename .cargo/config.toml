@@ -1,0 +1,6 @@
+# The prebuilt WebRTC library of the LiveKit SDK uses the static C runtime of Windows, and
+# MSVC links no program from objects of both runtimes. Every crate of a Windows build then
+# uses the static runtime (ADR 0753).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+rustdocflags = ["-C", "target-feature=+crt-static"]
