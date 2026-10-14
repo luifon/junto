@@ -81,6 +81,7 @@ pub const fn category(code: ErrorCode, status: u16) -> ErrorCategory {
         | ErrorCode::CallLocked
         | ErrorCode::CallFull
         | ErrorCode::NotInCall
+        | ErrorCode::SeatEnded
         | ErrorCode::StorageLow
         | ErrorCode::RecordingsFull => ErrorCategory::Conflict,
         ErrorCode::OwnerCodeInvalid
@@ -329,6 +330,7 @@ mod tests {
             (ErrorCode::CallLocked, C::Conflict),
             (ErrorCode::CallFull, C::Conflict),
             (ErrorCode::NotInCall, C::Conflict),
+            (ErrorCode::SeatEnded, C::Conflict),
             (ErrorCode::StorageLow, C::Conflict),
             (ErrorCode::RecordingsFull, C::Conflict),
             (ErrorCode::OwnerCodeInvalid, C::CodeRefused),

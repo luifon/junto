@@ -57,6 +57,34 @@ impl StoredText for BlockReason {
     }
 }
 
+impl StoredText for LeaveReason {
+    fn stored(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Disconnected => "disconnected",
+            Self::Moved => "moved",
+            Self::Switched => "switched",
+            Self::ConnectionLost => "connection_lost",
+            Self::NeverConnected => "never_connected",
+            Self::AccessEnded => "access_ended",
+        }
+    }
+
+    fn from_stored(text: &str) -> Option<Self> {
+        [
+            Self::Left,
+            Self::Disconnected,
+            Self::Moved,
+            Self::Switched,
+            Self::ConnectionLost,
+            Self::NeverConnected,
+            Self::AccessEnded,
+        ]
+        .into_iter()
+        .find(|reason| reason.stored() == text)
+    }
+}
+
 /// What a note about the call of a voice channel states (ADR 0501).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Note {
@@ -507,6 +535,45 @@ pub async fn is_inside(
         .await?)
 }
 
+/// How the seat `identity` of an account ended, when it is the last seat of the account that
+/// ended (ADR 0520).
+pub async fn seat_end(
+    connection: &mut PgConnection,
+    account_id: AccountId,
+    identity: &str,
+) -> ApiResult<Option<LeaveReason>> {
+    let reason: Option<String> = sqlx::query_scalar(
+        "select reason from call_seat_ends where account_id = $1 and identity = $2",
+    )
+    .bind(account_id)
+    .bind(identity)
+    .fetch_optional(connection)
+    .await?;
+    reason.as_deref().map(LeaveReason::read).transpose()
+}
+
+/// Whether the last end of a microphone block of a member was a grant of meeting mode that
+/// the device has not answered with an open microphone (ADR 0521); false for an account
+/// that has no seat in the call yet, as on its way into it by a move. Nothing for an
+/// account that does not [`reads`] the call: a grant tells that meeting mode was on.
+pub async fn meeting_grant(
+    connection: &mut PgConnection,
+    call: &CallRow,
+    account_id: AccountId,
+) -> ApiResult<Option<bool>> {
+    if !reads(&mut *connection, call, account_id).await? {
+        return Ok(None);
+    }
+    let granted: Option<bool> = sqlx::query_scalar(
+        "select meeting_grant from call_members where call_id = $1 and account_id = $2",
+    )
+    .bind(call.id)
+    .bind(account_id)
+    .fetch_optional(connection)
+    .await?;
+    Ok(Some(granted.unwrap_or(false)))
+}
+
 /// Whether an account may read what tells who is inside a call: the call does not hide who
 /// is inside, or the account is inside.
 pub async fn reads(
@@ -912,6 +979,19 @@ pub async fn take_out(
         .bind(member.account_id)
         .execute(&mut *connection)
         .await?;
+    sqlx::query(
+        "insert into call_seat_ends (account_id, identity, reason, ended_at)
+         values ($1, $2, $3, $4)
+         on conflict (account_id) do update
+             set identity = excluded.identity, reason = excluded.reason,
+                 ended_at = excluded.ended_at",
+    )
+    .bind(member.account_id)
+    .bind(&member.identity)
+    .bind(reason.stored())
+    .bind(now)
+    .execute(&mut *connection)
+    .await?;
     if member.connected_at.is_some() {
         let left = Event::CallParticipantLeft {
             call_id: call.id,

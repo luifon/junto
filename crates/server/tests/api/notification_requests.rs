@@ -225,7 +225,10 @@ async fn the_new_changes_count_against_the_limit_of_message_changes() {
 }
 
 /// An account with many read notices and a server with many notices of other accounts: the
-/// statement reads the unread notices of the account and no other row.
+/// statement reads the unread notices of the account and no other row. The read notices are
+/// twenty times the bound of the rows that the plan may visit, so a plan that reads them
+/// fails; the data is made in one statement that stays far below the statement time limit
+/// of the server, also on a loaded machine.
 #[tokio::test]
 async fn marking_all_read_reads_the_index_of_unread_notices() {
     let server = TestServer::start().await;
@@ -237,7 +240,7 @@ async fn marking_all_read_reads_the_index_of_unread_notices() {
         "with copies as (
              insert into messages (id, place_id, position, author_id, created_at, document)
              select gen_random_uuid(), place_id, position + n, author_id, created_at, document
-             from messages cross join generate_series(1, 20000) n where id = $1
+             from messages cross join generate_series(1, 2000) n where id = $1
              returning id, created_at),
          people as (
              insert into accounts (id, name, status, created_at)

@@ -197,6 +197,24 @@ pub struct CallJoin {
     pub identity: String,
     /// The requests to enter that wait for an answer of a person inside.
     pub entry_requests: Vec<EntryRequest>,
+    /// True when a microphone block of the caller ended as a grant of meeting mode and the
+    /// device has not reported an open microphone since (ADR 0521). Absent while the call
+    /// hides who is inside and the caller is not inside, and from a server from before
+    /// that ADR.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meeting_grant: Option<bool>,
+}
+
+/// The query of a request for a place in a call.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+#[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
+pub struct CallJoinQuery {
+    /// The identity of the seat that the request renews. The answer is a token for that
+    /// seat, or `seat_ended` when the device can no longer use it; such a request makes,
+    /// ends and takes no seat (ADR 0520). Absent: the request asks for a place.
+    #[serde(default)]
+    pub renews: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -208,6 +226,9 @@ pub struct OwnCallState {
     pub own: OwnCall,
     pub call: Call,
     pub entry_requests: Vec<EntryRequest>,
+    /// As `CallJoin::meeting_grant` (ADR 0521).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meeting_grant: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

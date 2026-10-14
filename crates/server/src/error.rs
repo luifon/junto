@@ -6,6 +6,7 @@ use axum::http::header::RETRY_AFTER;
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use junto_authz::{Denial, WorkspacePermission};
+use junto_protocol::call::LeaveReason;
 use junto_protocol::error::{ErrorBody, ErrorCode, ErrorDetail};
 use time::Duration;
 use utoipa::openapi::{ContentBuilder, Ref, RefOr, ResponseBuilder, ResponsesBuilder};
@@ -21,6 +22,7 @@ pub struct ApiError {
     message: Cow<'static, str>,
     retry_after: Option<Duration>,
     retryable: bool,
+    left: Option<LeaveReason>,
 }
 
 impl ApiError {
@@ -30,6 +32,7 @@ impl ApiError {
             message: message.into(),
             retry_after: None,
             retryable: false,
+            left: None,
         }
     }
 
@@ -110,7 +113,14 @@ impl ApiError {
             message: format!("change {number} ({name}): {message}; nothing was changed").into(),
             retry_after: self.retry_after,
             retryable: false,
+            left: self.left,
         }
+    }
+
+    /// Why the seat of a `seat_ended` error cannot be used (ADR 0520).
+    pub fn left(mut self, reason: Option<LeaveReason>) -> Self {
+        self.left = reason;
+        self
     }
 
     pub fn retry_after(mut self, wait: Duration) -> Self {
@@ -210,6 +220,7 @@ impl IntoResponse for ApiError {
             error: ErrorDetail {
                 code: self.code,
                 message: self.message.into_owned(),
+                left: self.left,
             },
         };
         let mut response = (status, Json(body)).into_response();

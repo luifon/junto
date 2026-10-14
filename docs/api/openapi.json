@@ -3160,6 +3160,15 @@
             "schema": {
               "$ref": "#/components/schemas/ChannelId"
             }
+          },
+          {
+            "name": "renews",
+            "in": "query",
+            "description": "The identity of the seat that the request renews. The answer is a token for that\nseat, or `seat_ended` when the device can no longer use it; such a request makes,\nends and takes no seat (ADR 0520). Absent: the request asks for a place.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -5205,6 +5214,15 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/AccountId"
+            }
+          },
+          {
+            "name": "renews",
+            "in": "query",
+            "description": "The identity of the seat that the request renews. The answer is a token for that\nseat, or `seat_ended` when the device can no longer use it; such a request makes,\nends and takes no seat (ADR 0520). Absent: the request asks for a place.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -13171,6 +13189,13 @@
             "type": "string",
             "description": "The address of the media server for the device."
           },
+          "meeting_grant": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "True when a microphone block of the caller ended as a grant of meeting mode and the\ndevice has not reported an open microphone since (ADR 0521). Absent while the call\nhides who is inside and the caller is not inside, and from a server from before\nthat ADR."
+          },
           "token": {
             "$ref": "#/components/schemas/CallToken"
           },
@@ -14320,6 +14345,7 @@
           "call_locked",
           "call_full",
           "not_in_call",
+          "seat_ended",
           "media_unavailable",
           "recorder_unavailable",
           "storage_low",
@@ -14341,6 +14367,17 @@
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode"
+          },
+          "left": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LeaveReason",
+                "description": "With `seat_ended`: why the seat that the request renews cannot be used. Absent when\nthe server does not know it (ADR 0520)."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "message": {
             "type": "string",
@@ -14896,6 +14933,19 @@
             "$ref": "#/components/schemas/Proof"
           }
         }
+      },
+      "LeaveReason": {
+        "type": "string",
+        "description": "Why a person is no longer in a call.",
+        "enum": [
+          "left",
+          "disconnected",
+          "moved",
+          "switched",
+          "connection_lost",
+          "never_connected",
+          "access_ended"
+        ]
       },
       "LineSource": {
         "type": "string",
@@ -15737,6 +15787,13 @@
               "null"
             ],
             "description": "True after admission has observed this seat. Absent means not stated by the server (ADR 0517)."
+          },
+          "meeting_grant": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "As `CallJoin::meeting_grant` (ADR 0521)."
           },
           "own": {
             "$ref": "#/components/schemas/OwnCall"

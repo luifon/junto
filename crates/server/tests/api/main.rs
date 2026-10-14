@@ -7,6 +7,8 @@ mod audit_requests;
 mod authorization;
 mod backups;
 mod calls;
+mod calls_grant;
+mod calls_renewal;
 mod calls_review;
 mod calls_review2;
 mod calls_review3;
