@@ -27,5 +27,5 @@ The settings that the server lists for the person ("muted", "sound off") and its
 
 - The tile, the row of the list and the row of the channel column of the person say "open" only while the device sends the microphone. The control of the profile strip shows the person's setting and a block, as before: it says "open" for an open setting also while the microphone does not run, and the line above it tells a microphone that cannot be used.
 - The other people see the person as the server lists the person, so their signs can be older than the sign that the person sees.
-- The sign "closed" is shown from the moment at which the person closes the microphone. The engine closes its gate after that, in its own task.
+- The sign "closed" is shown from the moment at which the person closes the microphone, and the frames of the microphone stop at that moment (ADR 0794).
 - Tests: `the_listed_own_tile_tracks_local_controls_before_server_reports` in `crates/client/src/state/view/tests.rs`, and `the_own_tile_is_open_while_the_report_of_the_state_waits` in the window tests with a media server.

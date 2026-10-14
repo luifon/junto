@@ -238,12 +238,8 @@ fn a_rendered_camera_stop_never_starts_a_replacement_call(cx: &mut TestAppContex
             .read_with(&window.cx, |state, _| state.camera_action())
             .unwrap()
     };
-    let used = |window: &mut Window, action: &CameraAction| {
-        let state = window.state.clone();
-        window.cx.update(|_, cx| {
-            state.update(cx, |state, cx| state.use_camera(action, cx));
-        });
-    };
+    // The camera control as it is drawn: the window does no other work before the press.
+    let used = |window: &mut Window, _: &CameraAction| window.press_as_drawn("call-camera");
     let camera_runs = |window: &mut Window| {
         window.click("call-camera");
         window.until("camera running", |_| camera(&calls) == CameraState::Running);

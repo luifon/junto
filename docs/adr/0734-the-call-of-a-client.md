@@ -68,6 +68,7 @@ Reconnect:
 
 - While the call library restores a connection, the call is shown as reconnecting.
 - When the connection has ended, the calls ask the server for a new token: first after 1 second, then with a doubled wait up to 5 seconds, until the media connection is made, the server ends the place, or the person leaves. The wait grows with each request, whether the server refused it or the media connection with its token failed, and starts at 1 second again when a media connection is made. A server that cannot be reached, a limit, and `media_unavailable` are waited for; another refusal ends the call with its reason.
+- After the media server removed the device from the room, a new token is asked for only when a state that was loaded after the loss shows the place (ADR 0794).
 - A new token is asked for only while a live state of the server shows the place of this device. A place that the server ended, or has not shown yet, is not asked for, so a person whom a moderator removed does not return by this path.
 - A new token can name a new identity: the earlier place had ended. The call continues with it when the server ended the earlier place because no media connection used it. After another end the device gives the new place up (ADR 0785).
 

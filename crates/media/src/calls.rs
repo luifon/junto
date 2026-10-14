@@ -32,9 +32,10 @@ use time::OffsetDateTime;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::Instant;
 
+use crate::audio::capture::CaptureLink;
 use crate::audio::{AudioError, AudioHost, DeviceInfo, Devices};
 use crate::engine::{
-    Connection, Controls, Engine, EngineOptions, EngineState, Levels, MainPicture, MediaJoin,
+    Connection, Controls, Engine, EngineOptions, EngineState, Levels, Lost, MainPicture, MediaJoin,
     MicrophoneState, OutputState, SeenShare, ShareId, ShareState, VoiceConfig, Watching,
 };
 use crate::permission::{MicrophoneAccess, MicrophonePermission};
@@ -196,11 +197,29 @@ impl ActiveCall {
     }
 }
 
+/// Why the calls closed the microphone setting of the person without an action of the
+/// person.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MicrophoneClosed {
+    /// A microphone block ended, and the device could not read how: the events of that
+    /// time were not delivered, or the block had no position among them. A presenter of
+    /// meeting mode can have let the person speak, and then the person opens the
+    /// microphone (ADR 0785).
+    EndOfBlockNotRead,
+    /// The microphone runs on another device than the person used: the device of the
+    /// call failed or was removed (ADR 0794).
+    DeviceChanged,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EndReason {
     /// The server ended the place. The reason is absent when the client did not receive
     /// the event that states it.
     Server(Option<LeaveReason>),
+    /// A request for a new token gave another place, and the device could not read why
+    /// the earlier one had ended: the events of that time were not delivered. The device
+    /// gave the new place up (ADR 0785).
+    NotRead,
     /// The account is in a call with another device or in another call.
     Elsewhere,
     /// The media connection was lost, and the server refused a new token.
@@ -249,6 +268,9 @@ pub struct CallsView {
     /// The last action that had no effect because it named another call or seat. It stays
     /// until [`Calls::dismiss_unused`].
     pub unused: Option<Unused>,
+    /// Why the calls closed the microphone setting last. It stays until
+    /// [`Calls::dismiss_closed`].
+    pub closed: Option<MicrophoneClosed>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -273,7 +295,9 @@ enum SessionCommand {
     /// The person opens the microphone at this seat. The number is the count of closes by
     /// the person at the time of the action.
     Unmute(Seat, u64),
-    Talking(bool),
+    /// The talk key, with the count of closes of the microphone at the press or the
+    /// release.
+    Talking(bool, u64),
     Volume(AccountId, f32),
     Config(VoiceConfig),
     RetryMicrophone(Seat),
@@ -298,6 +322,8 @@ struct ActiveHandle {
     key: u64,
     target: CallTarget,
     commands: mpsc::UnboundedSender<SessionCommand>,
+    /// The gate of the microphone of the engine of the call.
+    gate: Arc<CaptureLink>,
 }
 
 /// The join that the person asked for last and did not end.
@@ -360,6 +386,10 @@ impl Inner {
             shared.muted = muted;
             if muted {
                 shared.closes += 1;
+                // The frames stop here, before the session and the engine take the close.
+                if let Some(active) = &shared.active {
+                    active.gate.stop_now();
+                }
             }
         }
         self.view.send_modify(|view| view.muted = muted);
@@ -510,6 +540,13 @@ impl Calls {
             .send_if_modified(|view| view.unused.take().is_some());
     }
 
+    /// Puts away the statement that the calls closed the microphone setting.
+    pub fn dismiss_closed(&self) {
+        self.inner
+            .view
+            .send_if_modified(|view| view.closed.take().is_some());
+    }
+
     pub fn set_deafened(&self, deafened: bool) {
         self.inner.shared().deafened = deafened;
         self.inner.view.send_modify(|view| view.deafened = deafened);
@@ -521,8 +558,19 @@ impl Calls {
         let mut shared = self.inner.shared();
         if shared.talking != talking {
             shared.talking = talking;
-            drop(shared);
-            self.inner.tell(SessionCommand::Talking(talking));
+            if let Some(active) = &shared.active {
+                // The release is a close: the frames stop here. The press carries the
+                // count of closes of this moment, so a release that follows it is later
+                // than the press when the engine takes the press.
+                let stops = if talking {
+                    active.gate.stops()
+                } else {
+                    active.gate.stop_now()
+                };
+                let _ = active
+                    .commands
+                    .send(SessionCommand::Talking(talking, stops));
+            }
         }
     }
 
@@ -653,6 +701,13 @@ impl Calls {
         let mut views = self.inner.shared().camera_views.clone().unwrap_or_default();
         views.retain(|id, _| visible.contains(id));
         self.set_camera_views(views);
+    }
+
+    /// Gives a picture of the watched share to the readers, as the session of a call
+    /// does, for a test of a reader.
+    #[cfg(feature = "test-support")]
+    pub fn show_main_picture_for_test(&self, picture: Option<MainPicture>) {
+        self.inner.main_picture.send_replace(picture);
     }
 
     #[cfg(feature = "test-support")]
@@ -1006,6 +1061,7 @@ fn start(
         deafened: shared.deafened,
         microphone_blocked: true,
         sound_blocked: true,
+        camera_held: true,
     };
     let volumes = shared
         .volumes
@@ -1043,6 +1099,7 @@ fn start(
         key,
         target,
         commands,
+        gate: engine.gate(),
     });
     drop(shared);
     let timing = inner.options.timing;
@@ -1065,6 +1122,7 @@ fn start(
         sound_block: answer.sound_block,
         blocks_untold,
         refresh,
+        removal_read: false,
         accepted,
         seat_told: answer.cursor,
         grants,
@@ -1078,6 +1136,7 @@ fn start(
         speaking_report: Reporter::new(timing.speaking_spacing, Some(timing.speaking_renewal)),
         share_report: Reporter::holding(timing.share_spacing, None),
         moving: None,
+        probes: Vec::new(),
         speaking: false,
         timing,
     };
@@ -1193,6 +1252,8 @@ pub(crate) struct Place {
     given: Option<u64>,
     /// The last event that showed a seat of the account on another device.
     taken: Option<u64>,
+    /// The number of the last event that was read.
+    read: Option<u64>,
     /// Events were not delivered since a state last showed the seat.
     unread: bool,
     /// The seat is not used, for this reason: a request for a new token gave it after the
@@ -1248,6 +1309,7 @@ impl Place {
             device: None,
             given: None,
             taken: None,
+            read: None,
             unread: false,
             void: None,
         }
@@ -1272,14 +1334,23 @@ impl Place {
     pub(crate) fn untold(&mut self) {
         self.unread = true;
         if self.given.is_some() {
-            self.void.get_or_insert(EndReason::Server(None));
+            self.void.get_or_insert(EndReason::NotRead);
         }
     }
 
     /// A request for a new token gave this seat, in place of an earlier one, with an
-    /// answer at `position`.
+    /// answer at `position`. The events up to that position tell why the earlier seat
+    /// ended; when they were read before the answer, nothing is waited for.
     pub(crate) fn given(&mut self, position: u64) {
-        self.given = Some(position);
+        if self.read.is_none_or(|read| read < position) {
+            self.given = Some(position);
+        }
+    }
+
+    /// True while the events up to the answer that gave this seat are not all read: the
+    /// seat can still be void, and nothing of the person is sent at it.
+    pub(crate) fn unsettled(&self) -> bool {
+        self.given.is_some()
     }
 
     /// True when an event after the last sign of the seat showed a seat of the account on
@@ -1307,6 +1378,7 @@ impl Place {
             // An event of the history before the one of the state.
             return;
         }
+        self.read = self.read.max(Some(id));
         // An event from before the answer that gave this seat tells what happened to the
         // earlier one.
         let earlier = self.given.is_some_and(|given| id <= given);
@@ -1408,6 +1480,7 @@ impl Place {
                 self.shown = None;
                 self.left = None;
                 self.taken = None;
+                self.read = None;
             }
             self.history = Some(cursor.epoch);
             self.events.get_or_insert(cursor.epoch);
@@ -1474,7 +1547,7 @@ impl Place {
         self.taken = None;
         if std::mem::take(&mut self.unread) {
             // Why the earlier seat ended is not known.
-            self.void.get_or_insert(EndReason::Server(None));
+            self.void.get_or_insert(EndReason::NotRead);
         }
         true
     }
@@ -1793,6 +1866,9 @@ struct Session {
     /// from the first moment of the media connection (ADR 0503).
     blocks_untold: bool,
     refresh: Option<FreshState>,
+    /// A state was asked for after the media server removed the device, and the media
+    /// connection has not changed since.
+    removal_read: bool,
     accepted: Cursor,
     /// The cursor of the newest answer of the server that stated the seat of the place
     /// (ADR 0519). It is the membership of the person until a state is as new (ADR 0785).
@@ -1811,6 +1887,8 @@ struct Session {
     share_report: Reporter<Option<ShareAudio>>,
     /// The move of the person of this device that waits (ADR 0511).
     moving: Option<Moving>,
+    /// The work of moves that have ended. Each closes the connection that it made.
+    probes: Vec<tokio::task::JoinHandle<()>>,
     speaking: bool,
     timing: CallTiming,
 }
@@ -1821,6 +1899,8 @@ struct Moving {
     /// Ends the connection of this device to the room of the destination: the work that
     /// holds the connection closes it when this is sent or dropped.
     _stop: oneshot::Sender<()>,
+    /// The work that asks for the token of the move and holds the connection.
+    task: tokio::task::JoinHandle<()>,
     /// When the move is given up. The server ends a move after 30 seconds (ADR 0511); an
     /// outcome that has not arrived by this time was missed.
     deadline: Instant,
@@ -1831,6 +1911,47 @@ struct Moving {
 
 /// How long the outcome of a move is waited for.
 const MOVE_OUTCOME_LIMIT: Duration = Duration::from_secs(45);
+/// How long the end of a call waits for the work of a move to close its connection.
+const MOVE_END_LIMIT: Duration = Duration::from_secs(20);
+
+/// What became of the connection of a device to the room of the destination of a move.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Probed {
+    /// The move ended before a connection was started. Nothing was connected.
+    Stopped,
+    /// The server gave no token, or the connection was not made.
+    Failed,
+    /// The connection was made, held until the move ended, and closed.
+    Closed,
+}
+
+/// Asks for the token of a move, connects with it, holds the connection until the move
+/// ends, and closes it. `stopped` ends when the move has its outcome or is given up, or
+/// when the call ends. A move that has ended starts no connection: not while the server
+/// is asked, and not with an answer that arrives afterwards. A connection that is being
+/// made is not cut off, because a connection that is half made can stay in the room; it
+/// is closed as soon as it is made.
+pub(crate) async fn probe<T, R>(
+    mut stopped: oneshot::Receiver<()>,
+    token: impl Future<Output = Option<T>>,
+    connect: impl AsyncFnOnce(T) -> Option<R>,
+    close: impl AsyncFnOnce(R),
+) -> Probed {
+    let token = tokio::select! {
+        biased;
+        _ = &mut stopped => return Probed::Stopped,
+        token = token => token,
+    };
+    let Some(token) = token else {
+        return Probed::Failed;
+    };
+    let Some(room) = connect(token).await else {
+        return Probed::Failed;
+    };
+    let _ = stopped.await;
+    close(room).await;
+    Probed::Closed
+}
 
 fn far() -> Instant {
     Instant::now() + Duration::from_secs(86_400)
@@ -1901,26 +2022,7 @@ impl Session {
                     Some(Err(Missed(_))) => self.missed(),
                     None => {}
                 },
-                cursor = refreshed(&mut self.refresh) => {
-                    self.refresh = None;
-                    if self.accepted.epoch != cursor.epoch {
-                        self.microphone_block = None;
-                        self.sound_block = None;
-                        self.blocks_untold = true;
-                    }
-                    if self.grants.cursor.epoch != cursor.epoch {
-                        self.grants.restarted(cursor);
-                    }
-                    self.accepted = cursor;
-                    self.seat_told = None;
-                    self.place.left = None;
-                    self.place.taken = None;
-                    self.place.shown = None;
-                    self.place.history = None;
-                    self.place.events = None;
-                    if let Some(moving) = &mut self.moving { moving.reloaded = true; }
-                    self.review = true;
-                }
+                cursor = refreshed(&mut self.refresh) => self.reloaded_at(cursor),
                 Some(result) = finished.recv() => self.finished(result),
                 () = tokio::time::sleep_until(wake) => self.review = true,
             }
@@ -1935,6 +2037,7 @@ impl Session {
             target,
             engine,
             mut place,
+            probes,
             ..
         } = self;
         // The media connection and the devices close at once. The cause of the end is
@@ -1982,6 +2085,12 @@ impl Session {
                 view.outcome = Some(Outcome::Ended { target, reason });
             }
         });
+        // The work of a move closes the connection that it made before the call counts as
+        // left: what follows the end can use the same identity in the room of the
+        // destination.
+        for task in probes {
+            let _ = tokio::time::timeout(MOVE_END_LIMIT, task).await;
+        }
         if let Some(ended) = ended {
             let _ = ended.send(place.identity);
         }
@@ -2011,6 +2120,33 @@ impl Session {
                 }
             }
             Notice::Ended { .. } => {}
+        }
+        self.review = true;
+    }
+
+    /// A state that the session asked for is loaded: its cursor.
+    fn reloaded_at(&mut self, cursor: Cursor) {
+        self.refresh = None;
+        if self.accepted.epoch != cursor.epoch {
+            self.microphone_block = None;
+            self.sound_block = None;
+            self.blocks_untold = true;
+            // Another history: what the events of the earlier one told of the place is
+            // void. In the same history it stays: the end of the place and its reason.
+            self.place.left = None;
+            self.place.taken = None;
+            self.place.shown = None;
+            self.place.read = None;
+            self.place.history = None;
+            self.place.events = None;
+        }
+        if self.grants.cursor.epoch != cursor.epoch {
+            self.grants.restarted(cursor);
+        }
+        self.accepted = cursor;
+        self.seat_told = None;
+        if let Some(moving) = &mut self.moving {
+            moving.reloaded = true;
         }
         self.review = true;
     }
@@ -2070,9 +2206,9 @@ impl Session {
         self.end_move();
         let (api, move_id) = (self.server.api(), call_move.id);
         let (stop, stopped) = oneshot::channel::<()>();
-        self.inner.runtime.spawn(async move {
-            let connected = async {
-                let answer = api.join_move(move_id).await.ok()?;
+        let task = self.inner.runtime.spawn(async move {
+            let token = async { api.join_move(move_id).await.ok() };
+            let connect = |answer: CallJoin| async move {
                 let connecting = Room::connect(
                     &answer.media_url,
                     answer.token.expose(),
@@ -2083,26 +2219,22 @@ impl Session {
                     .ok()?
                     .ok()
             };
-            match connected.await {
-                // The connection is held until the move has its outcome or is
-                // given up, and is closed then. A connection that is only
-                // dropped stays in the room of the destination.
-                Some((room, _events)) => {
-                    let _ = stopped.await;
-                    if let Err(error) = room.close().await {
-                        tracing::debug!(%error, "the connection of a move was not closed");
-                    }
+            // A connection that is only dropped stays in the room of the destination.
+            let close = |(room, _events): (Room, _)| async move {
+                if let Err(error) = room.close().await {
+                    tracing::debug!(%error, "the connection of a move was not closed");
                 }
-                None => {
-                    if let Err(error) = api.fail_move(move_id).await {
-                        tracing::debug!(%error, "the failure of a move was not told");
-                    }
-                }
+            };
+            if probe(stopped, token, connect, close).await == Probed::Failed
+                && let Err(error) = api.fail_move(move_id).await
+            {
+                tracing::debug!(%error, "the failure of a move was not told");
             }
         });
         self.moving = Some(Moving {
             call_move: call_move.clone(),
             _stop: stop,
+            task,
             deadline: Instant::now() + MOVE_OUTCOME_LIMIT,
             reloaded: false,
         });
@@ -2133,7 +2265,11 @@ impl Session {
     /// Ends the move that waits: the work that holds the connection to the room of its
     /// destination closes that connection.
     fn end_move(&mut self) {
-        self.moving = None;
+        if let Some(moving) = self.moving.take() {
+            // The stop is dropped here. The work is kept until it has closed what it made.
+            self.probes.retain(|task| !task.is_finished());
+            self.probes.push(moving.task);
+        }
     }
 
     /// Decides a move whose outcome was not told. After a snapshot replaced the state, a
@@ -2208,7 +2344,9 @@ impl Session {
                     }
                 }
             }
-            SessionCommand::Talking(talking) => self.engine.set_talking(talking),
+            SessionCommand::Talking(talking, stops) => {
+                self.engine.set_talking_at(talking, stops);
+            }
             SessionCommand::Volume(account_id, gain) => self.engine.set_volume(account_id, gain),
             SessionCommand::Config(config) => self.engine.set_config(config),
             SessionCommand::RetryMicrophone(seat) => {
@@ -2254,7 +2392,7 @@ impl Session {
                 return;
             }
             let position = self.accepted.position.max(seen.saturating_add(1));
-            self.close_for_grant(position, false);
+            self.close_for_unread_end(position, false);
             // The state that showed the end had no meeting of another presenter.
             self.grants.blocked = false;
             self.grants.presenter = None;
@@ -2274,9 +2412,12 @@ impl Session {
     }
 
     fn apply_controls(&mut self) {
-        let (muted, deafened) = {
+        // The count of closes is read with the setting, under the lock that a close of the
+        // person holds: controls that open the microphone carry a count from before a
+        // close that follows them, so they cannot open the gate after it.
+        let (muted, deafened, stops) = {
             let shared = self.inner.shared();
-            (shared.muted, shared.deafened)
+            (shared.muted, shared.deafened, self.engine.stops())
         };
         let controls = Controls {
             muted,
@@ -2286,10 +2427,11 @@ impl Session {
                 || self.blocks_untold
                 || !self.admitted
                 || self.rejoining,
+            camera_held: !self.admitted,
         };
         if controls != self.controls {
             self.controls = controls;
-            self.engine.set_controls(controls);
+            self.engine.set_controls_at(controls, stops);
         }
     }
 
@@ -2320,10 +2462,26 @@ impl Session {
         }
         if self.refresh.is_some() {
             self.review_move(None);
-            return Fate::Undecided;
+            // No state decides while one is loaded. An end that the events told is an end.
+            let asking = self.asking();
+            return match self.place.fate(None, asking, Instant::now()) {
+                Fate::End(reason) => Fate::End(reason),
+                Fate::Held | Fate::Undecided => Fate::Undecided,
+            };
         }
         let view = self.server.live().view();
         self.read_state(view.status, view.model.as_deref())
+    }
+
+    /// This client asks the server of the call for a place now.
+    fn asking(&self) -> bool {
+        self.rejoining
+            || self.moving.is_some()
+            || self
+                .inner
+                .shared()
+                .joining
+                .is_some_and(|joining| joining.target.server_id == self.target.server_id)
     }
 
     /// `status` and `held`: the status of the event stream and the state that it holds.
@@ -2358,13 +2516,7 @@ impl Session {
         self.review_move(model);
         // This client asks the server for a place now: a join of the person, which ends
         // this call when it has its answer, or a new token for this call.
-        let asking = self.rejoining
-            || self.moving.is_some()
-            || self
-                .inner
-                .shared()
-                .joining
-                .is_some_and(|joining| joining.target.server_id == self.target.server_id);
+        let asking = self.asking();
         let now = Instant::now();
         match (model, told) {
             (Some(model), _) => {
@@ -2395,7 +2547,9 @@ impl Session {
             .call_at(&self.target.place)
             .and_then(|call| call.participant(model.account.id))
             .filter(|own| own.identity == self.place.identity())
-            .filter(|own| !model.seat_stated_outside(&own.identity));
+            .filter(|own| !model.seat_stated_outside(&own.identity))
+            // A seat that a request for a new token gave can still be void (ADR 0785).
+            .filter(|_| !self.place.unsettled());
         let Some(own) = own else {
             if std::mem::replace(&mut self.admitted, false) {
                 self.apply_controls();
@@ -2465,16 +2619,20 @@ impl Session {
                 // The events of that time were not delivered. The end is taken as a
                 // grant.
                 let position = self.accepted.position.max(seen.saturating_add(1));
-                self.close_for_grant(position, hand_raised);
+                self.close_for_unread_end(position, hand_raised);
             } else {
                 // The block holds on this device until the event of its end is read.
                 blocks.0.clone_from(&self.microphone_block);
                 kept = true;
             }
+        } else if self.microphone_block.is_some() && self.grants.block_seen.is_none() {
+            // The block has no position among the events: an answer without a position
+            // told it. Its end cannot be put in order with the event of a grant.
+            self.close_for_unread_end(self.accepted.position, hand_raised);
         } else if behind && self.grants.blocked {
             // The events told a block that no state showed to the session, and the events
             // of its end were not delivered.
-            self.close_for_grant(self.accepted.position, hand_raised);
+            self.close_for_unread_end(self.accepted.position, hand_raised);
         }
         self.grants.kept = kept;
         if behind && !kept {
@@ -2487,13 +2645,15 @@ impl Session {
         self.set_blocks(blocks);
     }
 
-    fn close_for_grant(&mut self, position: u64, hand_raised: bool) {
+    /// Returns whether the setting was closed for this grant: a grant at or before the
+    /// last handled position was answered already.
+    fn close_for_grant(&mut self, position: u64, hand_raised: bool) -> bool {
         if self
             .grants
             .handled
             .is_some_and(|handled| handled >= position)
         {
-            return;
+            return false;
         }
         self.grants.handled = Some(position);
         self.inner.shared().muted = true;
@@ -2506,6 +2666,29 @@ impl Session {
                 }
             });
         }
+        self.apply_controls();
+        self.show();
+        true
+    }
+
+    /// A block ended, and the session cannot read how. The end is taken as a grant: the
+    /// setting is closed, and the person is told why (ADR 0785).
+    fn close_for_unread_end(&mut self, position: u64, hand_raised: bool) {
+        let open = !self.inner.shared().muted;
+        if self.close_for_grant(position, hand_raised) && open {
+            self.inner
+                .view
+                .send_modify(|view| view.closed = Some(MicrophoneClosed::EndOfBlockNotRead));
+        }
+    }
+
+    /// Closes the person's own setting by a rule of the calls, and tells the person why.
+    fn close_setting(&mut self, why: MicrophoneClosed) {
+        self.inner.shared().muted = true;
+        self.inner.view.send_modify(|view| {
+            view.muted = true;
+            view.closed = Some(why);
+        });
         self.apply_controls();
         self.show();
     }
@@ -2531,13 +2714,28 @@ impl Session {
                 self.interrupted_at
                     .get_or_insert_with(OffsetDateTime::now_utc);
             }
-            Connection::Lost(_) => {
+            Connection::Lost(lost) => {
                 self.interrupted_at
                     .get_or_insert_with(OffsetDateTime::now_utc);
                 if self.retry.is_none() && !self.rejoining {
                     self.retry = Some(Instant::now() + self.backoff.take());
+                    if lost == Lost::Removed && self.refresh.is_none() && !self.removal_read {
+                        // The media server removed the device. A rule of the server can
+                        // be the cause, and its event can be on its way: a new token is
+                        // asked for only when a state from after the loss shows the
+                        // place. One state per loss is asked for, also when the engine
+                        // tells the same loss again after the token.
+                        self.refresh = Some(fresh_state(self.server.clone()));
+                        self.removal_read = true;
+                    }
                 }
             }
+        }
+        if state.connection != Connection::Lost(Lost::Removed) {
+            self.removal_read = false;
+        }
+        if state.input_replaced && !self.inner.shared().muted {
+            self.close_setting(MicrophoneClosed::DeviceChanged);
         }
         self.show_with(state);
     }
@@ -2622,6 +2820,11 @@ impl Session {
                                     .iter()
                                     .find(|person| person.identity == answer.identity)
                                     .is_some_and(|person| person.hand_raised);
+                                if new_seat {
+                                    // What the earlier seat held is not a block of this
+                                    // one.
+                                    self.microphone_block = None;
+                                }
                                 let seen = self.grants.block_seen;
                                 self.take_blocks(
                                     (answer.microphone_block.clone(), answer.sound_block.clone()),
@@ -2674,7 +2877,7 @@ impl Session {
         {
             if now < at {
                 wake = wake.min(at);
-            } else if self.fate == Fate::Held {
+            } else if self.fate == Fate::Held && self.refresh.is_none() {
                 // A new token is asked for only while the server shows the place of this
                 // device. A place that the server has ended is not asked for again: a
                 // person whom a moderator removed stays out.

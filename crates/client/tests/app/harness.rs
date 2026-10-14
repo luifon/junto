@@ -243,6 +243,73 @@ struct Initialized;
 impl gpui::Global for Initialized {}
 
 impl Window {
+    /// Runs the work of the application until it has none. A wait of a test has a limit:
+    /// an application that always has work fails the test here, and does not hold it.
+    #[track_caller]
+    pub fn park(&mut self) {
+        let deadline = Instant::now() + PATIENCE;
+        while self.cx.executor().tick() {
+            assert!(
+                Instant::now() < deadline,
+                "after {PATIENCE:?} the application still has work: it does not come to rest"
+            );
+        }
+    }
+
+    /// Gives every window one frame of the display, as the system does at each refresh.
+    /// The test platform has no display: what a window hands to its next frame is taken
+    /// here. Returns how many windows had something for the frame.
+    pub fn frame(&mut self) -> usize {
+        use gpui::AppContext as _;
+        let mut took = 0;
+        for handle in self.cx.windows() {
+            let ran = self
+                .cx
+                .update_window(handle, |_, window, cx| window.simulate_next_frame(cx));
+            took += usize::from(ran.is_ok_and(|ran| ran > 0));
+        }
+        took
+    }
+
+    /// Runs the application until it has no work, with one frame of the display.
+    #[track_caller]
+    pub fn settle(&mut self) {
+        self.park();
+        if self.frame() > 0 {
+            self.park();
+        }
+    }
+
+    /// Presses and releases the pointer on the element with this name as it is drawn now.
+    /// The application does no other work before the press: the control is the one that
+    /// was drawn, also when the state of the application has changed since.
+    #[track_caller]
+    pub fn press_as_drawn(&mut self, selector: &'static str) {
+        use gpui::InputEvent;
+        let bounds = self
+            .cx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{selector} is not drawn"));
+        let (position, modifiers) = (bounds.center(), Modifiers::none());
+        let down = gpui::MouseDownEvent {
+            position,
+            modifiers,
+            button: gpui::MouseButton::Left,
+            click_count: 1,
+            first_mouse: false,
+        };
+        let up = gpui::MouseUpEvent {
+            position,
+            modifiers,
+            button: gpui::MouseButton::Left,
+            click_count: 1,
+        };
+        self.cx.update(|window, cx| {
+            window.dispatch_event(down.to_platform_input(), cx);
+            window.dispatch_event(up.to_platform_input(), cx);
+        });
+    }
+
     /// Ends the application, as closing its window does: the window is removed, and the
     /// state of the application ends with it, with its tasks and its client. A test that
     /// starts the application again on the same data directory closes it first, so that it
@@ -276,7 +343,7 @@ impl Window {
     /// What the window drew last. The client core can be ahead of the window for a
     /// moment; a test reads what a person sees.
     pub fn view(&mut self) -> ShellView {
-        self.cx.run_until_parked();
+        self.settle();
         self.shell
             .read_with(&self.cx, |shell, _| shell.drawn().cloned())
             .expect("the window was drawn")
@@ -288,7 +355,7 @@ impl Window {
     pub fn until(&mut self, what: &str, mut holds: impl FnMut(&mut Self) -> bool) {
         let deadline = Instant::now() + PATIENCE;
         loop {
-            self.cx.run_until_parked();
+            self.settle();
             if holds(self) {
                 return;
             }
@@ -304,31 +371,31 @@ impl Window {
 
     /// True when an element with this name is drawn now.
     pub fn shows(&mut self, selector: &'static str) -> bool {
-        self.cx.run_until_parked();
+        self.settle();
         self.cx.debug_bounds(selector).is_some()
     }
 
     /// Clicks the middle of the element with this name.
     #[track_caller]
     pub fn click(&mut self, selector: &'static str) {
-        self.cx.run_until_parked();
+        self.settle();
         let bounds = self
             .cx
             .debug_bounds(selector)
             .unwrap_or_else(|| panic!("{selector} is not drawn"));
         self.cx.simulate_click(bounds.center(), Modifiers::none());
-        self.cx.run_until_parked();
+        self.settle();
     }
 
     /// Clicks the element with this name when it is drawn now. A test uses it for an
     /// element that a reload of the state takes away for a moment.
     pub fn click_if_shown(&mut self, selector: &'static str) -> bool {
-        self.cx.run_until_parked();
+        self.settle();
         let Some(bounds) = self.cx.debug_bounds(selector) else {
             return false;
         };
         self.cx.simulate_click(bounds.center(), Modifiers::none());
-        self.cx.run_until_parked();
+        self.settle();
         true
     }
 
@@ -347,7 +414,7 @@ impl Window {
     /// name, and releases it.
     #[track_caller]
     pub fn right_click_named(&mut self, name: String) {
-        self.cx.run_until_parked();
+        self.settle();
         let name = selector(name);
         let bounds = self
             .cx
@@ -358,7 +425,7 @@ impl Window {
             .simulate_mouse_down(at, gpui::MouseButton::Right, Modifiers::none());
         self.cx
             .simulate_mouse_up(at, gpui::MouseButton::Right, Modifiers::none());
-        self.cx.run_until_parked();
+        self.settle();
     }
 
     /// Presses and releases keys, as a keyboard does: `press("down enter")`. A focused
@@ -368,7 +435,7 @@ impl Window {
             let keystroke = gpui::Keystroke::parse(key).unwrap();
             self.cx.simulate_keystrokes(key);
             self.cx.simulate_event(gpui::KeyUpEvent { keystroke });
-            self.cx.run_until_parked();
+            self.settle();
         }
     }
 
@@ -380,7 +447,7 @@ impl Window {
         let result = self
             .cx
             .update(|window, cx| shell.update(cx, |shell, cx| act(shell, window, cx)));
-        self.cx.run_until_parked();
+        self.settle();
         result
     }
 

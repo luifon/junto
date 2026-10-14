@@ -193,6 +193,16 @@ impl Shell {
             header
         };
         body = body.child(header);
+        // What the main window tells about the call is told here too: the person can use
+        // this window alone (ADR 0772).
+        let meeting = view
+            .workspace()
+            .and_then(|workspace| workspace.call.as_ref())
+            .and_then(|panel| panel.room.meeting.as_ref())
+            .map(|meeting| self.render_meeting_bar(meeting, &theme, cx));
+        body = body
+            .children(meeting)
+            .children(self.render_call_notices(&view, cx));
         if let Some(workspace) = view.workspace()
             && let (Some(channel), Some(panel)) = (&workspace.channel, &workspace.call)
         {
@@ -290,6 +300,9 @@ impl Shell {
             controls
         };
         body = body.child(controls);
+        if let Some(warning) = &view.controls.warning {
+            body = body.child(self.render_sound_warning(warning, &theme, cx));
+        }
         if let Some(strip) = &view.call {
             body = body.child(self.render_call_strip(strip, &theme, cx));
         }

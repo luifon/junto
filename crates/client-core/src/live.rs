@@ -496,6 +496,23 @@ impl LiveServer {
     }
 }
 
+#[cfg(feature = "test-support")]
+impl LiveServer {
+    /// Shows a status and a state to the readers, as the stream client does.
+    pub fn show_for_test(&self, status: StreamStatus, model: Option<ServerModel>) {
+        self.shared.show(LiveView {
+            status,
+            level: None,
+            model: model.map(Arc::new),
+        });
+    }
+
+    /// Gives a notice to the readers, as the stream client does.
+    pub fn tell_for_test(&self, notice: Notice) {
+        self.shared.tell(notice);
+    }
+}
+
 /// Wakes a reader when the view of one server has changed.
 pub struct LiveWatch {
     receiver: watch::Receiver<LiveView>,

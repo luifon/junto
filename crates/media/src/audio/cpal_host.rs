@@ -84,17 +84,21 @@ fn error_of(error: cpal::Error) -> AudioError {
 }
 
 /// A fault that does not end a stream: the sound had a gap, or the system did not give
-/// the thread of the stream its priority.
-fn passes(error: &cpal::Error) -> bool {
-    matches!(
-        error.kind(),
-        cpal::ErrorKind::Xrun | cpal::ErrorKind::RealtimeDenied
-    )
+/// the thread of the stream its priority. For an output stream also a change of the
+/// default output of the system: the stream follows it by itself and goes on. An input
+/// stream that reports another device has failed: the microphone of a call is not
+/// replaced without the person (ADR 0794).
+fn passes(error: &cpal::Error, output: bool) -> bool {
+    match error.kind() {
+        cpal::ErrorKind::Xrun | cpal::ErrorKind::RealtimeDenied => true,
+        cpal::ErrorKind::DeviceChanged => output,
+        _ => false,
+    }
 }
 
-fn report(mut failed: Failed) -> impl FnMut(cpal::Error) + Send + 'static {
+fn report(mut failed: Failed, output: bool) -> impl FnMut(cpal::Error) + Send + 'static {
     move |error| {
-        if passes(&error) {
+        if passes(&error, output) {
             tracing::debug!(%error, "a sound stream had a fault that passes");
         } else {
             failed(error_of(error));
@@ -152,7 +156,7 @@ where
             converted.extend(samples.iter().map(|sample| f32::from_sample(*sample)));
             deliver(&converted, format);
         },
-        report(failed),
+        report(failed, false),
         Some(OPEN_TIMEOUT),
     )
 }
@@ -181,7 +185,7 @@ where
                 *sample = T::from_sample(*value);
             }
         },
-        report(failed),
+        report(failed, true),
         Some(OPEN_TIMEOUT),
     )
 }
@@ -299,6 +303,17 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_changed_default_output_is_not_a_failure_of_the_stream() {
+        let changed = cpal::Error::new(cpal::ErrorKind::DeviceChanged);
+        assert!(passes(&changed, true));
+        assert!(!passes(&changed, false));
+        let gone = cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable);
+        assert!(!passes(&gone, true) && !passes(&gone, false));
+        let gap = cpal::Error::new(cpal::ErrorKind::Xrun);
+        assert!(passes(&gap, true) && passes(&gap, false));
     }
 
     #[test]

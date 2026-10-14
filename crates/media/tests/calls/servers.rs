@@ -345,7 +345,7 @@ async fn a_renewal_that_waits_does_not_bring_a_removed_person_back() {
                 matches!(
                     view.outcome,
                     Some(Outcome::Ended {
-                        reason: EndReason::Server(_),
+                        reason: EndReason::Server(_) | EndReason::NotRead,
                         ..
                     })
                 ),

@@ -419,15 +419,21 @@ impl AppState {
                 InterfaceSettings::default()
             }
         };
-        let voice = match client.voice().load() {
-            Ok(voice) => voice,
+        let (voice, voice_failed) = match client.voice().load() {
+            Ok(voice) => (voice, None),
             Err(error) => {
                 tracing::warn!(%error, "the sound settings were not read");
-                VoiceSettings::default()
+                let failure = text::flow_error(&FlowError::Storage(error.to_string()));
+                (VoiceSettings::default(), Some(failure))
             }
         };
         let ringer = junto_media::audio::ring::RingPlayer::new(media.host.clone());
         let calls = Calls::new(client.clone(), media);
+        if voice_failed.is_some() {
+            // The settings of the person were not read, and the defaults send an open
+            // microphone all the time. The microphone is closed until the person opens it.
+            calls.mute();
+        }
         calls.set_voice(voice_config(&voice));
         calls.set_share_volume(f32::from(voice.share_volume) / 100.0);
         for (server_id, accounts) in &voice.volumes {
@@ -534,7 +540,7 @@ impl AppState {
             ringer,
             client,
             calls,
-            voice_failed: None,
+            voice_failed,
             camera_devices: Vec::new(),
             recording: recording::RecordingTold::default(),
             #[cfg(feature = "test-support")]
@@ -605,6 +611,11 @@ impl AppState {
             _retry: retry,
             _media: [follow_calls, follow_levels, clock],
         };
+        if state.voice_failed.is_some() {
+            // The microphone was closed for settings that were not read: the person
+            // reads why, wherever the window is.
+            state.pending.call_told = Some(text::SOUND_SETTINGS_NOT_READ.to_owned());
+        }
         state.load_preset_picture(cx);
         state.changed(cx);
         state
@@ -678,6 +689,11 @@ impl AppState {
             // (ADR 0788). The person is told, and the calls put the statement away.
             self.pending.call_told = Some(text::unused_action(unused).to_owned());
             self.calls.dismiss_unused();
+        }
+        if let Some(why) = view.closed {
+            // The calls closed the microphone setting by a rule. The person reads why.
+            self.pending.call_told = Some(text::microphone_closed(why).to_owned());
+            self.calls.dismiss_closed();
         }
         self.known.media.calls = view;
         if entered {

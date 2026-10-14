@@ -1089,13 +1089,10 @@ fn a_drawn_unmute_does_not_open_the_microphone_in_a_replacement_call(cx: &mut Te
         window.shows("may-speak-unmute")
             && window.view().controls.microphone == MicrophoneButton::Muted
     });
-    let seat = scene.window.view().controls.seat.unwrap();
-    // A moderator moves the person, and the person uses the control of the first call.
+    // A moderator moves the person, and the person presses the control of the first call
+    // as it is drawn.
     moved_without_a_drawing(&scene.world, &scene.admin, &scene.window, &daily, &focus);
-    let state = scene.window.state.clone();
-    scene.window.cx.update(|_, cx| {
-        state.update(cx, |state, _| state.open_microphone(&seat));
-    });
+    scene.window.press_as_drawn("may-speak-unmute");
     scene.window.until("the unmute has its result", |window| {
         window.shows("call-told") || !calls.view().muted
     });
@@ -1111,10 +1108,7 @@ fn a_drawn_unmute_does_not_open_the_microphone_in_a_replacement_call(cx: &mut Te
     let drawn = scene.window.view().controls.microphone_action;
     assert!(matches!(drawn, MicrophoneAction::Open(Some(_))));
     moved_without_a_drawing(&scene.world, &scene.admin, &scene.window, &focus, &daily);
-    let state = scene.window.state.clone();
-    scene.window.cx.update(|_, cx| {
-        state.update(cx, |state, _| state.use_microphone(&drawn));
-    });
+    scene.window.press_as_drawn("microphone");
     scene.window.until("the control has its result", |window| {
         window.shows("call-told") || !calls.view().muted
     });

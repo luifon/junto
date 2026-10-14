@@ -32,12 +32,12 @@ In the window a control holds its action from its drawing:
 - The camera control holds "stop", or "start at the seat", from the one reading of the calls that gives its look.
 - The share control ends a share or opens the dialog by the view that the window draws.
 - The control "Unmute" of meeting mode and the control that opens a failed microphone again hold the seat that is drawn.
-- The dialog of a share holds the seat that the window draws at its opening. The main window and the call window close it when the device is at another seat, and the person is told that nothing is shared. The confirm step passes the seat, so a confirmation that runs before the window has closed the dialog shares nothing either. A window that reads the calls in the moment between two calls closes the dialog without that sentence: the notice of the new call tells the change.
+- The dialog of a share holds the seat that the window draws at its opening. The main window and the call window close it when the device is at another seat, and the person is told that nothing is shared. The confirm step passes the seat, so a confirmation that runs before the window has closed the dialog shares nothing either. The sentence is shown also when the call has ended.
 
 ## Consequences
 
 - A person who is moved while a share dialog is open chooses again in the new call.
 - A click on a control that was drawn for another call does nothing but a close, and the person reads why.
 - A control of the microphone or of the camera that two windows show does in each window what that window showed. A second click on a control that another window has already used does not undo it.
-- A request for a new token that gives another identity gives another seat. The camera of the device is published again at that seat (ADR 0770).
+- A request for a new token that gives another identity gives another seat. The camera of the device is published at that seat when the session admits it (ADR 0794).
 - Tests: `an_action_for_another_seat_opens_nothing` and `an_unmute_without_a_call_is_for_no_call` in `calls::ordering_tests` of `crates/media`; `a_share_asked_for_in_one_call_does_not_start_in_the_next` in `crates/media/tests/calls`; `a_share_dialog_belongs_to_the_call_and_the_seat_of_its_opening` and `the_controls_hold_the_action_and_the_seat_that_they_show` in `crates/client`; in the window tests with a media server `a_share_choice_cannot_cross_a_call_move`, `a_rendered_camera_stop_never_starts_a_replacement_call` and `a_drawn_unmute_does_not_open_the_microphone_in_a_replacement_call`.

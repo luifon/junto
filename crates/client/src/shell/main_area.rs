@@ -647,13 +647,12 @@ impl Shell {
         }
     }
 
-    /// The notices above the content: how the last call ended, and the recoveries that
-    /// this device has not acknowledged (ADR 0118). A recovery notice goes only when the
-    /// person presses its button.
-    fn render_notices(
+    /// The notices about the one call of this client: the rules of the call, how the last
+    /// join or call ended, a share that ended by itself, and a request for a recording
+    /// that the server did not take. The main window and the call window draw them.
+    pub(crate) fn render_call_notices(
         &mut self,
         view: &ShellView,
-        theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         // How the last join or call ended. The notice concerns the one call of this
@@ -730,7 +729,20 @@ impl Shell {
                 .chain(share_notice)
                 .chain(recording_notice)
         };
-        let mut notices: Vec<AnyElement> = about_call().collect();
+        about_call().collect()
+    }
+
+    /// The notices above the content: how the last call ended, and the recoveries that
+    /// this device has not acknowledged (ADR 0118). A recovery notice goes only when the
+    /// person presses its button.
+    fn render_notices(
+        &mut self,
+        view: &ShellView,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let mut notices = self.render_call_notices(view, cx);
+        let pending = self.state.read(cx).pending().clone();
         let Some(server) = &view.selected else {
             return notices;
         };

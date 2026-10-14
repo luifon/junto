@@ -213,6 +213,17 @@ pub struct Shell {
     pub(crate) cameras: camera::ShownCameras,
     drawing_call: bool,
     pub(crate) picture_tasks: Vec<Task<()>>,
+    /// The sources of pictures that have a newer picture than the window took: the
+    /// watched share, the small pictures, the cameras. The next frame takes them.
+    pub(crate) pictures_pending: [bool; 3],
+    /// The picture of the watched share that the window took last.
+    pub(crate) main_taken: Option<std::sync::Arc<junto_media::share::picture::PictureFrame>>,
+    /// How often the window was drawn.
+    #[cfg(feature = "test-support")]
+    draws: usize,
+    /// How often received pictures asked for a drawing of the window.
+    #[cfg(feature = "test-support")]
+    pub(crate) picture_draws: usize,
     /// The number of dialogs of a share that this window has opened.
     pub(crate) share_reads: u64,
     /// The volume control of the sound of the watched share.
@@ -536,6 +547,12 @@ impl Shell {
             cameras: HashMap::new(),
             drawing_call: false,
             picture_tasks: Vec::new(),
+            pictures_pending: [false; 3],
+            main_taken: None,
+            #[cfg(feature = "test-support")]
+            draws: 0,
+            #[cfg(feature = "test-support")]
+            picture_draws: 0,
             share_reads: 0,
             share_volume: None,
             recording_details_open: false,
@@ -580,7 +597,7 @@ impl Shell {
             drawn: None,
             _subscriptions: subscriptions,
         };
-        shell.follow_pictures(cx);
+        shell.follow_pictures(window, cx);
         let active = window.is_window_active();
         if !detached {
             shell
@@ -678,6 +695,18 @@ impl Shell {
     #[cfg(feature = "test-support")]
     pub fn drawn(&self) -> Option<&ShellView> {
         self.drawn.as_ref()
+    }
+
+    /// How often the window was drawn for any cause, how often received pictures asked
+    /// for a drawing, and the width of the picture of the watched share that the window
+    /// holds.
+    #[cfg(feature = "test-support")]
+    pub fn draws(&self) -> (usize, usize, Option<u32>) {
+        let width = self.pictures.main.as_ref().map(|(_, image)| {
+            let size = image.size(0);
+            u32::try_from(size.width.0).unwrap_or_default()
+        });
+        (self.draws, self.picture_draws, width)
     }
 
     /// True when the settings mark the text of the name field as the stored name.
@@ -995,6 +1024,10 @@ fn logical_width(window: &Window) -> f32 {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(feature = "test-support")]
+        {
+            self.draws += 1;
+        }
         if self.detached {
             return self.render_detached(window, cx);
         }

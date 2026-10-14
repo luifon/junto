@@ -342,10 +342,8 @@ fn a_share_choice_cannot_cross_a_call_move(cx: &mut TestAppContext) {
             .shell
             .read_with(&window.cx, |shell, _| shell.share_picker_is_open())
     );
-    let shell = window.shell.clone();
-    window.cx.update(|window, cx| {
-        shell.update(cx, |shell, cx| shell.start_chosen_share(window, cx));
-    });
+    // The button of the dialog as it is drawn: the window does no other work before.
+    window.press_as_drawn("start-share");
     window.until("the confirmed share has its result", |window| {
         window.shows("call-told") || share_of_the_window(&calls) != ShareState::Off
     });
@@ -383,4 +381,89 @@ fn a_share_choice_cannot_cross_a_call_move(cx: &mut TestAppContext) {
     });
     window.click("leave-call");
     world.run(caller.calls.leave());
+}
+
+/// The call window tells what the main window tells about the call: the person can use
+/// the call window alone (ADR 0772).
+#[gpui::test]
+#[ignore = "needs PostgreSQL and LiveKit"]
+fn the_detached_call_draws_the_notices_and_the_bars_of_its_call(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server_with_media("Detached notices");
+    let admin = world.owner(&server);
+    let caller = admin.caller(&world);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
+    voice_channel(&world, &admin, &mut window, ROOM);
+    let voice = room(&mut window);
+    let target = CallTarget {
+        server_id: admin.handle.id(),
+        place: CallPlace::Channel {
+            workspace_id: window.view().workspace().unwrap().id,
+            channel_id: voice.id,
+        },
+    };
+    enter(&world, &caller, target);
+    window.click_channel(ROOM);
+    window.click("join-call");
+    window.until("connected", |window| {
+        window
+            .view()
+            .call
+            .is_some_and(|call| call.phase == Phase::Connected)
+    });
+    let member_id = window.view().person.account_id.unwrap();
+    let main = window.cx.update(|window, _| window.window_handle());
+    window.click("detach-call");
+    let handle = cx
+        .windows()
+        .into_iter()
+        .find(|handle| *handle != main)
+        .unwrap();
+    let mut detached = gpui::VisualTestContext::from_window(handle, cx);
+    let mut shown = |window: &mut Window, what: &str, selector: &'static str| {
+        window.until(what, |window| {
+            window.settle();
+            detached.debug_bounds(selector).is_some()
+        });
+    };
+    let api = admin.handle.api();
+
+    // A moderator blocks the microphone: the call window tells who holds it.
+    world
+        .run(api.block_microphone(voice.id, member_id))
+        .unwrap();
+    shown(&mut window, "the warning of the block", "sound-warning");
+    // The block ends, and the people hear the person again: the call window tells it.
+    world
+        .run(api.unblock_microphone(voice.id, member_id))
+        .unwrap();
+    shown(
+        &mut window,
+        "the notice of the open microphone",
+        "call-told",
+    );
+
+    // The administrator shares and runs meeting mode: the call window has the bar.
+    caller.calls.start_share(CaptureRequest {
+        picture: PictureSource::Display(1),
+        sound: SoundChoice::None,
+        quality: ShareQuality::default(),
+    });
+    let started = std::time::Instant::now();
+    while let Err(error) = world.run(api.start_meeting(voice.id)) {
+        assert!(
+            started.elapsed() < PATIENCE,
+            "meeting mode did not start: {error}"
+        );
+        window.settle();
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    shown(&mut window, "the bar of meeting mode", "meeting-bar");
+    // The presenter lets the person speak: the statement and its control are there.
+    world
+        .run(api.unblock_microphone(voice.id, member_id))
+        .unwrap();
+    shown(&mut window, "the person may speak", "may-speak-unmute");
+    world.run(caller.calls.leave());
+    window.click("leave-call");
 }

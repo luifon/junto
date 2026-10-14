@@ -214,3 +214,37 @@ fn an_invitation_that_is_not_shown_names_no_caller_for_the_profile_reads() {
     assert!(hidden.invitations.is_empty());
     assert!(hidden.wanted_people[&server].accounts.is_empty());
 }
+
+#[test]
+fn what_is_held_of_a_server_is_dropped_with_its_account() {
+    let (server, own, invitation) = ring();
+    let other = AccountId::generate();
+    let held = |calls: &mut DirectCalls| {
+        calls.see(server, own, &invitation, Instant::now());
+        calls.finished.insert((server, other), RingOutcome::Missed);
+    };
+    let mut calls = DirectCalls::default();
+    held(&mut calls);
+    // The same account: nothing is dropped.
+    calls.own(&[(server, own)].into_iter().collect());
+    calls.own(&[(server, own)].into_iter().collect());
+    assert_eq!(calls.finished.len(), 1);
+    assert_eq!(calls.rings.len(), 1);
+    // The device has another account on the server.
+    calls.own(&[(server, AccountId::generate())].into_iter().collect());
+    assert!(
+        calls.finished.is_empty() && calls.rings.is_empty(),
+        "the next account sees the outcome of a call of the account before it"
+    );
+    // The device has no account there, and the server is not saved any more.
+    for accounts in [
+        HashMap::new(),
+        [(ServerId::generate(), own)].into_iter().collect(),
+    ] {
+        let mut calls = DirectCalls::default();
+        calls.own(&[(server, own)].into_iter().collect());
+        held(&mut calls);
+        calls.own(&accounts);
+        assert!(calls.finished.is_empty() && calls.rings.is_empty());
+    }
+}

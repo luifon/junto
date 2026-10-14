@@ -17,10 +17,15 @@ pub(super) struct Sink {
     source: Mutex<Option<NativeVideoSource>>,
     last: Mutex<Option<Arc<dyn VideoBuffer>>>,
     ended: AtomicBool,
+    stops: Arc<Stops>,
+    /// The count of camera stops when this camera was asked for.
+    stop: u64,
 }
 impl CameraSink for Sink {
     fn picture(&self, frame: Arc<dyn VideoBuffer>) {
-        if self.ended.load(Ordering::Acquire) {
+        if self.ended.load(Ordering::Acquire)
+            || self.stops.camera.load(Ordering::Relaxed) != self.stop
+        {
             return;
         }
         if let Some(source) = &*self.source.lock().unwrap_or_else(PoisonError::into_inner) {
@@ -46,8 +51,55 @@ pub(super) struct OwnCamera {
     stream: Option<CaptureStream>,
     task: JoinHandle<()>,
     publication: Publication,
+    /// The number of the publication that this camera asked for last. The result of a
+    /// publication with another number is not the publication of the camera: the camera
+    /// was held, or the connection was lost, after the request.
+    round: u64,
     returning: Option<TrackSid>,
     seen: Option<Arc<dyn VideoBuffer>>,
+}
+impl OwnCamera {
+    /// Ends the publication of the camera and keeps the capture. A publication that was
+    /// asked for and has no result yet is old from now on. Returns the track that was
+    /// published.
+    fn unpublish(&mut self) -> Option<LocalTrackPublication> {
+        self.round += 1;
+        *self
+            .sink
+            .source
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
+        self.returning = None;
+        match std::mem::replace(&mut self.publication, Publication::None) {
+            Publication::Published(publication) => Some(publication),
+            Publication::None | Publication::Publishing => None,
+        }
+    }
+}
+
+/// What becomes of the result of a publication of the camera.
+#[derive(Debug, PartialEq, Eq)]
+enum Taken {
+    /// It is the publication of the camera.
+    Kept,
+    /// The publication failed, and the camera ends.
+    Failed,
+    /// A track was published that is not the one of the camera: it is withdrawn.
+    Withdrawn,
+    /// A failure of a publication that the camera does not wait for.
+    Dropped,
+}
+
+/// `current`: the number of the publication that the camera of that capture waits for,
+/// absent when that camera has ended. `round`: the number of the publication with this
+/// result.
+fn taken(current: Option<u64>, round: u64, published: bool) -> Taken {
+    match (current == Some(round), published) {
+        (true, true) => Taken::Kept,
+        (true, false) => Taken::Failed,
+        (false, true) => Taken::Withdrawn,
+        (false, false) => Taken::Dropped,
+    }
 }
 impl Drop for OwnCamera {
     fn drop(&mut self) {
@@ -72,7 +124,9 @@ impl Drop for RemoteCamera {
     }
 }
 impl Actor {
-    pub(super) fn start_camera(&mut self, device: Option<String>) {
+    /// `stop`: the count of camera stops when the start was asked for. After a later stop
+    /// the camera sends no frame.
+    pub(super) fn start_camera(&mut self, device: Option<String>, stop: u64) {
         self.end_camera(None);
         if let Some(error) =
             start_error(self.connection() == Connection::Connected, self.may_send(1))
@@ -88,6 +142,8 @@ impl Actor {
             source: Mutex::new(None),
             last: Mutex::new(None),
             ended: AtomicBool::new(false),
+            stops: self.stops.clone(),
+            stop,
         });
         let started = Arc::new(Mutex::new(None));
         let (capture, target, result, internal) = (
@@ -117,6 +173,7 @@ impl Actor {
             stream: None,
             task,
             publication: Publication::None,
+            round: 0,
             returning: None,
             seen: None,
         });
@@ -144,18 +201,24 @@ impl Actor {
     }
     pub(super) fn pause_camera(&mut self) {
         if let Some(camera) = &mut self.camera {
-            *camera
-                .sink
-                .source
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner) = None;
-            camera.publication = Publication::None;
-            camera.returning = None;
+            // The connection of the track is gone: nothing is withdrawn.
+            camera.unpublish();
             self.change(|s| s.camera = CameraState::Starting);
         }
     }
+    /// The seat is not admitted any more: the track of the camera is withdrawn, and the
+    /// capture goes on for the next publication.
+    pub(super) fn hold_camera(&mut self) {
+        let Some(camera) = self.camera.as_mut() else {
+            return;
+        };
+        if let Some(publication) = camera.unpublish() {
+            self.withdraw(publication);
+        }
+        self.change(|s| s.camera = CameraState::Starting);
+    }
     pub(super) fn publish_camera(&mut self) {
-        if self.room.is_none() {
+        if self.room.is_none() || self.controls.camera_held {
             return;
         }
         if !self.may_send(1) {
@@ -178,6 +241,8 @@ impl Actor {
         };
         let generation = camera.generation;
         let attempt = self.attempt;
+        camera.round += 1;
+        let round = camera.round;
         let source = NativeVideoSource::new(
             VideoResolution {
                 width: stream.width,
@@ -225,29 +290,33 @@ impl Actor {
                 Ok(Err(error)) => Err(error.to_string()),
                 Err(_) => Err("camera publication timed out".to_owned()),
             };
-            let _ = internal.send(Internal::CameraPublished(generation, attempt, result));
+            let _ = internal.send(Internal::CameraPublished(
+                generation, attempt, round, result,
+            ));
         });
     }
     pub(super) fn camera_published(
         &mut self,
         generation: u64,
         attempt: u64,
+        round: u64,
         result: Result<LocalTrackPublication, String>,
     ) {
         if attempt != self.attempt {
             return;
         }
-        match (
-            self.camera.as_mut().filter(|c| c.generation == generation),
-            result,
-        ) {
-            (Some(camera), Ok(publication)) => {
+        let camera = self.camera.as_mut().filter(|c| c.generation == generation);
+        let current = camera.as_ref().map(|camera| camera.round);
+        match (taken(current, round, result.is_ok()), camera, result) {
+            (Taken::Kept, Some(camera), Ok(publication)) => {
                 camera.publication = Publication::Published(publication);
                 self.change(|s| s.camera = CameraState::Running);
             }
-            (Some(_), Err(error)) => self.end_camera(Some(CameraError::Failed(error))),
-            (None, Ok(publication)) => self.withdraw(publication),
-            (None, Err(_)) => {}
+            (Taken::Failed, _, Err(error)) => self.end_camera(Some(CameraError::Failed(error))),
+            // The camera was held, or it ended, while the media server published the
+            // track: the track is not the one of the camera.
+            (_, _, Ok(publication)) => self.withdraw(publication),
+            (_, _, Err(_)) => {}
         }
     }
     pub(super) fn camera_ended(&mut self, generation: u64, error: CameraError) {
@@ -450,6 +519,53 @@ fn start_error(connected: bool, allowed: bool) -> Option<CameraError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A camera with a capture and a publication that the media server has not answered.
+    fn publishing() -> OwnCamera {
+        let (internal, _) = mpsc::unbounded_channel();
+        let sink = Arc::new(Sink {
+            generation: 1,
+            internal,
+            source: Mutex::new(None),
+            last: Mutex::new(None),
+            ended: AtomicBool::new(false),
+            stops: Arc::new(Stops::default()),
+            stop: 0,
+        });
+        OwnCamera {
+            generation: 1,
+            sink,
+            started: Arc::new(Mutex::new(None)),
+            stream: None,
+            task: tokio::spawn(async {}),
+            publication: Publication::Publishing,
+            round: 1,
+            returning: None,
+            seen: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_publication_that_ends_after_a_hold_is_not_the_publication_of_the_camera() {
+        // The media server answers while the camera waits for it.
+        let camera = publishing();
+        assert_eq!(taken(Some(camera.round), 1, true), Taken::Kept);
+        assert_eq!(taken(Some(camera.round), 1, false), Taken::Failed);
+        // The seat is not admitted any more, or the connection is lost, before the answer.
+        let mut camera = publishing();
+        assert!(camera.unpublish().is_none());
+        assert!(matches!(camera.publication, Publication::None));
+        assert_eq!(
+            taken(Some(camera.round), 1, true),
+            Taken::Withdrawn,
+            "a track from before the hold stays published at a seat that is not admitted"
+        );
+        // A failure of that publication does not end the camera.
+        assert_eq!(taken(Some(camera.round), 1, false), Taken::Dropped);
+        // The camera has ended.
+        assert_eq!(taken(None, 1, true), Taken::Withdrawn);
+        assert_eq!(taken(None, 1, false), Taken::Dropped);
+    }
+
     #[test]
     fn a_camera_waiting_for_connection_does_not_claim_a_server_block() {
         assert_ne!(start_error(false, true), Some(CameraError::Blocked));

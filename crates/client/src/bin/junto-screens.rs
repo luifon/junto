@@ -741,6 +741,7 @@ fn in_call(phase: Phase) -> MediaSnapshot {
             }),
             outcome: None,
             unused: None,
+            closed: None,
         },
         levels: ShownLevels {
             input: 5,

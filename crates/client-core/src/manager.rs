@@ -760,6 +760,12 @@ impl ServerHandle {
         async move { work.await.unwrap_or(Err(ApiError::Stopped)) }
     }
 
+    /// Sets the state of the access flow, without a server.
+    #[cfg(feature = "test-support")]
+    pub fn set_access_for_test(&self, access: AccessState) {
+        lock(&self.server.state).access = access;
+    }
+
     /// The account of the session that this device holds on the server now.
     pub fn account(&self) -> Option<AccountId> {
         lock(&self.server.state)

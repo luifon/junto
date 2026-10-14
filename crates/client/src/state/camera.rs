@@ -9,6 +9,16 @@ impl AppState {
         self.calls.view()
     }
 
+    /// The calls as the state of the application has taken them last. They change when
+    /// the state has done its work for a change of the calls.
+    pub fn shown_calls(&self) -> junto_media::calls::CallsView {
+        #[cfg(feature = "test-support")]
+        if let Some(media) = &self.media_fixture {
+            return media.calls.clone();
+        }
+        self.known.media.calls.clone()
+    }
+
     /// What the camera control does as it is drawn now: it stops a camera that starts or
     /// runs, and starts one at the seat of the call. Absent without a call.
     pub fn camera_action(&self) -> Option<CameraAction> {

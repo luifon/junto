@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -71,6 +72,9 @@ const ROOM_CLOSE_LIMIT: Duration = Duration::from_secs(3);
 /// A leave that has not ended after this time is given up: a room that cannot be left
 /// does not stay in memory.
 const ROOM_LEAVE_END: Duration = Duration::from_secs(30);
+/// How long the capture of a camera goes on without a media connection. After it the
+/// camera ends, and the person starts it again.
+const CAMERA_IDLE_LIMIT: Duration = Duration::from_secs(30);
 /// A device that fails is opened again once. A stream that the engine opened in this way
 /// and that fails again within this time stays closed until the person acts.
 const RECOVERY_SPAN: Duration = Duration::from_secs(5);
@@ -106,6 +110,9 @@ pub struct Controls {
     pub microphone_blocked: bool,
     /// A moderator blocked the sound. The client applies it (ADR 0503).
     pub sound_blocked: bool,
+    /// The camera is not published: the server has not listed the seat of this device, or
+    /// the events up to the answer that gave the seat were not read (ADR 0785).
+    pub camera_held: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,6 +165,10 @@ pub struct EngineState {
     /// The microphone track is published in the room.
     pub published: bool,
     pub input_device: Option<DeviceInfo>,
+    /// After a failure of the input stream the engine opened the microphone on another
+    /// device than before. It sends nothing from it until the person's own setting was
+    /// closed once: the person did not choose that device for the call (ADR 0794).
+    pub input_replaced: bool,
     pub output: OutputState,
     pub output_device: Option<DeviceInfo>,
     /// The share of this device.
@@ -214,15 +225,19 @@ impl Default for Watching {
 }
 
 enum Command {
-    StartCamera(Option<String>),
+    /// The number is the count of camera stops when the start was asked for.
+    StartCamera(Option<String>, u64),
     StopCamera,
-    Controls(Controls),
-    Talking(bool),
+    /// The number is the count of closes of the microphone when the controls were sent.
+    Controls(Controls, u64),
+    /// The number is the count of closes of the microphone when the key state was sent.
+    Talking(bool, u64),
     Volume(AccountId, f32),
     Config(VoiceConfig),
     Reconnect(MediaJoin),
     RetryMicrophone,
-    StartShare(CaptureRequest),
+    /// The number is the count of share stops when the start was asked for.
+    StartShare(CaptureRequest, u64),
     /// Ends the own share, and puts away the statement that a share ended by itself.
     StopShare,
     Watch(Option<ShareId>),
@@ -243,7 +258,7 @@ type Events = mpsc::UnboundedReceiver<RoomEvent>;
 enum Internal {
     CameraStarted(u64),
     CameraEnded(u64, crate::camera::CameraError),
-    CameraPublished(u64, u64, Result<LocalTrackPublication, String>),
+    CameraPublished(u64, u64, u64, Result<LocalTrackPublication, String>),
     CameraDue(u64, TrackSid),
     Connected(u64, Result<(Room, Events), String>),
     Permission(MicrophoneAccess),
@@ -260,6 +275,9 @@ enum Internal {
     ShareTrackDue(u64, u64, ShareTrack),
     /// The time for the microphone track to return has passed.
     MicrophoneDue(u64),
+    /// The time that a camera capture may wait for a media connection has passed: the
+    /// number of the wait.
+    CameraIdle(u64),
     SharePictureSize(TrackSid, (u32, u32)),
 }
 
@@ -268,13 +286,34 @@ enum Internal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Asked {
     Controls(Controls),
+    /// The talk key, with the count of closes that the request carried.
+    Talking(bool, u64),
     Camera,
     Microphone,
     Share,
 }
 
+/// True when the microphone that opened took the place of the microphone of the call
+/// without a choice of the person: the call sent from `used` before, and the device that
+/// opened is neither that one nor the one that the person chose in the sound settings. A
+/// chosen device that was absent and is there again is the choice of the person.
+fn replaces(used: Option<&DeviceId>, opened: &DeviceId, chosen: Option<&DeviceId>) -> bool {
+    used.is_some_and(|used| used != opened) && chosen != Some(opened)
+}
+
+/// How often the camera and the share of an engine were stopped from its handle. A capture
+/// holds the count of its start; its frames are dropped from the moment at which the count
+/// is another one, before the engine task has taken the stop (ADR 0794).
+#[derive(Debug, Default)]
+pub(crate) struct Stops {
+    pub(crate) camera: AtomicU64,
+    pub(crate) share: AtomicU64,
+}
+
 /// The media connection of one call. Dropping it ends the connection.
 pub struct Engine {
+    link: Arc<CaptureLink>,
+    stops: Arc<Stops>,
     #[cfg(test)]
     asked: Arc<Mutex<Vec<Asked>>>,
     camera_pictures: watch::Receiver<HashMap<ShareId, Arc<crate::camera::CameraFrame>>>,
@@ -306,10 +345,17 @@ impl Engine {
     pub fn start_camera(&self, device: Option<String>) {
         #[cfg(test)]
         self.asked_for(Asked::Camera);
-        let _ = self.commands.send(Command::StartCamera(device));
+        let stops = self.stops.camera.load(Ordering::Relaxed);
+        let _ = self.commands.send(Command::StartCamera(device, stops));
     }
+    /// Stops the camera. Its frames are dropped from now on.
     pub fn stop_camera(&self) {
+        self.stops.camera.fetch_add(1, Ordering::Relaxed);
         let _ = self.commands.send(Command::StopCamera);
+    }
+    /// The gate of the microphone of this engine. Who closes it stops the frames at once.
+    pub(crate) fn gate(&self) -> Arc<CaptureLink> {
+        self.link.clone()
     }
     pub fn camera_pictures(
         &self,
@@ -335,6 +381,7 @@ impl Engine {
             access,
             published: false,
             input_device: None,
+            input_replaced: false,
             output: OutputState::Closed,
             output_device: None,
             share: ShareState::Off,
@@ -353,6 +400,7 @@ impl Engine {
         let (frames, frames_taken) = mpsc::channel(WAITING_FRAMES);
         let source: Arc<Mutex<Option<NativeAudioSource>>> = Arc::default();
         let link = Arc::new(CaptureLink::default());
+        let stops = Arc::new(Stops::default());
         let pump = runtime.spawn(pump(
             FrameQueue::new(link.clone(), frames_taken),
             source.clone(),
@@ -376,7 +424,11 @@ impl Engine {
             internal,
             processor: Arc::new(Processor::new(config.processing)),
             mixer: Mixer::shared(),
-            link,
+            link: link.clone(),
+            stops: stops.clone(),
+            input_held: false,
+            input_used: None,
+            camera_wait: (0, false),
             frames,
             source,
             pump,
@@ -410,6 +462,8 @@ impl Engine {
         };
         runtime.spawn(actor.run(join, taken, internal_taken));
         Self {
+            link,
+            stops,
             #[cfg(test)]
             asked: Arc::default(),
             camera_pictures: camera_seen,
@@ -435,11 +489,14 @@ impl Engine {
     pub fn start_share(&self, request: CaptureRequest) {
         #[cfg(test)]
         self.asked_for(Asked::Share);
-        let _ = self.commands.send(Command::StartShare(request));
+        let stops = self.stops.share.load(Ordering::Relaxed);
+        let _ = self.commands.send(Command::StartShare(request, stops));
     }
 
-    /// Ends the share of this device, and puts away the statement that one ended.
+    /// Ends the share of this device, and puts away the statement that one ended. Its
+    /// pictures and its sound are dropped from now on.
     pub fn stop_share(&self) {
+        self.stops.share.fetch_add(1, Ordering::Relaxed);
         let _ = self.commands.send(Command::StopShare);
     }
 
@@ -481,14 +538,39 @@ impl Engine {
     }
 
     pub fn set_controls(&self, controls: Controls) {
-        #[cfg(test)]
-        self.asked_for(Asked::Controls(controls));
-        let _ = self.commands.send(Command::Controls(controls));
+        self.set_controls_at(controls, self.link.stops());
     }
 
-    /// The push-to-talk key is held or released.
+    /// As [`Engine::set_controls`], for a sender that read what the controls tell when the
+    /// count of closes of the microphone was `read` ([`Engine::stops`]). A close of the
+    /// microphone does not wait for the engine task; an open does, and an open that was
+    /// read before a later close does not open after it.
+    pub fn set_controls_at(&self, controls: Controls, read: u64) {
+        #[cfg(test)]
+        self.asked_for(Asked::Controls(controls));
+        let closes = controls.muted || controls.microphone_blocked;
+        let stops = self.link.count_for(closes, read);
+        let _ = self.commands.send(Command::Controls(controls, stops));
+    }
+
+    /// The count of closes of the microphone from outside the engine task.
+    pub fn stops(&self) -> u64 {
+        self.link.stops()
+    }
+
+    /// The push-to-talk key is held or released. A release stops the frames at once.
     pub fn set_talking(&self, talking: bool) {
-        let _ = self.commands.send(Command::Talking(talking));
+        self.set_talking_at(talking, self.link.count_for(!talking, self.link.stops()));
+    }
+
+    /// As [`Engine::set_talking`], for a sender that took the press or the release of the
+    /// key when the count of closes of the microphone was `stops`, and that counted the
+    /// release itself ([`CaptureLink::stop_now`]). A press that was taken before a later
+    /// release does not open after it.
+    pub fn set_talking_at(&self, talking: bool, stops: u64) {
+        #[cfg(test)]
+        self.asked_for(Asked::Talking(talking, stops));
+        let _ = self.commands.send(Command::Talking(talking, stops));
     }
 
     /// The volume of one person: 1.0 is 100 %, and 2.0 is the most.
@@ -513,8 +595,11 @@ impl Engine {
         let _ = self.commands.send(Command::RetryMicrophone);
     }
 
-    /// Leaves the room and closes the devices.
+    /// Leaves the room and closes the devices. Nothing of this device is sent from now on.
     pub fn close(self) -> impl Future<Output = ()> + Send + 'static {
+        self.link.stop_now();
+        self.stops.camera.fetch_add(1, Ordering::Relaxed);
+        self.stops.share.fetch_add(1, Ordering::Relaxed);
         let (done, closed) = oneshot::channel();
         let _ = self.commands.send(Command::Close(done));
         async move {
@@ -589,6 +674,15 @@ struct Actor {
     processor: Arc<Processor>,
     mixer: Arc<Mixer>,
     link: Arc<CaptureLink>,
+    stops: Arc<Stops>,
+    /// The microphone runs on another device than the call used before, and nothing is
+    /// sent from it until the person's own setting was closed once.
+    input_held: bool,
+    /// The input device that the call opened last.
+    input_used: Option<DeviceId>,
+    /// The wait of a camera for a media connection: its number, and whether its time
+    /// runs. A connection ends the wait.
+    camera_wait: (u64, bool),
     frames: mpsc::Sender<Frame>,
     source: Arc<Mutex<Option<NativeAudioSource>>>,
     pump: JoinHandle<()>,
@@ -772,20 +866,32 @@ impl Actor {
 
     async fn command(&mut self, command: Command, events: &mut Option<Events>) {
         match command {
-            Command::StartCamera(device) => self.start_camera(device),
+            Command::StartCamera(device, stops) => self.start_camera(device, stops),
             Command::StopCamera => self.end_camera(None),
-            Command::Controls(controls) => {
+            Command::Controls(controls, stops) => {
                 let before = std::mem::replace(&mut self.controls, controls);
+                if controls.muted && self.input_held {
+                    // The person's own setting is closed: it holds the microphone now.
+                    self.input_held = false;
+                    self.change(|state| state.input_replaced = false);
+                }
                 if before.microphone_blocked != controls.microphone_blocked {
                     self.sync_microphone();
                     self.sync_share_sound();
                 }
                 self.sync_gate();
+                self.link.take_stops(stops);
                 self.sync_sound();
+                if before.camera_held && !controls.camera_held {
+                    self.publish_camera();
+                } else if controls.camera_held && !before.camera_held {
+                    self.hold_camera();
+                }
             }
-            Command::Talking(talking) => {
+            Command::Talking(talking, stops) => {
                 self.talking = talking;
                 self.sync_gate();
+                self.link.take_stops(stops);
             }
             Command::Volume(account_id, gain) => {
                 let gain = gain.clamp(0.0, MAX_GAIN);
@@ -825,7 +931,7 @@ impl Actor {
                     self.retry_capture();
                 }
             }
-            Command::StartShare(request) => self.start_share(request),
+            Command::StartShare(request, stops) => self.start_share(request, stops),
             Command::StopShare => self.end_share(None),
             Command::Watch(choice) => self.set_watch(choice),
             Command::ShareVolume(gain) => self.set_share_volume(gain),
@@ -851,8 +957,8 @@ impl Actor {
         match message {
             Internal::CameraStarted(generation) => self.camera_started(generation),
             Internal::CameraEnded(generation, error) => self.camera_ended(generation, error),
-            Internal::CameraPublished(generation, attempt, result) => {
-                self.camera_published(generation, attempt, result)
+            Internal::CameraPublished(generation, attempt, round, result) => {
+                self.camera_published(generation, attempt, round, result)
             }
             Internal::CameraDue(generation, sid) => self.camera_due(generation, sid),
             Internal::Connected(attempt, result) => {
@@ -866,6 +972,7 @@ impl Actor {
                     Ok((room, taken)) => {
                         self.room = Some(room);
                         *events = Some(taken);
+                        self.camera_wait = (self.camera_wait.0 + 1, false);
                         self.change(|state| state.connection = Connection::Connected);
                         self.open_playout();
                         self.sync_microphone();
@@ -874,6 +981,7 @@ impl Actor {
                     Err(error) => {
                         tracing::warn!(%error, "the media connection of the call was not made");
                         self.change(|state| state.connection = Connection::Lost(Lost::Failed));
+                        self.camera_waits();
                     }
                 }
             }
@@ -935,6 +1043,14 @@ impl Actor {
                 }
             }
             Internal::SharePictureSize(sid, size) => self.picture_size(&sid, size),
+            Internal::CameraIdle(wait) => {
+                if self.camera_wait == (wait, true) {
+                    self.camera_wait.1 = false;
+                    if self.camera.is_some() {
+                        self.end_camera(Some(crate::camera::CameraError::Interrupted));
+                    }
+                }
+            }
         }
     }
 
@@ -1099,6 +1215,20 @@ impl Actor {
         self.pause_camera();
         self.reset_connection(events).await;
         self.change(|state| state.connection = Connection::Lost(lost));
+        self.camera_waits();
+    }
+
+    /// The capture of a camera goes on without a media connection for a bounded time,
+    /// from the first loss until a connection is made, however many tokens are tried.
+    fn camera_waits(&mut self) {
+        if self.camera.is_some() && !self.camera_wait.1 {
+            self.camera_wait.1 = true;
+            let (wait, internal) = (self.camera_wait.0, self.internal.clone());
+            self.runtime.spawn(async move {
+                tokio::time::sleep(CAMERA_IDLE_LIMIT).await;
+                let _ = internal.send(Internal::CameraIdle(wait));
+            });
+        }
     }
 
     /// Leaves the room, if there is one, and closes the devices.
@@ -1164,6 +1294,10 @@ impl Actor {
 
     /// The person asks for the microphone again: after a failure, or with another device.
     fn retry_capture(&mut self) {
+        // The person asks for a microphone: the device that opens is the one of the call.
+        self.input_used = None;
+        self.input_held = false;
+        self.change(|state| state.input_replaced = false);
         self.capture_stopped = false;
         self.capture_recovered = None;
         self.sync_microphone();
@@ -1231,10 +1365,20 @@ impl Actor {
         match opened {
             Ok(stream) => {
                 let device = stream.device.clone();
+                // The call sent from another device before: after a failure, a lost
+                // connection or a block, the chosen device is gone and this one took its
+                // place. The person did not choose it for the call, so nothing is sent
+                // from it until the person's own setting was closed once.
+                let used = self.input_used.replace(device.id.clone());
+                let replaced =
+                    replaces(used.as_ref(), &device.id, self.config.input_device.as_ref());
+                self.input_held |= replaced && !self.controls.muted;
+                let held = self.input_held;
                 self.capture = Some(stream);
                 self.change(|state| {
                     state.microphone = MicrophoneState::Running;
                     state.input_device = Some(device);
+                    state.input_replaced = held;
                 });
                 self.sync_gate();
             }
@@ -1316,7 +1460,8 @@ impl Actor {
     /// it or push-to-talk waits for its key. A mute is also told to the room, so that the
     /// media server forwards nothing.
     fn sync_gate(&self) {
-        let open = !self.controls.muted && (!self.config.push_to_talk || self.talking);
+        let open =
+            !self.controls.muted && !self.input_held && (!self.config.push_to_talk || self.talking);
         self.link.set_open(open && self.capture.is_some());
         if let Publication::Published(publication) = &self.publication
             && publication.is_muted() != self.controls.muted
@@ -1523,6 +1668,24 @@ mod tests {
         );
 
         assert_eq!(within(ROOM_CLOSE_LIMIT, async { 7 }).await, Some(7));
+    }
+
+    #[test]
+    fn a_chosen_microphone_that_is_there_again_is_not_a_replacement() {
+        let (desk, built_in) = (DeviceId("desk".to_owned()), DeviceId("built-in".to_owned()));
+        // The first microphone of a call replaces nothing.
+        assert!(!replaces(None, &built_in, Some(&desk)));
+        assert!(!replaces(Some(&desk), &desk, Some(&desk)));
+        // The chosen one is gone, and another one opens in its place.
+        assert!(replaces(Some(&desk), &built_in, Some(&desk)));
+        // No device is chosen, and the default of the system is another one now.
+        assert!(replaces(Some(&desk), &built_in, None));
+        // The chosen one was absent when the call began and is there again: the person
+        // chose it.
+        assert!(
+            !replaces(Some(&built_in), &desk, Some(&desk)),
+            "the device that the person chose is held as a replacement"
+        );
     }
 
     #[test]

@@ -15,7 +15,7 @@ required-features = ["test-support"]
 [features]
 # The synthetic sound devices and the tone analysis, for the tests of this crate and of the
 # desktop client.
-test-support = []
+test-support = ["junto-client-core/test-support"]
 
 [dependencies]
 junto-client-core = { path = "../client-core" }

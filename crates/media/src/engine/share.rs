@@ -29,7 +29,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use super::order::in_order;
-use super::{Actor, Internal, PUBLISH_LIMIT, PUBLISH_RETRY, Publication, account_of};
+use super::{Actor, Internal, PUBLISH_LIMIT, PUBLISH_RETRY, Publication, Stops, account_of};
 use crate::audio::playout::{MAX_GAIN, SourceHandle};
 use crate::audio::{Format, PLAYOUT_CHANNELS, SAMPLE_RATE};
 use crate::share::picture::{self, PictureFrame};
@@ -252,9 +252,17 @@ pub(super) struct ShareSink {
     arrived: Notify,
     sound: Mutex<SoundChain>,
     ended: AtomicBool,
+    stops: Arc<Stops>,
+    /// The count of share stops when this share was asked for.
+    stop: u64,
 }
 
 impl ShareSink {
+    /// The share was ended by the capture, or stopped at the handle of the engine.
+    fn over(&self) -> bool {
+        self.ended.load(Ordering::Relaxed) || self.stops.share.load(Ordering::Relaxed) != self.stop
+    }
+
     fn send(&self, buffer: &Arc<dyn VideoBuffer>) {
         let source = self
             .video
@@ -283,7 +291,7 @@ impl ShareSink {
 
 impl CaptureSink for ShareSink {
     fn picture(&self, buffer: Arc<dyn VideoBuffer>) {
-        if self.ended.load(Ordering::Relaxed) {
+        if self.over() {
             return;
         }
         self.send(&buffer);
@@ -292,7 +300,7 @@ impl CaptureSink for ShareSink {
     }
 
     fn sound(&self, samples: &[f32], format: Format) {
-        if self.ended.load(Ordering::Relaxed) {
+        if self.over() {
             return;
         }
         self.sound
@@ -327,7 +335,8 @@ async fn tend(sink: Arc<ShareSink>, pictures: Pictures, mut view: watch::Receive
                 }
             }
             _ = tick.tick() => {
-                if let Some((buffer, at)) = sink.last()
+                if !sink.over()
+                    && let Some((buffer, at)) = sink.last()
                     && at.elapsed() >= IDLE_RESEND
                 {
                     sink.send(&buffer);
@@ -335,7 +344,7 @@ async fn tend(sink: Arc<ShareSink>, pictures: Pictures, mut view: watch::Receive
                 }
             }
         }
-        if sink.ended.load(Ordering::Relaxed) {
+        if sink.over() {
             return;
         }
         let Some((buffer, _)) = sink.last() else {
@@ -784,8 +793,10 @@ impl Actor {
         }
     }
 
-    /// Starts the share of this device. A share that runs is replaced.
-    pub(super) fn start_share(&mut self, request: CaptureRequest) {
+    /// Starts the share of this device. A share that runs is replaced. `stop`: the count
+    /// of share stops when the start was asked for; after a later stop the share sends
+    /// nothing.
+    pub(super) fn start_share(&mut self, request: CaptureRequest, stop: u64) {
         self.end_share(None);
         if !self.joined() {
             self.change(|state| state.share = ShareState::Ended(CaptureError::Interrupted));
@@ -802,6 +813,8 @@ impl Actor {
             arrived: Notify::new(),
             sound: Mutex::new(SoundChain::new(frames)),
             ended: AtomicBool::new(false),
+            stops: self.stops.clone(),
+            stop,
         });
         let sound_source: Arc<Mutex<Option<NativeAudioSource>>> = Arc::default();
         let starting = self.options.capture.start(request.clone(), sink.clone());

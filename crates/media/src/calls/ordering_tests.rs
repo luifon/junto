@@ -201,6 +201,7 @@ fn fixture() -> Fixture {
         sound_block: None,
         blocks_untold: false,
         refresh: None,
+        removal_read: false,
         accepted: model.cursor,
         seat_told: None,
         grants: MeetingHistory::new(model.cursor, &call, account_id, false),
@@ -214,6 +215,7 @@ fn fixture() -> Fixture {
         speaking_report: Reporter::new(timing.speaking_spacing, Some(timing.speaking_renewal)),
         share_report: Reporter::holding(timing.share_spacing, None),
         moving: None,
+        probes: Vec::new(),
         speaking: false,
         timing,
     };
@@ -300,6 +302,23 @@ async fn unrelated_events_and_an_old_identity_do_not_release_the_gate() {
     f.model.cursor.position = 47;
     f.call().participants[0].identity = "new-seat".into();
     f.session.read_blocks(&f.model);
+    // The state lists the seat. The events up to the answer that gave it are not read
+    // yet: the seat can still be void (ADR 0785).
+    assert!(!f.session.admitted);
+    let (call_id, place) = (f.call().id, f.session.target.place);
+    let participant = f.call().participants[0].clone();
+    tell(
+        &mut f,
+        vec![(
+            47,
+            Event::CallParticipantJoined {
+                call_id,
+                place,
+                participant,
+            },
+        )],
+    );
+    f.session.read_blocks(&f.model);
     assert!(!f.session.controls.microphone_blocked && !f.session.controls.sound_blocked);
     assert!(f.session.admitted);
     f.session.engine.close().await;
@@ -379,9 +398,16 @@ async fn only_the_fresh_meeting_state_can_close_the_local_microphone_on_unblock(
         f.session.refresh = None;
         f.model.cursor.position = 46;
         f.session.read_blocks(&f.model);
-        assert_eq!(f.session.inner.shared().muted, still_presenting);
+        // With the meeting the end is a grant. Without it, the block of this test has no
+        // position among the events, so its end cannot be read: the setting is closed
+        // too, and the person is told (ADR 0785).
+        assert!(f.session.inner.shared().muted);
         assert!(!f.session.controls.microphone_blocked);
-        assert_eq!(f.session.controls.muted, still_presenting);
+        assert!(f.session.controls.muted);
+        assert_eq!(
+            f.session.inner.view.borrow().closed,
+            (!still_presenting).then_some(MicrophoneClosed::EndOfBlockNotRead)
+        );
         f.session.engine.close().await;
     }
 }
@@ -501,7 +527,7 @@ fn told_from(f: &Fixture, from: usize) -> Vec<Controls> {
         .skip(from)
         .filter_map(|asked| match asked {
             Asked::Controls(controls) => Some(controls),
-            Asked::Camera | Asked::Microphone | Asked::Share => None,
+            Asked::Camera | Asked::Microphone | Asked::Share | Asked::Talking(..) => None,
         })
         .collect()
 }
@@ -1083,11 +1109,11 @@ async fn a_renewed_seat_is_void_when_events_were_lost() {
     f.session.missed();
     assert_eq!(state_without_the_seat(&mut f, 41), Fate::Undecided);
     renewed_at_another_seat(&mut f, 43);
-    assert_eq!(f.session.place.void(), Some(&EndReason::Server(None)));
+    assert_eq!(f.session.place.void(), Some(&EndReason::NotRead));
     assert!(!f.session.admitted);
     assert_eq!(
         f.session.read_state(StreamStatus::Live, Some(&f.model)),
-        Fate::End(EndReason::Server(None))
+        Fate::End(EndReason::NotRead)
     );
     f.session.engine.close().await;
 
@@ -1096,7 +1122,7 @@ async fn a_renewed_seat_is_void_when_events_were_lost() {
     renewed_at_another_seat(&mut f, 43);
     assert_eq!(f.session.place.void(), None);
     f.session.missed();
-    assert_eq!(f.session.place.void(), Some(&EndReason::Server(None)));
+    assert_eq!(f.session.place.void(), Some(&EndReason::NotRead));
     f.session.engine.close().await;
 
     // A state that shows the seat after the loss tells that the seat was not ended.
@@ -1249,6 +1275,7 @@ async fn an_unmute_without_a_call_is_for_no_call() {
         key: 1,
         target: f.session.target,
         commands,
+        gate: Arc::default(),
     });
     calls.unmute_in(None);
     assert!(calls.view().muted && f.session.inner.shared().muted);
@@ -1265,8 +1292,557 @@ async fn an_unmute_without_a_call_is_for_no_call() {
     f.session.engine.close().await;
 }
 
-// The tests from here to the end of the file were written again from the notes and the
-// failure texts of the unit that wrote them first; the file that held them was lost.
+// A seat that a request for a new token gave, before the events up to its answer are
+// read (ADR 0785); a removal by the media server (ADR 0734); a microphone on another
+// device (ADR 0794).
+
+#[tokio::test]
+async fn a_seat_given_by_a_renewal_sends_nothing_before_the_events_reach_its_answer() {
+    for removed in [false, true] {
+        let mut f = fixture();
+        renewed_at_another_seat(&mut f, 43);
+        // A state lists the seat before the session has read the events up to 43.
+        f.model.cursor.position = 44;
+        f.model.own_call.as_mut().unwrap().identity = "seat-2".into();
+        f.call().participants[0].identity = "seat-2".into();
+        f.session.read_blocks(&f.model);
+        assert!(
+            !f.session.admitted,
+            "a seat that can still be void was admitted"
+        );
+        let held = f.session.controls;
+        assert!(held.microphone_blocked && held.sound_blocked && held.camera_held);
+        if removed {
+            // The events tell that a moderator removed the person before the answer.
+            tell(&mut f, vec![(41, ended(Some(LeaveReason::Disconnected)))]);
+            f.session.read_blocks(&f.model);
+            assert!(!f.session.admitted && f.session.controls.camera_held);
+            assert!(f.session.place.void().is_some());
+        } else {
+            // The events pass the answer: the seat is the one of the person.
+            let (call_id, place) = (f.call().id, f.session.target.place);
+            let participant = f.call().participants[0].clone();
+            tell(
+                &mut f,
+                vec![(
+                    44,
+                    Event::CallParticipantJoined {
+                        call_id,
+                        place,
+                        participant,
+                    },
+                )],
+            );
+            f.session.read_blocks(&f.model);
+            assert!(f.session.admitted);
+            let open = f.session.controls;
+            assert!(!open.microphone_blocked && !open.sound_blocked && !open.camera_held);
+        }
+        f.session.engine.close().await;
+    }
+}
+
+#[tokio::test]
+async fn a_removal_by_the_media_server_waits_for_a_new_state_before_a_token() {
+    for (lost, asks) in [(Lost::Failed, true), (Lost::Removed, false)] {
+        let mut f = fixture();
+        f.session.rejoining = false;
+        f.session.fate = f.session.read_state(StreamStatus::Live, Some(&f.model));
+        assert_eq!(f.session.fate, Fate::Held);
+        let mut state = f.session.engine.state().borrow().clone();
+        state.connection = Connection::Lost(lost);
+        f.session.engine_changed(&state);
+        assert_eq!(
+            asks_for_a_token(&mut f),
+            asks,
+            "after {lost:?} with a state from before the loss"
+        );
+        // A state from after the loss is asked for, and nothing else is.
+        assert_eq!(f.session.refresh.is_some(), !asks);
+        f.session.refresh = None;
+        if lost == Lost::Removed {
+            // One state per loss: a later change of the engine asks for no second one.
+            f.session.rejoining = false;
+            f.session.engine_changed(&state);
+            assert!(f.session.refresh.is_none());
+            // The state from after the loss shows the place: the token is asked for.
+            let cursor = Cursor {
+                epoch: f.model.cursor.epoch,
+                position: 45,
+            };
+            f.model.cursor = cursor;
+            f.session.reloaded_at(cursor);
+            f.session.fate = f.session.read_state(StreamStatus::Live, Some(&f.model));
+            assert_eq!(f.session.fate, Fate::Held);
+            assert!(asks_for_a_token(&mut f));
+            // The token is there, and the engine tells the same loss once more before it
+            // takes the token: no further state is asked for.
+            f.session.rejoining = false;
+            f.session.retry = None;
+            f.session.engine_changed(&state);
+            assert!(
+                f.session.refresh.is_none(),
+                "the same loss asked for a second state"
+            );
+            // A removal after another connection is another loss.
+            state.connection = Connection::Connected;
+            f.session.engine_changed(&state);
+            state.connection = Connection::Lost(Lost::Removed);
+            f.session.engine_changed(&state);
+            assert!(f.session.refresh.is_some());
+            f.session.refresh = None;
+        }
+        f.session.engine.close().await;
+    }
+}
+
+#[tokio::test]
+async fn a_removal_that_the_events_tell_ends_the_call_with_its_reason_while_a_state_is_loaded() {
+    use junto_client_core::flow::access::AccessState;
+    let removed = Some(LeaveReason::Disconnected);
+    // The media server removed the device, and the session asks for a new state.
+    let lose = |f: &mut Fixture| {
+        f.session.rejoining = false;
+        f.session.fate = f.session.read_state(StreamStatus::Live, Some(&f.model));
+        let mut state = f.session.engine.state().borrow().clone();
+        state.connection = Connection::Lost(Lost::Removed);
+        f.session.engine_changed(&state);
+        assert!(f.session.refresh.is_some());
+    };
+
+    // The event of the removal is read while the state is loaded: the call ends at once.
+    let mut f = fixture();
+    lose(&mut f);
+    tell(&mut f, vec![(41, ended(removed))]);
+    let logged_in = AccessState::LoggedIn {
+        account_id: f.model.account.id,
+        device_id: own_device(&f),
+        session_expires_at: OffsetDateTime::UNIX_EPOCH,
+        recoveries: Vec::new(),
+        previous_account: None,
+    };
+    assert_eq!(
+        f.session.read_as(None, &logged_in),
+        Fate::End(EndReason::Server(removed)),
+        "the end that the events told waits for the new state"
+    );
+    f.session.refresh = None;
+    f.session.engine.close().await;
+
+    // The new state arrives after the event: the reason of the end is the one of the event.
+    let mut f = fixture();
+    lose(&mut f);
+    f.session.place.note(41, &ended(removed));
+    let cursor = Cursor {
+        epoch: f.model.cursor.epoch,
+        position: 45,
+    };
+    f.session.reloaded_at(cursor);
+    f.model.cursor = cursor;
+    f.model.own_call = None;
+    assert_eq!(
+        f.session.read_state(StreamStatus::Live, Some(&f.model)),
+        Fate::End(EndReason::Server(removed)),
+        "the new state erased the reason of the end"
+    );
+    f.session.engine.close().await;
+}
+
+#[tokio::test]
+async fn a_microphone_on_another_device_closes_the_setting_and_is_told() {
+    let mut f = fixture();
+    f.session.rejoining = false;
+    f.session.apply_controls();
+    let mut state = f.session.engine.state().borrow().clone();
+    state.input_replaced = true;
+    f.session.engine_changed(&state);
+    assert!(f.session.inner.shared().muted && f.session.controls.muted);
+    let view = f.session.inner.view.borrow().clone();
+    assert!(view.muted);
+    assert_eq!(view.closed, Some(MicrophoneClosed::DeviceChanged));
+    f.session.engine.close().await;
+}
+
+#[test]
+fn a_close_from_outside_the_engine_task_stops_the_frames_until_the_engine_has_taken_it() {
+    let link = CaptureLink::default();
+    link.set_open(true);
+    assert!(link.is_open());
+    // The person closes the microphone: the frames stop before the engine task runs.
+    let closed_at = link.stop_now();
+    assert!(!link.is_open());
+    // The engine task is busy with an older command and opens its gate again.
+    link.set_open(false);
+    link.set_open(true);
+    link.take_stops(closed_at - 1);
+    assert!(
+        !link.is_open(),
+        "what the engine held before the close opened the gate"
+    );
+    // It takes the command of the close, and then a later open.
+    link.set_open(false);
+    link.take_stops(closed_at);
+    assert!(!link.is_open());
+    link.set_open(true);
+    link.take_stops(link.stops());
+    assert!(link.is_open());
+}
+
+#[test]
+fn controls_that_open_do_not_open_after_a_close_that_followed_their_reading() {
+    let link = CaptureLink::default();
+    // The session reads "not muted" and the count of closes for its controls. The person
+    // closes the microphone before the controls reach the engine.
+    let read = link.stops();
+    let closed_at = link.stop_now();
+    let carried = link.count_for(false, read);
+    // The engine task takes the controls of before the close and opens its gate.
+    link.set_open(true);
+    link.take_stops(carried);
+    assert!(
+        !link.is_open(),
+        "controls from before a close opened the gate after it"
+    );
+    // The controls of the close itself carry its count, and later ones open.
+    assert_eq!(link.count_for(true, read), closed_at + 1);
+    link.take_stops(link.count_for(false, link.stops()));
+    assert!(link.is_open());
+}
+
+#[tokio::test]
+async fn closing_the_microphone_stops_the_gate_of_the_call_at_once() {
+    let mut f = fixture();
+    f.session.rejoining = false;
+    let gate = f.session.engine.gate();
+    let calls = Calls {
+        inner: f.session.inner.clone(),
+    };
+    let (commands, _taken) = mpsc::unbounded_channel();
+    f.session.inner.shared().active = Some(ActiveHandle {
+        key: 1,
+        target: f.session.target,
+        commands,
+        gate: gate.clone(),
+    });
+    let before = gate.stops();
+    calls.mute();
+    assert!(
+        gate.stops() > before,
+        "the close of the person waits for the session and the engine"
+    );
+    // A rule of the server that closes the microphone does not wait either.
+    let before = gate.stops();
+    f.session.inner.shared().muted = false;
+    f.session
+        .set_blocks((Some(a_block(AccountId::generate())), None));
+    assert!(gate.stops() > before);
+    // An open is the direction that waits for the engine.
+    let before = gate.stops();
+    f.session.set_blocks((None, None));
+    assert_eq!(gate.stops(), before);
+    // The release of the push-to-talk key is a close; the press is an open.
+    calls.set_talking(true);
+    assert_eq!(gate.stops(), before);
+    calls.set_talking(false);
+    assert!(
+        gate.stops() > before,
+        "the release of the key waits for the session and the engine"
+    );
+    f.session.inner.shared().active = None;
+    f.session.engine.close().await;
+}
+
+#[tokio::test]
+async fn a_press_of_the_talk_key_does_not_open_after_its_release() {
+    let mut f = fixture();
+    f.session.rejoining = false;
+    let gate = f.session.engine.gate();
+    let calls = Calls {
+        inner: f.session.inner.clone(),
+    };
+    let (commands, mut told) = mpsc::unbounded_channel();
+    f.session.inner.shared().active = Some(ActiveHandle {
+        key: 1,
+        target: f.session.target,
+        commands,
+        gate: gate.clone(),
+    });
+    // The person presses the key and releases it before the session has taken the press.
+    let before = gate.stops();
+    calls.set_talking(true);
+    calls.set_talking(false);
+    let released = gate.stops();
+    assert!(released > before);
+    let from = f.session.engine.asked().len();
+    while let Ok(command) = told.try_recv() {
+        f.session.command(command);
+    }
+    // The press reaches the engine with the count from before the release, so the gate
+    // that the engine opens for it stays closed. The release carries its own count.
+    assert_eq!(
+        f.session.engine.asked()[from..],
+        [
+            Asked::Talking(true, before),
+            Asked::Talking(false, released)
+        ],
+        "the press carries a count that was read after the release"
+    );
+    gate.set_open(true);
+    gate.take_stops(before);
+    assert!(!gate.is_open());
+    f.session.inner.shared().active = None;
+    f.session.engine.close().await;
+}
+
+// The connection of a device to the room of the destination of a move (ADR 0511).
+
+#[tokio::test]
+async fn a_move_that_ended_starts_no_connection_with_a_late_token() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let connects = Arc::new(AtomicUsize::new(0));
+    let counting = |connects: &Arc<AtomicUsize>| {
+        let connects = connects.clone();
+        async move |_token: &str| {
+            connects.fetch_add(1, Ordering::SeqCst);
+            Some(())
+        }
+    };
+
+    // The request for the token waits. The move ends, and the answer arrives after it.
+    let (stop, stopped) = oneshot::channel::<()>();
+    let (answer, token) = oneshot::channel::<&str>();
+    let work = tokio::spawn(probe(
+        stopped,
+        async move { token.await.ok() },
+        counting(&connects),
+        async |()| {},
+    ));
+    tokio::task::yield_now().await;
+    drop(stop);
+    let ended = tokio::time::timeout(Duration::from_secs(5), work).await;
+    assert_eq!(
+        ended.expect("the work waits for the token").unwrap(),
+        Probed::Stopped
+    );
+    assert!(
+        answer.send("token").is_err(),
+        "the late answer is waited for"
+    );
+    assert_eq!(connects.load(Ordering::SeqCst), 0);
+
+    // The answer is there in the moment in which the move ends.
+    let (stop, stopped) = oneshot::channel::<()>();
+    drop(stop);
+    let result = probe(
+        stopped,
+        async { Some("token") },
+        counting(&connects),
+        async |()| {},
+    )
+    .await;
+    assert_eq!(result, Probed::Stopped);
+    assert_eq!(connects.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_move_that_ends_while_its_connection_is_made_closes_that_connection() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let closed = Arc::new(AtomicUsize::new(0));
+    let (stop, stopped) = oneshot::channel::<()>();
+    let (started, connecting) = oneshot::channel::<()>();
+    let (made, connected) = oneshot::channel::<()>();
+    let closes = closed.clone();
+    let work = tokio::spawn(probe(
+        stopped,
+        async { Some("token") },
+        async move |_token: &str| {
+            let _ = started.send(());
+            connected.await.ok()
+        },
+        async move |()| {
+            closes.fetch_add(1, Ordering::SeqCst);
+        },
+    ));
+    connecting.await.unwrap();
+    drop(stop);
+    tokio::task::yield_now().await;
+    assert!(
+        !work.is_finished(),
+        "a connection that is being made was cut off"
+    );
+    made.send(()).unwrap();
+    assert_eq!(work.await.unwrap(), Probed::Closed);
+    assert_eq!(closed.load(Ordering::SeqCst), 1);
+
+    // No token and no connection are failures of the move.
+    let (_stop, stopped) = oneshot::channel::<()>();
+    let none = async { None::<&str> };
+    let result = probe(stopped, none, async |_| Some(()), async |()| {}).await;
+    assert_eq!(result, Probed::Failed);
+    let (_stop, stopped) = oneshot::channel::<()>();
+    let token = async { Some("token") };
+    let result = probe(stopped, token, async |_| None::<()>, async |()| {}).await;
+    assert_eq!(result, Probed::Failed);
+}
+
+// The loop of a session, with a state and notices that the test gives to the client core.
+
+struct Looping {
+    calls: Calls,
+    live: junto_client_core::live::LiveServer,
+    commands: mpsc::UnboundedSender<SessionCommand>,
+    task: tokio::task::JoinHandle<()>,
+    _directory: tempfile::TempDir,
+}
+
+/// Starts the loop of the session of a fixture. The device is logged in, and the event
+/// stream is live with the state of the fixture.
+fn looping(mut f: Fixture) -> Looping {
+    use junto_client_core::flow::access::AccessState;
+    f.session.server.set_access_for_test(AccessState::LoggedIn {
+        account_id: f.model.account.id,
+        device_id: own_device(&f),
+        session_expires_at: OffsetDateTime::UNIX_EPOCH,
+        recoveries: Vec::new(),
+        previous_account: None,
+    });
+    let live = f.session.server.live();
+    live.show_for_test(StreamStatus::Live, Some(f.model.clone()));
+    let (commands, taken) = mpsc::unbounded_channel();
+    f.session.inner.shared().active = Some(ActiveHandle {
+        key: f.session.key,
+        target: f.session.target,
+        commands: commands.clone(),
+        gate: f.session.engine.gate(),
+    });
+    f.session.review = true;
+    let calls = Calls {
+        inner: f.session.inner.clone(),
+    };
+    let task = f.session.inner.runtime.clone().spawn(f.session.run(taken));
+    Looping {
+        calls,
+        live,
+        commands,
+        task,
+        _directory: f._directory,
+    }
+}
+
+impl Looping {
+    async fn until(&self, what: &str, holds: impl FnMut(&CallsView) -> bool) -> CallsView {
+        let mut watch = self.calls.watch();
+        match tokio::time::timeout(Duration::from_secs(20), watch.wait_for(holds)).await {
+            Ok(Ok(view)) => view.clone(),
+            _ => panic!(
+                "this did not hold: {what}; the view is {:?}",
+                self.calls.view()
+            ),
+        }
+    }
+
+    async fn end(self) {
+        let (done, ended) = oneshot::channel();
+        let _ = self.commands.send(SessionCommand::End { done });
+        let _ = ended.await;
+        let _ = self.task.await;
+    }
+}
+
+#[tokio::test]
+async fn the_loop_of_a_session_marks_the_events_before_its_first_notice_as_not_told() {
+    // The answer of the join told the block of meeting mode at 45. The meeting ended at
+    // 46, before the session read notices: the state of the stream is the one of 46.
+    let mut f = fixture();
+    f.session.rejoining = false;
+    f.session.accepted.position = 45;
+    f.session.grants =
+        MeetingHistory::new(f.session.accepted, &f.answer.call, f.model.account.id, true);
+    f.session.microphone_block = Some(MicrophoneBlock {
+        by: AccountId::generate(),
+        reason: BlockReason::Meeting,
+    });
+    f.model.cursor.position = 46;
+    let looping = looping(f);
+    let view = looping
+        .until("the end of the block is taken as not read", |view| {
+            view.closed.is_some()
+        })
+        .await;
+    assert!(view.muted);
+    assert_eq!(view.closed, Some(MicrophoneClosed::EndOfBlockNotRead));
+    assert_eq!(view.call.unwrap().microphone_block, None);
+    looping.end().await;
+}
+
+#[tokio::test]
+async fn the_loop_of_a_session_takes_missed_notices_as_events_that_were_not_told() {
+    let presenter = AccountId::generate();
+    let mut f = blocked(presenter, BlockReason::Meeting);
+    let (call_id, place) = (f.call().id, f.session.target.place);
+    // The state after the block: no meeting and no block.
+    f.call().meeting = None;
+    f.call().participants[0].microphone_block = None;
+    f.model.cursor.position = 44;
+    let after = f.model.clone();
+    // The loop starts with the state of 42, which shows the block.
+    f.call().participants[0].microphone_block = Some(MicrophoneBlock {
+        by: presenter,
+        reason: BlockReason::Meeting,
+    });
+    f.model.cursor.position = 42;
+    let looping = looping(f);
+    // The loop runs and has its notices: it answers a command.
+    let stale = Seat {
+        target: CallTarget {
+            server_id: ServerId::generate(),
+            place,
+        },
+        identity: "seat".into(),
+    };
+    looping
+        .commands
+        .send(SessionCommand::StartShare(stale, a_share()))
+        .unwrap();
+    looping
+        .until("the loop runs", |view| view.unused.is_some())
+        .await;
+
+    // The test holds the lock of what the calls share. The loop takes that lock when it
+    // reads the state after a notice, so it reads at most one notice while the stream
+    // gives the state of 44 and more notices than a reader may leave unread.
+    let inner = looping.calls.inner.clone();
+    let held = inner.shared();
+    looping.live.show_for_test(StreamStatus::Live, Some(after));
+    for id in 0..1_200 {
+        looping.live.tell_for_test(Notice::Event {
+            id: 1_000 + id,
+            at: OffsetDateTime::UNIX_EPOCH,
+            event: Arc::new(Event::CallSpeaking {
+                call_id,
+                place,
+                account_ids: Vec::new(),
+            }),
+        });
+    }
+    drop(held);
+
+    // A grant can be among the missed notices: the setting is closed, and the person is
+    // told why.
+    let view = looping
+        .until("the missed notices are taken as lost events", |view| {
+            view.closed.is_some()
+        })
+        .await;
+    assert!(view.muted);
+    assert_eq!(view.closed, Some(MicrophoneClosed::EndOfBlockNotRead));
+    assert_eq!(view.call.unwrap().microphone_block, None);
+    looping.end().await;
+}
+
+// The work of a move, the grants of meeting mode across a new history and a delayed
+// model, the account of a session, an answer without a position, and the answer of a
+// renewal as the membership of the person (ADR 0785).
 
 #[tokio::test]
 async fn renewal_waits_for_its_answer_when_the_old_seat_ends() {
@@ -1528,6 +2104,19 @@ async fn a_new_seat_seen_before_its_answer_keeps_the_newer_blocks() {
     });
     f.model.cursor.position = 50;
     f.session.read_blocks(&f.model);
+    let (call_id, place) = (f.call().id, f.session.target.place);
+    let participant = f.call().participants[0].clone();
+    tell(
+        &mut f,
+        vec![(
+            50,
+            Event::CallParticipantJoined {
+                call_id,
+                place,
+                participant,
+            },
+        )],
+    );
     f.answer.identity = "replacement".into();
     let (taken, _) = oneshot::channel();
     f.session
@@ -1599,6 +2188,19 @@ async fn an_answer_without_a_position_is_used_as_before_the_positions() {
     f.session.read_blocks(&f.model);
     assert!(f.session.microphone_block.is_none());
     assert!(f.session.admitted);
+    // How the block ended cannot be read either: the setting is closed, and the person
+    // is told (ADR 0785).
+    assert!(f.session.inner.shared().muted);
+    assert_eq!(
+        f.session.inner.view.borrow().closed,
+        Some(MicrophoneClosed::EndOfBlockNotRead)
+    );
+    // The person opens the microphone, and the next state changes nothing.
+    f.session.inner.shared().muted = false;
+    f.session.command(SessionCommand::Muted(false));
+    f.model.cursor.position += 1;
+    f.session.read_blocks(&f.model);
+    assert!(!f.session.inner.shared().muted && !f.session.controls.muted);
     f.session.engine.close().await;
 }
 
@@ -1691,6 +2293,13 @@ async fn a_newer_answer_without_a_block_removes_the_block_of_an_older_state() {
     assert!(
         !f.session.controls.microphone_blocked && !f.session.controls.sound_blocked,
         "the microphone and the sound waited for a state after the answer"
+    );
+    // The block of this test has no position among the events, so its end cannot be
+    // read: the person's setting is closed, and the person is told (ADR 0785).
+    assert!(f.session.inner.shared().muted && f.session.controls.muted);
+    assert_eq!(
+        f.session.inner.view.borrow().closed,
+        Some(MicrophoneClosed::EndOfBlockNotRead)
     );
     f.session.engine.close().await;
 }
