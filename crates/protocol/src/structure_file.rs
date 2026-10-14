@@ -1,6 +1,20 @@
 //! The structure of a server as a file, and the changes that apply a file (ADR 0204,
 //! ADR 0211, ADR 0212).
 
+// The schema function that the derive macro makes for `StructureChange` is one expression
+// over every variant, and clippy counts it at about the bound of `large_stack_frames`:
+// above it with some features of the crate and below it with others, so the lint is
+// allowed here and not expected. The crate is compiled with optimization also in the dev
+// profile, where that function needs little stack, and a test of the server bounds the
+// stack of all schemas together (ADR 0906).
+#![cfg_attr(
+    feature = "openapi",
+    allow(
+        clippy::large_stack_frames,
+        reason = "one generated schema function for every variant of a large enum"
+    )
+)]
+
 use junto_authz::{ServerPermission, WorkspacePermission};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

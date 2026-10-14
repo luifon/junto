@@ -733,8 +733,12 @@ fn audit_details(event: &AuditEvent) -> Vec<String> {
         | E::CallMemberDisconnected { account_id }
         | E::CallMemberMovedOut { account_id }
         | E::CallMemberMovedIn { account_id } => vec![pair("account", account_id)],
-        E::AccountRemoved { account_id, reason }
-        | E::WorkspaceMemberRemoved { account_id, reason } => {
+        E::AccountRemoved {
+            account_id, reason, ..
+        }
+        | E::WorkspaceMemberRemoved {
+            account_id, reason, ..
+        } => {
             let mut pairs = vec![pair("account", account_id)];
             pairs.extend(reason_pair(reason.as_deref()));
             pairs
@@ -816,6 +820,7 @@ fn audit_details(event: &AuditEvent) -> Vec<String> {
             reason,
             account_id,
             cancelled_invite_ids,
+            ..
         } => {
             let mut pairs = vec![
                 pair("account", account_id),
@@ -2137,6 +2142,7 @@ mod tests {
         };
 
         let banned = entry(AuditEvent::AccountBanned {
+            recipient_message: None,
             reason: None,
             account_id,
             cancelled_invite_ids: Vec::new(),
@@ -2221,6 +2227,7 @@ mod tests {
 
         // A reason stands in quotation marks, without its control characters.
         let banned = entry(AuditEvent::AccountBanned {
+            recipient_message: None,
             reason: Some("Spam in \"general\"\u{1b}[2J".to_owned()),
             account_id,
             cancelled_invite_ids: vec![invite_id],
@@ -2235,6 +2242,7 @@ mod tests {
         );
 
         let removed = entry(AuditEvent::AccountRemoved {
+            recipient_message: None,
             reason: Some("Left the team".to_owned()),
             account_id,
         });
@@ -2247,6 +2255,7 @@ mod tests {
             )
         );
         let without_reason = entry(AuditEvent::AccountRemoved {
+            recipient_message: None,
             reason: None,
             account_id,
         });
@@ -2261,6 +2270,7 @@ mod tests {
         let left = AuditEntry {
             workspace_id: Some(workspace_id),
             ..entry(AuditEvent::WorkspaceMemberRemoved {
+                recipient_message: None,
                 account_id,
                 reason: Some("Left the team".to_owned()),
             })

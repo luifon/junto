@@ -1041,7 +1041,7 @@ async fn review2_workspace_invite_withdrawal_reads_indexed_creator_pages() {
 async fn review2_a_connection_opened_during_a_watcher_read_gets_its_notice() {
     use futures_util::FutureExt;
     use junto_protocol::events::Level;
-    use junto_server::database::{Attempt, Mode};
+    use junto_server::database::Attempt;
     let server = TestServer::start().await;
     let owner = server.owner().await;
     let reader = server.join(&owner, "Reader").await;
@@ -1060,7 +1060,7 @@ async fn review2_a_connection_opened_during_a_watcher_read_gets_its_notice() {
     for _ in 0..app.config.limits.stream.pool().connections {
         held.push(
             app.database
-                .begin_stream(Mode::ReadOnly, &Attempt::default())
+                .acquire_for_stream(&Attempt::default())
                 .await
                 .unwrap(),
         );
@@ -1084,9 +1084,7 @@ async fn review2_a_connection_opened_during_a_watcher_read_gets_its_notice() {
     .await
     .unwrap();
     tx.commit().await.unwrap();
-    for tx in held {
-        tx.rollback().await.unwrap();
-    }
+    drop(held);
     pending.await.unwrap();
     assert!(registration.link().news().now_or_never().is_some());
 }

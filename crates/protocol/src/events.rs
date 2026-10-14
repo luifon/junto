@@ -4,6 +4,23 @@
 //! ignores a field that it does not know and skips a message or an event whose `type` it does
 //! not know.
 
+// The schema function that the derive macro makes for `Event` is one expression over
+// every variant. The crate is compiled with optimization also in the dev profile, where
+// that function needs little stack, and a test of the server bounds the stack of all
+// schemas together (ADR 0906).
+#![cfg_attr(
+    feature = "openapi",
+    expect(
+        clippy::large_stack_frames,
+        reason = "one generated schema function for every variant of a large enum"
+    )
+)]
+
+/// JSON cursor of the last committed event the caller may receive at the full level,
+/// with its current access after the commit; `null` when there is no such event.
+/// An absent header states no position; it does not undo a successful response.
+pub const EVENT_CURSOR_HEADER: &str = "junto-event-cursor";
+
 use junto_authz::WorkspacePermission;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;

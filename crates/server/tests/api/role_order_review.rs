@@ -362,7 +362,7 @@ async fn review_l7_extreme_reorder_cannot_exhaust_creation() {
     let server = TestServer::start().await;
     let owner = server.owner().await;
     let role = role(&server, &owner, &[]).await;
-    for position in [1_000_001, i32::MAX] {
+    for position in [-1, 0] {
         server
             .patch(
                 &owner,
@@ -380,20 +380,23 @@ async fn review_l7_extreme_reorder_cannot_exhaust_creation() {
         )
         .await
         .ok::<ServerRole>(StatusCode::CREATED);
-    sqlx::query("update server_roles set position=$2 where id=$1")
-        .bind(role.id)
-        .bind(i32::MAX)
-        .execute(&server.db)
-        .await
-        .unwrap();
     server
-        .post(
+        .patch(
             &owner,
-            "/api/v1/server-roles",
-            &json!({"name":"cannot overflow storage"}),
+            "/api/v1/server-roles/positions",
+            &json!({"positions":[{"role_id":role.id,"position":i32::MAX}]}),
         )
         .await
-        .error(ErrorCode::Conflict);
+        .empty(StatusCode::NO_CONTENT);
+    let admin = server.administrator(&owner, "Manager").await;
+    server
+        .post(
+            &admin,
+            "/api/v1/server-roles",
+            &json!({"name":"Still creates at the limit"}),
+        )
+        .await
+        .ok::<ServerRole>(StatusCode::CREATED);
 }
 
 #[tokio::test]

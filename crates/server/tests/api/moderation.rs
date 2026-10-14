@@ -76,6 +76,7 @@ async fn a_ban_blocks_the_keys_and_cancels_the_invites_and_an_unban_restores_the
         log.entries[0].event,
         AuditEvent::AccountBanned {
             reason: None,
+            recipient_message: None,
             account_id: guest.account_id,
             cancelled_invite_ids: vec![guest_invite.invite.id],
         }
@@ -236,6 +237,7 @@ async fn a_removal_ends_the_account_and_frees_its_key() {
         log.entries[0].event,
         AuditEvent::AccountRemoved {
             reason: None,
+            recipient_message: None,
             account_id: guest.account_id
         }
     );

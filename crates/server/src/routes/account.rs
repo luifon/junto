@@ -446,6 +446,13 @@ pub async fn remove_device(
             SessionEnd::DeviceRemoved,
         )
         .await?;
+        sqlx::query(
+            "delete from moderation_notice_devices where public_key =
+                 (select public_key from devices where id = $1)",
+        )
+        .bind(device_id)
+        .execute(&mut *connection)
+        .await?;
         sqlx::query("delete from devices where id = $1")
             .bind(device_id)
             .execute(&mut *connection)

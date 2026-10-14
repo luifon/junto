@@ -107,9 +107,69 @@ pub async fn migrate(database: &Database, migrations: &Migrator) -> Result<(), S
     if migration_waits(database, migrations).await? && recordings_that_run(database).await? > 0 {
         return Err(StartError::RecordingRuns);
     }
+    {
+        let mut connection = database.pool().acquire().await?;
+        initial_installation(&mut connection).await?;
+    }
     database.migrate(migrations).await?;
     upgrade_finished(database).await?;
     Ok(())
+}
+
+/// A committed marker before the first schema change survives an interrupted start.
+async fn initial_installation(connection: &mut PgConnection) -> Result<bool, sqlx::Error> {
+    use sqlx::Connection;
+    let mut tx = connection
+        .begin_with("begin isolation level read committed")
+        .await?;
+    sqlx::query("select pg_advisory_xact_lock($1)")
+        .bind(START_LOCK)
+        .execute(&mut *tx)
+        .await?;
+    let (name, comment): (String, Option<String>) =
+        sqlx::query_as(OWN_COMMENT).fetch_one(&mut *tx).await?;
+    let marked = comment
+        .as_deref()
+        .is_some_and(|text| text.starts_with(INITIAL_UNFINISHED));
+    let known: bool = sqlx::query_scalar("select to_regclass('public.server_state') is not null")
+        .fetch_one(&mut *tx)
+        .await?;
+    let installed = if known {
+        sqlx::query_scalar::<_, bool>("select exists(select 1 from server_state)")
+            .fetch_one(&mut *tx)
+            .await?
+    } else {
+        false
+    };
+    let initial = if installed {
+        if marked {
+            sqlx::query(sqlx::AssertSqlSafe(comment_on(
+                &name,
+                without_unfinished(comment.as_deref()).flatten(),
+            )))
+            .execute(&mut *tx)
+            .await?;
+        }
+        false
+    } else if marked {
+        true
+    } else if schema_of(&mut tx).await?.is_none() {
+        let marked = match comment.as_deref() {
+            Some(before) if !before.is_empty() => format!("{INITIAL_UNFINISHED}\n{before}"),
+            _ => INITIAL_UNFINISHED.to_owned(),
+        };
+        sqlx::query(sqlx::AssertSqlSafe(comment_on(&name, Some(&marked))))
+            .execute(&mut *tx)
+            .await?;
+        true
+    } else {
+        false
+    };
+    tx.commit().await?;
+    if installed && marked {
+        tracing::warn!(database = %name, "an initial-installation marker was ignored and cleared because installed server state exists");
+    }
+    Ok(initial)
 }
 
 /// The name and the comment of the database of a connection.
@@ -220,6 +280,8 @@ fn copy_comment(name: &str) -> String {
     format!("junto: copy of the database {name} before a migration")
 }
 
+const INITIAL_UNFINISHED: &str = "junto: initial installation of this database has not finished";
+
 /// The start of the first line of the comment of a database while an upgrade of it has not
 /// applied every migration. The line is written when the copy from before the upgrade
 /// exists, before the first migration, and it is removed by the start after which no
@@ -242,7 +304,10 @@ fn with_unfinished(before: Option<&str>, copy: &str) -> String {
 /// What a comment held before the line of an unfinished upgrade. `None` for a comment
 /// without that line.
 fn without_unfinished(comment: Option<&str>) -> Option<Option<&str>> {
-    let after = comment?.strip_prefix(UPGRADE_UNFINISHED)?;
+    let comment = comment?;
+    let after = comment
+        .strip_prefix(UPGRADE_UNFINISHED)
+        .or_else(|| comment.strip_prefix(INITIAL_UNFINISHED))?;
     Some(after.split_once('\n').map(|(_, before)| before))
 }
 
@@ -324,6 +389,8 @@ pub async fn copy_before_migration(
 pub enum MigrationCopied {
     /// No migration waits, or the copy is turned off.
     Nothing,
+    /// Initial installation continues without a copy: no installed server state exists.
+    Initial,
     /// The database was copied to the database of this name.
     Made(String),
     /// An upgrade before this start did not apply every migration, so no copy was made.
@@ -338,12 +405,32 @@ pub async fn copy_before(
     mode: MigrationCopy,
     migrations: &Migrator,
 ) -> Result<MigrationCopied, StartError> {
+    copy_before_with_retry(
+        options,
+        mode,
+        migrations,
+        std::time::Duration::from_secs(30),
+    )
+    .await
+}
+
+#[doc(hidden)]
+pub async fn copy_before_with_retry(
+    options: &sqlx::postgres::PgConnectOptions,
+    mode: MigrationCopy,
+    migrations: &Migrator,
+    retry_window: std::time::Duration,
+) -> Result<MigrationCopied, StartError> {
     use sqlx::{ConnectOptions, Connection};
 
     if mode == MigrationCopy::None {
         return Ok(MigrationCopied::Nothing);
     }
     let mut connection = options.connect().await?;
+    if initial_installation(&mut connection).await? {
+        connection.close().await?;
+        return Ok(MigrationCopied::Initial);
+    }
     let waiting = waiting_from(&mut connection, migrations).await?;
     let (name, own): (String, Option<String>) = sqlx::query_as(OWN_COMMENT)
         .fetch_one(&mut connection)
@@ -457,10 +544,30 @@ pub async fn copy_before(
         ]);
     }
     for statement in statements {
-        sqlx::query(sqlx::AssertSqlSafe(statement))
-            .execute(&mut maintenance)
-            .await
-            .map_err(failed)?;
+        let deadline = tokio::time::Instant::now() + retry_window;
+        loop {
+            match sqlx::query(sqlx::AssertSqlSafe(statement.clone()))
+                .execute(&mut maintenance)
+                .await
+            {
+                Ok(_) => break,
+                Err(error)
+                    if statement.starts_with("create database ")
+                        && error
+                            .as_database_error()
+                            .is_some_and(|error| error.code().as_deref() == Some("55006")) =>
+                {
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(StartError::MigrationCopy(format!(
+                            "{error}. The busy-source retry window of {} seconds ended. Stop the old server, close other database sessions, and start again after their statements finish",
+                            retry_window.as_secs()
+                        )));
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+                Err(error) => return Err(failed(error)),
+            }
+        }
     }
     maintenance.close().await.map_err(failed)?;
     Ok(if unfinished {

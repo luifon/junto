@@ -49,7 +49,10 @@ exit 0
             environment = dict(os.environ, PATH=search, CHECKOUT=str(root / "checkout"),
                                SCENARIO=scenario, JUNTO_LINUX_ARTIFACTS=str(root / "artifacts"),
                                COMMAND_LOG=str(root / "commands"),
-                               JUNTO_DOCKER_SOCKET="/tmp/junto-linux-test-docker.sock")
+                               JUNTO_DOCKER_SOCKET="/tmp/junto-linux-test-docker.sock",
+                               # The lock script under test takes a file of this test,
+                               # never the lock of the machine.
+                               JUNTO_HEAVY_LOCK=str(root / "heavy.lock"))
             environment.pop("JUNTO_LINUX_PREFIX", None)
             script = tools / ("linux-container.sh" if launcher else "linux/run.sh")
             result = subprocess.run(["/bin/sh", str(script), "true"], env=environment, capture_output=True, text=True)

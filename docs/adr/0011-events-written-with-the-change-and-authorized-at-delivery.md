@@ -88,3 +88,15 @@ Tests:
 - The delivery reads are serializable transactions. PostgreSQL can end a concurrent writing transaction because of one; that transaction is run again (ADR 0009).
 - A client that does not move its cursor receives events again after each reconnect.
 - The server keeps no state per device for the stream. A device that reconnects after any time gives its cursor and gets a replay or the instruction to load a snapshot (ADR 0207).
+
+Known limit: the positions between two events of one transaction that a caller receives
+reveal exactly how many intervening events it did not receive, even on a busy server. A
+caller can also bracket its request with visible changes to estimate the positions before
+its first or after its last received event. Depending on the writer, this can disclose
+whether another account has any direct conversation (not its number of peers), workspace
+memberships outside the caller's view, private call cleanup, or how many private exports a
+message or recording deletion invalidates. Ending an account's exports on ban or removal
+writes no event and reveals no export count that way. A rule for the number and order of
+writes within a transaction remains open for a later server unit; it must cover conditional
+contact notices, export invalidation and call cleanup. Filtering the event payloads and
+limiting response receipts to caller-visible events do not remove this older channel.

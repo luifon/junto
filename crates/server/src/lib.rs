@@ -24,6 +24,7 @@ pub mod owner;
 pub mod proof;
 pub mod purge;
 pub mod rate_limit;
+pub mod receipts;
 pub mod recorder;
 pub mod recordings;
 pub mod routes;

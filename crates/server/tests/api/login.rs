@@ -358,7 +358,7 @@ async fn the_challenges_of_one_key_are_bounded() {
         .fetch_one(&server.db)
         .await
         .unwrap();
-    assert_eq!(stored, 5);
+    assert_eq!(stored as usize, ChallengeOperation::ALL.len() - 1);
     let attempts_table: Option<String> =
         sqlx::query_scalar("select to_regclass('key_attempts')::text")
             .fetch_one(&server.db)

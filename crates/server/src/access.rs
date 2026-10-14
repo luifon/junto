@@ -34,6 +34,7 @@ pub struct Access {
     /// The access token of the request. The account is then the creator of the token, and
     /// the request has no device and no session.
     pub token_id: Option<AccessTokenId>,
+    token_actions: Vec<TokenAction>,
     actor: Actor,
     owner_id: Option<AccountId>,
 }
@@ -120,7 +121,9 @@ impl Access {
             }
             _ => return Err(ApiError::unauthenticated()),
         };
-        Self::load(connection, account_id, device_id, session_id).await
+        let access = Self::load(connection, account_id, device_id, session_id).await?;
+        crate::receipts::authorize_session(account_id);
+        Ok(access)
     }
 
     /// The caller of a request with an access token on a route of `action`: the account that
@@ -178,6 +181,7 @@ impl Access {
         let nobody = DeviceId::from_uuid(Uuid::nil());
         let mut access = Self::load(connection, account_id, nobody, Uuid::nil()).await?;
         access.token_id = Some(token_id);
+        access.token_actions = held;
         if access.actor.position == Position::Owner {
             access.actor.position = Position::Member;
             access.actor.server_roles.push(
@@ -189,8 +193,8 @@ impl Access {
         Ok(access)
     }
 
-    /// The standing of an active account that is not the caller of the request: a person who
-    /// is invited or moved. `None` when the account does not exist or is not active.
+    /// The current standing of an active account, including a person who is invited or moved
+    /// and the caller after a commit. `None` when the account does not exist or is not active.
     pub async fn of_account(
         connection: &mut PgConnection,
         account_id: AccountId,
@@ -278,6 +282,7 @@ impl Access {
             session_id,
             server_role_ids: roles.into_iter().map(|(id, _)| id).collect(),
             token_id: None,
+            token_actions: Vec::new(),
             actor: Actor {
                 position,
                 server_roles,
@@ -328,36 +333,17 @@ impl Access {
         ))
     }
 
+    pub fn permits_token_action(&self, action: TokenAction) -> bool {
+        self.token_id.is_none() || self.token_actions.contains(&action)
+    }
+
     pub async fn require_above_restored_roles(
         &self,
         connection: &mut PgConnection,
         account: AccountId,
     ) -> ApiResult<()> {
-        if self.owner_id == Some(self.account_id) {
-            return Ok(());
-        }
-        self.require_above_account(connection, account).await?;
-        let mut after = Uuid::nil();
-        loop {
-            let workspaces: Vec<WorkspaceId> = sqlx::query_scalar(
-                "select distinct workspace_id from member_roles
-                 where account_id = $1 and workspace_id > $2 order by workspace_id limit 64",
-            )
-            .bind(account)
-            .bind(after)
-            .fetch_all(&mut *connection)
-            .await?;
-            for workspace in &workspaces {
-                let actor = self.rank(connection, Some(*workspace)).await?;
-                let target =
-                    Self::rank_of(connection, account, self.owner_id, Some(*workspace)).await?;
-                Self::require_rank(actor, target)?;
-                after = workspace.as_uuid();
-            }
-            if workspaces.len() < 64 {
-                return Ok(());
-            }
-        }
+        let ranks = RestoredRanks::load(connection, self, &[account]).await?;
+        ranks.require(self, account)
     }
 
     pub async fn require_above_account(
@@ -563,6 +549,18 @@ impl Access {
         workspace_id: WorkspaceId,
         workspace: &WorkspaceScope,
     ) -> ApiResult<Vec<(ChannelRecord, ChannelScope)>> {
+        Ok(self
+            .workspace_channels_and_overrides(connection, workspace_id, workspace)
+            .await?
+            .0)
+    }
+
+    pub(crate) async fn workspace_channels_and_overrides(
+        &self,
+        connection: &mut PgConnection,
+        workspace_id: WorkspaceId,
+        workspace: &WorkspaceScope,
+    ) -> ApiResult<(Vec<(ChannelRecord, ChannelScope)>, Vec<OverrideRow>)> {
         let rows: Vec<ChannelRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {CHANNEL_COLUMNS} from channels where workspace_id = $1 order by position, id"
         )))
@@ -578,7 +576,10 @@ impl Access {
         .bind(workspace_id)
         .fetch_all(&mut *connection)
         .await?;
-        scoped_channels(rows, overrides, workspace)
+        Ok((
+            scoped_channels(rows, overrides.clone(), workspace)?,
+            overrides,
+        ))
     }
 
     /// The channels of a workspace with the identifiers in `channel_ids`, deleted ones
@@ -691,7 +692,7 @@ fn scoped_channels(
         .collect()
 }
 
-type OverrideRow = (ChannelId, WorkspaceRoleId, bool, i64, i64);
+pub(crate) type OverrideRow = (ChannelId, WorkspaceRoleId, bool, i64, i64);
 
 pub fn role_key(id: WorkspaceRoleId) -> RoleKey {
     RoleKey(id.as_uuid().as_u128())
@@ -757,4 +758,76 @@ fn channel_record(row: ChannelRow) -> ApiResult<ChannelRecord> {
         deleted_at,
         archived_at,
     })
+}
+
+pub(crate) struct RestoredRanks {
+    server: HashMap<AccountId, Vec<(i32, ServerPermissions)>>,
+    workspace: HashMap<AccountId, HashMap<WorkspaceId, Vec<i32>>>,
+}
+
+impl RestoredRanks {
+    pub(crate) async fn load(
+        connection: &mut PgConnection,
+        access: &Access,
+        accounts: &[AccountId],
+    ) -> ApiResult<Self> {
+        let mut ids = accounts.to_vec();
+        ids.push(access.account_id);
+        let rows: Vec<(AccountId, i32, i64)> = sqlx::query_as("select a.account_id,r.position,r.permissions from account_server_roles a join server_roles r on r.id=a.role_id where a.account_id=any($1)")
+            .bind(&ids).fetch_all(&mut *connection).await?;
+        let mut server: HashMap<AccountId, Vec<(i32, ServerPermissions)>> = HashMap::new();
+        for (account, position, bits) in rows {
+            server
+                .entry(account)
+                .or_default()
+                .push((position, db::server_permissions(bits)?));
+        }
+        let rows: Vec<(AccountId, WorkspaceId, i32)> = sqlx::query_as("select m.account_id,m.workspace_id,r.position from member_roles m join workspace_roles r on r.id=m.role_id where m.account_id=any($1)")
+            .bind(&ids).fetch_all(connection).await?;
+        let mut workspace: HashMap<AccountId, HashMap<WorkspaceId, Vec<i32>>> = HashMap::new();
+        for (account, id, position) in rows {
+            workspace
+                .entry(account)
+                .or_default()
+                .entry(id)
+                .or_default()
+                .push(position);
+        }
+        Ok(Self { server, workspace })
+    }
+
+    fn rank(
+        &self,
+        access: &Access,
+        account: AccountId,
+        workspace: Option<WorkspaceId>,
+    ) -> junto_authz::RoleRank {
+        let server = self.server.get(&account).map_or(&[][..], Vec::as_slice);
+        let positions = workspace.map(|id| {
+            self.workspace
+                .get(&account)
+                .and_then(|rows| rows.get(&id))
+                .map_or(&[][..], Vec::as_slice)
+        });
+        junto_authz::role_rank(access.owner_id == Some(account), server, positions)
+    }
+
+    pub(crate) fn require(&self, access: &Access, account: AccountId) -> ApiResult<()> {
+        if access.owner_id == Some(access.account_id) {
+            return Ok(());
+        }
+        Access::require_rank(
+            self.rank(access, access.account_id, None),
+            self.rank(access, account, None),
+        )?;
+        if let Some(workspaces) = self.workspace.get(&account) {
+            for id in workspaces.keys() {
+                Access::require_rank(
+                    self.rank(access, access.account_id, Some(*id)),
+                    self.rank(access, account, Some(*id)),
+                )?;
+            }
+        }
+        Ok(())
+    }
 }

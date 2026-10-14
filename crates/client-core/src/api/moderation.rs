@@ -36,9 +36,18 @@ pub fn stated_reason(reason: Option<&str>) -> Option<String> {
 fn reason_body(reason: Option<&str>) -> Result<Option<RequestBody>, ApiError> {
     stated_reason(reason)
         .map(|reason| {
-            encode(&ModerationReason {
+            // The message to the person concerned is not sent by this client yet. A field
+            // without a value is left out, so the body is the one of before the field.
+            let stated = ModerationReason {
                 reason: Some(reason),
-            })
+                recipient_message: None,
+            };
+            let mut body = serde_json::to_value(&stated)
+                .map_err(|error| ApiError::Request(error.to_string()))?;
+            if let serde_json::Value::Object(fields) = &mut body {
+                fields.retain(|_, value| !value.is_null());
+            }
+            encode(&body)
         })
         .transpose()
 }

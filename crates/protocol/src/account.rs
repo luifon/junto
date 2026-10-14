@@ -192,14 +192,80 @@ pub struct RecoveryNotice {
     pub performed_at: OffsetDateTime,
 }
 
-/// An optional explanation retained in the moderation audit entry.
+/// Separate private audit text and an optional message for the person affected.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ModerationReason {
-    /// At most 1000 characters without control characters. Empty means no reason.
+    /// Private audit text, never sent to the person affected. At most 1000 characters
+    /// without control characters; empty means no reason.
     #[serde(default)]
     pub reason: Option<String>,
+    /// Message in the affected person's notice for 30 days and retained separately in
+    /// the private audit. At most 1000 characters without control characters; empty
+    /// means no message.
+    #[serde(default)]
+    pub recipient_message: Option<String>,
+}
+
+/// An account-list row with the caller's current unban authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ListedAccount {
+    #[serde(flatten)]
+    pub account: AccountSummary,
+    #[serde(default)]
+    pub may_unban: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ModerationNoticeKind {
+    WorkspaceRemoved,
+    ServerRemoved,
+    Banned,
+    #[serde(other, skip_serializing)]
+    Unknown,
+}
+
+/// A historical notice for its subject; it never identifies the moderator.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ModerationNotice {
+    pub id: uuid::Uuid,
+    pub kind: ModerationNoticeKind,
+    pub workspace_id: Option<crate::ids::WorkspaceId>,
+    /// The workspace or server name at the time of the action.
+    pub name: String,
+    /// Optional text sent to the person affected, distinct from private audit text.
+    pub message: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub at: OffsetDateTime,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ModerationNoticePage {
+    pub notices: Vec<ModerationNotice>,
+    pub next_before: Option<uuid::Uuid>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+#[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
+pub struct ModerationNoticeQuery {
+    #[serde(default)]
+    pub before: Option<uuid::Uuid>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ReadModerationNotices {
+    pub proof: crate::auth::Proof,
+    #[serde(default)]
+    pub before: Option<uuid::Uuid>,
 }
 
 #[cfg(test)]

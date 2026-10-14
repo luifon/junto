@@ -166,6 +166,7 @@ fn routes_without_a_session_are_the_ones_a_device_uses_before_it_has_one() {
             "get /api/v1/health",
             "get /api/v1/server/logo",
             "post /api/v1/auth/challenges",
+            "post /api/v1/auth/moderation-notices",
             "post /api/v1/auth/sessions",
             "post /api/v1/device-links",
             "post /api/v1/join",
@@ -282,7 +283,7 @@ fn enum_places(value: &serde_json::Value, path: &str, found: &mut Vec<String>) {
 #[test]
 fn every_enum_of_the_generated_documents_lists_the_names_that_serde_writes() {
     use junto_protocol::access_token::TokenAction;
-    use junto_protocol::account::{AccountStatus, DeviceOrigin, ImageType};
+    use junto_protocol::account::{AccountStatus, DeviceOrigin, ImageType, ModerationNoticeKind};
     use junto_protocol::audit::AuditEvent;
     use junto_protocol::auth::ChallengeOperation;
     use junto_protocol::call::{
@@ -341,6 +342,7 @@ fn every_enum_of_the_generated_documents_lists_the_names_that_serde_writes() {
 
     let checked: &[(&str, Option<&str>, Wire, Listed)] = enums![
         AccountStatus,
+        ModerationNoticeKind,
         AuditEvent by "action",
         Block by "kind",
         BlockReason,
@@ -458,4 +460,15 @@ fn every_enum_of_the_generated_documents_lists_the_names_that_serde_writes() {
     for (name, ..) in checked {
         assert!(seen.contains(*name), "no document has the enum {name}");
     }
+}
+
+#[test]
+fn the_notice_schema_names_the_message() {
+    let document: serde_json::Value =
+        serde_json::from_str(&junto_server::openapi_document().unwrap()).unwrap();
+    let fields = document["components"]["schemas"]["ModerationNotice"]["properties"]
+        .as_object()
+        .unwrap();
+    assert!(fields.contains_key("message"));
+    assert!(!fields.contains_key("reason"));
 }

@@ -588,6 +588,7 @@ fn the_owner_bans_unbans_and_removes_a_member_on_the_people_page(cx: &mut TestAp
     assert_eq!(
         entry_of("account_banned"),
         AuditEvent::AccountBanned {
+            recipient_message: None,
             reason: Some(reason.to_owned()),
             account_id: bruno,
             cancelled_invite_ids: Vec::new(),
@@ -658,6 +659,7 @@ fn the_owner_bans_unbans_and_removes_a_member_on_the_people_page(cx: &mut TestAp
     assert_eq!(
         entry_of("account_removed"),
         AuditEvent::AccountRemoved {
+            recipient_message: None,
             reason: None,
             account_id: bruno,
         }

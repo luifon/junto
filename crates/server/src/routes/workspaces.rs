@@ -427,7 +427,7 @@ pub async fn remove_member(
     ApiPath((workspace_id, account_id)): ApiPath<(WorkspaceId, AccountId)>,
     body: axum::body::Bytes,
 ) -> ApiResult<StatusCode> {
-    let reason = super::moderation::moderation_reason(&body)?;
+    let (reason, recipient_message) = super::moderation::moderation_reason(&body)?;
     let now = app.now();
     transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
@@ -449,6 +449,15 @@ pub async fn remove_member(
         if removed.rows_affected() == 0 {
             return Err(ApiError::not_found());
         }
+        super::moderation_notices::record(
+            connection,
+            now,
+            account_id,
+            Some(workspace_id),
+            junto_protocol::account::ModerationNoticeKind::WorkspaceRemoved,
+            recipient_message.as_deref(),
+        )
+        .await?;
         super::invites::withdraw_workspace(
             connection,
             now,
@@ -501,6 +510,7 @@ pub async fn remove_member(
             &AuditEvent::WorkspaceMemberRemoved {
                 account_id,
                 reason: reason.clone(),
+                recipient_message: recipient_message.clone(),
             },
         )
         .await?;

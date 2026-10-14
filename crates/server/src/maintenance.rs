@@ -35,6 +35,10 @@ const EXPIRED_AT_NOW: [&str; 5] = [
      returning 1",
 ];
 
+const EXPIRED_MODERATION_NOTICES: &str = "delete from moderation_notices where id in (
+         select id from moderation_notices where occurred_at <= $1 limit $2)
+     returning 1";
+
 const EXPIRED_SESSIONS: &str = "delete from sessions where id in (
          select id from sessions where expires_at <= $1 limit $2)
      returning 1";
@@ -56,6 +60,7 @@ const ENDED_SESSIONS_PAST_THEIR_LIFETIME: &str = "delete from ended_sessions
 /// Deletes expired challenges, sessions, access tokens, device links and mutes, marks the join requests that
 /// waited too long as expired, deletes denied and expired join requests that are older than
 /// the history period, deletes the stored reasons of sessions that would have expired by now
+/// and private moderation notices with their historical device readers after 30 days,
 /// and the rings of direct-message calls that no limit counts any more, and removes the
 /// events that the log no longer keeps. It applies the retention settings, records the
 /// notices of archived channels and deletes the archived channels whose period has ended
@@ -73,6 +78,11 @@ pub async fn run_once(app: &AppState) -> ApiResult<()> {
         pass.ran("expired rows", in_batches(app, statement, now).await);
     }
     pass.ran("expired sessions", expire_sessions(app, now).await);
+    let notice_start = now - crate::routes::moderation_notices::RETENTION;
+    pass.ran(
+        "private moderation notices",
+        in_batches(app, EXPIRED_MODERATION_NOTICES, notice_start).await,
+    );
     let history_start = now - app.config.limits.join_request_history;
     let history = in_batches(app, PAST_THE_HISTORY_PERIOD, history_start).await;
     pass.ran("join request history", history);

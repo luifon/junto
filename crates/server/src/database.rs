@@ -126,6 +126,31 @@ impl Database {
         migrated
     }
 
+    pub async fn acquire_for_transaction(
+        &self,
+        attempt: &Attempt,
+    ) -> Result<sqlx::pool::PoolConnection<Postgres>, sqlx::Error> {
+        self.acquire_on(&self.pool, attempt).await
+    }
+
+    pub async fn acquire_for_stream(
+        &self,
+        attempt: &Attempt,
+    ) -> Result<sqlx::pool::PoolConnection<Postgres>, sqlx::Error> {
+        self.acquire_on(&self.stream_pool, attempt).await
+    }
+
+    async fn acquire_on(
+        &self,
+        pool: &PgPool,
+        attempt: &Attempt,
+    ) -> Result<sqlx::pool::PoolConnection<Postgres>, sqlx::Error> {
+        if attempt.0 > 0 {
+            tokio::time::sleep(backoff(attempt.0)).await;
+        }
+        pool.acquire().await
+    }
+
     pub fn pool(&self) -> &PgPool {
         &self.pool
     }
@@ -139,45 +164,9 @@ impl Database {
         self.pool.close().await;
     }
 
-    /// Starts one attempt of a transaction of the event stream, on a connection of its own
-    /// pool. A request never waits for one of these connections, and the event stream never
-    /// takes a connection of the requests.
-    pub async fn begin_stream(
-        &self,
-        mode: Mode,
-        attempt: &Attempt,
-    ) -> Result<Transaction<'static, Postgres>, sqlx::Error> {
-        self.begin_on(&self.stream_pool, mode, attempt).await
-    }
-
     /// Resolves after a transaction that can write has committed in this process.
     pub async fn written(&self) {
         self.written.notified().await;
-    }
-
-    /// Starts one attempt of a transaction. Used through [`transact!`] and [`read!`].
-    pub async fn begin(
-        &self,
-        mode: Mode,
-        attempt: &Attempt,
-    ) -> Result<Transaction<'static, Postgres>, sqlx::Error> {
-        self.begin_on(&self.pool, mode, attempt).await
-    }
-
-    async fn begin_on(
-        &self,
-        pool: &PgPool,
-        mode: Mode,
-        attempt: &Attempt,
-    ) -> Result<Transaction<'static, Postgres>, sqlx::Error> {
-        if attempt.0 > 0 {
-            tokio::time::sleep(backoff(attempt.0)).await;
-        }
-        pool.begin_with(match mode {
-            Mode::ReadWrite => BEGIN_READ_WRITE,
-            Mode::ReadOnly => BEGIN_READ_ONLY,
-        })
-        .await
     }
 
     /// Ends one attempt: commits after success, and asks for another attempt when the
@@ -185,7 +174,7 @@ impl Database {
     pub async fn finish<T, E>(
         &self,
         mode: Mode,
-        transaction: Transaction<'static, Postgres>,
+        transaction: Transaction<'_, Postgres>,
         outcome: Result<T, E>,
         attempt: &mut Attempt,
     ) -> Step<Result<T, E>>
@@ -201,7 +190,7 @@ impl Database {
     pub async fn finish_unattended<T, E>(
         &self,
         mode: Mode,
-        transaction: Transaction<'static, Postgres>,
+        transaction: Transaction<'_, Postgres>,
         outcome: Result<T, E>,
         attempt: &mut Attempt,
     ) -> Step<Result<T, E>>
@@ -215,7 +204,7 @@ impl Database {
         &self,
         mode: Mode,
         gate: Option<&CommitGate>,
-        transaction: Transaction<'static, Postgres>,
+        transaction: Transaction<'_, Postgres>,
         outcome: Result<T, E>,
         attempt: &mut Attempt,
     ) -> Step<Result<T, E>>
@@ -259,9 +248,27 @@ impl Database {
     }
 }
 
+pub async fn begin_on_connection(
+    connection: &mut sqlx::PgConnection,
+    mode: Mode,
+) -> Result<Transaction<'_, Postgres>, sqlx::Error> {
+    let mut transaction = connection
+        .begin_with(match mode {
+            Mode::ReadWrite => BEGIN_READ_WRITE,
+            Mode::ReadOnly => BEGIN_READ_ONLY,
+        })
+        .await?;
+    if matches!(mode, Mode::ReadWrite) && crate::receipts::requested() {
+        sqlx::query("select set_config('junto.event_first', '', false), set_config('junto.event_cursor', '', false)")
+            .execute(&mut *transaction)
+            .await?;
+    }
+    Ok(transaction)
+}
+
 /// Ends the transaction before the connection goes back to the pool, so that no response is
 /// sent while its backend is still inside a transaction.
-async fn rollback(transaction: Transaction<'static, Postgres>) {
+async fn rollback(transaction: Transaction<'_, Postgres>) {
     if let Err(error) = transaction.rollback().await {
         tracing::warn!(%error, "a transaction could not be rolled back");
     }
@@ -314,7 +321,8 @@ macro_rules! in_transaction {
     ($database:expr, $mode:expr, |$connection:ident| $body:block) => {{
         let mut attempt = $crate::database::Attempt::default();
         loop {
-            let mut transaction = $database.begin($mode, &attempt).await?;
+            let mut held = $database.acquire_for_transaction(&attempt).await?;
+            let mut transaction = $crate::database::begin_on_connection(&mut held, $mode).await?;
             let outcome = {
                 let $connection: &mut ::sqlx::PgConnection = &mut transaction;
                 async { $body }.await
@@ -323,7 +331,12 @@ macro_rules! in_transaction {
                 .finish($mode, transaction, outcome, &mut attempt)
                 .await
             {
-                $crate::database::Step::Done(result) => break result,
+                $crate::database::Step::Done(result) => {
+                    if result.is_ok() && matches!($mode, $crate::database::Mode::ReadWrite) {
+                        $crate::receipts::committed(&mut held).await;
+                    }
+                    break result;
+                }
                 $crate::database::Step::Again => continue,
             }
         }

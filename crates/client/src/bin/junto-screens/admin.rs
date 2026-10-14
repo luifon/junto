@@ -513,6 +513,7 @@ fn server_log() -> Vec<AuditEntry> {
         12,
         Some("Luca"),
         AuditEvent::AccountBanned {
+            recipient_message: None,
             reason: Some(
                 "Sent the same advertisement to every channel after two warnings.".to_owned(),
             ),
@@ -601,6 +602,7 @@ fn server_log() -> Vec<AuditEntry> {
         2 * day + 4 * hour,
         Some("Ana"),
         AuditEvent::AccountRemoved {
+            recipient_message: None,
             reason: None,
             account_id: person("Diego"),
         },

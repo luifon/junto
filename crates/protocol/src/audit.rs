@@ -1,3 +1,15 @@
+// The schema function that the derive macro makes for `AuditEvent` is one expression over
+// every variant. The crate is compiled with optimization also in the dev profile, where
+// that function needs little stack, and a test of the server bounds the stack of all
+// schemas together (ADR 0906).
+#![cfg_attr(
+    feature = "openapi",
+    expect(
+        clippy::large_stack_frames,
+        reason = "one generated schema function for every variant of a large enum"
+    )
+)]
+
 use junto_authz::{ServerPermission, WorkspacePermission};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -85,12 +97,18 @@ pub enum AuditEvent {
         #[serde(default)]
         reason: Option<String>,
         account_id: AccountId,
+        /// The optional text sent to the person affected, retained with the private audit.
+        #[serde(default)]
+        recipient_message: Option<String>,
     },
     AccountBanned {
         #[serde(default)]
         reason: Option<String>,
         account_id: AccountId,
         cancelled_invite_ids: Vec<InviteId>,
+        /// The optional text sent to the person affected, retained with the private audit.
+        #[serde(default)]
+        recipient_message: Option<String>,
     },
     AccountUnbanned {
         account_id: AccountId,
@@ -168,6 +186,9 @@ pub enum AuditEvent {
     WorkspaceMemberRemoved {
         account_id: AccountId,
         reason: Option<String>,
+        /// The optional text sent to the person affected, retained with the private audit.
+        #[serde(default)]
+        recipient_message: Option<String>,
     },
     /// An administrator added an existing account to the workspace.
     WorkspaceMemberAdded {
@@ -467,6 +488,7 @@ mod tests {
             AuditEvent::OwnerClaimed { account_id },
             AuditEvent::AccountBanned {
                 reason: None,
+                recipient_message: None,
                 account_id,
                 cancelled_invite_ids: vec![InviteId::generate()],
             },

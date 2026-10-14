@@ -1330,6 +1330,7 @@ mod tests {
             (AuditEvent::JoinRequestDenied { join_request_id }, vec![]),
             (
                 AuditEvent::AccountRemoved {
+                    recipient_message: None,
                     reason: None,
                     account_id,
                 },
@@ -1337,6 +1338,7 @@ mod tests {
             ),
             (
                 AuditEvent::AccountBanned {
+                    recipient_message: None,
                     reason: Some("Spam".to_owned()),
                     account_id,
                     cancelled_invite_ids: vec![invite_id, InviteId::generate()],
@@ -1345,6 +1347,7 @@ mod tests {
             ),
             (
                 AuditEvent::WorkspaceMemberRemoved {
+                    recipient_message: None,
                     account_id,
                     reason: None,
                 },
@@ -2344,6 +2347,7 @@ mod tests {
         let removal = entry(
             Some(scene.own),
             AuditEvent::AccountRemoved {
+                recipient_message: None,
                 reason: None,
                 account_id: AccountId::generate(),
             },
@@ -2551,6 +2555,7 @@ mod tests {
         );
 
         let removal = AuditEvent::AccountRemoved {
+            recipient_message: None,
             reason: None,
             account_id: ana,
         };
@@ -2597,6 +2602,7 @@ mod tests {
         let account_id = AccountId::generate();
         assert_eq!(
             of(AuditEvent::AccountBanned {
+                recipient_message: None,
                 reason: None,
                 account_id,
                 cancelled_invite_ids: Vec::new(),
@@ -2651,6 +2657,7 @@ mod tests {
         let ban = entry(
             Some(ana),
             AuditEvent::AccountBanned {
+                recipient_message: None,
                 reason: None,
                 account_id: zoe,
                 cancelled_invite_ids: Vec::new(),
@@ -2659,6 +2666,7 @@ mod tests {
         let removal = entry(
             Some(bea),
             AuditEvent::AccountRemoved {
+                recipient_message: None,
                 reason: None,
                 account_id: zoe,
             },
@@ -2743,6 +2751,7 @@ mod tests {
         let zoe = AccountId::generate();
         let line = |event: AuditEvent| audit_line(&entry(None, event), AuditScope::Server, &names);
         let banned = |reason: Option<&str>| AuditEvent::AccountBanned {
+            recipient_message: None,
             reason: reason.map(str::to_owned),
             account_id: zoe,
             cancelled_invite_ids: Vec::new(),
@@ -2763,6 +2772,7 @@ mod tests {
         assert_eq!(cut.chars().count(), 1000);
         assert_eq!(
             line(AuditEvent::AccountRemoved {
+                recipient_message: None,
                 reason: Some("Left the team".to_owned()),
                 account_id: zoe,
             })
@@ -2772,6 +2782,7 @@ mod tests {
         );
         assert_eq!(
             line(AuditEvent::WorkspaceMemberRemoved {
+                recipient_message: None,
                 account_id: zoe,
                 reason: Some("Project ended".to_owned()),
             })

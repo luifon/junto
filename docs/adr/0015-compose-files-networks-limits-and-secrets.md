@@ -44,7 +44,7 @@ Networks of the one-host form:
 - PostgreSQL is on an internal network with the server only, and publishes no port.
 - The media server and the entry use the network of the host, as step 0 ran the media server. The host firewall applies to them.
 - The network `backend` has a fixed subnet. The server and Redis have fixed addresses in it. The media server reaches Redis and the notification route of the server at those addresses. The entry reaches the server at its fixed address.
-- The API port of the media server listens on the loopback address and on the address of the host in `backend`. The server reaches it there.
+- The API port of the media server listens on the loopback address and on the address of the host in `backend`. The server reaches it there. This is the one connection from a container to an address of the host. A host firewall treats it as an incoming connection from the bridge of `backend`, and one that drops incoming connections by default needs a rule for the source address of the server; the install document states it.
 - `JUNTO_TRUSTED_PROXIES` is the address of the host in `backend`, from which the entry connects.
 - No container publishes a port.
 - The recorder reaches the media server at its public name and Redis by its service name.
@@ -52,7 +52,7 @@ Networks of the one-host form:
 Networks of the two-host form:
 
 - Each link container has a fixed address in `backend` and forwards TCP ports with `socat`; it forwards no IP packets (ADR 0003).
-- On the public host the link listens on its link address for Redis and for the API of the media server, and forwards the HTTP port of the server to the data host. The entry and the notifications of the media server use that port.
+- On the public host the link listens on its link address for Redis and for the API of the media server, and forwards the HTTP port of the server to the data host. The entry and the notifications of the media server use that port. The link reaches the API of the media server at the address of the host in `backend`, so the rule of the host firewall names the address of the link there.
 - That HTTP port listens in a network of its own, `inbound`, whose only container is the link. The server trusts the forwarded client address of every request that arrives through the link, so only the programs on the network of the host, which are the entry and the media server, may reach the port. Redis is in `backend` and cannot.
 - On the data host the link listens on its `backend` address for Redis and for the API of the media server, and on its link address for the HTTP port, which it forwards to the server. `JUNTO_TRUSTED_PROXIES` is the `backend` address of the link.
 - The link of the public host publishes its UDP port. No other container of either host publishes a port.
@@ -82,6 +82,8 @@ Recorder:
 Limits and behaviour:
 
 - Every container has a memory limit, a CPU limit and a limit of processes. The defaults are in `env.example` with the measurements that they follow.
+- A container that a script of the deployment or a command of the install document starts with `docker run` is no service of a Compose file. Its command names the three limits.
+- The defaults of the CPU limits stay the measured needs. Docker creates no container whose CPU limit is above the number of CPUs of its host, so on a smaller host the administrator sets the limit to that number. `deploy/check-limits.sh <form file>` reads the rendered configuration of a form, compares each CPU limit with the CPUs that the Docker daemon states, or with a number that is given, and names the setting of each limit that is above it. A lower default for small hosts was not chosen: it would take cores from the recorder and the media server on the hosts that have them.
 - Every container restarts unless it was stopped, except `init`.
 - Docker keeps five log files of 10 MB per container, and two of 1 MB for `init`.
 - Every container has a health check, except `init` and the worker. The health check of the entry connects to port 80, because a connection without a TLS greeting on port 443 is an error in its log. The server starts after `init` ended and PostgreSQL is healthy; the media server starts after Redis is healthy.
@@ -95,7 +97,7 @@ Backup, restore and upgrade:
 
 Tests:
 
-- `deploy/tests/compose-config.sh` renders each form with exactly the settings that it needs, removes each setting in turn, and checks the rendered configuration against stated rules: published ports and their addresses, pinned images, users, capabilities, limits, log limits, networks, the directories of the server that are volumes, and that `init` prepares every volume of a container without root rights.
+- `deploy/tests/compose-config.sh` renders each form with exactly the settings that it needs, removes each setting in turn, and checks the rendered configuration against stated rules: published ports and their addresses, pinned images, users, capabilities, limits, log limits, networks, the directories of the server that are volumes, and that `init` prepares every volume of a container without root rights. It also checks that every `docker run` of the scripts of `deploy/` and of the install document names the three limits, and that `deploy/check-limits.sh`, for a host with one CPU, names exactly the settings whose default in `env.example` is above 1 and accepts each form with those settings at 1.
 - `deploy/tests/entry.sh` runs the entry with certificates that it signs itself and three stand-in programs.
 - `deploy/tests/smoke.sh` starts the local form, waits for the health of every container, and removes it.
 - `deploy/tests/backup-restore.sh` makes a backup of the local form while content is written and deleted, runs restores that are refused, and restores the backup into a new, empty deployment with other secrets, with an interruption (ADR 0902, ADR 0911).
@@ -111,6 +113,8 @@ Tests:
 - A value of a secret that is not letters and digits can break the database URL or a YAML configuration. The generator writes letters and digits only.
 - The PostgreSQL password is stored at the first start. A later change of the line in `.env` alone makes the server fail at its start with the message of PostgreSQL.
 - The fixed subnet of `backend` can collide with a network of the host. Five settings move it.
+- A host with fewer CPUs than a default CPU limit does not start a form until the limit is lowered in `.env`. Docker's message names the CPUs and not the setting; `deploy/check-limits.sh` names the setting.
+- A host firewall that drops incoming connections by default, and has no rule for the API port of the media server from the address of the server or of the link, leaves the server without the media server: the health route states `media_server` as false. The rule was derived from the rules of a host with `ufw` and was not run on a host without another rule for that port.
 - The port for TURN without TLS (5349) and the relay ports of TURN listen on every address of the host. The install document tells the administrator to keep them closed in the firewall.
 - The public address also needs port 80, for the certificate requests (ADR 0004).
 - In the two-host form every connection of a client to the server passes two `socat` processes. Each connection is one process of each link container; the limit of processes of the link is 2048.

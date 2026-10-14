@@ -156,6 +156,7 @@ async fn a_member_removed_from_one_workspace_loses_it_and_keeps_the_server() {
     assert_eq!(
         log.entries[0].event,
         AuditEvent::WorkspaceMemberRemoved {
+            recipient_message: None,
             account_id: member_id,
             reason: Some(reason.to_owned()),
         }
@@ -266,7 +267,7 @@ async fn a_ban_with_a_reason_states_it_in_the_audit_log_of_the_server() {
     assert_eq!(log.entries.len(), 1);
     assert!(matches!(
         &log.entries[0].event,
-        AuditEvent::AccountRemoved { reason: None, account_id } if *account_id == member_id
+        AuditEvent::AccountRemoved { reason: None, account_id, .. } if *account_id == member_id
     ));
 }
 

@@ -21,8 +21,8 @@ ADR 0902 decides that CI builds and tests on macOS, Windows and Linux for every 
 
 Jobs:
 
-- Rust on Linux: `cargo fmt --check`, `cargo clippy` with warnings as errors, the tests of the workspace with `tools/with-test-postgres.sh` and `ffmpeg`, and the generation of the API documents followed by a comparison with the committed files.
-- Rust on macOS and on Windows: a build of every target of the workspace, and the tests of `junto-authz`, `junto-protocol` and the library and tools of `junto-client-core`, which need no database.
+- Rust on Linux: `cargo fmt --check`, `cargo clippy` with warnings as errors and with the bound on the stack of one function (ADR 0906), the tests of the workspace with `tools/with-test-postgres.sh` and `ffmpeg`, and the generation of the API documents followed by a comparison with the committed files.
+- Rust on macOS and on Windows: a build of every target of the workspace, and the tests of `junto-authz`, `junto-protocol` and the library and tools of `junto-client-core`, which need no database. On macOS also the check of the condition waits (ADR 0786): `tools/check-condition-wait.sh` with the built client binary, and the unit tests of that module of `junto-media`.
 - Licences: `cargo deny check` with a stated version of the tool.
 - Recording layout page: the locked packages without install scripts, the build, and the browser tests against a LiveKit server in Docker.
 - Transcription worker: the locked packages with `uv`, `ruff`, `mypy`, and the unit tests.

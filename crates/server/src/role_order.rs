@@ -16,7 +16,7 @@ use crate::error::{ApiError, ApiResult};
 use crate::events::{self, log::Affected};
 
 const MOST_REORDERED_ROLES: usize = 250;
-const HIGHEST_REORDER_POSITION: i32 = 1_000_000;
+const HIGHEST_REORDER_POSITION: i32 = i32::MAX;
 const POSITIONS_PER_EVENT: usize = 128;
 
 fn table(workspace: Option<WorkspaceId>) -> &'static str {
@@ -69,14 +69,13 @@ pub async fn insert_bottom(
             .fetch_one(&mut *connection)
             .await?
     };
-    if highest == Some(i32::MAX) {
-        return Err(ApiError::conflict(
-            "role positions are exhausted; reorder them first",
-        ));
-    }
     if let Some(workspace_id) = workspace {
         let rows: Vec<(WorkspaceRoleId, i32)> = sqlx::query_as(
-            "update workspace_roles set position = position + 1 where workspace_id = $1 and not is_everyone returning id, position",
+            if highest == Some(i32::MAX) {
+                "with ranked as (select id, (row_number() over (order by position) + 1)::integer as position from workspace_roles where workspace_id=$1 and not is_everyone) update workspace_roles r set position=ranked.position from ranked where r.id=ranked.id returning r.id,r.position"
+            } else {
+                "update workspace_roles set position = position + 1 where workspace_id = $1 and not is_everyone returning id, position"
+            },
         ).bind(workspace_id).fetch_all(&mut *connection).await?;
         for chunk in rows.chunks(POSITIONS_PER_EVENT) {
             let positions = chunk
@@ -100,7 +99,11 @@ pub async fn insert_bottom(
         }
     } else {
         let rows: Vec<(ServerRoleId, i32)> = sqlx::query_as(
-            "update server_roles set position = position + 1 returning id, position",
+            if highest == Some(i32::MAX) {
+                "with ranked as (select id, (row_number() over (order by position) + 1)::integer as position from server_roles) update server_roles r set position=ranked.position from ranked where r.id=ranked.id returning r.id,r.position"
+            } else {
+                "update server_roles set position = position + 1 returning id, position"
+            },
         )
         .fetch_all(&mut *connection)
         .await?;
@@ -145,7 +148,7 @@ pub async fn reorder(
             || !values.insert(*position)
         {
             return Err(ApiError::invalid(
-                "role identifiers and positions from 1 to 1000000 must be distinct",
+                "role identifiers and positive positions must be distinct",
             ));
         }
     }
@@ -274,4 +277,23 @@ async fn announce(
     audit::record(connection, now, Some(access.account_id), about, &audit).await?;
     events::publish(connection, now, &event).await?;
     events::permissions_changed(connection, now, affected, workspace).await
+}
+
+pub(crate) fn permitted(result: ApiResult<()>) -> ApiResult<bool> {
+    use junto_protocol::error::ErrorCode;
+    match result {
+        Ok(()) => Ok(true),
+        Err(error)
+            if matches!(
+                error.code(),
+                ErrorCode::Forbidden
+                    | ErrorCode::ExceedsOwnPermissions
+                    | ErrorCode::OwnerProtected
+                    | ErrorCode::OwnAccountTarget
+            ) =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(error),
+    }
 }

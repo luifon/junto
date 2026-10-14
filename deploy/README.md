@@ -6,6 +6,7 @@ The files that install a Junto server with Docker Compose. The steps are in [`do
 |---|---|
 | `env.example` | Every setting, explained. Copy it to `.env`, which is not tracked. |
 | `generate-secrets.sh` | Prints the secret settings with new random values. |
+| `check-limits.sh` | Names each CPU limit of a form that is above the CPUs of the host, before the first start. |
 | `base.yaml` | Each service, defined once. Not used alone. |
 | `one-host.yaml` | Form 1: every component on one host with a public address. |
 | `two-hosts-data.yaml`, `two-hosts-public.yaml` | Form 2: the data host and the public host. |
