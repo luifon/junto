@@ -15,6 +15,7 @@ from check_signing import requirement
 from configuration import architecture
 from create_identity import create, run
 from keychains import cleanup, signals
+from programs import outcome, program
 
 
 def check(tool):
@@ -37,8 +38,11 @@ def check(tool):
             environment = os.environ.copy()
             environment.update(JUNTO_CODESIGN_IDENTITY=identity, JUNTO_CODESIGN_KEYCHAIN=str(keychain),
                                JUNTO_TEST_CERTIFICATE_FILE=str(pin))
-            installed = assemble("/usr/bin/true", root / "installed/Junto.app", "1.0.0", tool)
-            candidate = assemble("/usr/bin/false", root / "source/Junto.app", "2.0.0", tool)
+            succeeding, failing = program(root / "exit-0", 0), program(root / "exit-1", 1)
+            installed = assemble(succeeding, root / "installed/Junto.app", "1.0.0", tool)
+            candidate = assemble(failing, root / "source/Junto.app", "2.0.0", tool)
+            def ran(arguments):
+                return subprocess.run(arguments, capture_output=True, text=True, timeout=30)
             def sign(bundle, env=environment):
                 subprocess.run([sys.executable, str(pathlib.Path(__file__).with_name("sign.py")), str(bundle)], env=env, check=True, timeout=30)
             def package(bundle, output, version):
@@ -66,16 +70,17 @@ def check(tool):
             update = [tool, "update", f"http://127.0.0.1:{server.server_port}/", str(public), str(fresh_public), str(installed)]
             installed.parent.chmod(0o555)
             try:
-                result = subprocess.run(update, capture_output=True, text=True, timeout=30)
+                result = ran(update)
             finally:
                 installed.parent.chmod(0o755)
-            assert result.returncode != 0 and "move Junto" in result.stderr
+            assert result.returncode != 0 and "move Junto" in result.stderr, outcome(result)
             assert server.requests == 0
             run(*update)
             previous = installed.parent / ".Junto.previous"
             assert version(installed) == "2.0.0"
             assert requirement(installed) == expected
-            assert subprocess.run([str(installed / "Contents/MacOS/junto")], capture_output=True, timeout=30).returncode != 0
+            result = ran([installed / "Contents/MacOS/junto"])
+            assert result.returncode == 1, outcome(result)
             assert (previous / "archive.junto").is_file()
             assert not (installed.parent / "Junto.previous.app").exists()
             assert not list(previous.rglob("*.app"))
@@ -83,17 +88,19 @@ def check(tool):
             recovery = [str(previous / "recover"), "--test-configuration", str(public), str(fresh_public), "rollback", str(installed), str(pin)]
             backup = (previous / "archive.junto").read_bytes()
             (previous / "archive.junto").write_bytes(b"changed archive")
-            result = subprocess.run(recovery, capture_output=True, timeout=30)
-            assert result.returncode != 0 and version(installed) == "2.0.0"
+            result = ran(recovery)
+            assert result.returncode != 0 and version(installed) == "2.0.0", outcome(result)
             (previous / "archive.junto").write_bytes(backup)
-            result = subprocess.run(recovery, capture_output=True, timeout=30)
-            assert result.returncode == 0, result.stderr.decode()
+            result = ran(recovery)
+            assert result.returncode == 0, outcome(result)
             assert version(installed) == "1.0.0"
             assert requirement(installed) == expected
-            assert subprocess.run([str(installed / "Contents/MacOS/junto")], capture_output=True, timeout=30).returncode == 0
-            assert subprocess.run(recovery, capture_output=True, timeout=30).returncode != 0
+            result = ran([installed / "Contents/MacOS/junto"])
+            assert result.returncode == 0, outcome(result)
+            result = ran(recovery)
+            assert result.returncode != 0, outcome(result)
             for identity_kind in ["adhoc", "other"]:
-                bad = assemble("/usr/bin/true", root / identity_kind / "Junto.app", "3.0.0", tool)
+                bad = assemble(succeeding, root / identity_kind / "Junto.app", "3.0.0", tool)
                 if identity_kind == "adhoc":
                     run("/usr/bin/codesign", "--force", "--sign", "-", str(bad))
                 else:
@@ -108,7 +115,8 @@ def check(tool):
                 package(bad, bad_release, "3.0.0")
                 for file in bad_release.iterdir():
                     shutil.copyfile(file, release / file.name)
-                assert subprocess.run(update, capture_output=True, timeout=30).returncode != 0
+                result = ran(update)
+                assert result.returncode != 0, outcome(result)
                 assert version(installed) == "1.0.0"
             print("18 update and archive-recovery assertions passed", flush=True)
         finally:

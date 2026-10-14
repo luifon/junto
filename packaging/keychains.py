@@ -6,6 +6,8 @@ import shlex
 import signal
 import subprocess
 
+from programs import outcome
+
 
 def run(*arguments):
     try:
@@ -13,7 +15,7 @@ def run(*arguments):
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"{arguments[0]} did not finish") from None
     if result.returncode:
-        raise RuntimeError(f"{arguments[0]} failed: {result.stderr.strip()}")
+        raise RuntimeError(f"{arguments[0]} failed: {outcome(result)}")
     return result.stdout + result.stderr
 
 

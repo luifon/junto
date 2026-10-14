@@ -17,6 +17,7 @@ import threading
 from check_signing import requirement
 from create_identity import create, run
 from keychains import cleanup, signals
+from programs import outcome, program
 
 
 def check():
@@ -74,12 +75,12 @@ def check():
             release_tool = str(repository / "target/release/junto-release")
             publish = ["publish", str(other), str(root), str(secret), str(fresh_secret)]
             result = subprocess.run([release_tool, *publish], capture_output=True, text=True)
-            assert result.returncode != 0 and "test configuration requires" in result.stderr
+            assert result.returncode != 0 and "test configuration requires" in result.stderr, outcome(result)
             result = subprocess.run([release_tool, "--test-configuration", str(public), str(fresh_public), *publish], capture_output=True, text=True)
-            assert result.returncode != 0 and "different project signing certificate" in result.stderr
+            assert result.returncode != 0 and "different project signing certificate" in result.stderr, outcome(result)
             broken = root / "broken/Junto.app"
             shutil.copytree(root / "v2/Junto.app", broken)
-            shutil.copyfile("/usr/bin/false", broken / "Contents/MacOS/junto")
+            program(broken / "Contents/MacOS/junto", 1)
             subprocess.run(["python3", str(repository / "packaging/sign.py"), str(broken)], env=environment, check=True)
             run(str(root / "updater-v1"), "package", str(broken.parent), str(root / "broken-release"), str(secret), str(fresh_secret), "2.0.0", "macos", architecture)
             run("/usr/bin/ditto", "-x", "-k", str(root / f"v1/Junto-1.0.0-macos-{architecture}.zip"), str(root / "installed"))
@@ -91,10 +92,11 @@ def check():
                 result = subprocess.run([str(root / "updater-v1"), "update-compiled", str(installed)], capture_output=True, text=True, timeout=30)
             finally:
                 installed.parent.chmod(0o755)
-            assert result.returncode != 0 and "move Junto" in result.stderr
+            assert result.returncode != 0 and "move Junto" in result.stderr, outcome(result)
             assert server.requests == 0, "a read-only location contacted the source"
             run(str(root / "updater-v1"), "update-compiled", str(installed))
-            assert subprocess.run([str(installed / "Contents/MacOS/junto"), "--version"], capture_output=True).returncode != 0
+            result = subprocess.run([str(installed / "Contents/MacOS/junto"), "--version"], capture_output=True, text=True, timeout=30)
+            assert result.returncode == 1, outcome(result)
             assert requirement(installed) == expected
             previous = installed.parent / ".Junto.previous"
             assert (previous / "archive.junto").is_file()
@@ -111,7 +113,7 @@ def check():
                 invalid.update(overrides)
                 result = subprocess.run(["cargo", "check", "--locked", "-p", "junto-client-core", "--lib"],
                                         cwd=repository, env=invalid, capture_output=True, text=True)
-                assert result.returncode != 0 and diagnostic in result.stderr, result.stderr
+                assert result.returncode != 0 and diagnostic in result.stderr, outcome(result)
             subprocess.run(["cargo", "check", "--locked", "-p", "junto-client-core", "--lib"],
                            cwd=repository, check=True)
             print("Build configuration: 2 intended refusals and 1 valid build passed", flush=True)

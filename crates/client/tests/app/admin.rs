@@ -318,11 +318,22 @@ fn an_administrator_manages_workspaces_and_channels_in_the_window(cx: &mut TestA
             .channel(plans)
             .is_some_and(|held| held.channel.category_id.is_none())
     });
+    // The row shows its actions again when the window has the answer to its own request,
+    // which can come after the member has the event of the server.
+    let settings: &'static str = Box::leak(format!("channel-settings-{plans}").into_boxed_str());
+    window.until(
+        "the window shows the channel without a category",
+        |window| {
+            matches!(
+                window.admin().map(|view| view.scope),
+                Some(Scope::Server { page: ServerPage::Channels(page), .. })
+                    if page.channel(plans).is_some_and(|line| line.category_id.is_none())
+            ) && window.shows(settings)
+        },
+    );
 
     // The settings of the channel: a new name, permanent messages, and the archive.
-    window.click(Box::leak(
-        format!("channel-settings-{plans}").into_boxed_str(),
-    ));
+    window.click(settings);
     window.until("the settings of the channel are open", |window| {
         window.shows("channel-nav-overview") && window.shows("channel-rename")
     });
