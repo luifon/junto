@@ -1,6 +1,12 @@
 //! `junto-cli`: operates Junto servers from a terminal with the client library and nothing
 //! else.
 
+mod admin;
+mod discovery;
+mod live;
+mod messages;
+mod recordings;
+mod roles;
 mod secret_input;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -71,8 +77,272 @@ commands:
                                [--max-uses <n>] [--expires-in-hours <n>] [--workspace <id>]...
   requests                     list the join requests that wait
   approve-request <id>         approve a join request
+  deny-request <id>            deny a join request
+  invites <action> [arguments] list the invites, or cancel one
+  redeem                       enter the workspaces of an invite code with the account of
+                               this device
+  workspaces <action> [arguments]
+  categories <action> [arguments]
+  channels <action> [arguments]
+  overrides <action> [arguments]
+  roles <action> [arguments]
+  members <action> [arguments]
+  accounts <action> [arguments]
+  tokens <action> [arguments]
+  exports <action> [arguments]
+  audit <action> [arguments]
+  archive-period <action> [arguments]
+  retention <action> [arguments]
+  logo <action> [arguments]
+                               send one request of the administration routes
   profile                      show or set the local profile preset
                                [--name <name>] [--avatar <file>] [--no-avatar]
+  state                        connect the event stream of the server and show the state
+                               that it gives: workspaces, channels, calls, invitations
+  watch                        show the state and then every event of the server, until
+                               the line `quit` on standard input or an interrupt
+                               [--seconds <n>]
+  call <action> [arguments]    send one request of the call routes
+  messages <action> [arguments]
+                               send one request of the message routes
+  threads <action> [arguments] send one request of the thread routes
+  pins <action> [arguments]    send one request of the pin routes
+  notices <action> [arguments] send one request of the notice and notification routes
+  recordings <action> [arguments]
+                               send one request of the routes of recordings and of
+                               their transcripts
+  search <text>                search the messages and transcript lines that the account
+                               can read; the text takes words, a phrase in quotation
+                               marks, `or`, and a minus before a word
+                               [--channel <id>] [--author <account>] [--from <time>]
+                               [--until <time>] [--limit <n>] [--cursor <continuation>]
+
+actions of call:
+  show [<channel>]             the call of a voice channel, or the call of this account
+  join <channel>               ask for a place in the call of a voice channel
+  leave
+  state <muted yes|no> <deafened yes|no>
+  share <application|system|none>      report a screen share and its sound
+  unshare
+  hand <up|down>
+  speaking <yes|no>
+  settings <channel> [--limit <n> | --no-limit] [--hide <yes|no>]
+  lock <channel>, unlock <channel>
+  meeting <channel> <on|off>
+  ask <channel>                ask to enter a locked or full voice channel
+  answer <request> <accept|deny>
+  cancel-request <request>
+  invite <channel> <account>
+  accept <invitation>, refuse <invitation>, cancel-invitation <invitation>
+  move <channel> <account> <to channel>
+  join-move <move>, fail-move <move>
+  block-microphone, unblock-microphone, block-sound, unblock-sound, disconnect
+                               each with <channel> <account>
+  direct <account>             ask for a place in the direct-message call with an account
+  refuse-direct <account>
+  mute-direct <account> [--hours <n>], unmute-direct <account>
+
+actions of messages:
+  list <place> [--before <position> | --after <position>] [--limit <n>]
+                               one page of the history, the latest page without a position
+  show <message>
+  send <place> [--text <text>] [--reply <message>] [--file <path>]...
+                               an empty line in the text starts a new paragraph
+  edit <message> --text <text>
+  delete <message>
+  react <message> <emoji>, unreact <message> <emoji>
+  read <place> <position>      move the read position of the account forward
+  unread <place>               the read position and the unread counts
+  conversations                the direct conversations of the account
+  open <account>               the direct conversation with an account
+  limits                       the limits of the server for the files of a message
+  set-limits --bytes <n> --files <n>
+  upload <place> <file>        upload a file and print its attachment
+  download <message> <attachment> --to <directory>
+                               save a file of a message under a name that no file has
+
+A place is channel:<id>, direct:<conversation id>, or the identifier of a channel.
+
+actions of threads:
+  list <root message> [--before <position> | --after <position>] [--limit <n>]
+                               the root, one page of the replies, and the fork channels
+  reply <root message> [--text <text>] [--reply <message>] [--file <path>]...
+  state <root message>         the read position and the unread counts in the thread
+  read <root message> <position>
+  unread [--before <continuation>] [--limit <n>]
+                               the threads that hold something unread, the newest first
+  follow <root message>, unfollow <root message>
+                               the choice to follow a thread or not
+  clear-follow <root message>  no choice: the rule of the server decides
+  followed <channel> [--before <continuation>] [--limit <n>]
+                               the threads of a channel that the account follows
+  fork <root message> --name <name> [--kind <text|voice>]
+                               copy the thread into a new channel
+
+actions of pins:
+  list <channel>
+  add <message>, remove <message>
+
+actions of notices:
+  list [--before <notice>] [--limit <n>]
+  read <notice>
+  settings <scope>             the stored notification settings of a scope
+  set-settings <scope> [--level <all|mentions|nothing|inherit>]
+               [--mute <yes|no>] [--mute-hours <n>]
+               [--role-mentions <yes|no|inherit>] [--everyone-mentions <yes|no|inherit>]
+               [--dnd <yes|no>] [--quiet <HH:MM-HH:MM> [--time-zone <name>]] [--no-quiet]
+                               change the named settings of a scope and keep the others;
+                               the mute and the mention switches belong to a channel,
+                               --dnd and --quiet to the account; a time zone is a
+                               name such as Europe/Lisbon, and UTC without one
+  read-all [--until <time>]    mark every notice up to a time as read, in one request
+  default <workspace>          the level that an administrator set for a workspace
+  set-default <workspace> <all|mentions|nothing>
+  remove-default <workspace>   the workspace sets no level
+
+A scope is account, workspace:<id> or channel:<id>. A time is written as
+2026-01-31T00:00:00Z.
+
+actions of recordings:
+  list <workspace> [--before <recording>] [--limit <n>]
+                               the recordings of a workspace, the newest first
+  show <recording>             the recording with its segments and their files
+  remove <recording>           delete the recording with its files and its transcript
+  transcript <recording>       the state of the transcript, its speakers and the result
+                               for each audio segment
+  request-transcript <recording>
+                               ask for the transcript again, when there is none or it
+                               failed
+  lines <recording> [--after <line>] [--limit <n>]
+                               one page of the lines of the transcript
+  text <recording> [--to <directory>]
+                               the transcript as text; with --to it is saved as a file
+                               under a name that no file has
+  correct <recording> <line> --text <text>
+  rename-speaker <recording> <number> --name <name>
+                               name the voice with the label `Speaker <number>`
+  download <recording> <segment> [--to <directory>]
+                               save the file of a segment under a name that no file has,
+                               in the directory of the tool without --to; a download
+                               that was cut continues in its unfinished file
+actions of workspaces:
+  list
+  create <name>
+  rename <workspace> <name>
+  delete <workspace>           delete a workspace with its members, roles, categories and
+                               channels
+
+actions of categories:
+  create <workspace> <name>
+  rename <workspace> <category> <name>
+  move <workspace> <category> <position>
+  delete <workspace> <category>
+                               the channels of the category stay and have no category
+
+actions of channels:
+  list <workspace>             the categories and the channels that the account sees
+  create <workspace> <name> --kind <text|voice> [--category <id>]
+  update <channel> [--name <name>] [--category <id> | --no-category] [--position <n>]
+         [--permanent <on|off>]
+  delete <channel>
+  archive <channel>, restore <channel>
+  archived <workspace>         the archived channels that the account sees
+  call-settings <channel> [--limit <n> | --no-limit] [--hide <on|off>]
+
+actions of overrides:
+  list <channel>
+  set <channel> <role> [--allow <permission>]... [--deny <permission>]...
+                               set the override of a role in a channel; without an option
+                               the override is removed. A permission is written as the
+                               server names it, such as view_channel
+  change <channel> <role> <permission> <allow|deny|inherit>
+                               change one permission of the override of a role in a channel
+                               and keep the other permissions of it
+
+actions of roles:
+  list <workspace>             the roles of a workspace: the \"everyone\" role, then the
+                               other roles from the highest position to the lowest
+  create <workspace> <name> [--permissions <list>]
+  rename <workspace> <role> <name>
+  permissions <workspace> <role> <list>
+                               replace the permissions of a role; --none in the place of
+                               the list gives the role no permission
+  delete <workspace> <role>
+  give <workspace> <account> <role>, take <workspace> <account> <role>
+  move <workspace> <role> <position>
+                               give a role the position that a role of the list holds; each
+                               role between the two positions takes the position of the
+                               role beside it, in one request
+  server <action> [arguments]  the same actions for the roles of the server, each without
+                               <workspace>
+
+A list of permissions is written with commas and without spaces, such as
+view_channel,manage_messages. A role of the server takes the permissions of the server,
+such as create_invites.
+
+actions of members:
+  list <workspace>
+  add <workspace> <account>    add an existing account to a workspace
+  remove <workspace> <account> [--reason <text>]
+                               remove an account from one workspace; the reason stays in
+                               the audit log
+
+actions of accounts:
+  list
+  remove <account> [--reason <text>], ban <account> [--reason <text>]
+                               the reason stays in the audit log
+  unban <account>
+
+actions of invites:
+  list
+  revoke <invite>
+
+actions of tokens:
+  list [--before <token>] [--limit <n>]
+  create <name> --action <action>... --days <n>
+                               create an access token and print it once. An action is
+                               read_structure, manage_structure, manage_members or
+                               read_audit_log
+  revoke <token>
+
+actions of exports:
+  list
+  channel <channel>, conversation <conversation>
+                               ask for an export
+  show <export>
+  download <export> <new file>
+  remove <export>
+
+actions of audit:
+  server [filters] [--before <entry>] [--limit <n>]
+  workspace <workspace> [filters] [--before <entry>] [--limit <n>]
+                               the filters: --action <name> for one action as the server
+                               names it, such as account_banned; --actor <account>;
+                               --target <identifier> for an identifier that the entry
+                               names; --since <time> and --until <time>, each written as
+                               2026-01-31T00:00:00Z
+
+actions of archive-period:
+  show <workspace>
+  set <workspace> <days|never> the time after which the server deletes an archived channel
+
+actions of retention:
+  show <workspace>             the retention of the files and of the recordings
+  files <workspace> <days|never>
+  recordings <workspace> <days|never>
+  direct show
+  direct set <days|never>      the retention of the files of direct messages
+
+actions of logo:
+  show                         the type, the size and the hash of the logo of the server
+  set <file>                   send an image file as the logo of the server
+  remove
+
+An action that joins a call prints the token for the media server only with --show-token.
+A place in a call belongs to the session that asked for it, and every command ends its
+session, so a place that `call` takes ends with the command. `watch` takes the same actions
+as lines on standard input, without the word `call`, and sends them with its own session,
+which lasts until the watch ends.
 
 Commands that work on one server take --server <identifier, address or name>. It can be
 left out while one server is saved. --name can be left out when the profile preset has a
@@ -95,8 +365,56 @@ const VALUE_OPTIONS: &[&str] = &[
     "workspace",
     "avatar",
     "save-avatar",
+    "seconds",
+    "limit",
+    "hide",
+    "hours",
+    "text",
+    "reply",
+    "file",
+    "before",
+    "after",
+    "bytes",
+    "files",
+    "to",
+    "kind",
+    "level",
+    "mute",
+    "mute-hours",
+    "role-mentions",
+    "everyone-mentions",
+    "dnd",
+    "quiet",
+    "time-zone",
+    "channel",
+    "author",
+    "from",
+    "until",
+    "cursor",
+    "category",
+    "position",
+    "permanent",
+    "allow",
+    "deny",
+    "action",
+    "days",
+    "reason",
+    "actor",
+    "target",
+    "since",
+    "permissions",
 ];
-const FLAGS: &[&str] = &["when-selected", "wait", "yes", "no-avatar"];
+const FLAGS: &[&str] = &[
+    "when-selected",
+    "wait",
+    "yes",
+    "no-avatar",
+    "no-limit",
+    "show-token",
+    "no-quiet",
+    "no-category",
+    "none",
+];
 const WAIT_INTERVAL: Duration = Duration::from_secs(5);
 
 enum Failure {
@@ -404,6 +722,18 @@ async fn run(arguments: Arguments) -> Result<(), Failure> {
             println!("request {}: {:?}", status.id, status.state);
             Ok(())
         }
+        "state" => live::state(&client, &arguments).await,
+        "watch" => live::watch(&client, &arguments).await,
+        "call" => live::call(&client, &arguments).await,
+        "messages" => messages::messages(&client, &arguments).await,
+        "threads" | "pins" | "notices" | "search" => {
+            discovery::run(&client, command, &arguments).await
+        }
+        "recordings" => recordings::run(&client, &arguments).await,
+        "deny-request" | "invites" | "redeem" | "workspaces" | "categories" | "channels"
+        | "overrides" | "members" | "accounts" | "tokens" | "exports" | "audit" | "logo"
+        | "archive-period" | "retention" => admin::run(&client, command, &arguments).await,
+        "roles" => roles::run(&client, &arguments).await,
         other => Err(usage(format!("unknown command {other}"))),
     }
 }
@@ -717,12 +1047,11 @@ fn all_notices(client: &Client) {
     }
 }
 
-/// A command is one process, so it ends the session that it started.
+/// A command is one process, so it ends the session that it started, also one that a
+/// login of this moment creates.
 async fn end_session(server: &ServerHandle) {
     notices(server);
-    if matches!(server.access().state, AccessState::LoggedIn { .. }) {
-        let _ = server.dispatch(AccessAction::LogOut).await;
-    }
+    let _ = server.end_session().await;
 }
 
 async fn wait_or_show(server: &ServerHandle, arguments: &Arguments) -> Result<(), Failure> {

@@ -1,12 +1,18 @@
 #!/bin/sh
 # Runs a command with a temporary LiveKit server in Docker, in development mode, and removes
 # it afterwards. The command receives JUNTO_TEST_LIVEKIT_API_URL, JUNTO_TEST_LIVEKIT_URL,
-# JUNTO_TEST_LIVEKIT_API_KEY, JUNTO_TEST_LIVEKIT_API_SECRET and JUNTO_TEST_WEBHOOK_ADDRESS.
+# JUNTO_TEST_LIVEKIT_API_KEY, JUNTO_TEST_LIVEKIT_API_SECRET, JUNTO_TEST_WEBHOOK_ADDRESS and
+# JUNTO_TEST_LIVEKIT_CONTAINER, the name of the container: a test restarts it to test a
+# reconnect.
 #
 # The media ports are fixed, because the server announces them to its clients. Set
 # JUNTO_TEST_LIVEKIT_PORT (signalling and API, TCP), JUNTO_TEST_LIVEKIT_TCP_PORT and
 # JUNTO_TEST_LIVEKIT_UDP_PORT when the defaults are taken. The server sends its notifications
 # to JUNTO_TEST_WEBHOOK_ADDRESS on the machine that runs the tests.
+#
+# The container is named by JUNTO_TEST_LIVEKIT_CONTAINER (default junto-dev-livekit). Two
+# checkouts on one machine run their tests at the same time when each sets another name and
+# other ports.
 set -eu
 
 if [ "$#" -eq 0 ]; then
@@ -70,4 +76,5 @@ export JUNTO_TEST_LIVEKIT_URL="ws://127.0.0.1:${port}"
 export JUNTO_TEST_LIVEKIT_API_KEY="$key"
 export JUNTO_TEST_LIVEKIT_API_SECRET="$secret"
 export JUNTO_TEST_WEBHOOK_ADDRESS="$webhook_address"
+export JUNTO_TEST_LIVEKIT_CONTAINER="$name"
 "$@"

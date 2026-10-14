@@ -10,13 +10,25 @@ pub mod book;
 pub mod events;
 pub mod flow;
 pub mod keys;
+pub mod live;
 pub mod manager;
+pub mod model;
 pub mod paths;
 pub mod profile;
+pub mod release_configuration;
+pub mod releases;
 pub mod runtime;
 pub mod secret;
+pub mod settings;
 pub mod storage;
+pub mod stream;
+pub mod transfers;
+pub mod updates;
 pub mod version;
+pub mod voice;
 
+pub use book::{EntryKey, Owner};
 pub use junto_protocol as protocol;
 pub use manager::{Client, ClientOptions, OpenError, Reach, ServerHandle};
+
+pub mod call_window;

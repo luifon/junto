@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key><string>chat.junto.Junto</string>
+    <key>CFBundleName</key><string>Junto</string>
+    <key>NSCameraUsageDescription</key><string>Junto uses your selected camera when you turn video on in a call.</string>
+    <key>NSMicrophoneUsageDescription</key><string>Junto uses your selected microphone to send your voice in a call.</string>
+</dict>
+</plist>

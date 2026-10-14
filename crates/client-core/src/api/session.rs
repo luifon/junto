@@ -10,7 +10,6 @@ use junto_protocol::account::{
     AccountProfile, AccountSummary, ApproveDeviceLink, Avatar, Device, ImageType, LookUpDeviceLink,
     OwnAccount, PendingDeviceLink, RecoverAccount, RecoveryNotice, RenameDevice, UpdateProfile,
 };
-use junto_protocol::audit::{AuditPage, AuditQuery};
 use junto_protocol::ids::{
     AccountId, CategoryId, ChannelId, DeviceId, InviteId, JoinRequestId, RecoveryId, ServerRoleId,
     WorkspaceId, WorkspaceRoleId,
@@ -36,23 +35,32 @@ use serde::de::DeserializeOwned;
 use super::client::{ApiClient, encode, read_json};
 use super::error::ApiError;
 use super::retry::Repeat;
-use super::transport::{HttpResponse, Method, RequestBody};
+use super::transport::{HttpResponse, Method, OpenedResponse, RequestBody};
 use crate::profile::{self, InvalidAvatar};
 use crate::secret::{SecretBytes, SecretToken};
 
 /// A request of a session without its token and without the version prefix.
+#[derive(Clone)]
 pub(crate) struct Outline {
     pub(crate) method: Method,
     pub(crate) path: String,
     pub(crate) query: Vec<(&'static str, String)>,
     pub(crate) body: Option<RequestBody>,
+    /// The body is one part of a file: the request gets the time of a slow connection.
+    pub(crate) part: bool,
 }
 
 pub(crate) type AuthorityFuture =
     Pin<Box<dyn Future<Output = Result<HttpResponse, ApiError>> + Send + 'static>>;
 
+pub(crate) type OpenAuthorityFuture =
+    Pin<Box<dyn Future<Output = Result<OpenedResponse, ApiError>> + Send + 'static>>;
+
 pub(crate) trait Authority: Send + Sync + 'static {
     fn send(&self, outline: Outline) -> AuthorityFuture;
+
+    /// Asks for a file from the byte `from` on. The answer has a status below 400.
+    fn open(&self, outline: Outline, from: u64) -> OpenAuthorityFuture;
 }
 
 pub(crate) struct TokenAuthority {
@@ -71,6 +79,11 @@ impl Authority for TokenAuthority {
         let (api, token) = (self.api.clone(), self.token.clone());
         Box::pin(async move { send_with_token(&api, &token, outline).await })
     }
+
+    fn open(&self, outline: Outline, from: u64) -> OpenAuthorityFuture {
+        let (api, token) = (self.api.clone(), self.token.clone());
+        Box::pin(async move { open_with_token(&api, &token, outline, from).await })
+    }
 }
 
 pub(crate) async fn send_with_token(
@@ -78,15 +91,29 @@ pub(crate) async fn send_with_token(
     token: &SecretToken,
     outline: Outline,
 ) -> Result<HttpResponse, ApiError> {
+    let repeat = if outline.part {
+        Repeat::Part
+    } else {
+        Repeat::WhenUnchanged
+    };
     api.send(
         outline.method,
         &outline.path,
         &outline.query,
         Some(token),
         outline.body,
-        Repeat::WhenUnchanged,
+        repeat,
     )
     .await
+}
+
+pub(crate) async fn open_with_token(
+    api: &ApiClient,
+    token: &SecretToken,
+    outline: Outline,
+    from: u64,
+) -> Result<OpenedResponse, ApiError> {
+    api.open(&outline.path, &outline.query, token, from).await
 }
 
 impl ApiClient {
@@ -129,7 +156,7 @@ impl ServerApi {
         Self { authority }
     }
 
-    async fn call(
+    pub(super) async fn call(
         &self,
         method: Method,
         path: String,
@@ -142,15 +169,44 @@ impl ServerApi {
                 path,
                 query,
                 body,
+                part: false,
             })
             .await
     }
 
-    async fn get<R: DeserializeOwned>(&self, path: String) -> Result<R, ApiError> {
+    /// Sends one part of a file.
+    pub(super) async fn call_part(
+        &self,
+        path: String,
+        body: RequestBody,
+    ) -> Result<HttpResponse, ApiError> {
+        self.authority
+            .send(Outline {
+                method: Method::Put,
+                path,
+                query: Vec::new(),
+                body: Some(body),
+                part: true,
+            })
+            .await
+    }
+
+    pub(super) async fn open(&self, path: String, from: u64) -> Result<OpenedResponse, ApiError> {
+        let outline = Outline {
+            method: Method::Get,
+            path,
+            query: Vec::new(),
+            body: None,
+            part: false,
+        };
+        self.authority.open(outline, from).await
+    }
+
+    pub(super) async fn get<R: DeserializeOwned>(&self, path: String) -> Result<R, ApiError> {
         read_json(&self.call(Method::Get, path, Vec::new(), None).await?)
     }
 
-    async fn send<B: Serialize, R: DeserializeOwned>(
+    pub(super) async fn send<B: Serialize, R: DeserializeOwned>(
         &self,
         method: Method,
         path: String,
@@ -160,7 +216,7 @@ impl ServerApi {
         read_json(&self.call(method, path, Vec::new(), body).await?)
     }
 
-    async fn act(&self, method: Method, path: String) -> Result<(), ApiError> {
+    pub(super) async fn act(&self, method: Method, path: String) -> Result<(), ApiError> {
         self.call(method, path, Vec::new(), None).await.map(|_| ())
     }
 
@@ -321,16 +377,6 @@ impl ServerApi {
 
     pub async fn accounts(&self) -> Result<Vec<AccountSummary>, ApiError> {
         self.get("/accounts".to_owned()).await
-    }
-
-    pub async fn remove_account(&self, account_id: AccountId) -> Result<(), ApiError> {
-        self.act(Method::Post, format!("/accounts/{account_id}/removal"))
-            .await
-    }
-
-    pub async fn ban_account(&self, account_id: AccountId) -> Result<(), ApiError> {
-        self.act(Method::Put, format!("/accounts/{account_id}/ban"))
-            .await
     }
 
     pub async fn unban_account(&self, account_id: AccountId) -> Result<(), ApiError> {
@@ -541,108 +587,5 @@ impl ServerApi {
     ) -> Result<ChannelOverride, ApiError> {
         let path = format!("/channels/{channel_id}/overrides/{role_id}");
         self.send(Method::Put, path, sets).await
-    }
-
-    // The audit log.
-
-    pub async fn server_audit_log(&self, query: &AuditQuery) -> Result<AuditPage, ApiError> {
-        let response = self
-            .call(Method::Get, "/audit-log".to_owned(), page(query), None)
-            .await?;
-        read_json(&response)
-    }
-
-    pub async fn workspace_audit_log(
-        &self,
-        workspace_id: WorkspaceId,
-        query: &AuditQuery,
-    ) -> Result<AuditPage, ApiError> {
-        let path = format!("/workspaces/{workspace_id}/audit-log");
-        read_json(&self.call(Method::Get, path, page(query), None).await?)
-    }
-}
-
-fn page(query: &AuditQuery) -> Vec<(&'static str, String)> {
-    let mut pairs = Vec::new();
-    if let Some(before) = query.before {
-        pairs.push(("before", before.to_string()));
-    }
-    if let Some(limit) = query.limit {
-        pairs.push(("limit", limit.to_string()));
-    }
-    pairs
-}
-
-#[cfg(test)]
-mod tests {
-    use junto_protocol::audit::AuditEvent;
-    use junto_protocol::ids::ServerId;
-
-    use super::*;
-    use crate::address::ServerAddress;
-    use crate::api::RetryPolicy;
-    use crate::api::transport::{HttpRequest, Transport, TransportFuture};
-    use crate::version::SupportedVersions;
-
-    struct Fixed(&'static str);
-
-    impl Transport for Fixed {
-        fn send(&self, _request: HttpRequest) -> TransportFuture {
-            let body = self.0.as_bytes().to_vec();
-            Box::pin(async move {
-                Ok(HttpResponse {
-                    status: 200,
-                    retry_after: None,
-                    body: body.into(),
-                })
-            })
-        }
-    }
-
-    fn api(body: &'static str) -> ServerApi {
-        ApiClient::new(
-            Arc::new(Fixed(body)),
-            ServerAddress::parse("chat.example.test").unwrap(),
-            ServerId::generate(),
-            SupportedVersions::THIS_BUILD.negotiate(&[1]).unwrap(),
-            RetryPolicy::default(),
-        )
-        .with_token(SecretToken::new("jst_test".to_owned()))
-    }
-
-    #[tokio::test]
-    async fn an_audit_page_with_an_action_of_a_newer_server_is_read_whole() {
-        let page = r#"{"entries":[
-            {"id":"0198f1c2-7d3a-7b1e-9c55-000000000003",
-             "occurred_at":"2030-01-02T00:00:00Z",
-             "actor_id":"0198f1c2-7d3a-7b1e-9c55-0000000000aa",
-             "workspace_id":"0198f1c2-7d3a-7b1e-9c55-0000000000bb",
-             "channel_id":null,
-             "event":{"action":"glossary_updated","terms":3,"nested":{"a":[1,2]}}},
-            {"id":"0198f1c2-7d3a-7b1e-9c55-000000000002",
-             "occurred_at":"2030-01-01T00:00:00Z",
-             "actor_id":null,"workspace_id":null,"channel_id":null,
-             "event":{"action":"owner_claimed",
-                      "account_id":"0198f1c2-7d3a-7b1e-9c55-0000000000aa"}}],
-            "next_before":"0198f1c2-7d3a-7b1e-9c55-000000000002"}"#;
-        for log in [
-            api(page).server_audit_log(&AuditQuery::default()).await,
-            api(page)
-                .workspace_audit_log(WorkspaceId::generate(), &AuditQuery::default())
-                .await,
-        ] {
-            let log = log.unwrap();
-            assert_eq!(log.entries.len(), 2);
-            let later = &log.entries[0];
-            assert_eq!(later.event, AuditEvent::Unknown);
-            assert_eq!(later.id.to_string(), "0198f1c2-7d3a-7b1e-9c55-000000000003");
-            assert_eq!(later.occurred_at.year(), 2030);
-            assert!(later.actor_id.is_some() && later.workspace_id.is_some());
-            assert!(matches!(
-                log.entries[1].event,
-                AuditEvent::OwnerClaimed { .. }
-            ));
-            assert!(log.next_before.is_some());
-        }
     }
 }

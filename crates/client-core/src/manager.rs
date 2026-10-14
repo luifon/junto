@@ -5,25 +5,26 @@
 use std::future::Future;
 use std::io;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use junto_protocol::error::ErrorCode;
-use junto_protocol::ids::{AccountId, RecoveryId, ServerId};
+use junto_protocol::ids::{AccountId, DeviceId, RecoveryId, ServerId};
 use junto_protocol::invite::JoinRequestState;
 use junto_protocol::keys::PublicKey;
 use time::OffsetDateTime;
 use tokio::sync::watch;
 
 use crate::address::ServerAddress;
-use crate::api::session::{Authority, AuthorityFuture, Outline, send_with_token};
+use crate::api::session::{
+    Authority, AuthorityFuture, OpenAuthorityFuture, Outline, open_with_token, send_with_token,
+};
 use crate::api::{
-    AccessLoss, ApiClient, ApiError, ErrorCategory, ExpectedAccount, HttpResponse,
-    ReqwestTransport, RetryPolicy, ServerApi, Transport, TransportError, server_info,
+    AccessLoss, ApiClient, ApiError, AvatarImage, ErrorCategory, ExpectedAccount, ReqwestTransport,
+    RetryPolicy, ServerApi, Transport, TransportError, TransportErrorKind, logo_at, server_info,
 };
 use crate::book::{
-    BookError, ConnectionMode, EntryKey, EventCursor, Membership, ProfileSync, ServerBook,
-    ServerEntry,
+    BookError, ConnectionMode, EntryKey, Membership, Owner, ProfileSync, ServerBook, ServerEntry,
 };
 use crate::events::{ConnectionLevel, EventStreams, StreamTarget};
 use crate::flow::access::{
@@ -38,12 +39,19 @@ use crate::flow::link_all::{
 use crate::flow::machine::lock;
 use crate::flow::{FlowError, FlowView};
 use crate::keys::{self, DeviceKey, FileKeyStore, KeyStore, KeyStoreError};
+use crate::live::{LiveServer, Shared};
 use crate::paths::DataDir;
 use crate::profile::ProfileStore;
 use crate::runtime::Runtime;
 use crate::secret::SecretToken;
+use crate::settings::SettingsStore;
 use crate::storage::StorageError;
+use crate::stream::{
+    Desired, Environment, Host, ReqwestStreamTransport, StreamPolicy, StreamTransport, Streams,
+};
+use crate::updates::{UpdateCheck, UpdateSource, Version};
 use crate::version::{ApiVersion, Incompatibility, SupportedVersions};
+use crate::voice::VoiceStore;
 
 /// How a client is opened. Every part except the data directory has a default.
 pub struct ClientOptions {
@@ -53,6 +61,15 @@ pub struct ClientOptions {
     pub versions: SupportedVersions,
     pub retry: RetryPolicy,
     pub runtime: Option<Runtime>,
+    /// What carries the connections of the event stream. The default is made when the
+    /// streams start.
+    pub stream_transport: Option<Arc<dyn StreamTransport>>,
+    pub stream: StreamPolicy,
+    /// Where the client learns of a newer build (ADR 0704). Without a source the client
+    /// never asks.
+    pub update_source: Option<Arc<dyn UpdateSource>>,
+    /// The version of the build that runs, which a release is compared with.
+    pub build: Version,
 }
 
 impl ClientOptions {
@@ -64,6 +81,10 @@ impl ClientOptions {
             versions: SupportedVersions::THIS_BUILD,
             retry: RetryPolicy::default(),
             runtime: None,
+            stream_transport: None,
+            stream: StreamPolicy::default(),
+            update_source: None,
+            build: Version::THIS_BUILD,
         }
     }
 }
@@ -106,6 +127,9 @@ pub(crate) struct Core {
     pub(crate) versions: SupportedVersions,
     pub(crate) policy: RetryPolicy,
     pub(crate) runtime: Runtime,
+    updates: UpdateCheck,
+    stream_transport: Option<Arc<dyn StreamTransport>>,
+    stream_policy: StreamPolicy,
     /// Runs between the snapshot and the write of a save. Only tests set it, to fix the
     /// order of two saves.
     #[cfg(test)]
@@ -123,7 +147,12 @@ impl Core {
 
 pub(crate) struct Inner {
     pub(crate) core: Arc<Core>,
+    /// In the order of the server book: the order of the file at the start, a new server
+    /// at the end as in the book, and the order that the book returns after a move.
     servers: Mutex<Vec<Arc<Server>>>,
+    /// Held from the move of an entry in the book to the new order of `servers`, so that
+    /// two moves give `servers` the order of the later one.
+    moving: Mutex<()>,
 }
 
 impl Inner {
@@ -162,6 +191,14 @@ impl Client {
             Some(runtime) => runtime,
             None => Runtime::current_or_new()?,
         };
+        let changes = watch::Sender::new(0);
+        let told = changes.clone();
+        let updates = UpdateCheck::with_notice(
+            options.build,
+            options.update_source,
+            runtime.clone(),
+            move || told.send_modify(|generation| *generation += 1),
+        );
         let core = Arc::new(Core {
             profile,
             data_dir,
@@ -171,11 +208,14 @@ impl Client {
             versions: options.versions,
             policy: options.retry,
             runtime,
+            updates,
+            stream_transport: options.stream_transport,
+            stream_policy: options.stream,
             #[cfg(test)]
             before_write: Mutex::new(None),
             selected: Mutex::new(None),
             streams: Mutex::new(None),
-            changes: watch::Sender::new(0),
+            changes,
         });
         let servers = entries
             .into_iter()
@@ -185,6 +225,7 @@ impl Client {
             inner: Arc::new(Inner {
                 core,
                 servers: Mutex::new(servers),
+                moving: Mutex::new(()),
             }),
         })
     }
@@ -196,6 +237,22 @@ impl Client {
     /// The local profile preset (ADR 0105).
     pub fn profile(&self) -> &ProfileStore {
         &self.inner.core.profile
+    }
+
+    /// The settings of the interface of this installation (ADR 0710).
+    pub fn settings(&self) -> SettingsStore {
+        SettingsStore::new(self.inner.core.data_dir.clone())
+    }
+
+    /// The sound settings of this installation (ADR 0710).
+    pub fn voice(&self) -> VoiceStore {
+        VoiceStore::new(self.inner.core.data_dir.clone())
+    }
+
+    /// Whether a newer build of the client exists (ADR 0704). Its periodic check starts
+    /// with the event streams. A change of its state is a change of the client.
+    pub fn updates(&self) -> &UpdateCheck {
+        &self.inner.core.updates
     }
 
     /// The saved servers in the order of the server book.
@@ -240,7 +297,8 @@ impl Client {
         ApproveDevicesFlow::new(self.clone())
     }
 
-    pub(crate) fn runtime(&self) -> &Runtime {
+    /// The runtime that carries the network work of this client.
+    pub fn runtime(&self) -> &Runtime {
         &self.inner.core.runtime
     }
 
@@ -281,6 +339,46 @@ impl Client {
         removed.map(|_| ())
     }
 
+    /// Moves a server to `position` of the list that [`Client::servers`] gives, in the
+    /// server book and in that list. A position past the end is the end. The book can hold
+    /// servers that another program added and that this client does not show: the server
+    /// is put directly before the server that follows it in the list of this client, and
+    /// at the end of the book when none follows. A server that the book does not hold any
+    /// more is "not saved" and nothing moves.
+    pub fn move_server(&self, server_id: ServerId, position: usize) -> Result<(), BookError> {
+        let _moving = lock(&self.inner.moving);
+        let (key, following) = {
+            let servers = lock(&self.inner.servers);
+            let moved = servers
+                .iter()
+                .find(|server| server.id == server_id)
+                .ok_or(BookError::NotSaved { server_id })?;
+            let following: Vec<EntryKey> = servers
+                .iter()
+                .filter(|server| server.id != server_id)
+                .skip(position)
+                .map(|server| server.key)
+                .collect();
+            (moved.key, following)
+        };
+        let order = self.inner.core.book.reorder(key, |others| {
+            following
+                .iter()
+                .find_map(|next| others.iter().position(|entry| entry.key() == *next))
+                .unwrap_or(others.len())
+        })?;
+        // A server that the book does not hold any more keeps its place after the others.
+        let place = |server: &Arc<Server>| {
+            order
+                .iter()
+                .position(|key| *key == server.key)
+                .unwrap_or(usize::MAX)
+        };
+        lock(&self.inner.servers).sort_by_key(place);
+        self.inner.core.notify();
+        Ok(())
+    }
+
     /// The server that the interface shows. It gets every event; the others get the
     /// background events (ADR 0107).
     pub fn select(&self, server_id: Option<ServerId>) {
@@ -295,9 +393,41 @@ impl Client {
         *lock(&self.inner.core.selected)
     }
 
+    /// Starts the event streams: from now on every saved server has the connection that
+    /// its level asks for (ADR 0107), and [`ServerHandle::live`] gives its state. The
+    /// periodic update check starts too (ADR 0704). A second call changes nothing.
+    pub fn start_event_streams(&self) -> Result<(), TransportError> {
+        let core = &self.inner.core;
+        core.updates.start();
+        {
+            let mut streams = lock(&core.streams);
+            if streams.is_some() {
+                return Ok(());
+            }
+            let sockets = match &core.stream_transport {
+                Some(sockets) => sockets.clone(),
+                None => Arc::new(ReqwestStreamTransport::new()?),
+            };
+            let environment = Environment {
+                transport: core.transport.clone(),
+                sockets,
+                retry: core.policy,
+                policy: core.stream_policy,
+            };
+            *streams = Some(Arc::new(Streams::new(environment, core.runtime.clone())));
+        }
+        self.announce_levels();
+        Ok(())
+    }
+
     /// Attaches the event streams and tells them the present level of every server.
-    pub fn attach_event_streams(&self, streams: Arc<dyn EventStreams>) {
+    #[cfg(test)]
+    pub(crate) fn attach_event_streams(&self, streams: Arc<dyn EventStreams>) {
         *lock(&self.inner.core.streams) = Some(streams);
+        self.announce_levels();
+    }
+
+    fn announce_levels(&self) {
         for handle in self.servers() {
             handle.server.forget_announcement();
             handle.server.announce_level();
@@ -371,6 +501,7 @@ impl Changes {
 struct Held {
     token: SecretToken,
     account_id: AccountId,
+    device_id: DeviceId,
 }
 
 struct ServerState {
@@ -389,6 +520,11 @@ struct ServerState {
     /// acknowledgement.
     acknowledged: Vec<RecoveryId>,
     announced: Option<(ConnectionLevel, Option<SecretToken>)>,
+    /// The account is in a call with this device, as the event stream tells it.
+    in_call: bool,
+    /// After a login that got no answer (ADR 0787): no login after an ended session is
+    /// sent before this time, and how many such logins followed each other.
+    login_wait: Option<(tokio::time::Instant, u32)>,
     /// The membership or the profile state in memory is not in the book yet: a write
     /// failed. It is cleared only by a write that succeeded.
     unsaved: bool,
@@ -396,6 +532,10 @@ struct ServerState {
 }
 
 pub(crate) struct Server {
+    /// This object, for the tasks that must not keep it alive.
+    this: Weak<Server>,
+    /// What the event stream client of the server and its readers share.
+    live: Arc<Shared>,
     id: ServerId,
     /// The entry of the book that this object was made from.
     key: EntryKey,
@@ -468,6 +608,55 @@ impl ServerHandle {
         async move { work.await? }
     }
 
+    /// Runs one action of the access flow after an action or a renewal of the session that
+    /// runs now has ended. `dispatch` answers `busy` in that case (ADR 0712); an interface
+    /// uses this for what a person asked for, so that the request is not lost because the
+    /// client asked the server something by itself at the same moment.
+    pub fn dispatch_when_free(
+        &self,
+        action: AccessAction,
+    ) -> impl Future<Output = Result<(), FlowError>> + Send + 'static + use<> {
+        let handle = self.clone();
+        let work = self.server.core.runtime.run(async move {
+            loop {
+                match handle.dispatch(action.clone()).await {
+                    Err(FlowError::Busy) => drop(handle.server.gate.lock().await),
+                    result => return result,
+                }
+            }
+        });
+        async move { work.await? }
+    }
+
+    /// Contacts the server as [`ServerHandle::connect`] does, after an action or a renewal
+    /// of the session that runs now has ended.
+    pub fn connect_when_free(
+        &self,
+    ) -> impl Future<Output = Result<(), FlowError>> + Send + 'static + use<> {
+        let kind = if matches!(self.access().state, AccessState::LoggedOut { .. }) {
+            AccessAction::LogIn
+        } else {
+            AccessAction::Check
+        };
+        self.dispatch_when_free(kind)
+    }
+
+    /// Logs out, after an action or a renewal of the session that runs now has ended.
+    /// `dispatch` refuses a second action while one runs (ADR 0712); a program that ends
+    /// uses this, so that a session that the running action creates is ended too. Without
+    /// a session nothing is sent.
+    pub fn end_session(
+        &self,
+    ) -> impl Future<Output = Result<(), FlowError>> + Send + 'static + use<> {
+        let ending = self.dispatch_when_free(AccessAction::LogOut);
+        async move {
+            match ending.await {
+                Err(FlowError::NotAvailable) => Ok(()),
+                result => result,
+            }
+        }
+    }
+
     /// Contacts the server and brings the flow to its present state. A device that
     /// belongs to an account logs in; no action of the user is needed (ADR 0109).
     pub fn connect(&self) -> impl Future<Output = Result<(), FlowError>> + Send + 'static + use<> {
@@ -514,7 +703,7 @@ impl ServerHandle {
                         },
                     ) => {}
                     Err(
-                        FlowError::Limited { retry_after }
+                        FlowError::Limited { retry_after, .. }
                         | FlowError::UnknownCode {
                             category: ErrorCategory::Limited,
                             retry_after,
@@ -557,12 +746,46 @@ impl ServerHandle {
         async move { work.await.unwrap_or(Err(ApiError::Stopped)) }
     }
 
+    /// Reads the logo of the server from its public route, without the session
+    /// (ADR 0101). Absent: the server has no logo, or the client knows no address of one.
+    pub fn logo(
+        &self,
+    ) -> impl Future<Output = Result<Option<AvatarImage>, ApiError>> + Send + 'static + use<> {
+        let server = self.server.clone();
+        let work = self
+            .server
+            .core
+            .runtime
+            .run(async move { server.logo().await });
+        async move { work.await.unwrap_or(Err(ApiError::Stopped)) }
+    }
+
+    /// Sets the state of the access flow, without a server.
+    #[cfg(feature = "test-support")]
+    pub fn set_access_for_test(&self, access: AccessState) {
+        lock(&self.server.state).access = access;
+    }
+
     /// The account of the session that this device holds on the server now.
     pub fn account(&self) -> Option<AccountId> {
         lock(&self.server.state)
             .session
             .as_ref()
             .map(|held| held.account_id)
+    }
+
+    /// The entry of the server book and the account that the access flow shows as logged
+    /// in. Absent in every other state of the flow, and for an entry that was removed from
+    /// the book. The owner stays while an ended session of the same account is renewed.
+    pub fn owner(&self) -> Option<Owner> {
+        let state = lock(&self.server.state);
+        match state.access {
+            AccessState::LoggedIn { account_id, .. } if !state.retired => Some(Owner {
+                entry: self.server.key,
+                account_id,
+            }),
+            _ => None,
+        }
     }
 
     /// The operations of the logged-in account. Each request belongs to the account that
@@ -616,15 +839,27 @@ impl ServerHandle {
         Ok(())
     }
 
-    /// Stores the position of this device in the event stream of the server.
-    pub fn store_cursor(&self, cursor: EventCursor) -> Result<(), BookError> {
-        let stored = cursor.clone();
-        self.server
-            .core
-            .book
-            .update(self.server.key, |entry| entry.last_cursor = Some(cursor))?;
-        lock(&self.server.state).entry.last_cursor = Some(stored);
-        Ok(())
+    /// The state of the server as the event stream keeps it, and its changes
+    /// (ADR 0719). Without a call of [`Client::start_event_streams`] the state stays
+    /// absent.
+    pub fn live(&self) -> LiveServer {
+        LiveServer {
+            shared: self.server.live.clone(),
+        }
+    }
+
+    /// The files of the messages of this server: uploads, downloads, and the sending of
+    /// a message with files (ADR 0721).
+    pub fn transfers(&self) -> crate::transfers::Transfers {
+        let handle = self.clone();
+        crate::transfers::Transfers {
+            live: self.live(),
+            runtime: self.server.core.runtime.clone(),
+            owned: Arc::new(move || {
+                let owner = handle.owner()?;
+                Some((owner, handle.api_for(owner.account_id)))
+            }),
+        }
     }
 
     /// The level that the event stream of this server should have now.
@@ -662,11 +897,23 @@ struct Managed {
 impl Authority for Managed {
     fn send(&self, outline: Outline) -> AuthorityFuture {
         let (server, account) = (self.server.clone(), self.account);
-        let work = self
-            .server
-            .core
-            .runtime
-            .run(async move { server.authorized(outline, account).await });
+        let work = self.server.core.runtime.run(async move {
+            let exchange = |api: ApiClient, token: SecretToken, outline: Outline| async move {
+                send_with_token(&api, &token, outline).await
+            };
+            server.authorized(outline, account, exchange).await
+        });
+        Box::pin(async move { work.await.unwrap_or(Err(ApiError::Stopped)) })
+    }
+
+    fn open(&self, outline: Outline, from: u64) -> OpenAuthorityFuture {
+        let (server, account) = (self.server.clone(), self.account);
+        let work = self.server.core.runtime.run(async move {
+            let exchange = move |api: ApiClient, token: SecretToken, outline: Outline| async move {
+                open_with_token(&api, &token, outline, from).await
+            };
+            server.authorized(outline, account, exchange).await
+        });
         Box::pin(async move { work.await.unwrap_or(Err(ApiError::Stopped)) })
     }
 }
@@ -703,9 +950,20 @@ fn held_of(probe: &Probe) -> Option<Held> {
         Probe::LoggedIn(session) => Some(Held {
             token: session.token.clone(),
             account_id: session.account_id,
+            device_id: session.device_id,
         }),
         Probe::UnknownDevice | Probe::Banned => None,
     }
+}
+
+/// The wait after the first login without an answer. It doubles with each further one.
+const LOGIN_WAIT_FIRST: Duration = Duration::from_secs(1);
+const LOGIN_WAIT_LONGEST: Duration = Duration::from_secs(60);
+
+/// True when a login failed without an answer of the server about the account: the server
+/// was not reached, it failed, or it named a time to wait.
+fn unanswered(error: &ApiError) -> bool {
+    error.is_unavailable() || error.category() == Some(ErrorCategory::Limited)
 }
 
 /// True when the server did not complete the operation for a reason that a login can
@@ -743,7 +1001,9 @@ impl From<KeyFault> for FlowError {
 
 impl Server {
     fn new(core: Arc<Core>, entry: ServerEntry) -> Arc<Self> {
-        Arc::new(Self {
+        Arc::new_cyclic(|this| Self {
+            this: this.clone(),
+            live: Shared::new(),
             id: entry.server_id,
             key: entry.key(),
             address: entry.address.clone(),
@@ -759,6 +1019,8 @@ impl Server {
                 preset_owner: 0,
                 acknowledged: Vec::new(),
                 announced: None,
+                in_call: false,
+                login_wait: None,
                 unsaved: false,
                 retired: false,
             }),
@@ -774,8 +1036,13 @@ impl Server {
             state.retired = true;
             state.session = None;
             state.api = None;
+            state.announced = Some((ConnectionLevel::Off, None));
         }
-        self.announce_level();
+        // The streams are told in every case, so that the task of this server ends.
+        let streams = lock(&self.core.streams).clone();
+        if let Some(streams) = streams {
+            streams.set_level(self, ConnectionLevel::Off, None);
+        }
     }
 
     fn membership(&self) -> Membership {
@@ -788,18 +1055,22 @@ impl Server {
         let (Some(api), Some(held), false) = (&state.api, &state.session, state.retired) else {
             return (ConnectionLevel::Off, None);
         };
+        // A call goes on while another server is shown (ADR 0107), so the server of a
+        // call keeps a connection in every connection mode.
         let level = if selected == Some(self.id) {
             ConnectionLevel::Selected
-        } else if state.entry.connection_mode == ConnectionMode::Always {
+        } else if state.entry.connection_mode == ConnectionMode::Always || state.in_call {
             ConnectionLevel::Background
         } else {
             return (ConnectionLevel::Off, None);
         };
         let target = StreamTarget {
+            server_id: self.id,
             address: state.entry.address.clone(),
             api_version: api.version(),
             token: held.token.clone(),
-            cursor: state.entry.last_cursor.clone(),
+            account_id: held.account_id,
+            device_id: held.device_id,
         };
         (level, Some(target))
     }
@@ -817,6 +1088,15 @@ impl Server {
         let now = (level, target.as_ref().map(|target| target.token.clone()));
         {
             let mut state = lock(&self.state);
+            // A login after an ended session runs, and the device has no session until it
+            // ends. The streams keep what they have: the end of the login announces the
+            // level (ADR 0787).
+            if state.session.is_none()
+                && state.in_progress == Some(ActionKind::LogIn)
+                && matches!(state.access, AccessState::LoggedIn { .. })
+            {
+                return;
+            }
             if state.announced.as_ref() == Some(&now) {
                 return;
             }
@@ -826,7 +1106,12 @@ impl Server {
             }
             state.announced = Some(now);
         }
-        streams.set_level(self.id, level, target);
+        streams.set_level(self, level, target);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn id(&self) -> ServerId {
+        self.id
     }
 
     async fn dispatch(self: Arc<Self>, action: AccessAction) -> Result<(), FlowError> {
@@ -1278,6 +1563,9 @@ impl Server {
                 recoveries.retain(|notice| !state.acknowledged.contains(&notice.id));
             }
             state.access = settled.state;
+            if session.is_some() {
+                state.login_wait = None;
+            }
             state.session = session;
             let other_account = access::account_of(&state.entry.membership)
                 != access::account_of(&settled.membership);
@@ -1400,11 +1688,16 @@ impl Server {
 
     /// Sends one request of the account that the device has now. The request belongs to
     /// that account: after a renewal into another account it is not sent again.
-    async fn authorized(
+    async fn authorized<T, F, Sent>(
         self: Arc<Self>,
         outline: Outline,
         only_for: Option<AccountId>,
-    ) -> Result<HttpResponse, ApiError> {
+        exchange: F,
+    ) -> Result<T, ApiError>
+    where
+        F: Fn(ApiClient, SecretToken, Outline) -> Sent,
+        Sent: Future<Output = Result<T, ApiError>>,
+    {
         let (api, held) = self.session()?;
         let started_for = only_for.unwrap_or(held.account_id);
         if held.account_id != started_for {
@@ -1413,13 +1706,8 @@ impl Server {
                 now: held.account_id,
             });
         }
-        let repeat = Outline {
-            method: outline.method,
-            path: outline.path.clone(),
-            query: outline.query.clone(),
-            body: outline.body.clone(),
-        };
-        let result = match send_with_token(&api, &held.token, outline).await {
+        let repeat = outline.clone();
+        let result = match exchange(api, held.token.clone(), outline).await {
             Err(error) if error.category() == Some(ErrorCategory::SessionEnded) => {
                 let (api, renewed) = self.renew(&held.token).await?;
                 if renewed.account_id != started_for {
@@ -1428,7 +1716,7 @@ impl Server {
                         now: renewed.account_id,
                     });
                 }
-                send_with_token(&api, &renewed.token, repeat).await
+                exchange(api, renewed.token, repeat).await
             }
             other => other,
         };
@@ -1448,6 +1736,17 @@ impl Server {
         if current.token != *ended {
             return Ok((api, current));
         }
+        let waits = lock(&self.state)
+            .login_wait
+            .is_some_and(|(until, _)| tokio::time::Instant::now() < until);
+        if waits {
+            // The stream client tries the session again after its own wait.
+            self.live.send(crate::live::Command::LoginUnanswered);
+            return Err(ApiError::Unreachable(TransportError::new(
+                TransportErrorKind::Timeout,
+                "the last login got no answer, and the next one waits",
+            )));
+        }
         let before = {
             let mut state = lock(&self.state);
             state.session = None;
@@ -1457,17 +1756,24 @@ impl Server {
         };
         self.core.notify();
         let running = Running(self);
-        let result = self.log_in_again(&before, api, current.account_id).await;
+        let result = self.log_in_again(&before, api, current).await;
         running.finish(result.as_ref().err().map(FlowError::from));
         result
     }
 
+    /// `ended`: the session that the server no longer accepts.
+    ///
+    /// A login that the server refuses leaves the device logged out. A login without an
+    /// answer of the server about the account tells nothing: the device keeps its state
+    /// and the session, and the next request or the event stream finds the end of the
+    /// session again and logs in again (ADR 0787).
     async fn log_in_again(
         &self,
         before: &AccessState,
         api: ApiClient,
-        account_id: AccountId,
+        ended: Held,
     ) -> Result<(ApiClient, Held), ApiError> {
+        let account_id = ended.account_id;
         let logged_out = || {
             lock(&self.state).access = AccessState::LoggedOut { account_id };
         };
@@ -1493,11 +1799,26 @@ impl Server {
         let probe = match self.probe(&api, &key).await {
             Ok(probe) => probe,
             Err(error) => {
-                logged_out();
+                if unanswered(&error) {
+                    {
+                        let mut state = lock(&self.state);
+                        let failures = state.login_wait.map_or(0, |(_, failures)| failures);
+                        let wait = error
+                            .retry_after()
+                            .unwrap_or(LOGIN_WAIT_FIRST * 2u32.pow(failures.min(6)))
+                            .min(LOGIN_WAIT_LONGEST);
+                        state.login_wait = Some((tokio::time::Instant::now() + wait, failures + 1));
+                        state.session = Some(ended);
+                    }
+                    self.live.send(crate::live::Command::LoginUnanswered);
+                } else {
+                    logged_out();
+                }
                 self.note(&error);
                 return Err(error);
             }
         };
+        lock(&self.state).login_wait = None;
         let outcome = match held_of(&probe) {
             Some(held) => Ok((api, held)),
             None if probe == Probe::Banned => Err(ApiError::AccessLost(AccessLoss::Banned)),
@@ -1586,6 +1907,27 @@ impl Server {
         }))
     }
 
+    /// The logo from the route of the API version that was chosen for the server. Before
+    /// the server was contacted in this run, the path of the server book is used.
+    async fn logo(&self) -> Result<Option<AvatarImage>, ApiError> {
+        let (api, path) = {
+            let state = lock(&self.state);
+            // An address that answered as another server gets nothing but the request
+            // for the server information (ADR 0714).
+            if matches!(state.reach, Reach::OtherServer { .. }) {
+                return Ok(None);
+            }
+            (state.api.clone(), state.entry.logo_path.clone())
+        };
+        if let Some(api) = api {
+            return api.server_logo().await;
+        }
+        match path.and_then(|path| self.address.logo_url(&path)) {
+            Some(url) => logo_at(self.core.transport.as_ref(), url, &self.core.policy).await,
+            None => Ok(None),
+        }
+    }
+
     /// Sends the acknowledgement of a recovery for the account that the flow shows, and
     /// takes the recovery out of the state when the server holds its notice no longer.
     async fn acknowledge_recovery(
@@ -1636,6 +1978,43 @@ impl Server {
         }
         self.core.notify();
         sync
+    }
+}
+
+/// The server object as its event stream client reaches it.
+struct StreamHost(Weak<Server>);
+
+impl Host for StreamHost {
+    /// Logs in again with the device key, once (ADR 0712). The result reaches the stream
+    /// client as another session, or as the level `off`.
+    fn session_ended(&self, token: &SecretToken) {
+        let Some(server) = self.0.upgrade() else {
+            return;
+        };
+        let token = token.clone();
+        let runtime = server.core.runtime.clone();
+        drop(runtime.run(async move {
+            let _ = server.renew(&token).await;
+        }));
+    }
+
+    fn in_call(&self, in_call: bool) {
+        let Some(server) = self.0.upgrade() else {
+            return;
+        };
+        if std::mem::replace(&mut lock(&server.state).in_call, in_call) == in_call {
+            return;
+        }
+        server.announce_level();
+        server.core.notify();
+    }
+}
+
+impl EventStreams for Streams {
+    fn set_level(&self, server: &Server, level: ConnectionLevel, target: Option<StreamTarget>) {
+        let host = || Arc::new(StreamHost(server.this.clone())) as Arc<dyn Host>;
+        let gone = lock(&server.state).retired;
+        self.set(&server.live, host, Desired { level, target }, gone);
     }
 }
 

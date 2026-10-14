@@ -479,6 +479,7 @@ pub async fn remove_member(
                 connection,
                 now,
                 account_id,
+                None,
                 junto_protocol::call::LeaveReason::AccessEnded,
             )
             .await?;

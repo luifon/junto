@@ -54,6 +54,9 @@ pub enum ErrorCode {
     CallFull,
     /// The caller is not in the call that the request is about.
     NotInCall,
+    /// The seat that a request for a token renews is not a seat that the device can use
+    /// any longer. `left` states why, when the server knows it (ADR 0520).
+    SeatEnded,
     /// The server does not reach its media server. No call can be joined.
     MediaUnavailable,
     /// The server has no recorder, or no recorder took the request. No recording starts.
@@ -115,6 +118,7 @@ impl ErrorCode {
         Self::CallLocked,
         Self::CallFull,
         Self::NotInCall,
+        Self::SeatEnded,
         Self::MediaUnavailable,
         Self::RecorderUnavailable,
         Self::StorageLow,
@@ -155,7 +159,8 @@ impl ErrorCode {
             | Self::PublicKeyMismatch
             | Self::CallLocked
             | Self::CallFull
-            | Self::NotInCall => 409,
+            | Self::NotInCall
+            | Self::SeatEnded => 409,
             Self::InviteExpired | Self::InviteExhausted | Self::InviteRevoked => 410,
             Self::TooManyAttempts
             | Self::RateLimited
@@ -185,6 +190,10 @@ pub struct ErrorDetail {
     pub code: ErrorCode,
     /// A sentence for a person who reads a log. Its text is not stable.
     pub message: String,
+    /// With `seat_ended`: why the seat that the request renews cannot be used. Absent when
+    /// the server does not know it (ADR 0520).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left: Option<crate::call::LeaveReason>,
 }
 
 /// The body of every response with a status of 400 or above.

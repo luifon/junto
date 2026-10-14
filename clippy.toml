@@ -1,2 +1,5 @@
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
+# The most bytes of stack that clippy counts for the values of one function before
+# `large_stack_frames` refuses it: one eighth of the 2 MiB of a thread (ADR 0906).
+stack-size-threshold = 262144

@@ -41,6 +41,7 @@ fn opened(result: rustix::io::Result<OwnedFd>) -> Result<OwnedFd, Fault> {
 }
 
 /// Checks the opened object itself: its kind, its owner and its permission bits.
+#[allow(clippy::useless_conversion)] // st_mode is u16 on macOS and u32 on Linux.
 fn check(descriptor: &OwnedFd, expected: FileType, private: bool) -> Result<(), Fault> {
     let status = rustix::fs::fstat(descriptor).map_err(io::Error::from)?;
     policy::unix(

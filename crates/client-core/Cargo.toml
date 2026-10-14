@@ -15,11 +15,20 @@ path = "src/bin/junto-cli/main.rs"
 name = "e2e"
 path = "tests/e2e/main.rs"
 
+[features]
+# For a test of a crate that reads the state of a server: the test publishes a state, a
+# notice and a state of the access flow without a server.
+test-support = []
+
 [dependencies]
+# Role order by the functions that the server uses (ADR 0791). No permission is computed
+# with it: the server states the permissions of the account (ADR 0790).
+junto-authz = { workspace = true }
 junto-protocol = { workspace = true }
 base64 = { workspace = true }
 bytes = "1"
 ed25519-dalek = { workspace = true }
+futures-util = { workspace = true }
 getrandom = { workspace = true }
 # The 0.12 line with the trust store of the operating system (ADR 0714).
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots"] }
@@ -29,8 +38,12 @@ sha2 = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }
+# The frames of the event stream. The HTTP library makes the upgrade request (ADR 0718).
+tokio-tungstenite = { workspace = true }
 tracing = { workspace = true }
 url = "2"
+# The identifiers of notices and of the scopes of notification settings (ADR 0409).
+uuid = { workspace = true }
 zeroize = "1"
 
 [target.'cfg(unix)'.dependencies]
@@ -47,10 +60,11 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
+# The server inside the test process, for the tests that need its recorder in memory.
+junto-server = { path = "../server" }
 sqlx = { workspace = true }
 tempfile = "3"
 tokio = { workspace = true, features = ["io-util", "test-util"] }
-uuid = { workspace = true }
 
 [target.'cfg(unix)'.dev-dependencies]
 rustix = { version = "1", features = ["pty"] }
@@ -64,3 +78,10 @@ unsafe_code = "deny"
 [lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
+large_stack_frames = "deny"
+
+[build-dependencies]
+base64 = { workspace = true }
+ed25519-dalek = { workspace = true }
+serde_json = { workspace = true }
+url = "2"

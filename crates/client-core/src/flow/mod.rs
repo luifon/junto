@@ -52,8 +52,13 @@ pub enum FlowError {
     Unreachable(TransportError),
     #[error("the server failed or its answer was lost")]
     Unavailable,
+    /// The server refused because a limit is reached: a limit on attempts, or a ceiling
+    /// such as the waiting join requests. The code states which (ADR 0111, ADR 0112).
     #[error("the server limits attempts; try again later")]
-    Limited { retry_after: Option<Duration> },
+    Limited {
+        code: ErrorCode,
+        retry_after: Option<Duration>,
+    },
     /// The server refused. The code states why.
     #[error("the server refused with the error {}", code_name(*.code))]
     Refused {
@@ -139,7 +144,8 @@ impl From<&Rejection> for FlowError {
             },
             (ErrorCode::OriginRejected, _) => Self::OriginRejected,
             (_, ErrorCategory::Unchanged | ErrorCategory::ServerFault) => Self::Unavailable,
-            (_, ErrorCategory::Limited) => Self::Limited {
+            (code, ErrorCategory::Limited) => Self::Limited {
+                code,
                 retry_after: rejection.retry_after,
             },
             (code, category) => Self::Refused { code, category },
@@ -250,7 +256,8 @@ mod tests {
                 (_, ErrorCategory::Unchanged | ErrorCategory::ServerFault) => {
                     FlowError::Unavailable
                 }
-                (_, ErrorCategory::Limited) => FlowError::Limited {
+                (code, ErrorCategory::Limited) => FlowError::Limited {
+                    code: *code,
                     retry_after: Some(Duration::from_secs(30)),
                 },
                 (_, category) => FlowError::Refused {

@@ -10,7 +10,7 @@ use tower_http::trace::{DefaultOnResponse, TraceLayer};
 use tracing::Level;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
-use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::router::{OpenApiRouter, UtoipaMethodRouter};
 use utoipa_axum::routes;
 
 use std::net::SocketAddr;
@@ -109,229 +109,312 @@ impl Modify for SessionSecurity {
     }
 }
 
+/// Adds the routes that `made` makes to the documented routes.
+///
+/// Each call of `routes!` makes a large value, and a build without optimization gives
+/// every such value of one function a place of its own on the stack. With every route in
+/// one function, that function needed more than 1.5 MiB of stack in such a build, and a
+/// thread has 2 MiB. Here each value is made in a function of its own, which returns
+/// before the next one is called, so the stack that the routes need does not grow with
+/// their number (ADR 0906).
+fn add(router: &mut OpenApiRouter<AppState>, made: fn() -> UtoipaMethodRouter<AppState>) {
+    *router = std::mem::take(router).routes(made());
+}
+
 fn documented_routes() -> OpenApiRouter<AppState> {
-    OpenApiRouter::with_openapi(ApiDocument::openapi())
-        .routes(routes!(server_info::get_server_info))
-        .routes(routes!(
+    let mut router = OpenApiRouter::with_openapi(ApiDocument::openapi());
+    add(&mut router, || routes!(server_info::get_server_info));
+    add(&mut router, || {
+        routes!(
             server_logo::get_logo,
             server_logo::set_logo,
             server_logo::remove_logo
-        ))
-        .routes(routes!(health::get_health))
-        .routes(routes!(threads::history, threads::reply))
-        .routes(routes!(threads::fork))
-        .routes(routes!(threads::read_state, threads::mark_read))
-        .routes(routes!(threads::unread))
-        .routes(routes!(threads::set_follow, threads::remove_follow))
-        .routes(routes!(threads::followed))
-        .routes(routes!(pins::list))
-        .routes(routes!(pins::pin, pins::unpin))
-        .routes(routes!(search::search))
-        .routes(routes!(
-            notifications::get_settings,
-            notifications::set_settings
-        ))
-        .routes(routes!(
+        )
+    });
+    add(&mut router, || routes!(health::get_health));
+    add(&mut router, || routes!(threads::history, threads::reply));
+    add(&mut router, || routes!(threads::fork));
+    add(&mut router, || {
+        routes!(threads::read_state, threads::mark_read)
+    });
+    add(&mut router, || routes!(threads::unread));
+    add(&mut router, || {
+        routes!(threads::set_follow, threads::remove_follow)
+    });
+    add(&mut router, || routes!(threads::followed));
+    add(&mut router, || routes!(pins::list));
+    add(&mut router, || routes!(pins::pin, pins::unpin));
+    add(&mut router, || routes!(search::search));
+    add(&mut router, || {
+        routes!(notifications::get_settings, notifications::set_settings)
+    });
+    add(&mut router, || {
+        routes!(
             notifications::get_default,
             notifications::set_default,
             notifications::remove_default
-        ))
-        .routes(routes!(notifications::list))
-        .routes(routes!(notifications::mark_all_read))
-        .routes(routes!(notifications::mark_read))
-        .routes(routes!(retention::get_workspace, retention::set_workspace))
-        .routes(routes!(retention::get_direct, retention::set_direct))
-        .routes(routes!(retention::get_recording, retention::set_recording))
-        .routes(routes!(attachments::start_upload))
-        .routes(routes!(attachments::get_limits, attachments::set_limits))
-        .routes(routes!(attachments::get_upload, attachments::cancel_upload))
-        .routes(routes!(attachments::put_chunk))
-        .routes(routes!(attachments::complete_upload))
-        .routes(routes!(attachments::download))
-        .routes(routes!(
-            messages::channel_history,
-            messages::send_channel_message
-        ))
-        .routes(routes!(
+        )
+    });
+    add(&mut router, || routes!(notifications::list));
+    add(&mut router, || routes!(notifications::mark_all_read));
+    add(&mut router, || routes!(notifications::mark_read));
+    add(&mut router, || {
+        routes!(retention::get_workspace, retention::set_workspace)
+    });
+    add(&mut router, || {
+        routes!(retention::get_direct, retention::set_direct)
+    });
+    add(&mut router, || {
+        routes!(retention::get_recording, retention::set_recording)
+    });
+    add(&mut router, || routes!(attachments::start_upload));
+    add(&mut router, || {
+        routes!(attachments::get_limits, attachments::set_limits)
+    });
+    add(&mut router, || {
+        routes!(attachments::get_upload, attachments::cancel_upload)
+    });
+    add(&mut router, || routes!(attachments::put_chunk));
+    add(&mut router, || routes!(attachments::complete_upload));
+    add(&mut router, || routes!(attachments::download));
+    add(&mut router, || {
+        routes!(messages::channel_history, messages::send_channel_message)
+    });
+    add(&mut router, || {
+        routes!(
             messages::conversation_history,
             messages::send_conversation_message
-        ))
-        .routes(routes!(
+        )
+    });
+    add(&mut router, || {
+        routes!(
             messages::read_channel_messages,
             messages::channel_message_state
-        ))
-        .routes(routes!(
+        )
+    });
+    add(&mut router, || {
+        routes!(
             messages::read_conversation_messages,
             messages::conversation_message_state
-        ))
-        .routes(routes!(
+        )
+    });
+    add(&mut router, || {
+        routes!(
             messages::get_message,
             messages::edit_message,
             messages::delete_message
-        ))
-        .routes(routes!(messages::add_reaction))
-        .routes(routes!(messages::remove_reaction))
-        .routes(routes!(
-            messages::open_conversation,
-            messages::list_conversations
-        ))
-        .routes(routes!(auth::create_challenge))
-        .routes(routes!(auth::log_in))
-        .routes(routes!(auth::log_out))
-        .routes(routes!(auth::claim_owner))
-        .routes(routes!(
-            account::get_own_account,
-            account::update_own_account
-        ))
-        .routes(routes!(account::set_avatar, account::remove_avatar))
-        .routes(routes!(account::get_profile))
-        .routes(routes!(account::get_avatar))
-        .routes(routes!(account::list_devices))
-        .routes(routes!(account::rename_device, account::remove_device))
-        .routes(routes!(account::list_recoveries))
-        .routes(routes!(account::list_recovery_notices))
-        .routes(routes!(account::acknowledge_recovery_notice))
-        .routes(routes!(account::request_device_link))
-        .routes(routes!(account::look_up_device_link))
-        .routes(routes!(account::approve_device_link))
-        .routes(routes!(invites::create_invite, invites::list_invites))
-        .routes(routes!(invites::revoke_invite))
-        .routes(routes!(invites::redeem_invite))
-        .routes(routes!(invites::join))
-        .routes(routes!(
-            invites::request_to_join,
-            invites::list_join_requests
-        ))
-        .routes(routes!(invites::join_request_status))
-        .routes(routes!(invites::approve_join_request))
-        .routes(routes!(invites::deny_join_request))
-        .routes(routes!(moderation::list_accounts))
-        .routes(routes!(moderation::remove_account))
-        .routes(routes!(moderation::ban_account, moderation::unban_account))
-        .routes(routes!(moderation::recover_account))
-        .routes(routes!(server_roles::reorder_server_roles))
-        .routes(routes!(workspace_roles::reorder_workspace_roles))
-        .routes(routes!(
+        )
+    });
+    add(&mut router, || routes!(messages::add_reaction));
+    add(&mut router, || routes!(messages::remove_reaction));
+    add(&mut router, || {
+        routes!(messages::open_conversation, messages::list_conversations)
+    });
+    add(&mut router, || routes!(auth::create_challenge));
+    add(&mut router, || routes!(auth::log_in));
+    add(&mut router, || routes!(auth::log_out));
+    add(&mut router, || routes!(auth::claim_owner));
+    add(&mut router, || {
+        routes!(account::get_own_account, account::update_own_account)
+    });
+    add(&mut router, || {
+        routes!(account::set_avatar, account::remove_avatar)
+    });
+    add(&mut router, || routes!(account::get_profile));
+    add(&mut router, || routes!(account::get_avatar));
+    add(&mut router, || routes!(account::list_devices));
+    add(&mut router, || {
+        routes!(account::rename_device, account::remove_device)
+    });
+    add(&mut router, || routes!(account::list_recoveries));
+    add(&mut router, || routes!(account::list_recovery_notices));
+    add(&mut router, || {
+        routes!(account::acknowledge_recovery_notice)
+    });
+    add(&mut router, || routes!(account::request_device_link));
+    add(&mut router, || routes!(account::look_up_device_link));
+    add(&mut router, || routes!(account::approve_device_link));
+    add(&mut router, || {
+        routes!(invites::create_invite, invites::list_invites)
+    });
+    add(&mut router, || routes!(invites::revoke_invite));
+    add(&mut router, || routes!(invites::redeem_invite));
+    add(&mut router, || routes!(invites::join));
+    add(&mut router, || {
+        routes!(invites::request_to_join, invites::list_join_requests)
+    });
+    add(&mut router, || routes!(invites::join_request_status));
+    add(&mut router, || routes!(invites::approve_join_request));
+    add(&mut router, || routes!(invites::deny_join_request));
+    add(&mut router, || routes!(moderation::list_accounts));
+    add(&mut router, || routes!(moderation::remove_account));
+    add(&mut router, || {
+        routes!(moderation::ban_account, moderation::unban_account)
+    });
+    add(&mut router, || routes!(moderation::recover_account));
+    add(&mut router, || routes!(server_roles::reorder_server_roles));
+    add(&mut router, || {
+        routes!(workspace_roles::reorder_workspace_roles)
+    });
+    add(&mut router, || {
+        routes!(
             server_roles::list_server_roles,
             server_roles::create_server_role
-        ))
-        .routes(routes!(
+        )
+    });
+    add(&mut router, || {
+        routes!(
             server_roles::update_server_role,
             server_roles::delete_server_role
-        ))
-        .routes(routes!(
+        )
+    });
+    add(&mut router, || {
+        routes!(
             server_roles::assign_server_role,
             server_roles::unassign_server_role
-        ))
-        .routes(routes!(
+        )
+    });
+    add(&mut router, || {
+        routes!(
             access_tokens::create_access_token,
             access_tokens::list_access_tokens
-        ))
-        .routes(routes!(access_tokens::revoke_access_token))
-        .routes(routes!(structure::get_structure))
-        .routes(routes!(structure::apply_structure_changes))
-        .routes(routes!(
-            workspaces::list_workspaces,
-            workspaces::create_workspace
-        ))
-        .routes(routes!(
-            workspaces::update_workspace,
-            workspaces::delete_workspace
-        ))
-        .routes(routes!(workspaces::list_members))
-        .routes(routes!(workspaces::add_member))
-        .routes(routes!(workspaces::remove_member))
-        .routes(routes!(
+        )
+    });
+    add(&mut router, || routes!(access_tokens::revoke_access_token));
+    add(&mut router, || routes!(structure::get_structure));
+    add(&mut router, || routes!(structure::apply_structure_changes));
+    add(&mut router, || {
+        routes!(workspaces::list_workspaces, workspaces::create_workspace)
+    });
+    add(&mut router, || {
+        routes!(workspaces::update_workspace, workspaces::delete_workspace)
+    });
+    add(&mut router, || routes!(workspaces::list_members));
+    add(&mut router, || routes!(workspaces::add_member));
+    add(&mut router, || routes!(workspaces::remove_member));
+    add(&mut router, || {
+        routes!(
             workspace_roles::list_workspace_roles,
             workspace_roles::create_workspace_role
-        ))
-        .routes(routes!(
+        )
+    });
+    add(&mut router, || {
+        routes!(
             workspace_roles::update_workspace_role,
             workspace_roles::delete_workspace_role
-        ))
-        .routes(routes!(
+        )
+    });
+    add(&mut router, || {
+        routes!(
             workspace_roles::assign_workspace_role,
             workspace_roles::unassign_workspace_role
-        ))
-        .routes(routes!(channels::create_category))
-        .routes(routes!(
-            channels::update_category,
-            channels::delete_category
-        ))
-        .routes(routes!(channels::list_channels, channels::create_channel))
-        .routes(routes!(channels::update_channel, channels::delete_channel))
-        .routes(routes!(archive::archive_channel, archive::restore_channel))
-        .routes(routes!(archive::list_archived_channels))
-        .routes(routes!(
-            archive::get_archive_period,
-            archive::set_archive_period
-        ))
-        .routes(routes!(exports::export_channel))
-        .routes(routes!(exports::export_conversation))
-        .routes(routes!(exports::list_exports))
-        .routes(routes!(exports::get_export, exports::remove_export))
-        .routes(routes!(exports::get_export_file))
-        .routes(routes!(channels::get_channel_permissions))
-        .routes(routes!(channels::list_channel_overrides))
-        .routes(routes!(channels::set_channel_override))
-        .routes(routes!(channels::change_channel_override))
-        .routes(routes!(calls::get_own_call, calls::leave_call))
-        .routes(routes!(calls::report_call_state))
-        .routes(routes!(calls::report_screen_share, calls::end_screen_share))
-        .routes(routes!(calls::raise_hand, calls::lower_hand))
-        .routes(routes!(calls::report_speaking))
-        .routes(routes!(calls::get_channel_call))
-        .routes(routes!(calls::update_call_settings))
-        .routes(routes!(calls::join_channel_call))
-        .routes(routes!(calls::lock_call, calls::unlock_call))
-        .routes(routes!(calls::request_entry))
-        .routes(routes!(calls::answer_entry_request))
-        .routes(routes!(calls::cancel_entry_request))
-        .routes(routes!(calls::invite_to_call))
-        .routes(routes!(calls::accept_call_invitation))
-        .routes(routes!(calls::refuse_call_invitation))
-        .routes(routes!(calls::cancel_call_invitation))
-        .routes(routes!(calls::move_participant))
-        .routes(routes!(calls::join_move))
-        .routes(routes!(calls::fail_move))
-        .routes(routes!(calls::start_meeting, calls::end_meeting))
-        .routes(routes!(calls::block_microphone, calls::unblock_microphone))
-        .routes(routes!(calls::block_sound, calls::unblock_sound))
-        .routes(routes!(calls::lower_participant_hand))
-        .routes(routes!(calls::disconnect_participant))
-        .routes(routes!(calls::join_direct_call))
-        .routes(routes!(calls::refuse_direct_call))
-        .routes(routes!(
+        )
+    });
+    add(&mut router, || routes!(channels::create_category));
+    add(&mut router, || {
+        routes!(channels::update_category, channels::delete_category)
+    });
+    add(&mut router, || {
+        routes!(channels::list_channels, channels::create_channel)
+    });
+    add(&mut router, || {
+        routes!(channels::update_channel, channels::delete_channel)
+    });
+    add(&mut router, || {
+        routes!(archive::archive_channel, archive::restore_channel)
+    });
+    add(&mut router, || routes!(archive::list_archived_channels));
+    add(&mut router, || {
+        routes!(archive::get_archive_period, archive::set_archive_period)
+    });
+    add(&mut router, || routes!(exports::export_channel));
+    add(&mut router, || routes!(exports::export_conversation));
+    add(&mut router, || routes!(exports::list_exports));
+    add(&mut router, || {
+        routes!(exports::get_export, exports::remove_export)
+    });
+    add(&mut router, || routes!(exports::get_export_file));
+    add(&mut router, || routes!(channels::get_channel_permissions));
+    add(&mut router, || routes!(channels::list_channel_overrides));
+    add(&mut router, || routes!(channels::set_channel_override));
+    add(&mut router, || routes!(channels::change_channel_override));
+    add(&mut router, || {
+        routes!(calls::get_own_call, calls::leave_call)
+    });
+    add(&mut router, || routes!(calls::report_call_state));
+    add(&mut router, || {
+        routes!(calls::report_screen_share, calls::end_screen_share)
+    });
+    add(&mut router, || {
+        routes!(calls::raise_hand, calls::lower_hand)
+    });
+    add(&mut router, || routes!(calls::report_speaking));
+    add(&mut router, || routes!(calls::get_channel_call));
+    add(&mut router, || routes!(calls::update_call_settings));
+    add(&mut router, || routes!(calls::join_channel_call));
+    add(&mut router, || {
+        routes!(calls::lock_call, calls::unlock_call)
+    });
+    add(&mut router, || routes!(calls::request_entry));
+    add(&mut router, || routes!(calls::answer_entry_request));
+    add(&mut router, || routes!(calls::cancel_entry_request));
+    add(&mut router, || routes!(calls::invite_to_call));
+    add(&mut router, || routes!(calls::accept_call_invitation));
+    add(&mut router, || routes!(calls::refuse_call_invitation));
+    add(&mut router, || routes!(calls::cancel_call_invitation));
+    add(&mut router, || routes!(calls::move_participant));
+    add(&mut router, || routes!(calls::join_move));
+    add(&mut router, || routes!(calls::fail_move));
+    add(&mut router, || {
+        routes!(calls::start_meeting, calls::end_meeting)
+    });
+    add(&mut router, || {
+        routes!(calls::block_microphone, calls::unblock_microphone)
+    });
+    add(&mut router, || {
+        routes!(calls::block_sound, calls::unblock_sound)
+    });
+    add(&mut router, || routes!(calls::lower_participant_hand));
+    add(&mut router, || routes!(calls::disconnect_participant));
+    add(&mut router, || routes!(calls::join_direct_call));
+    add(&mut router, || routes!(calls::refuse_direct_call));
+    add(&mut router, || {
+        routes!(
             calls::mute_direct_conversation,
             calls::unmute_direct_conversation
-        ))
-        .routes(routes!(
-            recordings::start_recording,
-            recordings::stop_recording
-        ))
-        .routes(routes!(recordings::list_recordings))
-        .routes(routes!(
-            recordings::get_recording,
-            recordings::remove_recording
-        ))
-        .routes(routes!(recordings::get_segment_file))
-        .routes(routes!(
-            transcripts::get_transcript,
-            transcripts::request_transcript
-        ))
-        .routes(routes!(transcripts::list_transcript_lines))
-        .routes(routes!(transcripts::correct_transcript_line))
-        .routes(routes!(transcripts::rename_transcript_speaker))
-        .routes(routes!(transcripts::get_transcript_text))
-        .routes(routes!(glossary::get_glossary, glossary::set_glossary))
-        .routes(routes!(audit_log::get_server_audit_log))
-        .routes(routes!(audit_log::get_workspace_audit_log))
-        .routes(routes!(moderation_notices::list))
-        .routes(routes!(moderation_notices::prove))
-        .routes(routes!(server_roles::change_permission))
-        .routes(routes!(workspace_roles::change_permission))
-        .routes(routes!(snapshot::get_snapshot))
-        .routes(routes!(stream::open_event_stream))
+        )
+    });
+    add(&mut router, || {
+        routes!(recordings::start_recording, recordings::stop_recording)
+    });
+    add(&mut router, || routes!(recordings::list_recordings));
+    add(&mut router, || {
+        routes!(recordings::get_recording, recordings::remove_recording)
+    });
+    add(&mut router, || routes!(recordings::get_segment_file));
+    add(&mut router, || {
+        routes!(transcripts::get_transcript, transcripts::request_transcript)
+    });
+    add(&mut router, || routes!(transcripts::list_transcript_lines));
+    add(&mut router, || {
+        routes!(transcripts::correct_transcript_line)
+    });
+    add(&mut router, || {
+        routes!(transcripts::rename_transcript_speaker)
+    });
+    add(&mut router, || routes!(transcripts::get_transcript_text));
+    add(&mut router, || {
+        routes!(glossary::get_glossary, glossary::set_glossary)
+    });
+    add(&mut router, || routes!(audit_log::get_server_audit_log));
+    add(&mut router, || routes!(audit_log::get_workspace_audit_log));
+    add(&mut router, || routes!(moderation_notices::list));
+    add(&mut router, || routes!(moderation_notices::prove));
+    add(&mut router, || routes!(server_roles::change_permission));
+    add(&mut router, || routes!(workspace_roles::change_permission));
+    add(&mut router, || routes!(snapshot::get_snapshot));
+    add(&mut router, || routes!(stream::open_event_stream));
+    router
 }
 
 /// The OpenAPI document of every route that [`router`] serves.
@@ -567,5 +650,26 @@ mod tests {
         assert!(logged.contains("path=/recording-layout/"), "{logged}");
         assert!(!logged.contains("secret-room-token"), "{logged}");
         assert!(!logged.contains("token="), "{logged}");
+    }
+
+    /// The stack that the documented routes and their schemas may need: one quarter of the
+    /// 2 MiB that a thread of the runtime and of the test harness has (ADR 0906).
+    const ROUTES_STACK: usize = 512 * 1024;
+
+    /// A thread with [`ROUTES_STACK`] builds the routes with their schemas. When they need
+    /// more, the thread overflows its stack and the test process ends with the name of
+    /// the thread: a function that makes many large values in one expression came back,
+    /// in this crate or in the schema functions of the protocol.
+    #[test]
+    fn the_documented_routes_are_built_within_a_quarter_of_a_thread_stack() {
+        let built = std::thread::Builder::new()
+            .name("the documented routes within a quarter of a thread stack".to_owned())
+            .stack_size(ROUTES_STACK)
+            .spawn(|| documented_routes().into_openapi().paths.paths.len())
+            .map(std::thread::JoinHandle::join);
+        assert!(
+            matches!(built, Ok(Ok(paths)) if paths > 100),
+            "the thread that builds the routes did not end with the routes"
+        );
     }
 }

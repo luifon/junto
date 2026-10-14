@@ -126,6 +126,15 @@ pub struct EntryKey {
     pub generation: u64,
 }
 
+/// One entry of the book and the account that this device has on its server. What the
+/// client stores of a server belongs to one owner, and its key names that owner: a file,
+/// an entry of a cache, a remembered choice and a prompt that waits (ADR 0745).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Owner {
+    pub entry: EntryKey,
+    pub account_id: AccountId,
+}
+
 /// One saved server.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerEntry {
@@ -375,6 +384,30 @@ impl ServerBook {
             entry.generation = key.generation;
             entry.address = address;
             Ok((entry.clone(), result))
+        })
+    }
+
+    /// Moves one entry to `position` of the list and returns the keys of all entries in
+    /// the new order. A position past the end is the end. An entry of another generation
+    /// is "not saved". The order of the list is the order of the file, so the content of
+    /// no entry changes.
+    pub fn move_entry(&self, key: EntryKey, position: usize) -> Result<Vec<EntryKey>, BookError> {
+        self.reorder(key, |_| position)
+    }
+
+    /// Like [`ServerBook::move_entry`], with the position chosen under the lock of the
+    /// book: `place` gets the other entries as the file holds them now and returns the
+    /// position among them.
+    pub(crate) fn reorder(
+        &self,
+        key: EntryKey,
+        place: impl FnOnce(&[ServerEntry]) -> usize,
+    ) -> Result<Vec<EntryKey>, BookError> {
+        self.change(|servers| {
+            let moved = servers.remove(position(servers, key)?);
+            let place = place(servers).min(servers.len());
+            servers.insert(place, moved);
+            Ok(servers.iter().map(ServerEntry::key).collect())
         })
     }
 
@@ -734,6 +767,145 @@ mod tests {
             worker.join().unwrap();
         }
         assert_eq!(book.entries().unwrap().len(), 8);
+    }
+
+    fn three(book: &ServerBook) -> [ServerEntry; 3] {
+        ["acme", "globex", "initech"].map(|name| {
+            book.add(entry(&format!("https://{name}.example.test"), name))
+                .unwrap()
+        })
+    }
+
+    fn stored_order(data_dir: &DataDir) -> Vec<String> {
+        let stored: serde_json::Value =
+            serde_json::from_slice(&fs::read(data_dir.book_file()).unwrap()).unwrap();
+        stored["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|server| server["server_id"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    fn ids(entries: &[&ServerEntry]) -> Vec<String> {
+        entries
+            .iter()
+            .map(|entry| entry.server_id.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn an_entry_moves_up_and_down_and_the_file_holds_the_order() {
+        let (_directory, data_dir, book) = book();
+        let [first, second, third] = three(&book);
+
+        let order = book.move_entry(third.key(), 0).unwrap();
+        assert_eq!(order, [third.key(), first.key(), second.key()]);
+        assert_eq!(stored_order(&data_dir), ids(&[&third, &first, &second]));
+        assert_eq!(
+            book.entries().unwrap(),
+            [third.clone(), first.clone(), second.clone()]
+        );
+
+        let order = book.move_entry(third.key(), 1).unwrap();
+        assert_eq!(order, [first.key(), third.key(), second.key()]);
+        assert_eq!(stored_order(&data_dir), ids(&[&first, &third, &second]));
+
+        let order = book.move_entry(first.key(), 2).unwrap();
+        assert_eq!(order, [third.key(), second.key(), first.key()]);
+        assert_eq!(stored_order(&data_dir), ids(&[&third, &second, &first]));
+
+        // The place that the entry has already.
+        let order = book.move_entry(second.key(), 1).unwrap();
+        assert_eq!(order, [third.key(), second.key(), first.key()]);
+        assert_eq!(
+            book.entries().unwrap(),
+            [third.clone(), second.clone(), first.clone()]
+        );
+    }
+
+    #[test]
+    fn a_position_past_the_end_is_the_end() {
+        let (_directory, data_dir, book) = book();
+        let [first, second, third] = three(&book);
+        for position in [3, 4, usize::MAX] {
+            let order = book.move_entry(first.key(), position).unwrap();
+            assert_eq!(order, [second.key(), third.key(), first.key()]);
+            assert_eq!(stored_order(&data_dir), ids(&[&second, &third, &first]));
+        }
+        let (_other_directory, _, single) = self::book();
+        let only = single
+            .add(entry("https://acme.example.test", "Acme"))
+            .unwrap();
+        assert_eq!(single.move_entry(only.key(), 7).unwrap(), [only.key()]);
+    }
+
+    #[test]
+    fn an_entry_that_is_gone_is_not_moved() {
+        let (_directory, data_dir, book) = book();
+        let [first, second, third] = three(&book);
+        let unknown = EntryKey {
+            server_id: ServerId::generate(),
+            generation: first.generation,
+        };
+        assert!(matches!(
+            book.move_entry(unknown, 0),
+            Err(BookError::NotSaved { server_id }) if server_id == unknown.server_id
+        ));
+
+        book.remove(third.key(), || Ok::<(), BookError>(()))
+            .unwrap();
+        let mut again = entry("https://initech.example.test", "initech");
+        again.server_id = third.server_id;
+        let replaced = book.add(again).unwrap();
+        assert!(matches!(
+            book.move_entry(third.key(), 0),
+            Err(BookError::NotSaved { server_id }) if server_id == third.server_id
+        ));
+        assert_eq!(stored_order(&data_dir), ids(&[&first, &second, &replaced]));
+        assert_eq!(
+            book.move_entry(replaced.key(), 0).unwrap(),
+            [replaced.key(), first.key(), second.key()]
+        );
+    }
+
+    #[test]
+    fn a_move_keeps_a_server_that_another_program_added() {
+        let (_directory, data_dir, book) = book();
+        let [first, second, third] = three(&book);
+        // This program read the book before the other one changed it.
+        assert_eq!(book.entries().unwrap().len(), 3);
+        let other = ServerBook::new(DataDir::open(data_dir.root()).unwrap());
+        let added = other
+            .add(entry("https://hooli.example.test", "hooli"))
+            .unwrap();
+        other
+            .update(second.key(), |entry| {
+                entry.connection_mode = ConnectionMode::WhenSelected;
+            })
+            .unwrap();
+
+        let order = book.move_entry(third.key(), 0).unwrap();
+        assert_eq!(order, [third.key(), first.key(), second.key(), added.key()]);
+        assert_eq!(
+            stored_order(&data_dir),
+            ids(&[&third, &first, &second, &added])
+        );
+        let entries = other.entries().unwrap();
+        assert_eq!(entries[3], added);
+        assert_eq!(entries[2].connection_mode, ConnectionMode::WhenSelected);
+
+        // The position is chosen from what the file holds under the lock.
+        let order = book
+            .reorder(first.key(), |others| {
+                assert_eq!(
+                    others.iter().map(ServerEntry::key).collect::<Vec<_>>(),
+                    [third.key(), second.key(), added.key()]
+                );
+                others.len()
+            })
+            .unwrap();
+        assert_eq!(order, [third.key(), second.key(), added.key(), first.key()]);
     }
 
     #[test]

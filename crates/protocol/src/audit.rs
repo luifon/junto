@@ -1,3 +1,15 @@
+// The schema function that the derive macro makes for `AuditEvent` is one expression over
+// every variant. The crate is compiled with optimization also in the dev profile, where
+// that function needs little stack, and a test of the server bounds the stack of all
+// schemas together (ADR 0906).
+#![cfg_attr(
+    feature = "openapi",
+    expect(
+        clippy::large_stack_frames,
+        reason = "one generated schema function for every variant of a large enum"
+    )
+)]
+
 use junto_authz::{ServerPermission, WorkspacePermission};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;

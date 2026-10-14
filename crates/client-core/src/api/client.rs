@@ -23,11 +23,17 @@ use super::error::ApiError;
 use super::proof::{self, Expected, ExpectedAccount};
 use super::retry::{self, Repeat, RetryPolicy};
 use super::session::{ServerApi, TokenAuthority};
-use super::transport::{HttpRequest, HttpResponse, Method, RequestBody, Transport};
+use super::transport::{
+    HttpRequest, HttpResponse, Method, OpenedResponse, RequestBody, Transport, TransportError,
+    TransportErrorKind,
+};
 use crate::address::ServerAddress;
 use crate::keys::DeviceKey;
 use crate::secret::{SecretBytes, SecretToken};
 use crate::version::ApiVersion;
+
+/// The largest error body that the client reads in place of a file.
+const LONGEST_ERROR_BODY: usize = 64 * 1024;
 
 /// Asks the server at `address` for its identifier, name, logo and API versions. The route
 /// has no version and needs no account.
@@ -142,6 +148,61 @@ impl ApiClient {
             body,
         };
         retry::send(self.transport.as_ref(), &request, repeat, &self.policy).await
+    }
+
+    /// Asks for a file of the API from the byte `from` on. A status of 400 or above is
+    /// read as the error of the API and returned as one.
+    pub(crate) async fn open(
+        &self,
+        path: &str,
+        query: &[(&'static str, String)],
+        bearer: &SecretToken,
+        from: u64,
+    ) -> Result<OpenedResponse, ApiError> {
+        use futures_util::StreamExt as _;
+        let mut url = self
+            .address
+            .endpoint(&format!("{}{path}", self.version.prefix()));
+        if !query.is_empty() {
+            url.query_pairs_mut()
+                .extend_pairs(query.iter().map(|(name, value)| (*name, value.as_str())));
+        }
+        let request = HttpRequest {
+            method: Method::Get,
+            url,
+            bearer: Some(bearer.clone()),
+            body: None,
+        };
+        let mut opened = self
+            .transport
+            .open(request, from)
+            .await
+            .map_err(ApiError::Unreachable)?;
+        if opened.status < 300 {
+            return Ok(opened);
+        }
+        if opened.status < 400 {
+            return Err(ApiError::InvalidResponse {
+                status: opened.status,
+                reason: "unexpected status",
+            });
+        }
+        let mut body = SecretBytes::with_capacity(512);
+        while let Some(chunk) = opened.body.next().await {
+            let chunk = chunk.map_err(ApiError::Unreachable)?;
+            if body.len() + chunk.len() > LONGEST_ERROR_BODY {
+                return Err(ApiError::Unreachable(TransportError::new(
+                    TransportErrorKind::TooLarge,
+                    "the error of a download",
+                )));
+            }
+            body.extend(&chunk);
+        }
+        Err(super::error::read_rejection(&HttpResponse {
+            status: opened.status,
+            retry_after: opened.retry_after,
+            body,
+        }))
     }
 
     /// Gets a challenge for `operation`, compares it with what was asked for, signs it and

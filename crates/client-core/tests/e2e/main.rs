@@ -3,7 +3,18 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod admin;
+mod calls_live;
+mod messages;
+mod recording_server;
+mod recordings;
+mod remaining;
+mod requests;
+mod roles;
+mod stream;
 mod support;
+mod threads;
+mod tool_live;
 
 use std::path::Path;
 use std::process::Command;
@@ -22,7 +33,7 @@ use junto_client_core::flow::link_all::{
 };
 use junto_client_core::profile::{AVATAR_MAX_BYTES, InvalidAvatar, ProfileError, avatar_hash};
 use junto_client_core::protocol::account::{AccountStatus, ImageType, RecoverAccount};
-use junto_client_core::protocol::audit::{AuditEvent, AuditQuery};
+use junto_client_core::protocol::audit::{AuditEvent, AuditFilterQuery};
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::protocol::invite::{ApproveJoinRequest, CreateInvite};
 use junto_client_core::protocol::secret::{InviteCode, OwnerCode};
@@ -231,9 +242,9 @@ async fn a_second_device_with_a_fresh_data_directory_joins_with_an_invite() {
 
     let log = owner
         .api()
-        .server_audit_log(&AuditQuery {
-            before: None,
+        .server_audit_log(&AuditFilterQuery {
             limit: Some(10),
+            ..AuditFilterQuery::default()
         })
         .await
         .unwrap();
@@ -581,6 +592,43 @@ async fn a_busy_answer_gets_the_same_signed_request_again_and_the_server_accepts
     assert_eq!(error.code(), Some(ErrorCode::Busy));
     assert_eq!(proxy.seen("/api/v1/workspaces").len(), 7);
     logged_in(&handle);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_action_that_waits_for_the_flow_runs_when_the_running_action_has_ended() {
+    const CLAIM: &str = "/api/v1/owner/claim";
+    let server = TestServer::start("Acme").await;
+    let proxy = FaultProxy::start(&server).await;
+    let device = Device::new();
+    let handle = device.add(&proxy.address()).await;
+
+    // The claim waits at the proxy, so the access flow is busy until the test says so.
+    proxy.hold(CLAIM);
+    let claiming = tokio::spawn(handle.dispatch(claim(&server, "Ada")));
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while proxy.seen(CLAIM).is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "the claim did not reach the proxy"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(matches!(
+        handle.dispatch(AccessAction::LogOut).await,
+        Err(FlowError::Busy)
+    ));
+    let logging_out = tokio::spawn(handle.dispatch_when_free(AccessAction::LogOut));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!claiming.is_finished() && !logging_out.is_finished());
+
+    proxy.release();
+    claiming.await.unwrap().unwrap();
+    logging_out.await.unwrap().unwrap();
+    assert!(matches!(
+        handle.access().state,
+        AccessState::LoggedOut { .. }
+    ));
+    assert_eq!(proxy.seen(CLAIM).len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]

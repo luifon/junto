@@ -16,6 +16,10 @@ allow = [
     "Zlib",
     "MPL-2.0",
     "Unicode-3.0",
+    # Three packages of the fixed gpui set (ADR 0701) carry these. Both are permissive and
+    # have no condition on the code that uses them.
+    "CC0-1.0",
+    "bzip2-1.0.6",
 ]
 
 [licenses.private]
@@ -35,3 +39,12 @@ allow-git = []
 [advisories]
 version = 2
 yanked = "deny"
+# Packages of the fixed gpui set (ADR 0701) whose authors no longer maintain them. None of
+# the notices names a vulnerability. Each entry goes when the set no longer contains the
+# package.
+ignore = [
+    { id = "RUSTSEC-2024-0384", reason = "instant: unmaintained; a dependency of the component library" },
+    { id = "RUSTSEC-2024-0436", reason = "paste: unmaintained; a dependency of gpui and of its Metal binding" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser: unmaintained; a dependency of the SVG and text layers of gpui" },
+    { id = "RUSTSEC-2026-0206", reason = "rustybuzz: unmaintained; a dependency of the SVG layer of gpui" },
+]

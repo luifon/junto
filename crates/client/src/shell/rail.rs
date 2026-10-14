@@ -1,0 +1,699 @@
+//! The server book: every saved server with its workspaces and its state, and the field
+//! that adds a server. Collapsed, it shows one icon per server with a menu.
+
+use gpui::{
+    AnyElement, ClickEvent, Context, Hsla, InteractiveElement, IntoElement, ParentElement, Role,
+    SharedString, StatefulInteractiveElement, Styled, Window, deferred, div,
+    prelude::FluentBuilder, px,
+};
+use junto_client_core::flow::add_server::{AddServerAction, AddServerState};
+
+use super::{Layer, Shell, join, window_controls_height};
+use crate::assets::Icon;
+use crate::state::view::{ServerRow, ServerStatus, ShellView};
+use crate::text;
+use crate::theme::{Theme, theme, u};
+use crate::ui::{
+    Avatar, Band, BandKind, Button, ButtonKind, Field, FieldKind, Menu, ScrollArea, StatusLine,
+    StyleExt, WorkspaceRow, focus_ring, focus_ring_inside, menu_label, selection_mark,
+};
+
+/// The line under the name of a server: an icon and a text for every state that is not
+/// "logged in and current".
+pub(crate) fn status_line(row: &ServerRow) -> Option<(Option<Icon>, &'static str)> {
+    Some(match &row.status {
+        ServerStatus::Ready | ServerStatus::Standby => {
+            if row.has_recovery {
+                (Some(Icon::Warning), text::STATUS_RECOVERY)
+            } else {
+                return None;
+            }
+        }
+        ServerStatus::Connecting => (None, text::STATUS_CONNECTING),
+        ServerStatus::Reconnecting => (Some(Icon::Retry), text::STATUS_RECONNECTING),
+        ServerStatus::LoggedOut => (Some(Icon::Warning), text::STATUS_LOGGED_OUT),
+        ServerStatus::WaitingForApproval { .. } => {
+            (Some(Icon::Clock), text::STATUS_WAITING_FOR_APPROVAL)
+        }
+        ServerStatus::WaitingForLink { .. } => (Some(Icon::Clock), text::STATUS_WAITING_FOR_LINK),
+        ServerStatus::NoAccount(notice) => (None, text::no_account_status(*notice)),
+        ServerStatus::Banned => (Some(Icon::Warning), text::STATUS_BANNED),
+        ServerStatus::Unreachable => (Some(Icon::Warning), text::STATUS_UNREACHABLE),
+        ServerStatus::Incompatible(reason) => (
+            Some(Icon::Warning),
+            match reason {
+                junto_client_core::version::Incompatibility::ClientTooOld { .. } => {
+                    text::STATUS_NEEDS_UPDATE
+                }
+                junto_client_core::version::Incompatibility::ServerTooOld { .. } => {
+                    text::STATUS_TOO_OLD
+                }
+                _ => text::STATUS_INCOMPATIBLE,
+            },
+        ),
+        ServerStatus::OtherServer => (Some(Icon::Warning), text::STATUS_OTHER_SERVER),
+    })
+}
+
+fn seed(row: &ServerRow) -> u128 {
+    row.id.as_uuid().as_u128()
+}
+
+/// The picture of a server at a size in design pixels: its logo when the window holds the
+/// image (ADR 0101), and the generated picture otherwise. Only the logo has a name for a
+/// screen reader and for a test: the generated picture is decoration beside the name of
+/// the server.
+fn picture(
+    place: &'static str,
+    index: usize,
+    row: &ServerRow,
+    size: f32,
+    radius: f32,
+) -> AnyElement {
+    let picture = Avatar::new(seed(row), size)
+        .radius(radius)
+        .image(row.logo.clone());
+    if row.logo.is_none() {
+        return picture.into_any_element();
+    }
+    div()
+        .id((place, index))
+        .role(Role::Image)
+        .aria_label(text::logo_of(&row.name))
+        .debug_selector(move || format!("{place}-{index}"))
+        .flex_none()
+        .child(picture)
+        .into_any_element()
+}
+
+impl Shell {
+    /// Sends the typed address to the flow that adds a server.
+    pub fn submit_address(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.adding.is_some() {
+            return;
+        }
+        let address = self.address.read(cx).value().to_string();
+        let flow = self.state.read(cx).client().add_server();
+        let asking = flow.dispatch(AddServerAction::Fetch { address });
+        self.adding = Some(flow.clone());
+        self.address_error = None;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = asking.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.adding = None;
+                match (result, flow.view().state) {
+                    (_, AddServerState::Preview(_) | AddServerState::KeyOfOtherAddress { .. }) => {
+                        this.code
+                            .update(cx, |code, cx| code.set_value("", window, cx));
+                        let opened = this.next_join();
+                        this.open_layer(Layer::Join(join::Join::preview(opened, flow)), window, cx);
+                        this.focus_field(&this.code.clone(), window, cx);
+                    }
+                    (Err(error), _) => {
+                        this.address_error = Some(text::flow_error(&error));
+                    }
+                    (Ok(()), _) => {}
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn render_rail(
+        &mut self,
+        view: &ShellView,
+        collapsed: bool,
+        narrow: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let theme = theme(cx);
+        let colors = theme.colors;
+        let width = if collapsed {
+            theme.metrics.rail_collapsed_width
+        } else {
+            theme.metrics.rail_width
+        };
+        let frame = div()
+            .id("server-book")
+            .role(Role::Navigation)
+            .aria_label(text::SERVER_BOOK)
+            .relative()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .w(u(width))
+            .h_full()
+            .bg(Hsla::from(colors.basalt))
+            .border_r_1()
+            .border_color(Hsla::from(colors.basalt_edge))
+            .ink(colors.bone)
+            .child(div().flex_none().h(u(window_controls_height(cx))));
+        if collapsed {
+            frame.children(self.render_rail_collapsed(view, narrow, &theme, window, cx))
+        } else {
+            frame.children(self.render_rail_expanded(view, narrow, &theme, window, cx))
+        }
+    }
+
+    fn render_rail_expanded(
+        &mut self,
+        view: &ShellView,
+        narrow: bool,
+        theme: &Theme,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let colors = theme.colors;
+        let header = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_between()
+            .pt(u(2.0))
+            .pr(u(8.0))
+            .pb(u(8.0))
+            .pl(u(12.0))
+            .child(
+                div()
+                    .typeface(theme.types.label, theme)
+                    .ink(colors.bone_label)
+                    .child(text::SERVER_BOOK),
+            )
+            .child(
+                Button::new("collapse-server-book")
+                    .kind(ButtonKind::Rail)
+                    .icon(Icon::Collapse)
+                    .tooltip(text::COLLAPSE_SERVER_BOOK)
+                    .selector("collapse-server-book")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toggle_server_book(narrow, cx);
+                    })),
+            );
+
+        let mut servers: Vec<AnyElement> = Vec::new();
+        for (index, row) in view.servers.iter().enumerate() {
+            if index > 0 {
+                servers.push(
+                    div()
+                        .flex_none()
+                        .mt(u(6.0))
+                        .mx(u(12.0))
+                        .mb(u(10.0))
+                        .child(Band::new(BandKind::Rail))
+                        .into_any_element(),
+                );
+            }
+            servers.push(self.render_server(index, row, theme, cx));
+        }
+
+        let asking = self.adding.is_some();
+        let help: SharedString = if asking {
+            text::ADDRESS_ASKING.into()
+        } else {
+            self.address_error
+                .clone()
+                .map_or_else(|| text::ADDRESS_HELP.into(), SharedString::from)
+        };
+        let failed = self.address_error.is_some() && !asking;
+        let add = div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .px(u(12.0))
+            .pb(u(12.0))
+            .child(
+                div()
+                    .pb(u(6.0))
+                    .typeface(theme.types.label, theme)
+                    .ink(colors.bone_label)
+                    .child(text::ADD_SERVER),
+            )
+            .child(
+                Field::new(&self.address, text::ADDRESS_FIELD)
+                    .kind(FieldKind::RailAddress)
+                    .selector("address-field")
+                    .trailing(
+                        Button::new("add-server")
+                            .kind(ButtonKind::RailAccent)
+                            .icon(Icon::Plus)
+                            .tooltip(text::ADD_SERVER_BY_ADDRESS)
+                            .selector("add-server")
+                            .disabled(asking)
+                            .rounded_l(px(0.0))
+                            .m(px(-1.0))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.submit_address(window, cx);
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .id("address-help")
+                    .debug_selector(|| "address-help".to_owned())
+                    .when(failed, |help| help.role(Role::Alert))
+                    .aria_label(help.clone())
+                    .mt(u(7.0))
+                    .typeface(theme.types.small, theme)
+                    .ink(if failed { colors.ochre } else { colors.bone_2 })
+                    .child(help),
+            );
+
+        vec![
+            header.into_any_element(),
+            ScrollArea::new("servers", &self.servers_scroll, text::SERVER_BOOK)
+                .dark()
+                .children(servers)
+                .into_any_element(),
+            add.into_any_element(),
+        ]
+    }
+
+    fn render_server(
+        &mut self,
+        index: usize,
+        row: &ServerRow,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = theme.colors;
+        let server_id = row.id;
+        // The server is marked itself when no workspace row carries the selection.
+        let marked = row.selected && !row.workspaces.iter().any(|workspace| workspace.selected);
+        let ring = focus_ring_inside(colors.ochre, theme.metrics.focus_ring);
+        let line = match status_line(row) {
+            Some((icon, status)) => {
+                let line = StatusLine::new(status);
+                match icon {
+                    Some(icon) => line.icon(icon),
+                    None => line,
+                }
+                .into_any_element()
+            }
+            None => div()
+                .typeface(theme.types.mono_small, theme)
+                .ink(colors.bone_3)
+                .truncate()
+                .child(row.address.clone())
+                .into_any_element(),
+        };
+        let head = div()
+            .id(("server", index))
+            .role(Role::ListItem)
+            .aria_label(super::book::head_label(row))
+            .aria_selected(row.selected)
+            .debug_selector(move || format!("server-{index}"))
+            .relative()
+            .flex()
+            .items_center()
+            .gap(u(8.0))
+            .py(u(5.0))
+            .pr(u(8.0))
+            .pl(u(10.0))
+            .cursor_pointer()
+            .focusable()
+            .tab_stop(true)
+            .when(marked, |head| {
+                head.bg(Hsla::from(colors.basalt_3))
+                    .child(selection_mark(cx))
+            })
+            .hover(move |style| style.bg(Hsla::from(colors.basalt_3)))
+            .focus_visible(move |style| style.shadow(ring))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.state
+                    .update(cx, |state, cx| state.select_server(server_id, cx));
+            }))
+            .child(
+                div()
+                    .flex_none()
+                    .rounded(u(theme.metrics.radius))
+                    .shadow(focus_ring(colors.basalt_edge, 1.0))
+                    .child(picture("server-logo", index, row, 28.0, 3.0)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .typeface(theme.types.name, theme)
+                            .ink(colors.bone)
+                            .truncate()
+                            .child(row.name.clone()),
+                    )
+                    .child(line),
+            )
+            // What the server holds unread that no row of a workspace shows.
+            .children(super::book::head_sign(row, index, cx));
+        let workspaces = row
+            .workspaces
+            .iter()
+            .enumerate()
+            .map(|(position, workspace)| {
+                let workspace_id = workspace.id;
+                WorkspaceRow::new(
+                    ("workspace", index * 1000 + position),
+                    workspace.name.clone(),
+                    workspace.id.as_uuid().as_u128(),
+                )
+                .selected(workspace.selected)
+                .unread(super::channels::unread_sign(workspace.unread))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.state.update(cx, |state, cx| {
+                        state.select_workspace(server_id, workspace_id, cx);
+                    });
+                }))
+            });
+        div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .pt(u(2.0))
+            .pb(u(8.0))
+            .child(head)
+            .when(!row.workspaces.is_empty(), |server| {
+                server.child(
+                    div()
+                        .relative()
+                        .flex()
+                        .flex_col()
+                        .mt(u(2.0))
+                        // The trunk of the tree line.
+                        .child(
+                            div()
+                                .absolute()
+                                .left(u(24.0))
+                                .top_0()
+                                .bottom(u(14.0))
+                                .w(px(1.0))
+                                .bg(Hsla::from(colors.basalt_rule)),
+                        )
+                        .children(workspaces),
+                )
+            })
+            .into_any_element()
+    }
+
+    fn render_rail_collapsed(
+        &mut self,
+        view: &ShellView,
+        narrow: bool,
+        theme: &Theme,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let colors = theme.colors;
+        let mut icons: Vec<AnyElement> = Vec::new();
+        for (index, row) in view.servers.iter().enumerate() {
+            if index > 0 {
+                icons.push(
+                    div()
+                        .flex_none()
+                        .w(u(28.0))
+                        .h(px(1.0))
+                        .my(u(7.0))
+                        .bg(Hsla::from(colors.basalt_rule))
+                        .into_any_element(),
+                );
+            }
+            icons.push(self.render_server_icon(index, row, theme, cx));
+        }
+        vec![
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h_0()
+                .items_center()
+                .child(
+                    Button::new("expand-server-book")
+                        .kind(ButtonKind::Rail)
+                        .icon(Icon::Expand)
+                        .tooltip(text::EXPAND_SERVER_BOOK)
+                        .selector("expand-server-book")
+                        .w(u(36.0))
+                        .h(u(26.0))
+                        .mb(u(12.0))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.toggle_server_book(narrow, cx);
+                        })),
+                )
+                .child(
+                    div()
+                        .id("servers")
+                        .role(Role::List)
+                        .aria_label(text::SERVER_BOOK)
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_h_0()
+                        .items_center()
+                        .children(icons),
+                )
+                .child(
+                    Button::new("add-server")
+                        .kind(ButtonKind::RailAccent)
+                        .icon(Icon::Plus)
+                        .tooltip(text::ADD_SERVER_BY_ADDRESS)
+                        .selector("add-server")
+                        .w(u(36.0))
+                        .h(u(30.0))
+                        .mb(u(12.0))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.show_address_field(narrow, window, cx);
+                        })),
+                )
+                .into_any_element(),
+        ]
+    }
+
+    fn render_server_icon(
+        &mut self,
+        index: usize,
+        row: &ServerRow,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = theme.colors;
+        let server_id = row.id;
+        let open = self.hover_menu.map(|(open, _)| open) == Some(server_id);
+        let ring = if open {
+            focus_ring(colors.ochre, 2.0)
+        } else {
+            focus_ring(colors.basalt_edge, 1.0)
+        };
+        let focused_ring = focus_ring_inside(colors.ochre, theme.metrics.focus_ring);
+        let icon = div()
+            .id(("server", index))
+            .role(Role::ListItem)
+            .aria_label(row.name.clone())
+            .aria_selected(row.selected)
+            .aria_expanded(open)
+            .debug_selector(move || format!("server-{index}"))
+            .relative()
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .w(u(theme.metrics.rail_collapsed_width))
+            .h(u(46.0))
+            .cursor_pointer()
+            .focusable()
+            .tab_stop(true)
+            .group("server-icon")
+            .when(row.selected, |icon| {
+                icon.bg(Hsla::from(colors.basalt_3))
+                    .child(selection_mark(cx))
+            })
+            .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
+                if *hovered {
+                    this.open_hover_menu(server_id, false, window, cx);
+                } else {
+                    this.leave_hover_menu(cx);
+                }
+            }))
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                // The keyboard opens the menu and moves into it. The pointer selects the
+                // server; its menu is open already.
+                if matches!(event, ClickEvent::Keyboard(_)) {
+                    this.open_hover_menu(server_id, true, window, cx);
+                } else {
+                    this.state
+                        .update(cx, |state, cx| state.select_server(server_id, cx));
+                }
+            }))
+            .focus_visible(move |style| style.shadow(focused_ring))
+            .child(div().rounded(u(4.0)).shadow(ring).child(picture(
+                "server-logo",
+                index,
+                row,
+                36.0,
+                4.0,
+            )))
+            .when(row.unread.any() && status_line(row).is_none(), |icon| {
+                // The server holds messages that the person has not read: the terracotta
+                // sign of the channel list, at the corner of the avatar.
+                icon.child(
+                    div()
+                        .absolute()
+                        .right(u(10.0))
+                        .top(u(2.0))
+                        .size(u(8.0))
+                        .rounded_full()
+                        .border_1()
+                        .border_color(Hsla::from(colors.basalt))
+                        .bg(Hsla::from(colors.terracotta))
+                        .debug_selector(move || format!("server-unread-{index}")),
+                )
+            })
+            .when(status_line(row).is_some(), |icon| {
+                // A dot at the corner of the avatar tells that the server needs a look.
+                icon.child(
+                    div()
+                        .absolute()
+                        .right(u(10.0))
+                        .top(u(2.0))
+                        .size(u(8.0))
+                        .rounded_full()
+                        .border_1()
+                        .border_color(Hsla::from(colors.basalt))
+                        .bg(Hsla::from(colors.ochre)),
+                )
+            });
+        div()
+            .relative()
+            .flex_none()
+            .child(icon)
+            .when(open, |wrapper| {
+                wrapper.child(
+                    deferred(
+                        div()
+                            .absolute()
+                            .left(u(60.0))
+                            .top(u(-4.0))
+                            .child(self.render_hover_menu(index, row, theme, cx)),
+                    )
+                    .with_priority(1),
+                )
+            })
+            .into_any_element()
+    }
+
+    fn render_hover_menu(
+        &mut self,
+        index: usize,
+        row: &ServerRow,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let colors = theme.colors;
+        let server_id = row.id;
+        let line: SharedString = match status_line(row) {
+            Some((_, status)) => status.into(),
+            None => row.address.clone().into(),
+        };
+        let header = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(u(9.0))
+            .pt(u(10.0))
+            .px(u(12.0))
+            .pb(u(9.0))
+            .border_b_1()
+            .border_color(Hsla::from(colors.basalt_rule))
+            .child(picture("server-menu-logo", index, row, 30.0, 3.0))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .typeface(theme.types.name, theme)
+                            .ink(colors.bone)
+                            .truncate()
+                            .child(row.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .typeface(theme.types.mono_small, theme)
+                            .ink(colors.bone_3)
+                            .truncate()
+                            .child(line),
+                    ),
+            );
+        let workspaces = row
+            .workspaces
+            .iter()
+            .enumerate()
+            .map(|(position, workspace)| {
+                let workspace_id = workspace.id;
+                WorkspaceRow::new(
+                    ("menu-workspace", index * 1000 + position),
+                    workspace.name.clone(),
+                    workspace.id.as_uuid().as_u128(),
+                )
+                .selected(workspace.selected)
+                .unread(super::channels::unread_sign(workspace.unread))
+                .in_menu()
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.state.update(cx, |state, cx| {
+                        state.select_workspace(server_id, workspace_id, cx);
+                    });
+                    this.dismiss_hover_menu(window, cx);
+                }))
+            });
+        let workspaces: Vec<WorkspaceRow> = workspaces.collect();
+        let empty = row.workspaces.is_empty();
+        div()
+            .id(("hover-menu", index))
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if *hovered {
+                    this.stay_in_hover_menu();
+                } else {
+                    this.leave_hover_menu(cx);
+                }
+            }))
+            .child(
+                Menu::new(
+                    "server-hover-menu",
+                    row.name.clone(),
+                    self.hover_menu_focus(),
+                )
+                .dark()
+                .selector("server-hover-menu")
+                .on_close(Self::handler(cx, |this, window, cx| {
+                    this.dismiss_hover_menu(window, cx);
+                }))
+                .child(header)
+                .when(!empty, |menu| {
+                    menu.child(menu_label(text::WORKSPACES, true, cx))
+                        .children(workspaces)
+                })
+                .when(empty, |menu| {
+                    menu.child(
+                        div()
+                            .id("open-server")
+                            .role(Role::MenuItem)
+                            .aria_label(row.name.clone())
+                            .px(u(12.0))
+                            .py(u(8.0))
+                            .typeface(theme.types.small, theme)
+                            .ink(colors.bone_2)
+                            .cursor_pointer()
+                            .focusable()
+                            .tab_stop(true)
+                            .hover(move |style| style.bg(Hsla::from(colors.basalt_3)))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.state
+                                    .update(cx, |state, cx| state.select_server(server_id, cx));
+                                this.dismiss_hover_menu(window, cx);
+                            }))
+                            .child(text::SHOW_SERVER),
+                    )
+                }),
+            )
+    }
+}

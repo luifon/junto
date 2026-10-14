@@ -49,9 +49,17 @@ unsafe_code = "forbid"
 [workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
+# A function whose values need more stack than the bound of clippy.toml (ADR 0906).
+large_stack_frames = "deny"
 
 [profile.dev]
 debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+# The schema functions that the derive macro makes for the large enums of the protocol are
+# one expression each. Without optimization such a function needs several hundred KiB of
+# stack, because every value of the expression gets a place of its own (ADR 0906).
+[profile.dev.package.junto-protocol]
+opt-level = 1

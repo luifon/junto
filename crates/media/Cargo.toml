@@ -1,0 +1,82 @@
+[package]
+name = "junto-media"
+description = "The media engine of the Junto client: sound devices, the media connection of a call, and the one call of a client over all its servers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[test]]
+name = "calls"
+path = "tests/calls/main.rs"
+required-features = ["test-support"]
+
+[features]
+# The synthetic sound devices and the tone analysis, for the tests of this crate and of the
+# desktop client.
+test-support = ["junto-client-core/test-support"]
+# Tests that authorise only the runner's virtual Wayland output (ADR 0751).
+portal-tests = ["test-support"]
+
+[dependencies]
+junto-client-core = { path = "../client-core" }
+# The call implementation on all systems (ADR 0701). The audio processing module, the
+# resampler and the audio sources and sinks of its WebRTC library carry the sound.
+livekit = { version = "=0.9.4", default-features = false, features = ["native", "rustls-tls-native-roots"] }
+# The sound devices (ADR 0733).
+cpal = "0.18.2"
+futures-util = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Call sound is played through a PipeWire connection of the client itself (ADR 0502).
+cpal = { version = "0.18.2", features = ["pipewire"] }
+# Portal authorisation, native capture and a bounded real-time hand-over (ADR 0751).
+# The later feature set requires codec constants absent from 0.3.65 headers.
+pipewire = { version = "0.10.1", features = ["v0_3_64"] }
+zbus = { version = "5.19", default-features = false, features = ["tokio"] }
+rtrb = "0.3.5"
+serde = { workspace = true }
+uuid = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-video = { version = "0.5.2", features = ["metal"] }
+core-foundation = "0.10"
+# The state of the microphone permission and the request for it.
+block2 = "0.6"
+dispatch2 = "0.3"
+objc2 = "0.6"
+objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "AVCaptureDevice", "AVCaptureInput", "AVCaptureOutputBase", "AVCaptureSession", "AVCaptureSessionPreset", "AVCaptureVideoDataOutput", "AVMediaFormat", "block2", "dispatch2", "objc2-core-media"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSDictionary", "NSValue", "NSError", "NSProcessInfo", "NSString"] }
+# The capture of a screen, a window and the sound of applications (ADR 0502, ADR 0736).
+objc2-screen-capture-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "dispatch2", "libc", "objc2-core-foundation", "objc2-core-graphics", "objc2-core-media", "SCShareableContent", "SCStream"] }
+objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "objc2", "objc2-core-audio-types", "objc2-core-video", "CMBlockBuffer", "CMFormatDescription", "CMSampleBuffer", "CMTime"] }
+objc2-core-audio-types = { version = "0.3.2", default-features = false, features = ["std", "objc2"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGDirectDisplay", "CGWindow"] }
+
+# Initialize the native call library's PipeWire symbols before the sound host uses them.
+[build-dependencies]
+cc = "1"
+
+[dev-dependencies]
+junto-media = { path = ".", features = ["test-support"] }
+sqlx = { workspace = true }
+tempfile = "3"
+tokio = { workspace = true, features = ["io-util", "test-util"] }
+url = "2"
+uuid = { workspace = true }
+
+# The workspace forbids unsafe code. This crate denies it and allows it only in modules
+# that call the platform APIs: macOS permissions and capture, and Linux audio initialisation.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+large_stack_frames = "deny"

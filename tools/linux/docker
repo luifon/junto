@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+container=${JUNTO_TEST_LIVEKIT_CONTAINER:?the test LiveKit container is not named}
+case "$*" in
+    "stop --time 1 $container") action=stop ;;
+    "start $container") action=start ;;
+    *) echo 'Only restarting the test LiveKit server is allowed' >&2; exit 2 ;;
+esac
+exec curl --fail --silent --show-error --max-time 40 -X POST "http://control:8080/$action"

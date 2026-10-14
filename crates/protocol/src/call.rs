@@ -188,6 +188,11 @@ pub struct OwnCall {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CallJoin {
+    /// The position in the event log up to which this answer holds the events. It is read
+    /// with the call and the blocks, after the place was made (ADR 0519). A server from
+    /// before that ADR sends none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<crate::events::Cursor>,
     pub call: Call,
     /// The address of the media server for the device.
     pub media_url: String,
@@ -197,6 +202,44 @@ pub struct CallJoin {
     pub identity: String,
     /// The requests to enter that wait for an answer of a person inside.
     pub entry_requests: Vec<EntryRequest>,
+    /// The block of the caller's microphone in this call. The call lists the caller as a
+    /// participant only after the device has connected, so the answer states the block.
+    #[serde(default)]
+    pub microphone_block: Option<MicrophoneBlock>,
+    /// The block of the caller's sound in this call. The client applies it from the first
+    /// moment of its connection (ADR 0503).
+    #[serde(default)]
+    pub sound_block: Option<SoundBlock>,
+    /// True when a microphone block of the caller ended as a grant of meeting mode and the
+    /// device has not reported an open microphone since (ADR 0521). Absent while the call
+    /// hides who is inside and the caller is not inside, and from a server from before
+    /// that ADR.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meeting_grant: Option<bool>,
+}
+
+/// The query of the request that leaves a call.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+#[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
+pub struct LeaveCallQuery {
+    /// The identity of the place that the device leaves. The call of the account ends only
+    /// when the account holds its place with this identity. Absent: the call of the
+    /// account ends, from whichever device it is in the call.
+    #[serde(default)]
+    pub identity: Option<String>,
+}
+
+/// The query of a request for a place in a call.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+#[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
+pub struct CallJoinQuery {
+    /// The identity of the seat that the request renews. The answer is a token for that
+    /// seat, or `seat_ended` when the device can no longer use it; such a request makes,
+    /// ends and takes no seat (ADR 0520). Absent: the request asks for a place.
+    #[serde(default)]
+    pub renews: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -208,11 +251,18 @@ pub struct OwnCallState {
     pub own: OwnCall,
     pub call: Call,
     pub entry_requests: Vec<EntryRequest>,
+    /// As `CallJoin::meeting_grant` (ADR 0521).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meeting_grant: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct OwnCallView {
+    /// The position in the event log up to which this answer holds the events (ADR 0519).
+    /// A server from before that ADR sends none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<crate::events::Cursor>,
     /// Absent when the account is in no call.
     pub call: Option<OwnCallState>,
 }

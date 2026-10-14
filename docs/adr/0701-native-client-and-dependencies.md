@@ -33,7 +33,8 @@ Dependencies:
 
 Libraries:
 
-- The LiveKit Rust SDK provides audio devices, echo cancellation, noise suppression, gain control and screen capture. Screen capture covers a screen or a window, including Wayland through the system portal.
+- The LiveKit Rust SDK provides echo cancellation, noise suppression, gain control and screen capture. Screen capture covers a screen or a window, including Wayland through the system portal.
+- The sound devices are opened with `cpal`. The device module of the SDK plays every remote track through one mix without a volume per person, and a test cannot give it a device (ADR 0733).
 - Capture of system sound and of application sound is the project's own code, with one implementation per operating system (ADR 0502).
 - A separate crate provides camera capture.
 - The component library provides the text input, the Markdown view and the message list. The Markdown view comes from the unstyled layer `gpui-base`, because only that layer accepts a resolver for image addresses.
@@ -67,4 +68,6 @@ What the client builds itself, because the set does not provide it:
 - The project maintains three implementations of sound capture.
 - Screen reader support depends on gpui (ADR 0702).
 - There is no browser client (ADR 0105), so every participant installs the application.
+- The licence check allows `CC0-1.0` and `bzip2-1.0.6`, which three packages of the set carry, and ignores the notices that four packages of the set are no longer maintained (`deny.toml`). Each exception ends when the set no longer contains its package.
+- The first version of the application uses the unstyled layer `gpui-base` only (ADR 0730); the styled layer and its assets join the lock file with the first screen that needs them.
 - Where the Apache-2.0 sources do not cover a need, the reference-code process of ADR 0801 applies. Step 0 met no need that required GPL code.

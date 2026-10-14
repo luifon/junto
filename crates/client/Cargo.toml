@@ -1,0 +1,105 @@
+[package]
+name = "junto-client"
+description = "The Junto desktop application: a gpui window on the client core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+build = "build.rs"
+
+[lib]
+name = "junto_client"
+
+[[bin]]
+name = "junto"
+path = "src/main.rs"
+
+# Draws every screen without a window and writes PNG files (ADR 0731).
+[[bin]]
+name = "junto-screens"
+path = "src/bin/junto-screens.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "app"
+path = "tests/app/main.rs"
+required-features = ["test-support"]
+
+[features]
+# The headless renderer and the test platform of gpui, for the tests and for `junto-screens`.
+test-support = [
+    "gpui/test-support",
+    "gpui_platform/test-support",
+    "gpui-base/test-support",
+    "junto-media/test-support",
+]
+
+[dependencies]
+junto-client-core = { path = "../client-core" }
+junto-media = { path = "../media" }
+# The fixed set of ADR 0701. The component library requires exactly this gpui snapshot.
+# Only its unstyled layer is used so far: the root view, the focus trap and the text input.
+gpui = { package = "gpui-pre", version = "=0.3.8" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["font-kit", "x11", "wayland"] }
+gpui-base = "=0.7.1"
+# The result of a write on a background thread returns to the interface thread through
+# its one-time channel. gpui uses the same crate.
+futures-channel = "0.3"
+# The picture of a share is given to gpui as an image of this crate, in the version that
+# gpui uses.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+# The time zone of the system, for the times of messages. gpui uses the same crate.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# The names and the rules of the IANA time zones, carried in the binary: a daily quiet
+# time names a zone (ADR 0412), and Windows has no files of the database (ADR 0798).
+chrono-tz = "0.10"
+# The name of the time zone of the system. chrono uses the same crate.
+iana-time-zone = "0.1"
+# The download directory of the person.
+dirs = "5"
+# The table of the standard emoji, in the version of the server: a reaction that the
+# picker offers is one that the server accepts (ADR 0408).
+emojis = "0.8"
+# The address of a link is checked as the server checks it.
+url = "2"
+# The tokens of a code block, for its syntax colours (ADR 0740).
+synoptic = "2.2"
+# The identifiers of notices and of the scopes of notification settings (ADR 0409).
+uuid = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The desktop notification service, driven on its own worker (ADR 0752).
+zbus = { version = "5.19", default-features = false, features = ["tokio"] }
+tokio = { workspace = true }
+futures-util = { workspace = true }
+# The Vulkan adapters of the machine, read before the first window with the graphics
+# library of gpui in its version (ADR 0705).
+gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.8" }
+# The X11 window of a gpui window, and the request to the window manager that keeps it
+# above other windows (ADR 0507). gpui uses the same crates.
+raw-window-handle = "0.6"
+x11rb = "0.13"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+junto-client = { path = ".", features = ["test-support"] }
+# The server inside the test process, for the tests that need its recorder in memory.
+junto-server = { path = "../server" }
+sqlx = { workspace = true }
+tempfile = "3"
+tokio = { workspace = true, features = ["io-util"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-video = { version = "0.5.2", features = ["metal"] }
+# Read the real application bundle before registering system notifications.
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSBundle", "NSString"] }

@@ -26,6 +26,8 @@ Files:
 | `servers.json` | The server book |
 | `profile.json` | The profile preset: a name and the media type of the avatar |
 | `avatar.png`, `avatar.jpg` or `avatar.webp` | The avatar of the preset, at most 256 KiB, the bound of a server (ADR 0119) |
+| `settings.json` | The settings of the interface: the interface scale and the form of the server book (ADR 0731) |
+| `voice.json` | The sound settings: the chosen devices, the processing of the microphone, the input mode and its key, the volume per account of a server (ADR 0734), and the settings of shares: resolution, frame rate, the volume of a watched share, and "hide people without video" (ADR 0738) |
 | `keys/<server identifier>.key` | The device key of one server (ADR 0711) |
 | `lock` | An empty file that carries the lock of the directory |
 
@@ -41,7 +43,7 @@ Server book:
 - A server identifier is saved once and an address is saved once. A second address that reports a saved identifier is refused.
 - The identifier, the generation and the address of an entry never change. A server at a new address is a new entry.
 - The name is stored without control characters and with at most 64 characters. The logo path is stored only when it is a path on the same server. At most 16 API versions are stored.
-- The event cursor is text of at most 512 bytes that the client stores and does not read.
+- The event cursor is text of at most 512 bytes. The client keeps what a file holds there and writes no cursor: it stores no state of a server that a cursor could continue (ADR 0718).
 
 Not stored:
 
@@ -51,6 +53,8 @@ Not stored:
 Format version:
 
 - `servers.json` and `profile.json` are JSON objects with the field `format_version`. This record describes version 2 of both.
+- `settings.json` has the same form and is at version 1. A scale outside 90 to 150 percent is read as the nearest bound.
+- `voice.json` has the same form and is at version 2. Version 1 had no settings of shares; a file of version 1 gets their defaults. A frame rate that is not 15, 30 or 60 is read as 30. A volume above 200 percent is read as 200, a volume of 100 percent of an account is not stored, and the file holds at most 2048 volumes. The identifier of a device is text of the system of at most 512 bytes; the file holds no text that a server sent.
 - Version 1 of `profile.json` named the format of the avatar `png`, `jpeg` or `webp`; version 2 stores its media type. Version 1 of `servers.json` had no state `refused` of the profile preset (ADR 0717); its content is otherwise the content of version 2. A new value of a stored field is a new version, so that an older client refuses the file and does not report it as corrupted.
 - A file with a higher version than the client knows is refused and never overwritten.
 - A file with a lower version is migrated in memory, one version step at a time, and written in the current version at the next change.
@@ -69,6 +73,9 @@ Writes:
 Unreadable files:
 
 - A server book or a profile that is not valid JSON, has no version, or holds an invalid entry is reported as corrupted. Both are read when the client starts. The client does not start with a corrupted one and does not change it.
+- `settings.json` is the exception: it holds nothing that a person cannot set again. The desktop client starts with the default settings when the file cannot be read. A change of a setting replaces a file that is not a settings file. It replaces no other file that it cannot read: not a file of a newer format, and not a file that is larger than the client reads, whose format the client does not learn.
+- A change of one setting reads the file again under the lock, changes that setting and writes the file, as a change of the server book does.
+- `voice.json` is read and replaced by the same rules as `settings.json`.
 - The client can move a corrupted server book aside under the name `servers.json.corrupt-<time>` and start with an empty book. This is an explicit call, never an automatic step. The key files stay, so a server that is added again finds its key.
 
 ## Consequences
