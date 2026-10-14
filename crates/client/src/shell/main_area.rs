@@ -26,7 +26,7 @@ use crate::ui::{
 
 /// The time of a recovery as the notice shows it: the date and the time in UTC.
 fn recovery_time(notice: &junto_client_core::protocol::account::RecoveryNotice) -> String {
-    let at = notice.performed_at.to_offset(time::UtcOffset::UTC);
+    let at = crate::moment::in_utc(notice.performed_at);
     format!(
         "{} {} {} at {:02}:{:02} UTC",
         at.day(),

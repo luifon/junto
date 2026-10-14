@@ -105,3 +105,84 @@ fn an_administrator_sets_and_removes_the_logo_and_the_window_of_a_member_follows
     assert_eq!(member.view().servers[0].logo, None);
     assert!(world.run(owner.handle().logo()).unwrap().is_none());
 }
+
+#[gpui::test]
+fn a_logo_dialog_that_is_answered_on_the_page_of_another_server_sends_nothing(
+    cx: &mut TestAppContext,
+) {
+    use crate::support::FaultProxy;
+    use junto_client::state::view::ServerStatus;
+
+    let world = World::new();
+    let first = world.server("Acme Studio");
+    let second = world.server("Harbor");
+    let proxy = world.run(FaultProxy::start(&second));
+    // One person owns both servers.
+    let (_directory, mut owner) = named(cx, "Ada");
+    owner.find_server(&first.address());
+    owner.join_with_code(&first.owner_code().unwrap());
+    owner.until_ready();
+    owner.find_server(&proxy.address());
+    owner.join_with_code(&second.owner_code().unwrap());
+    owner.until("the second server is shown", |window| {
+        let view = window.view();
+        view.servers.len() == 2
+            && view.servers[1].selected
+            && view.servers[1].status == ServerStatus::Ready
+            && view.workspace().is_some()
+    });
+    let shows = |window: &mut Window, name: &str| {
+        window
+            .view()
+            .selected
+            .is_some_and(|server| server.name == name && server.status == ServerStatus::Ready)
+    };
+    let logo_requests = |proxy: &FaultProxy| {
+        proxy
+            .all()
+            .iter()
+            .filter(|seen| seen.method == "PUT" && seen.path.contains("logo"))
+            .count()
+    };
+    let files = tempfile::tempdir().unwrap();
+    let chosen = files.path().join("logo.png");
+    std::fs::write(&chosen, png(64, 200)).unwrap();
+
+    // The person opens the file dialog on the page "Server" of the first server.
+    owner.click("server-0");
+    owner.until("the first server is shown", |window| {
+        shows(window, "Acme Studio")
+    });
+    owner.open_administration();
+    open_page(&mut owner, "admin-nav-server", shows_server_page);
+    click_in_page(&mut owner, "logo-choose");
+    assert!(owner.cx.did_prompt_for_paths());
+
+    // The dialog does not stop the window. The person opens the same page of the second
+    // server and chooses the file afterwards: nothing is sent to the second server.
+    owner.click("admin-close");
+    owner.click("server-1");
+    owner.until("the second server is shown again", |window| {
+        shows(window, "Harbor")
+    });
+    owner.open_administration();
+    open_page(&mut owner, "admin-nav-server", shows_server_page);
+    let file = chosen.clone();
+    owner
+        .cx
+        .simulate_path_prompt_response(move |_| Some(vec![file]));
+    owner.cx.run_until_parked();
+    assert!(owner.shows("logo-none") && !owner.shows("logo-picture"));
+    assert_eq!(logo_requests(&proxy), 0);
+
+    // A dialog that is answered on the page that opened it sends the file.
+    click_in_page(&mut owner, "logo-choose");
+    let file = chosen.clone();
+    owner
+        .cx
+        .simulate_path_prompt_response(move |_| Some(vec![file]));
+    owner.until("the page of the second server shows the logo", |window| {
+        window.shows("logo-picture")
+    });
+    assert_eq!(logo_requests(&proxy), 1);
+}

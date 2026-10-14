@@ -14,8 +14,8 @@ use junto_protocol::recording::{RecordingSegment, SegmentSource};
 use tokio::sync::watch;
 
 use super::{
-    DownloadProgress, DownloadShared, Length, TransferFailure, Transfers, Wanted, local_name,
-    part_file,
+    DownloadProgress, DownloadShared, Length, Stored, StoredKind, TransferFailure, Transfers,
+    Wanted, local_name, not_started, part_file,
 };
 
 /// The largest text of a transcript that a download saves. The server takes a transcript
@@ -107,14 +107,27 @@ impl Transfers {
     ) -> Option<RecordingDownload> {
         let bytes = segment.file.as_ref()?.bytes;
         let segment_id = segment.id;
+        let Some((owner, api)) = (self.owned)() else {
+            return Some(RecordingDownload {
+                recording_id,
+                segment_id: Some(segment_id),
+                shared: not_started(bytes),
+            });
+        };
         let name = segment_file_name(stem, segment);
+        let stored = Stored {
+            owner,
+            kind: StoredKind::RecordingSegment,
+            id: segment_id.as_uuid(),
+            bytes: Some(bytes),
+            sha256: None,
+        };
         let wanted = Wanted {
-            part: part_file(&directory, &name, segment_id.as_uuid()),
+            part: part_file(&directory, &name, &stored),
             name,
             length: Length::Exactly(bytes),
             sha256: None,
         };
-        let api = self.api.clone();
         let open = move |from| {
             let api = api.clone();
             async move { api.segment_file(recording_id, segment_id, from).await }
@@ -136,14 +149,27 @@ impl Transfers {
         stem: &str,
         directory: PathBuf,
     ) -> RecordingDownload {
+        let Some((owner, api)) = (self.owned)() else {
+            return RecordingDownload {
+                recording_id,
+                segment_id: None,
+                shared: not_started(0),
+            };
+        };
         let name = transcript_file_name(stem);
+        let stored = Stored {
+            owner,
+            kind: StoredKind::TranscriptText,
+            id: recording_id.as_uuid(),
+            bytes: None,
+            sha256: None,
+        };
         let wanted = Wanted {
-            part: part_file(&directory, &name, recording_id.as_uuid()),
+            part: part_file(&directory, &name, &stored),
             name,
             length: Length::AtMost(TRANSCRIPT_TEXT_MAX_BYTES),
             sha256: None,
         };
-        let api = self.api.clone();
         let open = move |_| {
             let api = api.clone();
             async move { api.transcript_text_file(recording_id).await }
@@ -157,14 +183,15 @@ impl Transfers {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::collections::VecDeque;
     use std::path::Path;
     use std::sync::Mutex;
     use std::time::Duration;
 
+    use futures_util::StreamExt as _;
     use junto_protocol::error::ErrorCode;
-    use junto_protocol::ids::ServerId;
+    use junto_protocol::ids::{AccountId, ServerId};
 
     use super::super::{DownloadStage, IDLE_TRIES};
     use super::*;
@@ -173,6 +200,7 @@ mod tests {
         ApiClient, HttpRequest, HttpResponse, OpenFuture, OpenedResponse, RetryPolicy, Transport,
         TransportError, TransportErrorKind, TransportFuture,
     };
+    use crate::book::{EntryKey, Owner};
     use crate::live::{LiveServer, Shared};
     use crate::model::recording_tests::segment;
     use crate::runtime::Runtime;
@@ -180,57 +208,71 @@ mod tests {
     use crate::version::SupportedVersions;
 
     /// One answer of the played server to a request for a file.
-    struct Answer {
+    pub(in crate::transfers) struct Answer {
         status: u16,
         body: Vec<u8>,
         /// The connection fails after the body.
         cut: bool,
         /// The first byte of the range that the answer states.
         starts: Option<u64>,
+        /// After the body no further byte arrives, and the answer does not end.
+        stalls: bool,
     }
 
-    fn whole(body: &[u8]) -> Answer {
+    pub(in crate::transfers) fn whole(body: &[u8]) -> Answer {
         Answer {
             status: 200,
             body: body.to_vec(),
             cut: false,
             starts: None,
+            stalls: false,
         }
     }
 
-    fn rest(body: &[u8]) -> Answer {
+    pub(in crate::transfers) fn stalled(body: &[u8]) -> Answer {
+        Answer {
+            stalls: true,
+            ..whole(body)
+        }
+    }
+
+    pub(in crate::transfers) fn rest(body: &[u8]) -> Answer {
         Answer {
             status: 206,
             ..whole(body)
         }
     }
 
-    fn cut(body: &[u8]) -> Answer {
+    pub(in crate::transfers) fn cut(body: &[u8]) -> Answer {
         Answer {
             cut: true,
             ..whole(body)
         }
     }
 
-    fn refusal(status: u16, code: &str) -> Answer {
+    pub(in crate::transfers) fn refusal(status: u16, code: &str) -> Answer {
         Answer {
             status,
             body: format!(r#"{{"error":{{"code":"{code}","message":""}}}}"#).into_bytes(),
             cut: false,
             starts: None,
+            stalls: false,
         }
     }
 
     /// A server that answers each request for a file with the next planned answer.
     #[derive(Default)]
-    struct Files {
+    pub(in crate::transfers) struct Files {
         answers: Mutex<VecDeque<Answer>>,
         /// The path and the first byte of each request.
         asked: Mutex<Vec<(String, u64)>>,
+        /// How many requests arrived that ask for no file.
+        pub(in crate::transfers) sent: std::sync::atomic::AtomicUsize,
     }
 
     impl Transport for Files {
         fn send(&self, _request: HttpRequest) -> TransportFuture {
+            self.sent.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Box::pin(async {
                 Ok(HttpResponse {
                     status: 500,
@@ -257,20 +299,45 @@ mod tests {
                         "cut",
                     )));
                 }
+                let parts = futures_util::stream::iter(parts);
                 Ok(OpenedResponse {
                     status: answer.status,
                     retry_after: None,
                     range_start: answer.starts,
-                    body: Box::pin(futures_util::stream::iter(parts)),
+                    body: if answer.stalls {
+                        Box::pin(parts.chain(futures_util::stream::pending()))
+                    } else {
+                        Box::pin(parts)
+                    },
                 })
             })
         }
     }
 
+    /// A saved server and an account on it that no other call of this function gives.
+    pub(in crate::transfers) fn owner() -> Owner {
+        Owner {
+            entry: EntryKey {
+                server_id: ServerId::generate(),
+                generation: 1,
+            },
+            account_id: AccountId::generate(),
+        }
+    }
+
     fn played(answers: Vec<Answer>) -> (Arc<Files>, Transfers) {
+        played_as(owner(), answers)
+    }
+
+    /// The transfers of one owner against a server that gives these answers.
+    pub(in crate::transfers) fn played_as(
+        owner: Owner,
+        answers: Vec<Answer>,
+    ) -> (Arc<Files>, Transfers) {
         let files = Arc::new(Files {
             answers: Mutex::new(answers.into()),
             asked: Mutex::default(),
+            sent: Default::default(),
         });
         let api = ApiClient::new(
             files.clone(),
@@ -280,17 +347,34 @@ mod tests {
             RetryPolicy::default(),
         )
         .with_token(SecretToken::new("jst_test".to_owned()));
+        let pinned = api;
         let transfers = Transfers {
-            api,
             live: LiveServer {
                 shared: Shared::new(),
             },
             runtime: Runtime::current_or_new().unwrap(),
+            owned: Arc::new(move || Some((owner, pinned.clone()))),
         };
         (files, transfers)
     }
 
-    fn starts(files: &Files) -> Vec<u64> {
+    /// The name of the unfinished file of a segment that is saved with the stem "Daily"
+    /// as an audio track.
+    fn part_name(transfers: &Transfers, segment: &RecordingSegment) -> String {
+        let (owner, _) = (transfers.owned)().unwrap();
+        let stored = Stored {
+            owner,
+            kind: StoredKind::RecordingSegment,
+            id: segment.id.as_uuid(),
+            bytes: segment.file.as_ref().map(|file| file.bytes),
+            sha256: None,
+        };
+        part_file(Path::new(""), "Daily.ogg", &stored)
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    pub(in crate::transfers) fn starts(files: &Files) -> Vec<u64> {
         files
             .asked
             .lock()
@@ -300,7 +384,7 @@ mod tests {
             .collect()
     }
 
-    fn names(directory: &Path) -> Vec<String> {
+    pub(in crate::transfers) fn names(directory: &Path) -> Vec<String> {
         let mut names: Vec<String> = std::fs::read_dir(directory)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
@@ -351,9 +435,9 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         // A file of the person has the name, and an earlier download left its first bytes.
         std::fs::write(directory.path().join("Daily.ogg"), b"mine").unwrap();
-        let part = format!("Daily.ogg.{}.part", segment.id.as_uuid().simple());
-        std::fs::write(directory.path().join(&part), &content[..4]).unwrap();
         let (files, transfers) = played(vec![rest(&content[4..])]);
+        let part = part_name(&transfers, &segment);
+        std::fs::write(directory.path().join(&part), &content[..4]).unwrap();
 
         let download = transfers
             .download_segment(recording_id, &segment, "Daily", directory.path().into())
@@ -450,14 +534,14 @@ mod tests {
         let content = b"abcdefghij";
         let segment = track(content);
         let directory = tempfile::tempdir().unwrap();
-        let part = format!("Daily.ogg.{}.part", segment.id.as_uuid().simple());
-        std::fs::write(directory.path().join(&part), &content[..4]).unwrap();
         // The client asks for the bytes from the fifth one on. The answer states a range
         // that starts at the third byte, with as many bytes as are missing.
         let (files, transfers) = played(vec![Answer {
             starts: Some(2),
             ..rest(&content[2..8])
         }]);
+        let part = part_name(&transfers, &segment);
+        std::fs::write(directory.path().join(&part), &content[..4]).unwrap();
         let download = transfers
             .download_segment(
                 RecordingId::generate(),
@@ -485,9 +569,9 @@ mod tests {
         let segment = track(b"abc");
         let directory = tempfile::tempdir().unwrap();
         // An earlier download left its first byte.
-        let part = format!("Daily.ogg.{}.part", segment.id.as_uuid().simple());
-        std::fs::write(directory.path().join(&part), b"a").unwrap();
         let (_, transfers) = played(vec![refusal(404, "not_found")]);
+        let part = part_name(&transfers, &segment);
+        std::fs::write(directory.path().join(&part), b"a").unwrap();
         let download = transfers
             .download_segment(
                 RecordingId::generate(),
@@ -505,8 +589,9 @@ mod tests {
         assert!(names(directory.path()).is_empty());
 
         // A refusal that can end, such as a missing permission, keeps the unfinished file.
-        std::fs::write(directory.path().join(&part), b"a").unwrap();
         let (_, transfers) = played(vec![refusal(403, "forbidden")]);
+        let part = part_name(&transfers, &segment);
+        std::fs::write(directory.path().join(&part), b"a").unwrap();
         let download = transfers
             .download_segment(
                 RecordingId::generate(),
@@ -576,9 +661,9 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let target = directory.path().join("mine.txt");
         std::fs::write(&target, b"mine").unwrap();
-        let part = format!("Daily.ogg.{}.part", segment.id.as_uuid().simple());
-        std::os::unix::fs::symlink(&target, directory.path().join(part)).unwrap();
         let (files, transfers) = played(Vec::new());
+        let part = part_name(&transfers, &segment);
+        std::os::unix::fs::symlink(&target, directory.path().join(part)).unwrap();
         let download = transfers
             .download_segment(
                 RecordingId::generate(),
@@ -636,7 +721,7 @@ mod tests {
     async fn a_text_above_the_bound_is_not_saved() {
         let directory = tempfile::tempdir().unwrap();
         let (_, transfers) = played(vec![whole(b"abcdef")]);
-        let api = transfers.api.clone();
+        let (_, api) = (transfers.owned)().unwrap();
         let recording_id = RecordingId::generate();
         let wanted = super::super::Wanted {
             name: "Daily.txt".to_owned(),

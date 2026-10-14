@@ -333,10 +333,16 @@ pub struct AppState {
     /// The uploads of the messages that wait to be sent, by the number of the message.
     sent_uploads: HashMap<(ServerId, u64), Vec<Upload>>,
     downloads: HashMap<(ServerId, AttachmentId), Download>,
+    /// The owner that each server had at the last look. The window lists that are keyed
+    /// by a server hold what one owner read or saved: they are emptied for a server when
+    /// its owner is another one, or none (ADR 0745).
+    owners: HashMap<ServerId, junto_client_core::Owner>,
     /// Where files are saved in place of the download directory of the person.
     download_directory: Option<std::path::PathBuf>,
     /// The number of requests about messages that the person made.
     message_asks: u64,
+    /// The requests for a change of a message that have no answer yet.
+    message_asks_flying: usize,
     /// The position of the list of each open place, as the client core was told it.
     anchors: HashMap<(ServerId, PlaceId), Option<u64>>,
     /// The read position of each place that the client core was asked to set.
@@ -575,6 +581,8 @@ impl AppState {
             downloads: HashMap::new(),
             download_directory: None,
             message_asks: 0,
+            message_asks_flying: 0,
+            owners: HashMap::new(),
             anchors: HashMap::new(),
             marked: HashMap::new(),
             open_recordings: HashMap::new(),
@@ -1863,6 +1871,7 @@ impl AppState {
         self.follow_recordings(shown, cx);
         self.follow_jump(shown);
         self.tell_alerts(&snapshots, shown, cx);
+        self.follow_owners();
         self.ask_missing_quotes(shown, cx);
         self.end_uploads_of_other_accounts();
         self.drop_sent_uploads();

@@ -19,6 +19,7 @@ mod main_area;
 mod notices;
 mod people;
 mod person_drag;
+mod pictures;
 mod rail;
 mod recorded;
 pub mod room;
@@ -975,6 +976,7 @@ fn logical_width(window: &Window) -> f32 {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.message_pictures.drawing_starts();
         if self.detached {
             return self.render_detached(window, cx);
         }

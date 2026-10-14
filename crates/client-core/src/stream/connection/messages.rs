@@ -935,13 +935,6 @@ impl Client {
                     wanted.anchor = position;
                 }
             }
-            Command::PutMessage(message) => {
-                if let Some(model) = &mut self.model {
-                    let place = PlaceId::of(&message.place);
-                    self.model_changed |= model.put_message(*message);
-                    self.model_changed |= model.confirm_arrived(place);
-                }
-            }
             Command::MarkRead { place, position } => {
                 let read = self.model.as_ref().map_or(0, |model| match place {
                     PlaceId::Thread { root_id, .. } => model

@@ -318,6 +318,21 @@ mod tests {
     }
 
     #[test]
+    fn a_recording_at_the_last_moment_of_the_range_of_dates_is_shown() {
+        use time::format_description::well_known::Rfc3339;
+
+        // The zone of the page is two hours east of UTC, where that moment lies in the
+        // year 10000: the row shows the moment as the server wrote it.
+        let scene = scene();
+        let last = OffsetDateTime::parse("9999-12-31T23:59:59Z", &Rfc3339).unwrap();
+        let mut recording = scene.recording(scene.daily, RecordingState::Starting);
+        recording.requested_at = last;
+        recording.recording_since = None;
+        let page = scene.page(&scene.list(vec![recording]));
+        assert_eq!(page.rows[0].since, last);
+    }
+
+    #[test]
     fn a_page_that_was_not_read_shows_nothing_and_says_so() {
         let scene = scene();
         let page = scene.page(&AdminState::default());
@@ -358,7 +373,10 @@ mod tests {
         assert!(row.started);
         assert_eq!(
             row.since,
-            (time() + time::Duration::seconds(4)).to_offset(UtcOffset::from_hms(2, 0, 0).unwrap())
+            crate::moment::in_offset(
+                time() + time::Duration::seconds(4),
+                UtcOffset::from_hms(2, 0, 0).unwrap()
+            )
         );
         assert_eq!(row.since.hour(), 10);
         assert_eq!(row.length, Some(Duration::from_secs(36 * 60 + 5)));

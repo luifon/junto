@@ -1,0 +1,5 @@
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+disallowed-methods = [
+    { path = "time::OffsetDateTime::to_offset", reason = "it ends the program for a moment at the end of the range of dates, which a server can state (ADR 0747); use `checked_to_offset`, or `moment::in_offset` in the window" },
+]

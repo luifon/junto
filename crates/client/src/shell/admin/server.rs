@@ -24,6 +24,9 @@ const LOGO_SIZE: f32 = 56.0;
 impl Shell {
     /// Asks the person for a file, and sends it as the logo of the server of the page.
     pub(crate) fn choose_server_logo(&mut self, cx: &mut Context<Self>) {
+        let Some(asked) = self.logo_owner(cx) else {
+            return;
+        };
         let chosen = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -34,10 +37,28 @@ impl Shell {
             if let Ok(Ok(Some(paths))) = chosen.await
                 && let Some(file) = paths.into_iter().next()
             {
-                let _ = this.update(cx, |this, cx| this.use_server_logo(file, cx));
+                let _ = this.update(cx, |this, cx| {
+                    // The dialog does not stop the window: the file is sent only while
+                    // the page "Server" of the same owner is still open (ADR 0746).
+                    if this.logo_owner(cx) == Some(asked) {
+                        this.use_server_logo(file, cx);
+                    }
+                });
             }
         })
         .detach();
+    }
+
+    /// The owner of the server whose page "Server" is open.
+    fn logo_owner(&self, cx: &gpui::App) -> Option<junto_client_core::Owner> {
+        let state = self.state.read(cx);
+        match state.admin_open() {
+            Some(AdminOpen::Server {
+                server_id,
+                page: AdminPage::Server,
+            }) => state.owner(server_id),
+            _ => None,
+        }
     }
 
     /// Sends the file at this path as the logo of the server whose page "Server" is open,

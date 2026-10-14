@@ -10,6 +10,7 @@ use junto_protocol::message::{Message, ThreadState, UnreadThreads};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use super::bounds::{MOST_NAMED_WEIGHT, MOST_PINNED_WEIGHT, excess, weight};
 use super::{Loadable, PlaceId, ReadFailure, ServerModel};
 use crate::api::SettingsScope;
 
@@ -251,7 +252,33 @@ impl ServerModel {
         missing
     }
 
+    /// The weight of the named messages that are held, without the one of `message_id`.
+    fn named_weight_without(&self, message_id: MessageId) -> usize {
+        self.named
+            .iter()
+            .filter(|(held, _)| *held != message_id)
+            .map(|(_, named)| match named {
+                Named::Read(message) => weight(message),
+                Named::Gone | Named::Failed => 0,
+            })
+            .sum()
+    }
+
     fn set_named(&mut self, message_id: MessageId, named: Named) -> bool {
+        // The named messages hold a bounded weight (ADR 0747). A message that would pass
+        // it is not held: its entry says that the read failed, as for a read without an
+        // answer.
+        let named = match named {
+            Named::Read(message)
+                if self
+                    .named_weight_without(message_id)
+                    .saturating_add(weight(&message))
+                    > MOST_NAMED_WEIGHT =>
+            {
+                Named::Failed
+            }
+            other => other,
+        };
         match self.named.iter_mut().find(|(held, _)| *held == message_id) {
             Some((_, held)) if *held == named => false,
             Some((_, held)) => {
@@ -355,6 +382,9 @@ impl ServerModel {
     pub(crate) fn set_pins(&mut self, channel_id: ChannelId, mut messages: Vec<Message>) {
         messages.retain(|message| PlaceId::of(&message.place) == PlaceId::Channel(channel_id));
         messages.truncate(MOST_PINS);
+        // The list holds a bounded weight (ADR 0747): the oldest pins give way.
+        let over = excess(messages.iter(), MOST_PINNED_WEIGHT, false);
+        messages.drain(..over);
         if let Some(list) = self.pin_list_mut(channel_id) {
             list.messages = Loadable::Loaded(messages.into_iter().map(Arc::new).collect());
             list.failed = None;
@@ -376,7 +406,7 @@ impl ServerModel {
         };
         let held = pins.iter().position(|pin| pin.id == message.id);
         let pinned = message.pinned && !message.deleted;
-        match (held, pinned) {
+        let changed = match (held, pinned) {
             (Some(index), true) if pins[index] == *message => false,
             (Some(index), true) => {
                 pins[index] = message.clone();
@@ -391,7 +421,12 @@ impl ServerModel {
                 true
             }
             (None, _) => false,
+        };
+        if changed {
+            let over = excess(pins.iter().map(Arc::as_ref), MOST_PINNED_WEIGHT, false);
+            pins.drain(..over);
         }
+        changed
     }
 
     pub(super) fn remove_pin(&mut self, place: PlaceId, message_id: MessageId) -> bool {

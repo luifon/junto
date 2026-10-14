@@ -25,6 +25,7 @@ pub mod updates;
 pub mod version;
 pub mod voice;
 
+pub use book::{EntryKey, Owner};
 pub use junto_protocol as protocol;
 pub use manager::{Client, ClientOptions, OpenError, Reach, ServerHandle};
 

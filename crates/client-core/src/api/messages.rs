@@ -65,6 +65,31 @@ pub struct FileBody {
     pub body: BodyStream,
 }
 
+/// An answer that holds a message above the bounds of the client (ADR 0747) is not an
+/// answer that the client reads: nothing of it is used.
+fn above_bounds() -> ApiError {
+    ApiError::InvalidResponse {
+        status: 200,
+        reason: "a message above the bounds of a message",
+    }
+}
+
+pub(super) fn bounded(message: Message) -> Result<Message, ApiError> {
+    if crate::model::fits(&message) {
+        Ok(message)
+    } else {
+        Err(above_bounds())
+    }
+}
+
+pub(super) fn all_bounded(messages: &[Message]) -> Result<(), ApiError> {
+    if messages.iter().all(crate::model::fits) {
+        Ok(())
+    } else {
+        Err(above_bounds())
+    }
+}
+
 fn messages_of(place: PlaceId) -> String {
     match place {
         PlaceId::Channel(channel_id) => format!("/channels/{channel_id}/messages"),
@@ -95,7 +120,9 @@ impl ServerApi {
         let response = self
             .call(Method::Get, messages_of(place), page.pairs(), None)
             .await?;
-        read_json(&response)
+        let page: MessagePage = read_json(&response)?;
+        all_bounded(&page.messages)?;
+        Ok(page)
     }
 
     /// Sends a message. The server has no key that names one attempt: after a lost answer
@@ -105,11 +132,11 @@ impl ServerApi {
         place: PlaceId,
         message: &SendMessage,
     ) -> Result<Message, ApiError> {
-        self.send(Method::Post, messages_of(place), message).await
+        bounded(self.send(Method::Post, messages_of(place), message).await?)
     }
 
     pub async fn message(&self, message_id: MessageId) -> Result<Message, ApiError> {
-        self.get(format!("/messages/{message_id}")).await
+        bounded(self.get(format!("/messages/{message_id}")).await?)
     }
 
     /// Replaces the text of a message of the caller. No earlier text is kept (ADR 0401).
@@ -119,8 +146,10 @@ impl ServerApi {
         document: Document,
     ) -> Result<Message, ApiError> {
         let path = format!("/messages/{message_id}");
-        self.send(Method::Put, path, &EditMessage { document })
-            .await
+        bounded(
+            self.send(Method::Put, path, &EditMessage { document })
+                .await?,
+        )
     }
 
     pub async fn delete_message(&self, message_id: MessageId) -> Result<(), ApiError> {

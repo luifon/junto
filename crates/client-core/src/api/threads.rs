@@ -9,7 +9,7 @@ use junto_protocol::structure::{Channel, ChannelKind};
 
 use super::client::read_json;
 use super::error::ApiError;
-use super::messages::PageQuery;
+use super::messages::{PageQuery, all_bounded, bounded};
 use super::session::ServerApi;
 use super::transport::Method;
 
@@ -30,7 +30,10 @@ impl ServerApi {
         let response = self
             .call(Method::Get, thread_of(root_id), page.pairs(), None)
             .await?;
-        read_json(&response)
+        let page: ThreadPage = read_json(&response)?;
+        all_bounded(std::slice::from_ref(&page.root))?;
+        all_bounded(&page.replies.messages)?;
+        Ok(page)
     }
 
     /// Sends a reply into a thread. As a send into a place, the call does not tell after a
@@ -40,7 +43,7 @@ impl ServerApi {
         root_id: MessageId,
         message: &SendMessage,
     ) -> Result<Message, ApiError> {
-        self.send(Method::Post, thread_of(root_id), message).await
+        bounded(self.send(Method::Post, thread_of(root_id), message).await?)
     }
 
     /// Copies a thread into a new channel of the workspace of its channel. The caller
@@ -143,7 +146,9 @@ impl ServerApi {
     /// The pinned messages of a channel as they are now, in the order in which they were
     /// pinned.
     pub async fn pins(&self, channel_id: ChannelId) -> Result<Vec<Message>, ApiError> {
-        self.get(format!("/channels/{channel_id}/pins")).await
+        let pins: Vec<Message> = self.get(format!("/channels/{channel_id}/pins")).await?;
+        all_bounded(&pins)?;
+        Ok(pins)
     }
 
     /// Pins a message of a channel. The caller needs "manage messages". Pinning a pinned

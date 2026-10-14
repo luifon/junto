@@ -11,6 +11,7 @@ use junto_protocol::message::{
 use time::OffsetDateTime;
 
 use super::ServerModel;
+use super::bounds::{MOST_LOADED_WEIGHT, excess};
 use crate::api::{ApiError, ErrorCategory};
 
 /// A place that holds messages: a channel, a direct conversation, or the thread under one
@@ -70,7 +71,8 @@ impl PlaceId {
 
 /// How many messages of one place the state holds at most. A page that passes the bound
 /// drops messages at the other end, so a server cannot make the state grow without a bound
-/// (ADR 0714).
+/// (ADR 0714). The messages of one place also weigh at most
+/// [`MOST_LOADED_WEIGHT`](super::MOST_LOADED_WEIGHT), with the same rule (ADR 0747).
 pub const MOST_LOADED: usize = 10_000;
 
 /// Why a read of messages got no messages.
@@ -213,6 +215,8 @@ impl Timeline {
                     return false;
                 }
                 self.messages[index] = Arc::new(message);
+                // The new copy can weigh more than the one before.
+                self.bound(self.keeps_end(index));
             }
             Err(index) => {
                 // A message never changes its position; a copy under another position
@@ -220,10 +224,17 @@ impl Timeline {
                 self.messages.retain(|held| held.id != message.id);
                 let index = index.min(self.messages.len());
                 self.messages.insert(index, Arc::new(message));
-                self.bound(index * 2 >= self.messages.len());
+                self.bound(self.keeps_end(index));
             }
         }
         true
+    }
+
+    /// Which end stays when the message at `index` made the timeline pass a bound. A
+    /// timeline that holds the end of the history keeps it, so the new messages of the
+    /// place still arrive. Another timeline keeps the half that the message is in.
+    fn keeps_end(&self, index: usize) -> bool {
+        !self.more_after || index * 2 >= self.messages.len()
     }
 
     pub(crate) fn remove(&mut self, message_id: MessageId) -> bool {
@@ -273,11 +284,15 @@ impl Timeline {
         self.bound(true);
     }
 
-    /// Keeps at most [`MOST_LOADED`] messages: the end that was not added to gives way.
+    /// Keeps at most [`MOST_LOADED`] messages, and at most the weight of
+    /// [`MOST_LOADED_WEIGHT`](super::MOST_LOADED_WEIGHT): the end that was not added to
+    /// gives way, and the history is marked as having more there, so a reader reads those
+    /// messages again when the person goes back to them.
     fn bound(&mut self, added_at_end: bool) {
-        let Some(over) = self.messages.len().checked_sub(MOST_LOADED) else {
-            return;
-        };
+        let by_count = self.messages.len().saturating_sub(MOST_LOADED);
+        let messages = self.messages.iter().map(Arc::as_ref);
+        let by_weight = excess(messages, MOST_LOADED_WEIGHT, !added_at_end);
+        let over = by_count.max(by_weight);
         if over == 0 {
             return;
         }
@@ -285,7 +300,7 @@ impl Timeline {
             self.messages.drain(..over);
             self.more_before = true;
         } else {
-            self.messages.truncate(MOST_LOADED);
+            self.messages.truncate(self.messages.len() - over);
             self.more_after = true;
         }
     }

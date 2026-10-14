@@ -146,7 +146,7 @@ mod tests {
         // A zone behind UTC.
         assert_eq!(minute_in("America/Sao_Paulo", winter), Some(19 * 60 + 30));
         // The instant counts, whatever offset it is written with.
-        let written = winter.to_offset(UtcOffset::from_hms(-3, 0, 0).unwrap());
+        let written = crate::moment::in_offset(winter, UtcOffset::from_hms(-3, 0, 0).unwrap());
         assert_eq!(minute_in("Europe/Lisbon", written), Some(22 * 60 + 30));
         // The first and the last minute of a day.
         assert_eq!(minute_in("UTC", utc(2027, 1, 15, 0, 0)), Some(0));

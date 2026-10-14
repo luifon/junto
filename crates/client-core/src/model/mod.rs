@@ -9,6 +9,7 @@
 
 mod admin;
 mod apply;
+mod bounds;
 mod discovery;
 mod messages;
 mod permissions;
@@ -59,6 +60,10 @@ pub use admin::{
 };
 pub(crate) use admin::{AdminPayload, AdminSet};
 pub(crate) use apply::{Follow, Part};
+pub use bounds::{
+    MOST_BLOCKS, MOST_FILES, MOST_INLINE_NODES, MOST_LIST_ITEMS, MOST_LOADED_WEIGHT,
+    MOST_MESSAGE_WEIGHT, MOST_NAMED_WEIGHT, MOST_PINNED_WEIGHT, MOST_REACTIONS, fits, weight,
+};
 pub(crate) use discovery::ThreadMoved;
 pub use discovery::{MOST_NOTICES, MOST_PINS, MOST_THREADS, Named, PinList, in_daily_quiet};
 pub(crate) use messages::Reach;

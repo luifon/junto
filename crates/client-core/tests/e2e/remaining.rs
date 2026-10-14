@@ -656,7 +656,9 @@ async fn a_quiet_time_in_a_named_zone_holds_the_event_of_a_notice_back() {
     // hours around the present time on its clock does not hold the present time on the
     // clock of UTC, so the test fails for a server that reads the window in UTC.
     let zone = "Etc/GMT+3";
-    let now = OffsetDateTime::now_utc().to_offset(time::UtcOffset::from_hms(-3, 0, 0).unwrap());
+    let now = OffsetDateTime::now_utc()
+        .checked_to_offset(time::UtcOffset::from_hms(-3, 0, 0).unwrap())
+        .unwrap();
     let minute = u16::from(now.hour()) * 60 + u16::from(now.minute());
     let around = DailyQuiet {
         start_minute: (minute + 1440 - 60) % 1440,

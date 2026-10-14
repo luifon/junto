@@ -46,7 +46,7 @@ pub const fn page_selector(page: AccountPage) -> &'static str {
 /// A moment as the pages of the account show it: the date and the time in UTC, as the
 /// notice of a recovery does.
 pub fn utc(at: OffsetDateTime) -> String {
-    let at = at.to_offset(time::UtcOffset::UTC);
+    let at = crate::moment::in_utc(at);
     format!(
         "{} {} {} at {:02}:{:02} UTC",
         at.day(),
@@ -505,7 +505,7 @@ mod tests {
         let at = OffsetDateTime::from_unix_timestamp(1_791_626_640).unwrap();
         assert_eq!(utc(at), "10 October 2026 at 10:04 UTC");
         // The same moment in another offset is the same text.
-        let east = at.to_offset(time::UtcOffset::from_hms(5, 30, 0).unwrap());
+        let east = crate::moment::in_offset(at, time::UtcOffset::from_hms(5, 30, 0).unwrap());
         assert_eq!(utc(east), "10 October 2026 at 10:04 UTC");
         assert_eq!(added_on(at), "Added on 10 October 2026 at 10:04 UTC");
         assert_eq!(

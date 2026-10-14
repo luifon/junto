@@ -22,6 +22,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 
 use crate::api::{ApiError, CHUNK_BYTES, ErrorCategory, FileBody, ServerApi};
+use crate::book::Owner;
 use crate::flow::machine::lock;
 use crate::live::{Command, LiveServer};
 use crate::model::{PendingFile, PlaceId};
@@ -38,6 +39,10 @@ const LONGEST_WAIT: Duration = Duration::from_secs(30);
 const LONGEST_NAME: usize = 200;
 /// The largest file that the server marks as a picture (ADR 0408).
 pub const PICTURE_MAX_BYTES: u64 = 8 * 1024 * 1024;
+/// The longest time of the read of one picture, with its tries. A server that sends a
+/// picture slower than this holds none of the reads of the window for longer. A picture
+/// of the largest size arrives in this time at 14 KiB in a second.
+const PICTURE_TIME: Duration = Duration::from_secs(600);
 
 /// Why a file was not uploaded or not downloaded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -546,6 +551,20 @@ enum Length {
     AtMost(u64),
 }
 
+/// A download that does not start, because the device is not logged in.
+fn not_started(bytes: u64) -> Arc<DownloadShared> {
+    Arc::new(DownloadShared {
+        progress: watch::Sender::new(DownloadProgress {
+            stage: DownloadStage::Failed(TransferFailure::Stopped),
+            received: 0,
+            bytes,
+            interrupted: false,
+        }),
+        cancelled: watch::Sender::new(false),
+        opened: AtomicBool::new(false),
+    })
+}
+
 /// A file of the server that a download saves.
 struct Wanted {
     /// The name of the saved file, as [`local_name`] gives it.
@@ -557,13 +576,72 @@ struct Wanted {
     sha256: Option<String>,
 }
 
+/// Which file of a server an unfinished file holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoredKind {
+    Attachment,
+    RecordingSegment,
+    TranscriptText,
+    Export,
+}
+
+/// What an unfinished file on this device holds: the file of the server, and the saved
+/// server and the account that it is read for (ADR 0745).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stored<'a> {
+    pub owner: Owner,
+    pub kind: StoredKind,
+    /// The identifier of the file on its server.
+    pub id: uuid::Uuid,
+    /// The length that the server states, when it states one.
+    pub bytes: Option<u64>,
+    /// The SHA-256 hash that the server states, when it states one.
+    pub sha256: Option<&'a str>,
+}
+
+impl Stored<'_> {
+    /// 32 hexadecimal digits that two unfinished files share only when every field of
+    /// both is equal. An identifier that one server copies from another gives another
+    /// name, because the entry of the server book and the account are fields.
+    fn mark(&self) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(b"junto unfinished file 1\0");
+        hasher.update(self.owner.entry.server_id.as_uuid().as_bytes());
+        hasher.update(self.owner.entry.generation.to_be_bytes());
+        hasher.update(self.owner.account_id.as_uuid().as_bytes());
+        hasher.update([match self.kind {
+            StoredKind::Attachment => 1u8,
+            StoredKind::RecordingSegment => 2,
+            StoredKind::TranscriptText => 3,
+            StoredKind::Export => 4,
+        }]);
+        hasher.update(self.id.as_bytes());
+        match self.bytes {
+            Some(bytes) => {
+                hasher.update([1u8]);
+                hasher.update(bytes.to_be_bytes());
+            }
+            None => hasher.update([0u8]),
+        }
+        match self.sha256 {
+            Some(sha256) => {
+                hasher.update([1u8]);
+                hasher.update((sha256.len() as u64).to_be_bytes());
+                hasher.update(sha256.as_bytes());
+            }
+            None => hasher.update([0u8]),
+        }
+        hex(&hasher.finalize()[..16])
+    }
+}
+
 /// The path of the unfinished file of a download in `directory`: the name of the saved
-/// file and the identifier of what is saved.
-fn part_file(directory: &Path, name: &str, id: uuid::Uuid) -> PathBuf {
+/// file and the mark of what the file holds and whom it belongs to.
+pub fn part_file(directory: &Path, name: &str, stored: &Stored<'_>) -> PathBuf {
     directory.join(format!(
         "{}.{}{PART_ENDING}",
         shorten(name, 120),
-        id.simple()
+        stored.mark()
     ))
 }
 
@@ -938,17 +1016,26 @@ pub async fn read_whole(
     Err(TransferFailure::Stopped)
 }
 
+/// The entry of the server book and the account of the device at this moment, with the
+/// operations of that account only. Absent when the device is not logged in.
+pub(crate) type Owned = Arc<dyn Fn() -> Option<(Owner, ServerApi)> + Send + Sync>;
+
 /// The files of the messages of one saved server.
 #[derive(Clone)]
 pub struct Transfers {
-    pub(crate) api: ServerApi,
     pub(crate) live: LiveServer,
     pub(crate) runtime: Runtime,
+    /// An upload, a download and the read of a picture belong to the owner of their
+    /// start: each of their requests is made for that account, and the unfinished file
+    /// of a download is named for that owner.
+    pub(crate) owned: Owned,
 }
 
 impl Transfers {
     /// Starts the upload of a file for a message of `place`. The upload runs until it is
-    /// complete, fails or is cancelled, also when the returned value is dropped.
+    /// complete, fails or is cancelled, also when the returned value is dropped. It
+    /// belongs to the owner of its start: each of its requests is made for that account,
+    /// and it does not start while the device is not logged in.
     pub fn upload(&self, place: PlaceId, source: UploadSource) -> Upload {
         let name = source.name();
         let shared = Arc::new(UploadShared {
@@ -967,13 +1054,17 @@ impl Transfers {
             cancelled: Arc::new(watch::Sender::new(false)),
         };
         let mut cancelled = handle.cancelled.subscribe();
-        let api = self.api.clone();
+        let owned = (self.owned)();
         drop(self.runtime.run(async move {
             let tell = |stage: UploadStage| {
                 shared.progress.send_modify(|progress| {
                     progress.stage = stage;
                     progress.interrupted = false;
                 });
+            };
+            let Some((_, api)) = owned else {
+                tell(UploadStage::Failed(TransferFailure::Stopped));
+                return;
             };
             let work = upload(&api, place, source, name, &shared);
             tokio::pin!(work);
@@ -1070,14 +1161,27 @@ impl Transfers {
     /// name of the attachment, or that name with a number when a file has it. Nothing is
     /// replaced.
     pub fn download(&self, attachment: &Attachment, directory: PathBuf) -> Download {
+        let attachment_id = attachment.id;
+        let Some((owner, api)) = (self.owned)() else {
+            return Download {
+                attachment_id,
+                shared: not_started(attachment.bytes),
+            };
+        };
         let name = local_name(&attachment.name);
+        let stored = Stored {
+            owner,
+            kind: StoredKind::Attachment,
+            id: attachment_id.as_uuid(),
+            bytes: Some(attachment.bytes),
+            sha256: Some(&attachment.sha256),
+        };
         let wanted = Wanted {
-            part: part_file(&directory, &name, attachment.id.as_uuid()),
+            part: part_file(&directory, &name, &stored),
             name,
             length: Length::Exactly(attachment.bytes),
             sha256: Some(attachment.sha256.clone()),
         };
-        let (api, attachment_id) = (self.api.clone(), attachment.id);
         let open = move |from| {
             let api = api.clone();
             async move { api.attachment_file(attachment_id, from).await }
@@ -1138,16 +1242,33 @@ impl Transfers {
         shared
     }
 
-    /// Reads a picture of a message into memory, at most [`PICTURE_MAX_BYTES`].
+    /// Reads a picture of a message into memory for `owner`, at most
+    /// [`PICTURE_MAX_BYTES`]. The read is made for the account of the owner only, and
+    /// fails with [`TransferFailure::Stopped`] when the server has another owner.
     pub fn picture(
         &self,
+        owner: Owner,
         attachment: &Attachment,
     ) -> impl Future<Output = Result<Vec<u8>, TransferFailure>> + Send + 'static + use<> {
-        let (api, attachment) = (self.api.clone(), attachment.clone());
-        let work = self
-            .runtime
-            .run(async move { read_whole(&api, &attachment, PICTURE_MAX_BYTES).await });
-        async move { work.await.unwrap_or(Err(TransferFailure::Stopped)) }
+        let api = (self.owned)()
+            .filter(|(present, _)| *present == owner)
+            .map(|(_, api)| api);
+        let attachment = attachment.clone();
+        let work = api.map(|api| {
+            self.runtime.run(async move {
+                let reading = read_whole(&api, &attachment, PICTURE_MAX_BYTES);
+                match tokio::time::timeout(PICTURE_TIME, reading).await {
+                    Ok(read) => read,
+                    Err(_) => Err(TransferFailure::Stopped),
+                }
+            })
+        });
+        async move {
+            match work {
+                Some(work) => work.await.unwrap_or(Err(TransferFailure::Stopped)),
+                None => Err(TransferFailure::Stopped),
+            }
+        }
     }
 }
 
@@ -1243,6 +1364,154 @@ mod tests {
         std::fs::write(&part, b"abc").unwrap();
         let (_second, held) = open_part(&part, 10).unwrap();
         assert_eq!(held, 3);
+    }
+
+    /// A file of a message with this identifier, this name and these bytes.
+    fn attached(id: AttachmentId, name: &str, content: &[u8]) -> Attachment {
+        Attachment {
+            id,
+            name: name.to_owned(),
+            bytes: content.len() as u64,
+            sha256: hex(&Sha256::digest(content)),
+            media_type: "text/plain".to_owned(),
+            width: None,
+            height: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn partial_downloads_never_resume_or_modify_another_servers_file() {
+        use super::recordings::tests::{
+            cut, names, owner, played_as, refusal, rest, starts, whole,
+        };
+
+        let id = AttachmentId::generate();
+        let (first, second) = (owner(), owner());
+        let content = b"abcdefghij";
+        let wanted = attached(id, "notes.txt", content);
+        let directory = tempfile::tempdir().unwrap();
+
+        // The download of the first server is cut after four bytes and then refused, so
+        // its unfinished file stays and no download holds it.
+        let (_, transfers) = played_as(first, vec![cut(&content[..4]), refusal(403, "forbidden")]);
+        let download = transfers.download(&wanted, directory.path().into());
+        assert!(download.finished().await.is_err());
+        let left = names(directory.path());
+        assert_eq!(left.len(), 1, "{left:?}");
+        let part = directory.path().join(&left[0]);
+        assert_eq!(std::fs::read(&part).unwrap(), &content[..4]);
+
+        // A second server states a file with the same identifier and the same name, with
+        // other bytes. It is asked for the file from its first byte, and the unfinished
+        // file of the first server keeps its bytes.
+        let other = b"0123456789ABCDEF";
+        let (files, transfers) = played_as(second, vec![whole(other)]);
+        let copied = attached(id, "notes.txt", other);
+        let saved = transfers
+            .download(&copied, directory.path().into())
+            .finished()
+            .await
+            .unwrap();
+        assert_eq!(starts(&files), [0]);
+        assert_eq!(std::fs::read(&saved).unwrap(), other);
+        assert_eq!(std::fs::read(&part).unwrap(), &content[..4]);
+
+        // The same identifier with fewer bytes than the unfinished file holds, and with
+        // the hash of the first file: nothing of the first server is cut or deleted.
+        let short = Attachment {
+            bytes: 3,
+            ..wanted.clone()
+        };
+        let (files, transfers) = played_as(second, vec![whole(b"abc")]);
+        let failed = transfers
+            .download(&short, directory.path().into())
+            .finished()
+            .await;
+        assert_eq!(failed, Err(TransferFailure::Corrupt));
+        assert_eq!(starts(&files), [0]);
+        assert_eq!(std::fs::read(&part).unwrap(), &content[..4]);
+
+        // Another account of the first server, and the entry of the first server after it
+        // was removed and added again, do not continue the file either.
+        let mut account = first;
+        account.account_id = junto_protocol::ids::AccountId::generate();
+        let mut added_again = first;
+        added_again.entry.generation += 1;
+        for owner in [account, added_again] {
+            let (files, transfers) = played_as(owner, vec![refusal(403, "forbidden")]);
+            let download = transfers.download(&wanted, directory.path().into());
+            assert!(download.finished().await.is_err());
+            assert_eq!(starts(&files), [0]);
+        }
+        assert_eq!(std::fs::read(&part).unwrap(), &content[..4]);
+
+        // The first server and its account continue the file where it stopped.
+        std::fs::remove_file(&saved).unwrap();
+        let (files, transfers) = played_as(first, vec![rest(&content[4..])]);
+        let saved = transfers
+            .download(&wanted, directory.path().into())
+            .finished()
+            .await
+            .unwrap();
+        assert_eq!(starts(&files), [4]);
+        assert_eq!(std::fs::read(&saved).unwrap(), content);
+        assert!(!part.exists());
+    }
+
+    #[tokio::test]
+    async fn a_download_without_a_session_does_not_start() {
+        use super::recordings::tests::{names, owner, played_as, starts};
+
+        let (files, mut transfers) = played_as(owner(), Vec::new());
+        transfers.owned = Arc::new(|| None);
+        let directory = tempfile::tempdir().unwrap();
+        let wanted = attached(AttachmentId::generate(), "notes.txt", b"abc");
+        let download = transfers.download(&wanted, directory.path().into());
+        assert_eq!(download.finished().await, Err(TransferFailure::Stopped));
+        assert!(starts(&files).is_empty());
+        assert!(names(directory.path()).is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_picture_is_read_for_its_owner_and_within_its_time() {
+        use super::recordings::tests::{owner, played_as, stalled, starts, whole};
+
+        let content = b"the bytes of a picture";
+        let file = attached(AttachmentId::generate(), "chart.png", content);
+        let asked = owner();
+        let (files, transfers) = played_as(asked, vec![whole(content)]);
+        // The server has another owner than the one that the picture is read for: no
+        // request is sent.
+        let read = transfers.picture(owner(), &file).await;
+        assert_eq!(read, Err(TransferFailure::Stopped));
+        assert!(starts(&files).is_empty());
+        assert_eq!(transfers.picture(asked, &file).await.unwrap(), content);
+
+        // A server that sends the first bytes and then nothing more, without an end: the
+        // read ends after its time, and holds no read of the window for longer.
+        let (files, transfers) = played_as(asked, vec![stalled(&content[..4])]);
+        let started = tokio::time::Instant::now();
+        let read = transfers.picture(asked, &file).await;
+        assert_eq!(read, Err(TransferFailure::Stopped));
+        assert_eq!(started.elapsed(), PICTURE_TIME);
+        assert_eq!(starts(&files), [0]);
+    }
+
+    #[tokio::test]
+    async fn an_upload_does_not_start_without_a_session() {
+        use super::recordings::tests::{owner, played_as};
+
+        let (files, mut transfers) = played_as(owner(), Vec::new());
+        transfers.owned = Arc::new(|| None);
+        let source = UploadSource::Bytes {
+            name: "notes.txt".to_owned(),
+            bytes: Arc::new(b"abc".to_vec()),
+        };
+        let place = PlaceId::Channel(junto_protocol::ids::ChannelId::generate());
+        let upload = transfers.upload(place, source);
+        let ended = tokio::time::timeout(Duration::from_secs(5), upload.finished()).await;
+        assert_eq!(ended, Ok(Err(TransferFailure::Stopped)));
+        assert_eq!(files.sent.load(Ordering::Relaxed), 0, "no request was sent");
     }
 
     #[test]

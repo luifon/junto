@@ -14,9 +14,9 @@ Derivation:
 
 - A function without side effects (ADR 0730) derives the rows of a list from a timeline: day separators, the line of the first unread message, messages, system lines, the waiting messages, and a row at each end that states whether the history goes on.
 - Messages of one author on one day form a group while each follows the one before within 5 minutes. A reply, a system line and a deleted message end a group. A message of a group is drawn without the avatar and the name.
-- Times and days are shown in the time zone of the system.
+- Times and days are shown in the time zone of the system. A moment that the clock of that zone cannot state is shown as the server wrote it (ADR 0747).
 - The line of the first unread message stands before the first message after the read position that another person wrote. It stays where it was when the place was opened, until the person leaves the place. No line is drawn when every loaded message is unread.
-- A reply shows the author and the start of the message that it answers. A message that the list does not hold is read from the server, at most 8 at one time. It is read again when an event names it and when the state was reloaded, so the reply shows an edit and a deletion. The window keeps the quoted messages that the replies of the shown place name, and no others.
+- A reply shows the author and the start of the message that it answers. A message that the list does not hold is read from the server, at most 8 at one time. It is read again when an event names it and when the state was reloaded, so the reply shows an edit and a deletion. The window keeps the quoted messages that the replies of the shown place name, and no others, up to the weight that ADR 0747 states.
 
 List:
 
@@ -26,14 +26,14 @@ List:
 - Formatted text is one text layout per block with runs: bold, italic, struck, inline code in the fixed-width face on its ground, links, and mentions on the terracotta ground. The italic faces of the text font are carried in the binary. A link opens in the application of the system for its address. The window draws a link only for an address that the composer accepts: HTTP, HTTPS or mailto, without a user name. A server is not trusted with what this device opens (ADR 0714), so the check of the server (ADR 0408) is not relied on, and another address is drawn as text.
 - A code block is drawn on basalt with its language. A block that names a language gets syntax colours for five kinds of token: keywords, types, functions, values (strings, numbers, constants) and comments. The tokens come from the library `synoptic`, which works with regular expressions and carries its rules for about thirty languages. The window gives it no block above 32 KiB or above 1,000 lines, takes a panic of the library as "no tokens", and takes no token of a block that the library does not give back as it was written. A pass after the library removes a keyword, a type or a function name that lies inside a longer word, and marks a capitalised name as a type in the languages that write types so. The window holds the tokens of up to 256 blocks that it drew, by the rules of their language and their text, and drops all of them when a further block arrives.
 - A check box of an own message takes a click and sends an edit (ADR 0401).
-- A file that the server marked as a picture (PNG, JPEG or WebP up to 1,024 pixels per side) is drawn inline at the size that its message states, so the row has its height before the picture has arrived. The picture is decoded away from the window with limits of 1,024 pixels per side. The window holds 48 decoded pictures. Every other file is a row with its name, its size and the state of its download.
+- A file that the server marked as a picture (PNG, JPEG or WebP up to 1,024 pixels per side) is drawn inline at the size that its message states, so the row has its height before the picture has arrived. The picture is decoded away from the window with limits of 1,024 pixels per side. The window holds 48 decoded pictures, each for the owner that it was read for, and reads 4 at one time (ADR 0745). Every other file is a row with its name, its size and the state of its download.
 - A download goes to the download directory of the person under a name that no file has, and the row then offers "Show in folder". No file of a message is opened by the application.
 
 Actions of a message:
 
 - React, reply, edit and delete are a bar at the message under the pointer. The same actions are a menu of the message: a right click, and from the keyboard the Menu key, Shift and F10, Enter or Space while the message holds the focus (ADR 0702).
 - Edit is offered for an own message, and delete for an own message and with "manage messages". The roles are a prediction; the server decides (ADR 0739).
-- A deletion asks first. A reaction, an edit and a deletion change nothing on screen before the server tells the change. A refusal is told above the composer.
+- A deletion asks first. A reaction, an edit and a deletion change nothing on screen before the server tells the change with its event; the answer to the request is not shown (ADR 0746). A refusal is told above the composer.
 - The emoji of the picker are the table that the server uses, by group and by a search of their names.
 
 Waiting messages:
@@ -48,7 +48,7 @@ Composer:
 - A mention is a token of the text area and no mark: `@` opens a list of the members and roles of the workspace, and of "everyone" with its permission; the chosen entry is one unit of the text with the identifier of its account or role.
 - An edit puts the text of the message into the composer with its marks. The arrow up in an empty composer edits the last own message. Escape ends an edit or a reply.
 - The text of the composer cannot state every document that the server accepts: a line break in a list item, white space at the ends of a paragraph, an address in plain text that is no link. So an edit changes only what the person changed. A block at the start or at the end of the text that stands as the composer showed it is sent as the document had it, and so is an unchanged item of a changed list. A check box that the person changes in the text keeps the text of its item. The text between is read as the text of a new message.
-- Files are attached with the file dialog, by a drop on the composer, and by pasting a picture. An upload starts when the file is attached. The composer shows each file with its progress and a control that removes it.
+- Files are attached with the file dialog, by a drop on the composer, and by pasting a picture. The files of a file dialog are attached only while the composer still writes to the place and for the account that the dialog was opened for (ADR 0746). An upload starts when the file is attached. The composer shows each file with its progress and a control that removes it.
 - Before a send the document is checked against the limits of ADR 0408, and a file against the limits of the server. What would be refused is not sent, and the composer states the reason.
 - The text, the reply and the edit of a place stay with that place and with the account that wrote them while the window shows another one. When a server has another account, the texts of the account before are discarded and the uploads of its files are ended.
 

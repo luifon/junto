@@ -183,13 +183,13 @@ async fn exchange(scene: &Pair, place: PlaceId) {
     let reply = message_when(owner, place, "reply").await;
     assert_eq!(reply.reply_to, Some(hello.id));
 
-    // An edit replaces the text on both clients.
-    let edited = owner
+    // An edit replaces the text on both clients. Each learns it from the event of the
+    // change; the answer to the request is not put into the state.
+    owner
         .api()
         .edit_message(hello.id, document("hello again"))
         .await
         .unwrap();
-    owner.live().put_message(edited);
     for handle in [owner, member] {
         let seen = message_when(handle, place, "hello again").await;
         assert!(seen.edited_at.is_some());
@@ -268,7 +268,11 @@ async fn exchange(scene: &Pair, place: PlaceId) {
     );
     assert_eq!(download.progress().stage, DownloadStage::Saved(saved));
     assert_eq!(std::fs::read_dir(target.path()).unwrap().count(), 2);
-    let picture = member.transfers().picture(attachment).await.unwrap();
+    let picture = member
+        .transfers()
+        .picture(member.owner().unwrap(), attachment)
+        .await
+        .unwrap();
     assert_eq!(picture, content);
 
     // A deleted message with a reply stays as a marker without content. A deleted message

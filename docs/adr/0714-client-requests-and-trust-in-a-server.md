@@ -48,6 +48,7 @@ What the client accepts from a server:
 
 - The client follows no redirect. A redirect is an invalid response.
 - A response body has at most 4 MiB. A request ends after 40 seconds, and a connection attempt after 10 seconds.
+- The bound of one answer bounds no list that many answers fill. ADR 0747 bounds one message and what each list of messages holds.
 - An error response is read as the error body of ADR 0205. Its message is cut to 200 characters without control characters and kept apart from the code. It is part of an error text of the client only for a code that the client does not know: that text names the status and quotes the message (ADR 0209).
 - The name of a server and a device name that a server sends are cut to 64 characters without control characters before they are stored or shown by a flow. A logo path is used only when it resolves to the origin of the server.
 - Other text that the API returns (names of accounts, roles and channels) is given to the caller as the server sent it. The interface treats it as text of another party.

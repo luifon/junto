@@ -11,7 +11,7 @@ use junto_protocol::account::RecoveryNotice;
 use junto_protocol::error::ErrorCode;
 use junto_protocol::events::{Cursor, EndReason, Event, Level};
 use junto_protocol::ids::{AttachmentId, ChannelId, MessageId, RecordingId, WorkspaceId};
-use junto_protocol::message::{Document, Message};
+use junto_protocol::message::Document;
 use time::OffsetDateTime;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
@@ -134,8 +134,6 @@ pub(crate) enum Command {
         place: PlaceId,
         position: Option<u64>,
     },
-    /// A message that a request of this client returned.
-    PutMessage(Box<Message>),
     MarkRead {
         place: PlaceId,
         position: u64,
@@ -352,12 +350,6 @@ impl LiveServer {
     /// end (`None`). After a reload of the state the client reads the page from there.
     pub fn set_message_anchor(&self, place: PlaceId, position: Option<u64>) {
         self.shared.send(Command::MessageAnchor { place, position });
-    }
-
-    /// Gives the state a message that a request returned, such as the answer to an edit,
-    /// so that a reader sees it before the event of the change has been followed.
-    pub fn put_message(&self, message: Message) {
-        self.shared.send(Command::PutMessage(Box::new(message)));
     }
 
     /// Moves the read position of the account in a place forward. The client sends one
