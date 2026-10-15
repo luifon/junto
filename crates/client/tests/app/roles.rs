@@ -339,6 +339,10 @@ fn a_person_who_manages_roles_creates_orders_gives_and_takes_them_and_another_wi
             .iter()
             .position(|held| held == permission)
     });
+    // The two changes are sent at the same time and their replies can arrive in either
+    // order. `idle` follows only the newest request, and a switch whose change the state
+    // does not hold yet is drawn held and takes no click, so the clicks below wait until
+    // no change is held.
     window.until("the role holds the three permissions", |window| {
         granted(window)
             == wanted
@@ -347,6 +351,9 @@ fn a_person_who_manages_roles_creates_orders_gives_and_takes_them_and_another_wi
                 .map(RolePermission::Workspace)
                 .collect::<Vec<_>>()
             && idle(window)
+            && window
+                .admin()
+                .is_some_and(|view| view.changing_roles.is_empty())
     });
     let stored = workspace_roles(&world, &ada, workspace_id)
         .into_iter()
@@ -678,9 +685,18 @@ fn a_moderator_sees_why_an_account_with_a_higher_role_cannot_be_banned_before_tr
         false
     });
     click_in_page(&mut window, "account-confirm");
-    let banned = awaited(&mut window, "the account is banned", |window| {
-        account(window, carla).filter(|row| row.status == AccountStatus::Banned)
-    });
+    // The event of the ban marks the account banned and makes the unban statements of the
+    // accounts stale until they are read again (ADR 0311): for that time the unban waits
+    // for the read.
+    let banned = awaited(
+        &mut window,
+        "the account is banned and its unban is read",
+        |window| {
+            account(window, carla).filter(|row| {
+                row.status == AccountStatus::Banned && row.unban != Err(Blocked::OrderNotRead)
+            })
+        },
+    );
     assert_eq!(banned.unban, Ok(()));
 
     // An unban restores the roles of the account, so it compares them too (ADR 0309):

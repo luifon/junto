@@ -369,6 +369,9 @@ fn a_recording_is_a_card_with_its_files_its_transcript_and_its_removal(cx: &mut 
     // With "manage recordings" the control asks first and then removes the recording:
     // its card leaves the chat.
     let api = admin.handle.api();
+    let read = window
+        .detail(recording_id)
+        .expect("the card shows the recording");
     let workspace_id = window.view().workspace().unwrap().id;
     let roles = world.run(api.workspace_roles(workspace_id)).unwrap();
     let everyone = roles.iter().find(|role| role.is_everyone).unwrap();
@@ -382,13 +385,20 @@ fn a_recording_is_a_card_with_its_files_its_transcript_and_its_removal(cx: &mut 
         .run(api.update_workspace_role(workspace_id, everyone.id, &update))
         .unwrap();
     // Each change of the permissions withdraws the messages of the workspace until the
-    // place is read again (ADR 0748): the control is pressed once it is drawn.
-    window.until("the permission to remove", |window| {
-        window
-            .card(recording_id)
-            .is_some_and(|card| card.may_remove)
-            && window.shows("remove-recording")
-    });
+    // place is read again (ADR 0748). The card draws its control before the lines of its
+    // transcript are read again. The lines are added below the control, and the chat
+    // keeps its end in place, so the control moves up between its drawing and a press.
+    // It is pressed once the card shows everything that it showed before the change.
+    window.until(
+        "the permission to remove on the card read again",
+        |window| {
+            window
+                .card(recording_id)
+                .is_some_and(|card| card.may_remove)
+                && window.detail(recording_id).as_ref() == Some(&read)
+                && window.shows("remove-recording")
+        },
+    );
     window.click("remove-recording");
     assert!(window.shows("confirm-remove-recording"));
     window.click("cancel");

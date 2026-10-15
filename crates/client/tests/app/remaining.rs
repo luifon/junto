@@ -373,11 +373,17 @@ fn an_administrator_sets_the_notification_level_of_a_workspace_and_removes_it(
 
     // "All messages" is the second choice of the control.
     click_in_page(&mut window, "notification-default-1");
-    window.until("the page shows the stored level", |window| {
-        notifications_page(window)
-            .is_some_and(|page| page.choice == DefaultChoice::Level(NotificationLevel::All))
-            && idle(window)
-    });
+    // The reply can end the request before the state holds the event of the change. Until
+    // the event is applied, the control shows the sent level and takes no choice, so the
+    // next click waits for the page to take a choice again.
+    window.until(
+        "the page shows the stored level and takes a choice",
+        |window| {
+            notifications_page(window).is_some_and(|page| {
+                page.choice == DefaultChoice::Level(NotificationLevel::All) && !page.changing
+            }) && idle(window)
+        },
+    );
     assert_eq!(level(&owner), Some(NotificationLevel::All));
     until_model(&world, &bruno, "the member holds the level", |model| {
         model
