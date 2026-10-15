@@ -157,12 +157,12 @@ if [ "$runner" = linux ]; then
 fi
 build_cpus=$((host_cpus > 2 ? host_cpus - 2 : 1))
 linux_container() {
-    JUNTO_LINUX_PREFIX=junto-ci JUNTO_LINUX_CPUS=$build_cpus JUNTO_LINUX_MEMORY=8g tools/linux-container.sh "$@"
+    JUNTO_LINUX_PREFIX=junto-ci JUNTO_LINUX_BUILDER=limited JUNTO_LINUX_CPUS=$build_cpus JUNTO_LINUX_MEMORY=8g tools/linux-container.sh "$@"
 }
 job() {
     case "$runner:$1" in
         linux:rust-linux)
-            JUNTO_LINUX_PREFIX=junto-ci JUNTO_LINUX_CPUS=$build_cpus JUNTO_LINUX_MEMORY=8g tools/ci/rust-linux.sh ;;
+            JUNTO_LINUX_PREFIX=junto-ci JUNTO_LINUX_BUILDER=limited JUNTO_LINUX_CPUS=$build_cpus JUNTO_LINUX_MEMORY=8g tools/ci/rust-linux.sh ;;
         linux:licences)
             JUNTO_CI_TOOLS=/target/ci-tools linux_container tools/ci/licences.sh ;;
         linux:transcription-worker)

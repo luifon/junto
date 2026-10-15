@@ -68,10 +68,37 @@ same "Python version of the transcription worker and of the Python image of $pin
     "$(sed -n 's/^requires-python = "==\([0-9.]*\)\.\*"$/\1/p' workers/transcription/pyproject.toml)" \
     "$(pin JUNTO_CI_PYTHON_IMAGE | sed -n 's/^python:\([0-9]*\.[0-9]*\)\..*/\1/p')"
 
+# A container that a CI script starts or creates names its image by a variable of
+# tools/ci/pins.sh or by a digest. A command that continues over several lines is read whole.
+unpinned=$(for file in tools/ci/*.sh; do
+    awk '
+        { instruction = instruction $0 }
+        /\\$/ { sub(/\\$/, "", instruction); next }
+        { print FILENAME ": " instruction; instruction = "" }
+    ' "$file"
+done | grep -E 'docker (run|create) ' | grep -v -E '"\$JUNTO_[A-Z_]*_IMAGE"|@sha256:[0-9a-f]{64}' || true)
+if [ -n "$unpinned" ]; then
+    echo "$unpinned"
+    fail "a CI script starts a container whose image is neither a variable of $pins nor named by a digest"
+else
+    echo "ok    every container of the CI scripts has an image of $pins or a digest"
+fi
+# A CI script installs a package of the runner with apt-get only with its version.
+other=$(grep -n -E '(apt-get|apt|aptitude|dpkg|snap)( +-[^ ]+)* +(install|-i)' tools/ci/* \
+    | grep -v -E 'apt-get install [^\\]*$' || true)
+unpinned=$(grep -h 'apt-get install' tools/ci/* | sed 's/.*apt-get install//' | tr -s ' ' '\n' \
+    | grep -v -E -e '^$' -e '^-' -e '^[a-z0-9][a-z0-9+.-]*=[0-9][0-9A-Za-z.+~:-]*$' || true)
+if [ -n "$other$unpinned" ]; then
+    echo "$other$unpinned"
+    fail "a CI script installs a package of the runner without a version, or in a form that this check does not read"
+else
+    echo "ok    every package that a CI script installs with apt-get has a version"
+fi
+same "PostgreSQL version of the tests in CI on Linux and on Windows" \
+    "$(pin JUNTO_TEST_POSTGRES_IMAGE | sed -n 's/^postgres:\([0-9.]*\)-.*/\1/p')" \
+    "$(sed -n 's/^VERSION = "\([0-9.]*\)-[0-9]*"$/\1/p' tools/windows/with_test_postgres.py)"
+
 if [ -d .github/workflows ]; then
-    same "PostgreSQL version of the tests in CI on Linux and on Windows" \
-        "$(pin JUNTO_TEST_POSTGRES_IMAGE | sed -n 's/^postgres:\([0-9.]*\)-.*/\1/p')" \
-        "$(sed -n 's/^VERSION = "\([0-9.]*\)-[0-9]*"$/\1/p' tools/windows/with_test_postgres.py)"
     same "Node version of the workflow and of $pins" \
         "$(sed -n 's/^ *node-version: \([0-9.]*\)$/\1/p' .github/workflows/ci.yml)" "$(pin JUNTO_CI_NODE_VERSION)"
     same "uv version of the workflow and of $pins" \
@@ -223,15 +250,15 @@ if [ -d .github/workflows ]; then
     # A package of the runner is installed in one form only, "apt-get install" with its
     # options and packages on one line, so that this rule reads every package: each word
     # after it that is not an option names a package with one exact version.
-    other=$(grep -n -E '(apt-get|apt|aptitude|dpkg|snap)( +-[^ ]+)* +(install|-i)' .github/workflows/* tools/ci/* \
+    other=$(grep -n -E '(apt-get|apt|aptitude|dpkg|snap)( +-[^ ]+)* +(install|-i)' .github/workflows/* \
         | grep -v -E 'apt-get install [^\\]*$' || true)
-    unpinned=$(grep -h 'apt-get install' .github/workflows/* tools/ci/* | sed 's/.*apt-get install//' | tr -s ' ' '\n' \
+    unpinned=$(grep -h 'apt-get install' .github/workflows/* | sed 's/.*apt-get install//' | tr -s ' ' '\n' \
         | grep -v -E -e '^$' -e '^-' -e '^[a-z0-9][a-z0-9+.-]*=[0-9][0-9A-Za-z.+~:-]*$' || true)
     if [ -n "$other$unpinned" ]; then
         echo "$other$unpinned"
-        fail "a workflow or a CI script installs a package of the runner without a version, or in a form that this check does not read"
+        fail "a workflow installs a package of the runner without a version, or in a form that this check does not read"
     else
-        echo "ok    every package that a workflow or a CI script installs with apt-get has a version"
+        echo "ok    every package that a workflow installs with apt-get has a version"
     fi
     other=$(find .github/workflows -type f ! -name '*.yml')
     if [ -n "$other" ]; then
