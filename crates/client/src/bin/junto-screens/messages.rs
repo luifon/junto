@@ -134,6 +134,7 @@ impl Made {
             unread_after: None,
             root: None,
             forks: Vec::new(),
+            anchor: None,
         }
     }
 }
@@ -360,7 +361,7 @@ fn timeline_picture() -> Vec<u8> {
 
 pub(crate) type Fixture = (
     HashMap<(ServerId, PlaceId), Vec<DraftFile>>,
-    HashMap<u64, UploadProgress>,
+    HashMap<(ServerId, u64), UploadProgress>,
     HashMap<(ServerId, AttachmentId), DownloadProgress>,
     Option<String>,
 );
@@ -530,7 +531,10 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
             },
         ],
     )]);
-    let uploads = HashMap::from([(9u64, upload(UploadStage::Sending, 800_000, 3_000_000))]);
+    let uploads = HashMap::from([(
+        (server_id, 9u64),
+        upload(UploadStage::Sending, 800_000, 3_000_000),
+    )]);
     studio.draw(
         Screen::new(
             "messages-waiting",

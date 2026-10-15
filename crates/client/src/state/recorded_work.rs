@@ -518,7 +518,9 @@ impl AppState {
             self.navigations += 1;
             self.selection.server = Some(server_id);
             self.selection.workspaces.insert(server_id, workspace_id);
-            self.selection.channels.insert(workspace_id, channel_id);
+            self.selection
+                .channels
+                .insert((server_id, workspace_id), channel_id);
             self.selection.conversations.remove(&server_id);
         }
         self.selection.transcript = Some((server_id, channel_id, recording_id));

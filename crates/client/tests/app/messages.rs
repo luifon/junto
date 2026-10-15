@@ -484,6 +484,60 @@ fn the_text_of_one_account_is_not_shown_to_the_next_account_of_the_server(cx: &m
 }
 
 #[gpui::test]
+fn a_new_account_can_mark_positions_seen_by_the_previous_account(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let first = window.own_account();
+    let voice = window
+        .channels()
+        .into_iter()
+        .find(|row| row.kind == ChannelKind::Voice)
+        .unwrap();
+    let unread = |window: &mut Window| {
+        window
+            .channels()
+            .into_iter()
+            .find(|row| row.id == voice.id)
+            .map_or(0, |row| row.unread.messages)
+    };
+    for number in 0..3 {
+        admin.send(&world, voice.id, document(&format!("message {number}")));
+    }
+    // The first account reads the chat of the voice channel to its end.
+    window.until("the unread sign", |window| unread(window) == 3);
+    window.click_channel(&voice.name);
+    window.until("the chat is read by the first account", |window| {
+        if window.shows("mark-as-read") {
+            window.click("mark-as-read");
+        }
+        unread(window) == 0
+    });
+
+    // The account is removed, and the person joins again. For the new account the same
+    // messages are unread, and it marks them as read: the read position that the first
+    // account reached does not stop the request of the new one.
+    world.run(admin.handle.api().remove_account(first)).unwrap();
+    window.until("the removal is shown", |window| window.shows("no-account"));
+    let code = admin.invite(&world, 1);
+    window.click("join-server");
+    window.join_with_code(code.expose());
+    window.until_ready();
+    assert_ne!(window.own_account(), first);
+    window.until("the unread sign of the new account", |window| {
+        unread(window) == 3
+    });
+    window.click_channel(&voice.name);
+    window.until("the chat is read by the new account", |window| {
+        if window.shows("mark-as-read") {
+            window.click("mark-as-read");
+        }
+        unread(window) == 0
+    });
+}
+
+#[gpui::test]
 fn a_quoted_message_that_is_not_loaded_follows_its_changes(cx: &mut TestAppContext) {
     let world = World::new();
     let server = world.server("Acme Studio");
@@ -591,6 +645,70 @@ impl Window {
         assert_eq!(self.message_asks_flying(), 1);
         message_id
     }
+}
+
+#[gpui::test]
+fn a_late_message_refusal_is_not_shown_at_another_composer(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let proxy = world.run(FaultProxy::start(&server));
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    window.until("the messages are read", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let first = window.feed().unwrap().place;
+    window.write("one");
+    let message_id = window.until_message("one").message.id;
+    // A new member may not pin: the server refuses the pin, and its answer waits.
+    proxy.hold_answer_ending("PUT", &format!("/messages/{message_id}/pin"));
+    let server_id = window.view().selected.unwrap().id;
+    window.in_shell(|shell, _, cx| {
+        shell.state().update(cx, |state, cx| {
+            state.set_pinned(server_id, message_id, true, cx);
+        });
+    });
+    window.until("the refusal waits at the proxy", |_| {
+        proxy.answers_waiting() == 1
+    });
+
+    // The person selects another channel before the refusal arrives: its composer does
+    // not tell the refusal, and neither does the composer of the first channel later.
+    let voice = window
+        .channels()
+        .into_iter()
+        .find(|row| row.kind == ChannelKind::Voice)
+        .unwrap();
+    window.click_channel(&voice.name);
+    window.until("the chat of the voice channel", |window| {
+        window
+            .feed()
+            .is_some_and(|feed| feed.loaded && feed.place == PlaceId::Channel(voice.id))
+    });
+    proxy.release();
+    window.until("the refusal has arrived", |window| {
+        window.message_asks_flying() == 0
+    });
+    assert!(!window.shows("compose-problem"));
+    window.until("the first channel again", |window| {
+        if window.feed().is_some_and(|feed| feed.place != first) {
+            window.click_channel("general");
+        }
+        window
+            .feed()
+            .is_some_and(|feed| feed.loaded && feed.place == first)
+    });
+    assert!(!window.shows("compose-problem"));
+
+    // A refusal in the place that the person stays in is told there.
+    window.in_shell(|shell, _, cx| {
+        shell.state().update(cx, |state, cx| {
+            state.set_pinned(server_id, message_id, true, cx);
+        });
+    });
+    window.until("the refusal is told", |window| {
+        window.shows("compose-problem")
+    });
 }
 
 #[gpui::test]

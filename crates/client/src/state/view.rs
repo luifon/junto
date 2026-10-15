@@ -101,7 +101,9 @@ pub fn shown_address(origin: &str) -> String {
 pub struct Selection {
     pub server: Option<ServerId>,
     pub workspaces: HashMap<ServerId, WorkspaceId>,
-    pub channels: HashMap<WorkspaceId, ChannelId>,
+    /// The channel that each workspace of a server shows. The same identifier of a
+    /// workspace on two servers names two workspaces.
+    pub channels: HashMap<(ServerId, WorkspaceId), ChannelId>,
     /// The direct conversation that a server shows in place of a channel.
     pub conversations: HashMap<ServerId, ConversationId>,
     /// The thread that the side panel shows: its server, its channel and its root.
@@ -182,8 +184,9 @@ pub struct Known {
     pub drafts: HashMap<(ServerId, PlaceId), Vec<DraftFile>>,
     /// The files of messages that the person saves, and those that were saved.
     pub downloads: HashMap<(ServerId, AttachmentId), DownloadProgress>,
-    /// The uploads of the messages that wait to be sent, by the number of the upload.
-    pub uploads: HashMap<u64, UploadProgress>,
+    /// The uploads of the messages that wait to be sent, by their server and the number
+    /// of the upload. Each server numbers its uploads from 1.
+    pub uploads: HashMap<(ServerId, u64), UploadProgress>,
     /// The date of this moment in the time zone of the messages.
     pub today: Option<time::Date>,
     /// The fork of a thread that the person asked for.
@@ -293,20 +296,68 @@ impl Unread {
         if !other.any() {
             return;
         }
-        self.messages = (self.messages + other.messages).min(100);
-        self.mentions = (self.mentions + other.mentions).min(100);
+        self.messages = self
+            .messages
+            .saturating_add(other.messages)
+            .min(MOST_COUNTED);
+        self.mentions = self
+            .mentions
+            .saturating_add(other.mentions)
+            .min(MOST_COUNTED);
         self.sign |= other.sign;
     }
 
-    fn of(model: &ServerModel, place: PlaceId) -> Self {
-        model
-            .message_state(place)
-            .map_or(Self::default(), |state| Self {
-                messages: state.unread,
-                mentions: state.notification_mentions,
-                sign: state.unread_sign,
-                muted: state.muted,
-            })
+    /// The counts of a summary that a server stated. A server is not trusted to keep
+    /// them at 100 (ADR 0714).
+    fn of_state(state: &junto_client_core::protocol::message::MessageState) -> Self {
+        Self {
+            messages: state.unread.min(MOST_COUNTED),
+            mentions: state.notification_mentions.min(MOST_COUNTED),
+            sign: state.unread_sign,
+            muted: state.muted,
+        }
+    }
+}
+
+/// The highest count of unread messages and of mentions that the window shows. It means
+/// that many or more.
+const MOST_COUNTED: u64 = 100;
+
+/// What each place of a server holds unread, made once for a derivation of the window.
+/// The summaries of a server are a list without an order; a search of the list for each
+/// row would cost the square of its length.
+struct Unreads(HashMap<PlaceId, Unread>);
+
+// How many indexes of summaries the derivations of this thread made. A test counts them.
+#[cfg(test)]
+thread_local! {
+    pub(super) static SUMMARIES_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+impl Unreads {
+    fn of(model: &ServerModel) -> Self {
+        #[cfg(test)]
+        SUMMARIES_READ.with(|read| read.set(read.get() + 1));
+        Self(
+            model
+                .message_states
+                .iter()
+                .map(|state| (PlaceId::of(&state.place), Unread::of_state(state)))
+                .collect(),
+        )
+    }
+
+    fn at(&self, place: PlaceId) -> Unread {
+        self.0.get(&place).copied().unwrap_or_default()
+    }
+
+    /// Every place of the server together.
+    fn total(&self) -> Unread {
+        let mut unread = Unread::default();
+        for held in self.0.values() {
+            unread.add(*held);
+        }
+        unread
     }
 }
 
@@ -1423,7 +1474,7 @@ fn name_of(
     known: &Known,
 ) -> Option<String> {
     if account_id == model.account.id {
-        return Some(model.account.name.clone());
+        return Some(crate::text::label(&model.account.name));
     }
     workspace
         .members
@@ -1432,7 +1483,7 @@ fn name_of(
             members
                 .iter()
                 .find(|member| member.account_id == account_id)
-                .map(|member| member.name.clone())
+                .map(|member| crate::text::label(&member.name))
         })
         .or_else(|| known.people.name(server_id, account_id))
 }
@@ -1631,6 +1682,7 @@ fn channel_row(
     workspace: &WorkspaceModel,
     model: &ServerModel,
     known: &Known,
+    unreads: &Unreads,
 ) -> ChannelRow {
     ChannelRow {
         id: channel.channel.id,
@@ -1639,7 +1691,7 @@ fn channel_row(
         selected: false,
         voice: (channel.channel.kind == ChannelKind::Voice)
             .then(|| voice_state(server_id, channel, workspace, model, known)),
-        unread: Unread::of(model, PlaceId::Channel(channel.channel.id)),
+        unread: unreads.at(PlaceId::Channel(channel.channel.id)),
         permanent: channel.channel.permanent_messages,
         threads: Vec::new(),
         mute: Mute::of_channel(channel.channel.id, model, known),
@@ -1669,7 +1721,11 @@ fn thread_entries(
             .as_ref()
             .map(|document| feed::plain_text(document, names, THREAD_TITLE_CHARACTERS))
             .filter(|title| !title.is_empty())
-            .or_else(|| root.attachments.first().map(|file| file.name.clone()))
+            .or_else(|| {
+                root.attachments
+                    .first()
+                    .map(|file| crate::text::label(&file.name))
+            })
     };
     let mut entries: Vec<ThreadEntry> = model
         .threads
@@ -1742,6 +1798,7 @@ fn sections(
     workspace: &WorkspaceModel,
     model: &ServerModel,
     known: &Known,
+    unreads: &Unreads,
 ) -> Vec<ChannelSection> {
     let in_category = |channel: &ChannelModel| {
         channel.channel.category_id.filter(|id| {
@@ -1751,7 +1808,8 @@ fn sections(
                 .any(|category| category.id == *id)
         })
     };
-    let row = |channel: &ChannelModel| channel_row(server_id, channel, workspace, model, known);
+    let row =
+        |channel: &ChannelModel| channel_row(server_id, channel, workspace, model, known, unreads);
     let mut made = Vec::new();
     for (kind, title) in [
         (ChannelKind::Text, SectionTitle::TextChannels),
@@ -1797,13 +1855,13 @@ fn members(
                 .map(|member| MemberRow {
                     pictured: member.avatar.is_some(),
                     account_id: member.account_id,
-                    name: member.name.clone(),
+                    name: crate::text::label(&member.name),
                     is_self: member.account_id == model.account.id,
                     roles: workspace
                         .roles
                         .iter()
                         .filter(|role| !role.is_everyone && member.role_ids.contains(&role.id))
-                        .map(|role| role.name.clone())
+                        .map(|role| crate::text::label(&role.name))
                         .collect(),
                 })
                 .collect();
@@ -1836,6 +1894,7 @@ fn directs(
     workspace: &WorkspaceModel,
     model: &ServerModel,
     known: &Known,
+    unreads: &Unreads,
     selected: Option<ConversationId>,
 ) -> Vec<DirectRow> {
     let own = model.account.id;
@@ -1853,7 +1912,7 @@ fn directs(
                 account_id: other,
                 name: name_of(server_id, other, workspace, model, known),
                 selected: selected == Some(conversation.id),
-                unread: Unread::of(model, PlaceId::Direct(conversation.id)),
+                unread: unreads.at(PlaceId::Direct(conversation.id)),
                 mute: Mute::of_direct(other, model, known),
             }
         })
@@ -1870,6 +1929,16 @@ fn directs(
     rows
 }
 
+/// The uploads of the waiting messages of one server, by the number of the upload.
+fn uploads_of(server_id: ServerId, known: &Known) -> HashMap<u64, UploadProgress> {
+    known
+        .uploads
+        .iter()
+        .filter(|((of, _), _)| *of == server_id)
+        .map(|((_, upload), progress)| (*upload, *progress))
+        .collect()
+}
+
 fn workspace_view(
     server_id: ServerId,
     workspace: &WorkspaceModel,
@@ -1877,16 +1946,27 @@ fn workspace_view(
     selection: &Selection,
     known: &Known,
 ) -> WorkspaceView {
-    let mut sections = sections(server_id, workspace, model, known);
+    let unreads = Unreads::of(model);
+    let mut sections = sections(server_id, workspace, model, known, &unreads);
     // A direct conversation is shown in place of a channel while the state holds it.
     let conversation_id = selection
         .conversations
         .get(&server_id)
         .copied()
         .filter(|id| model.conversations.iter().any(|held| held.id == *id));
-    let directs = directs(server_id, workspace, model, known, conversation_id);
+    let directs = directs(
+        server_id,
+        workspace,
+        model,
+        known,
+        &unreads,
+        conversation_id,
+    );
     let conversation = directs.iter().find(|row| row.selected).cloned();
-    let wanted = selection.channels.get(&workspace.workspace.id).copied();
+    let wanted = selection
+        .channels
+        .get(&(server_id, workspace.workspace.id))
+        .copied();
     // An archived channel is in no list. The main area shows it while the state knows it
     // and the person has it selected (ADR 0762).
     let archived = wanted
@@ -1953,7 +2033,7 @@ fn workspace_view(
             name: archived.channel.name.clone(),
             selected: true,
             voice: None,
-            unread: Unread::of(model, PlaceId::Channel(channel_id)),
+            unread: unreads.at(PlaceId::Channel(channel_id)),
             permanent: archived.channel.permanent_messages,
             mute: Mute::of_channel(channel_id, model, known),
             threads,
@@ -2182,9 +2262,9 @@ fn workspace_view(
             .roles
             .iter()
             .filter(|role| !role.is_everyone)
-            .map(|role| (role.id, role.name.clone()))
+            .map(|role| (role.id, crate::text::label(&role.name)))
             .collect(),
-        uploads: Arc::new(known.uploads.clone()),
+        uploads: Arc::new(uploads_of(server_id, known)),
         directs,
         conversation,
         thread,
@@ -2231,49 +2311,39 @@ fn names(
         accounts.extend(
             members
                 .iter()
-                .map(|member| (member.account_id, member.name.clone())),
+                .map(|member| (member.account_id, crate::text::label(&member.name))),
         );
     }
-    accounts.insert(model.account.id, model.account.name.clone());
+    accounts.insert(model.account.id, crate::text::label(&model.account.name));
     Names {
         accounts,
         roles: workspace
             .roles
             .iter()
-            .map(|role| (role.id, role.name.clone()))
+            .map(|role| (role.id, crate::text::label(&role.name)))
             .collect(),
     }
 }
 
 /// What the channels of a workspace hold that the person has not read.
-fn workspace_unread(workspace: &WorkspaceModel, model: &ServerModel) -> Unread {
+fn workspace_unread(workspace: &WorkspaceModel, unreads: &Unreads) -> Unread {
     let mut unread = Unread::default();
     for channel in &workspace.channels {
-        unread.add(Unread::of(model, PlaceId::Channel(channel.channel.id)));
-    }
-    unread
-}
-
-/// What the places of a server hold that the person has not read and that their settings
-/// let through.
-fn server_unread(model: &ServerModel) -> Unread {
-    let mut unread = Unread::default();
-    for state in &model.message_states {
-        unread.add(Unread::of(model, PlaceId::of(&state.place)));
+        unread.add(unreads.at(PlaceId::Channel(channel.channel.id)));
     }
     unread
 }
 
 /// What a server holds unread that no row of a workspace shows: its direct conversations,
 /// and every place when the server lists no workspace.
-fn head_unread(model: &ServerModel) -> Unread {
+fn head_unread(model: &ServerModel, unreads: &Unreads) -> Unread {
     if model.workspaces.is_empty() {
-        return server_unread(model);
+        return unreads.total();
     }
     let mut unread = Unread::default();
-    for state in &model.message_states {
-        if let place @ PlaceId::Direct(_) = PlaceId::of(&state.place) {
-            unread.add(Unread::of(model, place));
+    for (place, held) in &unreads.0 {
+        if let PlaceId::Direct(_) = place {
+            unread.add(*held);
         }
     }
     unread
@@ -2457,7 +2527,7 @@ fn call_panel(
                 .filter(|member| !inside(member.account_id))
                 .map(|member| OutsideMember {
                     account_id: member.account_id,
-                    name: member.name.clone(),
+                    name: crate::text::label(&member.name),
                     place: place_of(member.account_id),
                     invitation: model
                         .invitations
@@ -2873,6 +2943,9 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
         .map(|server| {
             let status = status(server);
             let selected = Some(server.id) == selected_id;
+            let unreads = shown_model(server)
+                .filter(|_| status.shows_content())
+                .map(|model| (model, Unreads::of(model)));
             let shown = shown_model(server).and_then(|model| {
                 shown_workspace(model, selection.workspaces.get(&server.id).copied())
             });
@@ -2886,22 +2959,22 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
                     &server.access,
                     AccessState::LoggedIn { recoveries, .. } if !recoveries.is_empty()
                 ),
-                unread: shown_model(server)
-                    .filter(|_| status.shows_content())
-                    .map(server_unread)
+                unread: unreads
+                    .as_ref()
+                    .map(|(_, unreads)| unreads.total())
                     .unwrap_or_default(),
-                head_unread: shown_model(server)
-                    .filter(|_| status.shows_content())
-                    .map(head_unread)
+                head_unread: unreads
+                    .as_ref()
+                    .map(|(model, unreads)| head_unread(model, unreads))
                     .unwrap_or_default(),
-                workspaces: shown_model(server)
-                    .filter(|_| status.shows_content())
-                    .map(|model| {
+                workspaces: unreads
+                    .as_ref()
+                    .map(|(model, unreads)| {
                         model
                             .workspaces
                             .iter()
                             .map(|workspace| WorkspaceRow {
-                                unread: workspace_unread(workspace, model),
+                                unread: workspace_unread(workspace, unreads),
                                 id: workspace.workspace.id,
                                 name: workspace.workspace.name.clone(),
                                 selected: selected
@@ -2954,7 +3027,7 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
     });
     let account = server.and_then(shown_model).map(|model| Person {
         account_id: Some(model.account.id),
-        name: model.account.name.clone(),
+        name: crate::text::label(&model.account.name),
     });
     let mut view = ShellView {
         servers: rows,

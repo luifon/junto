@@ -393,7 +393,7 @@ pub fn search_panel(
         .map(|members| {
             members
                 .iter()
-                .map(|member| (member.account_id, member.name.clone()))
+                .map(|member| (member.account_id, crate::text::label(&member.name)))
                 .collect()
         })
         .unwrap_or_default();

@@ -594,6 +594,48 @@ async fn a_lost_connection_is_continued_from_the_cursor_without_a_snapshot() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn repeated_successful_resyncs_are_rate_limited() {
+    let mut rig = rig();
+    rig.want(ConnectionLevel::Selected, "jst_one");
+    let (mut peer, _, _) = rig.served().await;
+    // The server asks for a reload as soon as the client subscribed after each snapshot.
+    let start = Instant::now();
+    let mut installed = Vec::new();
+    while start.elapsed() < Duration::from_secs(300) && installed.len() <= 100 {
+        let position = rig.model().cursor.position + 1;
+        rig.set_snapshot(position, |_| {});
+        peer.send(&ServerMessage::Resync {
+            reason: ResyncReason::TooFarBehind,
+        })
+        .await;
+        rig.model_when("the snapshot", |model| model.cursor.position == position)
+            .await;
+        installed.push(start.elapsed());
+        peer.serve().await;
+    }
+    // The first reload reads at once; the reads after it wait, longer each time, up to
+    // the longest wait of the policy.
+    let longest = StreamPolicy::default().longest_delay;
+    assert!(installed.len() <= 14, "{} snapshots", installed.len());
+    for pair in installed.windows(2).skip(8) {
+        assert!(pair[1] - pair[0] >= longest / 2, "{pair:?}");
+    }
+    // A state that stays for the settled time is replaced at once again.
+    tokio::time::sleep(StreamPolicy::default().settled_after).await;
+    let position = rig.model().cursor.position + 1;
+    rig.set_snapshot(position, |_| {});
+    let before = Instant::now();
+    peer.send(&ServerMessage::Resync {
+        reason: ResyncReason::TooFarBehind,
+    })
+    .await;
+    rig.model_when("the snapshot", |model| model.cursor.position == position)
+        .await;
+    assert!(before.elapsed() < Duration::from_secs(1));
+    peer.serve().await;
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_resync_replaces_the_state_and_subscribes_again_on_the_same_connection() {
     let mut rig = rig();
     rig.want(ConnectionLevel::Selected, "jst_one");

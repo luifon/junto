@@ -1107,6 +1107,42 @@ async fn a_challenge_that_names_another_server_is_not_signed() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_challenge_that_the_clock_of_the_device_sees_as_expired_is_signed() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle.dispatch(claim()).await.unwrap();
+    let account_id = logged_in(&handle);
+    // The clock of the device is a day ahead of the server: every challenge has expired
+    // for it. The server decides the lifetime, and the login succeeds.
+    server.shift_challenge_expiry(time::Duration::days(-1));
+    handle.dispatch(AccessAction::LogOut).await.unwrap();
+    handle.dispatch(AccessAction::LogIn).await.unwrap();
+    assert_eq!(logged_in(&handle), account_id);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_session_for_another_account_than_the_challenge_is_refused() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle.dispatch(claim()).await.unwrap();
+    let account_id = logged_in(&handle);
+    // The challenge names the account of the key; the session that the server gives
+    // after a valid proof names another one.
+    server.set_session_account(AccountId::generate());
+    handle.dispatch(AccessAction::LogOut).await.unwrap();
+    let error = handle.dispatch(AccessAction::LogIn).await.unwrap_err();
+    assert_eq!(error, FlowError::InvalidResponse);
+    assert!(!matches!(
+        handle.access().state,
+        AccessState::LoggedIn { account_id: got, .. } if got != account_id
+    ));
+}
+
+#[tokio::test(start_paused = true)]
 async fn each_server_gets_the_newest_api_version_that_both_sides_speak() {
     let network = Arc::new(Network::default());
     let newer = network.host("newer");
@@ -3499,6 +3535,47 @@ async fn a_login_that_was_answered_before_an_acknowledgement_does_not_show_the_r
     handle.dispatch(AccessAction::LogOut).await.unwrap();
     handle.dispatch(AccessAction::LogIn).await.unwrap();
     assert_eq!(shown(&handle), [second]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn recovery_acknowledgements_do_not_hide_another_accounts_notice() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    server.add_invite("NEW-CODE", 1);
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle.dispatch(claim()).await.unwrap();
+    let first = logged_in(&handle);
+    let shown = |handle: &ServerHandle| match handle.access().state {
+        AccessState::LoggedIn { recoveries, .. } => recoveries
+            .into_iter()
+            .map(|notice| notice.id)
+            .collect::<Vec<_>>(),
+        other => panic!("not logged in: {other:?}"),
+    };
+    let recovery = server.recover(first);
+    handle.api().own_account().await.unwrap();
+    handle.acknowledge_recovery(recovery).await.unwrap();
+    assert!(shown(&handle).is_empty());
+
+    // The device leaves the account and joins as another one, without a restart. The
+    // server states a recovery of the new account with the same identifier: it is shown,
+    // and nothing acknowledges it for the new account.
+    server.ban(first);
+    handle.dispatch(AccessAction::Check).await.unwrap();
+    handle.dispatch(AccessAction::ForgetAccount).await.unwrap();
+    handle.dispatch(join("NEW-CODE")).await.unwrap();
+    let second = logged_in(&handle);
+    assert_ne!(second, first);
+    server.recover_with(second, recovery);
+    handle.api().own_account().await.unwrap();
+    assert_eq!(shown(&handle), [recovery]);
+    let path = format!("/account/recovery-notices/{recovery}");
+    assert_eq!(server.count(&path), 1, "no request for the new account");
+    assert_eq!(
+        handle.api().recovery_notices().await.unwrap()[0].id,
+        recovery
+    );
 }
 
 #[tokio::test(start_paused = true)]

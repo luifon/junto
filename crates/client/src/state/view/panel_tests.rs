@@ -59,6 +59,7 @@ fn timeline(place: PlaceId, messages: Vec<Message>) -> Timeline {
         unread_after: None,
         root: None,
         forks: Vec::new(),
+        anchor: None,
     }
 }
 
@@ -350,7 +351,9 @@ fn the_thread_of_the_side_panel_belongs_to_the_shown_channel() {
 
     // Another channel is shown: the thread is not, and the selection of the pin list of
     // the first channel is not either.
-    selection.channels.insert(scene.studio, scene.random);
+    selection
+        .channels
+        .insert((server.id, scene.studio), scene.random);
     selection.pins = Some((server.id, scene.general));
     let view = derive(std::slice::from_ref(&server), &selection, &Known::default());
     let workspace = view.workspace().unwrap();

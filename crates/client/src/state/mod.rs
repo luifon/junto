@@ -37,6 +37,7 @@ use std::time::Duration;
 
 use futures_channel::oneshot;
 use gpui::{Context, Task};
+use junto_client_core::Owner;
 use junto_client_core::api::ApiError;
 use junto_client_core::book::ConnectionMode;
 use junto_client_core::flow::FlowError;
@@ -217,10 +218,11 @@ struct Asked {
 /// What the person asked for and that has not ended yet, or has failed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Pending {
-    /// The recoveries whose acknowledgement is on its way.
-    pub acknowledging: HashSet<RecoveryId>,
-    /// Why the last acknowledgement of a recovery failed, per server.
-    pub acknowledge_failed: HashMap<ServerId, String>,
+    /// The recoveries whose acknowledgement is on its way, each with the owner of the
+    /// server that it was sent for (ADR 0745): two servers can state the same identifier.
+    pub acknowledging: HashSet<(Owner, RecoveryId)>,
+    /// Why the last acknowledgement of a recovery failed, per owner of a server.
+    pub acknowledge_failed: HashMap<Owner, String>,
     /// Why a server could not be removed.
     pub remove_failed: HashMap<ServerId, String>,
     /// The servers whose removal is on its way. A second removal of one of them is not
@@ -240,7 +242,80 @@ pub struct Pending {
     /// was declined.
     pub call_told: Option<String>,
     /// Why the server did not do what the person asked for with a message or a file.
-    pub message_refused: Option<String>,
+    /// The window shows it while the person stays where the request was made
+    /// ([`AppState::message_refusal`]).
+    pub message_refused: Option<Refusal>,
+}
+
+/// A refusal of a request about a message or a file, with the selection that the person
+/// made it in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refusal {
+    pub sentence: String,
+    /// The count of the selections of the person when the request was made.
+    navigation: u64,
+}
+
+impl Pending {
+    /// True while the acknowledgement of this recovery is on its way for the owner of a
+    /// server that the window shows.
+    pub fn acknowledges(&self, owner: Option<Owner>, recovery_id: RecoveryId) -> bool {
+        owner.is_some_and(|owner| self.acknowledging.contains(&(owner, recovery_id)))
+    }
+
+    /// Why the last acknowledgement of a recovery failed for the owner of a server.
+    pub fn acknowledge_failure(&self, owner: Option<Owner>) -> Option<&str> {
+        owner
+            .and_then(|owner| self.acknowledge_failed.get(&owner))
+            .map(String::as_str)
+    }
+}
+
+#[cfg(test)]
+mod pending_tests {
+    use junto_client_core::EntryKey;
+    use junto_client_core::protocol::ids::AccountId;
+
+    use super::*;
+
+    fn owner() -> Owner {
+        Owner {
+            entry: EntryKey {
+                server_id: ServerId::generate(),
+                generation: 1,
+            },
+            account_id: AccountId::generate(),
+        }
+    }
+
+    #[test]
+    fn recovery_acknowledgements_are_independent_across_servers() {
+        let (first, second) = (owner(), owner());
+        let recovery = RecoveryId::generate();
+        let mut pending = Pending::default();
+        // The first server sends the acknowledgement of a recovery. The second server
+        // states the same identifier: its notice can be acknowledged, and is not shown as
+        // being sent.
+        assert!(pending.acknowledging.insert((first, recovery)));
+        assert!(pending.acknowledges(Some(first), recovery));
+        assert!(!pending.acknowledges(Some(second), recovery));
+        assert!(pending.acknowledging.insert((second, recovery)));
+        // The next account of the first entry, and the entry added again, are other owners.
+        let mut account = first;
+        account.account_id = AccountId::generate();
+        let mut added_again = first;
+        added_again.entry.generation += 1;
+        assert!(!pending.acknowledges(Some(account), recovery));
+        assert!(!pending.acknowledges(Some(added_again), recovery));
+        assert!(!pending.acknowledges(None, recovery));
+        // A failure is told for the owner that sent the acknowledgement only.
+        pending
+            .acknowledge_failed
+            .insert(first, "failed".to_owned());
+        assert_eq!(pending.acknowledge_failure(Some(first)), Some("failed"));
+        assert_eq!(pending.acknowledge_failure(Some(second)), None);
+        assert_eq!(pending.acknowledge_failure(Some(account)), None);
+    }
 }
 
 pub struct AppState {
@@ -347,8 +422,6 @@ pub struct AppState {
     message_asks_flying: usize,
     /// The position of the list of each open place, as the client core was told it.
     anchors: HashMap<(ServerId, PlaceId), Option<u64>>,
-    /// The read position of each place that the client core was asked to set.
-    marked: HashMap<(ServerId, PlaceId), u64>,
     /// The recordings that the window shows, with the task that opens each in the
     /// client core.
     open_recordings: HashMap<(ServerId, RecordingId), Task<()>>,
@@ -593,7 +666,6 @@ impl AppState {
             message_asks_flying: 0,
             owners: HashMap::new(),
             anchors: HashMap::new(),
-            marked: HashMap::new(),
             open_recordings: HashMap::new(),
             recording_downloads: HashMap::new(),
             recording_download_numbers: HashMap::new(),
@@ -1287,6 +1359,10 @@ impl AppState {
         if let Event::MessageChanged { message_id, .. } = event.as_ref() {
             self.forget_quotes(server_id, Some(*message_id), cx);
         }
+        if let Event::PermissionsChanged { workspace_id } = event.as_ref() {
+            self.search_after_permission_change(server_id, cx);
+            self.audit_after_permission_change(server_id, *workspace_id, cx);
+        }
         let own_call = self
             .known
             .media
@@ -1515,7 +1591,9 @@ impl AppState {
             self.selection
                 .workspaces
                 .insert(target.server_id, workspace_id);
-            self.selection.channels.insert(workspace_id, channel_id);
+            self.selection
+                .channels
+                .insert((target.server_id, workspace_id), channel_id);
         }
         self.changed(cx);
     }
@@ -1774,7 +1852,7 @@ impl AppState {
         self.made_invitations.retain(|(id, _)| ids.contains(id));
         self.pending
             .acknowledge_failed
-            .retain(|id, _| ids.contains(id));
+            .retain(|owner, _| ids.contains(&owner.entry.server_id));
         self.pending.remove_failed.retain(|id, _| ids.contains(id));
         for server in &servers {
             let id = server.id();
@@ -1988,13 +2066,16 @@ impl AppState {
         channel_id: ChannelId,
         cx: &mut Context<Self>,
     ) {
+        let Some(server_id) = self.shown.server else {
+            return;
+        };
         self.end_jump();
         self.navigations += 1;
-        self.selection.channels.insert(workspace_id, channel_id);
+        self.selection
+            .channels
+            .insert((server_id, workspace_id), channel_id);
         // The channel takes the place of a direct conversation that the server showed.
-        if let Some(server_id) = self.shown.server {
-            self.selection.conversations.remove(&server_id);
-        }
+        self.selection.conversations.remove(&server_id);
         self.changed(cx);
     }
 
@@ -2133,15 +2214,18 @@ impl AppState {
         let Some(server) = self.client.server(server_id) else {
             return;
         };
-        if !self.pending.acknowledging.insert(recovery_id) {
+        let Some(owner) = server.owner() else {
+            return;
+        };
+        if !self.pending.acknowledging.insert((owner, recovery_id)) {
             return;
         }
-        self.pending.acknowledge_failed.remove(&server_id);
+        self.pending.acknowledge_failed.remove(&owner);
         let sending = server.acknowledge_recovery(recovery_id);
         cx.spawn(async move |this, cx| {
             let result = sending.await;
             let _ = this.update(cx, |this, cx| {
-                this.pending.acknowledging.remove(&recovery_id);
+                this.pending.acknowledging.remove(&(owner, recovery_id));
                 // The server holds no notice of this device any more: the recovery left
                 // the state, and there is nothing to tell.
                 let gone = matches!(
@@ -2153,7 +2237,7 @@ impl AppState {
                 if let (Err(error), false) = (&result, gone) {
                     this.pending
                         .acknowledge_failed
-                        .insert(server_id, text::flow_error(&FlowError::from(error)));
+                        .insert(owner, text::flow_error(&FlowError::from(error)));
                 }
                 this.changed(cx);
             });

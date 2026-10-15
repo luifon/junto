@@ -34,6 +34,7 @@ fn timeline(place: PlaceId, messages: Vec<Message>) -> Timeline {
         unread_after: None,
         root: None,
         forks: Vec::new(),
+        anchor: None,
     }
 }
 
@@ -279,7 +280,9 @@ fn the_followed_threads_are_listed_under_the_shown_channel_only() {
     let roots: Vec<MessageId> = threads.iter().map(|state| state.root_id).collect();
     let of_general = known(followed((server.id, scene.general), threads.clone(), false));
     let shows = |channel_id: ChannelId| Selection {
-        channels: [(scene.studio, channel_id)].into_iter().collect(),
+        channels: [((server.id, scene.studio), channel_id)]
+            .into_iter()
+            .collect(),
         ..Selection::default()
     };
     let general = shows(scene.general);
@@ -476,7 +479,7 @@ fn an_archived_channel_lists_its_followed_threads_and_takes_no_change() {
     told(&mut followed, (server.id, root_id), (true, None));
     let held = known(followed);
     let selection = Selection {
-        channels: [(studio, general)].into_iter().collect(),
+        channels: [((server.id, studio), general)].into_iter().collect(),
         thread: Some((server.id, general, root_id)),
         ..Selection::default()
     };

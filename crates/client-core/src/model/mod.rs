@@ -455,6 +455,57 @@ impl ServerModel {
         }
     }
 
+    /// The server told that what the account may see has changed in one workspace, or on
+    /// the server when `scope` is `None`. Until the snapshot that replaces the state
+    /// arrives, the state holds nothing of that scope that the account may have lost: no
+    /// message, pin, unread summary, unread thread, notice of a message there, member or
+    /// collection of the administration. The structure of the workspaces stays, so that
+    /// the selection, the open panels and the calls keep their place; the snapshot
+    /// replaces it.
+    pub(crate) fn withdraw(&mut self, scope: Option<WorkspaceId>) {
+        let channels: Vec<ChannelId> = self
+            .workspaces
+            .iter()
+            .filter(|held| scope.is_none_or(|scope| held.workspace.id == scope))
+            .flat_map(|held| held.channels.iter().map(|channel| channel.channel.id))
+            .chain(self.admin.archived_in(scope))
+            .collect();
+        for workspace in &mut self.workspaces {
+            if scope.is_none_or(|scope| workspace.workspace.id == scope)
+                && !matches!(workspace.members, Loadable::NotLoaded)
+            {
+                Arc::make_mut(workspace).members = Loadable::Loading;
+            }
+        }
+        for channel_id in &channels {
+            let place = PlaceId::Channel(*channel_id);
+            for timeline in &mut self.timelines {
+                if timeline.place.container() == place {
+                    Arc::make_mut(timeline).withdraw();
+                }
+            }
+            for pins in &mut self.pins {
+                if pins.channel_id == *channel_id {
+                    pins.messages = Loadable::Loading;
+                    pins.failed = None;
+                }
+            }
+            self.message_states
+                .retain(|held| PlaceId::of(&held.place) != place);
+            self.forget_named_of(place);
+        }
+        for recording in &mut self.recordings {
+            // A recording whose channel is not known yet may lie in the scope.
+            if recording
+                .channel_id()
+                .is_none_or(|channel_id| channels.contains(&channel_id))
+            {
+                Arc::make_mut(recording).withdraw();
+            }
+        }
+        Arc::make_mut(&mut self.admin).withdraw(scope, &channels);
+    }
+
     pub fn workspace(&self, workspace_id: WorkspaceId) -> Option<&WorkspaceModel> {
         self.workspaces
             .iter()

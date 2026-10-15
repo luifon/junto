@@ -79,6 +79,31 @@ impl OpenRecording {
         }
     }
 
+    /// What the account may see changed (ADR 0748): nothing of the recording, its
+    /// transcript and its lines stays until the next state reads them again.
+    pub(crate) fn withdraw(&mut self) {
+        if !matches!(self.detail, Loadable::NotLoaded) {
+            self.detail = Loadable::Loading;
+        }
+        if !matches!(self.transcript, Loadable::NotLoaded) {
+            self.transcript = Loadable::Loading;
+        }
+        let read_again = self.lines.loaded || self.lines.stale;
+        self.lines = TranscriptLines {
+            stale: read_again,
+            ..TranscriptLines::default()
+        };
+        self.failed = None;
+        self.stale = true;
+    }
+
+    /// The channel of the recording, when its detail is loaded.
+    pub(crate) fn channel_id(&self) -> Option<ChannelId> {
+        self.detail
+            .loaded()
+            .map(|detail| detail.recording.channel_id)
+    }
+
     /// The line at a position of the transcript, when it is loaded.
     pub fn line(&self, position: u32) -> Option<&Arc<TranscriptLine>> {
         let index = self.line_index(position)?;
@@ -403,7 +428,7 @@ impl ServerModel {
                     let mut carried = held.as_ref().clone();
                     carried.stale = true;
                     carried.failed = None;
-                    carried.lines.stale = carried.lines.loaded;
+                    carried.lines.stale = carried.lines.loaded || carried.lines.stale;
                     carried.lines.reading = false;
                     carried.lines.failed = None;
                     carried

@@ -250,6 +250,15 @@ struct Client {
     covered: Level,
     snapshot_retry_at: Option<Instant>,
     snapshot_backoff: Backoff,
+    /// When the last snapshot was installed. A reload that the server causes before the
+    /// state stayed for `settled_after` is a quick reload. The first reload after a state
+    /// that stayed reads at once; each quick reload after it waits for its snapshot,
+    /// longer each time, so a server that asks for a reload after every snapshot gets its
+    /// reads at the waits of failed reads (ADR 0718).
+    installed_at: Option<Instant>,
+    /// The reloads that the server caused since a state stayed for `settled_after`.
+    quick_reloads: u32,
+    reload_backoff: Backoff,
     /// When the call of the account is read again after a read that failed. No event
     /// carries what that read gives of a call that hides who is inside (ADR 0517).
     own_call_retry_at: Option<Instant>,
@@ -312,6 +321,9 @@ pub(crate) async fn run(
         covered: Level::Full,
         snapshot_retry_at: None,
         snapshot_backoff: Backoff::new(policy.first_delay, policy.longest_delay),
+        installed_at: None,
+        quick_reloads: 0,
+        reload_backoff: Backoff::new(policy.first_delay, policy.longest_delay),
         own_call_retry_at: None,
         own_call_backoff: Backoff::new(policy.first_delay, policy.longest_delay),
         halted: false,
@@ -479,6 +491,9 @@ impl Client {
         self.own_call_retry_at = None;
         self.covered = Level::Full;
         self.snapshot_backoff.reset();
+        self.installed_at = None;
+        self.quick_reloads = 0;
+        self.reload_backoff.reset();
     }
 
     fn disconnect(&mut self) {
@@ -703,6 +718,29 @@ impl Client {
         }
     }
 
+    /// The server made the state end: a frame, an event or an answer of the server. The
+    /// state that a snapshot installed less than `settled_after` ago is replaced at once
+    /// the first time; each further time in a row its snapshot waits, longer each time
+    /// (ADR 0718). A reload that the client itself needs, for another level or for a
+    /// refresh, does not wait.
+    fn server_reload(&mut self) {
+        let now = Instant::now();
+        let unsettled = self
+            .installed_at
+            .is_some_and(|at| now.saturating_duration_since(at) < self.policy().settled_after);
+        if !self.stale {
+            if !unsettled {
+                // The state stayed: this reload reads at once, and the waits start again.
+                self.quick_reloads = 0;
+                self.reload_backoff.reset();
+            } else if self.quick_reloads > 0 && self.snapshot_retry_at.is_none() {
+                self.snapshot_retry_at = Some(now + self.reload_backoff.wait());
+            }
+            self.quick_reloads = self.quick_reloads.saturating_add(1);
+        }
+        self.reload();
+    }
+
     fn frame(&mut self, frame: Option<Incoming>) {
         let Some(link) = &mut self.link else {
             return;
@@ -729,7 +767,7 @@ impl Client {
             Some(Incoming::TooLarge) => {
                 // As for a message that cannot be read: the cursor of a snapshot lies
                 // after it.
-                self.reload();
+                self.server_reload();
                 self.lost(StreamFault::Unreadable);
                 return;
             }
@@ -746,7 +784,7 @@ impl Client {
                 // A new connection with the same cursor would get the same frame again.
                 // The cursor of a snapshot lies after it.
                 tracing::debug!(%error, "a message of the event stream cannot be read");
-                self.reload();
+                self.server_reload();
                 self.lost(StreamFault::Unreadable);
             }
         }
@@ -775,7 +813,7 @@ impl Client {
                 .as_ref()
                 .is_some_and(|model| model.cursor.epoch != epoch)
             {
-                self.reload();
+                self.server_reload();
             }
             return;
         }
@@ -794,7 +832,7 @@ impl Client {
                     return;
                 }
                 if cursor != from {
-                    self.reload();
+                    self.server_reload();
                     return;
                 }
                 link.subscription = Subscription::Live {
@@ -820,12 +858,12 @@ impl Client {
                 if epoch == Some(cursor.epoch) {
                     self.move_cursor(cursor.position);
                 } else {
-                    self.reload();
+                    self.server_reload();
                 }
             }
             ServerMessage::Resync { reason } => {
                 tracing::debug!(?reason, "the server does not continue from the cursor");
-                self.reload();
+                self.server_reload();
             }
             ServerMessage::Ended { reason, recovery } => {
                 self.untold.push(Notice::Ended { reason, recovery });
@@ -927,13 +965,20 @@ impl Client {
         }
         self.applied_bytes += bytes;
         if self.applied_bytes > MOST_APPLIED_BYTES {
-            self.reload();
+            self.server_reload();
         }
     }
 
     fn follow(&mut self, follow: Follow) {
+        if follow.withdrawn {
+            // An answer to a read that was sent before the change can hold what the
+            // account may not see any more. The snapshot reads every part again, as
+            // after any snapshot.
+            self.pending
+                .retain(|pending| matches!(pending.load, Load::Snapshot));
+        }
         if follow.reload {
-            self.reload();
+            self.server_reload();
         }
         for part in follow.load {
             if part.is_read_again() {
@@ -1175,7 +1220,7 @@ impl Client {
                     (Part::OwnCall, Payload::OwnCall(view)) => {
                         if let Some(read_at) = view.cursor {
                             if read_at.epoch != model.cursor.epoch {
-                                self.reload();
+                                self.server_reload();
                                 return;
                             }
                             if model
@@ -1276,6 +1321,7 @@ impl Client {
         self.covered = Level::Full;
         self.resume.clear();
         self.snapshot_backoff.reset();
+        self.installed_at = Some(Instant::now());
         self.pending.clear();
         if let Some(link) = &mut self.link {
             link.subscription = Subscription::None;
@@ -1312,8 +1358,9 @@ impl Client {
                 self.refresh_waiters.push(reply);
                 self.refreshed = None;
                 self.pending.clear();
-                self.snapshot_retry_at = None;
                 self.reload();
+                // The person asked for the state: it is read at once.
+                self.snapshot_retry_at = None;
             }
             // The session is tried again after the wait that its end set. A server that
             // still refuses it reports the end again, and the client core logs in again.

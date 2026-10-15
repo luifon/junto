@@ -229,3 +229,63 @@ fn the_view_names_a_newer_build_while_the_check_says_available() {
         );
     }
 }
+
+#[test]
+fn unread_summary_saturates_hostile_counts() {
+    let scene = scene();
+    let place = |channel_id| MessagePlace::Channel {
+        workspace_id: scene.studio,
+        channel_id,
+    };
+    // Two channels of one workspace: one unread message, and the most that the type holds.
+    for (first, second) in [(scene.general, scene.random), (scene.random, scene.general)] {
+        let mut model = scene.model();
+        model.message_states = vec![
+            summary(place(first), 1, 1),
+            summary(place(second), u64::MAX, u64::MAX),
+        ];
+        let row = row(model, scene.own);
+        assert_eq!((row.unread.messages, row.unread.mentions), (100, 100));
+        let studio = row
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == scene.studio)
+            .unwrap();
+        assert_eq!((studio.unread.messages, studio.unread.mentions), (100, 100));
+    }
+}
+
+#[test]
+fn unread_derivation_visits_each_summary_once() {
+    // A server that is not selected, with many direct conversations and no workspace.
+    let scene = scene();
+    let read = |count: usize| {
+        let mut model = scene.model();
+        model.workspaces.clear();
+        for _ in 0..count {
+            let (conversation, place) = direct(scene.own);
+            model.conversations.push(conversation);
+            model.message_states.push(summary(place, 1, 0));
+        }
+        let shown = server(
+            "Shown",
+            Some(scene.model()),
+            logged_in(scene.own, Vec::new()),
+        );
+        let other = server("Other", Some(model), logged_in(scene.own, Vec::new()));
+        let selection = Selection {
+            server: Some(shown.id),
+            ..Selection::default()
+        };
+        super::SUMMARIES_READ.with(|read| read.set(0));
+        let view = derive(&[shown, other], &selection, &Known::default());
+        assert_eq!(view.servers[1].head_unread.messages, 100.min(count as u64));
+        assert_eq!(view.servers[1].unread.messages, 100.min(count as u64));
+        super::SUMMARIES_READ.with(std::cell::Cell::get)
+    };
+    // One derivation makes one index of the summaries of each server that shows its
+    // lists, and of the shown workspace: their number does not grow with the summaries.
+    let (once, twice) = (read(500), read(1_000));
+    assert!((1..=3).contains(&once), "{once}");
+    assert_eq!(twice, once);
+}

@@ -1297,7 +1297,7 @@ impl Shell {
             .pen(pane)
             .problem
             .clone()
-            .or_else(|| self.state.read(cx).pending().message_refused.clone())
+            .or_else(|| self.state.read(cx).message_refusal().map(str::to_owned))
             .map(|sentence| {
                 div()
                     .id("compose-problem")

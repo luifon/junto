@@ -9,7 +9,7 @@ mod recordings;
 mod roles;
 mod secret_input;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::process::ExitCode;
 use std::sync::{Mutex, PoisonError};
@@ -28,12 +28,13 @@ use junto_client_core::flow::link_all::{
 use junto_client_core::paths::data_dir_of_this_user;
 use junto_client_core::profile::{AVATAR_MAX_BYTES, ProfilePreset};
 use junto_client_core::protocol::account::Avatar;
+use junto_client_core::protocol::account::RecoveryNotice;
 use junto_client_core::protocol::ids::{
     AccountId, JoinRequestId, RecoveryId, ServerId, WorkspaceId,
 };
 use junto_client_core::protocol::invite::{ApproveJoinRequest, CreateInvite};
 use junto_client_core::protocol::secret::{InviteCode, LinkCode, OwnerCode};
-use junto_client_core::{Client, ClientOptions, Reach, ServerHandle};
+use junto_client_core::{Client, ClientOptions, Owner, Reach, ServerHandle};
 use time::OffsetDateTime;
 use zeroize::Zeroizing;
 
@@ -1011,8 +1012,29 @@ async fn logged_in(client: &Client, arguments: &Arguments) -> Result<ServerHandl
     }
 }
 
-/// The recoveries that this process has printed.
-static PRINTED: Mutex<BTreeSet<RecoveryId>> = Mutex::new(BTreeSet::new());
+/// The recoveries that this process has printed, each with the owner of the server that
+/// stated it (ADR 0745). Two servers can state the same identifier.
+static PRINTED: Mutex<Vec<(Owner, RecoveryId)>> = Mutex::new(Vec::new());
+
+/// The recoveries that are not printed for `owner` yet. From now on they count as printed
+/// for that owner, and for no other.
+fn unprinted<'a>(
+    printed: &mut Vec<(Owner, RecoveryId)>,
+    owner: Owner,
+    recoveries: &'a [RecoveryNotice],
+) -> Vec<&'a RecoveryNotice> {
+    recoveries
+        .iter()
+        .filter(|recovery| {
+            let key = (owner, recovery.id);
+            let new = !printed.contains(&key);
+            if new {
+                printed.push(key);
+            }
+            new
+        })
+        .collect()
+}
 
 /// Prints the recoveries that this device has not acknowledged, each once in this process.
 /// It runs after every contact that can log in, before the output of the command. A
@@ -1022,11 +1044,11 @@ fn notices(server: &ServerHandle) {
     let AccessState::LoggedIn { recoveries, .. } = server.access().state else {
         return;
     };
+    let Some(owner) = server.owner() else {
+        return;
+    };
     let mut printed = PRINTED.lock().unwrap_or_else(PoisonError::into_inner);
-    for recovery in recoveries {
-        if !printed.insert(recovery.id) {
-            continue;
-        }
+    for recovery in unprinted(&mut printed, owner, &recoveries) {
         let by = match recovery.performed_by {
             Some(account_id) => format!("the account {account_id}"),
             None => "a command on the host of the server".to_owned(),
@@ -1335,7 +1357,44 @@ fn show(server: &ServerHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::shown;
+    use junto_client_core::EntryKey;
+    use junto_client_core::protocol::account::RecoveryNotice;
+    use junto_client_core::protocol::ids::{AccountId, RecoveryId, ServerId};
+    use time::OffsetDateTime;
+
+    use super::{Owner, shown, unprinted};
+
+    #[test]
+    fn recovery_notices_with_equal_ids_on_two_servers_are_both_printed() {
+        let owner = || Owner {
+            entry: EntryKey {
+                server_id: ServerId::generate(),
+                generation: 1,
+            },
+            account_id: AccountId::generate(),
+        };
+        let (first, second) = (owner(), owner());
+        let notice = RecoveryNotice {
+            id: RecoveryId::generate(),
+            device_id: None,
+            performed_by: None,
+            performed_at: OffsetDateTime::UNIX_EPOCH,
+        };
+        let recoveries = vec![notice.clone()];
+        let mut printed = Vec::new();
+        // Each server is printed once, also when a later contact states it again.
+        assert_eq!(unprinted(&mut printed, first, &recoveries), [&notice]);
+        assert!(unprinted(&mut printed, first, &recoveries).is_empty());
+        assert_eq!(unprinted(&mut printed, second, &recoveries), [&notice]);
+        assert!(unprinted(&mut printed, second, &recoveries).is_empty());
+        // The next account of an entry, and the entry added again, are other owners.
+        let mut account = first;
+        account.account_id = AccountId::generate();
+        let mut added_again = first;
+        added_again.entry.generation += 1;
+        assert_eq!(unprinted(&mut printed, account, &recoveries), [&notice]);
+        assert_eq!(unprinted(&mut printed, added_again, &recoveries), [&notice]);
+    }
 
     #[test]
     fn text_of_a_server_is_printed_without_control_characters() {

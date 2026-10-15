@@ -66,3 +66,61 @@ impl ServerApi {
         Ok(held.permissions)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use junto_protocol::WorkspacePermission;
+    use junto_protocol::ids::{ChannelId, ServerId};
+    use junto_protocol::structure::ChannelPermissions;
+
+    use crate::address::ServerAddress;
+    use crate::api::{
+        ApiClient, ApiError, HttpRequest, HttpResponse, RetryPolicy, Transport, TransportFuture,
+    };
+    use crate::secret::SecretToken;
+    use crate::version::SupportedVersions;
+
+    /// A server that answers every request with the permissions of one channel.
+    struct Answers(ChannelId);
+
+    impl Transport for Answers {
+        fn send(&self, _request: HttpRequest) -> TransportFuture {
+            let body = serde_json::to_vec(&ChannelPermissions {
+                channel_id: self.0,
+                permissions: vec![WorkspacePermission::ManageChannel],
+            })
+            .unwrap();
+            Box::pin(async move {
+                Ok(HttpResponse {
+                    status: 200,
+                    retry_after: None,
+                    body: body.into(),
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn an_answer_that_names_another_channel_is_refused() {
+        let asked = ChannelId::generate();
+        let api = |named| {
+            ApiClient::new(
+                Arc::new(Answers(named)),
+                ServerAddress::parse("chat.example.test").unwrap(),
+                ServerId::generate(),
+                SupportedVersions::THIS_BUILD.negotiate(&[1]).unwrap(),
+                RetryPolicy::default(),
+            )
+            .with_token(SecretToken::new("jst_test".to_owned()))
+        };
+        let held = api(asked).channel_permissions(asked).await.unwrap();
+        assert_eq!(held, [WorkspacePermission::ManageChannel]);
+        let other = api(ChannelId::generate()).channel_permissions(asked).await;
+        assert!(
+            matches!(other, Err(ApiError::InvalidResponse { .. })),
+            "{other:?}"
+        );
+    }
+}

@@ -125,11 +125,11 @@ pub fn account_names(
             names.extend(
                 members
                     .iter()
-                    .map(|member| (member.account_id, member.name.clone())),
+                    .map(|member| (member.account_id, crate::text::label(&member.name))),
             );
         }
     }
-    names.insert(model.account.id, model.account.name.clone());
+    names.insert(model.account.id, crate::text::label(&model.account.name));
     names
 }
 
@@ -146,7 +146,7 @@ fn names_of(
                 workspace
                     .roles
                     .iter()
-                    .map(|role| (role.id, role.name.clone()))
+                    .map(|role| (role.id, crate::text::label(&role.name)))
                     .collect()
             })
             .unwrap_or_default(),

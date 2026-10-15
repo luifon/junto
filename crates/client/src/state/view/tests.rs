@@ -322,6 +322,68 @@ fn the_first_server_its_default_workspace_and_its_first_text_channel_are_shown_a
 }
 
 #[test]
+fn channel_selection_is_scoped_to_server_when_workspace_ids_match() {
+    let scene = scene();
+    // Two servers state the same workspace with the same channels.
+    let servers = [scene.server(), scene.server()];
+    assert_ne!(servers[0].id, servers[1].id);
+    let shown_channel = |selection: &Selection| {
+        derive(&servers, selection, &Known::default())
+            .shown()
+            .channel
+    };
+    let mut selection = Selection {
+        server: Some(servers[0].id),
+        ..Selection::default()
+    };
+    selection
+        .channels
+        .insert((servers[0].id, scene.studio), scene.daily);
+    assert_eq!(shown_channel(&selection), Some(scene.daily));
+    // The second server shows its own choice, and its first channel without one.
+    selection.server = Some(servers[1].id);
+    assert_eq!(shown_channel(&selection), Some(scene.general));
+    selection
+        .channels
+        .insert((servers[1].id, scene.studio), scene.random);
+    assert_eq!(shown_channel(&selection), Some(scene.random));
+    // The choice of the second server leaves the first one as it was.
+    selection.server = Some(servers[0].id);
+    assert_eq!(shown_channel(&selection), Some(scene.daily));
+}
+
+#[test]
+fn pending_upload_progress_is_scoped_to_server() {
+    use junto_client_core::transfers::{TransferFailure, UploadStage};
+
+    let scene = scene();
+    let servers = [scene.server(), scene.server()];
+    let progress = |stage, sent| UploadProgress {
+        stage,
+        sent,
+        bytes: 1_000,
+        interrupted: false,
+    };
+    // Each server numbers its uploads from 1: both first uploads have the number 1.
+    let sending = progress(UploadStage::Sending, 400);
+    let failed = progress(UploadStage::Failed(TransferFailure::Interrupted), 0);
+    let known = Known {
+        uploads: HashMap::from([((servers[0].id, 1), sending), ((servers[1].id, 1), failed)]),
+        ..Known::default()
+    };
+    for (index, expected) in [(0, sending), (1, failed)] {
+        let selection = Selection {
+            server: Some(servers[index].id),
+            ..Selection::default()
+        };
+        let view = derive(&servers, &selection, &known);
+        let uploads = &view.workspace().unwrap().uploads;
+        assert_eq!(uploads.len(), 1);
+        assert_eq!(uploads.get(&1), Some(&expected));
+    }
+}
+
+#[test]
 fn a_selection_is_followed_while_the_state_holds_it_and_replaced_when_it_is_gone() {
     let scene = scene();
     let servers = [
@@ -332,7 +394,9 @@ fn a_selection_is_followed_while_the_state_holds_it_and_replaced_when_it_is_gone
         server: Some(servers[0].id),
         ..Selection::default()
     };
-    selection.channels.insert(scene.studio, scene.daily);
+    selection
+        .channels
+        .insert((servers[0].id, scene.studio), scene.daily);
     let view = derive(&servers, &selection, &Known::default());
     let workspace = view.workspace().unwrap();
     let shown = workspace.channel.as_ref().unwrap();
@@ -357,7 +421,7 @@ fn a_selection_is_followed_while_the_state_holds_it_and_replaced_when_it_is_gone
     // A channel, a workspace and a server that are gone.
     selection
         .channels
-        .insert(scene.studio, ChannelId::generate());
+        .insert((servers[0].id, scene.studio), ChannelId::generate());
     selection
         .workspaces
         .insert(servers[0].id, WorkspaceId::generate());
@@ -692,7 +756,11 @@ fn the_members_are_in_the_order_of_their_names_with_their_roles() {
 
     Arc::make_mut(&mut model.workspaces[1]).members = Loadable::Loaded(vec![
         member(own, "luca", vec![engineers.id, everyone.id]),
-        member(AccountId::generate(), "Carla", vec![engineers.id, leads.id]),
+        member(
+            AccountId::generate(),
+            "Car\nla\u{202e}",
+            vec![engineers.id, leads.id],
+        ),
         member(AccountId::generate(), "ana", Vec::new()),
     ]);
     let loaded = server("Acme", Some(model.clone()), logged_in(own, Vec::new()));
@@ -1045,7 +1113,7 @@ mod calls {
         );
         let servers = std::slice::from_ref(&server);
         let own_row = |known: &Known| {
-            let view = derive(servers, &selected(&scene, daily), known);
+            let view = derive(servers, &selected(&server, &scene, daily), known);
             occupant(&view, "Daily", own)
         };
 
@@ -1196,9 +1264,11 @@ mod calls {
         }
     }
 
-    fn selected(scene: &Scene, channel_id: ChannelId) -> Selection {
+    fn selected(server: &ServerSnapshot, scene: &Scene, channel_id: ChannelId) -> Selection {
         Selection {
-            channels: [(scene.studio, channel_id)].into_iter().collect(),
+            channels: [((server.id, scene.studio), channel_id)]
+                .into_iter()
+                .collect(),
             ..Selection::default()
         }
     }
@@ -1239,7 +1309,7 @@ mod calls {
             active.phase = phase;
             let view = derive(
                 std::slice::from_ref(&server),
-                &selected(&scene, scene.daily),
+                &selected(&server, &scene, scene.daily),
                 &in_call(active.clone()),
             );
             let menu = view.person_menu(focus_id, other).unwrap();
@@ -1251,7 +1321,7 @@ mod calls {
         active.phase = Phase::Connected;
         let view = derive(
             std::slice::from_ref(&server),
-            &selected(&scene, scene.daily),
+            &selected(&server, &scene, scene.daily),
             &in_call(active),
         );
         assert!(
@@ -1293,7 +1363,11 @@ mod calls {
         let servers = std::slice::from_ref(&server);
 
         // Outside the call: the marks of the server, and no measured level.
-        let outside = derive(servers, &selected(&scene, daily), &Known::default());
+        let outside = derive(
+            servers,
+            &selected(&server, &scene, daily),
+            &Known::default(),
+        );
         let row = voice(outside.workspace().unwrap(), "Daily");
         assert_eq!(row.relation, Relation::Outside);
         let shown = occupant(&outside, "Daily", ben);
@@ -1315,7 +1389,7 @@ mod calls {
         };
         known.media.voice.set_volume(server.id, ana, 140);
         known.media.now = Some(time() + time::Duration::seconds(125));
-        let inside = derive(servers, &selected(&scene, daily), &known);
+        let inside = derive(servers, &selected(&server, &scene, daily), &known);
         assert_eq!(
             voice(inside.workspace().unwrap(), "Daily").relation,
             Relation::Inside
@@ -1342,13 +1416,13 @@ mod calls {
         assert_eq!((strip.channel_id, strip.shown), (Some(daily), true));
 
         // Another channel is shown: the strip stays, and the main area has no call.
-        let elsewhere = derive(servers, &selected(&scene, general), &known);
+        let elsewhere = derive(servers, &selected(&server, &scene, general), &known);
         assert!(elsewhere.workspace().unwrap().call.is_none());
         let strip = elsewhere.call.unwrap();
         assert_eq!((strip.name.as_deref(), strip.shown), (Some("Daily"), false));
         // A clock of this machine that is behind the server shows no negative time.
         known.media.now = Some(time() - time::Duration::seconds(5));
-        let early = derive(servers, &selected(&scene, daily), &known);
+        let early = derive(servers, &selected(&server, &scene, daily), &known);
         assert_eq!(early.call.unwrap().elapsed, Some(Duration::ZERO));
     }
 
@@ -1378,7 +1452,7 @@ mod calls {
         model.named = vec![(root.id, Named::Read(Arc::new(root.clone())))];
         let server = server("Acme Studio", Some(model), logged_in(own, Vec::new()));
         let servers = std::slice::from_ref(&server);
-        let mut selection = selected(&scene, daily);
+        let mut selection = selected(&server, &scene, daily);
         selection.thread = Some((server.id, daily, root.id));
         let entry = |view: &ShellView| {
             let workspace = view.workspace().unwrap();
@@ -1414,7 +1488,7 @@ mod calls {
         // Another channel is shown: a selection of the voice channel shows the call, so
         // its thread still cannot be opened.
         let general = scene.general;
-        let elsewhere = derive(servers, &selected(&scene, general), &known);
+        let elsewhere = derive(servers, &selected(&server, &scene, general), &known);
         assert!(!entry(&elsewhere).available);
     }
 
@@ -1427,7 +1501,11 @@ mod calls {
         let servers = std::slice::from_ref(&server);
         let mut call = active(target(&server, &scene, daily));
         call.phase = Phase::Connecting;
-        let view = derive(servers, &selected(&scene, daily), &in_call(call.clone()));
+        let view = derive(
+            servers,
+            &selected(&server, &scene, daily),
+            &in_call(call.clone()),
+        );
         let people = &voice(view.workspace().unwrap(), "Daily").occupants;
         assert_eq!(people.len(), 2);
         let shown = occupant(&view, "Daily", own);
@@ -1446,7 +1524,7 @@ mod calls {
         let call = active(target(&server, &empty, empty.daily));
         let view = derive(
             std::slice::from_ref(&server),
-            &selected(&empty, empty.daily),
+            &selected(&server, &empty, empty.daily),
             &in_call(call),
         );
         let people = &voice(view.workspace().unwrap(), "Daily").occupants;
@@ -1462,7 +1540,7 @@ mod calls {
         let call = active(target(&server, &listed, listed.daily));
         let view = derive(
             std::slice::from_ref(&server),
-            &selected(&listed, listed.daily),
+            &selected(&server, &listed, listed.daily),
             &in_call(call),
         );
         assert_eq!(occupant(&view, "Daily", person).presence, Presence::Here);
@@ -1478,7 +1556,7 @@ mod calls {
         };
         let view = derive(
             std::slice::from_ref(&server),
-            &selected(&scene, daily),
+            &selected(&server, &scene, daily),
             &in_call(call),
         );
         assert_eq!(
@@ -1517,7 +1595,7 @@ mod calls {
         let at = |change: &dyn Fn(&mut Known)| {
             let mut known = in_call(active(target(&server, &scene, daily)));
             change(&mut known);
-            derive(servers, &selected(&scene, daily), &known).controls
+            derive(servers, &selected(&server, &scene, daily), &known).controls
         };
         fn call(known: &mut Known) -> &mut ActiveCall {
             known.media.calls.call.as_mut().unwrap()
@@ -1547,7 +1625,7 @@ mod calls {
         );
         let view = derive(
             servers,
-            &selected(&scene, daily),
+            &selected(&server, &scene, daily),
             &in_call(active(target(&server, &scene, daily))),
         );
         let shown = occupant(&view, "Daily", own);
@@ -1591,7 +1669,7 @@ mod calls {
         let with = |change: &dyn Fn(&mut CallsView)| {
             let mut known = Known::default();
             change(&mut known.media.calls);
-            derive(servers, &selected(&scene, scene.daily), &known)
+            derive(servers, &selected(&server, &scene, scene.daily), &known)
         };
 
         let joining = with(&|calls| calls.joining = Some(daily));
@@ -1690,7 +1768,7 @@ mod calls {
         };
         let view = derive(
             std::slice::from_ref(&server),
-            &selected(&scene, daily),
+            &selected(&server, &scene, daily),
             &known,
         );
         let audio = view.workspace().unwrap().call.clone().unwrap().audio;
@@ -1729,7 +1807,7 @@ mod calls {
         known.media.voice = VoiceSettings::default();
         let view = derive(
             std::slice::from_ref(&server),
-            &selected(&scene, daily),
+            &selected(&server, &scene, daily),
             &known,
         );
         let audio = view.workspace().unwrap().call.clone().unwrap().audio;
@@ -1772,7 +1850,7 @@ mod calls {
         let known = in_call(active(target(&server, &scene, daily)));
         let view = derive(
             std::slice::from_ref(&server),
-            &selected(&scene, daily),
+            &selected(&server, &scene, daily),
             &known,
         );
         let outside = view.workspace().unwrap().call.clone().unwrap().outside;
@@ -1826,7 +1904,7 @@ mod calls {
         let mut call = active(target(&server, &scene, daily));
         let mut known = in_call(call.clone());
         known.media.can_share = true;
-        let view = derive(servers, &selected(&scene, daily), &known);
+        let view = derive(servers, &selected(&server, &scene, daily), &known);
         assert_eq!(panel(&view).stage, None);
         let strip = view.call.clone().unwrap();
         assert_eq!((strip.share, strip.can_share), (OwnShare::Off, true));
@@ -1837,7 +1915,7 @@ mod calls {
         call.watched = Some(ShareId::Of(ana));
         let mut known = in_call(call.clone());
         known.media.voice.share_volume = 60;
-        let view = derive(servers, &selected(&scene, daily), &known);
+        let view = derive(servers, &selected(&server, &scene, daily), &known);
         let stage = panel(&view).stage.unwrap();
         assert_eq!(stage.volume, 60);
         assert_eq!(stage.shares.len(), 2);
@@ -1871,7 +1949,11 @@ mod calls {
             frame_rate: 15,
         });
         call.watched = Some(ShareId::Own);
-        let view = derive(servers, &selected(&scene, daily), &in_call(call.clone()));
+        let view = derive(
+            servers,
+            &selected(&server, &scene, daily),
+            &in_call(call.clone()),
+        );
         let stage = panel(&view).stage.unwrap();
         let own_share = stage.shares.last().unwrap();
         assert_eq!(stage.shares.len(), 3);
@@ -1889,17 +1971,25 @@ mod calls {
         assert_eq!(view.call.clone().unwrap().share, OwnShare::Running);
         assert!(occupant(&view, "Daily", own).sharing);
         // The strip tells the share while another channel is shown.
-        let elsewhere = derive(servers, &selected(&scene, general), &in_call(call.clone()));
+        let elsewhere = derive(
+            servers,
+            &selected(&server, &scene, general),
+            &in_call(call.clone()),
+        );
         assert_eq!(elsewhere.call.unwrap().share, OwnShare::Running);
 
         // A share that starts, and one that ended by itself.
         call.shares.clear();
         call.share = ShareState::Starting;
-        let view = derive(servers, &selected(&scene, daily), &in_call(call.clone()));
+        let view = derive(
+            servers,
+            &selected(&server, &scene, daily),
+            &in_call(call.clone()),
+        );
         assert_eq!(view.call.clone().unwrap().share, OwnShare::Starting);
         assert_eq!(panel(&view).stage, None);
         call.share = ShareState::Ended(CaptureError::SourceGone);
-        let view = derive(servers, &selected(&scene, general), &in_call(call));
+        let view = derive(servers, &selected(&server, &scene, general), &in_call(call));
         assert_eq!(view.call.clone().unwrap().share, OwnShare::Off);
         assert_eq!(view.share_notice, Some(CaptureError::SourceGone));
     }
@@ -1912,7 +2002,7 @@ mod calls {
         let server = scene.server();
         let servers = std::slice::from_ref(&server);
         let mut known = in_call(active(target(&server, &scene, daily)));
-        let shown = panel(&derive(servers, &selected(&scene, daily), &known));
+        let shown = panel(&derive(servers, &selected(&server, &scene, daily), &known));
         assert_eq!(
             (
                 shown.share_resolution,
@@ -1924,7 +2014,7 @@ mod calls {
         known.media.voice.share_resolution = ShareResolution::Source;
         known.media.voice.share_frame_rate = 60;
         known.media.voice.hide_people_without_video = true;
-        let shown = panel(&derive(servers, &selected(&scene, daily), &known));
+        let shown = panel(&derive(servers, &selected(&server, &scene, daily), &known));
         assert_eq!(
             (
                 shown.share_resolution,
@@ -1991,7 +2081,7 @@ mod calls {
             }
             panel(&derive(
                 std::slice::from_ref(&server),
-                &selected(scene, daily),
+                &selected(&server, scene, daily),
                 &known,
             ))
             .recording
@@ -2067,7 +2157,7 @@ mod calls {
             known
         };
         let shown = |known: &Known| {
-            panel(&derive(servers, &selected(&scene, daily), known))
+            panel(&derive(servers, &selected(&server, &scene, daily), known))
                 .recording
                 .state
         };
@@ -2197,7 +2287,7 @@ mod calls {
             change(&mut call);
             let view = derive(
                 std::slice::from_ref(&server),
-                &selected(scene, daily),
+                &selected(&server, scene, daily),
                 &in_call(call),
             );
             let room = panel(&view).room;
@@ -2265,7 +2355,7 @@ mod calls {
         known.media.calls.muted = true;
         let view = derive(
             std::slice::from_ref(&server),
-            &selected(&scene, daily),
+            &selected(&server, &scene, daily),
             &known,
         );
         let room = panel(&view).room;
@@ -2306,7 +2396,7 @@ mod calls {
             known.people.read_name(server.id, ana, "Ana");
             derive(
                 std::slice::from_ref(&server),
-                &selected(scene, channel),
+                &selected(&server, scene, channel),
                 &known,
             )
         };
@@ -2354,7 +2444,7 @@ mod calls {
             let known = in_call(active(target(&server, scene, daily)));
             let view = derive(
                 std::slice::from_ref(&server),
-                &selected(scene, daily),
+                &selected(&server, scene, daily),
                 &known,
             );
             (panel(&view).room, view.workspace().unwrap().allowed)
@@ -2605,7 +2695,7 @@ mod calls {
         let known = in_call(active(target(&server, &scene, daily)));
         let view = derive(
             std::slice::from_ref(&server),
-            &selected(&scene, daily),
+            &selected(&server, &scene, daily),
             &known,
         );
         assert!(view.invitations.is_empty());

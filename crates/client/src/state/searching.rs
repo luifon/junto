@@ -264,6 +264,30 @@ impl AppState {
         }
     }
 
+    /// What the account may see on the server of the search changed (ADR 0748): the
+    /// results leave at once, the answer of a read that started before is not taken, and
+    /// the search is read again as after a reload.
+    pub(super) fn search_after_permission_change(
+        &mut self,
+        server_id: ServerId,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(search) = self
+            .known
+            .search
+            .as_mut()
+            .filter(|search| search.server_id == server_id)
+        else {
+            return;
+        };
+        search.hits.clear();
+        search.more = false;
+        search.reading_more = false;
+        self.search_asks += 1;
+        self.search_next = None;
+        self.search_after_reload(server_id, cx);
+    }
+
     /// The channel of the filter left the state of its server: the filter is taken
     /// away, and the search is read again without it.
     pub(super) fn drop_lost_search_filter(

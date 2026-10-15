@@ -572,6 +572,111 @@ async fn http_message_bodies_count_toward_the_retained_budget() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn permission_invalidation_hides_content_before_a_snapshot_can_succeed() {
+    let room = room().await;
+    let (rig, place) = (&room.rig, room.place);
+    let workspace_id = rig.scene.workspace_id;
+    rig.http.routes.lock().unwrap().members = vec![member("Ana")];
+    soon("the members", rig.live.load_members(workspace_id))
+        .await
+        .unwrap();
+    let pins = soon("the pins", rig.live.open_pins(rig.scene.general));
+    pins.await.unwrap();
+    // A page is on its way when the change arrives, and the snapshots that follow fail.
+    let gate = rig.http.hold("/messages");
+    let before = rig.http.count("/messages");
+    rig.live.read_latest_messages(place);
+    soon("the page request", async {
+        while rig.http.count("/messages") == before {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    for _ in 0..3 {
+        rig.http.fail("/snapshot", 500, "internal");
+    }
+    room.peer
+        .event(
+            41,
+            Event::PermissionsChanged {
+                workspace_id: Some(workspace_id),
+            },
+        )
+        .await;
+    // Nothing of the workspace that the account may have lost is held any more.
+    let model = rig
+        .model_when("the change", |model| model.cursor.position == 41)
+        .await;
+    let timeline = model.timeline(place).unwrap();
+    assert!(timeline.messages.is_empty() && !timeline.loaded && timeline.stale);
+    assert_eq!(
+        model.workspace(workspace_id).unwrap().members,
+        Loadable::Loading
+    );
+    let pinned = model.pin_list(rig.scene.general).unwrap();
+    assert_eq!(pinned.messages, Loadable::Loading);
+    // The answer to the page that was asked for before the change is not taken, while
+    // the snapshots fail.
+    gate.add_permits(64);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let model = rig.model();
+    assert!(model.timeline(place).unwrap().messages.is_empty());
+    assert!(rig.http.count("/snapshot") >= 2);
+    // A snapshot that succeeds reads the place again.
+    let model = rig
+        .model_when("the place read again", |model| {
+            model
+                .timeline(place)
+                .is_some_and(|timeline| timeline.loaded && !timeline.stale)
+        })
+        .await;
+    assert_eq!(positions(&model, place), [1, 2, 3]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_bound_keeps_the_start_of_a_timeline_that_the_reader_shows() {
+    use crate::model::message_tests::heavy;
+    use crate::model::{MOST_LOADED_WEIGHT, MOST_MESSAGE_WEIGHT, weight};
+
+    let room = room().await;
+    let (rig, place) = (&room.rig, room.place);
+    // The reader shows the first message of the place.
+    rig.live.set_message_anchor(place, Some(1));
+    rig.model_when("the anchor", |model| {
+        model
+            .timeline(place)
+            .is_some_and(|timeline| timeline.anchor == Some(1))
+    })
+    .await;
+    let each = MOST_MESSAGE_WEIGHT - 4096;
+    let count = (MOST_LOADED_WEIGHT / each) as u64 + 8;
+    let mut heavies = Vec::new();
+    for index in 0..count {
+        let held = heavy(rig.scene.text_place(), 4 + index, each);
+        room.chat(|chat| chat.messages.push(held.clone()));
+        room.changed(41 + index, &held, false).await;
+        heavies.push(held);
+    }
+    rig.model_when("the last event", |model| {
+        model.cursor.position == 40 + count
+            && model
+                .timeline(place)
+                .is_some_and(|timeline| timeline.more_after)
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    let model = rig.model();
+    let timeline = model.timeline(place).unwrap();
+    let held: usize = timeline.messages.iter().map(|held| weight(held)).sum();
+    assert!(held <= MOST_LOADED_WEIGHT, "{held}");
+    // The messages that the reader shows stay; the end gave way.
+    assert_eq!(positions(&model, place)[..3], [1, 2, 3]);
+    assert!(timeline.more_after && !timeline.more_before);
+    let last = heavies.last().unwrap();
+    assert!(timeline.message(last.id).is_none());
+}
+
+#[tokio::test(start_paused = true)]
 async fn the_read_position_is_sent_one_request_at_a_time_with_the_newest_position() {
     let room = room().await;
     let (rig, place) = (&room.rig, room.place);
