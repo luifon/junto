@@ -25,6 +25,7 @@ mod admin_pages;
 mod calls;
 mod flows;
 mod harness;
+mod layout;
 mod linking;
 mod live;
 mod logo;

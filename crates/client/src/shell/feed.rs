@@ -664,6 +664,7 @@ impl Shell {
         &mut self,
         workspace: &WorkspaceView,
         compact: bool,
+        notices: Vec<AnyElement>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -687,7 +688,7 @@ impl Shell {
             gone,
             empty,
         };
-        self.render_pane(Pane::Main, &shown, window, cx)
+        self.render_pane(Pane::Main, &shown, notices, window, cx)
     }
 
     /// The message area of a pane: its list with the states of a list that has no rows,
@@ -696,6 +697,7 @@ impl Shell {
         &mut self,
         pane: Pane,
         shown: &PaneShown<'_>,
+        mut notices: Vec<AnyElement>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -715,7 +717,14 @@ impl Shell {
             });
         }
         let body: AnyElement = match shown.feed {
-            None => self.feed_state(pane, text::MESSAGES, text::MESSAGES_LOADING, None, cx),
+            None => self.feed_state(
+                pane,
+                text::MESSAGES,
+                text::MESSAGES_LOADING,
+                None,
+                std::mem::take(&mut notices),
+                cx,
+            ),
             Some(feed) if !feed.loaded => match feed.failed {
                 Some(failure) => {
                     let sentence = match failure {
@@ -727,6 +736,7 @@ impl Shell {
                         text::MESSAGES_FAILED_TITLE,
                         sentence,
                         Some((feed.server_id, feed.place)),
+                        std::mem::take(&mut notices),
                         cx,
                     );
                     // The messages that wait keep their rows under the statement.
@@ -743,7 +753,14 @@ impl Shell {
                         state
                     }
                 }
-                None => self.feed_state(pane, text::MESSAGES, text::MESSAGES_LOADING, None, cx),
+                None => self.feed_state(
+                    pane,
+                    text::MESSAGES,
+                    text::MESSAGES_LOADING,
+                    None,
+                    std::mem::take(&mut notices),
+                    cx,
+                ),
             },
             Some(feed) => {
                 let rows = feed.rows.clone();
@@ -760,6 +777,7 @@ impl Shell {
                     match pane {
                         Pane::Main => StatePanel::new(text::NO_MESSAGES_TITLE, shown.empty)
                             .selector(pane.id("no-messages"))
+                            .after_actions(std::mem::take(&mut notices))
                             .into_any_element(),
                         // A thread without replies shows its root above this line.
                         Pane::Thread => div()
@@ -812,7 +830,11 @@ impl Shell {
             } else {
                 colors.travertine
             }))
-            .children(stale)
+            .child(
+                crate::ui::notice_slot(pane.id("message-notice-area"))
+                    .children(notices)
+                    .children(stale),
+            )
             .child(body)
             .child(match self.shown_archived() {
                 // An archived channel takes no message (ADR 0410).
@@ -828,9 +850,12 @@ impl Shell {
         title: &'static str,
         sentence: &'static str,
         retry: Option<(ServerId, PlaceId)>,
+        notices: Vec<AnyElement>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let panel = StatePanel::new(title, sentence).selector(pane.id("messages-state"));
+        let panel = StatePanel::new(title, sentence)
+            .selector(pane.id("messages-state"))
+            .after_actions(notices);
         match retry {
             Some((server_id, place)) => panel
                 .action(

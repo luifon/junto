@@ -80,11 +80,9 @@ impl Shell {
             }
         };
 
-        // The notices of the server are drawn above its content. A state panel draws them
-        // under its actions, so that a notice that arrives later does not move an action
-        // that is already shown (ADR 0732).
+        // State panels keep their notices below the actions (ADR 0730).
         let mut notices = Some(self.render_notices(view, &theme, cx));
-        let mut stated = |panel: StatePanel| {
+        let stated = |panel: StatePanel, notices: &mut Option<Vec<AnyElement>>| {
             panel
                 .after_actions(notices.take().unwrap_or_default())
                 .into_any_element()
@@ -93,6 +91,7 @@ impl Shell {
             (None, _) => (
                 stated(
                     StatePanel::new(text::NO_SERVER_TITLE, text::NO_SERVER).selector("no-server"),
+                    &mut notices,
                 ),
                 None,
             ),
@@ -101,7 +100,7 @@ impl Shell {
                     self.render_call(view, channel, panel, narrow, window, cx)
                 }
                 (None, Some(_), _) => (
-                    self.render_feed(shown, false, window, cx),
+                    self.render_feed(shown, false, notices.take().unwrap_or_default(), window, cx),
                     side_of(self, shown, window, cx),
                 ),
                 // A direct conversation in place of a channel.
@@ -112,7 +111,13 @@ impl Shell {
                         .flex_1()
                         .min_h_0()
                         .child(self.render_direct_call(server.id, conversation.account_id, cx))
-                        .child(self.render_feed(shown, false, window, cx))
+                        .child(self.render_feed(
+                            shown,
+                            false,
+                            notices.take().unwrap_or_default(),
+                            window,
+                            cx,
+                        ))
                         .into_any_element(),
                     side_of(self, shown, window, cx),
                 ),
@@ -120,6 +125,7 @@ impl Shell {
                     stated(
                         StatePanel::new(text::NO_CHANNEL_TITLE, text::NO_CHANNELS)
                             .selector("no-channel"),
+                        &mut notices,
                     ),
                     side_of(self, shown, window, cx),
                 ),
@@ -129,13 +135,17 @@ impl Shell {
                     Content::NoWorkspace => stated(
                         StatePanel::new(text::NO_CHANNEL_TITLE, text::NO_WORKSPACES)
                             .selector("no-workspace"),
+                        &mut notices,
                     ),
                     // A server that waits for a device link shows its code and the key
                     // of this device (ADR 0782).
-                    _ => stated(match self.render_link_wait_panel(server, cx) {
-                        Some(panel) => panel,
-                        None => self.render_server_state(server, cx),
-                    }),
+                    _ => stated(
+                        match self.render_link_wait_panel(server, cx) {
+                            Some(panel) => panel,
+                            None => self.render_server_state(server, cx),
+                        },
+                        &mut notices,
+                    ),
                 },
                 None,
             ),
@@ -152,15 +162,33 @@ impl Shell {
             .flex()
             .flex_1()
             .min_h_0()
-            .child(
+            .child(if in_call {
                 div()
                     .flex()
                     .flex_col()
                     .flex_1()
                     .min_w_0()
-                    .children(notices.into_iter().flatten())
-                    .child(body),
-            )
+                    .min_h_0()
+                    .child(body)
+                    .child(
+                        crate::ui::notice_slot("call-notice-area")
+                            .h(u(128.0))
+                            .children(
+                                call.and_then(|(_, panel)| panel.room.meeting.as_ref())
+                                    .map(|meeting| self.render_meeting_bar(meeting, &theme, cx)),
+                            )
+                            .children(notices.take().into_iter().flatten()),
+                    )
+            } else {
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .children(notices.take().into_iter().flatten())
+                    .child(body)
+            })
             .when_some(side, |split, side| {
                 if narrow {
                     // The panel lies over the content, with a flat cover behind it.
@@ -205,10 +233,6 @@ impl Shell {
                 &theme,
                 cx,
             ))
-            .children(
-                call.and_then(|(_, panel)| panel.room.meeting.as_ref())
-                    .map(|meeting| self.render_meeting_bar(meeting, &theme, cx)),
-            )
             .child(split)
     }
 

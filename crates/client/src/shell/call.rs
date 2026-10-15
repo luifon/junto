@@ -655,7 +655,7 @@ impl Shell {
     ) -> AnyElement {
         let colors = theme.colors;
         let feed = match view.workspace() {
-            Some(workspace) => self.render_feed(workspace, true, window, cx),
+            Some(workspace) => self.render_feed(workspace, true, Vec::new(), window, cx),
             None => div().flex_1().into_any_element(),
         };
         div()
@@ -1534,40 +1534,42 @@ impl Shell {
             .ink(ink)
             .child(first)
             .child(second)
-            .children(
-                self.state
-                    .read(cx)
-                    .media_calls()
-                    .call
-                    .and_then(|call| super::camera::failure(&call.camera))
-                    .map(|line| {
-                        crate::ui::Notice::new(line)
-                            .selector("camera-failed")
-                            .stacked()
-                            .action(
-                                div()
-                                    .flex()
-                                    .gap(u(6.0))
-                                    .child(
-                                        Button::new("camera-settings")
-                                            .label(text::SETTINGS)
-                                            .selector("camera-settings")
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.open_settings(window, cx)
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new("camera-dismiss")
-                                            .label(text::DISMISS)
-                                            .selector("camera-dismiss")
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.state.read(cx).calls().stop_camera();
-                                            })),
-                                    ),
-                            )
-                    }),
-            )
             .into_any_element()
+    }
+
+    pub(crate) fn render_camera_notice(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        self.state
+            .read(cx)
+            .media_calls()
+            .call
+            .and_then(|call| super::camera::failure(&call.camera))
+            .map(|line| {
+                crate::ui::Notice::new(line)
+                    .selector("camera-failed")
+                    .stacked()
+                    .action(
+                        div()
+                            .flex()
+                            .gap(u(6.0))
+                            .child(
+                                Button::new("camera-settings")
+                                    .label(text::SETTINGS)
+                                    .selector("camera-settings")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_settings(window, cx)
+                                    })),
+                            )
+                            .child(
+                                Button::new("camera-dismiss")
+                                    .label(text::DISMISS)
+                                    .selector("camera-dismiss")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.state.read(cx).calls().stop_camera();
+                                    })),
+                            ),
+                    )
+            })
+            .map(IntoElement::into_any_element)
     }
 
     /// The line above the profile strip about the sound of this device.

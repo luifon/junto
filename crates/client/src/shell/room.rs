@@ -800,7 +800,7 @@ impl Shell {
                     .typeface(theme.types.small, theme)
                     .line_height(u(17.0))
                     .ink(colors.ink_2)
-                    .child(text::FULL_NOTE)
+                    .child(format!("{}: {}", channel.name, text::FULL_NOTE))
                     .into_any_element()
             });
         }
@@ -895,6 +895,7 @@ impl Shell {
                         .child(icon(shown, 13.0, colors.bronze))
                         .child(div().min_w_0().child(title)),
                 )
+                .child(div().truncate().child(channel.name.clone()))
                 .child(sentence)
                 .child(actions)
                 .into_any_element(),

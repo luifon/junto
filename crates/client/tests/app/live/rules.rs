@@ -1188,3 +1188,69 @@ fn the_own_tile_is_open_while_the_report_of_the_state_waits(cx: &mut TestAppCont
     world.run(caller.calls.leave());
     window.click("leave-call");
 }
+
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn a_late_entry_notice_keeps_the_call_tile_in_place(cx: &mut TestAppContext) {
+    let mut scene = scene(cx);
+    enter(&scene.world, &scene.caller, scene.target);
+    scene.join_in_the_window();
+    scene
+        .world
+        .run(scene.admin.handle.api().lock_call(scene.voice))
+        .unwrap();
+    scene.world.run(scene.caller.calls.leave());
+    scene
+        .window
+        .until("the other participant has left", |window| {
+            occupants(window).len() == 1
+        });
+    let selector = format!("call-tile:{}", scene.luca);
+    scene.window.until("the call tile is drawn", |window| {
+        window.shows_named(selector.clone())
+    });
+    let before = scene
+        .window
+        .cx
+        .debug_bounds(crate::harness::selector(selector.clone()))
+        .unwrap();
+    scene
+        .world
+        .run(scene.admin.handle.api().request_entry(scene.voice))
+        .unwrap();
+    scene.window.until("the entry notice is drawn", |window| {
+        window.shows("entry-prompt")
+    });
+    assert_eq!(
+        scene
+            .window
+            .cx
+            .debug_bounds(crate::harness::selector(selector.clone()))
+            .unwrap(),
+        before
+    );
+}
+
+#[gpui::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+fn ending_a_meeting_keeps_the_call_panel_control_in_place(cx: &mut TestAppContext) {
+    let mut scene = scene(cx);
+    enter(&scene.world, &scene.caller, scene.target);
+    scene.join_in_the_window();
+    scene.ada_starts_a_meeting();
+    scene.window.until("the meeting bar is drawn", |window| {
+        window.shows("meeting-bar")
+    });
+    let before = scene.window.cx.debug_bounds("call-tab-members").unwrap();
+    scene
+        .world
+        .run(scene.admin.handle.api().end_meeting(scene.voice))
+        .unwrap();
+    scene.window.until("the meeting bar is removed", |window| {
+        !window.shows("meeting-bar")
+    });
+    assert_eq!(
+        scene.window.cx.debug_bounds("call-tab-members").unwrap(),
+        before
+    );
+}

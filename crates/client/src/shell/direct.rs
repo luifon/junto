@@ -202,19 +202,24 @@ impl Shell {
             .flex_none()
             .p(u(12.0))
             .child(call)
-            .children(if separate {
-                Some(
-                    Notice::new(text::CALL_SEPARATE)
-                        .selector("call-in-separate-window")
-                        .action(self.return_call_button(cx))
-                        .into_any_element(),
-                )
-            } else {
-                None
-            })
+            .child(
+                crate::ui::notice_slot("direct-notice-area")
+                    .children(if separate {
+                        Some(
+                            Notice::new(text::CALL_SEPARATE)
+                                .selector("call-in-separate-window")
+                                .action(self.return_call_button(cx))
+                                .into_any_element(),
+                        )
+                    } else {
+                        None
+                    })
+                    .children(
+                        history.map(|line| Notice::new(line).selector("direct-call-history")),
+                    ),
+            )
             .children(if separate { None } else { share })
             .children(if separate { None } else { pictures })
-            .children(history.map(|line| Notice::new(line).selector("direct-call-history")))
             .into_any_element()
     }
 }

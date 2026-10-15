@@ -85,7 +85,7 @@ impl Shell {
                 self.render_fork_bar(thread, &theme, cx),
                 self.render_follow_bar(thread, &theme, cx),
                 self.render_thread_root(thread, &theme, window, cx),
-                self.render_pane(Pane::Thread, &shown, window, cx),
+                self.render_pane(Pane::Thread, &shown, Vec::new(), window, cx),
             ]
         };
         div()
