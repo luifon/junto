@@ -30,7 +30,7 @@ def check():
         try:
             release_tools.run("cargo", "build", "--locked", "-p", "junto-client-core", "--bin", "junto-release",
                               cwd=release_tools.REPOSITORY, timeout=3600)
-            files = release_tools.keys(release_tools.REPOSITORY / "target/debug/junto-release", root)
+            files = release_tools.keys(pathlib.Path(os.environ.get("CARGO_TARGET_DIR", release_tools.REPOSITORY / "target")) / "debug/junto-release", root)
             identity = create(root / "identity")
             pin = root / "certificate.sha1"
             pin.write_text(identity)

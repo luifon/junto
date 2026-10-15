@@ -6,6 +6,7 @@ set -eu
 cd "$(dirname "$0")/.."
 
 failures=0
+digest='@sha256:[0-9a-f]\{64\}'
 fail() {
     echo "FAIL  $1"
     failures=$((failures + 1))
@@ -43,18 +44,69 @@ deployed_postgres=$(sed -n 's/^ *image: postgres:\([0-9]*\)\..*/\1/p' deploy/bas
 tested_postgres=$(sed -n 's/.*:-postgres:\([0-9]*\)-.*/\1/p' tools/with-test-postgres.sh | head -n 1)
 same "PostgreSQL major version of the deployment and of the tests" "$deployed_postgres" "$tested_postgres"
 
+# The CI jobs read their images and tool versions from tools/ci/pins.sh (ADR 0905).
+pins=tools/ci/pins.sh
+pin() {
+    sed -n "s/^: \"\${$1:=\(.*\)}\"$/\1/p; s/^$1=\(.*\)$/\1/p" "$pins" | head -n 1
+}
+same "PostgreSQL image of the deployment and of the tests in CI" \
+    "$(sed -n 's/^ *image: \(postgres:.*\)$/\1/p' deploy/base.yaml)" "$(pin JUNTO_TEST_POSTGRES_IMAGE)"
+same "LiveKit image of the deployment and of the tests in CI" \
+    "$(sed -n 's/^ *image: \(livekit\/livekit-server:.*\)$/\1/p' deploy/base.yaml)" "$(pin JUNTO_TEST_LIVEKIT_IMAGE)"
+unpinned=$(grep -n '_IMAGE[:=]' "$pins" | grep -v "$digest" || true)
+if [ -n "$unpinned" ]; then
+    echo "$unpinned"
+    fail "$pins names an image without a digest"
+else
+    echo "ok    every image of $pins has a digest"
+fi
+same "Node version of $pins and of its Node image" \
+    "$(pin JUNTO_CI_NODE_VERSION)" "$(pin JUNTO_CI_NODE_IMAGE | sed -n 's/^node:\([0-9.]*\)-.*/\1/p')"
+same "uv version of $pins and of its uv image" \
+    "$(pin JUNTO_CI_UV_VERSION)" "$(pin JUNTO_CI_UV_IMAGE | sed -n 's/^[^:]*:\([0-9.]*\)@.*/\1/p')"
+same "Python version of the transcription worker and of the Python image of $pins" \
+    "$(sed -n 's/^requires-python = "==\([0-9.]*\)\.\*"$/\1/p' workers/transcription/pyproject.toml)" \
+    "$(pin JUNTO_CI_PYTHON_IMAGE | sed -n 's/^python:\([0-9]*\.[0-9]*\)\..*/\1/p')"
+
+# A container that a CI script starts or creates names its image by a variable of
+# tools/ci/pins.sh or by a digest. A command that continues over several lines is read whole.
+unpinned=$(for file in tools/ci/*.sh; do
+    awk '
+        { instruction = instruction $0 }
+        /\\$/ { sub(/\\$/, "", instruction); next }
+        { print FILENAME ": " instruction; instruction = "" }
+    ' "$file"
+done | grep -E 'docker (run|create) ' | grep -v -E '"\$JUNTO_[A-Z_]*_IMAGE"|@sha256:[0-9a-f]{64}' || true)
+if [ -n "$unpinned" ]; then
+    echo "$unpinned"
+    fail "a CI script starts a container whose image is neither a variable of $pins nor named by a digest"
+else
+    echo "ok    every container of the CI scripts has an image of $pins or a digest"
+fi
+# A CI script installs a package of the runner with apt-get only with its version.
+other=$(grep -n -E '(apt-get|apt|aptitude|dpkg|snap)( +-[^ ]+)* +(install|-i)' tools/ci/* \
+    | grep -v -E 'apt-get install [^\\]*$' || true)
+unpinned=$(grep -h 'apt-get install' tools/ci/* | sed 's/.*apt-get install//' | tr -s ' ' '\n' \
+    | grep -v -E -e '^$' -e '^-' -e '^[a-z0-9][a-z0-9+.-]*=[0-9][0-9A-Za-z.+~:-]*$' || true)
+if [ -n "$other$unpinned" ]; then
+    echo "$other$unpinned"
+    fail "a CI script installs a package of the runner without a version, or in a form that this check does not read"
+else
+    echo "ok    every package that a CI script installs with apt-get has a version"
+fi
+same "PostgreSQL version of the tests in CI on Linux and on Windows" \
+    "$(pin JUNTO_TEST_POSTGRES_IMAGE | sed -n 's/^postgres:\([0-9.]*\)-.*/\1/p')" \
+    "$(sed -n 's/^VERSION = "\([0-9.]*\)-[0-9]*"$/\1/p' tools/windows/with_test_postgres.py)"
+
 if [ -d .github/workflows ]; then
-    same "PostgreSQL image of the deployment and of the tests in CI" \
-        "$(sed -n 's/^ *image: \(postgres:.*\)$/\1/p' deploy/base.yaml)" \
-        "$(sed -n 's/^ *JUNTO_TEST_POSTGRES_IMAGE: \(.*\)$/\1/p' .github/workflows/ci.yml)"
-    same "LiveKit image of the deployment and of the tests in CI" \
-        "$(sed -n 's/^ *image: \(livekit\/livekit-server:.*\)$/\1/p' deploy/base.yaml)" \
-        "$(sed -n 's/^ *JUNTO_TEST_LIVEKIT_IMAGE: \(.*\)$/\1/p' .github/workflows/ci.yml)"
+    same "Node version of the workflow and of $pins" \
+        "$(sed -n 's/^ *node-version: \([0-9.]*\)$/\1/p' .github/workflows/ci.yml)" "$(pin JUNTO_CI_NODE_VERSION)"
+    same "uv version of the workflow and of $pins" \
+        "$(sed -n 's/.*pipx install uv==\([0-9.]*\)$/\1/p' .github/workflows/ci.yml)" "$(pin JUNTO_CI_UV_VERSION)"
+    same "cargo-deny version of the workflow cache and of $pins" \
+        "$(sed -n 's/^ *key: cargo-deny-\([0-9.]*\)-.*/\1/p' .github/workflows/ci.yml)" "$(pin JUNTO_CI_CARGO_DENY_VERSION)"
     # The Windows job downloads the PostgreSQL build for Windows (ADR 0912); the program
     # that downloads it checks the SHA-256 of the file.
-    same "PostgreSQL version of the tests in CI on Linux and on Windows" \
-        "$(sed -n 's/^ *JUNTO_TEST_POSTGRES_IMAGE: postgres:\([0-9.]*\)-.*/\1/p' .github/workflows/ci.yml)" \
-        "$(sed -n 's/^VERSION = "\([0-9.]*\)-[0-9]*"$/\1/p' tools/windows/with_test_postgres.py)"
     if grep -q '^SHA256 = "[0-9a-f]\{64\}"$' tools/windows/with_test_postgres.py \
         && grep -q 'sha256_of(partial)' tools/windows/with_test_postgres.py; then
         echo "ok    the PostgreSQL download of the Windows tests is checked by its SHA-256"
@@ -63,7 +115,6 @@ if [ -d .github/workflows ]; then
     fi
 fi
 
-digest='@sha256:[0-9a-f]\{64\}'
 unpinned=$(grep -n '^ *image:' deploy/*.yaml | grep -v "$digest" || true)
 if [ -n "$unpinned" ]; then
     echo "$unpinned"
