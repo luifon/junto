@@ -3579,6 +3579,53 @@ async fn recovery_acknowledgements_do_not_hide_another_accounts_notice() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_late_acknowledgement_answer_does_not_hide_the_notice_of_the_next_account() {
+    let network = Arc::new(Network::default());
+    let server = network.host("acme");
+    server.add_invite("NEW-CODE", 1);
+    let device = device(&network);
+    let handle = device.add("acme").await;
+    handle.dispatch(claim()).await.unwrap();
+    let first = logged_in(&handle);
+    let shown = |handle: &ServerHandle| match handle.access().state {
+        AccessState::LoggedIn { recoveries, .. } => recoveries
+            .into_iter()
+            .map(|notice| notice.id)
+            .collect::<Vec<_>>(),
+        other => panic!("not logged in: {other:?}"),
+    };
+    let recovery = server.recover(first);
+    handle.api().own_account().await.unwrap();
+    let path = format!("/account/recovery-notices/{recovery}");
+
+    // The server does the work of the acknowledgement of the first account; its answer
+    // arrives after the device has joined as another account, whose recovery has the same
+    // identifier.
+    let answer = server.hold_answer(&path);
+    let acknowledging = tokio::spawn(handle.acknowledge_recovery(recovery));
+    while server.count(&path) == 0 {
+        assert!(!acknowledging.is_finished(), "no acknowledgement was sent");
+        tokio::task::yield_now().await;
+    }
+    server.ban(first);
+    handle.dispatch(AccessAction::Check).await.unwrap();
+    handle.dispatch(AccessAction::ForgetAccount).await.unwrap();
+    handle.dispatch(join("NEW-CODE")).await.unwrap();
+    let second = logged_in(&handle);
+    assert_ne!(second, first);
+    server.recover_with(second, recovery);
+    handle.api().own_account().await.unwrap();
+    assert_eq!(shown(&handle), [recovery]);
+
+    answer.add_permits(1);
+    acknowledging.await.unwrap().unwrap();
+    assert_eq!(shown(&handle), [recovery]);
+    handle.api().own_account().await.unwrap();
+    assert_eq!(shown(&handle), [recovery]);
+    assert_eq!(server.count(&path), 1);
+}
+
+#[tokio::test(start_paused = true)]
 async fn an_acknowledgement_removes_the_notice_of_one_device_only() {
     let network = Arc::new(Network::default());
     let server = network.host("acme");

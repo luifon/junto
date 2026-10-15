@@ -40,7 +40,9 @@ use junto_client_core::protocol::invite::CreateInvite;
 use junto_client_core::protocol::message::SendMessage;
 use junto_client_core::protocol::roles::{CreateServerRole, CreateWorkspaceRole};
 use junto_client_core::protocol::secret::InviteCode;
-use junto_client_core::protocol::structure::{ChannelKind, CreateCategory, CreateChannel};
+use junto_client_core::protocol::structure::{
+    ChannelKind, CreateCategory, CreateChannel, UpdateChannel,
+};
 use junto_client_core::protocol::{ServerPermission, WorkspacePermission};
 use junto_client_core::secret::SecretToken;
 use junto_client_core::version::SupportedVersions;
@@ -1540,4 +1542,69 @@ fn the_audit_log_names_what_was_done_filters_by_group_and_loads_older_entries(
             );
         }
     }
+}
+
+/// Whether the messages of a channel are permanent and whether the person is the owner, as
+/// the open page "Archive and deletion" of the channel states them.
+fn archive_page_of(window: &mut Window, channel_id: ChannelId) -> Option<(bool, bool)> {
+    match window.admin()?.scope {
+        Scope::Channel(settings) if settings.channel_id == channel_id => match settings.page {
+            ChannelPageView::Archive(page) => Some((page.permanent, page.is_owner)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+#[gpui::test]
+fn a_member_who_manages_channels_deletes_none_with_permanent_messages(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let own = window.view().person.account_id.unwrap();
+    let default = default_workspace(&world, &admin.handle);
+    let notes = text_channel(&world, &admin.handle, default, "notes");
+    let plans = text_channel(&world, &admin.handle, default, "plans");
+    grant_workspace(
+        &world,
+        &admin.handle,
+        default,
+        own,
+        WorkspacePermission::ManageChannel,
+    );
+    let permanent = UpdateChannel {
+        permanent_messages: Some(true),
+        ..Default::default()
+    };
+    world
+        .run(admin.handle.api().update_channel(plans, &permanent))
+        .unwrap();
+
+    // The member may delete a channel without permanent messages: the question opens.
+    open_channel_settings(&mut window, "notes", notes);
+    open_page(&mut window, "channel-nav-archive", |window| {
+        archive_page_of(window, notes) == Some((false, false))
+    });
+    click_in_page(&mut window, "channel-delete");
+    window.until("the question of the deletion", |window| {
+        window.shows("channel-delete-confirm")
+    });
+    window.click("channel-delete-cancel");
+    window.until("the question is closed", |window| {
+        !window.shows("channel-delete-confirm")
+    });
+    window.click("admin-close");
+    window.until("the settings are closed", |window| !window.shows("admin"));
+
+    // The deletion of a channel with permanent messages is the owner's: the action is
+    // drawn, and a click opens no question.
+    open_channel_settings(&mut window, "plans", plans);
+    open_page(&mut window, "channel-nav-archive", |window| {
+        archive_page_of(window, plans) == Some((true, false))
+    });
+    click_in_page(&mut window, "channel-delete");
+    window.settle();
+    assert!(!window.shows("channel-delete-confirm"));
+    assert!(window.shows("channel-delete"));
 }
