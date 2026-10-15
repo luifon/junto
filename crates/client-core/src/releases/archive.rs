@@ -25,23 +25,6 @@ pub fn pack(source: &Path, output: &mut impl Write) -> Result<(), Error> {
     Ok(())
 }
 
-pub fn pack_bundle(bundle: &Path, output: &mut impl Write) -> Result<(), Error> {
-    if !fs::symlink_metadata(bundle)?.is_dir()
-        || bundle.file_name().and_then(|name| name.to_str()) != Some("Junto.app")
-    {
-        return Err(Error::Invalid("archive bundle"));
-    }
-    output.write_all(MAGIC)?;
-    write_directory(
-        bundle.parent().ok_or(Error::Invalid("bundle parent"))?,
-        bundle,
-        output,
-        &mut (0, 0),
-    )?;
-    output.write_all(&0u16.to_be_bytes())?;
-    Ok(())
-}
-
 fn write_directory(
     root: &Path,
     directory: &Path,
@@ -112,28 +95,55 @@ pub fn unpack(input: &mut impl Read, destination: &Path) -> Result<(), Error> {
     result
 }
 
-fn extract(input: &mut impl Read, destination: &Path) -> Result<(), Error> {
-    let mut magic = vec![0; MAGIC.len()];
-    input.read_exact(&mut magic)?;
-    if magic != MAGIC {
-        return Err(Error::Invalid("archive format"));
+/// One file of an archive, after the checks of its name, mode and size.
+struct Entry {
+    name: String,
+    // Windows has no executable mode; the file name decides.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    executable: bool,
+    size: u64,
+}
+
+/// Reads the entries of an archive in order. Each entry's content must be read or skipped
+/// before the next header.
+struct Entries {
+    names: HashSet<String>,
+    total: u64,
+}
+
+impl Entries {
+    fn start(input: &mut impl Read) -> Result<Self, Error> {
+        let mut magic = vec![0; MAGIC.len()];
+        input.read_exact(&mut magic)?;
+        if magic != MAGIC {
+            return Err(Error::Invalid("archive format"));
+        }
+        Ok(Self {
+            names: HashSet::new(),
+            total: 0,
+        })
     }
-    let mut names = HashSet::new();
-    let mut total = 0u64;
-    loop {
+
+    fn next(&mut self, input: &mut impl Read) -> Result<Option<Entry>, Error> {
         let mut length = [0; 2];
         input.read_exact(&mut length)?;
         let length = usize::from(u16::from_be_bytes(length));
         if length == 0 {
-            break;
+            let mut trailing = [0];
+            if input.read(&mut trailing)? != 0 {
+                return Err(Error::Invalid("trailing archive bytes"));
+            }
+            return Ok(None);
         }
         if length > 1024 {
             return Err(Error::Invalid("archive path"));
         }
         let mut name = vec![0; length];
         input.read_exact(&mut name)?;
-        let name = std::str::from_utf8(&name).map_err(|_| Error::Invalid("archive path"))?;
-        if !valid_name(name) || !names.insert(name.to_ascii_lowercase()) || names.len() > MAX_FILES
+        let name = String::from_utf8(name).map_err(|_| Error::Invalid("archive path"))?;
+        if !valid_name(&name)
+            || !self.names.insert(name.to_ascii_lowercase())
+            || self.names.len() > MAX_FILES
         {
             return Err(Error::Invalid("archive path"));
         }
@@ -145,13 +155,80 @@ fn extract(input: &mut impl Read, destination: &Path) -> Result<(), Error> {
         let mut size = [0; 8];
         input.read_exact(&mut size)?;
         let size = u64::from_be_bytes(size);
-        total = total
+        self.total = self
+            .total
             .checked_add(size)
             .ok_or(Error::Invalid("archive size"))?;
-        if total > MAX_ARCHIVE {
+        if self.total > MAX_ARCHIVE {
             return Err(Error::Invalid("archive size"));
         }
-        let path = destination.join(name);
+        Ok(Some(Entry {
+            name,
+            executable: executable[0] == 1,
+            size,
+        }))
+    }
+}
+
+/// Writes the one file `name` of an archive to the new file `destination`, with the mode
+/// of an executable on Unix when the archive marks it so. The rest of the archive is read
+/// and checked as an extraction would check it.
+pub fn extract_file(input: &mut impl Read, name: &str, destination: &Path) -> Result<(), Error> {
+    let mut entries = Entries::start(input)?;
+    let mut found = false;
+    let result = (|| {
+        while let Some(entry) = entries.next(input)? {
+            if entry.name != name {
+                if std::io::copy(&mut (&mut *input).take(entry.size), &mut std::io::sink())?
+                    != entry.size
+                {
+                    return Err(Error::Invalid("truncated archive"));
+                }
+                continue;
+            }
+            found = true;
+            write_file(input, &entry, destination)?;
+        }
+        if !found {
+            return Err(Error::Invalid("archive file missing"));
+        }
+        Ok(())
+    })();
+    if result.is_err() && found {
+        let _ = fs::remove_file(destination);
+    }
+    result
+}
+
+fn write_file(input: &mut impl Read, entry: &Entry, path: &Path) -> Result<(), Error> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut output = options.open(path)?;
+    if std::io::copy(&mut (&mut *input).take(entry.size), &mut output)? != entry.size {
+        return Err(Error::Invalid("truncated archive"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        output.set_permissions(fs::Permissions::from_mode(if entry.executable {
+            0o755
+        } else {
+            0o644
+        }))?;
+    }
+    output.sync_all()?;
+    Ok(())
+}
+
+fn extract(input: &mut impl Read, destination: &Path) -> Result<(), Error> {
+    let mut entries = Entries::start(input)?;
+    while let Some(entry) = entries.next(input)? {
+        let path = destination.join(&entry.name);
         let parent = path.parent().ok_or(Error::Invalid("archive path"))?;
         fs::create_dir_all(parent)?;
         #[cfg(unix)]
@@ -164,31 +241,7 @@ fn extract(input: &mut impl Read, destination: &Path) -> Result<(), Error> {
                 fs::set_permissions(directory, fs::Permissions::from_mode(0o755))?;
             }
         }
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut output = options.open(&path)?;
-        if std::io::copy(&mut (&mut *input).take(size), &mut output)? != size {
-            return Err(Error::Invalid("truncated archive"));
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            output.set_permissions(fs::Permissions::from_mode(if executable[0] == 1 {
-                0o755
-            } else {
-                0o644
-            }))?;
-        }
-        output.sync_all()?;
-    }
-    let mut trailing = [0];
-    if input.read(&mut trailing)? != 0 {
-        return Err(Error::Invalid("trailing archive bytes"));
+        write_file(input, &entry, &path)?;
     }
     Ok(())
 }

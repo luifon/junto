@@ -15,6 +15,7 @@ fn main() {
         println!("cargo:rerun-if-env-changed={name}");
     }
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+    let mut sets = Vec::new();
     for (variable, tracked, output) in [
         (
             "JUNTO_TEST_UPDATE_KEYS_FILE",
@@ -37,11 +38,13 @@ fn main() {
         let bytes = fs::read(&path).unwrap_or_else(|error| panic!("cannot read {path}: {error}"));
         if output.ends_with("keys.json") {
             configuration::keys(&bytes).unwrap_or_else(|error| panic!("{error}"));
+            sets.push(bytes.clone());
         } else {
             configuration::certificate(&bytes).unwrap_or_else(|error| panic!("{error}"));
         }
         fs::write(out.join(output), bytes).unwrap();
     }
+    configuration::distinct_roles(&sets[0], &sets[1]).unwrap_or_else(|error| panic!("{error}"));
     if let Ok(source) = env::var("JUNTO_UPDATE_SOURCE")
         && !source.is_empty()
     {

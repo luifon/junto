@@ -134,7 +134,7 @@ The second command applies the two values of this file. `sysctl --system` would 
    docker compose -f one-host.yaml logs --no-log-prefix server | grep -A 3 "no owner"
    ```
 
-7. Become the owner with a client. In the desktop client, add the server `https://chat.example.test` and enter the owner code. With the command-line client of this repository (`cargo build -p junto-client-core --bin junto-cli`):
+7. Become the owner with a client. In the desktop client (installed as `docs/client-macos.md`, `docs/client-linux.md` or `docs/client-windows.md` describe), add the server `https://chat.example.test` and enter the owner code. With the command-line client of this repository (`cargo build -p junto-client-core --bin junto-cli`):
 
    ```sh
    junto-cli add https://chat.example.test

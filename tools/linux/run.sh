@@ -96,6 +96,7 @@ docker run --name "$build" --network "$network" --memory 6g --cpuset-cpus "0-$((
     --mount "type=volume,src=$target_volume,dst=/target" \
     --mount "type=volume,src=$target_volume,dst=/src/spikes/test-participant/target" \
     -e "CARGO_BUILD_JOBS=$processors" -e CARGO_TARGET_DIR=/target -e CARGO_INCREMENTAL -e CARGO_TERM_COLOR \
+    -e JUNTO_UPDATE_SOURCE -e SOURCE_DATE_EPOCH \
     -e JUNTO_TEST_DATABASE_URL=postgres://postgres@postgres/postgres \
     -e JUNTO_TEST_LIVEKIT_API_URL=http://livekit:7880 \
     -e JUNTO_TEST_LIVEKIT_URL=ws://livekit:7880 \

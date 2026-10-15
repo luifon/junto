@@ -1,6 +1,31 @@
-# macOS release tooling
+# Release tooling
 
-The build machine needs Python 3.11 or later. `bundle.py <binary> <new Junto.app> <recovery binary>` assembles both executables and metadata using the workspace version. The fixed identifier is `org.junto.app` (ADR 0725).
+The packages, the signed release format and the update step are described in ADR 0724 (format and source), ADR 0725 (macOS bundle and signing identity), ADR 0726 (archive, record and rollback), ADR 0754 (Linux) and ADR 0755 (Windows). The install instructions for people are `docs/client-macos.md`, `docs/client-linux.md` and `docs/client-windows.md`.
+
+The build machine needs Python 3.11 or later.
+
+## Keys
+
+Create distinct release and freshness keys:
+
+```sh
+tools/serial.sh cargo run -p junto-client-core --bin junto-release -- \
+    keygen /absolute/offline/release.seed /absolute/offline/release-public.json
+tools/serial.sh cargo run -p junto-client-core --bin junto-release -- \
+    keygen /absolute/freshness/freshness.seed /absolute/freshness/freshness-public.json
+```
+
+Each seed is generated randomly, written privately and never overwritten. Keep both outside repositories with encrypted offline backups. Copy only the release public array to `packaging/update-keys.json` and the freshness public array to `packaging/freshness-keys.json`, review and track both. A key in both files stops the build. Release keys authorize code and are brought online only for a new release. Keep freshness keys in a separate private signing environment for renewal before each 30-day expiry; a freshness key cannot authorize new code. The release host needs neither private key.
+
+The release tool and every package are built with the same `JUNTO_UPDATE_SOURCE` (the HTTPS base address of releases) from the same checkout. The tool uses the trust sets compiled into it.
+
+## The release source
+
+For every release and every target the source holds the archive `junto-<version>-<system>-<package>-<architecture>.junto` and the release information `release-<version>-<system>-<package>-<architecture>.json`; `latest-<system>-<package>-<architecture>.json` is the release information of the newest release. Keep the files of earlier releases: an update downloads the installed version from them to keep it for a rollback. The release commands write into a new, empty directory for each release, because they never replace a file; copy the files of that directory to the source beside the files of earlier releases. The targets are `macos-bundle-aarch64`, `linux-directory-x86_64`, `linux-appimage-x86_64` and `windows-directory-x86_64`. The first-install files (the macOS ZIP, the Linux tarball and AppImage, the Windows ZIP) are offered beside them.
+
+## macOS
+
+`bundle.py <binary> <new Junto.app> <recovery program>` assembles both executables and metadata using the workspace version. The fixed identifier is `org.junto.app` (ADR 0725).
 
 Create the code-signing identity once, outside every repository:
 
@@ -16,20 +41,9 @@ JUNTO_CODESIGN_KEYCHAIN='/absolute/private/code-signing/signing.keychain-db' \
     packaging/sign.sh /absolute/output/Junto.app
 ```
 
-The helper signs the recovery executable and then the bundle. It temporarily includes the dedicated keychain in the search list, restores the original list, and never changes default keychain or system trust. A fixed per-user lock serializes search-list changes independently of TMPDIR. Interrupt, termination and hangup are handled, including interruptions during restoration. Password commands use standard input; the working PEM and password files remain unencrypted secrets. Never put them in a shared folder, repository, release directory or unencrypted backup. SIGKILL and power loss cannot run cleanup: inspect the search list after either.
+The helper signs the recovery program and then the bundle. It temporarily includes the dedicated keychain in the search list, restores the original list, and never changes default keychain or system trust. A fixed per-user lock serializes search-list changes independently of TMPDIR. Interrupt, termination and hangup are handled, including interruptions during restoration. Password commands use standard input; the working PEM and password files remain unencrypted secrets. Never put them in a shared folder, repository, release directory or unencrypted backup. SIGKILL and power loss cannot run cleanup: inspect the search list after either.
 
-Create distinct release and freshness keys:
-
-```sh
-tools/serial.sh cargo run -p junto-client-core --bin junto-release -- \
-    keygen /absolute/offline/release.seed /absolute/offline/release-public.json
-tools/serial.sh cargo run -p junto-client-core --bin junto-release -- \
-    keygen /absolute/freshness/freshness.seed /absolute/freshness/freshness-public.json
-```
-
-Each seed is generated randomly, written privately and never overwritten. Keep both outside repositories with encrypted offline backups. Copy only the release public array to `packaging/update-keys.json` and the freshness public array to `packaging/freshness-keys.json`, review and track both. Release keys authorize code and are brought online only for a new release. Keep freshness keys in a separate private signing environment for renewal before each 30-day expiry; a freshness key cannot authorize new code. The release host needs neither private key.
-
-Create release files without uploading them:
+Create the macOS release files without uploading them:
 
 ```sh
 JUNTO_UPDATE_SOURCE='https://<your-release-host>/<release-directory>/' \
@@ -40,23 +54,59 @@ JUNTO_CODESIGN_KEYCHAIN='/absolute/private/code-signing/signing.keychain-db' \
     packaging/release.sh /absolute/new-release-directory
 ```
 
-Use a new absolute output directory. The command builds the version, assembles and signs the bundle, checks its identity, compiled trust and version, and writes the `.junto` archive and `latest-<system>-<architecture>.json`. The first-install ZIP holds a complete `Junto` folder with the application and its detached release proof. Users must retain that complete folder. No Python is needed on the installed machine. The internal `release_locked.sh` entry point requires its caller to hold the shared lock.
+Use a new absolute output directory. The command builds the version, assembles and signs the bundle, checks its identity, compiled trust and version, and writes the archive, both release informations and the first-install ZIP, which holds `Junto.app` alone. No Python is needed on the installed machine. The internal `release_locked.sh` entry point requires its caller to hold the shared lock.
+
+## Linux
+
+On an x86-64 Linux host with Docker, build the packages in the Linux build image:
+
+```sh
+JUNTO_UPDATE_SOURCE='https://<your-release-host>/<release-directory>/' \
+    packaging/release_linux.sh target/linux-release
+```
+
+The output directory holds the tarball, the AppImage, and the source directories `package-directory` and `package-appimage` of the two update archives. `linux.py` stops when the client links a library that is neither in its bundled list nor in its host list (ADR 0754). Publish both with the release tool of the same checkout, on any system:
+
+```sh
+target/release/junto-release publish linux directory x86_64 target/linux-release/package-directory \
+    /absolute/new-release-directory /absolute/offline/release.seed /absolute/freshness/freshness.seed
+target/release/junto-release publish linux appimage x86_64 target/linux-release/package-appimage \
+    /absolute/new-release-directory /absolute/offline/release.seed /absolute/freshness/freshness.seed
+```
+
+## Windows
+
+On a Windows machine with the Rust toolchain of `rust-toolchain.toml` and the MSVC build tools, with `JUNTO_UPDATE_SOURCE` set:
+
+```sh
+cargo build --locked --release -p junto-client --bin junto -p junto-client-core --bin junto-recover
+python packaging/windows.py target/release/junto.exe target/release/junto-recover.exe <version> <new output directory>
+```
+
+The output directory holds the ZIP and the source directory `package-directory`. Publish it with the release tool of the same checkout, on any system:
+
+```sh
+target/release/junto-release publish windows directory x86_64 <output>/package-directory \
+    /absolute/new-release-directory /absolute/offline/release.seed /absolute/freshness/freshness.seed
+```
+
+## Freshness
 
 Refresh your retained, known release files before expiry, even without a new release:
 
 ```sh
-target/release/junto-release refresh /private/releases/latest-macos-aarch64.json \
-    /private/releases/junto-2.0.0-macos-aarch64.junto 2.0.0 /private/freshness/freshness.seed
+target/release/junto-release refresh /private/releases/latest-macos-bundle-aarch64.json \
+    /private/releases/junto-2.0.0-macos-bundle-aarch64.junto 2.0.0 /private/freshness/freshness.seed
 ```
 
-The named version is mandatory. The tool verifies release signatures, version, archive size, hash and signature before atomically replacing only freshness information. It never needs a release private key. Never refresh files fetched back from the release host. Upload the resulting metadata through the release process. Keep renewal scheduled before 30 days; a missed date or incorrect client clock prevents updating until freshness is valid again.
+The named version is mandatory. The tool verifies release signatures, version, archive size, hash and signature with its compiled trust sets before atomically replacing only freshness information. It never needs a release private key. Never refresh files fetched back from the release host. Upload the resulting metadata through the release process. Keep renewal scheduled before 30 days; a missed date or incorrect client clock prevents updating until freshness is valid again. A client refuses a statement that expires more than 45 days after its clock.
 
-For release-key rotation, build clients with both public keys and pass additional release-secret paths after the output directory of `release.sh`; both keys then sign the release and archive. The lower-level `package SOURCE OUTPUT RELEASE-SECRET FRESHNESS-SECRET VERSION SYSTEM ARCH [RELEASE-SECRET...]` and `publish BUNDLE OUTPUT RELEASE-SECRET FRESHNESS-SECRET [RELEASE-SECRET...]` support the same overlap. For freshness-key rotation, include both freshness public keys and pass both freshness secrets to `refresh` before publishing. Keep signatures for every supported old trust set; an overlap client alone does not reach users who skipped that version.
+For release-key rotation, build clients with both public keys and pass additional release-secret paths after the freshness secret of `publish` or `release.sh`; both keys then sign the release and archive. The lower-level `package SOURCE OUTPUT RELEASE-SECRET FRESHNESS-SECRET VERSION SYSTEM PACKAGE ARCH [RELEASE-SECRET...]` supports the same overlap. For freshness-key rotation, include both freshness public keys and pass both freshness secrets to `refresh` before publishing. Keep signatures for every supported old trust set; an overlap client alone does not reach users who skipped that version.
 
-The `.junto` transport is the bounded regular-file format of ADR 0726. Linux/Windows packaging implement `releases::Installer` over `VerifiedArchive`; their tarball, AppImage and installer formats are separate work. The format-1 metadata filename remains format 1 forever; future incompatible formats need separate filenames.
+## Test configurations and checks
 
-External test-only public-key, freshness-key, certificate and version variables mark the build as "test configuration" in Version and `--version`. `publish` refuses such a build without `--test-configuration RELEASE-PUBLIC FRESHNESS-PUBLIC`; the public release wrapper refuses overrides entirely. Tests never rewrite tracked trust or version files. `JUNTO_TEST_KEYCHAIN_LOCK` selects an isolated lock only for controlled tests; ordinary signing uses the fixed per-user path.
+External test-only public-key, freshness-key, certificate and version variables mark the build as "test configuration" in Version and `--version`. `publish` of such a build requires `--test-configuration`; a product build refuses that flag for every command. The public release wrappers refuse overrides. Tests never rewrite tracked trust or version files. `JUNTO_TEST_KEYCHAIN_LOCK` selects an isolated lock for controlled tests; every unit test sets it.
 
-CI runs portable Rust release/installer/configuration tests and Python unit tests. On macOS those unit tests run the real recovery command with a failing new executable, tampered archive and invalid certificate cases, plus a read-only location with zero source requests. `check_signing.py` additionally compares certificate requirements using paths with spaces and checks keychain restoration. `check_update.py target/debug/junto-release` exposes the same recovery check manually; its test executables are only `true` and `false`, with no GUI or audio.
+CI runs the portable Rust release, installer and configuration tests and the Python unit tests on every system. `check_signing.py` compares certificate requirements using paths with spaces and checks keychain restoration. `check_update.py` builds the release tool and the recovery program with test keys and a test certificate, then runs a real update of signed test bundles from a local source and the documented recovery command while the new executable fails; its test executables only end with a status, with no GUI or audio. `check_linux.py` (in the Linux build image) and `check_windows.py` check the Linux and Windows packages (ADR 0754, ADR 0755). These checks build in the repository's target directory; a local caller holds `tools/serial.sh`.
 
-`check_release.py`, under the shared lock, builds two real product releases with temporary role-separated keys. It checks test-build marking, publication refusal, compiled-source installation and the documented standalone recovery command while the new executable fails. It removes temporary identities/files; remove the release build output afterwards. `check_start.py <Junto.app>` is separate: it starts the bundled executable with an empty temporary data directory, `--no-activate` and `--check-startup`, and requires the first-frame line. Neither packaging nor signing grants microphone, camera, screen or notification permission.
+`check_release.py`, under the shared lock, builds two real macOS product releases with temporary role-separated keys. It checks test-build marking, publication refusal, compiled-source installation and the documented recovery command while the new executable fails. It removes temporary identities and files; remove the release build output afterwards. `check_start.py <Junto.app>` is separate: it starts the bundled executable with an empty temporary data directory, `--no-activate` and `--check-startup`, and requires the first-frame line. Neither packaging nor signing grants microphone, camera, screen or notification permission.

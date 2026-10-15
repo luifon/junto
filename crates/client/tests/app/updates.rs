@@ -3,6 +3,7 @@ use crate::harness::open_with_updates;
 use gpui::TestAppContext;
 use junto_client::state::book::CheckShown;
 use junto_client::text::book as txt;
+use junto_client_core::releases::install::Previous;
 use junto_client_core::updates::{FakeSource, Release, UpdateError, Version};
 use std::sync::{
     Arc,
@@ -46,14 +47,15 @@ fn update_notice_and_install_control_run_once_and_show_the_result(cx: &mut TestA
     window.state.update(&mut window.cx, move |state, cx| {
         state.set_update_installer(move || {
             count.fetch_add(1, Ordering::SeqCst);
-            Box::pin(async { Ok(()) })
+            Box::pin(async { Ok(txt::installed(&Previous::Kept(Version::new(1, 0, 0)))) })
         });
         cx.notify();
     });
     window.click("install-update");
     window.until("installed update is stated", |window| {
         window.state.read_with(&window.cx, |state, _| {
-            state.update_install_status() == Some(txt::INSTALLED)
+            state.update_install_status()
+                == Some("Update installed. Quit Junto and reopen it to use the new version. Version 1.0.0 is kept for a rollback.")
         })
     });
     window.click("install-update");
@@ -105,7 +107,7 @@ fn untrusted_information_removes_every_install_and_release_page_action(cx: &mut 
     window.state.update(&mut window.cx, move |state, cx| {
         state.set_update_installer(move || {
             count.fetch_add(1, Ordering::SeqCst);
-            Box::pin(async { Ok(()) })
+            Box::pin(async { Ok(String::new()) })
         });
         cx.notify();
     });

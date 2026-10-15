@@ -91,14 +91,27 @@ pub fn needs_update(detail: &str, available: Option<Version>) -> String {
     }
 }
 
-pub const EXPIRED: &str = "No valid freshness statement is available. Check the system clock and try again after the source is refreshed. Try again when it has been refreshed.";
+pub const EXPIRED: &str = "The update information has no valid date. Check the date and time of this computer, then check again later.";
 pub const UNTRUSTED_KEYS: &str = "The update information is not signed by a key this version trusts. This version does not update itself. Take a newer version only from a source you have verified with whoever runs your server.";
 pub const MOVE_TO_UPDATE: &str =
     "Move Junto to a writable directory of your account before updating.";
 pub const UPDATE: &str = "Update";
 pub const INSTALL_UPDATE: &str = "Install update";
 pub const INSTALLING: &str = "Downloading and verifying the update…";
-pub const INSTALLED: &str = "Update installed. Quit Junto and reopen it to use the new version. The previous version is kept for rollback.";
+pub const NOT_A_PACKAGE: &str =
+    "This copy of Junto was not installed from a package. It does not install updates.";
+/// The result of an installed update, with what happened to the version that it replaced.
+pub fn installed(previous: &junto_client_core::releases::install::Previous) -> String {
+    use junto_client_core::releases::install::Previous;
+    match previous {
+        Previous::Kept(version) => format!(
+            "Update installed. Quit Junto and reopen it to use the new version. Version {version} is kept for a rollback."
+        ),
+        Previous::Missing(reason) => format!(
+            "Update installed. Quit Junto and reopen it to use the new version. No previous version is kept for a rollback: {reason}."
+        ),
+    }
+}
 pub const INSTALL_STOPPED: &str =
     "The update task stopped. Check the installed version before trying again.";
 pub fn install_failed(error: &str) -> String {

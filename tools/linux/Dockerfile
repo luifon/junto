@@ -68,6 +68,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists
 COPY install-portal.sh /opt/junto-linux/
 RUN sh /opt/junto-linux/install-portal.sh
+# The AppImage of the Linux packages (ADR 0754): the SquashFS tools of the snapshot, and the
+# type 2 runtime of the AppImage project from one dated release, checked by its SHA-256.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    squashfs-tools=1:4.5.1-1 \
+    && rm -rf /var/lib/apt/lists
+RUN case "$(uname -m)" in \
+        x86_64) sum=2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d ;; \
+        aarch64) sum=00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444 ;; \
+        *) echo 'no AppImage runtime for this architecture' >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL --retry 5 -o /opt/junto-linux/appimage-runtime \
+        "https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-$(uname -m)" \
+    && echo "$sum  /opt/junto-linux/appimage-runtime" | sha256sum -c - \
+    && chmod 644 /opt/junto-linux/appimage-runtime
 ENV CC=clang-22 CXX=clang++-22 LIBCLANG_PATH=/usr/lib/llvm-22/lib
 ENV CARGO_BUILD_JOBS=4 CARGO_TARGET_DIR=/target
 ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=clang-22

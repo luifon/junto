@@ -4,6 +4,19 @@ use ed25519_dalek::{Signer, SigningKey};
 use junto_client_core::releases::{Manifest, TrustedKeys, verify_manifest};
 use junto_client_core::updates::Version;
 
+/// An expiry within the accepted range: one day after the clock of the test.
+fn soon() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 24 * 60 * 60
+}
+
+fn target(system: &str, architecture: &str) -> junto_client_core::releases::Target {
+    junto_client_core::releases::Target::new(system, "bundle", architecture).unwrap()
+}
+
 fn trust(keys: Vec<ed25519_dalek::VerifyingKey>) -> TrustedKeys {
     TrustedKeys::new(keys.clone()).with_freshness(TrustedKeys::new(keys))
 }
@@ -26,11 +39,12 @@ fn manifest() -> Manifest {
         format: 1,
         version: "0.2.0".into(),
         system: "macos".into(),
+        package: "bundle".into(),
         architecture: "aarch64".into(),
         archive: "junto-0.2.0.junto".into(),
         size: 6,
         sha256: "00".repeat(32),
-        expires: u64::MAX,
+        expires: soon(),
         archive_signatures: Vec::new(),
     }
 }
@@ -41,17 +55,17 @@ fn signed_metadata_accepts_only_newer_matching_releases_and_trusted_keys() {
     let keys = trust(vec![signing.verifying_key()]);
     let current = Version::new(0, 1, 0);
     let wire = sign_manifest(&manifest(), &signing).unwrap();
-    assert!(verify_manifest(&wire, &keys, current, "macos", "aarch64").is_ok());
+    assert!(verify_manifest(&wire, &keys, current, &target("macos", "aarch64")).is_ok());
     for version in [Version::new(0, 2, 0), Version::new(0, 3, 0)] {
-        assert!(verify_manifest(&wire, &keys, version, "macos", "aarch64").is_err());
+        assert!(verify_manifest(&wire, &keys, version, &target("macos", "aarch64")).is_err());
     }
-    assert!(verify_manifest(&wire, &keys, current, "windows", "aarch64").is_err());
-    assert!(verify_manifest(&wire, &keys, current, "macos", "x86_64").is_err());
+    assert!(verify_manifest(&wire, &keys, current, &target("windows", "aarch64")).is_err());
+    assert!(verify_manifest(&wire, &keys, current, &target("macos", "x86_64")).is_err());
     let replacement = key();
     let replaced = trust(vec![replacement.verifying_key()]);
-    assert!(verify_manifest(&wire, &replaced, current, "macos", "aarch64").is_err());
+    assert!(verify_manifest(&wire, &replaced, current, &target("macos", "aarch64")).is_err());
     let new_wire = sign_manifest(&manifest(), &replacement).unwrap();
-    assert!(verify_manifest(&new_wire, &replaced, current, "macos", "aarch64").is_ok());
+    assert!(verify_manifest(&new_wire, &replaced, current, &target("macos", "aarch64")).is_ok());
     let mut changed: serde_json::Value = serde_json::from_slice(&wire).unwrap();
     changed["signatures"][0]["signature"] = serde_json::Value::String(base64::Engine::encode(
         &base64::prelude::BASE64_STANDARD,
@@ -62,8 +76,7 @@ fn signed_metadata_accepts_only_newer_matching_releases_and_trusted_keys() {
             &serde_json::to_vec(&changed).unwrap(),
             &keys,
             current,
-            "macos",
-            "aarch64"
+            &target("macos", "aarch64")
         )
         .is_err()
     );
@@ -133,8 +146,7 @@ async fn source_accepts_signed_metadata_from_loopback_and_refuses_redirects() {
         &address,
         keys.clone(),
         Version::new(0, 1, 0),
-        "macos",
-        "aarch64",
+        target("macos", "aarch64"),
     )
     .unwrap();
     assert_eq!(source.check().await.unwrap().version, "0.2.0");
@@ -144,8 +156,13 @@ async fn source_accepts_signed_metadata_from_loopback_and_refuses_redirects() {
     let redirect =
         format!("HTTP/1.1 302 Found\r\nLocation: {redirect_address}\r\nContent-Length: 0\r\n\r\n");
     let (address, task) = server(redirect.into_bytes(), Duration::ZERO).await;
-    let source =
-        HttpSource::new(&address, keys, Version::new(0, 1, 0), "macos", "aarch64").unwrap();
+    let source = HttpSource::new(
+        &address,
+        keys,
+        Version::new(0, 1, 0),
+        target("macos", "aarch64"),
+    )
+    .unwrap();
     assert!(source.check().await.is_err());
     assert!(
         !redirected.is_finished(),
@@ -164,8 +181,7 @@ async fn source_bounds_the_complete_request_even_when_it_never_answers() {
             &address,
             trust(vec![key().verifying_key()]),
             Version::new(0, 1, 0),
-            "macos",
-            "aarch64",
+            target("macos", "aarch64"),
         )
         .unwrap()
         .with_timeout(Duration::from_millis(50))
@@ -194,8 +210,7 @@ fn source_refuses_credentials_fragments_and_nonlocal_plain_http() {
                 address,
                 trust(vec![]),
                 Version::new(0, 1, 0),
-                "macos",
-                "aarch64"
+                target("macos", "aarch64")
             )
             .is_err(),
             "{address}"
@@ -239,8 +254,7 @@ async fn download_is_bounded_and_verified_before_it_is_returned() {
             &address,
             keys.clone(),
             Version::new(0, 1, 0),
-            "macos",
-            "aarch64",
+            target("macos", "aarch64"),
         )
         .unwrap();
         let destination = root.path().join(if valid { "valid" } else { "invalid" });
@@ -274,7 +288,13 @@ fn signed_metadata_rejects_unsafe_names_and_resource_limits() {
         metadata.archive = name.into();
         let wire = sign_manifest(&metadata, &signing).unwrap();
         assert!(
-            verify_manifest(&wire, &keys, Version::new(0, 1, 0), "macos", "aarch64").is_err(),
+            verify_manifest(
+                &wire,
+                &keys,
+                Version::new(0, 1, 0),
+                &target("macos", "aarch64")
+            )
+            .is_err(),
             "{name}"
         );
     }
@@ -286,8 +306,7 @@ fn signed_metadata_rejects_unsafe_names_and_resource_limits() {
                 &sign_manifest(&metadata, &signing).unwrap(),
                 &keys,
                 Version::new(0, 1, 0),
-                "macos",
-                "aarch64"
+                &target("macos", "aarch64")
             )
             .is_err()
         );
@@ -297,8 +316,7 @@ fn signed_metadata_rejects_unsafe_names_and_resource_limits() {
             &vec![b' '; 65537],
             &keys,
             Version::new(0, 1, 0),
-            "macos",
-            "aarch64"
+            &target("macos", "aarch64")
         )
         .is_err()
     );
@@ -327,11 +345,103 @@ async fn failed_download_does_not_remove_a_file_that_already_existed() {
         &address,
         trust(vec![signing.verifying_key()]),
         Version::new(0, 1, 0),
-        "macos",
-        "aarch64",
+        target("macos", "aarch64"),
     )
     .unwrap();
     assert!(source.download(&original).await.is_err());
     assert_eq!(std::fs::read(&original).unwrap(), b"keep");
     task.await.unwrap();
+}
+
+#[test]
+fn a_freshness_date_more_than_45_days_ahead_is_not_valid() {
+    let signing = key();
+    let keys = trust(vec![signing.verifying_key()]);
+    let now = 1_800_000_000;
+    let day = 24 * 60 * 60;
+    for (days, valid) in [(1, true), (45, true), (46, false), (3650, false)] {
+        let mut metadata = manifest();
+        metadata.expires = now + days * day;
+        let result = junto_client_core::releases::verify_manifest_at(
+            &sign_manifest(&metadata, &signing).unwrap(),
+            &keys,
+            Version::new(0, 1, 0),
+            &target("macos", "aarch64"),
+            now,
+        );
+        assert_eq!(result.is_ok(), valid, "{days} days");
+        if !valid {
+            assert!(matches!(
+                result,
+                Err(junto_client_core::releases::Error::Expired)
+            ));
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_release_of_an_installed_version_is_requested_by_its_name_without_freshness() {
+    let root = tempfile::Builder::new()
+        .prefix("junto-release-")
+        .tempdir()
+        .unwrap();
+    let original = root.path().join("original");
+    std::fs::write(&original, b"archive").unwrap();
+    let signing = key();
+    let keys = trust(vec![signing.verifying_key()]);
+    for (stated, valid) in [("0.1.0", true), ("0.2.0", false)] {
+        let mut metadata = manifest();
+        metadata.version = stated.into();
+        metadata.expires = 1;
+        sign_archive(&original, &mut metadata, &signing).unwrap();
+        let mut information: serde_json::Value =
+            serde_json::from_slice(&sign_manifest(&metadata, &signing).unwrap()).unwrap();
+        information.as_object_mut().unwrap().remove("freshness");
+        let information = serde_json::to_vec(&information).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = format!("http://{}/", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            let mut paths = Vec::new();
+            for bytes in [information, b"archive".to_vec()] {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut request = [0; 4096];
+                let count = stream.read(&mut request).await.unwrap();
+                let line = String::from_utf8_lossy(&request[..count]).into_owned();
+                paths.push(line.split(' ').nth(1).unwrap_or_default().to_owned());
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    bytes.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.write_all(&bytes).await.unwrap();
+                if !valid {
+                    break;
+                }
+            }
+            paths
+        });
+        let source = HttpSource::new(
+            &address,
+            keys.clone(),
+            Version::new(0, 3, 0),
+            target("macos", "aarch64"),
+        )
+        .unwrap();
+        let destination = root.path().join(format!("download-{stated}"));
+        let result = source
+            .download_version(Version::new(0, 1, 0), &destination)
+            .await;
+        assert_eq!(result.is_ok(), valid, "{stated}");
+        let paths = task.await.unwrap();
+        assert_eq!(paths[0], "/release-0.1.0-macos-bundle-aarch64.json");
+        if valid {
+            assert_eq!(paths[1], "/junto-0.2.0.junto");
+            assert_eq!(std::fs::read(&destination).unwrap(), b"archive");
+        } else {
+            assert_eq!(paths.len(), 1);
+            assert!(!destination.exists());
+        }
+    }
 }

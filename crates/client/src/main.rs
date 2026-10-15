@@ -102,13 +102,13 @@ fn main() -> ExitCode {
     let arguments = match parse(std::env::args().skip(1)) {
         Ok(Parsed::Run(arguments)) => arguments,
         Ok(Parsed::Rollback) => {
-            #[cfg(target_os = "macos")]
-            let result = junto_client_core::releases::macos::MacInstaller::running()
+            let result = junto_client_core::releases::PlatformInstaller::running()
                 .and_then(|installer| installer.rollback());
-            #[cfg(not(target_os = "macos"))]
-            let result: Result<(), &str> = Err("rollback is not supported on this system");
             return match result {
-                Ok(()) => ExitCode::SUCCESS,
+                Ok(version) => {
+                    println!("restored version {version}");
+                    ExitCode::SUCCESS
+                }
                 Err(error) => {
                     eprintln!("{error}");
                     ExitCode::FAILURE

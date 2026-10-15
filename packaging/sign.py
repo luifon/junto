@@ -18,7 +18,7 @@ def sign(bundle):
     keychain = str(pathlib.Path(os.environ["JUNTO_CODESIGN_KEYCHAIN"]).resolve(strict=True))
     with session() as before:
         run("security", "list-keychains", "-d", "user", "-s", *dict.fromkeys([*before, keychain]))
-        recovery = pathlib.Path(bundle) / "Contents/MacOS/junto-release"
+        recovery = pathlib.Path(bundle) / "Contents/MacOS/junto-recover"
         if recovery.is_file():
             run("/usr/bin/codesign", "--force", "--timestamp=none", "--keychain", keychain, "--sign", identity, str(recovery))
         run("/usr/bin/codesign", "--force", "--timestamp=none", "--keychain", keychain, "--sign", identity, bundle)

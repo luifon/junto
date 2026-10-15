@@ -4,7 +4,8 @@ use crate::text::book as txt;
 use gpui::Context;
 use std::{future::Future, pin::Pin, sync::Arc};
 
-type Work = Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
+/// The work of one update: on success the sentence that states the result.
+type Work = Pin<Box<dyn Future<Output = Result<String, String>> + Send>>;
 type Install = Arc<dyn Fn() -> Work + Send + Sync>;
 #[derive(Default)]
 pub(super) struct InstallState {
@@ -15,28 +16,26 @@ pub(super) struct InstallState {
 }
 impl InstallState {
     pub fn new() -> Self {
-        #[cfg(target_os = "macos")]
         let mut state = Self::default();
-        #[cfg(not(target_os = "macos"))]
-        let state = Self::default();
-        #[cfg(target_os = "macos")]
-        if matches!(
+        if !matches!(
             junto_client_core::releases::HttpSource::compiled(),
             Ok(Some(_))
-        ) && let Ok(installer) = junto_client_core::releases::macos::MacInstaller::running()
-        {
-            if installer.location().is_ok() {
+        ) {
+            return state;
+        }
+        match junto_client_core::releases::PlatformInstaller::running() {
+            Ok(installer) if installer.location().is_ok() => {
                 state.action = Some(Arc::new(|| {
                     Box::pin(async {
-                        junto_client_core::releases::macos::update_running()
+                        junto_client_core::releases::update_running()
                             .await
-                            .map(|_| ())
+                            .map(|installed| txt::installed(&installed.previous))
                             .map_err(|error| error.to_string())
                     })
                 }));
-            } else {
-                state.status = Some(txt::MOVE_TO_UPDATE.into());
             }
+            Ok(_) => state.status = Some(txt::MOVE_TO_UPDATE.into()),
+            Err(_) => state.status = Some(txt::NOT_A_PACKAGE.into()),
         }
         state
     }
@@ -75,9 +74,9 @@ impl AppState {
             let result = work.await;
             let _ = this.update(cx, |this, cx| {
                 this.update_install.working = false;
-                this.update_install.installed = matches!(result, Ok(Ok(())));
+                this.update_install.installed = matches!(result, Ok(Ok(_)));
                 this.update_install.status = Some(match result {
-                    Ok(Ok(())) => txt::INSTALLED.into(),
+                    Ok(Ok(sentence)) => sentence,
                     Ok(Err(error)) => txt::install_failed(&error),
                     Err(_) => txt::INSTALL_STOPPED.into(),
                 });

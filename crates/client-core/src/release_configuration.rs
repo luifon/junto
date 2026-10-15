@@ -17,6 +17,23 @@ pub fn keys(bytes: &[u8]) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Refuses a public key that is in the release set and in the freshness set: its holder
+/// would have both roles (ADR 0724).
+pub fn distinct_roles(release: &[u8], freshness: &[u8]) -> Result<(), &'static str> {
+    let release: Vec<String> =
+        serde_json::from_slice(release).map_err(|_| "invalid update keys")?;
+    let freshness: Vec<String> =
+        serde_json::from_slice(freshness).map_err(|_| "invalid update keys")?;
+    let decoded = |text: &String| BASE64_STANDARD.decode(text).unwrap_or_default();
+    if release
+        .iter()
+        .any(|key| freshness.iter().any(|other| decoded(key) == decoded(other)))
+    {
+        return Err("a key is in the release set and in the freshness set");
+    }
+    Ok(())
+}
+
 pub fn certificate(bytes: &[u8]) -> Result<(), &'static str> {
     let hash = std::str::from_utf8(bytes)
         .map_err(|_| "invalid certificate fingerprint")?
@@ -63,9 +80,14 @@ pub fn identity(required: &str, expected: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// `--test-configuration` states that the person knows the build is a test configuration.
+/// A product build refuses it, so that the flag cannot change what a product build trusts.
 pub fn publication(test_configuration: bool, allow_test: bool) -> Result<(), &'static str> {
     if test_configuration && !allow_test {
         return Err("test configuration requires --test-configuration");
+    }
+    if allow_test && !test_configuration {
+        return Err("--test-configuration is refused by a product build");
     }
     Ok(())
 }
@@ -120,8 +142,28 @@ mod tests {
         assert!(publication(true, false).is_err());
         assert!(publication(true, true).is_ok());
         assert!(publication(false, false).is_ok());
+        assert_eq!(
+            publication(false, true),
+            Err("--test-configuration is refused by a product build")
+        );
         assert_eq!(label("1.0.0", true), "1.0.0 (test configuration)");
         assert_eq!(label("1.0.0", false), "1.0.0");
+    }
+
+    #[test]
+    fn one_key_in_both_trust_sets_is_refused() {
+        let first = format!("\"{}\"", BASE64_STANDARD.encode([1u8; 32]));
+        let second = format!("\"{}\"", BASE64_STANDARD.encode([2u8; 32]));
+        let set = |keys: &[&str]| format!("[{}]", keys.join(","));
+        assert_eq!(
+            distinct_roles(
+                set(&[&first, &second]).as_bytes(),
+                set(&[&second]).as_bytes()
+            ),
+            Err("a key is in the release set and in the freshness set")
+        );
+        assert!(distinct_roles(set(&[&first]).as_bytes(), set(&[&second]).as_bytes()).is_ok());
+        assert!(distinct_roles(b"[]", b"[]").is_ok());
     }
 
     #[test]

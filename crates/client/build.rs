@@ -11,5 +11,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             info.display()
         );
     }
+    // The Linux packages carry the X11 keyboard libraries in `lib` beside the program
+    // (ADR 0754). An old-style search path (DT_RPATH) also applies to the libraries
+    // that those libraries load. A build outside a package has no such directory, and the
+    // loader then takes the libraries of the system.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+        println!("cargo:rustc-link-arg-bin=junto=-Wl,--disable-new-dtags,-rpath,$ORIGIN/lib");
+    }
     Ok(())
 }

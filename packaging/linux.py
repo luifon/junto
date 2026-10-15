@@ -1,0 +1,230 @@
+#!/usr/bin/env python3
+"""Assemble the Linux packages of a client build: the directory package as a tarball, and the
+AppImage (ADR 0754). Each also gets the source directory of its update archive.
+
+Runs in the Linux build image (tools/linux/Dockerfile), which holds the programs used here:
+ldd, mksquashfs and the pinned AppImage runtime."""
+import argparse
+import gzip
+import io
+import json
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+
+from bundle import png
+from configuration import architecture as machine_architecture
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+APPLICATION_ID = "chat.junto.Junto"
+RUNTIME = pathlib.Path("/opt/junto-linux/appimage-runtime")
+
+# The libraries that a package carries: the X11 keyboard libraries and the XKB extension of
+# the X11 connection library, which hosts without an X11 keyboard library often lack.
+BUNDLED = {"libxkbcommon.so.0", "libxkbcommon-x11.so.0", "libxcb-xkb.so.1"}
+# The libraries that a package takes from the host: the C library and its loader; the X11
+# connection library and the libraries that it loads, because the graphics drivers of the
+# host load its other extensions, which need the host's version of it; and the sound
+# libraries, which load their plugins and configuration from the host.
+HOST = {
+    "linux-vdso.so.1", "libc.so.6", "libm.so.6", "libgcc_s.so.1", "ld-linux-x86-64.so.2",
+    "ld-linux-aarch64.so.1", "libxcb.so.1", "libXau.so.6", "libXdmcp.so.6", "libbsd.so.0", "libmd.so.0",
+    "libpipewire-0.3.so.0", "libasound.so.2",
+}
+# The licence texts of the Debian packages of the bundled libraries.
+LIBRARY_PACKAGES = ["libxkbcommon0", "libxkbcommon-x11-0", "libxcb-xkb1"]
+
+DESKTOP = f"""[Desktop Entry]
+Type=Application
+Name=Junto
+Comment=Chat, calls and call recordings on your own server
+Exec=junto
+Icon={APPLICATION_ID}
+Terminal=false
+Categories=Network;Chat;InstantMessaging;
+StartupWMClass={APPLICATION_ID}
+"""
+
+SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+<rect width="128" height="128" fill="#f4f0e7"/>
+<g fill="none" stroke="#285341" stroke-width="10"><circle cx="47" cy="64" r="23"/><circle cx="81" cy="64" r="23"/></g>
+</svg>
+"""
+
+# Writes the menu entry of a directory package for the person who runs it, with the absolute
+# path of this copy. Run it again after moving the directory.
+INSTALL_ENTRY = f"""#!/bin/sh
+set -eu
+here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+data=${{XDG_DATA_HOME:-$HOME/.local/share}}
+mkdir -p "$data/applications" "$data/icons/hicolor/scalable/apps"
+cp "$here/share/icons/hicolor/scalable/apps/{APPLICATION_ID}.svg" "$data/icons/hicolor/scalable/apps/"
+sed "s|^Exec=junto$|Exec=\\"$here/junto\\"|" "$here/share/applications/{APPLICATION_ID}.desktop" \\
+    > "$data/applications/{APPLICATION_ID}.desktop"
+echo "Junto is in the application menu: $data/applications/{APPLICATION_ID}.desktop"
+"""
+
+
+def libraries(binary):
+    """The shared libraries that the loader resolves for `binary`, with their paths."""
+    result = subprocess.run(["ldd", str(binary)], capture_output=True, text=True, check=True,
+                            env=dict(os.environ, LD_LIBRARY_PATH=""))
+    return parse_ldd(result.stdout)
+
+
+def parse_ldd(text):
+    found = {}
+    for line in text.splitlines():
+        missing = re.match(r"\s*(\S+) => not found$", line)
+        if missing:
+            found[missing.group(1)] = None
+            continue
+        match = re.match(r"\s*(\S+)(?: => (\S+))? \(0x[0-9a-f]+\)$", line)
+        if not match:
+            raise ValueError(f"unexpected ldd line: {line}")
+        name, path = match.groups()
+        found[pathlib.PurePosixPath(name).name] = path or name
+    return found
+
+
+def classify(found):
+    """Splits the libraries into those to bundle and those of the host. A library in neither
+    list stops the build until a person decides where it belongs."""
+    missing = sorted(name for name in found if found[name] is None)
+    if missing:
+        raise ValueError("libraries that the loader does not find: " + ", ".join(missing))
+    unknown = sorted(set(found) - BUNDLED - HOST)
+    if unknown:
+        raise ValueError("libraries that are neither bundled nor taken from the host: " + ", ".join(unknown))
+    return {name: found[name] for name in found if name in BUNDLED}
+
+
+def description(version, package, architecture):
+    return json.dumps({"format": 1, "version": version, "system": "linux", "package": package,
+                       "architecture": architecture}) + "\n"
+
+
+def write(path, content, mode=0o644):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(content, str):
+        content = content.encode()
+    path.write_bytes(content)
+    path.chmod(mode)
+
+
+def copy(source, destination, mode):
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, destination)
+    destination.chmod(mode)
+
+
+def tree(directory, client, recover, version, architecture, licence_texts):
+    """The directory of the program: the AppDir of the AppImage has the same files."""
+    copy(client, directory / "junto", 0o755)
+    copy(recover, directory / "junto-recover", 0o755)
+    for name, path in sorted(classify(libraries(client)).items()):
+        copy(path, directory / "lib" / name, 0o644)
+    write(directory / f"share/applications/{APPLICATION_ID}.desktop", DESKTOP)
+    write(directory / f"share/icons/hicolor/scalable/apps/{APPLICATION_ID}.svg", SVG)
+    write(directory / f"share/icons/hicolor/256x256/apps/{APPLICATION_ID}.png", png(256))
+    for name, text in licence_texts.items():
+        write(directory / "licences" / name, text)
+
+
+def licence_texts():
+    texts = {"Junto-LICENSE.txt": (ROOT / "LICENSE").read_bytes()}
+    for path in sorted((ROOT / "crates/client/assets/fonts").glob("*-OFL.txt")):
+        texts[path.name] = path.read_bytes()
+    for package in LIBRARY_PACKAGES:
+        texts[f"{package}-copyright.txt"] = pathlib.Path(f"/usr/share/doc/{package}/copyright").read_bytes()
+    return texts
+
+
+def tarball(directory, output, epoch):
+    """A tarball of `directory` under the name `junto`, owned by root, with one time."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w", format=tarfile.PAX_FORMAT) as archive:
+        for path in [directory, *sorted(directory.rglob("*"))]:
+            info = archive.gettarinfo(str(path), "junto/" + str(path.relative_to(directory)) if path != directory else "junto")
+            info.uid = info.gid = 0
+            info.uname = info.gname = "root"
+            info.mtime = epoch
+            if info.isfile():
+                with path.open("rb") as content:
+                    archive.addfile(info, content)
+            else:
+                archive.addfile(info)
+    with gzip.GzipFile(output, "wb", mtime=epoch) as compressed:
+        compressed.write(buffer.getvalue())
+
+
+def appimage(directory, output, runtime, epoch):
+    """An AppImage of type 2: the runtime followed by a SquashFS image of the AppDir."""
+    appdir = output.with_name(output.name + ".AppDir")
+    shutil.copytree(directory, appdir, symlinks=True)
+    try:
+        (appdir / "AppRun").symlink_to("junto")
+        shutil.copyfile(appdir / f"share/applications/{APPLICATION_ID}.desktop", appdir / f"{APPLICATION_ID}.desktop")
+        shutil.copyfile(appdir / f"share/icons/hicolor/scalable/apps/{APPLICATION_ID}.svg", appdir / f"{APPLICATION_ID}.svg")
+        shutil.copyfile(appdir / f"share/icons/hicolor/256x256/apps/{APPLICATION_ID}.png", appdir / ".DirIcon")
+        image = output.with_name(output.name + ".squashfs")
+        subprocess.run(["mksquashfs", str(appdir), str(image), "-root-owned", "-noappend", "-no-xattrs",
+                        "-comp", "zstd", "-all-time", str(epoch), "-quiet", "-no-progress"], check=True)
+        with output.open("wb") as file:
+            file.write(runtime.read_bytes())
+            file.write(image.read_bytes())
+        image.unlink()
+        output.chmod(0o755)
+    finally:
+        shutil.rmtree(appdir)
+
+
+def assemble(client, recover, version, output, runtime=RUNTIME, epoch=None):
+    client, recover, output = pathlib.Path(client), pathlib.Path(recover), pathlib.Path(output)
+    if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version):
+        raise ValueError("a release version has three decimal numbers")
+    architecture = machine_architecture()
+    epoch = int(os.environ.get("SOURCE_DATE_EPOCH", "0")) if epoch is None else epoch
+    output.mkdir(parents=False, exist_ok=False)
+    try:
+        directory = output / "package-directory/junto"
+        tree(directory, client, recover, version, architecture, licence_texts())
+        write(directory / "junto-package.json", description(version, "directory", architecture))
+        write(directory / "install-menu-entry", INSTALL_ENTRY, 0o755)
+        tarball(directory, output / f"junto-{version}-linux-{architecture}.tar.gz", epoch)
+        image = output / "package-appimage"
+        image.mkdir()
+        appimage_tree = output / ".appimage-tree"
+        tree(appimage_tree, client, recover, version, architecture, licence_texts())
+        write(appimage_tree / "licences/AppImage-runtime.txt",
+              "The AppImage runtime of this file is the type 2 runtime of the AppImage project, "
+              "release 20251108, under the MIT licence; it contains libfuse, squashfuse, zstd and "
+              "zlib under their own licences: https://github.com/AppImage/type2-runtime\n")
+        appimage(appimage_tree, image / "Junto.AppImage", pathlib.Path(runtime), epoch)
+        shutil.rmtree(appimage_tree)
+        copy(recover, image / "junto-recover", 0o755)
+        write(image / "junto-package.json", description(version, "appimage", architecture))
+        shutil.copyfile(image / "Junto.AppImage", output / f"Junto-{version}-{architecture}.AppImage")
+        (output / f"Junto-{version}-{architecture}.AppImage").chmod(0o755)
+    except BaseException:
+        shutil.rmtree(output)
+        raise
+    return output
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Assemble the Linux packages of a client build.")
+    parser.add_argument("client")
+    parser.add_argument("recover")
+    parser.add_argument("version")
+    parser.add_argument("output", help="a new directory")
+    parser.add_argument("--runtime", default=str(RUNTIME))
+    arguments = parser.parse_args()
+    try:
+        assemble(arguments.client, arguments.recover, arguments.version, arguments.output, arguments.runtime)
+    except (ValueError, subprocess.CalledProcessError, OSError) as error:
+        sys.exit(str(error))

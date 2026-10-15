@@ -6,6 +6,10 @@ use junto_client_core::updates::Version;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+fn target(system: &str, architecture: &str) -> junto_client_core::releases::Target {
+    junto_client_core::releases::Target::new(system, "bundle", architecture).unwrap()
+}
+
 fn trust(keys: Vec<ed25519_dalek::VerifyingKey>) -> TrustedKeys {
     TrustedKeys::new(keys.clone()).with_freshness(TrustedKeys::new(keys))
 }
@@ -15,8 +19,16 @@ fn key() -> SigningKey {
     getrandom::fill(&mut seed).unwrap();
     SigningKey::from_bytes(&seed)
 }
+/// An expiry within the accepted range: one day after the clock of the test.
+fn soon() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 24 * 60 * 60
+}
 fn payload(expires: u64) -> serde_json::Value {
-    json!({"format":1,"version":"2.0.0","system":"macos","architecture":"aarch64",
+    json!({"format":1,"version":"2.0.0","system":"macos","package":"bundle","architecture":"aarch64",
         "archive":"release.junto","size":7,"sha256":"00".repeat(32),"expires":expires,
         "archive_signatures":[]})
 }
@@ -35,19 +47,24 @@ fn named_signatures_accept_any_trusted_key_and_cover_extension_bytes() {
     let old = key();
     let new = key();
     let keys = trust(vec![old.verifying_key()]);
-    let mut payload = payload(u64::MAX);
+    let mut payload = payload(soon());
     payload["future_feature"] = json!({"text":"signed extension"});
     let bytes = wire(&payload, &[&new, &old]);
     assert!(
-        releases::verify_manifest(&bytes, &keys, Version::new(1, 0, 0), "macos", "aarch64").is_ok()
+        releases::verify_manifest(
+            &bytes,
+            &keys,
+            Version::new(1, 0, 0),
+            &target("macos", "aarch64")
+        )
+        .is_ok()
     );
     assert!(matches!(
         releases::verify_manifest(
             &wire(&payload, &[&new]),
             &keys,
             Version::new(1, 0, 0),
-            "macos",
-            "aarch64"
+            &target("macos", "aarch64")
         ),
         Err(Error::UntrustedKeys)
     ));
@@ -59,8 +76,7 @@ fn named_signatures_accept_any_trusted_key_and_cover_extension_bytes() {
             &serde_json::to_vec(&envelope).unwrap(),
             &keys,
             Version::new(1, 0, 0),
-            "macos",
-            "aarch64"
+            &target("macos", "aarch64")
         )
         .is_err()
     );
@@ -74,8 +90,7 @@ fn expired_information_is_not_reported_as_current() {
             &wire(&payload(1), &[&key]),
             &keys,
             Version::new(2, 0, 0),
-            "macos",
-            "aarch64"
+            &target("macos", "aarch64")
         ),
         Err(Error::Expired)
     ));
@@ -134,13 +149,13 @@ fn public_wire_fixture_fixes_both_signature_domains() {
         .with_freshness(
             TrustedKeys::from_json(include_bytes!("data/freshness-public.json")).unwrap(),
         );
+    // The fixture's statement expires at 1794623717; it is checked one day before.
     let metadata = releases::verify_manifest_at(
         include_bytes!("data/release-v1.json"),
         &keys,
         Version::new(1, 0, 0),
-        "macos",
-        "aarch64",
-        0,
+        &target("macos", "aarch64"),
+        1_794_623_717 - 24 * 60 * 60,
     )
     .unwrap();
     let root = tempfile::tempdir().unwrap();
@@ -153,7 +168,7 @@ fn format_hash_and_compiled_configuration_are_checked() {
     let key = key();
     let keys = trust(vec![key.verifying_key()]);
     for field in ["format", "hash"] {
-        let mut data = payload(u64::MAX);
+        let mut data = payload(soon());
         if field == "format" {
             data["format"] = json!(2);
         } else {
@@ -164,8 +179,7 @@ fn format_hash_and_compiled_configuration_are_checked() {
                 &wire(&data, &[&key]),
                 &keys,
                 Version::new(1, 0, 0),
-                "macos",
-                "aarch64"
+                &target("macos", "aarch64")
             )
             .is_err()
         );

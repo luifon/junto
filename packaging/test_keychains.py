@@ -1,4 +1,4 @@
-"""Failure paths for signing helpers and portable release configuration."""
+"""Keychain helpers: the lock, the restore of the search list, and the machine names."""
 import os
 import pathlib
 import signal
@@ -11,7 +11,7 @@ from unittest.mock import patch
 import keychains
 
 
-class KeychainReview(unittest.TestCase):
+class KeychainTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -88,11 +88,3 @@ class KeychainReview(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported release architecture"):
             architecture("unsupported")
 
-
-class RecoveryCommand(unittest.TestCase):
-    @unittest.skipUnless(sys.platform == "darwin", "real macOS code signatures")
-    def test_documented_recovery_command_restores_a_failing_new_executable(self):
-        from check_update import check
-        tool = pathlib.Path(__file__).resolve().parent.parent / "target/debug/junto-release"
-        self.assertTrue(tool.is_file(), "build the release tool before macOS packaging tests")
-        check(tool)

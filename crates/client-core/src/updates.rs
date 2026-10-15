@@ -245,7 +245,7 @@ impl Shared {
             Err(UpdateError::Expired) => Some(UpdateState::Expired),
             Err(UpdateError::UntrustedKeys) => {
                 tracing::warn!(
-                    "this build can no longer update automatically; install the current release"
+                    "the update information is not signed by a key that this build trusts; this build does not update itself"
                 );
                 Some(UpdateState::UntrustedKeys)
             }

@@ -135,6 +135,22 @@ else
     echo "ok    every Debian package of $linux has a version"
 fi
 
+# A file that the Linux build image downloads from another place than the Debian snapshot is
+# checked by its SHA-256 in the same instruction: the instruction names the sum and runs
+# sha256sum -c.
+unpinned=$(awk '
+    { instruction = instruction $0 }
+    /\\$/ { sub(/\\$/, "", instruction); next }
+    { print instruction; instruction = "" }
+' "$linux" | grep -E 'https?://' | grep -v 'snapshot\.debian\.org/archive' \
+    | grep -v -E '[0-9a-f]{64}.*sha256sum -c' || true)
+if [ -n "$unpinned" ]; then
+    echo "$unpinned"
+    fail "$linux downloads a file without checking its SHA-256"
+else
+    echo "ok    every download of $linux is checked by its SHA-256"
+fi
+
 # The words after "pip install" that are not options: each names a package with one exact
 # version.
 unpinned=$(sed -n '/pip install/,/[^\\]$/p' "$speech" | tr -s ' \\' '\n\n' \

@@ -1,7 +1,7 @@
 # The checks of every commit (ADR 0902, ADR 0905). Every action is named by its commit hash,
-# every container image by its digest, and every package that a step installs with apt-get
-# or that the Linux build image installs by its version; tools/check-pins.sh fails when one
-# is not.
+# every container image by its digest, every package that a step installs with apt-get or
+# that the Linux build image installs by its version, and every other file that the Linux
+# build image downloads by its SHA-256; tools/check-pins.sh fails when one is not.
 
 name: CI
 
@@ -58,6 +58,12 @@ jobs:
         run: tools/linux-container.sh cargo test --workspace --locked
       - name: Packaging unit tests
         run: python3 -m unittest discover -s packaging -p "test_*.py"
+      # The tarball and the AppImage of the client: their contents, the rule of the bundled
+      # libraries, the first frame of each on a virtual display, and an update and a rollback
+      # of the directory package while its program runs (ADR 0754). Each step prints its name;
+      # a failure prints the command, its exit code and both outputs.
+      - name: Linux packages
+        run: tools/linux-container.sh python3 packaging/check_linux.py
       - name: The committed API documents equal the generated ones
         run: |
           tools/linux-container.sh cargo run --locked -p junto-server --bin junto-openapi
@@ -107,7 +113,7 @@ jobs:
         shell: bash
         run: |
           cargo test --locked -p junto-authz -p junto-protocol
-          cargo test --locked -p junto-client-core --lib --bins --test releases --test release_corrections --test release_review2 --test release_downloads --test update_archives --test release_tool
+          cargo test --locked -p junto-client-core --lib --bins --test releases --test release_format --test release_roles --test release_downloads --test update_archives --test release_tool
       - name: Packaging unit tests
         run: python3 -m unittest discover -s packaging -p "test_*.py"
       - name: macOS signing and installation checks
@@ -118,8 +124,15 @@ jobs:
           trap 'rm -rf "$temporary"' EXIT
           export TMPDIR="$temporary"
           python3 packaging/check_signing.py
-          python3 packaging/check_update.py target/debug/junto-release
+          python3 packaging/check_update.py
           cargo clippy --locked -p junto-client-core --all-targets -- -D warnings
+      # The ZIP of the client: extracted into a folder of the account, started, updated while
+      # its program runs, and rolled back by its recovery program (ADR 0755). Each step prints
+      # its name; a failure prints the command, its exit code and both outputs.
+      - name: Windows package
+        if: runner.os == 'Windows'
+        shell: bash
+        run: python3 packaging/check_windows.py
 
   licences:
     name: Licences of the Rust dependencies
@@ -242,6 +255,7 @@ jobs:
           --severity=warning
           tools/serial.sh tools/check-pins.sh tools/with-test-postgres.sh tools/with-test-livekit.sh
           tools/linux-container.sh tools/linux/run.sh tools/linux/session.sh
+          packaging/release.sh packaging/release_locked.sh packaging/release_linux.sh packaging/sign.sh
           deploy/generate-secrets.sh deploy/backup.sh deploy/restore.sh deploy/upgrade-undo.sh
           deploy/database-user.sh deploy/check-limits.sh
           deploy/images/server/junto-transcribe-handover

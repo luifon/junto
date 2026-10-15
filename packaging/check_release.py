@@ -73,18 +73,22 @@ def check():
                              JUNTO_TEST_CERTIFICATE_FILE=str(other_pin))
             subprocess.run(["python3", str(repository / "packaging/sign.py"), str(other)], env=other_env, check=True)
             release_tool = str(repository / "target/release/junto-release")
-            publish = ["publish", str(other), str(root), str(secret), str(fresh_secret)]
+            publish = ["publish", "macos", "bundle", architecture, str(other.parent), str(root / "other-release"), str(secret), str(fresh_secret)]
             result = subprocess.run([release_tool, *publish], capture_output=True, text=True)
             assert result.returncode != 0 and "test configuration requires" in result.stderr, outcome(result)
-            result = subprocess.run([release_tool, "--test-configuration", str(public), str(fresh_public), *publish], capture_output=True, text=True)
+            result = subprocess.run([release_tool, "--test-configuration", *publish], capture_output=True, text=True)
             assert result.returncode != 0 and "different project signing certificate" in result.stderr, outcome(result)
             broken = root / "broken/Junto.app"
             shutil.copytree(root / "v2/Junto.app", broken)
             program(broken / "Contents/MacOS/junto", 1)
             subprocess.run(["python3", str(repository / "packaging/sign.py"), str(broken)], env=environment, check=True)
-            run(str(root / "updater-v1"), "package", str(broken.parent), str(root / "broken-release"), str(secret), str(fresh_secret), "2.0.0", "macos", architecture)
+            run(str(root / "updater-v1"), "package", str(broken.parent), str(root / "broken-release"), str(secret), str(fresh_secret), "2.0.0", "macos", "bundle", architecture)
+            # The source keeps the release of every version: the first update downloads the
+            # installed version for its record (ADR 0726).
+            for name in [f"release-1.0.0-macos-bundle-{architecture}.json", f"junto-1.0.0-macos-bundle-{architecture}.junto"]:
+                shutil.copyfile(root / "v1" / name, root / "broken-release" / name)
             run("/usr/bin/ditto", "-x", "-k", str(root / f"v1/Junto-1.0.0-macos-{architecture}.zip"), str(root / "installed"))
-            installed = root / "installed/Junto/Junto.app"
+            installed = root / "installed/Junto.app"
             expected = requirement(installed)
             assert requirement(root / "v2/Junto.app") == expected
             installed.parent.chmod(0o555)
@@ -98,9 +102,9 @@ def check():
             result = subprocess.run([str(installed / "Contents/MacOS/junto"), "--version"], capture_output=True, text=True, timeout=30)
             assert result.returncode == 1, outcome(result)
             assert requirement(installed) == expected
-            previous = installed.parent / ".Junto.previous"
+            previous = installed.parent / ".Junto.app.junto-update/record/previous"
             assert (previous / "archive.junto").is_file()
-            assert not list(previous.rglob("*.app"))
+            assert not list((installed.parent / ".Junto.app.junto-update").rglob("*.app"))
             run(str(previous / "recover"), "rollback", str(installed))
             assert run(str(installed / "Contents/MacOS/junto"), "--version").strip() == "1.0.0 (test configuration)"
             assert requirement(installed) == expected

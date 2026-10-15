@@ -1,0 +1,194 @@
+#!/usr/bin/env python3
+"""Checks of the Windows package on a Windows machine (ADR 0755): the ZIP is extracted into a
+folder of the account, its program starts and draws its first frame, a running installation
+is updated from a local source, and its recovery program rolls the update back.
+
+Each step prints its name; a failure prints the step, the command, its exit code and both of
+its outputs. It builds the client and the release tools in the target directory of the
+repository."""
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import tempfile
+import zipfile
+
+import release_tools
+import windows
+from programs import outcome
+
+TARGET = pathlib.Path(os.environ.get("CARGO_TARGET_DIR", release_tools.REPOSITORY / "target")) / "debug"
+STEPS = []
+
+
+def step(name):
+    def decorate(function):
+        STEPS.append((name, function))
+        return function
+    return decorate
+
+
+def ran(arguments, **options):
+    """Runs a command; a command that does not end in time is a failure with its output so far."""
+    arguments = [str(argument) for argument in arguments]
+    try:
+        return subprocess.run(arguments, capture_output=True, text=True, timeout=options.pop("timeout", 180),
+                              **options)
+    except subprocess.TimeoutExpired as expired:
+        raise AssertionError(outcome(subprocess.CompletedProcess(arguments, -1, expired.stdout, expired.stderr))
+                             + f"\nthe command did not end within {expired.timeout} seconds") from None
+
+
+def expect(condition, message, result=None):
+    if not condition:
+        raise AssertionError(message + ("\n" + outcome(result) if result is not None else ""))
+
+
+def listing(directory):
+    return sorted(path.relative_to(directory).as_posix() for path in directory.rglob("*"))
+
+
+class Check:
+    def __init__(self, root):
+        self.root = root
+
+    @step("build the client and the release tools")
+    def build(self):
+        release_tools.run("cargo", "build", "--locked", "-p", "junto-client", "--bin", "junto", "-p",
+                          "junto-client-core", "--bin", "junto-release", cwd=release_tools.REPOSITORY, timeout=7200)
+        self.files = release_tools.keys(TARGET / "junto-release.exe", self.root)
+        self.tool, self.recover = release_tools.build(self.files)
+        for name, status in [("exit-0", 0), ("exit-1", 1)]:
+            source = self.root / f"{name}.rs"
+            source.write_text("fn main() {\n"
+                              "    if std::env::args().nth(1).as_deref() == Some(\"--wait\") {\n"
+                              "        std::thread::sleep(std::time::Duration::from_secs(600));\n"
+                              "    }\n"
+                              f"    std::process::exit({status});\n"
+                              "}\n")
+            release_tools.run("rustc", "--edition", "2021", "-o", self.root / f"{name}.exe", source)
+
+    @step("assemble the ZIP of the client build")
+    def assemble(self):
+        self.packages = windows.assemble(TARGET / "junto.exe", self.recover, "1.0.0", self.root / "packages")
+        self.zip = self.packages / "Junto-1.0.0-windows-x86_64.zip"
+        with zipfile.ZipFile(self.zip) as archive:
+            names = sorted(archive.namelist())
+        expect({"Junto/junto.exe", "Junto/junto-recover.exe", "Junto/junto-package.json",
+                "Junto/licences/Junto-LICENSE.txt"} <= set(names), f"ZIP entries: {names}")
+        expect(not any(name.lower().endswith(".dll") for name in names), f"the ZIP holds a library: {names}")
+
+    @step("install: extract the ZIP into a folder of the account")
+    def install(self):
+        programs = self.root / "Programs"
+        with zipfile.ZipFile(self.zip) as archive:
+            archive.extractall(programs)
+        self.installed = programs / "Junto"
+        description = json.loads((self.installed / "junto-package.json").read_text())
+        expect(description == {"format": 1, "version": "1.0.0", "system": "windows", "package": "directory",
+                               "architecture": "x86_64"}, f"description: {description}")
+
+    @step("start: the installed program states its version")
+    def version(self):
+        result = ran([self.installed / "junto.exe", "--version"])
+        expect(result.returncode == 0 and result.stdout.strip(), "the program did not start", result)
+        print(f"    the program states: {result.stdout.strip()}", flush=True)
+
+    @step("start: the installed program draws its first frame")
+    def first_frame(self):
+        result = ran([self.installed / "junto.exe", "--data-dir", self.root / "data", "--no-activate",
+                      "--check-startup"], timeout=300)
+        expect(result.returncode == 0 and "Junto first frame rendered" in (result.stdout + result.stderr).splitlines(),
+               "the program did not draw its first frame", result)
+
+    @step("update a running installation from a local source")
+    def update(self):
+        def tree(directory, version, program):
+            folder = directory / "Junto"
+            folder.mkdir(parents=True)
+            shutil.copyfile(program, folder / "junto.exe")
+            shutil.copyfile(self.recover, folder / "junto-recover.exe")
+            (folder / "junto-package.json").write_text(windows.description(version, "x86_64"), newline="\n")
+        source = self.root / "release"
+        source.mkdir()
+        for version, program in [("1.0.0", "exit-0.exe"), ("2.0.0", "exit-1.exe")]:
+            tree(self.root / f"tree-{version}", version, self.root / program)
+            release_tools.package(self.tool, self.files, self.root / f"tree-{version}", self.root / f"out-{version}",
+                                  version, "windows", "directory", "x86_64")
+            for path in (self.root / f"out-{version}").iterdir():
+                if version == "2.0.0" or not path.name.startswith("latest-"):
+                    shutil.copyfile(path, source / path.name)
+        self.place = self.root / "Place"
+        tree(self.place, "1.0.0", self.root / "exit-0.exe")
+        self.application = self.place / "Junto"
+        self.running = subprocess.Popen([str(self.application / "junto.exe"), "--wait"])
+        with release_tools.source(source) as (server, address):
+            result = ran([self.tool, "update", address, self.application])
+            expect(result.returncode == 0 and "version 1.0.0 is kept for a rollback" in result.stdout,
+                   "the update failed", result)
+            expect(server.paths == ["/latest-windows-directory-x86_64.json",
+                                    "/junto-2.0.0-windows-directory-x86_64.junto",
+                                    "/release-1.0.0-windows-directory-x86_64.json",
+                                    "/junto-1.0.0-windows-directory-x86_64.junto"], f"requests: {server.paths}")
+        expect(self.running.poll() is None, "the running program stopped during the update")
+        result = ran([self.application / "junto.exe"])
+        expect(result.returncode == 1, "the new program is not in place", result)
+        update = self.place / ".Junto.junto-update"
+        print(f"    the update directory holds: {listing(update)}", flush=True)
+        # A staging directory that still holds the replaced running program has a mark, so that
+        # the next operation removes it; one without a mark could hold the only recovery copy.
+        names = {path.name for path in update.iterdir()}
+        unmarked = [name for name in names if name.startswith("stage-") and f"finished-{name}" not in names]
+        expect(not unmarked, f"staging directories without a mark: {unmarked}")
+
+    @step("roll back with the recovery program of the installation")
+    def rollback(self):
+        self.running.kill()
+        self.running.wait()
+        record = self.place / ".Junto.junto-update/record"
+        recovery = [record / "previous/recover.exe", "rollback", self.application]
+        archive = record / "previous/archive.junto"
+        backup = archive.read_bytes()
+        archive.unlink()
+        archive.write_bytes(b"changed archive")
+        result = ran(recovery)
+        expect(result.returncode != 0, "a changed archive was restored", result)
+        archive.unlink()
+        archive.write_bytes(backup)
+        result = ran(recovery)
+        expect(result.returncode == 0 and "restored version 1.0.0" in result.stdout, "the rollback failed", result)
+        result = ran([self.application / "junto.exe"])
+        expect(result.returncode == 0, "the previous program is not in place", result)
+        # The record now names the restored release as installed and has no older one.
+        expect(not (record / "previous").exists(), "the record still holds a previous release")
+        result = ran([record / "installed/recover.exe", "rollback", self.application])
+        expect(result.returncode != 0, "a second rollback was accepted", result)
+        update = self.place / ".Junto.junto-update"
+        left = [path.name for path in update.iterdir() if path.name.startswith(("stage-", "finished-"))]
+        expect(not left, f"staging directories were left: {left}")
+
+
+def main():
+    with tempfile.TemporaryDirectory(prefix="junto-windows-package-", ignore_cleanup_errors=True) as temporary:
+        check = Check(pathlib.Path(temporary))
+        try:
+            for number, (name, function) in enumerate(STEPS, 1):
+                print(f"[{number}/{len(STEPS)}] {name}", flush=True)
+                try:
+                    function(check)
+                except Exception as error:
+                    print(f"FAILED at step {number}: {name}\n{type(error).__name__}: {error}", flush=True)
+                    return 1
+            print(f"all {len(STEPS)} steps of the Windows package check passed", flush=True)
+            return 0
+        finally:
+            running = getattr(check, "running", None)
+            if running is not None and running.poll() is None:
+                running.kill()
+                running.wait()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

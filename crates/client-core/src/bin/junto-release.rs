@@ -1,4 +1,5 @@
-//! Offline release creation and the platform update interface.
+//! Release creation on the build machine, and the update command of the release checks.
+//! The installed packages carry `junto-recover` instead (ADR 0726).
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -6,7 +7,10 @@ use std::path::{Path, PathBuf};
 
 use base64::{Engine, prelude::BASE64_STANDARD};
 use ed25519_dalek::SigningKey;
-use junto_client_core::releases::{self, Error, Manifest, TrustedKeys};
+use junto_client_core::releases::install::{Package, Previous};
+use junto_client_core::releases::{
+    self, Error, HttpSource, Manifest, PlatformInstaller, Target, TrustedKeys,
+};
 use junto_client_core::updates::Version;
 use zeroize::Zeroizing;
 
@@ -82,6 +86,7 @@ fn signing_key(path: &Path) -> Result<SigningKey, Error> {
     Ok(SigningKey::from_bytes(seed))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn package(
     source: &Path,
     output: &Path,
@@ -89,18 +94,21 @@ fn package(
     freshness: &SigningKey,
     version: &str,
     system: &str,
+    package: &str,
     architecture: &str,
 ) -> Result<(), Error> {
-    Version::parse(version).map_err(|_| Error::Invalid("version"))?;
+    let version = Version::parse(version).map_err(|_| Error::Invalid("version"))?;
     if !["macos", "linux", "windows"].contains(&system)
+        || Package::parse(package).is_none()
         || !["aarch64", "x86_64"].contains(&architecture)
     {
         return Err(Error::Invalid("target"));
     }
+    let target = Target::new(system, package, architecture)?;
     if output.canonicalize()?.starts_with(source.canonicalize()?) {
         return Err(Error::Invalid("output must be outside the archive source"));
     }
-    let archive = format!("junto-{version}-{system}-{architecture}.junto");
+    let archive = target.archive(version);
     let archive_path = output.join(&archive);
     let mut file = new_file(&archive_path)?;
     let result = (|| {
@@ -108,9 +116,10 @@ fn package(
         file.sync_all()?;
         let mut manifest = Manifest {
             format: 1,
-            version: version.into(),
-            system: system.into(),
-            architecture: architecture.into(),
+            version: version.to_string(),
+            system: target.system.clone(),
+            package: target.package.clone(),
+            architecture: target.architecture.clone(),
             archive,
             size: 0,
             sha256: String::new(),
@@ -125,15 +134,37 @@ fn package(
             &keys.iter().collect::<Vec<_>>(),
             &[freshness],
         )?;
-        let mut metadata = new_file(&output.join(format!("latest-{system}-{architecture}.json")))?;
-        metadata.write_all(&wire)?;
-        metadata.sync_all()?;
+        // The source keeps the information of every version: an update downloads the
+        // installed version from it when the installation holds no copy (ADR 0726).
+        for name in [target.latest(), target.release(version)] {
+            let mut metadata = new_file(&output.join(name))?;
+            metadata.write_all(&wire)?;
+            metadata.sync_all()?;
+        }
         Ok(())
     })();
     if result.is_err() {
         let _ = fs::remove_file(archive_path);
     }
     result
+}
+
+/// A macOS bundle is published only from macOS, where its code signature can be read: it must
+/// carry the pinned project certificate and the version of this tool.
+fn verify_bundle(bundle: &Path) -> Result<(), Error> {
+    #[cfg(target_os = "macos")]
+    {
+        releases::macos::verify_release_identity(bundle)?;
+        if releases::macos::verify_bundle(bundle)? != Version::THIS_BUILD {
+            return Err(Error::Invalid("bundle and release versions differ"));
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = bundle;
+        Err(Error::Invalid("a macOS bundle is published on macOS"))
+    }
 }
 
 #[tokio::main]
@@ -149,20 +180,45 @@ async fn main() -> std::process::ExitCode {
     }
 }
 
+fn signing_keys(first: &str, additional: &[&str]) -> Result<Vec<SigningKey>, Error> {
+    std::iter::once(&first)
+        .chain(additional)
+        .map(|path| signing_key(Path::new(path)))
+        .collect()
+}
+
+async fn update(source: &str, application: &str) -> Result<(), Error> {
+    let installer = PlatformInstaller::at(Path::new(application))?;
+    installer.location()?;
+    let current = installer.installed_version()?;
+    let source = HttpSource::new(
+        source,
+        TrustedKeys::compiled()?,
+        current,
+        installer.target().clone(),
+    )?;
+    let installed = releases::update(installer, &source).await?;
+    println!("installed version {}", installed.version);
+    match installed.previous {
+        Previous::Kept(version) => println!("version {version} is kept for a rollback"),
+        Previous::Missing(reason) => println!("no previous version is kept: {reason}"),
+    }
+    Ok(())
+}
+
 async fn execute(args: &[String]) -> Result<(), Error> {
-    let (args, test_configuration, trusted) =
-        if args.first().map(String::as_str) == Some("--test-configuration") {
-            if args.len() < 4 {
-                return Err(Error::Invalid(
-                    "test configuration requires release and freshness public-key files",
-                ));
-            }
-            let trusted = TrustedKeys::from_json(&fs::read(&args[1])?)?
-                .with_freshness(TrustedKeys::from_json(&fs::read(&args[2])?)?);
-            (&args[3..], true, trusted)
-        } else {
-            (args, false, TrustedKeys::compiled()?)
-        };
+    // The flag states that the person knows that this build is a test configuration. A
+    // product build refuses it; the trusted keys are always the compiled ones.
+    let (args, test_configuration) = match args.first().map(String::as_str) {
+        Some("--test-configuration") => (&args[1..], true),
+        _ => (args, false),
+    };
+    if test_configuration && !releases::TEST_CONFIGURATION {
+        return Err(Error::Invalid(
+            "--test-configuration is refused by a product build",
+        ));
+    }
+    let trusted = TrustedKeys::compiled()?;
     match args
         .iter()
         .map(String::as_str)
@@ -194,13 +250,11 @@ async fn execute(args: &[String]) -> Result<(), Error> {
             freshness,
             version,
             system,
+            package_name,
             architecture,
             additional @ ..,
         ] => {
-            let mut keys = vec![signing_key(Path::new(secret))?];
-            for secret in additional {
-                keys.push(signing_key(Path::new(secret))?);
-            }
+            let keys = signing_keys(secret, additional)?;
             fs::create_dir(output)?;
             let result = package(
                 Path::new(source),
@@ -209,6 +263,7 @@ async fn execute(args: &[String]) -> Result<(), Error> {
                 &signing_key(Path::new(freshness))?,
                 version,
                 system,
+                package_name,
                 architecture,
             );
             if result.is_err() {
@@ -218,7 +273,10 @@ async fn execute(args: &[String]) -> Result<(), Error> {
         }
         [
             "publish",
-            bundle,
+            system,
+            package_name,
+            architecture,
+            source,
             output,
             secret,
             freshness,
@@ -236,18 +294,15 @@ async fn execute(args: &[String]) -> Result<(), Error> {
             }
             releases::HttpSource::compiled()?
                 .ok_or(Error::Invalid("no build-time update source"))?;
-            #[cfg(target_os = "macos")]
-            if {
-                releases::macos::verify_release_identity(Path::new(bundle))?;
-                releases::macos::verify_bundle(Path::new(bundle))?
-            } != Version::THIS_BUILD
-            {
-                return Err(Error::Invalid("bundle and release versions differ"));
+            Package::parse(package_name).ok_or(Error::Invalid("package"))?;
+            let target = Target::new(system, package_name, architecture)?;
+            let source = Path::new(source);
+            // The release is of this checkout: the package states the version of this tool.
+            releases::install::verify_source(&target, source, Version::THIS_BUILD)?;
+            if target.system == "macos" {
+                verify_bundle(&source.join("Junto.app"))?;
             }
-            let mut keys = vec![signing_key(Path::new(secret))?];
-            for secret in additional {
-                keys.push(signing_key(Path::new(secret))?);
-            }
+            let keys = signing_keys(secret, additional)?;
             if keys
                 .iter()
                 .any(|key| !trusted.contains(&key.verifying_key()))
@@ -262,85 +317,26 @@ async fn execute(args: &[String]) -> Result<(), Error> {
                     "the freshness key is not in the compiled trust set",
                 ));
             }
-            let source = Path::new(bundle)
-                .parent()
-                .ok_or(Error::Invalid("bundle parent"))?;
             package(
                 source,
                 Path::new(output),
                 &keys,
                 &freshness,
                 &Version::THIS_BUILD.to_string(),
-                std::env::consts::OS,
-                std::env::consts::ARCH,
+                &target.system,
+                &target.package,
+                &target.architecture,
             )
         }
-        #[cfg(target_os = "macos")]
-        ["update", source, public, freshness_public, application] => {
-            use releases::{
-                HttpSource, Installer,
-                macos::{MacInstaller, version},
-            };
-            let application = Path::new(application);
-            let keys = TrustedKeys::from_json(&fs::read(public)?)?
-                .with_freshness(TrustedKeys::from_json(&fs::read(freshness_public)?)?);
-            let source = HttpSource::new(
-                source,
-                keys,
-                version(application)?,
-                "macos",
-                std::env::consts::ARCH,
-            )?;
-            let mut random = [0; 16];
-            getrandom::fill(&mut random).map_err(|_| Error::Invalid("random source"))?;
-            let suffix: String = random.iter().map(|b| format!("{b:02x}")).collect();
-            let download = application
-                .parent()
-                .ok_or(Error::Invalid("bundle parent"))?
-                .join(format!(".Junto.download-{suffix}"));
-            let installer = MacInstaller::new(application)?;
-            installer.location()?;
-            let mut archive = source.download(&download).await?;
-            installer.install(&mut archive)?;
-            Ok(())
-        }
-        #[cfg(target_os = "macos")]
+        ["update", source, application] => update(source, application).await,
         ["update-compiled", application] => {
-            use releases::{
-                Installer,
-                macos::{MacInstaller, version},
-            };
-            let application = Path::new(application);
-            if version(application)? != Version::THIS_BUILD {
-                return Err(Error::Invalid("updater and application versions differ"));
-            }
-            let source =
-                releases::HttpSource::compiled()?.ok_or(Error::Invalid("no build-time source"))?;
-            let mut random = [0; 16];
-            getrandom::fill(&mut random).map_err(|_| Error::Invalid("random source"))?;
-            let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
-            let download = application
-                .parent()
-                .ok_or(Error::Invalid("bundle parent"))?
-                .join(format!(".Junto.download-{suffix}"));
-            let installer = MacInstaller::new(application)?;
-            installer.location()?;
-            let mut archive = source.download(&download).await?;
-            installer.install(&mut archive)?;
-            Ok(())
-        }
-        #[cfg(target_os = "macos")]
-        ["rollback", application, pin @ ..]
-            if pin.len() < 2 && (pin.is_empty() || test_configuration) =>
-        {
-            let mut installer = releases::macos::MacInstaller::new(Path::new(application))?;
-            if let Some(pin) = pin.first() {
-                installer = installer.with_trust(trusted, fs::read_to_string(pin)?.trim().into());
-            }
-            installer.rollback()
+            let source = option_env!("JUNTO_UPDATE_SOURCE")
+                .filter(|source| !source.is_empty())
+                .ok_or(Error::Invalid("no build-time source"))?;
+            update(source, application).await
         }
         _ => Err(Error::Invalid(
-            "usage: junto-release keygen SECRET PUBLIC | package SOURCE NEW-OUTPUT RELEASE-SECRET FRESHNESS-SECRET VERSION SYSTEM ARCH [RELEASE-SECRET...] | publish BUNDLE OUTPUT RELEASE-SECRET FRESHNESS-SECRET [RELEASE-SECRET...] | update SOURCE RELEASE-PUBLIC FRESHNESS-PUBLIC BUNDLE | update-compiled BUNDLE | rollback BUNDLE | refresh METADATA ARCHIVE VERSION FRESHNESS-SECRET...",
+            "usage: junto-release [--test-configuration] keygen SECRET PUBLIC | package SOURCE NEW-OUTPUT RELEASE-SECRET FRESHNESS-SECRET VERSION SYSTEM PACKAGE ARCH [RELEASE-SECRET...] | publish SYSTEM PACKAGE ARCH SOURCE OUTPUT RELEASE-SECRET FRESHNESS-SECRET [RELEASE-SECRET...] | update SOURCE APPLICATION | update-compiled APPLICATION | refresh METADATA ARCHIVE VERSION FRESHNESS-SECRET...",
         )),
     }
 }

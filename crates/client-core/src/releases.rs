@@ -14,11 +14,75 @@ use crate::updates::{NewestFuture, Release, UpdateError, UpdateSource, Version};
 
 pub mod archive;
 pub mod install;
+#[cfg(target_os = "linux")]
+pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
+// Compiled on every system: its replacement by entries uses portable file operations only,
+// and the tests of the other systems check it.
+pub mod windows;
 
-pub trait Installer {
-    fn install(&self, archive: &mut VerifiedArchive) -> Result<PathBuf, Error>;
+#[cfg(target_os = "linux")]
+pub type Tools = linux::LinuxTools;
+#[cfg(target_os = "macos")]
+pub type Tools = macos::MacTools;
+#[cfg(windows)]
+pub type Tools = windows::WindowsTools;
+
+/// The installer of this system.
+pub type PlatformInstaller = install::Installer<Tools>;
+
+impl install::Installer<Tools> {
+    /// The installer of the installation that this process runs from.
+    pub fn running() -> Result<Self, Error> {
+        let (package, application) = install::running()?;
+        Self::with_system(&application, package, Tools::for_running())
+    }
+
+    /// The installer of the installation at a path that a person names.
+    pub fn at(application: &Path) -> Result<Self, Error> {
+        Self::with_system(
+            application,
+            install::package_at(application)?,
+            Tools::for_running(),
+        )
+    }
+}
+
+/// Downloads the newest release from the source of this build and installs it over the
+/// installation that this process runs from.
+pub async fn update_running() -> Result<install::Installed, Error> {
+    let installer = PlatformInstaller::running()?;
+    installer.location()?;
+    let current = installer.installed_version()?;
+    let source = HttpSource::compiled_for(installer.target().clone(), current)?
+        .ok_or(Error::Invalid("no update source"))?;
+    update(installer, &source).await
+}
+
+/// Downloads the newest release from `source` and installs it. When the record beside the
+/// application does not hold the release of the installed version, it is downloaded too,
+/// so that the update can keep it for a rollback.
+pub async fn update<S: install::System + Send + 'static>(
+    installer: install::Installer<S>,
+    source: &HttpSource,
+) -> Result<install::Installed, Error> {
+    let current = installer.installed_version()?;
+    let mut archive = source.download(&installer.download_path()?).await?;
+    let fetched = if installer.has_record_of(current) {
+        install::Fetched::NotNeeded
+    } else {
+        match source
+            .download_version(current, &installer.download_path()?)
+            .await
+        {
+            Ok(release) => install::Fetched::Archive(Box::new(release)),
+            Err(error) => install::Fetched::Unavailable(error.to_string()),
+        }
+    };
+    tokio::task::spawn_blocking(move || installer.install(&mut archive, fetched))
+        .await
+        .map_err(|_| Error::Invalid("installer task stopped"))?
 }
 
 pub const TEST_CONFIGURATION: bool = env!("JUNTO_TEST_CONFIGURATION").as_bytes()[0] == b'1';
@@ -29,6 +93,72 @@ pub fn build_label() -> String {
 
 pub const MAX_METADATA: usize = 64 * 1024;
 pub const MAX_ARCHIVE: u64 = 512 * 1024 * 1024;
+/// The latest expiry of a freshness statement that a client accepts, counted from its clock.
+/// The release tool signs 30 days; the rest allows for a clock that is behind.
+pub const MAX_FRESHNESS_AHEAD: u64 = 45 * 24 * 60 * 60;
+
+/// What a release is for: the system, the form of the package and the architecture.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Target {
+    pub system: String,
+    pub package: String,
+    pub architecture: String,
+}
+
+impl Target {
+    pub fn new(system: &str, package: &str, architecture: &str) -> Result<Self, Error> {
+        if !filename(system) || !filename(package) || !filename(architecture) {
+            return Err(Error::Invalid("release target"));
+        }
+        Ok(Self {
+            system: system.into(),
+            package: package.into(),
+            architecture: architecture.into(),
+        })
+    }
+
+    /// The target of this build with the form of its package.
+    pub fn this_build(package: install::Package) -> Self {
+        Self {
+            system: std::env::consts::OS.into(),
+            package: package.name().into(),
+            architecture: std::env::consts::ARCH.into(),
+        }
+    }
+
+    /// The release information of the newest release.
+    pub fn latest(&self) -> String {
+        format!(
+            "latest-{}-{}-{}.json",
+            self.system, self.package, self.architecture
+        )
+    }
+
+    /// The release information of one version, kept by the source for every release.
+    pub fn release(&self, version: Version) -> String {
+        format!(
+            "release-{version}-{}-{}-{}.json",
+            self.system, self.package, self.architecture
+        )
+    }
+
+    pub fn archive(&self, version: Version) -> String {
+        format!(
+            "junto-{version}-{}-{}-{}.junto",
+            self.system, self.package, self.architecture
+        )
+    }
+
+    fn check(&self, manifest: &Manifest) -> Result<(), Error> {
+        if manifest.system != self.system
+            || manifest.package != self.package
+            || manifest.architecture != self.architecture
+        {
+            return Err(Error::Invalid("release target"));
+        }
+        Ok(())
+    }
+}
 const METADATA_DOMAIN: &[u8] = b"junto-release-metadata-v1\0";
 const FRESHNESS_DOMAIN: &[u8] = b"junto-release-freshness-v1\0";
 const ARCHIVE_DOMAIN: &[u8] = b"junto-release-archive-sha256-v1\0";
@@ -48,9 +178,17 @@ pub enum Error {
     #[error("move Junto to a writable directory of your account before updating")]
     NotWritable,
     #[error(
-        "cannot open or acquire .Junto.update.lock; check its permissions or another update in progress"
+        "cannot open or acquire the lock in .<application>.junto-update beside the application; check its permissions or another update in progress"
     )]
     Locked,
+    #[error("this copy of Junto is not an installed package")]
+    NotInstalled,
+    #[error(
+        "the replacement stopped and could not be undone; keep the stage-* directory in .<application>.junto-update beside the application, it holds the application"
+    )]
+    ExchangeIncomplete,
+    #[error("the source did not give the release: {0}")]
+    Unavailable(String),
     #[error("the release request timed out")]
     Timeout,
     #[error(transparent)]
@@ -101,14 +239,15 @@ impl TrustedKeys {
     }
 
     pub fn compiled() -> Result<Self, Error> {
-        Ok(Self::from_json(include_bytes!(concat!(
-            env!("OUT_DIR"),
-            "/update-keys.json"
-        )))?
-        .with_freshness(Self::from_json(include_bytes!(concat!(
-            env!("OUT_DIR"),
-            "/freshness-keys.json"
-        )))?))
+        let release = include_bytes!(concat!(env!("OUT_DIR"), "/update-keys.json"));
+        let freshness = include_bytes!(concat!(env!("OUT_DIR"), "/freshness-keys.json"));
+        crate::release_configuration::distinct_roles(release, freshness).map_err(Error::Invalid)?;
+        Ok(Self::from_json(release)?.with_freshness(Self::from_json(freshness)?))
+    }
+
+    /// Whether a key is in both sets, which gives its holder both roles.
+    pub fn shares_a_key(&self) -> bool {
+        self.release.iter().any(|key| self.freshness.contains(key))
     }
 
     pub fn contains(&self, key: &VerifyingKey) -> bool {
@@ -173,6 +312,7 @@ pub struct Manifest {
     pub format: u32,
     pub version: String,
     pub system: String,
+    pub package: String,
     pub architecture: String,
     pub archive: String,
     pub size: u64,
@@ -327,6 +467,7 @@ pub fn verify_release(bytes: &[u8], keys: &TrustedKeys) -> Result<Manifest, Erro
         return Err(Error::Invalid("format"));
     }
     Version::parse(&manifest.version).map_err(|_| Error::Invalid("version"))?;
+    Target::new(&manifest.system, &manifest.package, &manifest.architecture)?;
     if !filename(&manifest.archive) || manifest.size == 0 || manifest.size > MAX_ARCHIVE {
         return Err(Error::Invalid("archive name or size"));
     }
@@ -341,22 +482,37 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// Verifies the release information of one earlier or installed version with the release
+/// keys only. Freshness is not required: the information describes a version that the
+/// client already runs or ran, and it is used to keep or restore that version.
+pub fn verify_version(
+    bytes: &[u8],
+    keys: &TrustedKeys,
+    version: Version,
+    target: &Target,
+) -> Result<Manifest, Error> {
+    let manifest = verify_release(bytes, keys)?;
+    target.check(&manifest)?;
+    if Version::parse(&manifest.version).map_err(|_| Error::Invalid("version"))? != version {
+        return Err(Error::Invalid("release information of another version"));
+    }
+    Ok(manifest)
+}
+
 pub fn verify_manifest(
     bytes: &[u8],
     keys: &TrustedKeys,
     current: Version,
-    system: &str,
-    architecture: &str,
+    target: &Target,
 ) -> Result<Manifest, Error> {
-    verify_manifest_at(bytes, keys, current, system, architecture, now()?)
+    verify_manifest_at(bytes, keys, current, target, now()?)
 }
 
 pub fn verify_manifest_at(
     bytes: &[u8],
     keys: &TrustedKeys,
     current: Version,
-    system: &str,
-    architecture: &str,
+    target: &Target,
     now: u64,
 ) -> Result<Manifest, Error> {
     let mut manifest = verify_release(bytes, keys)?;
@@ -384,10 +540,12 @@ pub fn verify_manifest_at(
     if freshness.expires <= now {
         return Err(Error::Expired);
     }
-    manifest.expires = freshness.expires;
-    if manifest.system != system || manifest.architecture != architecture {
-        return Err(Error::Invalid("release target"));
+    // A date further ahead comes from a wrong clock at signing or here; it is not valid.
+    if freshness.expires > now.saturating_add(MAX_FRESHNESS_AHEAD) {
+        return Err(Error::Expired);
     }
+    manifest.expires = freshness.expires;
+    target.check(&manifest)?;
     if Version::parse(&manifest.version).map_err(|_| Error::Invalid("version"))? <= current {
         return Err(Error::NotNewer);
     }
@@ -479,7 +637,8 @@ pub fn verify_archive(path: &Path, manifest: &Manifest, keys: &TrustedKeys) -> R
 
 /// Owns a verified download. Dropping it removes its temporary file.
 pub struct VerifiedArchive {
-    pub(crate) file: File,
+    /// The open download; `None` after `keep` moved the file away.
+    pub(crate) file: Option<File>,
     pub(crate) manifest: Manifest,
     cleanup: RemoveFile,
     keys: TrustedKeys,
@@ -489,15 +648,17 @@ pub struct VerifiedArchive {
 impl VerifiedArchive {
     pub fn verify(&mut self) -> Result<(), Error> {
         use std::io::{Seek, SeekFrom};
-        self.file.seek(SeekFrom::Start(0))?;
-        verify_contents(&mut self.file, &self.manifest, &self.keys)
+        let file = self.file.as_mut().ok_or(Error::Invalid("archive moved"))?;
+        file.seek(SeekFrom::Start(0))?;
+        verify_contents(file, &self.manifest, &self.keys)
     }
 
     pub fn unpack(&mut self, destination: &Path) -> Result<(), Error> {
         self.verify()?;
         use std::io::{Seek, SeekFrom};
-        self.file.seek(SeekFrom::Start(0))?;
-        archive::unpack(&mut self.file, destination)
+        let file = self.file.as_mut().ok_or(Error::Invalid("archive moved"))?;
+        file.seek(SeekFrom::Start(0))?;
+        archive::unpack(file, destination)
     }
 
     pub fn manifest(&self) -> &Manifest {
@@ -505,6 +666,20 @@ impl VerifiedArchive {
     }
     pub fn path(&self) -> &Path {
         &self.cleanup.0
+    }
+    /// The release information as the source served it.
+    pub fn information(&self) -> &[u8] {
+        &self.wire
+    }
+
+    /// Moves the file to `destination` on the same file system and closes it: Windows does
+    /// not rename a directory that holds an open file. From then on the file is not removed
+    /// when this value is dropped.
+    pub fn keep(&mut self, destination: &Path) -> Result<(), Error> {
+        self.file = None;
+        std::fs::rename(&self.cleanup.0, destination)?;
+        self.cleanup.0 = PathBuf::new();
+        Ok(())
     }
 }
 
@@ -548,7 +723,9 @@ fn create_private_directory(path: &Path) -> std::io::Result<()> {
 struct RemoveFile(PathBuf);
 impl Drop for RemoveFile {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        if !self.0.as_os_str().is_empty() {
+            let _ = std::fs::remove_file(&self.0);
+        }
     }
 }
 
@@ -558,8 +735,7 @@ pub struct HttpSource {
     client: reqwest::Client,
     keys: TrustedKeys,
     current: Version,
-    system: String,
-    architecture: String,
+    target: Target,
     timeout: Duration,
     idle: Duration,
 }
@@ -569,13 +745,9 @@ impl HttpSource {
         base: &str,
         keys: TrustedKeys,
         current: Version,
-        system: &str,
-        architecture: &str,
+        target: Target,
     ) -> Result<Self, Error> {
         let mut base = crate::release_configuration::source(base).map_err(Error::Invalid)?;
-        if !filename(system) || !filename(architecture) {
-            return Err(Error::Invalid("release target"));
-        }
         if !base.path().ends_with('/') {
             base.set_path(&format!("{}/", base.path()));
         }
@@ -589,14 +761,20 @@ impl HttpSource {
             client,
             keys,
             current,
-            system: system.into(),
-            architecture: architecture.into(),
+            target,
             timeout: Duration::from_secs(60),
             idle: Duration::from_secs(60),
         })
     }
 
+    /// The source of this build for the package that it runs from: the package of the
+    /// installation when this copy is one, else the usual package of its system.
     pub fn compiled() -> Result<Option<Self>, Error> {
+        let package = install::Package::running();
+        Self::compiled_for(Target::this_build(package), Version::THIS_BUILD)
+    }
+
+    pub fn compiled_for(target: Target, current: Version) -> Result<Option<Self>, Error> {
         let Some(base) = option_env!("JUNTO_UPDATE_SOURCE").filter(|base| !base.is_empty()) else {
             return Ok(None);
         };
@@ -604,14 +782,11 @@ impl HttpSource {
         if keys.is_empty() {
             return Ok(None);
         }
-        Self::new(
-            base,
-            keys,
-            Version::THIS_BUILD,
-            std::env::consts::OS,
-            std::env::consts::ARCH,
-        )
-        .map(Some)
+        Self::new(base, keys, current, target).map(Some)
+    }
+
+    pub fn target(&self) -> &Target {
+        &self.target
     }
 
     pub fn with_timeout(mut self, timeout: Duration) -> Result<Self, Error> {
@@ -639,28 +814,22 @@ impl HttpSource {
         self.check_with_wire().await.map(|(manifest, _)| manifest)
     }
 
+    async fn information(&self, filename: &str) -> Result<Vec<u8>, Error> {
+        let mut response = self.get(filename).await?;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            if bytes.len() + chunk.len() > MAX_METADATA {
+                return Err(Error::Invalid("metadata size"));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(bytes)
+    }
+
     async fn check_with_wire(&self) -> Result<(Manifest, Vec<u8>), Error> {
         tokio::time::timeout(self.timeout, async {
-            let mut response = self
-                .get(&format!(
-                    "latest-{}-{}.json",
-                    self.system, self.architecture
-                ))
-                .await?;
-            let mut bytes = Vec::new();
-            while let Some(chunk) = response.chunk().await? {
-                if bytes.len() + chunk.len() > MAX_METADATA {
-                    return Err(Error::Invalid("metadata size"));
-                }
-                bytes.extend_from_slice(&chunk);
-            }
-            let manifest = verify_manifest(
-                &bytes,
-                &self.keys,
-                self.current,
-                &self.system,
-                &self.architecture,
-            )?;
+            let bytes = self.information(&self.target.latest()).await?;
+            let manifest = verify_manifest(&bytes, &self.keys, self.current, &self.target)?;
             Ok((manifest, bytes))
         })
         .await
@@ -669,6 +838,33 @@ impl HttpSource {
 
     pub async fn download(&self, destination: &Path) -> Result<VerifiedArchive, Error> {
         let (manifest, wire) = self.check_with_wire().await?;
+        self.download_archive(manifest, wire, destination).await
+    }
+
+    /// Downloads the release of one version that this client runs or ran, from the release
+    /// information that the source keeps for each version. Only the release keys are
+    /// checked (ADR 0726).
+    pub async fn download_version(
+        &self,
+        version: Version,
+        destination: &Path,
+    ) -> Result<VerifiedArchive, Error> {
+        let (manifest, wire) = tokio::time::timeout(self.timeout, async {
+            let bytes = self.information(&self.target.release(version)).await?;
+            let manifest = verify_version(&bytes, &self.keys, version, &self.target)?;
+            Ok::<_, Error>((manifest, bytes))
+        })
+        .await
+        .map_err(|_| Error::Timeout)??;
+        self.download_archive(manifest, wire, destination).await
+    }
+
+    async fn download_archive(
+        &self,
+        manifest: Manifest,
+        wire: Vec<u8>,
+        destination: &Path,
+    ) -> Result<VerifiedArchive, Error> {
         let total = self.idle + Duration::from_secs(manifest.size.div_ceil(16 * 1024));
         tokio::time::timeout(total, async {
             let mut options = OpenOptions::new();
@@ -705,7 +901,7 @@ impl HttpSource {
             }
             file.sync_all().await?;
             let mut archive = VerifiedArchive {
-                file: file.into_std().await,
+                file: Some(file.into_std().await),
                 manifest,
                 cleanup,
                 keys: self.keys.clone(),

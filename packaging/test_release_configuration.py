@@ -1,4 +1,5 @@
-"""Release configuration and cleanup contracts, without system keychain changes."""
+"""Release configuration and cleanup contracts. No test changes a keychain or a file outside its
+temporary directory: each test sets the lock of the keychain helpers to a file of its own."""
 import os
 import pathlib
 import subprocess
@@ -9,7 +10,14 @@ from unittest.mock import patch
 import sign
 
 
-class Corrections(unittest.TestCase):
+class ReleaseConfigurationTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        environment = patch.dict(os.environ, {"JUNTO_TEST_KEYCHAIN_LOCK": str(pathlib.Path(temporary.name) / "keychain.lock")})
+        environment.start()
+        self.addCleanup(environment.stop)
+
     def test_signing_requires_the_pinned_certificate(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
@@ -116,3 +124,16 @@ class Corrections(unittest.TestCase):
                                     cwd=pathlib.Path(__file__).resolve().parent.parent)
             self.assertEqual(result.returncode, 23, result.stderr)
             self.assertFalse(output.exists())
+
+    @unittest.skipIf(os.name == "nt", "POSIX home directory")
+    def test_the_unit_tests_write_nothing_into_the_home_directory(self):
+        with tempfile.TemporaryDirectory() as home:
+            environment = dict(os.environ, HOME=home)
+            environment.pop("JUNTO_TEST_KEYCHAIN_LOCK", None)
+            result = subprocess.run(
+                [sys.executable, "-m", "unittest",
+                 "test_release_configuration.ReleaseConfigurationTests.test_cleanup_restores_search_list_even_when_delete_fails",
+                 "test_keychains"],
+                cwd=pathlib.Path(__file__).resolve().parent, env=environment, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(list(pathlib.Path(home).rglob("*")), [])

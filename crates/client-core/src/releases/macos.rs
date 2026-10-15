@@ -1,15 +1,18 @@
 //! macOS system tools for the shared installation decisions.
-use super::{
-    Error, Installer,
-    install::{BundleInstaller, System, application_for_executable},
-};
+use super::{Error, install::System};
 use crate::updates::Version;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
+#[derive(Clone, Copy, Default)]
 pub struct MacTools;
-pub type MacInstaller = BundleInstaller<MacTools>;
+
+impl MacTools {
+    pub fn for_running() -> Self {
+        Self
+    }
+}
 
 fn command(program: &str, arguments: &[&std::ffi::OsStr]) -> Result<String, Error> {
     let output = Command::new(program).args(arguments).output()?;
@@ -91,45 +94,17 @@ impl System for MacTools {
     fn version(&self, bundle: &Path) -> Result<Version, Error> {
         version(bundle)
     }
-    fn exchange(&self, first: &Path, second: &Path) -> Result<(), Error> {
+    fn exchange(&self, application: &Path, candidate: &Path) -> Result<(), Error> {
         rustix::fs::renameat_with(
             rustix::fs::CWD,
-            first,
+            application,
             rustix::fs::CWD,
-            second,
+            candidate,
             rustix::fs::RenameFlags::EXCHANGE,
         )
         .map_err(std::io::Error::from)?;
         Ok(())
     }
-}
-impl BundleInstaller<MacTools> {
-    pub fn new(application: &Path) -> Result<Self, Error> {
-        Self::with_system(application, MacTools)
-    }
-    pub fn running() -> Result<Self, Error> {
-        Self::new(&application_for_executable(&std::env::current_exe()?)?)
-    }
-}
-
-pub async fn update_running() -> Result<PathBuf, Error> {
-    let source = super::HttpSource::compiled()?.ok_or(Error::Invalid("no update source"))?;
-    let installer = MacInstaller::running()?;
-    installer.location()?;
-    let mut random = [0; 16];
-    getrandom::fill(&mut random).map_err(|_| Error::Invalid("random source"))?;
-    let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
-    let download = std::env::current_exe()?
-        .parent()
-        .and_then(Path::parent)
-        .and_then(Path::parent)
-        .and_then(Path::parent)
-        .ok_or(Error::Invalid("bundle parent"))?
-        .join(format!(".Junto.download-{suffix}"));
-    let mut archive = source.download(&download).await?;
-    tokio::task::spawn_blocking(move || installer.install(&mut archive))
-        .await
-        .map_err(|_| Error::Invalid("installer task stopped"))?
 }
 
 pub fn verify_bundle(bundle: &Path) -> Result<Version, Error> {

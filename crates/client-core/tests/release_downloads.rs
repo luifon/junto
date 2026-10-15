@@ -11,6 +11,19 @@ use std::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+/// An expiry within the accepted range: one day after the clock of the test.
+fn soon() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 24 * 60 * 60
+}
+
+fn target(system: &str, architecture: &str) -> junto_client_core::releases::Target {
+    junto_client_core::releases::Target::new(system, "bundle", architecture).unwrap()
+}
+
 fn trust(keys: Vec<ed25519_dalek::VerifyingKey>) -> TrustedKeys {
     TrustedKeys::new(keys.clone()).with_freshness(TrustedKeys::new(keys))
 }
@@ -38,11 +51,12 @@ async fn fixture(
         format: 1,
         version: "2.0.0".into(),
         system: "macos".into(),
+        package: "bundle".into(),
         architecture: "aarch64".into(),
         archive: "archive".into(),
         size: 0,
         sha256: String::new(),
-        expires: u64::MAX,
+        expires: soon(),
         archive_signatures: vec![],
     };
     releases::sign_archive(&original, &mut metadata, &key).unwrap();
@@ -67,8 +81,7 @@ async fn fixture(
             vec![key.verifying_key()]
         }),
         Version::new(if mode == "current" { 2 } else { 1 }, 0, 0),
-        "macos",
-        "aarch64",
+        target("macos", "aarch64"),
     )
     .unwrap()
     .with_timeout(Duration::from_secs(if mode == "steady" { 2 } else { 1 }))
