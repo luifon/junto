@@ -34,8 +34,16 @@ checkout=$here/checkout
 if [ -z "${JUNTO_CI_LOCKED:-}" ]; then
     # Until the locked part runs, a failure or a signal ends the run here: the clone is
     # removed and "finished" names the status.
+    locked=""
     outer_end() {
         status=$?
+        # The lock program runs the locked part as its child; that part ends its job and
+        # cleans up on its own signal.
+        if [ -n "$locked" ]; then
+            pkill -TERM -P "$locked" 2>/dev/null || true
+            kill "$locked" 2>/dev/null || true
+            wait "$locked" 2>/dev/null || true
+        fi
         rm -rf "$checkout"
         echo "$status" >"$here/finished"
     }
@@ -54,9 +62,13 @@ if [ -z "${JUNTO_CI_LOCKED:-}" ]; then
     if [ "$runner" = linux ]; then export JUNTO_HEAVY_LOCK="$directory/run.lock"; fi
     # The locked part writes "finished" itself; this part keeps its trap for the time the
     # run waits for the lock.
-    status=0
+    # It runs in the background, so that a signal to this part ends it as well.
     JUNTO_CI_LOCKED=1 "$checkout/tools/serial.sh" \
-        sh "$checkout/tools/ci/run-jobs.sh" "$directory" "$run" "$runner" "$repository" "$@" || status=$?
+        sh "$checkout/tools/ci/run-jobs.sh" "$directory" "$run" "$runner" "$repository" "$@" &
+    locked=$!
+    status=0
+    wait "$locked" || status=$?
+    locked=""
     trap - EXIT
     rm -rf "$checkout"
     if [ ! -f "$here/finished" ]; then echo "$status" >"$here/finished"; fi
@@ -166,6 +178,9 @@ job() {
         linux:licences)
             JUNTO_CI_TOOLS=/target/ci-tools linux_container tools/ci/licences.sh ;;
         linux:transcription-worker)
+            # The tests of file and device permissions need a user other than root: the
+            # container gives user 1000 the worker directory and the uv cache, then runs the
+            # job as that user.
             linux_tools || return 1
             docker run --rm --name junto-ci-worker --cpus "$host_cpus" --memory 11g --memory-swap 11g \
                 --mount "type=bind,src=$checkout,dst=/src" -w /src \
@@ -173,7 +188,9 @@ job() {
                 --mount type=volume,src=junto-ci-uv,dst=/cache \
                 -e UV_CACHE_DIR=/cache/uv -e UV_PYTHON_INSTALL_DIR=/cache/python -e UV_LINK_MODE=copy \
                 -e PATH=/opt/junto-ci/bin:/usr/local/bin:/usr/bin:/bin \
-                "$JUNTO_CI_PYTHON_IMAGE" tools/ci/transcription-worker.sh ;;
+                "$JUNTO_CI_PYTHON_IMAGE" sh -c 'chown -R 1000:1000 /cache /src/workers/transcription &&
+                    exec setpriv --reuid=1000 --regid=1000 --clear-groups env HOME=/tmp \
+                    tools/ci/transcription-worker.sh' ;;
         linux:layout-page)
             # The page's tests start LiveKit with tools/with-test-livekit.sh, which publishes
             # its ports on 127.0.0.1 of the Docker host; this container shares the host's

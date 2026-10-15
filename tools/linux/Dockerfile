@@ -11,9 +11,11 @@ RUN rm -f /etc/apt/sources.list.d/debian.sources \
         debian-security/20261010T000000Z bookworm-security \
         > /etc/apt/sources.list \
     && printf 'Acquire::Retries "5";\n' > /etc/apt/apt.conf.d/80-retries
+# git: cargo deny fetches its advisory database with the git program.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl=7.88.1-10+deb12u15 \
     ca-certificates=20250419~deb12u1 \
+    git=1:2.39.5-0+deb12u3 \
     && rm -rf /var/lib/apt/lists
 
 # The call library needs clang 21 or later. The compiler is Debian's build for this release,
