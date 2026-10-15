@@ -16,6 +16,7 @@ The server builds its SQL statements at run time (ADR 0008) and relies on constr
 - A test without `JUNTO_TEST_DATABASE_URL` fails with a message that names the script. It is not skipped.
 - A test replaces the clock (ADR 0008) and moves the time forward to test expiry.
 - A test that shortens a time limit applies it only to the step that it examines, and prepares under the normal limits. For the time limit of a request and the time limits of the database, the test prepares on one server process and sends the examined step to a second process on the same database that has the short limit. For the time limits of the event stream, the test replaces the limits of the running server after its preparation. Only tests replace limits at run time.
+- Fixtures whose bulk preparation exceeds the normal statement time limit are inserted in batches of at most 500 rows under the normal statement time limit. The fixture size and the assertions of the query under test stay unchanged; preparing thousands of rows is not one production request.
 - A test waits for a condition and not for a fixed time when it needs something to have happened. For the admission check, the server states whether a check runs or a room waits for one.
 - The permission function has table tests for each rule and property tests for the rules that must hold for every combination of roles and overrides.
 - A test compares the committed OpenAPI document with the generated one (ADR 0205).

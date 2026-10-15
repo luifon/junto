@@ -58,6 +58,9 @@ if [ -z "${JUNTO_CI_LOCKED:-}" ]; then
     echo "$objects" >"$checkout/.git/objects/info/alternates"
     git -C "$checkout" fetch --quiet "$repository" "refs/ci/$run"
     git -C "$checkout" checkout --quiet --detach FETCH_HEAD
+    # Container commands cannot reach the host's object directory.
+    git -C "$checkout" -c pack.threads=1 repack -a -d --quiet
+    rm "$checkout/.git/objects/info/alternates"
     git -C "$checkout" rev-parse HEAD >"$here/commit"
     if [ "$runner" = linux ]; then export JUNTO_HEAVY_LOCK="$directory/run.lock"; fi
     # The locked part writes "finished" itself; this part keeps its trap for the time the
@@ -160,7 +163,7 @@ linux_tools() {
 
 # The limits of one job on the Linux host: at most 8 processors and 12 GB (11 GiB) of memory
 # over all of its containers, without swap. tools/linux/run.sh gives its build container the
-# processors and memory below, and PostgreSQL, LiveKit and the control container 2
+# processors and memory below, and PostgreSQL, LiveKit and the control container 4
 # processors and 2.4 GiB together. A host with fewer processors gives fewer.
 host_cpus=8
 if [ "$runner" = linux ]; then
@@ -168,19 +171,21 @@ if [ "$runner" = linux ]; then
     if [ "$host_cpus" -gt 8 ]; then host_cpus=8; fi
 fi
 build_cpus=$((host_cpus > 2 ? host_cpus - 2 : 1))
+rust_cpus=$((host_cpus > 4 ? host_cpus - 4 : 1))
+postgres_cpus=2.75
+if [ "$host_cpus" -lt 5 ]; then postgres_cpus=0.75; fi
 linux_container() {
-    JUNTO_LINUX_PREFIX=junto-ci JUNTO_LINUX_BUILDER=limited JUNTO_LINUX_CPUS=$build_cpus JUNTO_LINUX_MEMORY=8g tools/linux-container.sh "$@"
+    JUNTO_LINUX_PREFIX=junto-ci JUNTO_LINUX_BUILDER=limited JUNTO_LINUX_CPUS=$rust_cpus \
+        JUNTO_LINUX_POSTGRES_CPUS=$postgres_cpus JUNTO_LINUX_MEMORY=8g tools/linux-container.sh "$@"
 }
 job() {
     case "$runner:$1" in
         linux:rust-linux)
-            JUNTO_LINUX_PREFIX=junto-ci JUNTO_LINUX_BUILDER=limited JUNTO_LINUX_CPUS=$build_cpus JUNTO_LINUX_MEMORY=8g tools/ci/rust-linux.sh ;;
+            JUNTO_LINUX_PREFIX=junto-ci JUNTO_LINUX_BUILDER=limited JUNTO_LINUX_CPUS=$rust_cpus \
+                JUNTO_LINUX_POSTGRES_CPUS=$postgres_cpus JUNTO_LINUX_MEMORY=8g tools/ci/rust-linux.sh ;;
         linux:licences)
             JUNTO_CI_TOOLS=/target/ci-tools linux_container tools/ci/licences.sh ;;
         linux:transcription-worker)
-            # The tests of file and device permissions need a user other than root: the
-            # container gives user 1000 the worker directory and the uv cache, then runs the
-            # job as that user.
             linux_tools || return 1
             docker run --rm --name junto-ci-worker --cpus "$host_cpus" --memory 11g --memory-swap 11g \
                 --mount "type=bind,src=$checkout,dst=/src" -w /src \
@@ -188,9 +193,8 @@ job() {
                 --mount type=volume,src=junto-ci-uv,dst=/cache \
                 -e UV_CACHE_DIR=/cache/uv -e UV_PYTHON_INSTALL_DIR=/cache/python -e UV_LINK_MODE=copy \
                 -e PATH=/opt/junto-ci/bin:/usr/local/bin:/usr/bin:/bin \
-                "$JUNTO_CI_PYTHON_IMAGE" sh -c 'chown -R 1000:1000 /cache /src/workers/transcription &&
-                    exec setpriv --reuid=1000 --regid=1000 --clear-groups env HOME=/tmp \
-                    tools/ci/transcription-worker.sh' ;;
+                "$JUNTO_CI_PYTHON_IMAGE" tools/linux/run-as-user.sh 1000 1000 /src /cache -- \
+                    tools/ci/transcription-worker.sh ;;
         linux:layout-page)
             # The page's tests start LiveKit with tools/with-test-livekit.sh, which publishes
             # its ports on 127.0.0.1 of the Docker host; this container shares the host's
@@ -202,13 +206,15 @@ job() {
                 --mount "type=bind,src=$directory/tools/bin,dst=/opt/junto-ci/bin,readonly" \
                 --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock \
                 --mount type=volume,src=junto-ci-npm,dst=/cache \
-                -e npm_config_cache=/cache/npm -e PLAYWRIGHT_BROWSERS_PATH=/cache/playwright \
+                -e JUNTO_CI_LAYOUT_DEPS_READY=1 -e npm_config_cache=/cache/npm -e PLAYWRIGHT_BROWSERS_PATH=/cache/playwright \
                 -e PATH=/opt/junto-ci/bin:/usr/local/bin:/usr/bin:/bin \
                 -e JUNTO_TEST_LIVEKIT_IMAGE -e JUNTO_TEST_LIVEKIT_CONTAINER=junto-ci-layout-livekit \
                 -e JUNTO_TEST_LIVEKIT_PORT=37880 -e JUNTO_TEST_LIVEKIT_TCP_PORT=37881 \
                 -e JUNTO_TEST_LIVEKIT_UDP_PORT=37882 -e JUNTO_TEST_WEBHOOK_ADDRESS=127.0.0.1:37890 \
                 -e JUNTO_TEST_LIVEKIT_CPUS=$((host_cpus - build_cpus)) -e JUNTO_TEST_LIVEKIT_MEMORY=2g \
-                "$JUNTO_CI_NODE_IMAGE" tools/ci/layout-page.sh ;;
+                "$JUNTO_CI_NODE_IMAGE" sh -c 'cd recording-layout && npm ci --ignore-scripts &&
+                    npx --no-install playwright install-deps chromium && cd /src &&
+                    exec tools/linux/run-as-user.sh 1000 1000 /src /cache -- tools/ci/layout-page.sh'  ;;
         macos:rust-macos)
             CARGO_TARGET_DIR="$directory/cargo-target" tools/ci/rust-other-systems.sh ;;
         macos:deployment)

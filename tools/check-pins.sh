@@ -84,9 +84,9 @@ else
     echo "ok    every container of the CI scripts has an image of $pins or a digest"
 fi
 # A CI script installs a package of the runner with apt-get only with its version.
-other=$(grep -n -E '(apt-get|apt|aptitude|dpkg|snap)( +-[^ ]+)* +(install|-i)' tools/ci/* \
+other=$(grep -n -E '(apt-get|apt|aptitude|dpkg|snap)( +-[^ ]+)* +(install|-i)' tools/ci/*.sh \
     | grep -v -E 'apt-get install [^\\]*$' || true)
-unpinned=$(grep -h 'apt-get install' tools/ci/* | sed 's/.*apt-get install//' | tr -s ' ' '\n' \
+unpinned=$(grep -h 'apt-get install' tools/ci/*.sh | sed 's/.*apt-get install//' | tr -s ' ' '\n' \
     | grep -v -E -e '^$' -e '^-' -e '^[a-z0-9][a-z0-9+.-]*=[0-9][0-9A-Za-z.+~:-]*$' || true)
 if [ -n "$other$unpinned" ]; then
     echo "$other$unpinned"
