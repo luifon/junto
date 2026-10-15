@@ -147,6 +147,11 @@ impl From<sqlx::Error> for ApiError {
             busy
         } else if crate::database::is_timeout(&error) {
             Self::timeout()
+        } else if matches!(error, sqlx::Error::PoolTimedOut) {
+            // No transaction began, so nothing changed. The request is not run again here:
+            // another wait for the pool would hold the request longer than its limit allows.
+            tracing::warn!("no database connection was free within the wait for one");
+            <Self as TransactionError>::exhausted()
         } else {
             Self::internal(&error)
         }

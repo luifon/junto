@@ -63,6 +63,13 @@ fn free_port() -> u16 {
 pub struct TestServer {
     child: Option<Child>,
     output: Arc<Mutex<String>>,
+    /// The log of every process of this server, in order. A test that fails prints it
+    /// (`Drop`), so the cause of an `internal` error that the server logged is in the output
+    /// of that test.
+    log: Arc<Mutex<String>>,
+    /// One per thread that copies the output or the log of the running process: it
+    /// disconnects when that thread has copied everything.
+    copiers: Vec<std::sync::mpsc::Receiver<()>>,
     name: String,
     port: u16,
     proxy: Mutex<Option<StdListener>>,
@@ -108,6 +115,8 @@ impl TestServer {
         let mut server = Self {
             child: None,
             output: Arc::default(),
+            log: Arc::default(),
+            copiers: Vec::new(),
             name: name.to_owned(),
             port: free_port(),
             proxy: Mutex::new(Some(proxy)),
@@ -174,11 +183,6 @@ impl TestServer {
 
     /// Starts the process. False when it stopped at once or nothing listens at its port.
     async fn launch(&mut self) -> bool {
-        let logs = if std::env::var_os("JUNTO_TEST_SERVER_LOG").is_some() {
-            Stdio::inherit()
-        } else {
-            Stdio::null()
-        };
         let mut command = Command::new(server_binary());
         if self.media {
             command
@@ -219,21 +223,15 @@ impl TestServer {
             .env("JUNTO_LOG_LEVEL", "warn")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(logs)
+            .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        let mut stdout = child.stdout.take().unwrap();
         self.output = Arc::default();
-        let output = self.output.clone();
-        std::thread::spawn(move || {
-            let mut buffer = [0u8; 1024];
-            while let Ok(count @ 1..) = stdout.read(&mut buffer) {
-                output
-                    .lock()
-                    .unwrap()
-                    .push_str(&String::from_utf8_lossy(&buffer[..count]));
-            }
-        });
+        let echo = std::env::var_os("JUNTO_TEST_SERVER_LOG").is_some();
+        self.copiers = vec![
+            copy_into(child.stdout.take().unwrap(), self.output.clone(), false),
+            copy_into(child.stderr.take().unwrap(), self.log.clone(), echo),
+        ];
         self.child = Some(child);
         let address = SocketAddr::from(([127, 0, 0, 1], self.port));
         for _ in 0..600 {
@@ -277,6 +275,16 @@ impl TestServer {
             let _ = child.kill();
             let _ = child.wait();
         }
+        // A process that another test started can hold the write end of a pipe of this
+        // server, so the end of the copy is awaited for a bounded time only.
+        for copier in self.copiers.drain(..) {
+            let _ = copier.recv_timeout(Duration::from_secs(5));
+        }
+    }
+
+    /// What the processes of this server have logged so far.
+    pub fn log(&self) -> String {
+        self.log.lock().unwrap().clone()
     }
 
     /// Starts a new process on the same database and the same port.
@@ -289,7 +297,37 @@ impl TestServer {
 impl Drop for TestServer {
     fn drop(&mut self) {
         self.stop();
+        if std::thread::panicking() && std::env::var_os("JUNTO_TEST_SERVER_LOG").is_none() {
+            let log = self.log();
+            if !log.is_empty() {
+                eprintln!("---- log of the server {} ----\n{log}", self.name);
+            }
+        }
     }
+}
+
+/// Copies what a process writes on one of its outputs into `into` until the process ends,
+/// and also into the standard error of the process of the tests, past the capture of the
+/// test runner, when `echo` is set. The returned receiver disconnects when the copy ends.
+fn copy_into(
+    mut from: impl Read + Send + 'static,
+    into: Arc<Mutex<String>>,
+    echo: bool,
+) -> std::sync::mpsc::Receiver<()> {
+    let (copying, copied) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        let _copying = copying;
+        let mut buffer = [0u8; 1024];
+        while let Ok(count @ 1..) = from.read(&mut buffer) {
+            if echo {
+                let _ = std::io::Write::write_all(&mut std::io::stderr(), &buffer[..count]);
+            }
+            into.lock()
+                .unwrap()
+                .push_str(&String::from_utf8_lossy(&buffer[..count]));
+        }
+    });
+    copied
 }
 
 /// The owner code in the output of the server: five groups of four symbols.

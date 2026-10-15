@@ -39,9 +39,15 @@ pub fn is_conflict(error: &sqlx::Error) -> bool {
         .is_some_and(|code| code == SERIALIZATION_FAILURE || code == DEADLOCK_DETECTED)
 }
 
-/// The time limits that PostgreSQL enforces on every connection of the server.
+/// The time limits of the database work of a request: the wait for a free connection of the
+/// pool, which the server enforces, and three limits that PostgreSQL enforces on every
+/// connection of the server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Timeouts {
+    /// A request that gets no connection of the pool within this time is answered with
+    /// `busy` (ADR 0009). The wait includes the check of an idle connection and the opening
+    /// of a new one.
+    pub acquire: time::Duration,
     pub statement: time::Duration,
     pub lock: time::Duration,
     pub idle_in_transaction: time::Duration,
@@ -87,7 +93,7 @@ impl Database {
         };
         let pool = PgPoolOptions::new()
             .max_connections(connections)
-            .acquire_timeout(Duration::from_secs(10))
+            .acquire_timeout(timeouts.acquire.unsigned_abs())
             .connect_with(limited(
                 timeouts.statement,
                 timeouts.lock,

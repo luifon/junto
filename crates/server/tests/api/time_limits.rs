@@ -235,3 +235,48 @@ async fn migrations_are_exempt_from_the_statement_time_limit() {
         .expect_err("the statement of the migration ran to its end on the pool");
     assert!(junto_server::database::is_timeout(&error), "{error}");
 }
+
+/// When PostgreSQL stops answering for a while, every connection of the pool stays busy or
+/// fails its check, and a request gets no connection within the wait for one. That request
+/// changed nothing, so it gets `busy` with a time to wait, not an internal error (ADR 0009).
+#[tokio::test]
+async fn a_request_that_gets_no_connection_of_the_pool_gets_the_busy_error() {
+    let prepared = TestServer::start().await;
+    let owner = prepared.owner().await;
+    let server = prepared
+        .strict(|config| config.limits.database.acquire = Duration::milliseconds(300))
+        .await;
+    let connections = server.db.options().get_max_connections();
+    // A task of the server can hold a connection for a moment; each is taken when it is free.
+    let take_all = async {
+        let mut taken = Vec::new();
+        while taken.len() < connections as usize {
+            if let Ok(connection) = server.db.acquire().await {
+                taken.push(connection);
+            }
+        }
+        taken
+    };
+    let taken = tokio::time::timeout(PATIENCE, take_all)
+        .await
+        .expect("the connections of the pool did not become free");
+
+    let refused =
+        tokio::time::timeout(PATIENCE, server.post(&owner, "/api/v1/invites", &json!({})))
+            .await
+            .expect("the request did not return");
+    assert_eq!(
+        refused.status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{}",
+        refused.text()
+    );
+    refused.error(ErrorCode::Busy);
+    assert!(refused.retry_after.is_some());
+
+    drop(taken);
+    server
+        .post(&owner, "/api/v1/invites", &json!({}))
+        .await
+        .ok::<serde_json::Value>(StatusCode::CREATED);
+}

@@ -636,6 +636,7 @@ impl Default for Limits {
             owner_code_lifetime: Duration::hours(1),
             request_timeout: Duration::seconds(30),
             database: Timeouts {
+                acquire: Duration::seconds(10),
                 statement: Duration::seconds(10),
                 lock: Duration::seconds(5),
                 idle_in_transaction: Duration::seconds(15),

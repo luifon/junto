@@ -39,6 +39,7 @@ Time limits in the database:
 - The server rolls a failed transaction back before it sends the response, so the connection is free when the client reads the error.
 - A request that the HTTP time limit ends while a statement runs leaves that statement to the database limits: it ends within 10 seconds, and the connection returns to the pool.
 - The migrations run on a connection of their own without these limits.
+- Each attempt of a transaction waits at most 10 seconds for a free connection of the pool. The wait includes the check that the pool makes on an idle connection and the opening of a new one, so it also ends when PostgreSQL stops answering for a while. A request whose attempt gets no connection in this time gets the error `busy` with the status 503 and `Retry-After: 1`: no transaction began and nothing was changed, so the client sends the same request again. The server logs a warning. The server does not run the request again, because another wait for the pool would hold the request longer than its time limit allows.
 
 Other writers:
 
@@ -58,4 +59,5 @@ Test hook:
 - A client must be prepared for `busy` and send the request again.
 - PostgreSQL detects conflicts only between serializable transactions. A program that writes to the database with another isolation level is outside this rule.
 - No transaction of a request holds a lock or a connection for longer than the database limits allow. A request that waits behind a lock for 5 seconds fails with `timeout`, also when it would have succeeded a moment later.
+- A server whose pool stays full, or whose database does not answer, answers `busy` and not an internal error, so a client can tell this state from a defect of the server.
 - A statement that needs more than 10 seconds cannot be part of a request. Later features with such work run it in batches, as the maintenance task does.
