@@ -50,6 +50,17 @@ if [ -d .github/workflows ]; then
     same "LiveKit image of the deployment and of the tests in CI" \
         "$(sed -n 's/^ *image: \(livekit\/livekit-server:.*\)$/\1/p' deploy/base.yaml)" \
         "$(sed -n 's/^ *JUNTO_TEST_LIVEKIT_IMAGE: \(.*\)$/\1/p' .github/workflows/ci.yml)"
+    # The Windows job downloads the PostgreSQL build for Windows (ADR 0912); the program
+    # that downloads it checks the SHA-256 of the file.
+    same "PostgreSQL version of the tests in CI on Linux and on Windows" \
+        "$(sed -n 's/^ *JUNTO_TEST_POSTGRES_IMAGE: postgres:\([0-9.]*\)-.*/\1/p' .github/workflows/ci.yml)" \
+        "$(sed -n 's/^VERSION = "\([0-9.]*\)-[0-9]*"$/\1/p' tools/windows/with_test_postgres.py)"
+    if grep -q '^SHA256 = "[0-9a-f]\{64\}"$' tools/windows/with_test_postgres.py \
+        && grep -q 'sha256_of(partial)' tools/windows/with_test_postgres.py; then
+        echo "ok    the PostgreSQL download of the Windows tests is checked by its SHA-256"
+    else
+        fail "tools/windows/with_test_postgres.py downloads PostgreSQL without checking its SHA-256"
+    fi
 fi
 
 digest='@sha256:[0-9a-f]\{64\}'

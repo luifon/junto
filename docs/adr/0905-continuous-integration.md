@@ -4,7 +4,7 @@
 
 Accepted
 
-The tests that need PostgreSQL do not run on macOS and Windows.
+The tests that need PostgreSQL do not run on macOS. On Windows the window tests of the client run against PostgreSQL since ADR 0912; the other tests that need PostgreSQL do not run there.
 
 ## Context
 
@@ -23,7 +23,7 @@ ADR 0902 decides that CI builds and tests on macOS, Windows and Linux for every 
 Jobs:
 
 - Rust on Linux: the free disk space of the runner as in the deployment job, the build of the Linux image, then in it `cargo fmt --check`, `cargo clippy` with warnings as errors and with the bound on the stack of one function (ADR 0906), the tests of the workspace with the private PostgreSQL of the container runner; on the runner the packaging unit tests; in the image the check of the Linux packages (ADR 0754); then the generation of the API documents in the image, followed on the runner by a comparison with the committed files.
-- Rust on macOS and on Windows: a build of every target of the workspace, and the tests of `junto-authz`, `junto-protocol` and the library and tools of `junto-client-core`, which need no database. On macOS also the check of the condition waits (ADR 0786): `tools/check-condition-wait.sh` with the built client binary, and the unit tests of that module of `junto-media`. On macOS the signing, update and recovery checks of test bundles (ADR 0725, ADR 0726). On Windows every crate is built with the static C runtime (ADR 0753), and the check of the Windows package installs, starts, updates and rolls back the ZIP (ADR 0755).
+- Rust on macOS and on Windows: a build of every target of the workspace, and the tests of `junto-authz`, `junto-protocol` and the library and tools of `junto-client-core`, which need no database. On macOS also the check of the condition waits (ADR 0786): `tools/check-condition-wait.sh` with the built client binary, and the unit tests of that module of `junto-media`. On macOS the signing, update and recovery checks of test bundles (ADR 0725, ADR 0726). On Windows every crate is built with the static C runtime (ADR 0753), and the check of the Windows package installs, starts, updates and rolls back the ZIP (ADR 0755). On Windows also the window tests of the client, without and with PostgreSQL (ADR 0912).
 - Licences: `cargo deny check` with a stated version of the tool.
 - Recording layout page: the locked packages without install scripts, the build, and the browser tests against a LiveKit server in Docker.
 - Transcription worker: the locked packages with `uv`, `ruff`, `mypy`, and the unit tests.

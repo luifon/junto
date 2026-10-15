@@ -32,6 +32,7 @@ pub struct World {
 
 impl World {
     pub fn new() -> Self {
+        log_into_test_output();
         Self {
             runtime: tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
@@ -173,6 +174,7 @@ pub fn open(cx: &mut TestAppContext, data_dir: &Path) -> Window {
 
 /// Opens the application with the start argument for the interface scale.
 pub fn open_with(cx: &mut TestAppContext, data_dir: &Path, scale: Option<u32>) -> Window {
+    log_into_test_output();
     let client: Client = Device::open(data_dir, SupportedVersions::THIS_BUILD);
     open_client(cx, client, scale)
 }
@@ -185,14 +187,34 @@ pub fn open_with_updates(
     source: std::sync::Arc<junto_client_core::updates::FakeSource>,
     build: junto_client_core::updates::Version,
 ) -> Window {
+    log_into_test_output();
     let mut options = junto_client_core::ClientOptions::new(data_dir.join("junto"));
     options.update_source = Some(source);
     options.build = build;
     open_client(cx, Client::open(options).unwrap(), None)
 }
 
+/// Sends the log of the client into the output of the test, which the test runner keeps for
+/// each test and prints when the test fails. The threads that a test starts, also those of
+/// the runtime of its client, write into the output of that test. The level is that of
+/// `JUNTO_LOG_LEVEL`, as for the binary, with `info` when it is not set.
+fn log_into_test_output() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let level = std::env::var("JUNTO_LOG_LEVEL")
+            .ok()
+            .and_then(|level| level.parse::<tracing::Level>().ok())
+            .unwrap_or(tracing::Level::INFO);
+        let _ = tracing_subscriber::fmt()
+            .with_test_writer()
+            .with_max_level(level)
+            .try_init();
+    });
+}
+
 /// Opens the window of the application on an opened client.
 fn open_client(cx: &mut TestAppContext, client: Client, scale: Option<u32>) -> Window {
+    log_into_test_output();
     // The client core answers from threads of its own runtime, at real times. The
     // scheduler of the test accepts that only when it is told so.
     cx.executor().allow_parking();
