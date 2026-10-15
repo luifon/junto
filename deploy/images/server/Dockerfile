@@ -16,6 +16,7 @@ ENV CARGO_PROFILE_RELEASE_STRIP=symbols \
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+COPY vendor ./vendor
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/src/target,sharing=locked \
     cargo build --locked --release -p junto-server --bin junto-server \

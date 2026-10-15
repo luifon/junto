@@ -47,7 +47,6 @@ mod camera;
 mod order;
 use camera::{OwnCamera, RemoteCamera};
 mod share;
-#[cfg(feature = "test-support")]
 pub(crate) mod statistics;
 
 pub use share::{
@@ -59,6 +58,8 @@ use share::{OwnShare, Pictures, RemotePicture, RemoteSound, ShareTrack, View};
 const WAITING_FRAMES: usize = 50;
 /// How often the levels are told.
 const LEVEL_INTERVAL: Duration = Duration::from_millis(50);
+const DIAGNOSTIC_INTERVAL: Duration = Duration::from_secs(5);
+static NEXT_ENGINE: AtomicU64 = AtomicU64::new(1);
 /// A publication of the microphone that the media server refused is tried again after
 /// this time, while the microphone may be sent.
 const PUBLISH_RETRY: Duration = Duration::from_secs(1);
@@ -414,6 +415,7 @@ impl Engine {
         let camera_pictures = watch::Sender::new(HashMap::new());
         let camera_seen = camera_pictures.subscribe();
         let actor = Actor {
+            id: NEXT_ENGINE.fetch_add(1, Ordering::Relaxed),
             camera: None,
             camera_generation: 0,
             camera_views: None,
@@ -439,7 +441,6 @@ impl Engine {
             source,
             pump,
             room: None,
-            #[cfg(feature = "test-support")]
             connected_at: None,
             attempt: 0,
             capture: None,
@@ -668,6 +669,7 @@ impl Drop for Remote {
 }
 
 struct Actor {
+    id: u64,
     camera: Option<OwnCamera>,
     camera_generation: u64,
     camera_views: Option<HashMap<ShareId, (u32, u32)>>,
@@ -698,8 +700,7 @@ struct Actor {
     source: Arc<Mutex<Option<NativeAudioSource>>>,
     pump: JoinHandle<()>,
     room: Option<Room>,
-    /// When the media connection was made, for the diagnosis of a live test.
-    #[cfg(feature = "test-support")]
+    /// When the current media connection was made.
     connected_at: Option<Instant>,
     /// Counts the connections that were started. The result of an earlier one is not used.
     attempt: u64,
@@ -802,6 +803,7 @@ async fn next_event(events: &mut Option<Events>) -> Option<RoomEvent> {
 }
 
 impl Actor {
+    #[tracing::instrument(name = "media_engine", skip_all, fields(engine = self.id))]
     async fn run(
         mut self,
         join: MediaJoin,
@@ -813,6 +815,8 @@ impl Actor {
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut camera_tick = tokio::time::interval(Duration::from_millis(33));
         camera_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut diagnostic_tick = tokio::time::interval(DIAGNOSTIC_INTERVAL);
+        diagnostic_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         self.connect(join);
         let done = loop {
             tokio::select! {
@@ -829,9 +833,15 @@ impl Actor {
                 },
                 _ = tick.tick() => self.tell_levels(),
                 _ = camera_tick.tick() => self.draw_cameras(),
+                _ = diagnostic_tick.tick() => {
+                    if self.room.is_some() && tracing::enabled!(tracing::Level::INFO) {
+                        tracing::info!(attempt = self.attempt, sound = %self.sound_snapshot(), "call sound progress");
+                    }
+                },
             }
         };
         self.leave(&mut events).await;
+        tracing::info!("the media engine finished leaving its room");
         self.pump.abort();
         // A media connection that was made while the engine ended is left as every
         // other one: a connection that is only dropped stays in the room. A connection
@@ -850,6 +860,15 @@ impl Actor {
         self.state.send_if_modified(|state| {
             let before = state.clone();
             change(state);
+            if before.connection != state.connection
+                || before.microphone != state.microphone
+                || before.output != state.output
+                || before.published != state.published
+            {
+                tracing::info!(attempt = self.attempt, connection = ?state.connection,
+                    microphone = ?state.microphone, output = ?state.output,
+                    published = state.published, "call sound state changed");
+            }
             *state != before
         });
     }
@@ -988,12 +1007,10 @@ impl Actor {
                 }
                 match result {
                     Ok((room, taken)) => {
+                        tracing::info!(room = %room.name(), attempt, "the media connection was made");
                         self.room = Some(room);
                         *events = Some(taken);
-                        #[cfg(feature = "test-support")]
-                        {
-                            self.connected_at = Some(Instant::now());
-                        }
+                        self.connected_at = Some(Instant::now());
                         self.camera_wait = (self.camera_wait.0 + 1, false);
                         self.change(|state| state.connection = Connection::Connected);
                         self.open_playout();
@@ -1077,6 +1094,22 @@ impl Actor {
     }
 
     async fn event(&mut self, event: RoomEvent, events: &mut Option<Events>) {
+        match &event {
+            RoomEvent::TrackPublished { publication, .. }
+            | RoomEvent::TrackSubscribed { publication, .. }
+            | RoomEvent::TrackUnsubscribed { publication, .. }
+            | RoomEvent::TrackUnpublished { publication, .. } => {
+                tracing::info!(track = %publication.sid(), source = ?publication.source(),
+                    subscribed = publication.is_subscribed(), muted = publication.is_muted(),
+                    "a remote track changed");
+            }
+            RoomEvent::TrackSubscriptionFailed {
+                track_sid, error, ..
+            } => {
+                tracing::warn!(track = %track_sid, %error, "a remote track subscription failed");
+            }
+            _ => {}
+        }
         match event {
             RoomEvent::Reconnecting => {
                 self.change(|state| state.connection = Connection::Reconnecting);
@@ -1260,6 +1293,8 @@ impl Actor {
     }
 
     async fn reset_connection(&mut self, events: &mut Option<Events>) {
+        tracing::info!(attempt = self.attempt, "the media connection is closing");
+        self.connected_at = None;
         self.attempt += 1;
         // A share does not outlive the connection that carried it (ADR 0737).
         if self.share.is_some() {
@@ -1551,6 +1586,8 @@ impl Actor {
             && matches!(self.publication, Publication::Publishing);
         match result {
             Ok(publication) if current => {
+                tracing::info!(track = %publication.sid(), generation,
+                    "the microphone track was published");
                 self.publication = Publication::Published(publication);
                 self.change(|state| state.published = true);
                 self.sync_gate();
@@ -1656,6 +1693,110 @@ async fn play(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dropping_the_last_peer_connection_closes_it_before_releasing_its_observer() {
+        use livekit::webrtc::peer_connection::SignalingState;
+        use livekit::webrtc::peer_connection_factory::PeerConnectionFactory;
+
+        let factory = PeerConnectionFactory::default();
+        let connection = factory
+            .create_peer_connection(Default::default())
+            .unwrap_or_else(|error| panic!("{error:?}"));
+        let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = closed.clone();
+        connection.on_signaling_state_change(Some(Box::new(move |state| {
+            if state == SignalingState::Closed {
+                observed.store(true, Ordering::SeqCst);
+            }
+        })));
+        let last = connection.clone();
+        drop(connection);
+        assert!(!closed.load(Ordering::SeqCst));
+        drop(last);
+        assert!(
+            closed.load(Ordering::SeqCst),
+            "the native observer was released before Close"
+        );
+        assert_eq!(Arc::strong_count(&closed), 1, "the observer was retained");
+    }
+
+    #[test]
+    fn a_native_peer_closes_when_its_task_is_cancelled_by_runtime_shutdown() {
+        use livekit::webrtc::peer_connection::SignalingState;
+        use livekit::webrtc::peer_connection_factory::PeerConnectionFactory;
+
+        let factory = PeerConnectionFactory::default();
+        for _ in 0..16 {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap_or_else(|error| panic!("{error}"));
+            let connection = factory
+                .create_peer_connection(Default::default())
+                .unwrap_or_else(|error| panic!("{error:?}"));
+            let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let observed = closed.clone();
+            connection.on_signaling_state_change(Some(Box::new(move |state| {
+                if state == SignalingState::Closed {
+                    observed.store(true, Ordering::SeqCst);
+                }
+            })));
+            let task = runtime.spawn(async move {
+                let _connection = connection;
+                std::future::pending::<()>().await;
+            });
+            runtime.block_on(tokio::task::yield_now());
+            drop(runtime);
+            assert!(task.is_finished());
+            assert!(closed.load(Ordering::SeqCst));
+            assert_eq!(Arc::strong_count(&closed), 1, "the observer was retained");
+        }
+    }
+
+    #[test]
+    fn a_transceiver_outliving_its_native_peer_is_stopped_before_the_observer_is_released() {
+        use livekit::webrtc::MediaType;
+        use livekit::webrtc::peer_connection_factory::PeerConnectionFactory;
+        use livekit::webrtc::rtp_transceiver::{RtpTransceiverDirection, RtpTransceiverInit};
+
+        let factory = PeerConnectionFactory::default();
+        for close_first in [false, true] {
+            let connection = factory
+                .create_peer_connection(Default::default())
+                .unwrap_or_else(|error| panic!("{error:?}"));
+            let transceiver = connection
+                .add_transceiver_for_media(
+                    MediaType::Audio,
+                    RtpTransceiverInit {
+                        direction: RtpTransceiverDirection::RecvOnly,
+                        stream_ids: Vec::new(),
+                        send_encodings: Vec::new(),
+                    },
+                )
+                .unwrap_or_else(|error| panic!("{error:?}"));
+            if close_first {
+                connection.close();
+            }
+            drop(connection);
+            assert_eq!(transceiver.direction(), RtpTransceiverDirection::Stopped);
+        }
+    }
+
+    #[test]
+    fn a_native_peer_that_fails_initialization_can_release_its_wrapper() {
+        use livekit::webrtc::peer_connection_factory::{
+            IceServer, PeerConnectionFactory, RtcConfiguration,
+        };
+
+        let factory = PeerConnectionFactory::default();
+        let mut config = RtcConfiguration::default();
+        config.ice_servers.push(IceServer {
+            urls: vec!["invalid-scheme:example.invalid".to_owned()],
+            username: String::new(),
+            password: String::new(),
+        });
+        assert!(factory.create_peer_connection(config).is_err());
+    }
 
     #[test]
     fn the_account_of_a_participant_is_the_first_part_of_its_identity() {

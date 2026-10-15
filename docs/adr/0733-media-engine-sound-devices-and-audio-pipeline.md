@@ -54,6 +54,20 @@ Engine:
 - When the engine leaves a room, it closes both devices first and then waits at most 3 seconds for the media server to confirm the leave.
 - The call library restores an interrupted connection by itself. When it gives up, or the media server ends the connection, the engine closes both devices and waits for a new token (ADR 0734).
 
+Native connection shutdown:
+
+- The native peer-connection wrapper calls `PeerConnectionInterface::Close` synchronously in its destructor, before releasing the interface, observer or factory. The call waits for the signaling thread while the interface still has a positive reference count. Pending callbacks can finish before `Close` unregisters the observer and stops further callbacks. The [pinned implementation](https://github.com/webrtc-sdk/webrtc/blob/89d790b/pc/peer_connection.cc#L1689-L1766) invalidates pending description callbacks and clears the observer before returning.
+- This order also applies when runtime shutdown cancels a task, a connection fails during setup, or a close future is dropped. An asynchronous room leave cannot provide that guarantee during runtime shutdown.
+- Without this order, the last release enters `PeerConnectionProxyWithInternal` destruction on the runtime thread while the signaling thread can still execute `OnTrack`. That callback copies the wrapper's interface reference to an `RtpTransceiver`; its `AddRef` then calls a pure virtual function on the partially destroyed proxy. The wrapper's observer is also still registered during member destruction.
+- The workspace uses the build inputs of `webrtc-sys` 0.3.48 from `vendor/`, with this destructor correction. The WebRTC binary revision is unchanged. The patch is removed when a pinned upstream version guarantees this order. Source provenance and the retained licence notices are kept beside the dependency.
+- Native tests observe the closed-state callback on last-owner release, cancellation during runtime shutdown, and a stopped transceiver that outlives its wrapper. Dropping one of several owners does not close the connection; an explicit close followed by destruction remains valid. These checks use no media server or real device.
+
+Call diagnostics:
+
+- Each media engine has a process-local numeric log identifier. Logs name connection attempts, room connection and closure, sound-state changes, local publication and remote subscription changes and failures. They never log join tokens.
+- At the `info` log level, an engine with a room reports sound progress every five seconds: connection age, controls, publication and mute state, remote subscriptions, the capture gate, recent frame counts for each sound stage, dropped capture frames and playback queues. Existing counters are used; no audio samples are logged. The default desktop log level remains `warn`.
+- These reports distinguish an unopened microphone, a closed gate, missing publication or subscription, absent incoming frames and playback starvation. They are available in the product as well as in tests, including when a failed wait does not explicitly request a sound report.
+
 ## Consequences
 
 - The client has a volume per person and a level per person, and the tests carry a tone through the same code as a voice of the product: only the device differs.

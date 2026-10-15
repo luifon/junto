@@ -1,7 +1,10 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
-exclude = ["spikes"]
+exclude = ["spikes", "vendor/webrtc-sys-0.3.48"]
+
+[patch.crates-io]
+webrtc-sys = { path = "vendor/webrtc-sys-0.3.48" }
 
 [workspace.package]
 version = "0.1.0"

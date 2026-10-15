@@ -68,6 +68,7 @@ junto-media = { path = ".", features = ["test-support"] }
 sqlx = { workspace = true }
 tempfile = "3"
 tokio = { workspace = true, features = ["io-util", "test-util"] }
+tracing-subscriber = { workspace = true }
 url = "2"
 uuid = { workspace = true }
 

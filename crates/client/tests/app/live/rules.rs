@@ -3,6 +3,7 @@
 //! meeting mode as participant and as presenter, invitations, the menu of a person with
 //! the blocks, the removal and the move, and the settings of the room.
 
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use gpui::TestAppContext;
@@ -15,7 +16,7 @@ use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::call::{
     BlockReason, CallInvitation, CallPlace, EntryRequest, LeaveReason, UpdateCallSettings,
 };
-use junto_client_core::protocol::ids::{AccountId, ChannelId};
+use junto_client_core::protocol::ids::{AccountId, CallInvitationId, ChannelId};
 use junto_client_core::protocol::roles::UpdateWorkspaceRole;
 use junto_client_core::protocol::structure::ChannelKind;
 use junto_media::calls::{CallTarget, EndReason, Outcome, Phase};
@@ -40,12 +41,33 @@ struct Scene {
     luca: AccountId,
     _directory: tempfile::TempDir,
     _server: crate::support::TestServer,
+    recipient_proxy: Option<crate::support::FaultProxy>,
+    seen_invitations: HashSet<CallInvitationId>,
 }
 
 fn scene(cx: &mut TestAppContext) -> Scene {
+    make_scene(cx, false)
+}
+
+fn make_scene(cx: &mut TestAppContext, proxy_recipient: bool) -> Scene {
     let world = World::new();
     let server = world.server_with_media("Acme Studio");
-    let admin = world.owner(&server);
+    let recipient_proxy =
+        proxy_recipient.then(|| world.run(crate::support::FaultProxy::start(&server)));
+    let admin = if let Some(proxy) = &recipient_proxy {
+        world.run(async {
+            let device = crate::support::Device::new();
+            let handle = device.add(&proxy.address()).await;
+            handle
+                .dispatch(crate::support::claim(&server, "Ada"))
+                .await
+                .unwrap();
+            crate::support::logged_in(&handle);
+            Admin { device, handle }
+        })
+    } else {
+        world.owner(&server)
+    };
     let caller = admin.caller(&world);
     let (directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
     voice_channel(&world, &admin, &mut window, ROOM);
@@ -69,6 +91,8 @@ fn scene(cx: &mut TestAppContext) -> Scene {
         voice,
         _directory: directory,
         _server: server,
+        recipient_proxy,
+        seen_invitations: HashSet::new(),
     }
 }
 
@@ -125,16 +149,15 @@ impl Scene {
     /// Waits for the invitation that the administrator got.
     fn invitation_for_ada(&mut self) -> CallInvitation {
         let admin = self.admin.handle.clone();
+        let seen = &self.seen_invitations;
         let mut found = None;
         self.window.until("the invitation has arrived", |_| {
-            found = admin
-                .live()
-                .view()
-                .model
-                .and_then(|model| model.incoming_invitations().next().cloned());
+            found = next_invitation(&admin, seen);
             found.is_some()
         });
-        found.unwrap()
+        let invitation = found.unwrap();
+        self.seen_invitations.insert(invitation.id);
+        invitation
     }
 
     /// Turns meeting mode on as the administrator. The server accepts it when its
@@ -156,6 +179,18 @@ impl Scene {
             std::thread::sleep(Duration::from_millis(200));
         }
     }
+}
+
+fn next_invitation(
+    admin: &junto_client_core::ServerHandle,
+    seen: &HashSet<CallInvitationId>,
+) -> Option<CallInvitation> {
+    admin.live().view().model.and_then(|model| {
+        model
+            .incoming_invitations()
+            .find(|invitation| !seen.contains(&invitation.id))
+            .cloned()
+    })
 }
 
 fn connected(window: &mut Window) -> bool {
@@ -899,7 +934,7 @@ fn invitations_and_the_menu_of_a_person_with_blocks_a_move_and_a_removal(cx: &mu
 fn dragging_a_person_invites_or_moves_and_the_keyboard_reaches_the_same_actions(
     cx: &mut TestAppContext,
 ) {
-    let mut scene = scene(cx);
+    let mut scene = make_scene(cx, true);
     scene.join_in_the_window();
     let destination = scene.voice;
     let source = scene
@@ -983,6 +1018,13 @@ fn dragging_a_person_invites_or_moves_and_the_keyboard_reaches_the_same_actions(
     drag(&mut scene.window, destination);
     let invitation = scene.invitation_for_ada();
     assert_eq!(invitation.place, scene.target.place);
+    scene.recipient_proxy.as_ref().unwrap().block_streams(true);
+    scene.recipient_proxy.as_ref().unwrap().cut_streams();
+    scene
+        .window
+        .until("the recipient stream is interrupted", |_| {
+            scene.admin.handle.live().view().status != junto_client_core::live::StreamStatus::Live
+        });
     scene
         .world
         .run(
@@ -997,6 +1039,26 @@ fn dragging_a_person_invites_or_moves_and_the_keyboard_reaches_the_same_actions(
         window.shows("call-told")
     });
     scene.window.click("dismiss-call-told");
+
+    assert_eq!(
+        scene
+            .admin
+            .handle
+            .live()
+            .view()
+            .model
+            .unwrap()
+            .incoming_invitations()
+            .next()
+            .map(|held| held.id),
+        Some(invitation.id),
+        "the interrupted recipient still holds the resolved invitation"
+    );
+    assert!(
+        next_invitation(&scene.admin.handle, &scene.seen_invitations).is_none(),
+        "a resolved invitation still cached by its recipient must not be used for the next action"
+    );
+    scene.recipient_proxy.as_ref().unwrap().block_streams(false);
 
     scene.window.click_named(format!("occupant:{person}"));
     scene.window.press("shift-f10");

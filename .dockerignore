@@ -4,6 +4,7 @@
 !Cargo.toml
 !Cargo.lock
 !crates/
+!vendor/
 !recording-layout/package.json
 !recording-layout/package-lock.json
 !recording-layout/build.mjs

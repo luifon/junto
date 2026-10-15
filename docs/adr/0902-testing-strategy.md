@@ -17,6 +17,8 @@ Automated tests:
 - Tests cover reconnects, a recorder that stops during a recording, and a restore from a backup (ADR 0005).
 - Tests run the client against the current and the previous API version (ADR 0201).
 - CI regenerates the API documentation and fails on a difference (ADR 0202), and checks the licence of every dependency (ADR 0801).
+- A test that repeats an action identifies each result separately. An invitation already consumed by the test is not returned as the result of the next invitation, even while the recipient's event stream still holds it. Receiving a resolution on the sender does not prove that the recipient has applied it. The window invitation test interrupts the recipient stream to check this order.
+- The PostgreSQL and LiveKit test wrappers print container state and timestamped logs into the test output before removing a failed run's containers. Failure to read those logs does not replace the test's exit status or prevent cleanup. Wrapper tests exercise these failure paths without starting containers.
 
 Tests on real systems:
 

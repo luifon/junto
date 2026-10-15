@@ -60,6 +60,7 @@ impl Person {
     }
 
     pub fn with_permission(hz: f32, permission: FixedPermission) -> Self {
+        log_into_test_output();
         let device = Device::new();
         let host = SyntheticHost::with_tone(hz);
         let capture = SyntheticCapture::new();
@@ -202,6 +203,21 @@ impl Person {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
+}
+
+/// Keep the engine's progress and shutdown logs with the test that owns its threads.
+fn log_into_test_output() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let level = std::env::var("JUNTO_LOG_LEVEL")
+            .ok()
+            .and_then(|level| level.parse::<tracing::Level>().ok())
+            .unwrap_or(tracing::Level::INFO);
+        let _ = tracing_subscriber::fmt()
+            .with_test_writer()
+            .with_max_level(level)
+            .try_init();
+    });
 }
 
 pub async fn when(

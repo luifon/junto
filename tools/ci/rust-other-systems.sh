@@ -30,6 +30,8 @@ cargo test --locked -p junto-authz -p junto-protocol
 cargo test --locked -p junto-client-core --lib --bins --test releases --test release_format --test release_roles --test release_downloads --test update_archives --test release_tool
 step "Packaging unit tests"
 python3 -m unittest discover -s packaging -p "test_*.py"
+step "Test service wrapper failure paths"
+python3 tools/test_test_services.py
 if [ "$system" = macos ]; then
     step "macOS signing and installation checks"
     temporary=$(mktemp -d)
