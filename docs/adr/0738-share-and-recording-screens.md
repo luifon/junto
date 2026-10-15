@@ -15,7 +15,7 @@ Starting a share:
 - The share button of the strip of the call opens a dialog. It lists the screens with their size and the windows with their application and size, and has one control for the sound: no sound, all system sound, or one application. With a window, "this application" is the application of that window; with a screen, the person chooses the application from a list.
 - Nothing is chosen when the dialog opens. "Share" works when a picture and a sound are chosen. The sound "one application" names an application through the picture, so another picture ends that choice and the sound is asked again; "no sound" and "all system sound" hold for every picture. The stored switch "Include system audio" of the design is not built (ADR 0502).
 - Without the permission of the system the dialog states how the person gives it (ADR 0736). On a system without a capture the button is disabled and says so.
-- While the share runs, the button has its "on" form, and a press ends the share. A share that ended by itself is told by a notice above the content until the person closes it.
+- While the share runs, the button has its "on" form, and a press ends the share. A share that ended by itself is told by a notice in the notice area of the shown view until the person closes it.
 - The dialog shows no preview pictures: a preview needs a capture before the person has chosen.
 
 The stage with a share:
@@ -47,6 +47,8 @@ Structure:
 - "Details" opens and closes with its button, closes with a press elsewhere and with Escape.
 - The window derives its view again only after the state of the application told a change. A picture of a share draws the window up to 30 times a second and does not derive.
 - An image that the window drew is released when the next picture replaces it.
+
+The notice area is the fixed scrolling area at the end of a call stage, the area above a message list and under its direct-call controls, or the part below the actions of a state panel (ADR 0730).
 
 ## Consequences
 

@@ -25,7 +25,7 @@ State:
 - The server that is shown is the selected server of the client core (ADR 0107). The members of the shown workspace are loaded and released as ADR 0719 states.
 - A person in a voice channel is named from the members of the workspace. An account that the list does not hold is read from its profile route. A read that gets no answer is repeated with a later change of the state, at most three times for one account; a refusal is final.
 - The lists and the name of an account are shown only while the state of the event stream belongs to the account of the session. After a login to another account, a logout, a ban or a removal, the state of the account before is not shown, although the event stream can still hold it for a moment (ADR 0718).
-- A login that gave the device another account than the one of its last contact is told by a notice above the content of the server (ADR 0712).
+- A login that gave the device another account than the one of its last contact is told by a notice in the notice area of the server (ADR 0712).
 - Every write of a file of the data directory that the window starts runs on a background thread: the settings, the name of the preset, the connection mode and the removal of a server. The thread of the window takes no lock of the data directory after the start.
 - These writes are one queue of the application and run in the order in which the person asked for them. The queue does not belong to a window: a write that was accepted is done after its window has closed. When the application quits, it waits for the queue, at most 5 seconds. A write takes that long only while another program holds the lock of the data directory; after 5 seconds the application ends and that write is lost.
 - A removal of a server that is asked for while a removal of the same server runs is not started.
@@ -44,6 +44,16 @@ Window:
 - The call of the device ends with the application: the server is told when the application quits, with a wait of at most 2 seconds.
 - The interface text is in one module, with one sentence for every failure of a flow and for the error codes of joining. A test fails when the client core adds a failure without a sentence.
 - A device name that the application sends is the name of the product and of the operating system. It holds nothing of the machine or of the person.
+
+Notice areas:
+
+- A notice, error or bar that arrives after a view is drawn must preserve the bounds of its existing controls. Its region either keeps a fixed height or grows from the edge opposite the content anchor. The notice area scrolls when its contents do not fit; notices are not drawn over controls.
+- State panels put notices in the growing part under their actions (ADR 0732).
+- A message area puts notices above the message list, under the controls of a direct call. A list at its end keeps its bottom anchor. A list away from its end compensates for a change of its top edge before laying out its rows, so a notice does not move the row under the pointer.
+- A call reserves a scrolling notice area at the end of its stage column, including the meeting bar. The side panel keeps its bounds. This area has a fixed height even when empty: the tiles are centred inside the stage and a shared picture fits its height, so taking height from either edge would move them. The separate call window follows the same rule.
+- The channel column places entry notices and connection, sound and update notices below its scrolling list and above the call controls. Its list keeps its top anchor and its call controls keep their bottom anchor.
+- A form reserves a scrolling error slot wherever a result can arrive before another control. The slot keeps its height when empty and when its text wraps. This also keeps the height and position of a centred dialog. A request result may instead follow all controls in a region whose top position is fixed.
+- Changes that replace the whole body, such as a server state panel becoming channel content after its snapshot, are separate view transitions. Controls may change position at that transition, including the recovery acknowledgement. The notice remains until acknowledged; drawing or replacing a view never acknowledges it. Preserving a control across unrelated bodies would require a permanent shared location for that control, which this layout does not provide.
 
 Tests:
 

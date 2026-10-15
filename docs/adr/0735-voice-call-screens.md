@@ -13,7 +13,7 @@ The approved design draws a call with a screen share (view B), its problem state
 Entering:
 
 - A click on a voice channel shows the channel and joins nothing. Its header has "Join call" (view G). The same place shows the state of its call: recording, meeting mode, lock, count. For the call of this device the header has the controls of the room in their place (ADR 0739).
-- A join that the server refuses is told by a notice above the content, with the name of the channel and what the person can do. The notice stays until the person closes it.
+- A join that the server refuses is told by a notice in the notice area of the shown view, with the name of the channel and what the person can do. The notice stays until the person closes it.
 
 The call in the main area:
 
@@ -34,6 +34,8 @@ Outside the main area:
 Structure:
 
 - The functions that draw the call take the derived view (ADR 0730) and the handlers of the window, and read from the main window only what belongs to the drawing: the open tab, the open list of devices, the positions of the volume controls, the scroll positions of the lists, and whether the panel is open in a narrow window. A second window draws the same view with them.
+
+The notice area is the fixed scrolling area at the end of a call stage, the area above a message list and under its direct-call controls, or the part below the actions of a state panel (ADR 0730).
 
 ## Consequences
 
