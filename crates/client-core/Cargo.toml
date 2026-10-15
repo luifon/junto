@@ -62,9 +62,13 @@ windows-sys = { version = "0.61", features = [
 [dev-dependencies]
 # The server inside the test process, for the tests that need its recorder in memory.
 junto-server = { path = "../server" }
+# An executor without a tokio runtime, as the window has (ADR 0715).
+futures-executor = "0.3"
 sqlx = { workspace = true }
 tempfile = "3"
 tokio = { workspace = true, features = ["io-util", "test-util"] }
+# A TLS server inside the test process for the upgrade of the event stream (ADR 0718).
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 
 [target.'cfg(unix)'.dev-dependencies]
 rustix = { version = "1", features = ["pty"] }

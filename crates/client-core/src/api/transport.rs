@@ -16,7 +16,7 @@ use crate::secret::{SecretBytes, SecretToken};
 /// The largest response body that the client reads.
 pub const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 
-pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Longer than the 30 seconds after which the server ends a request (ADR 0008).
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(40);
 /// The time for a request that carries one part of a file: 1 MiB on a slow connection.
@@ -242,22 +242,26 @@ pub struct ReqwestTransport {
     files: reqwest::Client,
 }
 
+/// The settings of every client object of the HTTP library: no redirect, rustls with the
+/// certificates that the operating system trusts, and the time for a connection attempt
+/// (ADR 0714, ADR 0718).
+pub(crate) fn client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(CONNECT_TIMEOUT)
+        .user_agent(concat!("junto-client/", env!("CARGO_PKG_VERSION")))
+}
+
 impl ReqwestTransport {
     pub fn new() -> Result<Self, TransportError> {
-        let builder = || {
-            reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .connect_timeout(CONNECT_TIMEOUT)
-                .user_agent(concat!("junto-client/", env!("CARGO_PKG_VERSION")))
-        };
         let built = |client: reqwest::Result<reqwest::Client>| {
             client.map_err(|error| {
                 TransportError::new(TransportErrorKind::Connect, error.without_url().to_string())
             })
         };
         Ok(Self {
-            client: built(builder().timeout(REQUEST_TIMEOUT).build())?,
-            files: built(builder().read_timeout(READ_TIMEOUT).build())?,
+            client: built(client_builder().timeout(REQUEST_TIMEOUT).build())?,
+            files: built(client_builder().read_timeout(READ_TIMEOUT).build())?,
         })
     }
 }

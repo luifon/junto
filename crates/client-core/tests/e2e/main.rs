@@ -1665,3 +1665,37 @@ async fn the_tool_links_a_new_device_on_every_server_of_the_first_device() {
     let (success, _, stderr) = owner.run(&["approve-all", "--code", request]);
     assert!(!success && stderr.contains("standard input"), "{stderr}");
 }
+
+/// ADR 0715: an operation that uses the network starts its work on the runtime of the
+/// client and returns a future that only waits for it. The thread of this test has no
+/// tokio runtime, as the thread of a window, and polls those futures with an executor of
+/// its own. A future that did network work itself would need the tokio reactor here.
+#[test]
+fn an_executor_without_tokio_polls_the_futures_of_network_operations() {
+    let server_runtime = tokio::runtime::Runtime::new().unwrap();
+    let server = server_runtime.block_on(TestServer::start("Acme Studio"));
+    assert!(tokio::runtime::Handle::try_current().is_err());
+    let device = Device::new();
+
+    futures_executor::block_on(async {
+        let handle = add(&device.client, &server.address()).await;
+        handle.dispatch(claim(&server, "Ada")).await.unwrap();
+        let account_id = logged_in(&handle);
+        let api = handle.api();
+        assert_eq!(api.own_account().await.unwrap().id, account_id);
+        let created = CreateChannel {
+            name: "plans".to_owned(),
+            kind: ChannelKind::Text,
+            category_id: None,
+            position: None,
+        };
+        let workspaces = api.workspaces().await.unwrap();
+        let channel = api
+            .create_channel(workspaces[0].id, &created)
+            .await
+            .unwrap();
+        assert_eq!(channel.name, "plans");
+        handle.logo().await.unwrap();
+    });
+    drop(server);
+}
