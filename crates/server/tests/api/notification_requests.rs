@@ -227,8 +227,7 @@ async fn the_new_changes_count_against_the_limit_of_message_changes() {
 /// An account with many read notices and a server with many notices of other accounts: the
 /// statement reads the unread notices of the account and no other row. The read notices are
 /// twenty times the bound of the rows that the plan may visit, so a plan that reads them
-/// fails; the data is made in one statement that stays far below the statement time limit
-/// of the server, also on a loaded machine.
+/// fails; the data is prepared in bounded batches under the normal statement time limit.
 #[tokio::test]
 async fn marking_all_read_reads_the_index_of_unread_notices() {
     let server = TestServer::start().await;
@@ -236,28 +235,38 @@ async fn marking_all_read_reads_the_index_of_unread_notices() {
     let reader = reader_of_everything(&server, &owner, "Reader").await;
     let channel = channel(&server, &owner, "text").await;
     let root = send(&server, &owner, &channel, "content").await;
-    sqlx::query(
-        "with copies as (
+    let others: Vec<uuid::Uuid> = sqlx::query_scalar(
+        "insert into accounts (id, name, status, created_at)
+         select gen_random_uuid(), 'filler', 'active', $1 from generate_series(1, 4)
+         returning id",
+    )
+    .bind(server.clock.now())
+    .fetch_all(&server.db)
+    .await
+    .unwrap();
+    for (first, last) in crate::support::fixture_batches(2_000) {
+        sqlx::query(
+            "with copies as (
              insert into messages (id, place_id, position, author_id, created_at, document)
              select gen_random_uuid(), place_id, position + n, author_id, created_at, document
-             from messages cross join generate_series(1, 2000) n where id = $1
+             from messages cross join generate_series($4::int, $5::int) n where id = $1
              returning id, created_at),
-         people as (
-             insert into accounts (id, name, status, created_at)
-             select gen_random_uuid(), 'filler', 'active', $3 from generate_series(1, 4)
-             returning id),
+         people as (select unnest($3::uuid[]) as id),
          theirs as (
              insert into notifications (id, account_id, message_id, kind, created_at)
              select c.id, p.id, c.id, 'message', c.created_at from copies c cross join people p)
          insert into notifications (id, account_id, message_id, kind, created_at, read_at)
          select id, $2, id, 'message', created_at, created_at from copies",
-    )
-    .bind(root.id)
-    .bind(reader.account_id)
-    .bind(server.clock.now())
-    .execute(&server.db)
-    .await
-    .unwrap();
+        )
+        .bind(root.id)
+        .bind(reader.account_id)
+        .bind(&others)
+        .bind(first)
+        .bind(last)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    }
     analyze(&server.db, &["notifications", "messages"]).await;
 
     let statement = junto_server::messages::notifications::mark_all_read_statement();

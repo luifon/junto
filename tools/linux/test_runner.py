@@ -36,7 +36,7 @@ esac
 exit 0
 ''')
             docker.chmod(0o755)
-            for name, body in [("uname", "echo Linux"), ("id", 'case "$1" in -u) echo 12345 ;; -g) echo 23456 ;; esac'),
+            for name, body in [("uname", 'if [ "$SCENARIO" = macos ]; then echo Darwin; else echo Linux; fi'), ("id", 'if [ "$SCENARIO" = root ]; then echo 0; else case "$1" in -u) echo 12345 ;; -g) echo 23456 ;; esac; fi'),
                                ("flock", 'printf \'flock %s\\n\' "$1" >> "$COMMAND_LOG"; shift; exec "$@"')]:
                 executable = root / name
                 executable.write_text(f"#!/bin/sh\n{body}\n")
@@ -55,6 +55,9 @@ exit 0
                                # never the lock of the machine.
                                JUNTO_HEAVY_LOCK=str(root / "heavy.lock"))
             environment.pop("JUNTO_LINUX_PREFIX", None)
+            environment.pop("JUNTO_LINUX_POSTGRES_CPUS", None)
+            if scenario == "database_budget":
+                environment["JUNTO_LINUX_POSTGRES_CPUS"] = "2.75"
             script = tools / ("linux-container.sh" if launcher else "linux/run.sh")
             result = subprocess.run(["/bin/sh", str(script), "true"], env=environment, capture_output=True, text=True)
             commands = root / "commands"
@@ -74,8 +77,18 @@ exit 0
     def test_the_linux_source_owner_is_the_build_user(self):
         result = self.run_script("ownership")
         self.assertIn("--build-arg BUILD_UID=12345 --build-arg BUILD_GID=23456", result.commands)
-        self.assertIn("JUNTO_BUILD_UID=12345", result.commands)
-        self.assertIn("JUNTO_BUILD_GID=23456", result.commands)
+        self.assertIn("run-as-user.sh 12345 23456 /target /usr/local/cargo/registry --", result.commands)
+
+    def test_a_root_caller_runs_tests_as_user_1000(self):
+        result = self.run_script("root")
+        self.assertIn("--build-arg BUILD_UID=1000 --build-arg BUILD_GID=1000", result.commands)
+        build = next(line for line in result.commands.splitlines() if line.startswith("run --name junto-linux-build "))
+        self.assertIn("/opt/junto-linux/run-as-user.sh 1000 1000 /src /target /usr/local/cargo/registry --", build)
+
+    def test_macos_does_not_change_bind_mount_ownership(self):
+        result = self.run_script("macos")
+        self.assertIn("run-as-user.sh 1000 1000 /target /usr/local/cargo/registry --", result.commands)
+        self.assertNotIn("run-as-user.sh 1000 1000 /src ", result.commands)
 
     def test_a_rootless_docker_socket_can_be_selected(self):
         result = self.run_script("rootless")
@@ -95,6 +108,11 @@ exit 0
         self.assertIn(" --cpuset-cpus 0-3 ", build[0])
         self.assertIn(" -e CARGO_BUILD_JOBS=4 ", build[0])
         self.assertNotIn(" --cpus ", build[0])
+
+    def test_the_database_cpu_budget_can_be_selected(self):
+        result = self.run_script("database_budget")
+        postgres = next(line for line in result.commands.splitlines() if line.startswith("run -d --name junto-linux-postgres "))
+        self.assertIn(" --cpus 2.75 ", postgres)
 
     def test_a_machine_with_fewer_processors_runs_as_many_build_jobs(self):
         result = self.run_script("two_processors")

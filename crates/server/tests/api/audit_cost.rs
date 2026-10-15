@@ -11,7 +11,7 @@ use serde_json::json;
 
 use crate::messages_support::{Files, channel, send, text};
 use crate::recordings_support::Studio;
-use crate::support::{FREE_DISK, Scratch, TestServer};
+use crate::support::{FREE_DISK, Scratch, TestServer, fixture_batches};
 
 /// ADR 0408: an account has at most 20 pending uploads, and each one reserves its declared
 /// size in the storage guard. A cancelled upload no longer counts as pending, and its
@@ -166,19 +166,25 @@ async fn a_search_over_20000_matches_stays_below_the_time_that_fills_the_connect
     let channel = channel(&server, &owner, "text").await;
     send(&server, &owner, &channel, "single basalt").await;
     let document = text("placeholder")["document"].clone();
-    sqlx::query(
-        "insert into messages (id, place_id, position, author_id, created_at, document)
+    let messages_before = server.count("messages").await;
+    for (first, last) in fixture_batches(20_000) {
+        sqlx::query(
+            "insert into messages (id, place_id, position, author_id, created_at, document)
          select gen_random_uuid(), $1, 1000000 + n, $2, $3,
                 jsonb_set($4, '{blocks,0,content,0,text}', to_jsonb('quartz report ' || n::text))
-         from generate_series(1, 20000) n",
-    )
-    .bind(channel.id)
-    .bind(owner.account_id)
-    .bind(server.clock.now())
-    .bind(sqlx::types::Json(document))
-    .execute(&server.db)
-    .await
-    .unwrap();
+         from generate_series($5::int, $6::int) n",
+        )
+        .bind(channel.id)
+        .bind(owner.account_id)
+        .bind(server.clock.now())
+        .bind(sqlx::types::Json(&document))
+        .bind(first)
+        .bind(last)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    }
+    assert_eq!(server.count("messages").await, messages_before + 20_000);
     sqlx::query("analyze messages")
         .execute(&server.db)
         .await

@@ -67,7 +67,8 @@ CONFIG
 output HEADLESS-1 mode 1920x1080
 seat seat0 fallback true
 CONFIG
-        sway -c /tmp/junto-linux-sway.conf >/tmp/junto-linux-wayland.log 2>&1 &
+        # The headless Pixman renderer uses no GPU; host driver checks do not apply.
+        sway --unsupported-gpu -c /tmp/junto-linux-sway.conf >/tmp/junto-linux-wayland.log 2>&1 &
         display_pid=$!
         ready() {
             for socket in "$XDG_RUNTIME_DIR"/wayland-*; do

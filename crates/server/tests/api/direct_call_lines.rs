@@ -820,16 +820,26 @@ async fn the_unread_count_reads_missed_calls_by_an_index() {
     let conversation = conversation(server, ben, ann)
         .await
         .expect("a conversation");
-    sqlx::query(
-        "insert into messages (id, place_id, position, created_at, system, notifies)
+    let originals: Vec<uuid::Uuid> =
+        sqlx::query_scalar("select id from messages where place_id=$1 and notifies is not null")
+            .bind(conversation.id)
+            .fetch_all(&server.db)
+            .await
+            .unwrap();
+    for (first, last) in crate::support::fixture_batches(20_000) {
+        sqlx::query(
+            "insert into messages (id, place_id, position, created_at, system, notifies)
          select gen_random_uuid(), m.place_id, m.position + n, m.created_at, m.system, m.notifies
-         from messages m cross join generate_series(1, 20000) n
-         where m.place_id = $1 and m.notifies is not null",
-    )
-    .bind(conversation.id)
-    .execute(&server.db)
-    .await
-    .unwrap();
+         from messages m cross join generate_series($2::int, $3::int) n
+         where m.id = any($1)",
+        )
+        .bind(&originals)
+        .bind(first)
+        .bind(last)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    }
     analyze(&server.db, &["messages"]).await;
 
     assert_eq!(

@@ -16,7 +16,11 @@ cd recording-layout
 printf '\n=== Install the locked packages\n'
 npm ci --ignore-scripts
 printf '\n=== Install the browser of the locked Playwright version\n'
-npx --no-install playwright install --with-deps chromium
+if [ "$(id -u)" -eq 0 ] || [ -z "${JUNTO_CI_LAYOUT_DEPS_READY:-}" ]; then
+    npx --no-install playwright install --with-deps chromium
+else
+    npx --no-install playwright install chromium
+fi
 printf '\n=== Build\n'
 node build.mjs
 printf '\n=== Browser tests against a LiveKit server in Docker\n'

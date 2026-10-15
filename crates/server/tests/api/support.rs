@@ -34,6 +34,13 @@ use time::{Duration, OffsetDateTime};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
+/// Bounded statements prepare large fixtures under the normal database time limits.
+pub fn fixture_batches(rows: i32) -> impl Iterator<Item = (i32, i32)> {
+    (1..=rows)
+        .step_by(500)
+        .map(move |first| (first, (first + 499).min(rows)))
+}
+
 const DATABASE_URL: &str = "JUNTO_TEST_DATABASE_URL";
 
 /// The public origin of every test server: the address that a device connected to and signs.

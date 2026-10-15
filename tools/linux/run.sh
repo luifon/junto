@@ -18,9 +18,14 @@ created=""
 socket=${JUNTO_DOCKER_SOCKET:-/var/run/docker.sock}
 build_uid=1000
 build_gid=1000
+own_checkout=false
 if [ "$(uname -s)" = Linux ]; then
-    build_uid=$(id -u)
-    build_gid=$(id -g)
+    if [ "$(id -u)" -eq 0 ]; then
+        own_checkout=true
+    else
+        build_uid=$(id -u)
+        build_gid=$(id -g)
+    fi
 fi
 cleanup() {
     for name in $created; do docker rm -f -v "$name" >/dev/null 2>&1 || true; done
@@ -55,21 +60,12 @@ else
 fi
 docker volume create "$cargo_volume" >/dev/null
 docker volume create "$target_volume" >/dev/null
-docker run --rm --name "$prefix-cache-init" --user 0 --cpus 1 --memory 512m --memory-swap 512m \
-    --mount "type=volume,src=$cargo_volume,dst=/usr/local/cargo/registry" \
-    --mount "type=volume,src=$target_volume,dst=/target" \
-    -e "JUNTO_BUILD_UID=$build_uid" -e "JUNTO_BUILD_GID=$build_gid" \
-    "$image" sh -c 'for directory in /target /usr/local/cargo/registry; do
-        if [ "$(stat -c %u:%g "$directory")" != "$JUNTO_BUILD_UID:$JUNTO_BUILD_GID" ]; then
-            chown -R "$JUNTO_BUILD_UID:$JUNTO_BUILD_GID" "$directory"
-        fi
-    done'
 docker network create "$network" >/dev/null
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 created="$postgres"
 docker run -d --name "$postgres" --network "$network" --network-alias postgres \
-    --cpus 0.75 --memory 1536m --memory-swap 1536m \
+    --cpus "${JUNTO_LINUX_POSTGRES_CPUS:-0.75}" --memory 1536m --memory-swap 1536m \
     -e POSTGRES_HOST_AUTH_METHOD=trust \
     "$postgres_image" \
     -c max_connections=400 -c fsync=off -c shared_preload_libraries=pg_stat_statements \
@@ -104,7 +100,8 @@ mkdir -p "$root/spikes/test-participant/target"
 # container for the rest of each 100 ms in which it is used up, and a test that measures
 # sound in real time then measures those stops. Cargo runs one job for each processor of the
 # set; more jobs than processors only add memory. The other three containers have quotas:
-# 2 processors and 2.4 GiB of memory together. No container may use swap.
+# PostgreSQL defaults to 0.75 processor (JUNTO_LINUX_POSTGRES_CPUS replaces it), LiveKit gets
+# 1 and control 0.25; together they have 2.4 GiB of memory. No container may use swap.
 wanted=${JUNTO_LINUX_CPUS:-4}
 memory=${JUNTO_LINUX_MEMORY:-6g}
 case "$wanted" in ''|*[!0-9]*|0) echo "JUNTO_LINUX_CPUS is not a count: $wanted" >&2; exit 2 ;; esac
@@ -112,8 +109,13 @@ processors=$(docker info --format '{{.NCPU}}' 2>/dev/null || true)
 case "$processors" in ''|*[!0-9]*|0) processors=$wanted ;; esac
 if [ "$processors" -gt "$wanted" ]; then processors=$wanted; fi
 # Test service ports are not published; no host display, sound or home is mounted.
+if "$own_checkout"; then
+    set -- /src /target /usr/local/cargo/registry -- /opt/junto-linux/session.sh "$@"
+else
+    set -- /target /usr/local/cargo/registry -- /opt/junto-linux/session.sh "$@"
+fi
 status=0
-docker run --name "$build" --network "$network" --memory "$memory" --memory-swap "$memory" --cpuset-cpus "0-$((processors - 1))" --shm-size 512m \
+docker run --name "$build" --user 0 --network "$network" --memory "$memory" --memory-swap "$memory" --cpuset-cpus "0-$((processors - 1))" --shm-size 512m \
     --mount "type=bind,src=$root,dst=/src" \
     --mount "type=volume,src=$cargo_volume,dst=/usr/local/cargo/registry" \
     --mount "type=volume,src=$target_volume,dst=/target" \
@@ -127,7 +129,7 @@ docker run --name "$build" --network "$network" --memory "$memory" --memory-swap
     -e JUNTO_TEST_LIVEKIT_CONTAINER="$livekit" \
     -e JUNTO_TEST_WEBHOOK_ADDRESS=0.0.0.0:17890 \
     -e JUNTO_TEST_VIRTUAL_AUDIO=1 -e TZ=UTC \
-    "$image" /opt/junto-linux/session.sh "$@" || status=$?
+    "$image" /opt/junto-linux/run-as-user.sh "$build_uid" "$build_gid" "$@" || status=$?
 if [ "$status" -ne 0 ]; then
     docker logs "$postgres" 2>&1 | grep -E \
         'PANIC|FATAL|No space left|server process.*terminated|database system.*interrupted|recovery in progress' \
