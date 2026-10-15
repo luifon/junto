@@ -228,6 +228,9 @@ fn a_recovery_is_shown_until_the_person_states_that_it_was_seen(cx: &mut TestApp
     window.until("the recovery is shown again", |window| {
         window.shows("recovery-notice")
     });
+    // Until the snapshot arrives the notice is drawn in the state panel of the server, and
+    // then above the messages of the channel. The button is pressed after that move.
+    window.until_ready();
 
     // The button sends the acknowledgement, and the notice goes for good.
     window.click("recovery-seen");
