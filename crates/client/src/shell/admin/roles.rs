@@ -17,7 +17,9 @@ use junto_client_core::protocol::ids::{AccountId, ServerId};
 use super::{line, line_text, named, page_title, refusal, sentence};
 use crate::assets::Icon;
 use crate::shell::Shell;
-use crate::state::admin::view::roles::{PermissionSwitch, RoleChoice, RoleRow, RolesPage};
+use crate::state::admin::view::roles::{
+    NoDeletion, PermissionSwitch, RoleChoice, RoleRow, RolesPage,
+};
 use crate::state::admin::view::{AdminView, Listed, Scope, ServerPage};
 use crate::state::admin::{AdminPage, AskKind, AskState, RoleRef};
 use crate::text;
@@ -322,13 +324,14 @@ impl Shell {
     ) -> AnyElement {
         let colors = theme.colors;
         let (server_id, role) = (view.server_id, row.role);
-        let (permission, on) = (switch.permission, switch.on);
+        // A change of this permission is on its way, or the server did it and the state
+        // does not hold it yet: the switch shows the asked state (ADR 0791, ADR 0311).
+        let asked = view.permission_asked(role, switch.permission);
+        let changing = asked.is_some();
+        let (permission, on) = (switch.permission, asked.unwrap_or(switch.on));
         // A permission that the person does not hold cannot be given; taking it needs
         // the managing permission only (ADR 0304).
         let beyond = (!on && switch.beyond_own).then(|| txt::beyond_own(permission));
-        // The change before this one is on its way, or the server did it and the state
-        // does not show it yet (ADR 0791).
-        let changing = view.changing_roles.contains(&role);
         let held: Option<SharedString> = row
             .locked
             .map(|reason| txt::locked(reason).into())
@@ -466,12 +469,13 @@ impl Shell {
             }));
         actions.push(named(format!("role-permissions-{written}"), toggle).into_any_element());
         if row.named {
+            let held = row.deletion().err().map(txt::no_deletion);
             let mut delete = Button::new(("role-delete", number))
                 .label(text::admin::DELETE)
                 .h(u(28.0))
                 .px(u(8.0))
-                .disabled(locked.is_some());
-            match locked {
+                .disabled(held.is_some());
+            match held {
                 Some(reason) => delete = delete.tooltip(reason),
                 None => {
                     delete = delete.on_click(cx.listener(move |this, _, window, cx| {
@@ -501,10 +505,16 @@ impl Shell {
         let expanded = self.admin.roles.expanded == Some(role);
         // A form or a question of a role that the person cannot change any more is put
         // away for good: it does not return when the role can be changed again.
-        let stale = matches!(
-            self.admin.roles.open,
-            Some(Open::Rename(of) | Open::Delete(of)) if of == role
-        ) && (row.locked.is_some() || !row.named);
+        let stale = match self.admin.roles.open {
+            Some(Open::Rename(of)) if of == role => row.locked.is_some() || !row.named,
+            Some(Open::Delete(of)) if of == role => {
+                !row.named
+                    || row
+                        .deletion()
+                        .is_err_and(|reason| reason != NoDeletion::Reading)
+            }
+            _ => false,
+        };
         if stale {
             self.admin.roles.open = None;
             self.admin.roles.sent = None;
@@ -521,7 +531,7 @@ impl Shell {
                     cx,
                 )
                 .into_any_element(),
-            Some(Open::Delete(of)) if of == role && row.locked.is_none() && row.named => div()
+            Some(Open::Delete(of)) if of == role && row.named => div()
                 .flex()
                 .flex_1()
                 .min_w_0()
@@ -550,7 +560,11 @@ impl Shell {
                         .kind(ButtonKind::Primary)
                         .label(text::admin::DELETE)
                         .selector("role-confirm")
-                        .disabled(view.sending(AskKind::DeleteRole(role)))
+                        // While the statement of the server is read again the question
+                        // stays and its confirmation waits.
+                        .disabled(
+                            view.sending(AskKind::DeleteRole(role)) || row.deletion().is_err(),
+                        )
                         .h(u(28.0))
                         .px(u(10.0))
                         .on_click(cx.listener(move |this, _, _, cx| {

@@ -4,6 +4,7 @@
 use gpui::Context;
 use junto_client_core::api::{ApiError, ErrorCategory, SearchQuery};
 use junto_client_core::flow::FlowError;
+use junto_client_core::model::Timeline;
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::protocol::ids::{MessageId, ServerId};
 use time::OffsetDateTime;
@@ -11,11 +12,22 @@ use time::OffsetDateTime;
 use super::AppState;
 use super::notices::Jump;
 use super::search::{Filters, Hit, MOST_HITS, Progress, Search};
-use super::view::{ServerSnapshot, shown_model};
+use super::view::{ServerSnapshot, Shown, shown_model};
 use crate::text;
 
 /// The longest text of a search in bytes (ADR 0409).
 const MOST_QUERY_BYTES: usize = 1_024;
+
+/// True when the loaded messages of a timeline reach over `position`: the position lies
+/// between the first and the last one, or beyond an end after which the history has no
+/// more.
+fn covers(timeline: &Timeline, position: u64) -> bool {
+    let (Some(first), Some(last)) = (timeline.messages.first(), timeline.messages.last()) else {
+        return !timeline.more_before && !timeline.more_after;
+    };
+    (position >= first.position || !timeline.more_before)
+        && (position <= last.position || !timeline.more_after)
+}
 
 /// How a failed request of a search is told: a refusal with its reason, or no answer.
 fn failure(error: &ApiError) -> Progress {
@@ -291,9 +303,12 @@ impl AppState {
         }
     }
 
-    /// Goes to the message of a result. The result names its message and its place; the
-    /// position and the thread of the message are read first. The person who goes to
-    /// another place before the answer stays there.
+    /// Goes to the message of a result. The result states its place, its position and the
+    /// root of its thread (ADR 0413): the window goes there as a notice does, and the
+    /// messages around the position are read when the list does not hold the message. A
+    /// message that is not among them is gone. A result of a server that states no
+    /// position reads the message first; the person who goes to another place before the
+    /// answer stays there.
     pub fn go_to_result(&mut self, message_id: MessageId, cx: &mut Context<Self>) {
         let Some(search) = &mut self.known.search else {
             return;
@@ -302,8 +317,20 @@ impl AppState {
         let Some(server) = self.client.server(server_id) else {
             return;
         };
-        search.going = Some(message_id);
+        let stated = server.live().view().model.and_then(|model| {
+            search
+                .hits
+                .iter()
+                .find(|hit| hit.message_id == Some(message_id))
+                .and_then(|hit| hit.jump(server_id, &model))
+        });
         search.go_failed = None;
+        if let Some(jump) = stated {
+            self.result_jump = Some(jump);
+            self.go_to(jump, cx);
+            return;
+        }
+        search.going = Some(message_id);
         self.result_asks += 1;
         let number = self.result_asks;
         let api = server.api();
@@ -347,6 +374,52 @@ impl AppState {
         })
         .detach();
         self.changed(cx);
+    }
+
+    /// After a jump to a result by its position: once the list of its place holds the
+    /// messages around that position, a message that is not among them is gone, and the
+    /// search says so. A jump whose place the window does not show any more ends.
+    pub(super) fn follow_result_jump(&mut self, shown: Shown) {
+        let Some(jump) = self.result_jump else {
+            return;
+        };
+        let place = Self::jump_place(&jump);
+        let wanted = shown.server == Some(jump.server_id)
+            && (shown.place() == Some(place) || shown.thread_place() == Some(place));
+        let model = self
+            .client
+            .server(jump.server_id)
+            .and_then(|server| server.live().view().model)
+            .filter(|_| wanted);
+        let Some(model) = model else {
+            self.result_jump = None;
+            return;
+        };
+        let Some(timeline) = model
+            .timeline(place)
+            .filter(|held| held.loaded && !held.stale)
+        else {
+            return;
+        };
+        if timeline.message(jump.message_id).is_some() {
+            self.result_jump = None;
+            return;
+        }
+        if !covers(timeline, jump.position) {
+            return;
+        }
+        self.result_jump = None;
+        if let Some(search) = self
+            .known
+            .search
+            .as_mut()
+            .filter(|search| search.server_id == jump.server_id)
+        {
+            search
+                .hits
+                .retain(|hit| hit.message_id != Some(jump.message_id));
+            search.go_failed = Some(text::RESULT_GONE.to_owned());
+        }
     }
 
     /// How many reads of the message of a search result have ended. A test waits for

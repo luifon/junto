@@ -52,6 +52,7 @@ fn fixture() -> Fixture {
             },
             last_cursor: None,
             profile_sync: ProfileSync::NotNeeded,
+            moderation_notices_shown: Vec::new(),
         })
         .unwrap();
     let client = Client::open(ClientOptions::new(root)).unwrap();
@@ -212,6 +213,8 @@ fn fixture() -> Fixture {
         retry: None,
         backoff: Backoff::new(timing.reconnect_first, timing.reconnect_longest),
         rejoining: true,
+        renew_open: false,
+        grant_closed: false,
         state_report: Reporter::new(timing.state_spacing, None),
         speaking_report: Reporter::new(timing.speaking_spacing, Some(timing.speaking_renewal)),
         share_report: Reporter::holding(timing.share_spacing, None),
@@ -2590,5 +2593,127 @@ async fn an_event_at_or_before_an_answer_that_stated_the_seat_does_not_end_the_s
         Fate::Held
     );
     assert_eq!(f.session.place.identity(), "seat");
+    f.session.engine.close().await;
+}
+
+#[tokio::test]
+async fn a_refusal_of_a_renewal_states_how_the_seat_ended() {
+    use junto_client_core::api::Rejection;
+    let refusal = |left: Option<LeaveReason>| {
+        Err(ApiError::Rejected(Rejection {
+            code: ErrorCode::SeatEnded,
+            status: 409,
+            retry_after: None,
+            message: String::new(),
+            left,
+        }))
+    };
+    // The seat ended because no media connection used it: a place is asked for at once,
+    // without naming the seat (ADR 0520).
+    for left in [LeaveReason::ConnectionLost, LeaveReason::NeverConnected] {
+        let mut f = fixture();
+        let (taken, _) = oneshot::channel();
+        f.session
+            .finished(Done::Rejoined(Box::new(refusal(Some(left))), taken));
+        assert!(f.session.renew_open, "{left:?}");
+        assert!(f.session.retry.is_some());
+        assert_eq!(f.session.fate, Fate::Held);
+        f.session.engine.close().await;
+    }
+    // Every other reason ends the call with it, and nothing is asked again.
+    for (left, reason) in [
+        (
+            Some(LeaveReason::Disconnected),
+            EndReason::Server(Some(LeaveReason::Disconnected)),
+        ),
+        (
+            Some(LeaveReason::AccessEnded),
+            EndReason::Server(Some(LeaveReason::AccessEnded)),
+        ),
+        (Some(LeaveReason::Switched), EndReason::Elsewhere),
+        (None, EndReason::Server(None)),
+    ] {
+        let mut f = fixture();
+        let (taken, _) = oneshot::channel();
+        f.session
+            .finished(Done::Rejoined(Box::new(refusal(left)), taken));
+        assert_eq!(f.session.fate, Fate::End(reason), "{left:?}");
+        assert!(!f.session.renew_open && f.session.retry.is_none());
+        f.session.engine.close().await;
+    }
+    // A move: its events decide, as without the request; nothing is asked again.
+    let mut f = fixture();
+    let (taken, _) = oneshot::channel();
+    f.session.finished(Done::Rejoined(
+        Box::new(refusal(Some(LeaveReason::Moved))),
+        taken,
+    ));
+    assert_eq!(f.session.fate, Fate::Held);
+    assert!(!f.session.renew_open && f.session.retry.is_none());
+    f.session.engine.close().await;
+}
+
+#[tokio::test]
+async fn a_grant_that_a_read_of_the_own_call_states_closes_the_setting_once_after_lost_events() {
+    let mut f = fixture();
+    f.session.rejoining = false;
+    f.session.apply_controls();
+    let seat = f.session.place.identity().to_owned();
+    // The events were all read: the event of the grant closes the setting, not the
+    // statement.
+    let stated_at = f.model.cursor.position;
+    f.model.own_grant = Some((seat.clone(), stated_at));
+    f.session.read_blocks(&f.model);
+    assert!(!f.session.inner.shared().muted);
+
+    // Notices were missed: the event of the grant can be among them. The statement closes
+    // the setting once.
+    f.session.missed();
+    f.model.cursor.position += 1;
+    f.session.read_blocks(&f.model);
+    assert!(
+        f.session.inner.shared().muted,
+        "the stated grant did not close the setting"
+    );
+    // The person opens the microphone. A later read that still states the grant, before
+    // the report of the open reached the server, closes nothing.
+    f.session.inner.shared().muted = false;
+    f.session.command(SessionCommand::Muted(false));
+    f.model.cursor.position += 1;
+    f.session.read_blocks(&f.model);
+    assert!(
+        !f.session.inner.shared().muted,
+        "the same statement closed the setting twice"
+    );
+    f.session.engine.close().await;
+
+    // A statement that the person answered by opening the microphone after it, and then
+    // lost notices: the statement is older than the open, and closes nothing.
+    let mut f = fixture();
+    f.session.rejoining = false;
+    f.session.apply_controls();
+    let stated_at = f.model.cursor.position;
+    f.model.own_grant = Some((seat.clone(), stated_at));
+    f.session.read_blocks(&f.model);
+    f.model.cursor.position += 1;
+    f.session.read_blocks(&f.model);
+    f.session.command(SessionCommand::Muted(false));
+    f.session.missed();
+    f.model.cursor.position += 1;
+    f.session.read_blocks(&f.model);
+    assert!(
+        !f.session.inner.shared().muted,
+        "a statement from before the open closed the setting"
+    );
+
+    // A read without the statement ends it; a later statement after lost events is a
+    // grant again.
+    f.model.own_grant = None;
+    f.session.read_blocks(&f.model);
+    f.session.missed();
+    f.model.cursor.position += 1;
+    f.model.own_grant = Some((seat, f.model.cursor.position));
+    f.session.read_blocks(&f.model);
+    assert!(f.session.inner.shared().muted);
     f.session.engine.close().await;
 }

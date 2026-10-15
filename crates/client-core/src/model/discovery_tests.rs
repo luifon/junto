@@ -743,3 +743,41 @@ fn a_notice_whose_message_was_not_read_can_be_marked_by_any_read_position() {
     assert!(model.settle_named(unknown, true));
     assert!(!model.apply(&read).load.contains(&Part::Notices));
 }
+
+#[test]
+fn a_reload_keeps_the_named_messages_for_display_until_each_is_read_again() {
+    let scene = scene();
+    let other = AccountId::generate();
+    let noticed = message(scene.text_place(), 7, other, "@you");
+    let dropped = message(scene.text_place(), 8, other, "@you again");
+    let page = |messages: &[&Message]| NotificationPage {
+        notifications: messages.iter().map(|held| notice(held.id)).collect(),
+        has_more: false,
+    };
+    let mut before = scene.model();
+    before.set_notices(page(&[&noticed, &dropped]));
+    before.put_message(noticed.clone());
+    before.put_message(dropped.clone());
+    assert!(before.missing_named().is_empty());
+
+    // The new state names one of the two messages. It shows the message of before and
+    // reads it again; the other one is not taken.
+    let mut after = scene.model();
+    after.set_notices(page(&[&noticed]));
+    after.carry_named(&before);
+    assert!(matches!(after.named(noticed.id), Some(Named::Read(held)) if held.id == noticed.id));
+    assert!(after.named(dropped.id).is_none());
+    assert_eq!(after.missing_named(), [noticed.id]);
+    assert!(after.needs_named(noticed.id));
+    // The read of the message ends the carried mark, also when the message is the same.
+    assert!(after.put_message(noticed.clone()));
+    assert!(after.missing_named().is_empty());
+    assert!(!after.needs_named(noticed.id));
+
+    // Another account takes nothing of the state before.
+    let mut other_account = scene.model();
+    other_account.account.id = AccountId::generate();
+    other_account.set_notices(page(&[&noticed]));
+    other_account.carry_named(&before);
+    assert!(other_account.named(noticed.id).is_none());
+}

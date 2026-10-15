@@ -290,6 +290,12 @@ pub struct Shell {
     pub(crate) quiet_until: Entity<InputState>,
     /// The two typed times are no time span.
     pub(crate) quiet_refused: bool,
+    /// The time zone of the daily quiet time, as the settings show and send it
+    /// (ADR 0798).
+    pub(crate) quiet_zone: String,
+    /// The search of the list of time zones, and whether the list is open.
+    pub(crate) quiet_zone_search: Entity<InputState>,
+    pub(crate) quiet_zone_open: bool,
     /// The fields and the open forms of the administration.
     pub(crate) admin: admin::AdminUi,
     /// The fields and the open form of the account layer.
@@ -361,6 +367,7 @@ impl Shell {
         let search_field = Field::state(text::SEARCH, window, cx);
         let quiet_from = Field::state(text::QUIET_FROM, window, cx);
         let quiet_until = Field::state(text::QUIET_UNTIL, window, cx);
+        let quiet_zone_search = Field::state(text::QUIET_ZONE_SEARCH, window, cx);
         let feed = feed::FeedList::new(Pane::Main);
         feed.list
             .set_scroll_handler(cx.listener(|this, event, window, cx| {
@@ -408,6 +415,10 @@ impl Shell {
             }),
             Field::observe(&quiet_until, window, cx, |this: &mut Self, _, _, cx| {
                 this.quiet_refused = false;
+                cx.notify();
+            }),
+            // The list of time zones follows the typed text.
+            Field::observe(&quiet_zone_search, window, cx, |_: &mut Self, _, _, cx| {
                 cx.notify();
             }),
             // The emoji of the picker follow the text that they are searched for.
@@ -590,6 +601,9 @@ impl Shell {
             quiet_from,
             quiet_until,
             quiet_refused: false,
+            quiet_zone: crate::zones::system(),
+            quiet_zone_search,
+            quiet_zone_open: false,
             admin,
             account,
             linking,

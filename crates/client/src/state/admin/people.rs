@@ -3,6 +3,7 @@
 //! a member from one workspace (ADR 0106), invites and join requests (ADR 0111).
 
 use gpui::Context;
+use junto_client_core::api::Statement;
 use junto_client_core::protocol::ids::{AccountId, InviteId, JoinRequestId, ServerId, WorkspaceId};
 use junto_client_core::protocol::invite::{ApproveJoinRequest, CreateInvite};
 
@@ -11,42 +12,37 @@ use crate::state::AppState;
 
 impl AppState {
     /// Removes an account from the server. Its devices, sessions, memberships and roles
-    /// end. The reason stays in the audit entry of the removal (ADR 0106).
+    /// end. The reason stays in the audit entry of the removal (ADR 0106); the message is
+    /// the notice that the person reads (ADR 0120).
     pub fn remove_account(
         &mut self,
         server_id: ServerId,
         account_id: AccountId,
-        reason: Option<String>,
+        statement: Statement,
         cx: &mut Context<Self>,
     ) {
         self.admin_ask(
             server_id,
             AskKind::RemoveAccount(account_id),
-            |api| async move {
-                api.remove_account_with_reason(account_id, reason.as_deref())
-                    .await
-            },
+            |api| async move { api.remove_account_stating(account_id, &statement).await },
             |_, (), _| {},
             cx,
         );
     }
 
     /// Bans an account. Its keys cannot log in or join again, and its invites are
-    /// cancelled. The reason stays in the audit entry of the ban (ADR 0106).
+    /// cancelled. The reason and the message are stated as for a removal.
     pub fn ban_account(
         &mut self,
         server_id: ServerId,
         account_id: AccountId,
-        reason: Option<String>,
+        statement: Statement,
         cx: &mut Context<Self>,
     ) {
         self.admin_ask(
             server_id,
             AskKind::BanAccount(account_id),
-            |api| async move {
-                api.ban_account_with_reason(account_id, reason.as_deref())
-                    .await
-            },
+            |api| async move { api.ban_account_stating(account_id, &statement).await },
             |_, (), _| {},
             cx,
         );
@@ -60,14 +56,14 @@ impl AppState {
         server_id: ServerId,
         workspace_id: WorkspaceId,
         account_id: AccountId,
-        reason: Option<String>,
+        statement: Statement,
         cx: &mut Context<Self>,
     ) {
         self.admin_ask(
             server_id,
             AskKind::RemoveMember(account_id),
             |api| async move {
-                api.remove_workspace_member(workspace_id, account_id, reason.as_deref())
+                api.remove_workspace_member(workspace_id, account_id, &statement)
                     .await
             },
             |_, (), _| {},

@@ -7,6 +7,7 @@ use gpui::{
     Role, SharedString, StatefulInteractiveElement, Styled, Subscription, Window, div,
 };
 use gpui_base::input::InputState;
+use junto_client_core::api::Statement;
 use junto_client_core::model::AdminPart;
 use junto_client_core::protocol::account::AccountStatus;
 use junto_client_core::protocol::ids::{AccountId, InviteId, WorkspaceId};
@@ -77,6 +78,8 @@ pub(crate) struct Ui {
     pub(crate) uses: Entity<InputState>,
     /// The typed reason of the ban or of the removal that the open question asks about.
     pub(crate) reason: Entity<InputState>,
+    /// The typed message to the person of that ban or removal (ADR 0120).
+    pub(crate) message: Entity<InputState>,
     pub(crate) open: Option<Open>,
     pub(crate) filter: Filter,
     /// The lifetime of a new invite in days.
@@ -98,6 +101,13 @@ impl Ui {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Shell>) -> (Self, Vec<Subscription>) {
         let uses = Field::state(txt::USES_PLACEHOLDER, window, cx);
         let reason = Field::state(txt::REASON_PLACEHOLDER, window, cx);
+        let message = Field::state(txt::MESSAGE_PLACEHOLDER, window, cx);
+        fn redraw(_: &mut Shell, event: FieldEvent, _: &mut Window, cx: &mut Context<Shell>) {
+            match event {
+                FieldEvent::Changed => cx.notify(),
+                FieldEvent::Submitted => {}
+            }
+        }
         let subscriptions = vec![
             Field::observe(
                 &uses,
@@ -111,20 +121,14 @@ impl Ui {
                     FieldEvent::Submitted => this.submit_invite_form(window, cx),
                 },
             ),
-            // The question draws whether the typed reason can be sent.
-            Field::observe(
-                &reason,
-                window,
-                cx,
-                |_: &mut Shell, event, _, cx| match event {
-                    FieldEvent::Changed => cx.notify(),
-                    FieldEvent::Submitted => {}
-                },
-            ),
+            // The question draws whether the typed texts can be sent.
+            Field::observe(&reason, window, cx, redraw),
+            Field::observe(&message, window, cx, redraw),
         ];
         let ui = Self {
             uses,
             reason,
+            message,
             open: None,
             filter: Filter::All,
             invite_days: DEFAULT_EXPIRY_DAYS,
@@ -236,6 +240,7 @@ impl Shell {
         ui.copied = None;
         self.reset_invite_form(window, cx);
         self.type_reason("", window, cx);
+        self.type_moderation_message("", window, cx);
     }
 
     /// Puts text into the field of the reason of the open question, as typing does.
@@ -248,15 +253,41 @@ impl Shell {
         cx.notify();
     }
 
-    /// The reason that the open question sends, or why the typed text cannot be sent.
-    fn reason_typed(&self, cx: &Context<Self>) -> Result<Option<String>, &'static str> {
-        typed_reason(&self.admin.people.reason.read(cx).value()).map_err(txt::reason_fault)
+    /// Puts text into the field of the message to the person of the open question, as
+    /// typing does.
+    pub fn type_moderation_message(
+        &mut self,
+        message: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let message = message.to_owned();
+        self.admin
+            .people
+            .message
+            .update(cx, |field, cx| field.set_value(message, window, cx));
+        cx.notify();
     }
 
-    /// The field of the reason under an open question, with what the reason is for and
-    /// why the typed text cannot be sent.
+    /// What the open question sends: the reason and the message to the person, or why a
+    /// typed text cannot be sent.
+    fn statement_typed(&self, cx: &Context<Self>) -> Result<Statement, &'static str> {
+        let people = &self.admin.people;
+        let reason = typed_reason(&people.reason.read(cx).value()).map_err(txt::reason_fault)?;
+        let message = typed_reason(&people.message.read(cx).value()).map_err(txt::message_fault)?;
+        Ok(Statement { reason, message })
+    }
+
+    /// The fields of the reason and of the message to the person under an open question,
+    /// with what each text is for and why a typed text cannot be sent.
     fn render_reason(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let fault = self.reason_typed(cx).err();
+        let people = &self.admin.people;
+        let reason_fault = typed_reason(&people.reason.read(cx).value())
+            .err()
+            .map(txt::reason_fault);
+        let message_fault = typed_reason(&people.message.read(cx).value())
+            .err()
+            .map(txt::message_fault);
         div()
             .flex()
             .flex_col()
@@ -270,7 +301,21 @@ impl Shell {
                     .selector("moderation-reason-field"),
             )
             .child(sentence(txt::REASON_HELP, theme))
-            .children(fault.map(|fault| Notice::error(fault).selector("moderation-reason-invalid")))
+            .children(
+                reason_fault
+                    .map(|fault| Notice::error(fault).selector("moderation-reason-invalid")),
+            )
+            .child(
+                div().mt(u(6.0)).child(
+                    Field::new(&self.admin.people.message, txt::MESSAGE)
+                        .selector("moderation-message-field"),
+                ),
+            )
+            .child(sentence(txt::MESSAGE_HELP, theme))
+            .children(
+                message_fault
+                    .map(|fault| Notice::error(fault).selector("moderation-message-invalid")),
+            )
             .into_any_element()
     }
 
@@ -297,8 +342,9 @@ impl Shell {
         if open == Some(Open::NewInvite) {
             self.reset_invite_form(window, cx);
         }
-        // A reason belongs to the question that it was typed for.
+        // A reason and a message belong to the question that they were typed for.
         self.type_reason("", window, cx);
+        self.type_moderation_message("", window, cx);
         self.state
             .update(cx, |state, cx| state.dismiss_admin_ask(cx));
         cx.notify();
@@ -383,15 +429,16 @@ impl Shell {
     }
 
     /// A question in the row of an account, with its two answers. The confirmation
-    /// carries the typed reason; a reason that cannot be sent holds the confirmation.
+    /// carries the typed reason and message; a text that cannot be sent holds the
+    /// confirmation.
     fn render_account_question(
         &mut self,
         question: Question,
         theme: &Theme,
         cx: &mut Context<Self>,
-        confirmed: impl Fn(&mut Self, Option<String>, &mut Window, &mut Context<Self>) + 'static,
+        confirmed: impl Fn(&mut Self, Statement, &mut Window, &mut Context<Self>) + 'static,
     ) -> gpui::Div {
-        let invalid = self.reason_typed(cx).is_err();
+        let invalid = self.statement_typed(cx).is_err();
         div()
             .flex()
             .flex_1()
@@ -425,8 +472,8 @@ impl Shell {
                     .h(u(28.0))
                     .px(u(10.0))
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        if let Ok(reason) = this.reason_typed(cx) {
-                            confirmed(this, reason, window, cx);
+                        if let Ok(statement) = this.statement_typed(cx) {
+                            confirmed(this, statement, window, cx);
                         }
                     })),
             )
@@ -600,6 +647,19 @@ impl Shell {
             Some(Open::RemoveAccount(id) | Open::BanAccount(id)) if id == account_id
         ) {
             under.push(self.render_reason(theme, cx));
+        }
+        // The server keeps the account banned for the person: the row states it without a
+        // pointer (ADR 0311).
+        if row.unban == Err(Blocked::NotUnbannable) {
+            under.push(
+                sentence(txt::NOT_UNBANNABLE, theme)
+                    .mt(u(3.0))
+                    .mb(u(4.0))
+                    .pl(u(34.0))
+                    .ink(theme.colors.ink)
+                    .debug_selector(move || format!("account-not-unbannable-{account_id}"))
+                    .into_any_element(),
+            );
         }
         // Role order protects the account: the row states it without a pointer
         // (ADR 0309).

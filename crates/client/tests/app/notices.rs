@@ -351,16 +351,20 @@ fn a_quiet_time_shows_no_system_notification_and_mark_all_reads_the_list(cx: &mu
     assert_eq!(window.kept().shown[0].body, "in the morning, @Luca");
 
     // A change of the notification settings replaces the state (ADR 0722). The settings
-    // show the change before that. The list of the notices has no row and no "Mark all
-    // as read" from the replacement until the messages of its notices are read again, so
-    // each change is followed to its replacement before the list is used below.
+    // show the change before that.
     let reloads = |window: &mut Window| {
         window
             .state
             .read_with(&window.cx, |state, _| state.reloads_of(server_id))
     };
 
-    // A daily quiet time is written as two times of day.
+    // A daily quiet time is written as two times of day, in the zone of the system or in
+    // a zone that the person chooses from the list (ADR 0798).
+    assert!(window.shows("quiet-zone"));
+    window.click("quiet-zone-change");
+    window.in_shell(|shell, window, cx| shell.type_quiet_zone_search("tokyo", window, cx));
+    window.click("quiet-zone-choice:Asia/Tokyo");
+    assert!(!window.shows("quiet-zone-search"));
     window.in_shell(|shell, window, cx| shell.type_quiet_times("22:00", "7:30", window, cx));
     let before = reloads(&mut window);
     window.click("set-daily-quiet");
@@ -368,7 +372,9 @@ fn a_quiet_time_shows_no_system_notification_and_mark_all_reads_the_list(cx: &mu
         matches!(
             window.view().quiet.daily,
             Some(Agreement::All(Some(daily)))
-                if daily.start_minute == 22 * 60 && daily.end_minute == 7 * 60 + 30
+                if daily.start_minute == 22 * 60
+                    && daily.end_minute == 7 * 60 + 30
+                    && daily.time_zone == "Asia/Tokyo"
         )
     });
     window.until(
@@ -390,8 +396,18 @@ fn a_quiet_time_shows_no_system_notification_and_mark_all_reads_the_list(cx: &mu
     );
     window.click("dialog-close");
 
-    // "Mark all as read" marks the three notices, and the count ends.
-    window.open_notices();
+    // The replacement of the state keeps the rows of the notices while their messages
+    // are read again, and the list offers "Mark all as read" at once (ADR 0742).
+    window
+        .cx
+        .update(|_, cx| state.update(cx, |state, cx| state.open_notices(server_id, cx)));
+    assert!(window.shows("mark-all-read"));
+    assert_eq!(window.notices().unwrap().rows.len(), 3);
+
+    // "Mark all as read" marks the three notices in one request, and the count ends.
+    window.until("the notices are listed", |window| {
+        window.notices().is_some_and(|panel| !panel.reading)
+    });
     assert_eq!(window.notices().unwrap().unread, 3);
     window.click("mark-all-read");
     window.until("every notice is read", |window| {
@@ -506,8 +522,7 @@ fn a_person_sets_the_level_and_the_mute_of_a_channel(cx: &mut TestAppContext) {
             matches!(panel.scope, SettingsScope::Workspace(_))
                 && panel.workspace_default.is_some_and(|default| {
                     // The workspace of a new server sets no level (ADR 0412).
-                    default.level == junto_client::state::notices::DefaultRead::Read(None)
-                        && !default.may_set
+                    default.level.is_none() && !default.may_set
                 })
         })
     });

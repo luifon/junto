@@ -283,14 +283,16 @@ such as create_invites.
 actions of members:
   list <workspace>
   add <workspace> <account>    add an existing account to a workspace
-  remove <workspace> <account> [--reason <text>]
+  remove <workspace> <account> [--reason <text>] [--message <text>]
                                remove an account from one workspace; the reason stays in
-                               the audit log
+                               the audit log, the message is shown to the account
 
 actions of accounts:
   list
-  remove <account> [--reason <text>], ban <account> [--reason <text>]
-                               the reason stays in the audit log
+  remove <account> [--reason <text>] [--message <text>]
+  ban <account> [--reason <text>] [--message <text>]
+                               the reason stays in the audit log, the message is shown to
+                               the account
   unban <account>
 
 actions of invites:
@@ -399,6 +401,7 @@ const VALUE_OPTIONS: &[&str] = &[
     "action",
     "days",
     "reason",
+    "message",
     "actor",
     "target",
     "since",

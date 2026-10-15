@@ -258,14 +258,9 @@ async fn a_leave_does_not_end_the_call_that_another_device_of_the_account_took()
     ann.until_heard_afresh(&laptop).await;
 }
 
-/// The path of the request that gives up a seat (ADR 0510).
-fn leave_of(seat: &str) -> String {
-    let named: String = url::form_urlencoded::byte_serialize(seat.as_bytes()).collect();
-    format!("/api/v1/call?identity={named}")
-}
-
-/// ADR 0734: a person whom a moderator removed does not return by a request for a new
-/// token, also not by one that was on its way at the removal.
+/// ADR 0734, ADR 0520: a person whom a moderator removed does not return by a request for
+/// a new token, also not by one that was on its way at the removal. The request names the
+/// seat that it renews, so the server gives no seat for it, and nobody sees one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
 async fn a_renewal_that_waits_does_not_bring_a_removed_person_back() {
@@ -282,9 +277,9 @@ async fn a_renewal_that_waits_does_not_bring_a_removed_person_back() {
         ann.until_heard(&ben).await;
         let first = ben.calls.view().call.unwrap().identity;
 
-        // The media connection of Ben ends, and his device asks for a new token. The
-        // request waits on its way to the server.
-        let path = Room::join_path(&room.target);
+        // The media connection of Ben ends, and his device asks for a new token of its
+        // seat. The request waits on its way to the server.
+        let path = Room::renew_path(&room.target, &first);
         let asked = proxy.seen(&path).len();
         proxy.hold(&path);
         ben.calls.simulate_connection_loss();
@@ -317,62 +312,55 @@ async fn a_renewal_that_waits_does_not_bring_a_removed_person_back() {
             );
         }
 
-        // The server gets the request only now. Ben may enter the channel, so it gives a
-        // new seat. The device does not use it: it gives the seat up.
+        // The server gets the request only now. The seat that it names ended by the
+        // removal: the server refuses it with the reason, and gives no seat.
         proxy.release();
         until("the server has answered the request", || {
             proxy
                 .seen(&path)
                 .last()
-                .is_some_and(|request| matches!(request.answer, Some((200, _))))
+                .is_some_and(|request| matches!(request.answer, Some((409, _))))
         })
         .await;
+        let answer = proxy.seen(&path).last().unwrap().answer.clone().unwrap();
+        let body = String::from_utf8_lossy(&answer.1);
+        assert!(
+            body.contains(r#""code":"seat_ended""#) && body.contains(r#""left":"disconnected""#),
+            "{body}"
+        );
         if !events_first {
-            // The device has the answer and holds its seat before any event reaches it.
-            ben.until("the device holds the seat of the answer", |view| {
-                view.call
-                    .as_ref()
-                    .is_some_and(|call| call.identity != first)
-            })
-            .await;
             proxy.block_streams(false);
-            // The stream gives the events again, or a snapshot in their place: the reason
-            // of the end is the one of the event, or none.
-            let view = ben
-                .until("the call has ended", |view| view.call.is_none())
-                .await;
-            assert!(
-                matches!(
-                    view.outcome,
-                    Some(Outcome::Ended {
-                        reason: EndReason::Server(_) | EndReason::NotRead,
-                        ..
-                    })
-                ),
-                "{:?}",
-                view.outcome
-            );
         }
-        // The request names the seat of the late answer, which is not the first seat.
-        let first_leave = leave_of(&first);
-        until("the seat of the late answer is given up", || {
-            proxy.all().iter().any(|request| {
-                request.method == "DELETE"
-                    && request.path.starts_with("/api/v1/call?identity=")
-                    && request.path != first_leave
-                    && request.answer.is_some()
+        // The call ends with the reason that the server stated, and nothing is asked
+        // again: no seat to give up, no place.
+        let view = ben
+            .until("the call has ended", |view| view.call.is_none())
+            .await;
+        assert_eq!(
+            view.outcome,
+            Some(Outcome::Ended {
+                target: room.target,
+                reason: EndReason::Server(Some(LeaveReason::Disconnected)),
             })
-        })
-        .await;
+        );
         model_when(&ann_at, "Ann is alone in the call", |model| {
             model
                 .call_at(&room.target.place)
                 .is_some_and(|call| call.participants.len() == 1)
         })
         .await;
-        // No media connection and no place follow.
+        let seen = proxy.all().len();
         ann.host.clear_played();
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        let later = proxy.all();
+        assert!(
+            !later[seen..].iter().any(|request| request
+                .path
+                .starts_with(&Room::join_path(&room.target))
+                || request.path.starts_with("/api/v1/call?identity=")),
+            "a request for a place or a leave followed the refusal: {:?}",
+            &later[seen..]
+        );
         assert_eq!(ben.calls.view().call, None);
         assert!(ben_at.api().own_call().await.unwrap().call.is_none());
         assert!(ann.hears(ben.hz) < crate::scene::ABSENT_DBFS);

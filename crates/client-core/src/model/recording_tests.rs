@@ -173,7 +173,7 @@ pub(crate) fn renamed(recording: &Recording, speaker: &TranscriptSpeaker) -> Eve
 
 fn first_page(count: usize) -> LinesAsk {
     LinesAsk {
-        after: None,
+        from: LinesFrom::After(None),
         count,
         replace: true,
     }
@@ -184,6 +184,7 @@ fn answer(ask: LinesAsk, range: std::ops::Range<u32>, more: bool) -> LinesRead {
         ask,
         lines: spoken(range),
         more,
+        more_before: false,
     }
 }
 
@@ -433,6 +434,7 @@ fn a_correction_reads_a_loaded_line_and_preserves_its_original_text() {
                 .map(|line| line.as_ref().clone())
                 .collect(),
             more: false,
+            more_before: false,
         };
         page.lines[1].text = text.to_owned();
         page.lines[1].original_text = Some("line 1".to_owned());
@@ -535,14 +537,14 @@ fn the_lines_are_read_in_pages_from_the_first_line() {
     // The page after the last loaded line.
     let next = model.lines_ask(id).unwrap();
     let after_first = LinesAsk {
-        after: Some(page - 1),
+        from: LinesFrom::After(Some(page - 1)),
         count: LINES_PAGE,
         replace: false,
     };
     assert_eq!(next, after_first);
     // An answer that continues other lines than the loaded ones is not taken.
     let elsewhere = LinesAsk {
-        after: Some(150),
+        from: LinesFrom::After(Some(150)),
         ..after_first
     };
     model.add_transcript_lines(id, answer(elsewhere, 151..300, true));
@@ -569,6 +571,7 @@ fn the_lines_are_read_in_pages_from_the_first_line() {
         ask: first_page(LINES_PAGE),
         lines: mixed,
         more: true,
+        more_before: false,
     };
     model.add_transcript_lines(id, unordered);
     assert_eq!(positions(&model, id), [0, 1]);
@@ -577,7 +580,7 @@ fn the_lines_are_read_in_pages_from_the_first_line() {
     assert!(!lines.more);
     // A page that starts at the line that it was asked to follow adds nothing.
     let next = LinesAsk {
-        after: Some(1),
+        from: LinesFrom::After(Some(1)),
         count: LINES_PAGE,
         replace: false,
     };
@@ -845,4 +848,75 @@ fn a_late_recording_read_does_not_restore_an_archived_channel() {
         assert!(model.channel(scene.daily).is_none());
         assert!(model.admin.archived_channel(scene.daily).is_some());
     }
+}
+
+#[test]
+fn the_lines_are_read_around_a_line_and_then_before_and_after_it() {
+    let scene = scene();
+    let (mut model, read) = opened(&scene, 1_000);
+    let id = read.recording.id;
+    // A reader asks for line 600: one page around it replaces what is loaded.
+    assert!(model.want_lines_around(id, 600));
+    let ask = model.lines_ask(id).unwrap();
+    assert_eq!(ask.from, LinesFrom::Around(600));
+    assert!(ask.replace);
+    model.add_transcript_lines(
+        id,
+        LinesRead {
+            ask,
+            lines: spoken(500..700),
+            more: true,
+            more_before: true,
+        },
+    );
+    let lines = &held(&model, id).lines;
+    assert!(lines.loaded && lines.more && lines.more_before);
+    assert_eq!(positions(&model, id).first(), Some(&500));
+    // The line is held: no read around it is due, and the next page follows the last line.
+    assert!(!model.want_lines_around(id, 600));
+    assert_eq!(
+        model.lines_ask(id).unwrap().from,
+        LinesFrom::After(Some(699))
+    );
+
+    // The lines before the first loaded one are put in front of it.
+    let earlier = model.earlier_lines_ask(id).unwrap();
+    assert_eq!(earlier.from, LinesFrom::Before(500));
+    model.add_transcript_lines(
+        id,
+        LinesRead {
+            ask: earlier,
+            lines: spoken(300..500),
+            more: true,
+            more_before: true,
+        },
+    );
+    let held_positions = positions(&model, id);
+    assert_eq!(held_positions.len(), 400);
+    assert_eq!(held_positions.first(), Some(&300));
+    assert!(held_positions.is_sorted());
+    assert!(held(&model, id).lines.more_before);
+    // A page before that reaches into the loaded lines is not taken past that line.
+    let earlier = model.earlier_lines_ask(id).unwrap();
+    let mut wrong = spoken(250..260);
+    wrong.extend(spoken(300..302));
+    model.add_transcript_lines(
+        id,
+        LinesRead {
+            ask: earlier,
+            lines: wrong,
+            more: true,
+            more_before: true,
+        },
+    );
+    let lines = &held(&model, id).lines;
+    assert_eq!(positions(&model, id).first(), Some(&250));
+    assert_eq!(lines.failed, Some(ReadFailure::NoAnswer));
+    assert!(!lines.more_before);
+    assert_eq!(model.earlier_lines_ask(id), None);
+
+    // After a reload the lines are read again around the line of the reader.
+    let mut stale = model.clone();
+    stale.recording_mut(id).unwrap().lines.stale = true;
+    assert_eq!(stale.lines_ask(id).unwrap().from, LinesFrom::Around(600));
 }

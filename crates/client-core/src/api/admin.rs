@@ -270,6 +270,7 @@ mod tests {
                     status: 200,
                     retry_after: None,
                     body: body.into(),
+                    receipt: crate::api::Receipt::NotStated,
                 })
             })
         }

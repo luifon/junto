@@ -3,8 +3,8 @@
 //! the first authors of a thread, every notice read in one request, and a notification
 //! default that is not set.
 
-use junto_client_core::api::ErrorCategory;
-use junto_client_core::model::PlaceId;
+use junto_client_core::api::{ErrorCategory, Receipt};
+use junto_client_core::model::{Followed, PlaceId};
 use junto_client_core::protocol::discovery::NotificationLevel;
 
 use crate::messages::{document, message_when, timeline_when};
@@ -73,18 +73,29 @@ async fn an_account_leaves_a_thread_follows_it_again_and_reads_every_notice_in_o
         .mark_notifications_read(Some(newest))
         .await
         .unwrap();
-    assert_eq!(read.marked, 1);
-    model_when(owner, "no unread notice", |model| {
-        model.unread_notices().count() == 0 && !model.notices.is_empty()
+    assert_eq!(read.value.marked, 1);
+    // The answer states the position of its event (ADR 0214), and the state that holds
+    // that position holds the change.
+    assert!(matches!(read.receipt, Receipt::At(_)), "{:?}", read.receipt);
+    let model = model_when(owner, "the state at the position of the answer", |model| {
+        model.followed(read.receipt) == Followed::Yes
     })
     .await;
-    // Nothing is left to mark.
+    assert_eq!(model.unread_notices().count(), 0);
+    assert!(!model.notices.is_empty());
+    // Nothing is left to mark: no event, and the answer says so.
     let again = owner.api().mark_notifications_read(None).await.unwrap();
-    assert_eq!(again.marked, 0);
+    assert_eq!(again.value.marked, 0);
+    assert_eq!(again.receipt, Receipt::Nothing);
 
     // The owner chooses not to follow the thread: its replies are not unread any more,
     // and the state follows the event.
-    let stopped = owner.api().set_thread_follow(root.id, false).await.unwrap();
+    let stopped = owner
+        .api()
+        .set_thread_follow(root.id, false)
+        .await
+        .unwrap()
+        .value;
     assert!(!stopped.following);
     assert_eq!(stopped.follow_setting, Some(false));
     model_when(owner, "the thread is no unread thread", |model| {
@@ -152,7 +163,8 @@ async fn a_member_follows_the_notification_default_of_a_workspace_and_its_remova
         .api()
         .set_notification_default(workspace_id, NotificationLevel::All)
         .await
-        .unwrap();
+        .unwrap()
+        .value;
     assert_eq!(stored, Some(NotificationLevel::All));
     model_when(member, "the level of the workspace", |model| {
         level(model) == Some(NotificationLevel::All)

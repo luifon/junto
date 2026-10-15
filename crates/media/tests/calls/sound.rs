@@ -406,7 +406,7 @@ async fn a_new_token_that_arrives_after_the_person_left_is_given_up() {
     // client asks for a new token. That request waits on its way to the server.
     let again = ben_at.api().join_channel_call(room.voice).await.unwrap();
     assert_eq!(again.identity, ben.calls.view().call.unwrap().identity);
-    let path = Room::join_path(&room.target);
+    let path = Room::renew_path(&room.target, &again.identity);
     let before = proxy.seen(&path).len();
     proxy.hold(&path);
     let (second, _events) = livekit::Room::connect(
@@ -422,8 +422,9 @@ async fn a_new_token_that_arrives_after_the_person_left_is_given_up() {
     .await;
     assert_eq!(ben.calls.view().call.unwrap().phase, Phase::Reconnecting);
 
-    // Ben leaves while the request waits. The server gets the request only after that,
-    // and gives a place that nobody uses: the client gives it up.
+    // Ben leaves while the request waits. The requests of the device to the server go one
+    // after the other, so the server gets the renewal of the held seat first and renews it;
+    // the leave that follows gives the seat up.
     let leaving = ben.calls.leave();
     ben.until("the call has ended", |view| view.call.is_none())
         .await;

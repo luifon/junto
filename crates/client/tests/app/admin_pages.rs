@@ -562,14 +562,28 @@ fn the_owner_bans_unbans_and_removes_a_member_on_the_people_page(cx: &mut TestAp
     click_in_page(&mut window, sel("account-ban", bruno));
     assert!(window.shows("account-confirm") && window.shows("account-cancel"));
     assert_eq!(on_server(bruno), Some(AccountStatus::Active));
-    // The question takes a reason, which the audit entry of the ban keeps.
+    // The question takes a reason, which the audit entry of the ban keeps, and a message
+    // to the person, which the notice of the ban gives the person (ADR 0120).
     assert!(window.shows("moderation-reason-field"));
+    assert!(window.shows("moderation-message-field"));
     let reason = "Advertisements in every channel";
+    let message = "You can ask for an unban by mail.";
     window.in_shell(|shell, window, cx| shell.type_reason(&format!("  {reason} "), window, cx));
+    // A control character in the message holds the confirmation.
+    window.in_shell(|shell, window, cx| {
+        shell.type_moderation_message("ring \u{7}", window, cx);
+    });
+    assert!(window.shows("moderation-message-invalid"));
     click_in_page(&mut window, "account-confirm");
+    assert_eq!(on_server(bruno), Some(AccountStatus::Active));
+    window.in_shell(|shell, window, cx| shell.type_moderation_message(message, window, cx));
+    click_in_page(&mut window, "account-confirm");
+    // The server states that the owner may unban the account, after the read of the
+    // accounts that the ban asked for (ADR 0311).
     let banned = awaited(&mut window, "the row shows the ban", |window| {
-        account(window, bruno)
-            .filter(|row| row.status == AccountStatus::Banned && window.shows(unban))
+        account(window, bruno).filter(|row| {
+            row.status == AccountStatus::Banned && window.shows(unban) && row.unban.is_ok()
+        })
     });
     assert_eq!(
         (banned.remove, banned.ban, banned.unban),
@@ -588,7 +602,7 @@ fn the_owner_bans_unbans_and_removes_a_member_on_the_people_page(cx: &mut TestAp
     assert_eq!(
         entry_of("account_banned"),
         AuditEvent::AccountBanned {
-            recipient_message: None,
+            recipient_message: Some(message.to_owned()),
             reason: Some(reason.to_owned()),
             account_id: bruno,
             cancelled_invite_ids: Vec::new(),
@@ -1341,7 +1355,7 @@ fn the_audit_log_names_what_was_done_filters_by_group_and_loads_older_entries(
     }
     let reason = "Sent the same advertisement to every channel";
     world
-        .run(api.ban_account_with_reason(bruno, Some(reason)))
+        .run(api.ban_account_stating(bruno, &junto_client_core::api::Statement::reason(reason)))
         .unwrap();
 
     // The page shows the log of the server first: the ban, with the name of the member.

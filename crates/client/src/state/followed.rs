@@ -16,7 +16,7 @@ use junto_client_core::api::{ApiError, ErrorCategory};
 use junto_client_core::flow::FlowError;
 use junto_client_core::flow::access::AccessState;
 use junto_client_core::live::Notice;
-use junto_client_core::model::{Named, PlaceId, ServerModel};
+use junto_client_core::model::{self as core_model, Named, PlaceId, ServerModel};
 use junto_client_core::protocol::events::Event;
 use junto_client_core::protocol::ids::{AccountId, ChannelId, MessageId, ServerId};
 use junto_client_core::protocol::message::{FollowedThreads, Message, ThreadState};
@@ -187,24 +187,31 @@ impl ThreadFollow {
     }
 
     /// The answer to a change: the state that holds now, nothing when the server made the
-    /// change and did not tell the state, or the sentence of the refusal. True when the
-    /// answer is the one that was waited for.
+    /// change and did not tell the state, or the sentence of the refusal. `followed` states
+    /// whether the state of the server holds the events of the change (ADR 0214). True when
+    /// the answer is the one that was waited for.
     pub fn ask_answered(
         &mut self,
         number: u64,
         answer: Result<Option<(bool, Option<bool>)>, String>,
+        followed: core_model::Followed,
     ) -> bool {
         if self.asking != Some(number) {
             return false;
         }
         self.asking = None;
         let overtaken = std::mem::take(&mut self.overtaken);
-        match answer {
-            // An event told the state during the request, and the answer can be older
-            // than the event: the state of the event stays, and the server is asked
-            // which one holds.
-            Ok(_) if overtaken => self.again = true,
-            Ok(state) => {
+        match (answer, followed) {
+            // The events of the change were followed: their state, or the state of a
+            // later event, is the one that holds. The answer is older than it can be.
+            (Ok(_), core_model::Followed::Yes) => {}
+            // An event told the state during the request, and the answer cannot be put in
+            // order with it: the state of the event stays, and the server is asked which
+            // one holds.
+            (Ok(_), core_model::Followed::Unknown) if overtaken => self.again = true,
+            // The answer is newer than every event that was told: an event that overtook
+            // the request lies before the change.
+            (Ok(state), core_model::Followed::NotYet | core_model::Followed::Unknown) => {
                 self.read = match state {
                     Some((following, setting)) => FollowRead::Read { following, setting },
                     None => FollowRead::NotRead,
@@ -212,7 +219,7 @@ impl ThreadFollow {
                 // A read that was sent before the change is older than its answer.
                 self.reading = None;
             }
-            Err(refusal) => self.refused = Some(refusal),
+            (Err(refusal), _) => self.refused = Some(refusal),
         }
         true
     }
@@ -789,16 +796,19 @@ impl Followed {
         &mut self,
         ask: &ThreadAsk,
         answer: Result<Option<(bool, Option<bool>)>, String>,
+        followed: core_model::Followed,
     ) -> bool {
         let made = answer.as_ref().ok().copied();
         let overtaken = self.thread.asking == Some(ask.number) && self.thread.overtaken;
-        if !self.thread.ask_answered(ask.number, answer) {
+        if !self.thread.ask_answered(ask.number, answer, followed) {
             return false;
         }
         match made {
-            // An event told the state during the request, and the answer can be older
-            // than the event: it does not state what the list holds. The list is read.
-            Some(_) if overtaken => {
+            // The events of the change were followed: the list follows them by itself.
+            Some(_) if followed == core_model::Followed::Yes => {}
+            // An event told the state during the request, and the answer cannot be put in
+            // order with it: it does not state what the list holds. The list is read.
+            Some(_) if overtaken && followed == core_model::Followed::Unknown => {
                 self.list.trigger(ask.server_id);
             }
             Some(Some((following, _))) => {
@@ -1051,16 +1061,35 @@ impl AppState {
                 Some(following) => api
                     .set_thread_follow(ask.root_id, following)
                     .await
-                    .map(|state| Some((state.following, state.follow_setting))),
+                    .map(|set| {
+                        (
+                            Some((set.value.following, set.value.follow_setting)),
+                            set.receipt,
+                        )
+                    }),
                 None => match api.clear_thread_follow(ask.root_id).await {
                     // Only the server knows what its rule gives for the account.
-                    Ok(()) => Ok(follow_state(api.thread_state(ask.root_id).await)),
+                    Ok(receipt) => Ok((follow_state(api.thread_state(ask.root_id).await), receipt)),
                     Err(error) => Err(error),
                 },
             };
-            let answer = answer.map_err(|error| change_refusal(&error));
             let _ = this.update(cx, |this, cx| {
-                if this.known.followed.change_answered(&ask, answer) {
+                // Whether the state of the server holds the events of the change, at the
+                // moment of the answer.
+                let followed = match &answer {
+                    Ok((_, receipt)) => this
+                        .client
+                        .server(ask.server_id)
+                        .and_then(|server| server.live().view().model)
+                        .map_or(core_model::Followed::Unknown, |model| {
+                            model.followed(*receipt)
+                        }),
+                    Err(_) => core_model::Followed::Unknown,
+                };
+                let answer = answer
+                    .map(|(state, _)| state)
+                    .map_err(|error| change_refusal(&error));
+                if this.known.followed.change_answered(&ask, answer, followed) {
                     this.followed_changed(cx);
                 }
             });
@@ -1096,7 +1125,11 @@ impl AppState {
         if let Some(ask) = shown.ask()
             && !busy
         {
-            shown.ask_answered(ask.number, refused.map_or(Ok(Some(state)), Err));
+            shown.ask_answered(
+                ask.number,
+                refused.map_or(Ok(Some(state)), Err),
+                core_model::Followed::NotYet,
+            );
         }
         self.known.followed.thread = shown;
         self.changed(cx);
@@ -1301,12 +1334,20 @@ mod tests {
         assert!(control(&follow, shown).unwrap().busy);
         assert_eq!(follow.ask(), None);
         assert_eq!(follow.next_read(), None);
-        assert!(follow.ask_answered(ask.number, Ok(Some((true, Some(true))))));
+        assert!(follow.ask_answered(
+            ask.number,
+            Ok(Some((true, Some(true)))),
+            core_model::Followed::Unknown
+        ));
         let drawn = control(&follow, shown).unwrap();
         assert!(drawn.following && !drawn.busy);
         assert_eq!(drawn.setting, Some(true));
         // The answer was taken once.
-        assert!(!follow.ask_answered(ask.number, Ok(Some((false, Some(false))))));
+        assert!(!follow.ask_answered(
+            ask.number,
+            Ok(Some((false, Some(false)))),
+            core_model::Followed::Unknown
+        ));
         assert!(control(&follow, shown).unwrap().following);
     }
 
@@ -1318,8 +1359,16 @@ mod tests {
         follow.show(Some(second));
         let ask = follow.next_read().unwrap();
         assert!(follow.read_answered(ask.number, Some((false, None))));
-        assert!(!follow.ask_answered(late.number, Ok(Some((true, Some(true))))));
-        assert!(!follow.ask_answered(late.number, Err("refused".to_owned())));
+        assert!(!follow.ask_answered(
+            late.number,
+            Ok(Some((true, Some(true)))),
+            core_model::Followed::Unknown
+        ));
+        assert!(!follow.ask_answered(
+            late.number,
+            Err("refused".to_owned()),
+            core_model::Followed::Unknown
+        ));
         let drawn = control(&follow, second).unwrap();
         assert!(!drawn.following && !drawn.busy);
         assert_eq!(drawn.refused, None);
@@ -1329,7 +1378,11 @@ mod tests {
     fn a_refusal_stays_until_the_next_request_or_until_another_thread_is_shown() {
         let (mut follow, shown) = read(true, None);
         let ask = follow.ask().unwrap();
-        assert!(follow.ask_answered(ask.number, Err("Not allowed.".to_owned())));
+        assert!(follow.ask_answered(
+            ask.number,
+            Err("Not allowed.".to_owned()),
+            core_model::Followed::Unknown
+        ));
         let drawn = control(&follow, shown).unwrap();
         assert_eq!(drawn.refused.as_deref(), Some("Not allowed."));
         // What was read before the refusal still holds, and the actions take a click.
@@ -1340,7 +1393,11 @@ mod tests {
 
         let (mut follow, shown) = read(true, None);
         let ask = follow.ask().unwrap();
-        follow.ask_answered(ask.number, Err("Not allowed.".to_owned()));
+        follow.ask_answered(
+            ask.number,
+            Err("Not allowed.".to_owned()),
+            core_model::Followed::Unknown,
+        );
         follow.show(Some(thread()));
         follow.show(Some(shown));
         let again = follow.next_read().unwrap();
@@ -1410,7 +1467,7 @@ mod tests {
     fn a_removed_choice_whose_state_the_server_did_not_tell_is_read_again() {
         let (mut follow, shown) = read(false, Some(false));
         let ask = follow.ask().unwrap();
-        assert!(follow.ask_answered(ask.number, Ok(None)));
+        assert!(follow.ask_answered(ask.number, Ok(None), core_model::Followed::Unknown));
         assert_eq!(control(&follow, shown), None);
         let again = follow.next_read().unwrap();
         assert!(follow.read_answered(again.number, Some((true, None))));
@@ -1682,16 +1739,28 @@ mod tests {
             .answered(first.number, Some(page(vec![state(shown.1, 0)], None)));
         // A refusal changes nothing of the list.
         let ask = followed.thread.ask().unwrap();
-        assert!(followed.change_answered(&ask, Err("Not allowed.".to_owned())));
+        assert!(followed.change_answered(
+            &ask,
+            Err("Not allowed.".to_owned()),
+            core_model::Followed::Unknown
+        ));
         assert_eq!(followed.list.threads.len(), 1);
         assert_eq!(followed.list.next_read(), None);
         // The server stored "do not follow": the thread leaves the list.
         let ask = followed.thread.ask().unwrap();
-        assert!(followed.change_answered(&ask, Ok(Some((false, Some(false))))));
+        assert!(followed.change_answered(
+            &ask,
+            Ok(Some((false, Some(false)))),
+            core_model::Followed::Unknown
+        ));
         assert!(followed.list.threads.is_empty());
         assert!(followed.list.next_read().is_some());
         // An answer that was taken changes nothing a second time.
-        assert!(!followed.change_answered(&ask, Ok(Some((true, Some(true))))));
+        assert!(!followed.change_answered(
+            &ask,
+            Ok(Some((true, Some(true)))),
+            core_model::Followed::Unknown
+        ));
         assert_eq!(
             followed
                 .thread
@@ -1928,7 +1997,11 @@ mod tests {
         // and its event arrives before the answer of the request of this device.
         let ask = follow.ask().unwrap();
         assert!(follow.told(shown.0, shown.1, false, Some(false)));
-        assert!(follow.ask_answered(ask.number, Ok(Some((true, Some(true))))));
+        assert!(follow.ask_answered(
+            ask.number,
+            Ok(Some((true, Some(true)))),
+            core_model::Followed::Unknown
+        ));
         // The answer can be older than the event: the state of the event stays, and the
         // server is asked which one holds.
         let control = control(&follow, shown).unwrap();
@@ -1941,9 +2014,41 @@ mod tests {
         // Without an event during the change, the answer tells the state and no read
         // follows.
         let ask = follow.ask().unwrap();
-        assert!(follow.ask_answered(ask.number, Ok(Some((true, Some(true))))));
+        assert!(follow.ask_answered(
+            ask.number,
+            Ok(Some((true, Some(true)))),
+            core_model::Followed::Unknown
+        ));
         let control = control_of(&follow, shown);
         assert_eq!(control, (true, Some(true)));
+        assert!(follow.next_read().is_none());
+    }
+
+    #[test]
+    fn the_receipt_of_a_change_orders_its_answer_with_the_events() {
+        // An event of an earlier change of another device overtook the request; the
+        // stream has not reached the position of this change: the answer is newer.
+        let (mut follow, shown) = read(false, None);
+        let ask = follow.ask().unwrap();
+        assert!(follow.told(shown.0, shown.1, false, Some(false)));
+        assert!(follow.ask_answered(
+            ask.number,
+            Ok(Some((true, Some(true)))),
+            core_model::Followed::NotYet
+        ));
+        assert_eq!(control_of(&follow, shown), (true, Some(true)));
+        assert!(follow.next_read().is_none());
+
+        // The stream followed the events of the change and of a later change: the state
+        // of the events stays, and nothing is read.
+        let ask = follow.ask().unwrap();
+        assert!(follow.told(shown.0, shown.1, false, None));
+        assert!(follow.ask_answered(
+            ask.number,
+            Ok(Some((false, Some(false)))),
+            core_model::Followed::Yes
+        ));
+        assert_eq!(control_of(&follow, shown), (false, None));
         assert!(follow.next_read().is_none());
     }
 
@@ -2076,7 +2181,11 @@ mod tests {
         assert!(followed.told(shown.0, shown.1, true, Some(true)));
         let after = followed.list.next_read().unwrap();
         followed.list.answered(after.number, listed());
-        assert!(followed.change_answered(&ask, Ok(Some((false, Some(false))))));
+        assert!(followed.change_answered(
+            &ask,
+            Ok(Some((false, Some(false)))),
+            core_model::Followed::Unknown
+        ));
         // The answer can be older than the event: the thread stays listed, and the
         // server is asked for the list and for the state.
         assert_eq!(followed.list.threads.len(), 1);

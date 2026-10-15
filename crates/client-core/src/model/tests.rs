@@ -770,7 +770,7 @@ fn the_account_reads_its_call_when_the_server_has_seen_its_device_in_the_room() 
         },
         entry_requests: Vec::new(),
     };
-    model.set_own_call(Some(answer(Vec::new())));
+    model.set_own_call(Some(answer(Vec::new())), None);
     let call = model.call_at(&place).unwrap();
     assert!(call.hides_occupants && call.participants.is_empty());
     assert!(model.channel(scene.hidden).unwrap().in_use);
@@ -795,7 +795,7 @@ fn the_account_reads_its_call_when_the_server_has_seen_its_device_in_the_room() 
         },
     };
     assert_eq!(model.apply(&updated), Follow::default());
-    model.set_own_call(Some(answer(vec![me.clone(), other])));
+    model.set_own_call(Some(answer(vec![me.clone(), other])), None);
     assert_eq!(model.call_at(&place).unwrap().participants.len(), 2);
 
     // The account leaves: it keeps nothing of the call, also after the channel stopped
@@ -858,11 +858,11 @@ fn what_the_server_says_of_the_own_seat_is_held_until_an_event_lists_the_account
     };
 
     // A server that does not state it: not stated is not "outside".
-    model.set_own_call(Some(answer(None)));
+    model.set_own_call(Some(answer(None)), Some(7));
     assert_eq!(model.own_seat, None);
     assert!(!model.seat_stated_outside(&own.identity));
 
-    model.set_own_call(Some(answer(Some(false))));
+    model.set_own_call(Some(answer(Some(false))), Some(7));
     assert!(model.seat_stated_outside(&own.identity));
     // The statement names one seat.
     assert!(!model.seat_stated_outside("another-seat"));
@@ -878,7 +878,7 @@ fn what_the_server_says_of_the_own_seat_is_held_until_an_event_lists_the_account
     assert_eq!(model.own_seat, None);
     assert!(!model.seat_stated_outside(&own.identity));
 
-    model.set_own_call(Some(answer(Some(true))));
+    model.set_own_call(Some(answer(Some(true))), Some(7));
     assert_eq!(
         model.own_seat,
         Some(SeatStated {
@@ -889,7 +889,7 @@ fn what_the_server_says_of_the_own_seat_is_held_until_an_event_lists_the_account
     assert!(!model.seat_stated_outside(&own.identity));
 
     // A change of the state of the person in the call is an event of a person inside.
-    model.set_own_call(Some(answer(Some(false))));
+    model.set_own_call(Some(answer(Some(false))), Some(7));
     model.apply(&Event::CallParticipantUpdated {
         call_id,
         place,
@@ -898,12 +898,60 @@ fn what_the_server_says_of_the_own_seat_is_held_until_an_event_lists_the_account
     assert_eq!(model.own_seat, None);
 
     // Another own call: the statement was about the call of before.
-    model.set_own_call(Some(answer(Some(false))));
+    model.set_own_call(Some(answer(Some(false))), Some(7));
     model.apply(&Event::OwnCallChanged {
         call: Some(scene.own_call(CallId::generate(), scene.daily)),
         left: None,
     });
     assert_eq!(model.own_seat, None);
+}
+
+/// ADR 0521: a read of the own call states a grant of meeting mode that the person has
+/// not answered, for one seat; a change of the own call ends the statement.
+#[test]
+fn a_read_of_the_own_call_states_a_grant_of_its_seat() {
+    let scene = scene();
+    let mut model = scene.model();
+    let (call_id, place) = (CallId::generate(), scene.place(scene.daily));
+    let own = scene.own_call(call_id, scene.daily);
+    model.apply(&Event::OwnCallChanged {
+        call: Some(own.clone()),
+        left: None,
+    });
+    let answer = |meeting_grant: Option<bool>| OwnCallState {
+        meeting_grant,
+        inside: Some(true),
+        own: own.clone(),
+        call: Call {
+            id: call_id,
+            place,
+            started_at: Some(time()),
+            lock: None,
+            meeting: None,
+            hides_occupants: false,
+            participants: Vec::new(),
+            recording: None,
+        },
+        entry_requests: Vec::new(),
+    };
+    model.set_own_call(Some(answer(None)), Some(7));
+    assert_eq!(model.grant_stated(&own.identity), None);
+    model.set_own_call(Some(answer(Some(true))), Some(7));
+    assert_eq!(model.grant_stated(&own.identity), Some(7));
+    assert_eq!(model.grant_stated("another-seat"), None);
+    model.set_own_call(Some(answer(Some(false))), Some(8));
+    assert_eq!(model.grant_stated(&own.identity), None);
+    // An answer without a position states the grant at the position of the state.
+    model.set_own_call(Some(answer(Some(true))), None);
+    assert_eq!(
+        model.grant_stated(&own.identity),
+        Some(model.cursor.position)
+    );
+    model.apply(&Event::OwnCallChanged {
+        call: Some(scene.own_call(CallId::generate(), scene.daily)),
+        left: None,
+    });
+    assert_eq!(model.grant_stated(&own.identity), None);
 }
 
 /// ADR 0517: the event of the start of a call and the own call of the account state the
@@ -996,22 +1044,25 @@ fn a_read_of_a_hidden_call_that_the_account_left_shows_nothing_of_it() {
     for event in &during {
         model.apply(event);
     }
-    model.set_own_call(Some(OwnCallState {
-        inside: None,
-        meeting_grant: None,
-        own,
-        call: Call {
-            id: call_id,
-            place,
-            started_at: Some(time()),
-            lock: None,
-            meeting: None,
-            hides_occupants: true,
-            participants: vec![person],
-            recording: None,
-        },
-        entry_requests: Vec::new(),
-    }));
+    model.set_own_call(
+        Some(OwnCallState {
+            inside: None,
+            meeting_grant: None,
+            own,
+            call: Call {
+                id: call_id,
+                place,
+                started_at: Some(time()),
+                lock: None,
+                meeting: None,
+                hides_occupants: true,
+                participants: vec![person],
+                recording: None,
+            },
+            entry_requests: Vec::new(),
+        }),
+        None,
+    );
     model.replay(Part::OwnCall, &during);
     let held = model.channel(scene.hidden).unwrap();
     assert!(held.in_use && held.call.is_none());
@@ -1100,22 +1151,25 @@ fn the_account_that_leaves_a_call_that_never_started_keeps_nothing_of_it() {
         call: Some(own.clone()),
         left: None,
     });
-    model.set_own_call(Some(OwnCallState {
-        inside: None,
-        meeting_grant: None,
-        own: own.clone(),
-        call: Call {
-            id: call_id,
-            place,
-            started_at: None,
-            lock: None,
-            meeting: None,
-            hides_occupants: false,
-            participants: Vec::new(),
-            recording: None,
-        },
-        entry_requests: Vec::new(),
-    }));
+    model.set_own_call(
+        Some(OwnCallState {
+            inside: None,
+            meeting_grant: None,
+            own: own.clone(),
+            call: Call {
+                id: call_id,
+                place,
+                started_at: None,
+                lock: None,
+                meeting: None,
+                hides_occupants: false,
+                participants: Vec::new(),
+                recording: None,
+            },
+            entry_requests: Vec::new(),
+        }),
+        None,
+    );
     let daily = model.channel(scene.daily).unwrap();
     assert!(!daily.in_use);
     assert_eq!(daily.call.as_ref().unwrap().id, call_id);
@@ -1176,11 +1230,11 @@ fn the_answer_for_the_own_call_gives_the_people_and_the_requests_of_that_call_on
     };
     // The answer of a read for a call that the account has left is not used.
     let before = model.clone();
-    model.set_own_call(Some(loaded(CallId::generate())));
-    model.set_own_call(None);
+    model.set_own_call(Some(loaded(CallId::generate())), None);
+    model.set_own_call(None, None);
     assert_eq!(model, before);
 
-    model.set_own_call(Some(loaded(call_id)));
+    model.set_own_call(Some(loaded(call_id)), None);
     assert_eq!(model.entry_requests, std::slice::from_ref(&request));
     let call = model.call_at(&place).unwrap();
     assert_eq!(call.participants.len(), 1);
@@ -1471,7 +1525,7 @@ fn the_events_that_arrived_during_a_read_are_applied_to_its_part_after_the_answe
             &participant(AccountId::generate()),
         ),
     ];
-    model.set_own_call(Some(answer));
+    model.set_own_call(Some(answer), None);
     model.replay(Part::OwnCall, &during);
     assert_eq!(model.call_at(&place).unwrap().participants, [late]);
     assert!(model.channel(scene.hidden).unwrap().call.is_none());
@@ -1519,22 +1573,25 @@ fn direct_calls_and_muted_conversations_follow_their_events() {
         call: Some(own.clone()),
         left: None,
     });
-    model.set_own_call(Some(OwnCallState {
-        inside: None,
-        meeting_grant: None,
-        own,
-        call: Call {
-            id: call_id,
-            place,
-            started_at: None,
-            lock: None,
-            meeting: None,
-            hides_occupants: false,
-            participants: Vec::new(),
-            recording: None,
-        },
-        entry_requests: Vec::new(),
-    }));
+    model.set_own_call(
+        Some(OwnCallState {
+            inside: None,
+            meeting_grant: None,
+            own,
+            call: Call {
+                id: call_id,
+                place,
+                started_at: None,
+                lock: None,
+                meeting: None,
+                hides_occupants: false,
+                participants: Vec::new(),
+                recording: None,
+            },
+            entry_requests: Vec::new(),
+        }),
+        None,
+    );
     assert_eq!(model.direct_calls.len(), 1);
     model.apply(&Event::OwnCallChanged {
         call: None,
@@ -1791,13 +1848,16 @@ fn the_views_of_a_call_carry_its_recording_and_a_read_keeps_the_events_of_it() {
         call: Some(scene.own_call(call_id, scene.daily)),
         left: None,
     });
-    model.set_own_call(Some(OwnCallState {
-        inside: None,
-        meeting_grant: None,
-        own: scene.own_call(call_id, scene.daily),
-        call: call(Some(record.clone())),
-        entry_requests: Vec::new(),
-    }));
+    model.set_own_call(
+        Some(OwnCallState {
+            inside: None,
+            meeting_grant: None,
+            own: scene.own_call(call_id, scene.daily),
+            call: call(Some(record.clone())),
+            entry_requests: Vec::new(),
+        }),
+        None,
+    );
     assert_eq!(
         model.call_at(&place).unwrap().recording,
         Some(record.clone())
@@ -1808,13 +1868,16 @@ fn the_views_of_a_call_carry_its_recording_and_a_read_keeps_the_events_of_it() {
     let during = [updated(&ended)];
     assert!(Part::OwnCall.concerns(&during[0], &model));
     assert!(!Part::Members(scene.workspace_id).concerns(&during[0], &model));
-    model.set_own_call(Some(OwnCallState {
-        inside: None,
-        meeting_grant: None,
-        own: scene.own_call(call_id, scene.daily),
-        call: call(Some(record)),
-        entry_requests: Vec::new(),
-    }));
+    model.set_own_call(
+        Some(OwnCallState {
+            inside: None,
+            meeting_grant: None,
+            own: scene.own_call(call_id, scene.daily),
+            call: call(Some(record)),
+            entry_requests: Vec::new(),
+        }),
+        None,
+    );
     model.replay(Part::OwnCall, &during);
     assert_eq!(model.call_at(&place).unwrap().recording, None);
 }

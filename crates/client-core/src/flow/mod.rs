@@ -129,6 +129,7 @@ impl FlowError {
             status: code.http_status(),
             retry_after: None,
             message: String::new(),
+            left: None,
         })
     }
 }
@@ -243,6 +244,7 @@ mod tests {
             status,
             retry_after: retry_after.map(Duration::from_secs),
             message: "a sentence of the server".to_owned(),
+            left: None,
         })
     }
 
@@ -305,6 +307,7 @@ mod tests {
             status: 409,
             retry_after: None,
             message: String::new(),
+            left: None,
         }));
         assert_eq!(
             silent.to_string(),

@@ -113,7 +113,7 @@ pub async fn agrees_with_a_snapshot(handle: &ServerHandle) {
     let started = tokio::time::Instant::now();
     loop {
         let snapshot = handle.api().snapshot().await.unwrap();
-        let fresh = ServerModel::from_snapshot(snapshot);
+        let fresh = ServerModel::from_snapshot(snapshot.snapshot);
         let held = handle.live().view().model.unwrap();
         if same(&held, &fresh) {
             return;

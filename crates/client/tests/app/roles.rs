@@ -23,7 +23,7 @@ use crate::admin_pages::{
     account, awaited, click_in_page, default_workspace, idle, invite, joined, open_page, sel,
     try_click, until_model,
 };
-use crate::harness::{Admin, Window, World, member};
+use crate::harness::{Admin, Window, World, member, selector};
 use crate::messages::document;
 use crate::support::logged_in;
 
@@ -310,6 +310,68 @@ fn a_person_who_manages_roles_creates_orders_gives_and_takes_them_and_another_wi
         .find(|held| held.id == helpers)
         .unwrap();
     assert_eq!(stored.permissions, [WorkspacePermission::ManageMessages]);
+
+    // Two further permissions are given one directly after the other: each is one request
+    // that names its permission, so the second does not wait for the first and neither
+    // undoes the other (ADR 0311).
+    let free: Vec<WorkspacePermission> = role_row(&mut window, role(helpers))
+        .unwrap()
+        .permissions
+        .iter()
+        .filter(|switch| !switch.on && !switch.beyond_own)
+        .filter_map(|switch| match switch.permission {
+            RolePermission::Workspace(permission) => Some(permission),
+            RolePermission::Server(_) => None,
+        })
+        .take(2)
+        .collect();
+    assert_eq!(free.len(), 2, "the person holds two further permissions");
+    for permission in &free {
+        click_in_page(
+            &mut window,
+            selector(format!("role-permission-{}", permission.name())),
+        );
+    }
+    let mut wanted = vec![WorkspacePermission::ManageMessages];
+    wanted.extend(free.iter().copied());
+    wanted.sort_by_key(|permission| {
+        WorkspacePermission::ALL
+            .iter()
+            .position(|held| held == permission)
+    });
+    window.until("the role holds the three permissions", |window| {
+        granted(window)
+            == wanted
+                .iter()
+                .copied()
+                .map(RolePermission::Workspace)
+                .collect::<Vec<_>>()
+            && idle(window)
+    });
+    let stored = workspace_roles(&world, &ada, workspace_id)
+        .into_iter()
+        .find(|held| held.id == helpers)
+        .unwrap();
+    let mut held = stored.permissions.clone();
+    held.sort_by_key(|permission| {
+        WorkspacePermission::ALL
+            .iter()
+            .position(|of| of == permission)
+    });
+    assert_eq!(held, wanted);
+    for permission in &free {
+        click_in_page(
+            &mut window,
+            selector(format!("role-permission-{}", permission.name())),
+        );
+    }
+    window.until("the role holds one permission again", |window| {
+        granted(window)
+            == [RolePermission::Workspace(
+                WorkspacePermission::ManageMessages,
+            )]
+            && idle(window)
+    });
     click_in_page(&mut window, sel("role-permissions", helpers));
 
     // A second role, and the order: one place up with its button, which is the path of

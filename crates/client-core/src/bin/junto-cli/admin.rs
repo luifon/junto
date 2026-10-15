@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use futures_util::StreamExt as _;
-use junto_client_core::api::{AvatarImage, BodyStream, ServerApi};
+use junto_client_core::api::{AvatarImage, BodyStream, ServerApi, Statement};
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::access_token::{
     AccessTokenInfo, AccessTokenQuery, CreateAccessToken, TokenAction,
@@ -56,10 +56,10 @@ enum Action {
     ChangeOverride(ChannelId, WorkspaceRoleId, ChangeChannelOverride),
     Members(WorkspaceId),
     AddMember(WorkspaceId, AccountId),
-    RemoveMember(WorkspaceId, AccountId, Option<String>),
+    RemoveMember(WorkspaceId, AccountId, Statement),
     Accounts,
-    RemoveAccount(AccountId, Option<String>),
-    BanAccount(AccountId, Option<String>),
+    RemoveAccount(AccountId, Statement),
+    BanAccount(AccountId, Statement),
     UnbanAccount(AccountId),
     Invites,
     RevokeInvite(InviteId),
@@ -183,9 +183,13 @@ fn override_state(text: &str) -> Result<OverrideState, Failure> {
     }
 }
 
-/// The reason of a removal or of a ban. The server keeps it in the audit entry.
-fn reason(arguments: &Arguments) -> Option<String> {
-    arguments.value("reason").map(str::to_owned)
+/// The reason and the message of a removal or of a ban. The server keeps the reason in the
+/// audit entry, and gives the message to the person concerned (ADR 0120).
+fn statement(arguments: &Arguments) -> Statement {
+    Statement {
+        reason: arguments.value("reason").map(str::to_owned),
+        message: arguments.value("message").map(str::to_owned),
+    }
 }
 
 /// An action of an access token by the name that the server writes.
@@ -361,7 +365,7 @@ fn members(
     Ok(Some(match action {
         "list" => Action::Members(workspace()?),
         "add" => Action::AddMember(workspace()?, account()?),
-        "remove" => Action::RemoveMember(workspace()?, account()?, reason(arguments)),
+        "remove" => Action::RemoveMember(workspace()?, account()?, statement(arguments)),
         _ => return Ok(None),
     }))
 }
@@ -374,8 +378,8 @@ fn accounts(
     let account = || identifier::<AccountId>(words, 1, "the account");
     Ok(Some(match action {
         "list" => Action::Accounts,
-        "remove" => Action::RemoveAccount(account()?, reason(arguments)),
-        "ban" => Action::BanAccount(account()?, reason(arguments)),
+        "remove" => Action::RemoveAccount(account()?, statement(arguments)),
+        "ban" => Action::BanAccount(account()?, statement(arguments)),
         "unban" => Action::UnbanAccount(account()?),
         _ => return Ok(None),
     }))
@@ -553,6 +557,11 @@ fn pair(name: &str, id: impl Display) -> String {
 /// The reason of a removal or of a ban in quotation marks, when the entry has one.
 fn reason_pair(reason: Option<&str>) -> Option<String> {
     reason.map(|reason| format!("reason={:?}", shown(reason)))
+}
+
+/// The message to the person of a removal or of a ban in quotation marks (ADR 0120).
+fn message_pair(message: Option<&str>) -> Option<String> {
+    message.map(|message| format!("message={:?}", shown(message)))
 }
 
 fn days_text(days: Option<u32>) -> String {
@@ -734,13 +743,19 @@ fn audit_details(event: &AuditEvent) -> Vec<String> {
         | E::CallMemberMovedOut { account_id }
         | E::CallMemberMovedIn { account_id } => vec![pair("account", account_id)],
         E::AccountRemoved {
-            account_id, reason, ..
+            account_id,
+            reason,
+            recipient_message,
         }
         | E::WorkspaceMemberRemoved {
-            account_id, reason, ..
+            account_id,
+            reason,
+            recipient_message,
+            ..
         } => {
             let mut pairs = vec![pair("account", account_id)];
             pairs.extend(reason_pair(reason.as_deref()));
+            pairs.extend(message_pair(recipient_message.as_deref()));
             pairs
         }
         E::OwnerAssigned {
@@ -818,6 +833,7 @@ fn audit_details(event: &AuditEvent) -> Vec<String> {
         E::JoinRequestDenied { join_request_id } => vec![pair("request", join_request_id)],
         E::AccountBanned {
             reason,
+            recipient_message,
             account_id,
             cancelled_invite_ids,
             ..
@@ -827,6 +843,7 @@ fn audit_details(event: &AuditEvent) -> Vec<String> {
                 pair("cancelled_invites", listed(cancelled_invite_ids)),
             ];
             pairs.extend(reason_pair(reason.as_deref()));
+            pairs.extend(message_pair(recipient_message.as_deref()));
             pairs
         }
         E::ServerRoleCreated { role_id, .. }
@@ -1146,8 +1163,8 @@ async fn perform(api: &ServerApi, action: Action) -> Result<Vec<String>, Failure
                 .await
                 .map_err(failed)?,
         ),
-        Action::RemoveMember(workspace_id, account_id, reason) => done(
-            api.remove_workspace_member(workspace_id, account_id, reason.as_deref())
+        Action::RemoveMember(workspace_id, account_id, statement) => done(
+            api.remove_workspace_member(workspace_id, account_id, &statement)
                 .await
                 .map_err(failed)?,
         ),
@@ -1158,13 +1175,13 @@ async fn perform(api: &ServerApi, action: Action) -> Result<Vec<String>, Failure
             .iter()
             .map(account_line)
             .collect(),
-        Action::RemoveAccount(account_id, reason) => done(
-            api.remove_account_with_reason(account_id, reason.as_deref())
+        Action::RemoveAccount(account_id, statement) => done(
+            api.remove_account_stating(account_id, &statement)
                 .await
                 .map_err(failed)?,
         ),
-        Action::BanAccount(account_id, reason) => done(
-            api.ban_account_with_reason(account_id, reason.as_deref())
+        Action::BanAccount(account_id, statement) => done(
+            api.ban_account_stating(account_id, &statement)
                 .await
                 .map_err(failed)?,
         ),
@@ -1696,30 +1713,34 @@ mod tests {
         let (account, workspace) = (account.as_str(), workspace.as_str());
         assert!(matches!(
             parsed("accounts", &["remove", account, "--reason", "Spam in #general"]),
-            Ok(Action::RemoveAccount(id, Some(reason)))
+            Ok(Action::RemoveAccount(id, Statement { reason: Some(reason), message: None }))
                 if id == account_id && reason == "Spam in #general"
         ));
         assert!(matches!(
             parsed("accounts", &["remove", account]),
-            Ok(Action::RemoveAccount(id, None)) if id == account_id
+            Ok(Action::RemoveAccount(id, statement))
+                if id == account_id && statement == Statement::default()
         ));
         assert!(matches!(
-            parsed("accounts", &["ban", account, "--reason", "Spam"]),
-            Ok(Action::BanAccount(id, Some(reason))) if id == account_id && reason == "Spam"
+            parsed("accounts", &["ban", account, "--reason", "Spam", "--message", "Read the rules"]),
+            Ok(Action::BanAccount(id, Statement { reason: Some(reason), message: Some(message) }))
+                if id == account_id && reason == "Spam" && message == "Read the rules"
         ));
         assert!(matches!(
             parsed("accounts", &["ban", account]),
-            Ok(Action::BanAccount(id, None)) if id == account_id
+            Ok(Action::BanAccount(id, statement))
+                if id == account_id && statement == Statement::default()
         ));
         assert!(matches!(
             parsed("members", &["remove", workspace, account, "--reason", "Left the team"]),
-            Ok(Action::RemoveMember(in_workspace, id, Some(reason)))
+            Ok(Action::RemoveMember(in_workspace, id, Statement { reason: Some(reason), message: None }))
                 if in_workspace == workspace_id && id == account_id && reason == "Left the team"
         ));
         assert!(matches!(
             parsed("members", &["remove", workspace, account]),
-            Ok(Action::RemoveMember(in_workspace, id, None))
+            Ok(Action::RemoveMember(in_workspace, id, statement))
                 if in_workspace == workspace_id && id == account_id
+                    && statement == Statement::default()
         ));
         assert!(refused("members", &["remove", workspace]));
         assert!(refused("members", &["remove", workspace, "first"]));
@@ -2242,7 +2263,7 @@ mod tests {
         );
 
         let removed = entry(AuditEvent::AccountRemoved {
-            recipient_message: None,
+            recipient_message: Some("Thank you\u{7}".to_owned()),
             reason: Some("Left the team".to_owned()),
             account_id,
         });
@@ -2250,7 +2271,7 @@ mod tests {
             audit_line(&removed),
             format!(
                 "audit: {}  {at}  {actor_id}  account_removed  account={account_id} \
-                 reason=\"Left the team\"",
+                 reason=\"Left the team\" message=\"Thank you\"",
                 removed.id
             )
         );

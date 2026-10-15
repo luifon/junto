@@ -11,8 +11,8 @@ use uuid::Uuid;
 
 use super::client::read_json;
 use super::error::ApiError;
-use super::session::ServerApi;
-use super::transport::Method;
+use super::session::{Changed, ServerApi};
+use super::transport::{Method, Receipt};
 
 /// What the notification settings of an account belong to (ADR 0409).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -129,14 +129,15 @@ impl ServerApi {
 
     /// Replaces the settings of a scope. An absent level inherits. The mute and the two
     /// mention switches belong to a channel; "do not disturb" and the daily quiet time
-    /// belong to the account. The server refuses them elsewhere.
+    /// belong to the account. The server refuses them elsewhere. The answer states the
+    /// position of the event of the change (ADR 0214).
     pub async fn set_notification_settings(
         &self,
         scope: SettingsScope,
         settings: &NotificationSettings,
-    ) -> Result<NotificationSettings, ApiError> {
+    ) -> Result<Changed<NotificationSettings>, ApiError> {
         let path = format!("/notification-settings/{}", scope.id());
-        self.send(Method::Put, path, settings).await
+        self.change(Method::Put, path, Some(settings)).await
     }
 
     /// The level that an administrator set for the members of a workspace. Absent: the
@@ -155,11 +156,12 @@ impl ServerApi {
         &self,
         workspace_id: WorkspaceId,
         level: NotificationLevel,
-    ) -> Result<Option<NotificationLevel>, ApiError> {
+    ) -> Result<Changed<Option<NotificationLevel>>, ApiError> {
         let path = format!("/workspaces/{workspace_id}/notification-default");
         let body = NotificationDefault { level: Some(level) };
-        let held: NotificationDefault = self.send(Method::Put, path, &body).await?;
-        Ok(held.level)
+        let held: Changed<NotificationDefault> =
+            self.change(Method::Put, path, Some(&body)).await?;
+        Ok(held.map(|held| held.level))
     }
 
     /// Removes the level that an administrator set for the members of a workspace. The
@@ -167,9 +169,9 @@ impl ServerApi {
     pub async fn remove_notification_default(
         &self,
         workspace_id: WorkspaceId,
-    ) -> Result<(), ApiError> {
+    ) -> Result<Receipt, ApiError> {
         let path = format!("/workspaces/{workspace_id}/notification-default");
-        self.act(Method::Delete, path).await
+        self.change_without_body(Method::Delete, path).await
     }
 
     /// Marks every unread notice of the caller that was created at or before `until` as
@@ -178,9 +180,9 @@ impl ServerApi {
     pub async fn mark_notifications_read(
         &self,
         until: Option<OffsetDateTime>,
-    ) -> Result<NotificationsRead, ApiError> {
+    ) -> Result<Changed<NotificationsRead>, ApiError> {
         let body = MarkNotificationsRead { until };
-        self.send(Method::Put, "/notifications/read".to_owned(), &body)
+        self.change(Method::Put, "/notifications/read".to_owned(), Some(&body))
             .await
     }
 

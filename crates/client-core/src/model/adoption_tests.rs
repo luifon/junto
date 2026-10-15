@@ -47,7 +47,15 @@ fn load_server_roles(model: &mut ServerModel, roles: Vec<ServerRole>) {
     model.set_admin(AdminPart::ServerRoles, AdminSet::Loading);
     model.set_admin(
         AdminPart::ServerRoles,
-        AdminSet::Loaded(AdminPayload::ServerRoles(roles)),
+        AdminSet::Loaded(AdminPayload::ServerRoles(
+            roles
+                .into_iter()
+                .map(|role| junto_protocol::roles::ListedServerRole {
+                    role,
+                    actions: junto_protocol::roles::RoleActions::default(),
+                })
+                .collect(),
+        )),
     );
 }
 

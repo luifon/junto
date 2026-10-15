@@ -141,6 +141,7 @@ fn refusal(code: &str, status: u16, retry_after: Option<u64>) -> OpenError {
         body: format!(r#"{{"error":{{"code":"{code}","message":""}}}}"#)
             .into_bytes()
             .into(),
+        receipt: crate::api::Receipt::NotStated,
     })
 }
 
@@ -167,6 +168,9 @@ struct Routes {
     /// `/` holds every path that contains it. A text that starts with `PUT ` holds only
     /// the requests of that method.
     held: Option<(&'static str, Arc<Semaphore>)>,
+    /// The answers to requests whose path ends with the text are made and then wait for a
+    /// permit: the server has done the work, and the answer arrives later.
+    held_answers: Option<(&'static str, Arc<Semaphore>)>,
     /// The messages of the one place that the tests of messages use, as the server holds
     /// them, and what the stream client did with them.
     chat: messages::Chat,
@@ -193,6 +197,12 @@ impl Http {
     fn hold(&self, end: &'static str) -> Arc<Semaphore> {
         let gate = Arc::new(Semaphore::new(0));
         self.routes.lock().unwrap().held = Some((end, gate.clone()));
+        gate
+    }
+
+    fn hold_answers(&self, end: &'static str) -> Arc<Semaphore> {
+        let gate = Arc::new(Semaphore::new(0));
+        self.routes.lock().unwrap().held_answers = Some((end, gate.clone()));
         gate
     }
 
@@ -229,49 +239,72 @@ impl crate::api::Transport for Http {
                 gate.acquire().await.unwrap().forget();
             }
             // The answer is made after the wait, from the routes of that moment.
-            let mut routes = routes.lock().unwrap();
-            let failure = routes
-                .failures
-                .iter()
-                .position(|(end, _, _)| path.ends_with(end));
-            if let Some(position) = failure {
-                let (_, status, code) = routes.failures.remove(position);
-                let body = format!(r#"{{"error":{{"code":"{code}","message":""}}}}"#);
-                return Ok(HttpResponse {
-                    status,
-                    retry_after: None,
-                    body: body.into_bytes().into(),
-                });
-            }
-            if let Some(answer) = routes.chat.answer(&request) {
-                return answer;
-            }
-            if let Some(answer) = routes.tape.answer(&request) {
-                return answer;
-            }
-            let body = if path.ends_with("/snapshot") {
-                serde_json::to_vec(routes.snapshot.as_ref().unwrap())
-            } else if path.ends_with("/members") {
-                serde_json::to_vec(&routes.members)
-            } else if path.ends_with("/api/v1/call") {
-                serde_json::to_vec(&OwnCallView {
-                    cursor: (!routes.own_call_unplaced).then(|| {
-                        routes
-                            .own_call_cursor
-                            .unwrap_or(routes.snapshot.as_ref().unwrap().cursor)
-                    }),
-                    call: routes.own_call.clone(),
-                })
-            } else {
-                panic!("the stream client asked for {path}");
+            let answer = answer_of(&routes, &request, &path);
+            let after = {
+                let routes = routes.lock().unwrap();
+                routes
+                    .held_answers
+                    .as_ref()
+                    .filter(|(end, _)| path.ends_with(end))
+                    .map(|(_, gate)| gate.clone())
             };
-            Ok(HttpResponse {
-                status: 200,
-                retry_after: None,
-                body: body.unwrap().into(),
-            })
+            if let Some(after) = after {
+                after.acquire().await.unwrap().forget();
+            }
+            answer
         })
     }
+}
+
+/// The answer of the played routes to a request.
+fn answer_of(
+    routes: &Mutex<Routes>,
+    request: &HttpRequest,
+    path: &str,
+) -> Result<HttpResponse, TransportError> {
+    let mut routes = routes.lock().unwrap();
+    let failure = routes
+        .failures
+        .iter()
+        .position(|(end, _, _)| path.ends_with(end));
+    if let Some(position) = failure {
+        let (_, status, code) = routes.failures.remove(position);
+        let body = format!(r#"{{"error":{{"code":"{code}","message":""}}}}"#);
+        return Ok(HttpResponse {
+            status,
+            retry_after: None,
+            body: body.into_bytes().into(),
+            receipt: crate::api::Receipt::NotStated,
+        });
+    }
+    if let Some(answer) = routes.chat.answer(request) {
+        return answer;
+    }
+    if let Some(answer) = routes.tape.answer(request) {
+        return answer;
+    }
+    let body = if path.ends_with("/snapshot") {
+        serde_json::to_vec(routes.snapshot.as_ref().unwrap())
+    } else if path.ends_with("/members") {
+        serde_json::to_vec(&routes.members)
+    } else if path.ends_with("/api/v1/call") {
+        serde_json::to_vec(&OwnCallView {
+            cursor: (!routes.own_call_unplaced).then(|| {
+                routes
+                    .own_call_cursor
+                    .unwrap_or(routes.snapshot.as_ref().unwrap().cursor)
+            }),
+            call: routes.own_call.clone(),
+        })
+    } else {
+        panic!("the stream client asked for {path}");
+    };
+    Ok(HttpResponse {
+        status: 200,
+        retry_after: None,
+        body: body.unwrap().into(),
+        receipt: crate::api::Receipt::NotStated,
+    })
 }
 
 /// Counts a request from its start to its answer or to the moment it is dropped.

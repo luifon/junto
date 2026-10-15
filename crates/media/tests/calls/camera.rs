@@ -355,8 +355,10 @@ async fn a_camera_without_a_media_connection_ends_after_its_limit() {
     })
     .await;
     assert_eq!(two.camera.active(), 1);
-    // The media connection ends, and the request for a new token gets no answer.
-    proxy.hold(&Room::join_path(&room.target));
+    // The media connection ends, and the request for a new token of the seat gets no
+    // answer.
+    let seat = two.calls.view().call.unwrap().identity;
+    proxy.hold(&Room::renew_path(&room.target, &seat));
     two.calls.simulate_connection_loss();
     let view = two
         .until("the camera has ended", |view| {

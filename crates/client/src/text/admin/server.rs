@@ -44,6 +44,7 @@ mod tests {
             status: code.http_status(),
             retry_after: None,
             message: String::new(),
+            left: None,
         })
     }
 

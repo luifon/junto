@@ -8,7 +8,7 @@ Accepted
 
 ADR 0404 defines unread signs, the notification level, the mute and "do not disturb". ADR 0409 defines their routes: one notice per recipient and message without text and without a place, a level for the account on a server, for a workspace and for a channel, a mute and two mention switches for a channel, and "do not disturb" with a daily quiet time as data of the account on one server. ADR 0722 gives the window the notices of the state, the messages that they name, the notification settings and the answer whether the account is in its quiet time. The approved design draws no list of notices and no notification settings. gpui shows a notification of the operating system, takes one away by its tag, and tells a press on one; on macOS that works only from an application bundle, and the system asks the person for the permission at the first notification (ADR 0701).
 
-The server has no route that marks every notice as read, no setting for a thread, and no way to tell whether a workspace has a level of its administrators: the route of that level answers "mentions only" also when none is stored. The server tells no notice while the account is in a quiet time, so a client learns of the notices of that time when the quiet time has ended.
+The server marks every notice up to a time as read with one request, and states with the snapshot whether a workspace has a level of its administrators (ADR 0412, ADR 0792). It has no setting for a thread. The server tells no notice while the account is in a quiet time, so a client learns of the notices of that time when the quiet time has ended.
 
 ## Decision
 
@@ -17,17 +17,19 @@ List of notices:
 - The channel column has an entry "Notifications" above the channels, with the count of the notices that the person has not read. It opens the notices of the shown server in the side panel. The panel shows one list: opening the notices closes a thread, the pinned messages and a transcript, and takes a search out of the panel.
 - A row shows the place of the message, its day, its author, its time, what the notice is (a mention, a direct message, a reply in a thread, a new message) and the start of its text. A notice whose message the server no longer has is not listed, and neither is one whose place the state does not hold. A notice whose message could not be read is listed without its text and leads nowhere.
 - A press on a row shows the message in its place and marks the notice as read. The channel or the conversation is selected, the thread of a reply is opened over the list, and the messages around the message are read when the list of the place does not hold it. The list goes to the message and marks it, and does not follow new messages then. The mark stays until the person selects another place. A second press on the same row goes to the message again.
-- "Mark all as read" sends the read mark of each unread notice that the state holds, one request after the other. The first request that fails ends them, and the panel states its reason. An answer "not found" is no failure: the notice is gone. A mark that is asked for while marks of the server are on their way follows them in a request of its own, also after a failure of those; a mark that waits or is on its way is not sent a second time. A read mark of a notice does not move a read position.
+- "Mark all as read" sends one request that marks every notice up to the newest unread notice that the state holds; a notice that arrives later stays unread. The panel shows the marking until the state holds the event of the change (ADR 0763), and a press meanwhile sends nothing. A refusal is stated in the panel.
+- The panel offers "Mark all as read" while the state holds an unread notice whose message is not gone, also while the messages of the notices are read. After a reload of the state the messages that the notices name are kept for display and read again (ADR 0721), so the rows stay.
+- The read mark of the notice of a row is sent by itself. A mark that is asked for while marks of the server are on their way follows them in a request of its own; a mark that waits or is on its way is not sent a second time. An answer "not found" is no failure: the notice is gone. A read mark of a notice does not move a read position.
 - "Show older" reads the page after the listed notices.
 - The view of the call of this device has its own side panel: the entry of the notices takes no click there and tells the reason, as the thread rows do (ADR 0741).
 
 Notification settings:
 
 - One dialog shows the settings of one scope: the server (the account on that server), a workspace, or a channel. The menu of the server opens the first two, and the menu of a channel the third.
-- The level is one of "all messages", "mentions only" and "nothing". A workspace and a channel also have "default", which takes the level of the scope above (ADR 0409). The dialog states which level "default" gives now only when the client can tell it: with a stored level of the workspace, or when the level of the administrators was read. The server states that level, or that the workspace sets none (ADR 0412); with none, the level of the account holds.
+- The level is one of "all messages", "mentions only" and "nothing". A workspace and a channel also have "default", which takes the level of the scope above (ADR 0409). The dialog states which level "default" gives now. The state holds the level of the administrators of each workspace, or that the workspace sets none (ADR 0412, ADR 0792); with none, the level of the account holds.
 - The dialog of a channel also has the mute with its four lengths, and the two switches for mentions of a role and of everyone.
-- The dialog of a workspace reads the level of its administrators when it opens. An administrator of the server sets it there; another member reads it.
-- A change is one request that replaces the settings of its scope. One change of a scope is on its way at a time. The dialog shows what the server took until the state of the server holds it, and no longer than until the state was replaced: `notification_settings_changed` reloads the state (ADR 0722), and a change that the server already held sends no event. A refusal is told in the dialog of the scope, and above the composer when the change came from the menu of a row. The level of the administrators that an open dialog shows is read again after the state was replaced.
+- The dialog of a workspace shows the level of its administrators as the state holds it. An administrator of the server sets it there; another member reads it. The dialog and the page "Notifications" share one change of that level (ADR 0763).
+- A change is one request that replaces the settings of its scope. One change of a scope is on its way at a time. The dialog shows what the server took until the state of the server holds the events of the change (ADR 0763). A refusal is told in the dialog of the scope, and above the composer when the change came from the menu of a row.
 - A channel row opens a menu with a right click, the Menu key, or Shift and F10: the notification settings, and the mute for one hour, for eight hours, until the next day begins in the time zone of the person, or until it is turned off. A muted channel states the end of its mute there and offers "Unmute". The row of a direct conversation has the same menu for its mute (ADR 0515).
 - A place is drawn as muted when its summary says so, and when the stored settings say so and their end has not passed: a channel without a message has no summary.
 
@@ -35,7 +37,7 @@ Quiet times:
 
 - "Do not disturb" and the daily quiet time are in the settings of the application. A change is sent to every server on which the device has a session, because ADR 0404 defines them for the whole application and the server stores them per account. A server that does not take the change is named with its reason, and so is a server whose state the device does not hold at that moment, or whose settings of the account are being changed.
 - The switch shows "on" when every such server says so. When the servers differ, the settings say so, and the next change sets all of them.
-- The daily quiet time is typed as two times of day. The client sends them as minutes of a day with the name of the time zone of the system (ADR 0412, ADR 0798), and applies the quiet time to what it holds by the clock of the zone that the settings name. Two equal times are refused before a request.
+- The daily quiet time is typed as two times of day in a named time zone. The settings show the zone of the stored quiet time, and otherwise the zone of the system; "Change time zone" opens a search of the names of ADR 0798, and a choice is sent with the next change. The settings state the zone of the system when the chosen zone is another one, and state when the build does not know the stored zone. The client sends the times as minutes of a day with the name of the zone (ADR 0412), and applies the quiet time to what it holds by the clock of that zone. Two equal times are refused before a request.
 
 System notifications:
 
@@ -57,10 +59,9 @@ System notifications:
 ## Consequences
 
 - The notices and the notification settings have no screen in the approved design. They are built from its components and are shown to the operator as pictures.
-- "Mark all as read" costs one request for each unread notice, and the requests share the limit of 120 changes in a minute with the sends of the account (ADR 0408). A route that marks every notice would replace them.
+- "Mark all as read" costs one request.
 - A thread has no notification setting, because the server has none.
-- "Default" is shown without the level that it gives while the level of the administrators is not read, or when its read failed.
-- The daily quiet time names the time zone that the system had when the person set it. The window has no control that chooses another zone, and it shows the two times without the name of their zone.
+- The settings show the time zone of the daily quiet time, and the person chooses another one from the list of ADR 0798.
 - A device with sessions on two servers can hold two values of "do not disturb" after a change on another device. The settings say so.
 - The first notice after "do not disturb" ended can miss its system notification when it arrives in the same change of the state as the notices of the quiet time.
 - On macOS the system notifications need an application bundle, which the build does not make yet (ADR 0701). `cargo run` shows none.

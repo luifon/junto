@@ -58,3 +58,43 @@ pub fn restate(model: &mut ServerModel) {
         }
     }
 }
+
+/// The state of a server without a workspace, whose stream stands at `position`. Tests of
+/// the changes that wait for their events compare receipts with it (ADR 0214).
+pub fn model_at(position: u64) -> ServerModel {
+    use junto_client_core::protocol::account::OwnAccount;
+    use junto_client_core::protocol::events::Cursor;
+    use junto_client_core::protocol::ids::{AccountId, StreamEpoch};
+    // One epoch for every state of a run, so that two states compare by position.
+    static EPOCH: std::sync::LazyLock<StreamEpoch> =
+        std::sync::LazyLock::new(StreamEpoch::generate);
+    ServerModel::from_snapshot(Snapshot {
+        cursor: Cursor {
+            epoch: *EPOCH,
+            position,
+        },
+        account: OwnAccount {
+            id: AccountId::generate(),
+            name: "Luca".to_owned(),
+            avatar: None,
+            is_owner: false,
+            server_role_ids: Vec::new(),
+            server_permissions: Vec::new(),
+            workspace_ids: Vec::new(),
+        },
+        workspaces: Vec::new(),
+        own_call: None,
+        direct_calls: Vec::new(),
+        call_invitations: Vec::new(),
+        sent_call_invitations: Vec::new(),
+        call_moves: Vec::new(),
+        entry_requests: Vec::new(),
+        direct_mutes: Vec::new(),
+        messages: Vec::new(),
+        threads: Vec::new(),
+        threads_more: false,
+        threads_next: None,
+        notifications: Vec::new(),
+        notification_settings: Vec::new(),
+    })
+}

@@ -211,8 +211,8 @@ fn a_search_finds_messages_and_a_transcript_line_and_leads_to_a_message(cx: &mut
     // The results stay beside the channel.
     assert!(window.shows("search-panel"));
 
-    // The person presses a result and goes to another channel before the message of the
-    // result is read: the window stays in that channel.
+    // A result states its position: the window goes there without a read of the message
+    // (ADR 0413), and a person who then goes to another channel stays there.
     window.click_channel("random");
     window.until("the other channel is shown again", |window| {
         window.selected_channel() == random
@@ -230,12 +230,43 @@ fn a_search_finds_messages_and_a_transcript_line_and_leads_to_a_message(cx: &mut
             state.select_channel(workspace_id, random, cx);
         });
     });
-    // The read of the message of the result has ended, and the window stays.
-    window.until("the answer for the result", |window| {
-        answers(window) > before
-    });
     window.cx.run_until_parked();
     assert_eq!(window.selected_channel(), random);
+    assert_eq!(
+        answers(&mut window),
+        before,
+        "the message of the result was read"
+    );
+
+    // A message that was deleted after the search: the list of its place holds the
+    // messages around its position and not the message, so the result is gone, and the
+    // panel says so.
+    let gone = window
+        .search_panel()
+        .unwrap()
+        .messages
+        .iter()
+        .find_map(|row| match row.target {
+            ResultTarget::Message(id) if id != first.id => Some(id),
+            _ => None,
+        })
+        .unwrap();
+    world.run(admin.handle.api().delete_message(gone)).unwrap();
+    window.until("the list of the channel lost the message", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+            && window.messages().iter().all(|row| row.message.id != gone)
+    });
+    window.click_named(format!("search-result:{gone}"));
+    window.until("the result is gone", |window| {
+        window.search_panel().is_some_and(|panel| {
+            panel.go_failed.as_deref() == Some(text::RESULT_GONE)
+                && panel
+                    .messages
+                    .iter()
+                    .all(|row| row.target != ResultTarget::Message(gone))
+        })
+    });
+    assert_eq!(answers(&mut window), before);
 
     // The result of the transcript shows the voice channel of its recording.
     window.click("search-transcript-0");

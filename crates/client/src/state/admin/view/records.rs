@@ -403,7 +403,29 @@ fn stated_reason(event: &AuditEvent) -> Option<String> {
         | AuditEvent::WorkspaceMemberRemoved { reason, .. } => reason.as_deref()?,
         _ => return None,
     };
-    let shown: String = reason
+    shown_text(reason)
+}
+
+/// The message to the person that a ban or a removal states (ADR 0120), shown as a
+/// reason is.
+fn stated_message(event: &AuditEvent) -> Option<String> {
+    let message = match event {
+        AuditEvent::AccountRemoved {
+            recipient_message, ..
+        }
+        | AuditEvent::AccountBanned {
+            recipient_message, ..
+        }
+        | AuditEvent::WorkspaceMemberRemoved {
+            recipient_message, ..
+        } => recipient_message.as_deref()?,
+        _ => return None,
+    };
+    shown_text(message)
+}
+
+fn shown_text(text: &str) -> Option<String> {
+    let shown: String = text
         .chars()
         .filter(|character| !character.is_control())
         .take(REASON_CHARACTERS)
@@ -538,6 +560,8 @@ pub struct AuditLine {
     pub sentence: String,
     /// The reason that the person stated for a ban or a removal (ADR 0106).
     pub reason: Option<String>,
+    /// The message that the person sent with a ban or a removal (ADR 0120).
+    pub message: Option<String>,
     /// The workspace of the entry. Absent for an entry about the server, and in the log
     /// of that workspace.
     pub workspace: Option<About>,
@@ -791,6 +815,7 @@ fn audit_line(entry: &AuditEntry, scope: AuditScope, names: &Names<'_>) -> Audit
         with_token: entry.access_token_id.is_some(),
         sentence: text::admin::records::audit_sentence(&entry.event, names),
         reason: stated_reason(&entry.event),
+        message: stated_message(&entry.event),
         workspace: if in_shown_workspace {
             None
         } else {
@@ -2796,6 +2821,30 @@ mod tests {
         assert_eq!(txt::audit_reason("Spam"), "Reason: Spam");
         // No other action states one.
         assert_eq!(line(AuditEvent::EventEpochRenewed).reason, None);
+
+        // The message to the person stands beside the reason, shown as a reason is
+        // (ADR 0120).
+        let messaged = |message: Option<&str>| AuditEvent::WorkspaceMemberRemoved {
+            recipient_message: message.map(str::to_owned),
+            account_id: zoe,
+            reason: Some("Project ended".to_owned()),
+        };
+        assert_eq!(line(messaged(None)).message, None);
+        let stated = line(messaged(Some(" Thank you\u{7} ")));
+        assert_eq!(stated.message.as_deref(), Some("Thank you"));
+        assert_eq!(stated.reason.as_deref(), Some("Project ended"));
+        assert!(!stated.sentence.contains("Thank you"));
+        let banned_with = AuditEvent::AccountBanned {
+            recipient_message: Some("Read the rules".to_owned()),
+            reason: None,
+            account_id: zoe,
+            cancelled_invite_ids: Vec::new(),
+        };
+        assert_eq!(line(banned_with).message.as_deref(), Some("Read the rules"));
+        assert_eq!(
+            txt::audit_message("Read the rules"),
+            "Message to the person: Read the rules"
+        );
     }
 
     #[test]

@@ -52,6 +52,7 @@ fn refused(code: ErrorCode, status: u16) -> ApiError {
         status,
         retry_after: None,
         message: String::new(),
+        left: None,
     })
 }
 

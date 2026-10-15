@@ -391,6 +391,7 @@ fn refusal(code: &str) -> HttpResponse {
         body: format!(r#"{{"error":{{"code":"{code}","message":"a sentence"}}}}"#)
             .into_bytes()
             .into(),
+        receipt: crate::api::Receipt::NotStated,
     }
 }
 
@@ -969,6 +970,7 @@ impl Transport for FakeServer {
                         status,
                         retry_after: None,
                         body: body.into_bytes().into(),
+                        receipt: crate::api::Receipt::NotStated,
                     })
                 });
             }
@@ -984,6 +986,7 @@ impl Transport for FakeServer {
                         status,
                         retry_after: None,
                         body: b"<html>ok</html>".to_vec().into(),
+                        receipt: crate::api::Receipt::NotStated,
                     },
                     Err(code) => refusal(code),
                 }),
@@ -992,6 +995,7 @@ impl Transport for FakeServer {
                         status,
                         retry_after: None,
                         body: body.into(),
+                        receipt: crate::api::Receipt::NotStated,
                     },
                     Err(code) => refusal(code),
                 }),

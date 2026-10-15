@@ -37,7 +37,7 @@ pub(super) struct Collections {
 /// Reads one collection from its route.
 pub(super) async fn read(api: &ServerApi, part: AdminPart) -> Result<AdminPayload, ApiError> {
     match part {
-        AdminPart::Accounts => api.accounts().await.map(AdminPayload::Accounts),
+        AdminPart::Accounts => api.listed_accounts().await.map(AdminPayload::Accounts),
         AdminPart::Invites => api.invites().await.map(AdminPayload::Invites),
         AdminPart::JoinRequests => api.join_requests().await.map(AdminPayload::JoinRequests),
         AdminPart::AccessTokens => {
@@ -66,7 +66,14 @@ pub(super) async fn read(api: &ServerApi, part: AdminPart) -> Result<AdminPayloa
             }
         }
         AdminPart::Exports => api.exports().await.map(AdminPayload::Exports),
-        AdminPart::ServerRoles => api.server_roles().await.map(AdminPayload::ServerRoles),
+        AdminPart::ServerRoles => api
+            .listed_server_roles()
+            .await
+            .map(AdminPayload::ServerRoles),
+        AdminPart::RoleActions(workspace_id) => api
+            .listed_workspace_roles(workspace_id)
+            .await
+            .map(AdminPayload::RoleActions),
         AdminPart::DirectRetention => api
             .direct_message_retention()
             .await

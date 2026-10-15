@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use junto_protocol::account::ImageType;
+use junto_protocol::events::{Cursor, EVENT_CURSOR_HEADER};
 use url::Url;
 
 use crate::secret::{SecretBytes, SecretToken};
@@ -91,12 +92,38 @@ impl fmt::Debug for HttpRequest {
     }
 }
 
+/// What the header `Junto-Event-Cursor` of an answer states about the events of a change
+/// (ADR 0214).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Receipt {
+    /// The answer has no such header, or one that cannot be read: the position of the
+    /// events of the change is not stated.
+    #[default]
+    NotStated,
+    /// The change made no event that the account receives.
+    Nothing,
+    /// The last event of the change that the account receives.
+    At(Cursor),
+}
+
+impl Receipt {
+    /// The receipt of a header value.
+    pub fn of_header(value: Option<&[u8]>) -> Self {
+        match value.map(serde_json::from_slice::<Option<Cursor>>) {
+            Some(Ok(Some(cursor))) => Self::At(cursor),
+            Some(Ok(None)) => Self::Nothing,
+            Some(Err(_)) | None => Self::NotStated,
+        }
+    }
+}
+
 /// A response. Its body can hold a session token: formatting shows its length only, and
 /// the body is overwritten when the response is dropped.
 pub struct HttpResponse {
     pub status: u16,
     pub retry_after: Option<Duration>,
     pub body: SecretBytes,
+    pub receipt: Receipt,
 }
 
 impl fmt::Debug for HttpResponse {
@@ -330,6 +357,12 @@ fn retry_after_of(response: &reqwest::Response) -> Option<Duration> {
 pub(crate) async fn read(mut response: reqwest::Response) -> Result<HttpResponse, TransportError> {
     let status = response.status().as_u16();
     let retry_after = retry_after_of(&response);
+    let receipt = Receipt::of_header(
+        response
+            .headers()
+            .get(EVENT_CURSOR_HEADER)
+            .map(reqwest::header::HeaderValue::as_bytes),
+    );
     let too_large = || {
         TransportError::new(
             TransportErrorKind::TooLarge,
@@ -354,6 +387,7 @@ pub(crate) async fn read(mut response: reqwest::Response) -> Result<HttpResponse
         status,
         retry_after,
         body,
+        receipt,
     })
 }
 
@@ -415,6 +449,7 @@ mod tests {
             status: 201,
             retry_after: None,
             body: br#"{"token":"jst_secret-token"}"#.to_vec().into(),
+            receipt: Receipt::NotStated,
         };
         assert_eq!(format!("{response:?}"), "201 with 28 bytes");
         assert!(response.is_success());
@@ -456,6 +491,26 @@ mod tests {
         assert_eq!(parse_retry_after("-1"), None);
         assert_eq!(parse_retry_after("soon"), None);
         assert_eq!(parse_retry_after("Wed, 21 Oct 2026 07:28:00 GMT"), None);
+    }
+
+    #[test]
+    fn the_receipt_header_states_a_cursor_no_event_or_nothing() {
+        let epoch = "0b3c6a52-6ad1-4a4f-9b55-0f0a7f8c2d11";
+        let cursor = format!(r#"{{"epoch":"{epoch}","position":123}}"#);
+        match Receipt::of_header(Some(cursor.as_bytes())) {
+            Receipt::At(read) => {
+                assert_eq!(read.position, 123);
+                assert_eq!(read.epoch.to_string(), epoch);
+            }
+            other => panic!("read {other:?}"),
+        }
+        assert_eq!(Receipt::of_header(Some(b"null")), Receipt::Nothing);
+        assert_eq!(Receipt::of_header(None), Receipt::NotStated);
+        assert_eq!(
+            Receipt::of_header(Some(b"{\"position\":1}")),
+            Receipt::NotStated
+        );
+        assert_eq!(Receipt::of_header(Some(b"soon")), Receipt::NotStated);
     }
 
     #[test]

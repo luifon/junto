@@ -63,12 +63,33 @@ fn a_ban_a_removal_and_a_forgotten_account_show_their_states(cx: &mut TestAppCon
     let api = admin.handle.api();
 
     // The server ends the session of a banned account. The window shows the ban without
-    // an action of the person.
-    world.run(api.ban_account(account_id)).unwrap();
+    // an action of the person, with the notice of the ban that the device reads with a
+    // proof of its key: the message of the moderator, and not the reason (ADR 0120).
+    let stated = junto_client_core::api::Statement {
+        reason: Some("Spam in every channel".to_owned()),
+        message: Some("Write to the owner for an unban.".to_owned()),
+    };
+    world
+        .run(api.ban_account_stating(account_id, &stated))
+        .unwrap();
     window.until("the ban is shown", |window| {
         window.status() == Some(ServerStatus::Banned)
     });
     assert!(window.shows("banned"));
+    let notice = window.until_value("the notice of the ban", |window| {
+        window.view().selected?.moderation.first().cloned()
+    });
+    assert_eq!(
+        notice.kind,
+        junto_client_core::protocol::account::ModerationNoticeKind::Banned
+    );
+    assert_eq!(notice.name, "Harbor");
+    assert_eq!(
+        notice.message.as_deref(),
+        Some("Write to the owner for an unban.")
+    );
+    assert!(!notice.dismissable);
+    assert!(window.shows("moderation-notice") && !window.shows("moderation-seen"));
     assert_eq!(window.view().selected.unwrap().content, Content::State);
     assert!(window.view().servers[0].workspaces.is_empty());
 
@@ -105,12 +126,21 @@ fn a_ban_a_removal_and_a_forgotten_account_show_their_states(cx: &mut TestAppCon
     window.until_ready();
     assert_eq!(window.view().person.account_id, Some(account_id));
 
-    // A removed account has no access; the window says so and offers the way back in.
+    // A removed account has no access; the window says so, with the notice of the
+    // removal, and offers the way back in.
     world.run(api.remove_account(account_id)).unwrap();
     window.until("the removal is shown", |window| {
         window.status() == Some(ServerStatus::NoAccount(Some(Notice::Removed)))
     });
     assert!(window.shows("no-account") && window.shows("join-server"));
+    let notice = window.until_value("the notice of the removal", |window| {
+        window.view().selected?.moderation.first().cloned()
+    });
+    assert_eq!(
+        notice.kind,
+        junto_client_core::protocol::account::ModerationNoticeKind::ServerRemoved
+    );
+    assert_eq!(notice.message, None);
 
     // Joining again with a code creates a new account with the same key.
     let code = admin.invite(&world, 1);

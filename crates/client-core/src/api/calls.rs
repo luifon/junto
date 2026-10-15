@@ -9,7 +9,7 @@ use junto_protocol::call::{
 };
 use junto_protocol::ids::{AccountId, CallInvitationId, CallMoveId, ChannelId, EntryRequestId};
 use junto_protocol::recording::{Recording, StartRecording};
-use junto_protocol::snapshot::Snapshot;
+use junto_protocol::snapshot::SnapshotResponse;
 use junto_protocol::structure::Channel;
 use time::OffsetDateTime;
 
@@ -19,13 +19,22 @@ use super::session::ServerApi;
 use super::transport::Method;
 
 impl ServerApi {
-    /// The state that the event stream continues from the cursor of the answer (ADR 0207).
-    pub async fn snapshot(&self) -> Result<Snapshot, ApiError> {
+    /// The state that the event stream continues from the cursor of the answer (ADR 0207),
+    /// with the newest private moderation notices of the account (ADR 0120).
+    pub async fn snapshot(&self) -> Result<SnapshotResponse, ApiError> {
         self.get("/snapshot".to_owned()).await
     }
 
     async fn join(&self, path: String) -> Result<CallJoin, ApiError> {
         read_json(&self.call(Method::Post, path, Vec::new(), None).await?)
+    }
+
+    /// A request for a new token of the seat `identity` (ADR 0520): it makes, ends and
+    /// takes no seat. A seat that cannot be used is refused with `seat_ended` and the
+    /// reason in [`super::Rejection::left`].
+    async fn renew(&self, path: String, identity: &str) -> Result<CallJoin, ApiError> {
+        let query = vec![("renews", identity.to_owned())];
+        read_json(&self.call(Method::Post, path, query, None).await?)
     }
 
     // The call of the account.
@@ -101,6 +110,16 @@ impl ServerApi {
     /// the media server, which is usable for about one minute and for one connection.
     pub async fn join_channel_call(&self, channel_id: ChannelId) -> Result<CallJoin, ApiError> {
         self.join(format!("/channels/{channel_id}/call/join")).await
+    }
+
+    /// A new token for the seat `identity` in the call of a voice channel.
+    pub async fn renew_channel_call(
+        &self,
+        channel_id: ChannelId,
+        identity: &str,
+    ) -> Result<CallJoin, ApiError> {
+        self.renew(format!("/channels/{channel_id}/call/join"), identity)
+            .await
     }
 
     pub async fn lock_call(&self, channel_id: ChannelId) -> Result<(), ApiError> {
@@ -304,6 +323,16 @@ impl ServerApi {
         self.join(format!("/direct-calls/{account_id}/join")).await
     }
 
+    /// A new token for the seat `identity` in the direct call with an account.
+    pub async fn renew_direct_call(
+        &self,
+        account_id: AccountId,
+        identity: &str,
+    ) -> Result<CallJoin, ApiError> {
+        self.renew(format!("/direct-calls/{account_id}/join"), identity)
+            .await
+    }
+
     /// Declines the ring of the direct-message call with an account.
     pub async fn refuse_direct_call(&self, account_id: AccountId) -> Result<(), ApiError> {
         self.act(Method::Post, format!("/direct-calls/{account_id}/refusal"))
@@ -371,6 +400,7 @@ mod tests {
                     status: 200,
                     retry_after: None,
                     body: body.into(),
+                    receipt: crate::api::Receipt::NotStated,
                 })
             })
         }

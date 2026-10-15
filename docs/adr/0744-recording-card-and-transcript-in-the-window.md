@@ -31,7 +31,7 @@ Transcript:
 
 - The card shows the first 6 lines: the time from the start of the recording, the speaker, the source of the sound, and the text. A line of a microphone is named by its person. A line of shared sound is named by the name that a person gave its voice, with the label that the voice had, or by the label `Speaker N`, or by the person who shared when the line has no voice; under it stands whose screen the sound came from.
 - "Show all" opens the transcript in the side panel, with every line that was read and "Show more lines" for the next page. The panel is a list that draws the rows in view and derives a line when it draws it: the state holds up to 20,000 lines (ADR 0723). The panel belongs to the shown voice channel, lies over the notices and the search, and under a thread and the pinned messages.
-- A transcript result of a search (ADR 0743) shows the voice channel of its recording and opens the transcript in the side panel. When the read lines hold the line of the result, the list goes to it and marks it, once for each press on the result.
+- A transcript result of a search (ADR 0743) shows the voice channel of its recording and opens the transcript in the side panel at its line. The lines are read as one page with that line in its middle in place of the loaded ones, when the state does not hold it, and again around it after a reload. The list goes to the line and marks it, once for each press on the result. "Show earlier lines" above the list reads the page before the first loaded line, and "Show more lines" the page after the last one.
 
 Removal:
 
@@ -47,6 +47,6 @@ Removal:
 - The window has no list of the recordings of a workspace: the approved design draws none. The route is in the client core (ADR 0723).
 - The correction of a line and the name of a speaker are drawn in the design and are not built in the window. The client core has their routes, and the window follows a correction and a name that another client made.
 - A person in a call reads the card of an earlier recording of that voice channel after the call.
-- A transcript result of a search whose line lies after the read pages opens the transcript at its start; the person reads on with "Show more lines". A read of the lines around a line would end that.
+- The state holds one range of lines without a hole: lines read around a line replace the lines from the start, and the person reads on in both directions. The bound of 20,000 lines drops lines at the end when lines are added before them.
 - The card draws no frame of the video. A thumbnail from the server would be needed for the picture of the design.
 - The window test against the real server makes a recording with the recorder in memory of the server, and checks the card with its files and its speakers, a saved audio file and the saved video against the files of the server, the transcript as text, the opening of the video, the transcript in the side panel, the jump from a search result, the refusal of a removal without the permission, and the removal with it.

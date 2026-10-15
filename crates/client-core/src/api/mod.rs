@@ -23,12 +23,13 @@ pub use error::{
     AccessLoss, ApiError, ErrorCategory, Rejection, category, code_name, unknown_refusal,
 };
 pub use messages::{CHUNK_BYTES, FileBody, PageQuery};
-pub use moderation::{LONGEST_REASON, logo_at, stated_reason};
+pub use moderation::{LONGEST_REASON, Statement, logo_at, stated_reason};
 pub use notices::{SearchQuery, SettingsScope};
 pub use proof::{ChallengeMismatch, ExpectedAccount};
 pub use retry::RetryPolicy;
-pub use session::{AvatarImage, ServerApi};
+pub use session::{AvatarImage, Changed, ServerApi};
 pub use transport::{
     BodyStream, HttpRequest, HttpResponse, MAX_RESPONSE_BYTES, Method, OpenFuture, OpenedResponse,
-    RequestBody, ReqwestTransport, Transport, TransportError, TransportErrorKind, TransportFuture,
+    Receipt, RequestBody, ReqwestTransport, Transport, TransportError, TransportErrorKind,
+    TransportFuture,
 };

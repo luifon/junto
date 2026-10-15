@@ -46,6 +46,8 @@ pub(super) struct Chat {
     pub(super) answered_wrongly: Vec<MessageId>,
     /// The summary of the channel says that the account muted it.
     pub(super) muted: bool,
+    /// The receipt of the answer to the next send (ADR 0214).
+    pub(super) send_receipt: crate::api::Receipt,
 }
 
 pub(super) fn json<T: serde::Serialize>(
@@ -56,6 +58,7 @@ pub(super) fn json<T: serde::Serialize>(
         status,
         retry_after: None,
         body: serde_json::to_vec(body).unwrap().into(),
+        receipt: crate::api::Receipt::NotStated,
     })
 }
 
@@ -64,6 +67,7 @@ pub(super) fn not_found() -> Result<HttpResponse, TransportError> {
         status: 404,
         retry_after: None,
         body: br#"{"error":{"code":"not_found","message":""}}"#.to_vec().into(),
+        receipt: crate::api::Receipt::NotStated,
     })
 }
 
@@ -234,7 +238,11 @@ impl Chat {
                 "the answer was lost",
             )));
         }
-        Some(json(201, &sent))
+        let mut answer = json(201, &sent);
+        if let Ok(answer) = &mut answer {
+            answer.receipt = std::mem::take(&mut self.send_receipt);
+        }
+        Some(answer)
     }
 }
 
@@ -756,6 +764,64 @@ async fn messages_are_sent_in_their_order_and_a_lost_answer_is_resolved_by_the_h
     rig.live.discard_message(id);
     rig.model_when("nothing waits", |model| model.outbox.is_empty())
         .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_answer_to_a_send_is_put_into_the_timeline_only_before_its_event() {
+    let room = room().await;
+    let (rig, place) = (&room.rig, room.place);
+    let epoch = rig.epoch();
+    let receipt =
+        |position| crate::api::Receipt::At(junto_protocol::events::Cursor { epoch, position });
+
+    // The server stores the message and tells its event and then its deletion before
+    // the answer arrives. The answer states the position of the event of the message.
+    let gate = rig.http.hold_answers("/messages");
+    room.chat(|chat| chat.send_receipt = receipt(41));
+    let id = rig
+        .live
+        .send_message(place, document("deleted at once"), None)
+        .unwrap();
+    rig.model_when("the message waits", |model| {
+        model.outbox.iter().any(|pending| pending.id == id)
+    })
+    .await;
+    room.until_sent_to(
+        &format!("/api/v1/channels/{}/messages", rig.scene.general),
+        2,
+    )
+    .await;
+    let stored = room.chat(|chat| chat.messages.pop().unwrap());
+    assert_eq!(stored.position, 4);
+    room.changed(41, &stored, false).await;
+    room.changed(42, &stored, true).await;
+    rig.model_when("both events", |model| model.cursor.position == 42)
+        .await;
+    gate.add_permits(1);
+    let model = rig
+        .model_when("the answer", |model| model.outbox.is_empty())
+        .await;
+    assert_eq!(positions(&model, place), [1, 2, 3]);
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(positions(&rig.model(), place), [1, 2, 3]);
+
+    // An answer that arrives before the stream reached the event of its message puts the
+    // message into the timeline; the events that follow are applied after it.
+    room.chat(|chat| chat.send_receipt = receipt(43));
+    let id = rig
+        .live
+        .send_message(place, document("kept"), None)
+        .unwrap();
+    rig.model_when("the message waits", |model| {
+        model.outbox.iter().any(|pending| pending.id == id)
+    })
+    .await;
+    gate.add_permits(1);
+    let model = rig
+        .model_when("the answer", |model| model.outbox.is_empty())
+        .await;
+    assert_eq!(model.cursor.position, 42);
+    assert_eq!(positions(&model, place), [1, 2, 3, 4]);
 }
 
 fn unconfirmed(id: u64) -> impl Fn(&ServerModel) -> bool {

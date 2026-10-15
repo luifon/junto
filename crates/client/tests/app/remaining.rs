@@ -174,7 +174,9 @@ fn an_administrator_removes_a_member_from_one_workspace_and_the_member_keeps_the
     assert!(member_row(&mut window, carla).is_some());
     assert!(idle(&mut window));
     let reason = "The project of this workspace ended";
+    let message = "Thank you for your work on the project.";
     window.in_shell(|shell, window, cx| shell.type_reason(reason, window, cx));
+    window.in_shell(|shell, window, cx| shell.type_moderation_message(message, window, cx));
     window.until("the reason can be sent", |window| {
         !window.shows("moderation-reason-invalid")
     });
@@ -202,6 +204,29 @@ fn an_administrator_removes_a_member_from_one_workspace_and_the_member_keeps_the
     let still = world.run(handle_of(&mut other).api().workspaces());
     assert!(still.is_ok());
 
+    // The window of the member states the removal with the message, and not the reason,
+    // until the member puts the notice away (ADR 0120).
+    let notice = other.until_value("the notice of the removal", |window| {
+        window.view().selected?.moderation.first().cloned()
+    });
+    assert_eq!(notice.name, "Lab");
+    assert_eq!(notice.message.as_deref(), Some(message));
+    assert!(notice.dismissable);
+    let text = junto_client::text::moderation_notice(&notice);
+    assert!(text.contains(message) && !text.contains(reason), "{text}");
+    other.click("moderation-seen");
+    other.until("the notice is put away", |window| {
+        window
+            .view()
+            .selected
+            .is_some_and(|selected| selected.moderation.is_empty())
+    });
+    // The server book keeps that it was put away.
+    assert_eq!(
+        handle_of(&mut other).moderation_notices_shown(),
+        [notice.id]
+    );
+
     // The audit log of the workspace states the removal with its reason.
     open_page(&mut window, "admin-nav-audit", |window| {
         audit_page(window).is_some()
@@ -223,8 +248,10 @@ fn an_administrator_removes_a_member_from_one_workspace_and_the_member_keeps_the
             .find(|row| row.sentence.contains("removed") && row.sentence.contains("Carla"))
     });
     assert_eq!(removal.reason.as_deref(), Some(reason));
+    assert_eq!(removal.message.as_deref(), Some(message));
     click_in_page(&mut window, sel("audit-row", removal.id));
     assert!(window.shows(sel("audit-reason", removal.id)));
+    assert!(window.shows(sel("audit-message", removal.id)));
 }
 
 #[gpui::test]
@@ -274,7 +301,11 @@ fn an_administrator_sees_why_a_member_above_cannot_be_removed_from_a_workspace_b
     // The server decides the same for a request that is sent all the same.
     let api = handle_of(&mut window).api();
     let refused = world
-        .run(api.remove_workspace_member(studio, dora, None))
+        .run(api.remove_workspace_member(
+            studio,
+            dora,
+            &junto_client_core::api::Statement::default(),
+        ))
         .unwrap_err();
     assert_eq!(refused.category(), Some(ErrorCategory::NotAllowed));
     // The owner and the own account.
@@ -482,7 +513,8 @@ fn a_quiet_time_in_a_named_zone_holds_a_notice_back_by_the_clock_that_the_client
                     SettingsScope::Account,
                     &quiet(Some(around.clone())),
                 ))
-                .unwrap();
+                .unwrap()
+                .value;
         assert_eq!(stored.daily_quiet.as_ref(), Some(&around), "{zone}");
         until_model(&world, &bruno, "the state holds the quiet time", |model| {
             model

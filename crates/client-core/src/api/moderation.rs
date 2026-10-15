@@ -31,25 +31,42 @@ pub fn stated_reason(reason: Option<&str>) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The body of a ban or of a removal. A request without a reason has no body, as the
-/// request had before the reason existed.
-fn reason_body(reason: Option<&str>) -> Result<Option<RequestBody>, ApiError> {
-    stated_reason(reason)
-        .map(|reason| {
-            // The message to the person concerned is not sent by this client yet. A field
-            // without a value is left out, so the body is the one of before the field.
-            let stated = ModerationReason {
-                reason: Some(reason),
-                recipient_message: None,
-            };
-            let mut body = serde_json::to_value(&stated)
-                .map_err(|error| ApiError::Request(error.to_string()))?;
-            if let serde_json::Value::Object(fields) = &mut body {
-                fields.retain(|_, value| !value.is_null());
-            }
-            encode(&body)
-        })
-        .transpose()
+/// What a moderator states with a ban, a removal from the server or a removal from a
+/// workspace: a reason that stays in the audit entry, and a message that the person
+/// concerned reads in a private notice (ADR 0106, ADR 0120).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Statement {
+    pub reason: Option<String>,
+    pub message: Option<String>,
+}
+
+impl Statement {
+    /// A statement with a reason and no message.
+    pub fn reason(reason: &str) -> Self {
+        Self {
+            reason: Some(reason.to_owned()),
+            message: None,
+        }
+    }
+}
+
+/// The body of a ban or of a removal. A text is sent without the space around it, and a
+/// text that is empty then is left out. A request without either has no body, as the
+/// request had before the fields existed.
+fn statement_body(statement: &Statement) -> Result<Option<RequestBody>, ApiError> {
+    let stated = ModerationReason {
+        reason: stated_reason(statement.reason.as_deref()),
+        recipient_message: stated_reason(statement.message.as_deref()),
+    };
+    if stated.reason.is_none() && stated.recipient_message.is_none() {
+        return Ok(None);
+    }
+    let mut body =
+        serde_json::to_value(&stated).map_err(|error| ApiError::Request(error.to_string()))?;
+    if let serde_json::Value::Object(fields) = &mut body {
+        fields.retain(|_, value| !value.is_null());
+    }
+    encode(&body).map(Some)
 }
 
 fn filters(query: &AuditFilterQuery) -> Result<Vec<(&'static str, String)>, ApiError> {
@@ -146,35 +163,37 @@ impl ServerApi {
     /// Removes an account from the server: its devices, sessions, memberships and roles
     /// end (ADR 0106).
     pub async fn remove_account(&self, account_id: AccountId) -> Result<(), ApiError> {
-        self.remove_account_with_reason(account_id, None).await
+        self.remove_account_stating(account_id, &Statement::default())
+            .await
     }
 
-    /// As [`Self::remove_account`], with a reason. The reason stays in the audit entry
-    /// and is sent to nobody (ADR 0106).
-    pub async fn remove_account_with_reason(
+    /// As [`Self::remove_account`], with a statement. The reason stays in the audit entry;
+    /// the message is the notice that the person reads (ADR 0106, ADR 0120).
+    pub async fn remove_account_stating(
         &self,
         account_id: AccountId,
-        reason: Option<&str>,
+        statement: &Statement,
     ) -> Result<(), ApiError> {
         let path = format!("/accounts/{account_id}/removal");
-        self.call(Method::Post, path, Vec::new(), reason_body(reason)?)
+        self.call(Method::Post, path, Vec::new(), statement_body(statement)?)
             .await
             .map(|_| ())
     }
 
     /// Bans an account: its keys cannot log in or join again (ADR 0106).
     pub async fn ban_account(&self, account_id: AccountId) -> Result<(), ApiError> {
-        self.ban_account_with_reason(account_id, None).await
+        self.ban_account_stating(account_id, &Statement::default())
+            .await
     }
 
-    /// As [`Self::ban_account`], with a reason that stays in the audit entry.
-    pub async fn ban_account_with_reason(
+    /// As [`Self::ban_account`], with a statement as for a removal.
+    pub async fn ban_account_stating(
         &self,
         account_id: AccountId,
-        reason: Option<&str>,
+        statement: &Statement,
     ) -> Result<(), ApiError> {
         let path = format!("/accounts/{account_id}/ban");
-        self.call(Method::Put, path, Vec::new(), reason_body(reason)?)
+        self.call(Method::Put, path, Vec::new(), statement_body(statement)?)
             .await
             .map(|_| ())
     }
@@ -187,10 +206,10 @@ impl ServerApi {
         &self,
         workspace_id: WorkspaceId,
         account_id: AccountId,
-        reason: Option<&str>,
+        statement: &Statement,
     ) -> Result<(), ApiError> {
         let path = format!("/workspaces/{workspace_id}/members/{account_id}/removal");
-        self.call(Method::Post, path, Vec::new(), reason_body(reason)?)
+        self.call(Method::Post, path, Vec::new(), statement_body(statement)?)
             .await
             .map(|_| ())
     }
@@ -279,6 +298,7 @@ mod tests {
                     status,
                     retry_after: None,
                     body: body.into(),
+                    receipt: crate::api::Receipt::NotStated,
                 })
             })
         }
@@ -330,13 +350,13 @@ mod tests {
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\nimage";
 
     #[tokio::test]
-    async fn a_ban_and_a_removal_send_their_reason_and_no_body_without_one() {
+    async fn a_ban_and_a_removal_send_their_reason_and_message_and_no_body_without_one() {
         let account_id = AccountId::generate();
         let workspace_id = WorkspaceId::generate();
         let stated = serde_json::json!({ "reason": "Spam in #general" });
 
         let (seen, api) = server(&());
-        api.ban_account_with_reason(account_id, Some("  Spam in #general \n"))
+        api.ban_account_stating(account_id, &Statement::reason("  Spam in #general \n"))
             .await
             .unwrap();
         assert_eq!(
@@ -350,7 +370,7 @@ mod tests {
         );
 
         let (seen, api) = server(&());
-        api.remove_account_with_reason(account_id, Some("Spam in #general"))
+        api.remove_account_stating(account_id, &Statement::reason("Spam in #general"))
             .await
             .unwrap();
         assert_eq!(
@@ -364,9 +384,13 @@ mod tests {
         );
 
         let (seen, api) = server(&());
-        api.remove_workspace_member(workspace_id, account_id, Some("Spam in #general"))
-            .await
-            .unwrap();
+        api.remove_workspace_member(
+            workspace_id,
+            account_id,
+            &Statement::reason("Spam in #general"),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             seen.request(),
             (
@@ -377,20 +401,53 @@ mod tests {
             )
         );
 
-        // No reason, and a reason of spaces only: the request of before, without a body.
-        for reason in [None, Some("  \n ")] {
+        // A message to the person goes in its own field, also without a reason.
+        let both = Statement {
+            reason: Some("Spam".to_owned()),
+            message: Some(" Please read the rules. ".to_owned()),
+        };
+        let (seen, api) = server(&());
+        api.ban_account_stating(account_id, &both).await.unwrap();
+        assert_eq!(
+            seen.request().3,
+            Some(serde_json::json!({
+                "reason": "Spam",
+                "recipient_message": "Please read the rules."
+            }))
+        );
+        let message_only = Statement {
+            reason: Some("  ".to_owned()),
+            message: Some("Please read the rules.".to_owned()),
+        };
+        let (seen, api) = server(&());
+        api.remove_workspace_member(workspace_id, account_id, &message_only)
+            .await
+            .unwrap();
+        assert_eq!(
+            seen.request().3,
+            Some(serde_json::json!({ "recipient_message": "Please read the rules." }))
+        );
+
+        // No text, and texts of spaces only: the request of before, without a body.
+        for statement in [
+            Statement::default(),
+            Statement {
+                reason: Some("  \n ".to_owned()),
+                message: Some(" ".to_owned()),
+            },
+        ] {
             let (seen, api) = server(&());
-            api.ban_account_with_reason(account_id, reason)
+            api.ban_account_stating(account_id, &statement)
                 .await
                 .unwrap();
             assert_eq!(seen.request().3, None);
             let (seen, api) = server(&());
-            api.remove_account_with_reason(account_id, reason)
+            api.remove_account_stating(account_id, &statement)
                 .await
                 .unwrap();
             assert_eq!(seen.request().3, None);
             let (seen, api) = server(&());
-            api.remove_workspace_member(workspace_id, account_id, reason)
+            api.remove_workspace_member(workspace_id, account_id, &statement)
                 .await
                 .unwrap();
             assert_eq!(seen.request().3, None);

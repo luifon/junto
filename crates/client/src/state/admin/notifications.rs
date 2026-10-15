@@ -4,25 +4,15 @@
 use gpui::Context;
 use junto_client_core::protocol::ids::{ServerId, WorkspaceId};
 
+use super::AskKind;
 use super::view::notifications::DefaultChoice;
-use super::{Ask, AskKind, AskState};
 use crate::state::AppState;
-
-/// True when a choice of the level of a workspace is sent now: no request of that level
-/// is on its way. The level that the state holds does not decide: the answer of a request
-/// can arrive before the event of its change, the control shows the level of before for
-/// that time, and a choice of that level is a change then. The server does nothing for
-/// the level that it holds already.
-pub(crate) fn takes_choice(ask: Option<&Ask>, workspace_id: WorkspaceId) -> bool {
-    !ask.is_some_and(|ask| {
-        ask.what == AskKind::NotificationDefault(workspace_id) && ask.state == AskState::Sending
-    })
-}
 
 impl AppState {
     /// Sets the level that a workspace gives its members, or with "not set" removes it.
-    /// One request is on its way at a time. The change arrives with the event
-    /// `notification_default_changed`.
+    /// One change of the level is on its way or waits for the state at a time: the page
+    /// shows the chosen level until the state holds the events of the change (ADR 0214),
+    /// so a choice is never built on a level that the server changed already.
     pub fn set_notification_default(
         &mut self,
         server_id: ServerId,
@@ -30,50 +20,37 @@ impl AppState {
         choice: DefaultChoice,
         cx: &mut Context<Self>,
     ) {
-        if !takes_choice(self.admin.ask.as_ref(), workspace_id) {
+        let level = match choice {
+            DefaultChoice::Level(level) => Some(level),
+            DefaultChoice::NotSet => None,
+        };
+        if !self.begin_default_change(server_id, workspace_id, level) {
             return;
         }
+        let (told, outcome) = futures_channel::oneshot::channel();
         self.admin_ask(
             server_id,
             AskKind::NotificationDefault(workspace_id),
-            |api| async move {
-                match choice {
+            move |api| async move {
+                let changed = match choice {
                     DefaultChoice::Level(level) => api
                         .set_notification_default(workspace_id, level)
                         .await
-                        .map(|_| ()),
+                        .map(|set| set.receipt),
                     DefaultChoice::NotSet => api.remove_notification_default(workspace_id).await,
-                }
+                };
+                let _ = told.send(changed.as_ref().ok().copied());
+                changed.map(|_| ())
             },
             |_, (), _| {},
             cx,
         );
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_choice_is_sent_unless_a_request_of_the_level_of_the_workspace_is_on_its_way() {
-        let workspace_id = WorkspaceId::generate();
-        let what = AskKind::NotificationDefault(workspace_id);
-        // Nothing is on its way: every choice is sent, also the one that the control
-        // shows, which can be the level of before a change that the server made.
-        assert!(takes_choice(None, workspace_id));
-        let refused = Ask {
-            what,
-            state: AskState::Refused("No.".to_owned()),
-        };
-        assert!(takes_choice(Some(&refused), workspace_id));
-        // A request is on its way: a second one could reach the server before it.
-        let sending = Ask {
-            what,
-            state: AskState::Sending,
-        };
-        assert!(!takes_choice(Some(&sending), workspace_id));
-        // The request of another workspace is not one of this workspace.
-        assert!(takes_choice(Some(&sending), WorkspaceId::generate()));
+        cx.spawn(async move |this, cx| {
+            let receipt = outcome.await.ok().flatten();
+            let _ = this.update(cx, |this, cx| {
+                this.default_answered(server_id, workspace_id, receipt.ok_or(()), cx);
+            });
+        })
+        .detach();
     }
 }

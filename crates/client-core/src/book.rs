@@ -11,18 +11,20 @@ use crate::address::ServerAddress;
 use crate::paths::{BOOK_FILE, DataDir};
 use crate::storage::{StorageError, Versioned};
 
-pub const BOOK_FORMAT_VERSION: u32 = 2;
+pub const BOOK_FORMAT_VERSION: u32 = 3;
 
 const BOOK: Versioned = Versioned {
     name: BOOK_FILE,
     kind: "server book",
     version: BOOK_FORMAT_VERSION,
-    migrations: &[unchanged],
+    migrations: &[unchanged, unchanged],
     limit: 4 * 1024 * 1024,
 };
 
-/// Version 2 added the state `refused` of the profile preset. Every book of version 1 is a
-/// book of version 2; the version tells an older client that it cannot read the file.
+/// Version 2 added the state `refused` of the profile preset, and version 3 the moderation
+/// notices that the person put away. Every book of an earlier version is a book of the next
+/// one, with no notice put away; the version tells an older client that it cannot read the
+/// file, so that it does not drop the field when it writes the book.
 fn unchanged(value: serde_json::Value) -> Result<serde_json::Value, String> {
     Ok(value)
 }
@@ -31,6 +33,9 @@ const LONGEST_NAME: usize = 64;
 const LONGEST_LOGO_PATH: usize = 512;
 const LONGEST_CURSOR: usize = 512;
 const MOST_API_VERSIONS: usize = 16;
+/// How many moderation notices of one server the book remembers as put away: a page of
+/// the server (ADR 0120).
+pub const MOST_SHOWN_NOTICES: usize = 100;
 
 /// When the client holds the event stream of a server (ADR 0107).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -152,6 +157,10 @@ pub struct ServerEntry {
     pub last_cursor: Option<EventCursor>,
     #[serde(default)]
     pub profile_sync: ProfileSync,
+    /// The private moderation notices of the account that the person put away on this
+    /// device, the oldest first (ADR 0120). The server keeps a notice for 30 days.
+    #[serde(default)]
+    pub moderation_notices_shown: Vec<uuid::Uuid>,
 }
 
 impl ServerEntry {
@@ -175,6 +184,7 @@ impl ServerEntry {
             membership: Membership::None,
             last_cursor: None,
             profile_sync: ProfileSync::NotNeeded,
+            moderation_notices_shown: Vec::new(),
         };
         entry.refresh(info);
         entry
@@ -211,6 +221,9 @@ impl ServerEntry {
         }
         if self.api_versions.len() > MOST_API_VERSIONS {
             return Err(format!("server {id} has too many API versions"));
+        }
+        if self.moderation_notices_shown.len() > MOST_SHOWN_NOTICES {
+            return Err(format!("server {id} has too many shown moderation notices"));
         }
         Ok(())
     }
@@ -542,7 +555,7 @@ mod tests {
 
         let stored: serde_json::Value =
             serde_json::from_slice(&fs::read(data_dir.book_file()).unwrap()).unwrap();
-        assert_eq!(stored["format_version"], 2);
+        assert_eq!(stored["format_version"], 3);
         assert_eq!(stored["servers"][0]["address"], "https://acme.example.test");
         assert_eq!(stored["servers"][0]["connection_mode"], "when_selected");
         assert_eq!(stored["servers"][0]["membership"]["state"], "member");
@@ -659,10 +672,45 @@ mod tests {
         .unwrap();
         let stored: serde_json::Value =
             serde_json::from_slice(&fs::read(data_dir.book_file()).unwrap()).unwrap();
-        assert_eq!(stored["format_version"], 2);
+        assert_eq!(stored["format_version"], 3);
         assert_eq!(stored["servers"][0]["profile_sync"]["state"], "refused");
         assert_eq!(stored["servers"][1]["address"], "http://127.0.0.1:8080");
         assert_eq!(book.entries().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn the_moderation_notices_put_away_are_kept_and_a_book_of_version_2_has_none() {
+        let (_directory, data_dir, book) = book();
+        let written = br#"{"format_version":2,"servers":[
+            {"server_id":"0198f1c2-7d3a-7b1e-9c55-000000000001","generation":7,
+             "address":"https://acme.example.test","name":"Acme","logo_path":null,
+             "api_versions":[1],"connection_mode":"always",
+             "membership":{"state":"none"},"last_cursor":null}]}"#;
+        fs::write(data_dir.book_file(), written).unwrap();
+        let entries = book.entries().unwrap();
+        assert!(entries[0].moderation_notices_shown.is_empty());
+        let notice = uuid::Uuid::now_v7();
+        book.update(entries[0].key(), |entry| {
+            entry.moderation_notices_shown.push(notice);
+        })
+        .unwrap();
+        let stored: serde_json::Value =
+            serde_json::from_slice(&fs::read(data_dir.book_file()).unwrap()).unwrap();
+        assert_eq!(stored["format_version"], 3);
+        assert_eq!(
+            stored["servers"][0]["moderation_notices_shown"][0],
+            notice.to_string()
+        );
+        assert_eq!(
+            book.entries().unwrap()[0].moderation_notices_shown,
+            [notice]
+        );
+        // More than the bound is an entry that the book does not hold.
+        let mut over = book.entries().unwrap()[0].clone();
+        over.moderation_notices_shown = (0..=MOST_SHOWN_NOTICES)
+            .map(|_| uuid::Uuid::now_v7())
+            .collect();
+        assert!(over.check().is_err());
     }
 
     #[test]
@@ -971,33 +1019,33 @@ mod tests {
         };
         let cases = [
             format!(
-                r#"{{"format_version":2,"servers":[{},{}]}}"#,
+                r#"{{"format_version":3,"servers":[{},{}]}}"#,
                 server("https://a.example.test", ""),
                 server("https://b.example.test", "")
             ),
             format!(
-                r#"{{"format_version":2,"servers":[{}]}}"#,
+                r#"{{"format_version":3,"servers":[{}]}}"#,
                 server("http://a.example.test", "")
             ),
             format!(
-                r#"{{"format_version":2,"servers":[{}]}}"#,
+                r#"{{"format_version":3,"servers":[{}]}}"#,
                 server("https://a.example.test/../../etc", "")
             ),
             format!(
-                r#"{{"format_version":2,"servers":[{}]}}"#,
+                r#"{{"format_version":3,"servers":[{}]}}"#,
                 server("https://a.example.test", "").replace("\"Acme\"", "\"\"")
             ),
             format!(
-                r#"{{"format_version":2,"servers":[{}]}}"#,
+                r#"{{"format_version":3,"servers":[{}]}}"#,
                 server("https://a.example.test", "")
                     .replace("\"logo_path\":null", "\"logo_path\":\"//b.example.test/x\"")
             ),
             format!(
-                r#"{{"format_version":2,"servers":[{}]}}"#,
+                r#"{{"format_version":3,"servers":[{}]}}"#,
                 server("https://a.example.test", "").replace("\"always\"", "\"sometimes\"")
             ),
             format!(
-                r#"{{"format_version":2,"servers":[{}]}}"#,
+                r#"{{"format_version":3,"servers":[{}]}}"#,
                 server("https://a.example.test", "")
                     .replace("\"generation\":7", "\"generation\":0")
             ),
@@ -1013,7 +1061,7 @@ mod tests {
         fs::write(
             data_dir.book_file(),
             format!(
-                r#"{{"format_version":2,"servers":[{}]}}"#,
+                r#"{{"format_version":3,"servers":[{}]}}"#,
                 server("https://a.example.test", "")
             ),
         )
@@ -1024,13 +1072,13 @@ mod tests {
     #[test]
     fn a_book_of_a_newer_client_is_refused_and_not_overwritten() {
         let (_directory, data_dir, book) = book();
-        let newer = br#"{"format_version":3,"servers":[],"folders":[]}"#;
+        let newer = br#"{"format_version":4,"servers":[],"folders":[]}"#;
         fs::write(data_dir.book_file(), newer).unwrap();
         assert!(matches!(
             book.entries(),
             Err(StorageError::NewerFormat {
-                found: 3,
-                supported: 2,
+                found: 4,
+                supported: 3,
                 ..
             })
         ));

@@ -3,7 +3,8 @@
 use std::fmt;
 use std::time::Duration;
 
-use junto_protocol::error::{ErrorBody, ErrorCode};
+use junto_protocol::call::LeaveReason;
+use junto_protocol::error::ErrorCode;
 use junto_protocol::ids::{AccountId, ServerId};
 
 use super::proof::ChallengeMismatch;
@@ -131,6 +132,10 @@ pub struct Rejection {
     /// it as a quotation and decides nothing on it. The text of an error of this crate
     /// contains it only for a code that this client does not know.
     pub message: String,
+    /// With `seat_ended`: why the seat that a request for a token renews cannot be used
+    /// (ADR 0520). Absent when the server does not state it, or states a reason that this
+    /// client does not know.
+    pub left: Option<LeaveReason>,
 }
 
 impl Rejection {
@@ -246,9 +251,24 @@ impl ApiError {
     }
 }
 
+/// The error body as the client reads it: a value of `left` that this client does not
+/// know does not make the whole body unreadable.
+#[derive(serde::Deserialize)]
+struct ReadBody {
+    error: ReadDetail,
+}
+
+#[derive(serde::Deserialize)]
+struct ReadDetail {
+    code: ErrorCode,
+    message: String,
+    #[serde(default)]
+    left: Option<serde_json::Value>,
+}
+
 /// Reads a response with a status of 400 or above (ADR 0205).
 pub(crate) fn read_rejection(response: &HttpResponse) -> ApiError {
-    let Ok(body) = serde_json::from_slice::<ErrorBody>(&response.body) else {
+    let Ok(body) = serde_json::from_slice::<ReadBody>(&response.body) else {
         return ApiError::InvalidResponse {
             status: response.status,
             reason: "no error body",
@@ -266,6 +286,10 @@ pub(crate) fn read_rejection(response: &HttpResponse) -> ApiError {
         status: response.status,
         retry_after: response.retry_after,
         message,
+        left: body
+            .error
+            .left
+            .and_then(|left| serde_json::from_value(left).ok()),
     })
 }
 
@@ -278,6 +302,7 @@ mod tests {
             status,
             retry_after: retry_after.map(Duration::from_secs),
             body: body.as_bytes().to_vec().into(),
+            receipt: crate::api::Receipt::NotStated,
         }
     }
 
@@ -293,6 +318,30 @@ mod tests {
             assert!(error.to_string().ends_with(&name), "{error}");
             assert!(!error.to_string().contains("text"));
         }
+    }
+
+    #[test]
+    fn a_refusal_of_a_renewal_states_why_the_seat_ended() {
+        let left = |body: &str| match read_rejection(&response(409, body, None)) {
+            ApiError::Rejected(rejection) => {
+                assert_eq!(rejection.code, ErrorCode::SeatEnded);
+                rejection.left
+            }
+            other => panic!("read {other:?}"),
+        };
+        assert_eq!(
+            left(r#"{"error":{"code":"seat_ended","message":"","left":"connection_lost"}}"#),
+            Some(LeaveReason::ConnectionLost)
+        );
+        assert_eq!(
+            left(r#"{"error":{"code":"seat_ended","message":""}}"#),
+            None
+        );
+        // A reason of a newer server is not known; the refusal is read without it.
+        assert_eq!(
+            left(r#"{"error":{"code":"seat_ended","message":"","left":"expired"}}"#),
+            None
+        );
     }
 
     #[test]

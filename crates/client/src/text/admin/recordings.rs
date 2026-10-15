@@ -326,6 +326,7 @@ mod tests {
                 status: code.http_status(),
                 retry_after: None,
                 message: "a sentence of the server".to_owned(),
+                left: None,
             })
         };
         assert_eq!(

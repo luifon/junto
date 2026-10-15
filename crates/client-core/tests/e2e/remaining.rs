@@ -1,14 +1,16 @@
 //! The remaining requests of the client in the client core against the real server: the
-//! removal of a member from one workspace with its reason (ADR 0106), the filters of the
+//! removal of a member from one workspace with its reason and its message (ADR 0106,
+//! ADR 0120), the filters of the
 //! audit log (ADR 0305), one permission of an override (ADR 0304), the name of the creator
 //! of an invite (ADR 0111), the logo of the server (ADR 0101), the position of a search
 //! result (ADR 0413), and a quiet time by the name of a time zone (ADR 0412).
 
-use junto_client_core::api::{ErrorCategory, SearchQuery, SettingsScope};
+use junto_client_core::api::{ErrorCategory, SearchQuery, SettingsScope, Statement};
 use junto_client_core::flow::access::AccessState;
 use junto_client_core::live::{Notice, StreamStatus};
 use junto_client_core::model::{AdminPart, LogoState, PlaceId, ServerModel};
 use junto_client_core::protocol::WorkspacePermission;
+use junto_client_core::protocol::account::ModerationNoticeKind;
 use junto_client_core::protocol::audit::{AuditEvent, AuditFilterQuery};
 use junto_client_core::protocol::discovery::{DailyQuiet, NotificationSettings};
 use junto_client_core::protocol::error::ErrorCode;
@@ -75,13 +77,13 @@ async fn a_member_removed_from_one_workspace_loses_it_and_keeps_the_server() {
     // A member is no administrator, and an account does not remove itself.
     let refused = member
         .api()
-        .remove_workspace_member(second.id, owner_id, None)
+        .remove_workspace_member(second.id, owner_id, &Statement::default())
         .await
         .unwrap_err();
     assert_eq!(refused.category(), Some(ErrorCategory::NotAllowed));
     let own = owner
         .api()
-        .remove_workspace_member(second.id, owner_id, None)
+        .remove_workspace_member(second.id, owner_id, &Statement::default())
         .await
         .unwrap_err();
     assert!(
@@ -94,9 +96,17 @@ async fn a_member_removed_from_one_workspace_loses_it_and_keeps_the_server() {
 
     let mut told = member.live().notices();
     let reason = "The project of this workspace ended";
+    let message = "Thank you for your work on the project.";
     owner
         .api()
-        .remove_workspace_member(second.id, member_id, Some(reason))
+        .remove_workspace_member(
+            second.id,
+            member_id,
+            &Statement {
+                reason: Some(reason.to_owned()),
+                message: Some(message.to_owned()),
+            },
+        )
         .await
         .unwrap();
 
@@ -109,6 +119,18 @@ async fn a_member_removed_from_one_workspace_loses_it_and_keeps_the_server() {
     assert!(model.channel(lobby.id).is_none());
     assert!(model.timeline(place).is_none());
     assert!(!model.account.workspace_ids.contains(&second.id));
+    // The new state holds the private notice of the removal with the message and without
+    // the reason (ADR 0120).
+    let notice = model
+        .moderation_notices
+        .iter()
+        .find(|notice| notice.workspace_id == Some(second.id))
+        .expect("the notice of the removal");
+    assert_eq!(notice.kind, ModerationNoticeKind::WorkspaceRemoved);
+    assert_eq!(notice.name, "Second");
+    assert_eq!(notice.message.as_deref(), Some(message));
+    let page = member.api().moderation_notices(None).await.unwrap();
+    assert_eq!(page.notices.first().map(|held| held.id), Some(notice.id));
     assert!(model.workspace(scene.workspace_id).is_some());
     when(member, "the stream of the member delivers", |view| {
         view.status == StreamStatus::Live
@@ -156,7 +178,7 @@ async fn a_member_removed_from_one_workspace_loses_it_and_keeps_the_server() {
     assert_eq!(
         log.entries[0].event,
         AuditEvent::WorkspaceMemberRemoved {
-            recipient_message: None,
+            recipient_message: Some(message.to_owned()),
             account_id: member_id,
             reason: Some(reason.to_owned()),
         }
@@ -217,7 +239,7 @@ async fn a_member_removed_from_one_workspace_loses_it_and_keeps_the_server() {
     // A second removal finds no member.
     let gone = owner
         .api()
-        .remove_workspace_member(second.id, member_id, None)
+        .remove_workspace_member(second.id, member_id, &Statement::default())
         .await
         .unwrap_err();
     assert_eq!(gone.category(), Some(ErrorCategory::NotFound));
@@ -232,7 +254,7 @@ async fn a_ban_with_a_reason_states_it_in_the_audit_log_of_the_server() {
     let long = "a".repeat(1001);
     let refused = owner
         .api()
-        .ban_account_with_reason(member_id, Some(&long))
+        .ban_account_stating(member_id, &Statement::reason(&long))
         .await
         .unwrap_err();
     assert_eq!(refused.code(), Some(ErrorCode::InvalidRequest));
@@ -240,10 +262,26 @@ async fn a_ban_with_a_reason_states_it_in_the_audit_log_of_the_server() {
 
     owner
         .api()
-        .ban_account_with_reason(member_id, Some("  Advertisements in every channel "))
+        .ban_account_stating(
+            member_id,
+            &Statement {
+                reason: Some("  Advertisements in every channel ".to_owned()),
+                message: Some("You can ask for an unban by mail.".to_owned()),
+            },
+        )
         .await
         .unwrap();
     when(member, "off", |view| view.status == StreamStatus::Off).await;
+    // The banned device reads its notice with a proof of its key and without a session,
+    // with the message and without the reason (ADR 0120).
+    let page = member.moderation_notices().await.unwrap();
+    let notice = page.notices.first().expect("the notice of the ban");
+    assert_eq!(notice.kind, ModerationNoticeKind::Banned);
+    assert_eq!(
+        notice.message.as_deref(),
+        Some("You can ask for an unban by mail.")
+    );
+    assert!(!format!("{page:?}").contains("Advertisements"));
     let log = owner
         .api()
         .server_audit_log(&action("account_banned"))
@@ -452,7 +490,7 @@ async fn an_invite_names_its_creator_and_loses_a_workspace_with_the_removal_of_i
     // invite; the list of the administrator follows `invite_changed`.
     owner
         .api()
-        .remove_workspace_member(second.id, member_id, None)
+        .remove_workspace_member(second.id, member_id, &Statement::default())
         .await
         .unwrap();
     model_when(owner, "the invite lost the workspace", |model| {
@@ -670,7 +708,8 @@ async fn a_quiet_time_in_a_named_zone_holds_the_event_of_a_notice_back() {
         .api()
         .set_notification_settings(SettingsScope::Account, &quiet(Some(around.clone())))
         .await
-        .unwrap();
+        .unwrap()
+        .value;
     assert_eq!(stored.daily_quiet, Some(around.clone()));
     model_when(member, "the state holds the quiet time", |model| {
         model

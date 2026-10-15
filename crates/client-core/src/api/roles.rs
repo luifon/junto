@@ -1,16 +1,17 @@
 //! The routes of role order (ADR 0309) and of the permissions of the account in one
 //! channel (ADR 0310).
 
-use junto_protocol::WorkspacePermission;
-use junto_protocol::ids::{ChannelId, WorkspaceId};
+use junto_protocol::ids::{ChannelId, ServerRoleId, WorkspaceId, WorkspaceRoleId};
 use junto_protocol::roles::{
-    ReorderServerRoles, ReorderWorkspaceRoles, ServerRolePosition, WorkspaceRolePosition,
+    ChangeServerRolePermission, ChangeWorkspaceRolePermission, ReorderServerRoles,
+    ReorderWorkspaceRoles, ServerRole, ServerRolePosition, WorkspaceRole, WorkspaceRolePosition,
 };
 use junto_protocol::structure::ChannelPermissions;
+use junto_protocol::{ServerPermission, WorkspacePermission};
 
 use super::client::encode;
 use super::error::ApiError;
-use super::session::ServerApi;
+use super::session::{Changed, ServerApi};
 use super::transport::Method;
 
 impl ServerApi {
@@ -45,6 +46,39 @@ impl ServerApi {
         self.call(Method::Patch, path, Vec::new(), body)
             .await
             .map(|_| ())
+    }
+
+    /// Gives or takes one permission of a server role and keeps every other permission of
+    /// it, so two changes of different permissions at the same time both stay (ADR 0311).
+    /// The answer states the position of the event of the change.
+    pub async fn change_server_role_permission(
+        &self,
+        role_id: ServerRoleId,
+        permission: ServerPermission,
+        enabled: bool,
+    ) -> Result<Changed<ServerRole>, ApiError> {
+        let change = ChangeServerRolePermission {
+            permission,
+            enabled,
+        };
+        let path = format!("/server-roles/{role_id}/permissions");
+        self.change(Method::Patch, path, Some(&change)).await
+    }
+
+    /// As [`Self::change_server_role_permission`], for a role of a workspace.
+    pub async fn change_workspace_role_permission(
+        &self,
+        workspace_id: WorkspaceId,
+        role_id: WorkspaceRoleId,
+        permission: WorkspacePermission,
+        enabled: bool,
+    ) -> Result<Changed<WorkspaceRole>, ApiError> {
+        let change = ChangeWorkspaceRolePermission {
+            permission,
+            enabled,
+        };
+        let path = format!("/workspaces/{workspace_id}/roles/{role_id}/permissions");
+        self.change(Method::Patch, path, Some(&change)).await
     }
 
     /// The workspace permissions that the caller holds in one channel that it can see. An

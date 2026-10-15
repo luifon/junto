@@ -88,6 +88,7 @@ fn refused(what: AskKind, code: ErrorCode) -> Ask {
         status: code.http_status(),
         retry_after: Some(std::time::Duration::from_secs(40)),
         message: String::new(),
+        left: None,
     });
     Ask {
         what,

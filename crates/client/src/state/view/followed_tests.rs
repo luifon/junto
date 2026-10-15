@@ -440,7 +440,11 @@ fn the_control_of_the_thread_panel_states_the_choice_of_the_account_or_the_rule(
     let ask = held.followed.thread.ask().unwrap();
     assert!(control(&server, &scene, root_id, &held).unwrap().busy);
     let refusal = text::followed::THREAD_GONE.to_owned();
-    assert!(held.followed.thread.ask_answered(ask.number, Err(refusal)));
+    assert!(held.followed.thread.ask_answered(
+        ask.number,
+        Err(refusal),
+        junto_client_core::model::Followed::Unknown
+    ));
     let drawn = control(&server, &scene, root_id, &held).unwrap();
     assert!(!drawn.busy && !drawn.following);
     assert_eq!(

@@ -296,12 +296,25 @@ pub struct AdminView {
     pub ask: Option<Ask>,
     /// What the last request made and the person has not put away.
     pub made: Option<Made>,
-    /// The roles whose permissions the person changed and whose change the state does
-    /// not show yet: their switches take no further change (ADR 0791).
-    pub changing_roles: Vec<super::RoleRef>,
+    /// The permissions of roles that the person changed and whose change the state does
+    /// not hold yet, with the asked state: their switches show it and take no further
+    /// change (ADR 0791, ADR 0311).
+    pub changing_roles: Vec<(super::RoleRef, super::RolePermission, bool)>,
 }
 
 impl AdminView {
+    /// The state that a waiting change of a permission of a role asked for.
+    pub fn permission_asked(
+        &self,
+        role: super::RoleRef,
+        permission: super::RolePermission,
+    ) -> Option<bool> {
+        self.changing_roles
+            .iter()
+            .find(|(of, held, _)| *of == role && *held == permission)
+            .map(|(_, _, on)| *on)
+    }
+
     /// The state of the request `what`, when it is the one that the page tells about.
     pub fn asked(&self, what: super::AskKind) -> Option<&super::AskState> {
         self.ask
@@ -431,13 +444,17 @@ pub fn needs(
             // order decides who can be removed and banned (ADR 0309).
             AdminPage::People => vec![AdminPart::Accounts, AdminPart::ServerRoles],
             AdminPage::ServerRoles => vec![AdminPart::ServerRoles],
-            // An administrator stands in a workspace at the position of a server role.
+            // An administrator stands in a workspace at the position of a server role. The
+            // server states what the person may do with each role (ADR 0311).
             AdminPage::Roles => {
+                let mut parts: Vec<AdminPart> = workspace_id
+                    .map(AdminPart::RoleActions)
+                    .into_iter()
+                    .collect();
                 if administrator && !model.account.is_owner {
-                    vec![AdminPart::ServerRoles]
-                } else {
-                    Vec::new()
+                    parts.push(AdminPart::ServerRoles);
                 }
+                parts
             }
             AdminPage::Invites => vec![AdminPart::Invites],
             AdminPage::JoinRequests => vec![AdminPart::JoinRequests],
@@ -451,15 +468,22 @@ pub fn needs(
             // A recording of an archived channel is named by the archived list.
             AdminPage::Recordings => workspace_id.map(AdminPart::Archived).into_iter().collect(),
             AdminPage::Members => {
+                let mut parts = Vec::new();
                 if administrator {
-                    let mut parts = vec![AdminPart::Accounts];
+                    parts.push(AdminPart::Accounts);
                     if !model.account.is_owner {
                         parts.push(AdminPart::ServerRoles);
                     }
-                    parts
-                } else {
-                    Vec::new()
                 }
+                // The roles of a member are given and taken by the statement of the
+                // server for each role (ADR 0311).
+                let manages_roles = workspace_id
+                    .and_then(|workspace_id| model.workspace(workspace_id))
+                    .is_some_and(|workspace| workspace.holds(WorkspacePermission::ManageRoles));
+                if manages_roles {
+                    parts.extend(workspace_id.map(AdminPart::RoleActions));
+                }
+                parts
             }
             AdminPage::Archive => {
                 let mut parts = Vec::new();
@@ -754,7 +778,7 @@ pub fn derive(
                     ServerPage::Members(people::members(server_id, model, workspace, known))
                 }
                 (AdminPage::Notifications, Some(workspace)) => {
-                    ServerPage::Notifications(notifications::derive(workspace))
+                    ServerPage::Notifications(notifications::derive(server_id, workspace, known))
                 }
                 (AdminPage::Recordings, Some(workspace)) => ServerPage::Recordings(
                     recordings::recordings(server_id, model, workspace, known, admin),

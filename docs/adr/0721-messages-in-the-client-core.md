@@ -37,7 +37,7 @@ Reads that events ask for:
 Reload:
 
 - After a snapshot replaced the state, the timelines that readers hold stay in the new state with the mark `stale`, and the waiting messages stay. Each timeline is read again as one page that replaces its messages: the latest page when its reader follows the end, else the page from the position that the reader named last.
-- ADR 0719 discards every part at a reload. A timeline is kept for display only: its content is not trusted, the mark says so, and the page that replaces it is asked for at once.
+- ADR 0719 discards every part at a reload. A timeline is kept for display only: its content is not trusted, the mark says so, and the page that replaces it is asked for at once. The messages that the unread threads and the notices of the new state name are kept in the same way, and each is read again (ADR 0742).
 
 Read position:
 
@@ -49,7 +49,7 @@ Sending:
 
 - A message that the person sends is in the state from that moment as a waiting message: `waiting for files`, `sending`, `not confirmed`, or `failed` with the code of the refusal.
 - One send per place is on its way, in the order in which the person sent, so the messages of a place get their positions in that order. A message that waits for its files is the exception: it does not hold the messages after it, and it gets its position when its files are complete. An upload can take an hour, and a text that the person sends meanwhile is not kept back for it.
-- The answer to a send puts the message into the timeline and ends the wait.
+- The answer to a send ends the wait. It puts the message into the timeline only while the state does not hold the events of the send by the receipt of the answer (ADR 0763); otherwise the events decided, also a later edit or deletion. An answer without a stated position puts the message in.
 - A refusal, and a connection that was never made, leave the message as `failed`. The person sends it again or discards it.
 - A lost answer leaves the message as `not confirmed`: the server may hold it. The client does not send it again by itself.
 - A message `not confirmed` is confirmed when a loaded message of the own account has the same document, the same reply and the same files, and a position after the latest position of the place at the first attempt. One message of the server confirms one waiting message, and a message that was the answer to another send confirms none.

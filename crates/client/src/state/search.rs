@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use junto_client_core::model::{ServerModel, WorkspaceModel};
+use junto_client_core::model::{PlaceId, ServerModel, WorkspaceModel};
 use junto_client_core::protocol::discovery::SearchHit;
 use junto_client_core::protocol::ids::{
     AccountId, ChannelId, MessageId, RecordingId, ServerId, WorkspaceId,
@@ -18,7 +18,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::feed::Zone;
-use super::notices::{Whereabouts, account_names};
+use super::notices::{Jump, Whereabouts, account_names};
 use super::view::Known;
 use crate::text;
 
@@ -85,6 +85,13 @@ pub struct Hit {
     pub author_id: AccountId,
     pub created_at: OffsetDateTime,
     pub text: String,
+    /// The position of the message in its channel or conversation (ADR 0413). Absent for a
+    /// transcript line, and from a server before that record.
+    pub position: Option<u64>,
+    /// The root of the thread of a reply.
+    pub thread_root: Option<MessageId>,
+    /// For a transcript line: the time from the start of the recording, in milliseconds.
+    pub start_ms: Option<u64>,
 }
 
 impl From<SearchHit> for Hit {
@@ -97,7 +104,41 @@ impl From<SearchHit> for Hit {
             author_id: hit.author_id,
             created_at: hit.created_at,
             text: bounded(hit.text),
+            position: hit.position,
+            thread_root: hit.thread_root,
+            start_ms: hit.start_ms,
         }
+    }
+}
+
+impl Hit {
+    /// The jump to the message of the result, from what the result states: its place, its
+    /// position and the root of its thread. Absent for a transcript line, for a result
+    /// without a position, and for a place that the state does not hold.
+    pub fn jump(&self, server_id: ServerId, model: &ServerModel) -> Option<Jump> {
+        let (message_id, position) = (self.message_id?, self.position?);
+        let channel_id = ChannelId::from_uuid(self.place_id);
+        let (workspace_id, place) = match model.channel(channel_id) {
+            Some(channel) => (
+                Some(channel.channel.workspace_id),
+                PlaceId::Channel(channel_id),
+            ),
+            None => {
+                let conversation = model
+                    .conversations
+                    .iter()
+                    .find(|held| held.id.as_uuid() == self.place_id)?;
+                (None, PlaceId::Direct(conversation.id))
+            }
+        };
+        Some(Jump {
+            server_id,
+            workspace_id,
+            place,
+            thread_root: self.thread_root,
+            message_id,
+            position,
+        })
     }
 }
 
@@ -356,7 +397,10 @@ pub fn search_panel(
             )),
             (None, Some(recording_id), Some(line), Some((workspace_id, channel_id))) => {
                 transcripts.push(row(
-                    text::transcript_line(line),
+                    // The time of the line from the start of the recording; a server that
+                    // states none gives the number of the line.
+                    hit.start_ms
+                        .map_or_else(|| text::transcript_line(line), text::clock_of),
                     ResultTarget::Transcript {
                         workspace_id,
                         channel_id,

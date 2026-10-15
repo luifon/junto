@@ -245,7 +245,7 @@ impl ServerModel {
         let roots = self.threads.iter().map(|held| held.root_id);
         let noticed = self.notices.iter().map(|held| held.message_id);
         for message_id in roots.chain(noticed) {
-            if self.named(message_id).is_none() && !missing.contains(&message_id) {
+            if self.needs_named(message_id) && !missing.contains(&message_id) {
                 missing.push(message_id);
             }
         }
@@ -265,6 +265,9 @@ impl ServerModel {
     }
 
     fn set_named(&mut self, message_id: MessageId, named: Named) -> bool {
+        let carried = self.named_carried.len();
+        self.named_carried.retain(|held| *held != message_id);
+        let was_carried = self.named_carried.len() != carried;
         // The named messages hold a bounded weight (ADR 0747). A message that would pass
         // it is not held: its entry says that the read failed, as for a read without an
         // answer.
@@ -280,7 +283,7 @@ impl ServerModel {
             other => other,
         };
         match self.named.iter_mut().find(|(held, _)| *held == message_id) {
-            Some((_, held)) if *held == named => false,
+            Some((_, held)) if *held == named => was_carried,
             Some((_, held)) => {
                 *held = named;
                 true
@@ -288,6 +291,27 @@ impl ServerModel {
             None => {
                 self.named.push((message_id, named));
                 true
+            }
+        }
+    }
+
+    /// True when a list names the message and the state holds no current read of it.
+    pub(crate) fn needs_named(&self, message_id: MessageId) -> bool {
+        self.names(message_id)
+            && (self.named(message_id).is_none() || self.named_carried.contains(&message_id))
+    }
+
+    /// Takes the named messages of the state before a reload for display, as the
+    /// timelines are taken (ADR 0721): the lists of the new state show them while each is
+    /// read again. A message that no list of the new state names is not taken.
+    pub(crate) fn carry_named(&mut self, before: &ServerModel) {
+        if before.account.id != self.account.id {
+            return;
+        }
+        for (message_id, named) in &before.named {
+            if self.names(*message_id) && self.named(*message_id).is_none() {
+                self.named.push((*message_id, named.clone()));
+                self.named_carried.push(*message_id);
             }
         }
     }
@@ -314,6 +338,11 @@ impl ServerModel {
         self.named = named
             .into_iter()
             .filter(|(message_id, _)| self.names(*message_id))
+            .collect();
+        let carried = std::mem::take(&mut self.named_carried);
+        self.named_carried = carried
+            .into_iter()
+            .filter(|message_id| self.names(*message_id))
             .collect();
     }
 

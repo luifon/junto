@@ -112,6 +112,13 @@ impl AppState {
             .collect();
         for key in gone {
             self.open_recordings.remove(&key);
+            // A recording that is opened again is read around its line again.
+            if self
+                .lines_asked_around
+                .is_some_and(|(server_id, recording_id, _, _)| (server_id, recording_id) == key)
+            {
+                self.lines_asked_around = None;
+            }
             if let Some(server) = self.client.server(key.0) {
                 server.live().release_recording(key.1);
             }
@@ -157,6 +164,24 @@ impl AppState {
                 ) && transcript.lines > 0
             });
             let lines = &open.lines;
+            // The transcript that the side panel opened at a line is read around that
+            // line, once for each opening; the client core reads it there again after a
+            // reload (ADR 0744).
+            let at_line = self
+                .selection
+                .transcript
+                .filter(|(of, _, shown)| *of == server_id && *shown == recording_id)
+                .and(self.known.transcript_line);
+            if let Some(line) = at_line.filter(|_| has_lines) {
+                let asked = (server_id, recording_id, line, self.known.transcript_jump);
+                if self.lines_asked_around != Some(asked) {
+                    self.lines_asked_around = Some(asked);
+                    server
+                        .live()
+                        .read_transcript_lines_around(recording_id, line);
+                }
+                continue;
+            }
             if has_lines
                 && (!lines.loaded || lines.stale)
                 && !lines.reading
@@ -171,6 +196,17 @@ impl AppState {
     pub fn read_transcript_lines(&mut self, server_id: ServerId, recording_id: RecordingId) {
         if let Some(server) = self.client.server(server_id) {
             server.live().read_transcript_lines(recording_id);
+        }
+    }
+
+    /// Reads the lines of a transcript before the read ones.
+    pub fn read_earlier_transcript_lines(
+        &mut self,
+        server_id: ServerId,
+        recording_id: RecordingId,
+    ) {
+        if let Some(server) = self.client.server(server_id) {
+            server.live().read_earlier_transcript_lines(recording_id);
         }
     }
 

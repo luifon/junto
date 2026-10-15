@@ -122,6 +122,9 @@ impl Scene {
             author_id: self.ana,
             created_at: morning() - Duration::minutes(minutes),
             text: text.to_owned(),
+            position: Some(7),
+            thread_root: None,
+            start_ms: None,
         }
     }
 
@@ -134,6 +137,9 @@ impl Scene {
             author_id: self.own,
             created_at: morning() - Duration::days(2),
             text: text.to_owned(),
+            position: None,
+            thread_root: None,
+            start_ms: None,
         }
     }
 
@@ -278,6 +284,7 @@ fn results_are_listed_as_messages_and_as_transcript_lines_with_their_places() {
         }
     );
     assert_eq!(line.author, "Luca");
+    // A server that states no time of the line gives its number.
     assert_eq!(line.time, crate::text::transcript_line(212));
     assert_eq!(
         line.target,
@@ -395,6 +402,43 @@ fn a_search_at_its_bound_says_that_the_server_has_more_and_offers_no_page() {
     search.hits.truncate(50);
     let panel = scene.panel(search);
     assert!(panel.more && panel.can_read_more);
+}
+
+#[test]
+fn a_result_leads_to_its_place_and_position_and_a_line_shows_its_time() {
+    let scene = scene();
+    let mut in_general = scene.hit(scene.general.as_uuid(), "retention", 3);
+    in_general.thread_root = Some(MessageId::generate());
+    let jump = in_general.jump(scene.server_id, &scene.model).unwrap();
+    assert_eq!(jump.place, PlaceId::Channel(scene.general));
+    assert_eq!(jump.workspace_id, Some(scene.studio));
+    assert_eq!(jump.thread_root, in_general.thread_root);
+    assert_eq!(jump.position, 7);
+    assert_eq!(Some(jump.message_id), in_general.message_id);
+    // A direct conversation has no workspace.
+    let direct = scene.hit(scene.conversation.id.as_uuid(), "retention", 3);
+    let jump = direct.jump(scene.server_id, &scene.model).unwrap();
+    assert_eq!(jump.place, PlaceId::Direct(scene.conversation.id));
+    assert_eq!(jump.workspace_id, None);
+    // Without a position, or in a place that the state does not hold: no jump; the
+    // message is read for its place.
+    let mut unplaced = scene.hit(scene.general.as_uuid(), "retention", 3);
+    unplaced.position = None;
+    assert!(unplaced.jump(scene.server_id, &scene.model).is_none());
+    let elsewhere = scene.hit(Uuid::now_v7(), "retention", 3);
+    assert!(elsewhere.jump(scene.server_id, &scene.model).is_none());
+    assert!(
+        scene
+            .spoken("retention", 4)
+            .jump(scene.server_id, &scene.model)
+            .is_none()
+    );
+
+    // A line of a transcript shows its time from the start of the recording.
+    let mut spoken = scene.spoken("Diego writes the retention spec", 212);
+    spoken.start_ms = Some(3_723_000);
+    let panel = scene.panel(scene.search("retention", vec![spoken]));
+    assert_eq!(panel.transcripts[0].time, "01:02:03");
 }
 
 #[test]
