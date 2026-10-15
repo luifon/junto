@@ -156,6 +156,11 @@ fn a_ban_a_removal_and_a_forgotten_account_show_their_states(cx: &mut TestAppCon
     // A banned person can forget the account: the key goes and the server stays.
     world.run(api.ban_account(again)).unwrap();
     window.until("the second ban is shown", |window| window.shows("banned"));
+    // The notice of the ban arrives after the state of the ban and is drawn above it,
+    // which moves the actions of the state: the click waits for it.
+    window.until("the notice of the second ban is drawn", |window| {
+        window.shows("moderation-notice")
+    });
     window.click("forget-account");
     assert!(window.shows("confirm-forget"));
     window.click("confirm");
