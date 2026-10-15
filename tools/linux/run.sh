@@ -40,7 +40,7 @@ fi
 docker build --build-arg "BUILD_UID=$build_uid" --build-arg "BUILD_GID=$build_gid" -t "$image" -f "$root/tools/linux/Dockerfile" "$root/tools/linux"
 docker volume create "$cargo_volume" >/dev/null
 docker volume create "$target_volume" >/dev/null
-docker run --rm --name "$prefix-cache-init" --user 0 \
+docker run --rm --name "$prefix-cache-init" --user 0 --cpus 1 --memory 512m --memory-swap 512m \
     --mount "type=volume,src=$cargo_volume,dst=/usr/local/cargo/registry" \
     --mount "type=volume,src=$target_volume,dst=/target" \
     -e "JUNTO_BUILD_UID=$build_uid" -e "JUNTO_BUILD_GID=$build_gid" \
@@ -54,12 +54,14 @@ trap cleanup EXIT
 trap 'exit 130' INT TERM
 created="$postgres"
 docker run -d --name "$postgres" --network "$network" --network-alias postgres \
+    --cpus 0.75 --memory 1536m --memory-swap 1536m \
     -e POSTGRES_HOST_AUTH_METHOD=trust \
     "$postgres_image" \
     -c max_connections=400 -c fsync=off -c shared_preload_libraries=pg_stat_statements \
     -c pg_stat_statements.max=100000 >/dev/null
 created="$livekit $created"
 docker run -d --name "$livekit" --network "$network" --network-alias livekit \
+    --cpus 1 --memory 768m --memory-swap 768m \
     -e "LIVEKIT_CONFIG=port: 7880
 keys:
   devkey: secret
@@ -75,28 +77,34 @@ webhook:
     --dev --bind 0.0.0.0 >/dev/null
 created="$proxy $created"
 docker run -d --user 0 --name "$proxy" --network "$network" --network-alias control \
+    --cpus 0.25 --memory 128m --memory-swap 128m \
     --mount "type=bind,src=$socket,dst=/var/run/docker.sock" \
     -e JUNTO_TEST_LIVEKIT_CONTAINER="$livekit" \
     "$image" python3 /opt/junto-linux/docker-control.py >/dev/null
 created="$build $created"
 # Docker creates a missing mount point as its own user, which is root on a Linux host.
 mkdir -p "$root/spikes/test-participant/target"
-# The build gets at most four processors as a set and not as a quota. A quota stops every
-# thread of the container for the rest of each 100 ms in which it is used up, and a test
-# that measures sound in real time then measures those stops. Cargo runs one job for each
-# processor of the set; more jobs than processors only add memory.
+# The build gets at most JUNTO_LINUX_CPUS processors (default 4) as a set and not as a
+# quota, and JUNTO_LINUX_MEMORY of memory (default 6g). A quota stops every thread of the
+# container for the rest of each 100 ms in which it is used up, and a test that measures
+# sound in real time then measures those stops. Cargo runs one job for each processor of the
+# set; more jobs than processors only add memory. The other three containers have quotas:
+# 2 processors and 2.4 GiB of memory together. No container may use swap.
+wanted=${JUNTO_LINUX_CPUS:-4}
+memory=${JUNTO_LINUX_MEMORY:-6g}
+case "$wanted" in ''|*[!0-9]*|0) echo "JUNTO_LINUX_CPUS is not a count: $wanted" >&2; exit 2 ;; esac
 processors=$(docker info --format '{{.NCPU}}' 2>/dev/null || true)
-case "$processors" in ''|*[!0-9]*|0) processors=4 ;; esac
-if [ "$processors" -gt 4 ]; then processors=4; fi
+case "$processors" in ''|*[!0-9]*|0) processors=$wanted ;; esac
+if [ "$processors" -gt "$wanted" ]; then processors=$wanted; fi
 # Test service ports are not published; no host display, sound or home is mounted.
 status=0
-docker run --name "$build" --network "$network" --memory 6g --cpuset-cpus "0-$((processors - 1))" --shm-size 512m \
+docker run --name "$build" --network "$network" --memory "$memory" --memory-swap "$memory" --cpuset-cpus "0-$((processors - 1))" --shm-size 512m \
     --mount "type=bind,src=$root,dst=/src" \
     --mount "type=volume,src=$cargo_volume,dst=/usr/local/cargo/registry" \
     --mount "type=volume,src=$target_volume,dst=/target" \
     --mount "type=volume,src=$target_volume,dst=/src/spikes/test-participant/target" \
     -e "CARGO_BUILD_JOBS=$processors" -e CARGO_TARGET_DIR=/target -e CARGO_INCREMENTAL -e CARGO_TERM_COLOR \
-    -e JUNTO_UPDATE_SOURCE -e SOURCE_DATE_EPOCH \
+    -e JUNTO_UPDATE_SOURCE -e SOURCE_DATE_EPOCH -e JUNTO_CI_TOOLS \
     -e JUNTO_TEST_DATABASE_URL=postgres://postgres@postgres/postgres \
     -e JUNTO_TEST_LIVEKIT_API_URL=http://livekit:7880 \
     -e JUNTO_TEST_LIVEKIT_URL=ws://livekit:7880 \

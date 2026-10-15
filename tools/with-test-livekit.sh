@@ -12,7 +12,8 @@
 #
 # The container is named by JUNTO_TEST_LIVEKIT_CONTAINER (default junto-dev-livekit). Two
 # checkouts on one machine run their tests at the same time when each sets another name and
-# other ports.
+# other ports. JUNTO_TEST_LIVEKIT_CPUS and JUNTO_TEST_LIVEKIT_MEMORY limit the container
+# (default 2 processors and 1g, without swap).
 set -eu
 
 if [ "$#" -eq 0 ]; then
@@ -53,6 +54,8 @@ webhook:
 "
 
 docker run -d --name "$name" \
+    --cpus "${JUNTO_TEST_LIVEKIT_CPUS:-2}" --memory "${JUNTO_TEST_LIVEKIT_MEMORY:-1g}" \
+    --memory-swap "${JUNTO_TEST_LIVEKIT_MEMORY:-1g}" \
     --add-host=host.docker.internal:host-gateway \
     -e LIVEKIT_CONFIG="$config" \
     -p "127.0.0.1:${port}:7880" \

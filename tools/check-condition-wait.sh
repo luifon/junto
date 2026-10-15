@@ -19,9 +19,11 @@ if [ "$(uname)" != Darwin ]; then
 fi
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-archive=$(find "$root/target" -type f -name libwebrtc.a -path '*livekit_webrtc*' 2>/dev/null | head -n 1)
+# The target directory of Cargo: CARGO_TARGET_DIR when it is set.
+target=${CARGO_TARGET_DIR:-$root/target}
+archive=$(find "$target" -type f -name libwebrtc.a -path '*livekit_webrtc*' 2>/dev/null | head -n 1)
 if [ -z "$archive" ]; then
-    echo "no libwebrtc.a under $root/target: build the media crate first" >&2
+    echo "no libwebrtc.a under $target: build the media crate first" >&2
     exit 2
 fi
 webrtc=$(dirname "$(dirname "$archive")")

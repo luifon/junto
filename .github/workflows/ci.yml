@@ -1,7 +1,10 @@
-# The checks of every commit (ADR 0902, ADR 0905). Every action is named by its commit hash,
-# every container image by its digest, every package that a step installs with apt-get or
-# that the Linux build image installs by its version, and every other file that the Linux
-# build image downloads by its SHA-256; tools/check-pins.sh fails when one is not.
+# The checks of every commit (ADR 0902, ADR 0905). The steps of each job are the script of
+# tools/ci/ that the job calls, so that a Linux host and a macOS machine run the same steps
+# (tools/ci/ci.sh); this file prepares the runner and calls the script. Every action is named
+# by its commit hash, every container image by its digest (tools/ci/pins.sh), every package
+# that a step installs with apt-get or that the Linux build image installs by its version,
+# and every other file that the Linux build image downloads by its SHA-256;
+# tools/check-pins.sh fails when one is not.
 
 name: CI
 
@@ -18,10 +21,6 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
-  # The images that tools/with-test-postgres.sh and tools/with-test-livekit.sh start: the
-  # images of deploy/base.yaml, by digest. tools/check-pins.sh compares them.
-  JUNTO_TEST_POSTGRES_IMAGE: postgres:17.11-alpine3.24@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
-  JUNTO_TEST_LIVEKIT_IMAGE: livekit/livekit-server:v1.13.9@sha256:d0c04791bf63ca8dcea123571827d56ba9504bd57c8d5de60ee03b5408cc3154
 
 jobs:
   rust-linux:
@@ -43,31 +42,8 @@ jobs:
           df -h /
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/hostedtoolcache/CodeQL /usr/local/.ghcup /usr/share/swift
           df -h /
-      # The Rust steps run in the image of tools/linux/Dockerfile (ADR 0750): the system
-      # libraries of the client, the clang version of the call library, PipeWire for the sound
-      # tests and ffmpeg for the tests of recordings, each pinned by a dated Debian snapshot.
-      # Each command gets a new PostgreSQL and LiveKit server; Cargo's registry and target
-      # directory stay in Docker volumes between the steps.
-      - name: Build the Linux image and start its services
-        run: tools/linux-container.sh true
-      - name: Format
-        run: tools/linux-container.sh cargo fmt --all --check
-      - name: Lint
-        run: tools/linux-container.sh cargo clippy --workspace --all-targets --locked -- -D warnings
-      - name: Tests with PostgreSQL
-        run: tools/linux-container.sh cargo test --workspace --locked
-      - name: Packaging unit tests
-        run: python3 -m unittest discover -s packaging -p "test_*.py"
-      # The tarball and the AppImage of the client: their contents, the rule of the bundled
-      # libraries, the first frame of each on a virtual display, and an update and a rollback
-      # of the directory package while its program runs (ADR 0754). Each step prints its name;
-      # a failure prints the command, its exit code and both outputs.
-      - name: Linux packages
-        run: tools/linux-container.sh python3 packaging/check_linux.py
-      - name: The committed API documents equal the generated ones
-        run: |
-          tools/linux-container.sh cargo run --locked -p junto-server --bin junto-openapi
-          git diff --exit-code -- docs/api
+      - name: Rust on Linux
+        run: tools/ci/rust-linux.sh
 
   rust-other-systems:
     name: Rust on ${{ matrix.system }}
@@ -96,85 +72,21 @@ jobs:
             ~/.cargo/registry/cache
             target
           key: rust-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
-      - name: Build every target
-        run: cargo build --workspace --all-targets --locked
-      # The WebRTC library ends a blocking call when macOS refuses a condition wait; the
-      # media crate defines the two waits for the client (ADR 0786). The check runs the
-      # library of this build with and without that module and reads the built binary.
-      - name: Condition waits of the client on macOS
-        if: runner.os == 'macOS'
-        run: |
-          tools/check-condition-wait.sh target/debug/junto
-          cargo test --locked -p junto-media --lib condition_wait
-      # The tests that need PostgreSQL run on Linux only (ADR 0905).
-      # Bash ends the step at the first command that fails; PowerShell, the default shell on
-      # Windows, takes the exit code of the last command only.
-      - name: Tests that need no database
-        shell: bash
-        run: |
-          cargo test --locked -p junto-authz -p junto-protocol
-          cargo test --locked -p junto-client-core --lib --bins --test releases --test release_format --test release_roles --test release_downloads --test update_archives --test release_tool
-      - name: Packaging unit tests
-        run: python3 -m unittest discover -s packaging -p "test_*.py"
-      - name: macOS signing and installation checks
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          temporary=$(mktemp -d)
-          trap 'rm -rf "$temporary"' EXIT
-          export TMPDIR="$temporary"
-          python3 packaging/check_signing.py
-          python3 packaging/check_update.py
-          cargo clippy --locked -p junto-client-core --all-targets -- -D warnings
-      # The ZIP of the client: extracted into a folder of the account, started, updated while
-      # its program runs, and rolled back by its recovery program (ADR 0755). Each step prints
-      # its name; a failure prints the command, its exit code and both outputs.
-      - name: Windows package
-        if: runner.os == 'Windows'
-        shell: bash
-        run: python3 packaging/check_windows.py
-      # The window tests of crates/client/tests/app on the test platform of gpui (ADR 0912).
-      # This step has no database, so a test here that needs one fails. A failed test prints
-      # its name, its panic message and the log of its client.
-      - name: Window tests without a database
-        if: runner.os == 'Windows'
-        shell: bash
-        # --workspace, as in the build step, so that Cargo builds nothing again.
-        run: |
-          cargo test --locked --workspace --test app -- updates::
-      # The ZIP of PostgreSQL for Windows is kept before the tests run, so that a failed test
-      # does not lose the download.
+      # The download of PostgreSQL for Windows is kept also when a test fails.
       - id: postgres-cache
         if: runner.os == 'Windows'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/junto-postgres
           key: postgres-windows-${{ hashFiles('tools/windows/with_test_postgres.py') }}
-      - name: PostgreSQL for Windows
-        if: runner.os == 'Windows'
+      - name: Rust on ${{ matrix.system }}
         shell: bash
-        run: python3 tools/windows/with_test_postgres.py --fetch
-      - if: runner.os == 'Windows' && steps.postgres-cache.outputs.cache-hit != 'true'
+        run: tools/ci/rust-other-systems.sh
+      - if: always() && runner.os == 'Windows' && steps.postgres-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/junto-postgres
           key: postgres-windows-${{ hashFiles('tools/windows/with_test_postgres.py') }}
-      # The other window tests, against the PostgreSQL build for Windows of the version of the
-      # CI image, which tools/windows/with_test_postgres.py downloads and checks (ADR 0912).
-      # Not here: the tests of live:: need LiveKit; the tests of recordings::, the file of a
-      # message and the export of a channel need the server to store files, which it does on
-      # Unix systems only (crates/server/src/recordings/files.rs).
-      - name: Window tests with PostgreSQL
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          python3 -m unittest discover -s tools/windows -p "test_*.py"
-          python3 tools/windows/with_test_postgres.py cargo test --locked --workspace --test app -- \
-            --skip updates:: --skip live:: --skip recordings:: \
-            --skip messages::a_file_is_sent_with_a_message_and_saved_from_one \
-            --skip messages::a_pending_file_picker_cannot_retarget_an_upload \
-            --skip messages::the_picture_of_a_message_is_read_again_for_the_next_account_of_the_server \
-            --skip admin_pages::the_owner_exports_a_channel_saves_the_file_and_removes_the_export
 
   licences:
     name: Licences of the Rust dependencies
@@ -196,10 +108,8 @@ jobs:
         with:
           path: ~/.cargo/bin/cargo-deny
           key: cargo-deny-0.20.2-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}
-      - name: Install cargo-deny 0.20.2
-        run: test -x ~/.cargo/bin/cargo-deny || cargo install --locked cargo-deny@0.20.2
-      - name: Licences, sources and advisories
-        run: cargo deny check
+      - name: Licences of the Rust dependencies
+        run: tools/ci/licences.sh
 
   layout-page:
     name: Recording layout page
@@ -208,9 +118,6 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
-    defaults:
-      run:
-        working-directory: recording-layout
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -218,14 +125,8 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22.23.3
-      - name: Install the locked packages
-        run: npm ci --ignore-scripts
-      - name: Install the browser of the locked Playwright version
-        run: npx --no-install playwright install --with-deps chromium
-      - name: Build
-        run: node build.mjs
-      - name: Browser tests against a LiveKit server in Docker
-        run: node tests/run.mjs
+      - name: Recording layout page
+        run: tools/ci/layout-page.sh
 
   transcription-worker:
     name: Transcription worker
@@ -234,25 +135,14 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
-    defaults:
-      run:
-        working-directory: workers/transcription
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install uv 0.11.13
         run: pipx install uv==0.11.13
-      - name: Install Python 3.12 and the locked packages
-        run: uv sync --frozen
-      - name: Lint
-        run: |
-          uv run --frozen ruff check src tests
-          uv run --frozen ruff format --check src tests
-      - name: Types
-        run: uv run --frozen mypy
-      - name: Unit tests
-        run: uv run --frozen pytest
+      - name: Transcription worker
+        run: tools/ci/transcription-worker.sh
 
   deployment:
     name: Images and the Compose deployment
@@ -275,58 +165,5 @@ jobs:
           df -h /
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/hostedtoolcache/CodeQL /usr/local/.ghcup /usr/share/swift
           df -h /
-      - name: Fit Compose CPU limits to the runner
-        run: |
-          cpus=$(getconf _NPROCESSORS_ONLN)
-          sed -n 's/^[[:space:]]*cpus: ${\(JUNTO_[A-Z_]*_CPUS\):-\([0-9][0-9]*\)}/\1 \2/p' deploy/base.yaml |
-          while read -r setting limit; do
-            if [ "$limit" -gt "$cpus" ]; then limit=$cpus; fi
-            echo "${setting}=$limit" >> "$GITHUB_ENV"
-          done
-      - name: Pinned versions agree
-        run: tools/check-pins.sh
-      - name: Workflow files
-        run: >
-          docker run --rm --network none -v "$PWD:/repository:ro" -w /repository
-          rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
-          -color
-      - name: Shell scripts
-        run: >
-          docker run --rm --network none -v "$PWD:/repository:ro" -w /repository
-          koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d
-          --severity=warning
-          tools/serial.sh tools/check-pins.sh tools/with-test-postgres.sh tools/with-test-livekit.sh
-          tools/linux-container.sh tools/linux/run.sh tools/linux/session.sh
-          packaging/release.sh packaging/release_locked.sh packaging/release_linux.sh packaging/sign.sh
-          deploy/generate-secrets.sh deploy/backup.sh deploy/restore.sh deploy/upgrade-undo.sh
-          deploy/database-user.sh deploy/check-limits.sh
-          deploy/images/server/junto-transcribe-handover
-          deploy/images/server/junto-volumes deploy/images/worker/junto-worker-loop
-          deploy/images/recorder/start.sh deploy/images/link/entrypoint.sh
-          deploy/tests/compose-config.sh deploy/tests/smoke.sh deploy/tests/entry.sh
-          deploy/tests/one-host.sh deploy/tests/two-hosts.sh deploy/tests/backup-restore.sh
-          deploy/tests/upgrade.sh
-          deploy/tests/recorder-start.sh deploy/tests/recording.sh deploy/tests/recording-prepare.sh
-          deploy/tests/transcribe-handover.sh deploy/tests/transcribe-handover-inside.sh
-      - name: Compose files of every form
-        run: deploy/tests/compose-config.sh
-      - name: Server image
-        run: docker build -f deploy/images/server/Dockerfile -t junto-ci-server .
-      - name: Link image
-        run: docker build -t junto-ci-link deploy/images/link
-      - name: Hand-over of a transcription job between two containers
-        run: deploy/tests/transcribe-handover.sh junto-ci-server
-      - name: The start script of the recorder saves partial files
-        run: deploy/tests/recorder-start.sh junto-ci-server
-      - name: The entry selects by server name
-        run: deploy/tests/entry.sh junto-ci-entry
-      - name: The local form starts, with the worker image
-        run: deploy/tests/smoke.sh junto-ci
-      - name: Backup of a running server, and restore into an empty deployment
-        run: deploy/tests/backup-restore.sh junto-ci-backup
-      - name: Upgrade from an earlier release, and the way back
-        run: deploy/tests/upgrade.sh junto-ci-upgrade
-      - name: The one-host form starts behind the entry
-        run: deploy/tests/one-host.sh junto-ci-one
-      - name: The two-host form starts as two projects joined by the link
-        run: deploy/tests/two-hosts.sh junto-ci-two
+      - name: Images and the Compose deployment
+        run: tools/ci/deployment.sh
