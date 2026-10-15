@@ -463,3 +463,130 @@ fn an_unanswered_outgoing_call_ends_even_when_the_recipient_muted_it(cx: &mut Te
             .is_none()
     );
 }
+
+/// The server finds the ring unanswered before the deadline of this device runs out: the
+/// call ends with the outcome "no answer" as it does at the deadline of the device.
+#[gpui::test]
+#[ignore = "needs PostgreSQL and LiveKit"]
+fn an_outgoing_call_that_the_server_finds_unanswered_first_ends_with_no_answer(
+    cx: &mut TestAppContext,
+) {
+    use sqlx::Connection;
+    let world = World::new();
+    let server = world.server_with_media("Unanswered on the server");
+    let admin = world.owner(&server);
+    let _recipient = admin.caller(&world);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
+    let server_id = admin.handle.id();
+    let other = admin.handle.account().unwrap();
+    window.state.update(&mut window.cx, |state, cx| {
+        state.open_conversation(server_id, other, cx)
+    });
+    window.until("conversation ready", |window| {
+        window.shows("start-direct-call")
+    });
+    window.click("start-direct-call");
+    window.until("outgoing call connected", |window| {
+        window
+            .view()
+            .call
+            .is_some_and(|call| call.phase == Phase::Connected)
+    });
+    let connected = std::time::Instant::now();
+    // Move the deadline of the ring into the past; the maintenance of the server resolves
+    // it long before the sixty seconds of this device.
+    world.run(async {
+        let mut database = sqlx::PgConnection::connect(&server.database_url)
+            .await
+            .unwrap();
+        sqlx::query("update call_invitations set expires_at = now() - interval '1 second'")
+            .execute(&mut database)
+            .await
+            .unwrap();
+    });
+    window.until("the unanswered call ends", |window| {
+        window.view().call.is_none()
+    });
+    // The resolution of the server ended the call, and not the deadline of this device.
+    assert!(connected.elapsed() < std::time::Duration::from_secs(30));
+    assert!(window.shows("direct-call-history"));
+    assert_eq!(
+        window.state.read_with(&window.cx, |state, _| state
+            .direct_calls()
+            .finished
+            .get(&(server_id, other))
+            .copied()),
+        Some(junto_client::state::direct::RingOutcome::Missed)
+    );
+}
+
+/// The other person declines while the answer of the server to the join is on its way:
+/// the device learns of the decline before it has the call. The call ends as declined
+/// when it arrives.
+#[gpui::test]
+#[ignore = "needs PostgreSQL and LiveKit"]
+fn a_decline_before_the_answer_to_the_join_ends_the_outgoing_call(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server_with_media("Declined before the answer");
+    let admin = world.owner(&server);
+    let _caller = admin.caller(&world);
+    let proxy = world.run(crate::support::FaultProxy::start(&server));
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Member");
+    let server_id = admin.handle.id();
+    let other = admin.handle.account().unwrap();
+    window.state.update(&mut window.cx, |state, cx| {
+        state.open_conversation(server_id, other, cx)
+    });
+    window.until("conversation ready", |window| {
+        window.shows("start-direct-call")
+    });
+    proxy.hold_answer_ending("POST", &format!("/direct-calls/{other}/join"));
+    window.click("start-direct-call");
+    window.until("ring arrives", |_| {
+        admin
+            .handle
+            .live()
+            .view()
+            .model
+            .is_some_and(|model| model.incoming_invitations().next().is_some())
+    });
+    let invitation = admin
+        .handle
+        .live()
+        .view()
+        .model
+        .unwrap()
+        .incoming_invitations()
+        .next()
+        .unwrap()
+        .id;
+    world
+        .run(admin.handle.api().refuse_call_invitation(invitation))
+        .unwrap();
+    window.until("the window holds the decline", |window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state
+                .direct_calls()
+                .rings
+                .get(&(server_id, invitation))
+                .is_some_and(|ring| {
+                    ring.outcome == junto_client::state::direct::RingOutcome::Declined
+                })
+        })
+    });
+    assert_eq!(proxy.answers_waiting(), 1);
+    assert!(window.view().call.is_none());
+    proxy.release();
+    window.until("the call ends as declined when it arrives", |window| {
+        window.state.read_with(&window.cx, |state, _| {
+            state
+                .direct_calls()
+                .finished
+                .get(&(server_id, other))
+                .copied()
+                == Some(junto_client::state::direct::RingOutcome::Declined)
+        })
+    });
+    window.until("the call is left", |window| window.view().call.is_none());
+    assert!(window.shows("direct-call-history"));
+}

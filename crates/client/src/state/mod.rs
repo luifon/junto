@@ -1438,27 +1438,14 @@ impl AppState {
                     _ => {}
                 }
             }
-            // An invitation that the person made was declined, or nobody answered it.
+            // An invitation that the person made was declined, or nobody answered it. A
+            // direct call whose ring ended so ends in the reconciliation of direct calls,
+            // which also runs when the call itself arrives later.
             Event::CallInvitationResolved {
                 invitation_id,
                 outcome,
             } => {
                 self.direct.resolve(server_id, *invitation_id, *outcome);
-                let outgoing_ended = self
-                    .direct
-                    .rings
-                    .get(&(server_id, *invitation_id))
-                    .is_some_and(|ring| {
-                        !ring.incoming
-                            && own_call == Some(ring.invitation.call_id)
-                            && matches!(
-                                outcome,
-                                InvitationOutcome::Declined | InvitationOutcome::Expired
-                            )
-                    });
-                if outgoing_ended {
-                    self.leave_call(cx);
-                }
                 self.reconcile_direct(cx);
                 cx.notify();
                 let made = self.made_invitations.remove(&(server_id, *invitation_id));

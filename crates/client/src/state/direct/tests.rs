@@ -248,3 +248,53 @@ fn what_is_held_of_a_server_is_dropped_with_its_account() {
         assert!(calls.finished.is_empty() && calls.rings.is_empty());
     }
 }
+
+#[test]
+fn the_outcome_of_a_call_is_the_one_of_its_newest_outgoing_ring() {
+    let (server, callee, first) = ring();
+    let caller = first.invited_by;
+    let mut calls = DirectCalls::default();
+    calls.see(server, caller, &first, Instant::now());
+    calls.resolve(server, first.id, InvitationOutcome::Declined);
+    // A later ring of the same call waits.
+    let later = CallInvitation {
+        id: CallInvitationId::generate(),
+        created_at: first.created_at + time::Duration::seconds(5),
+        expires_at: first.expires_at + time::Duration::seconds(5),
+        ..first.clone()
+    };
+    calls.see(server, caller, &later, Instant::now());
+    // A declined ring of an older call at the same place, and an incoming ring of this
+    // call, say nothing of this call.
+    let older = CallInvitation {
+        id: CallInvitationId::generate(),
+        call_id: CallId::generate(),
+        created_at: later.created_at + time::Duration::seconds(5),
+        ..first.clone()
+    };
+    calls.see(server, caller, &older, Instant::now());
+    calls.resolve(server, older.id, InvitationOutcome::Declined);
+    assert_eq!(
+        calls.outgoing_outcome(server, first.call_id),
+        Some(RingOutcome::Waiting)
+    );
+    let incoming = CallInvitation {
+        id: CallInvitationId::generate(),
+        account_id: caller,
+        invited_by: callee,
+        created_at: later.created_at + time::Duration::seconds(10),
+        ..first.clone()
+    };
+    calls.see(server, caller, &incoming, Instant::now());
+    calls.resolve(server, incoming.id, InvitationOutcome::Declined);
+    assert_eq!(
+        calls.outgoing_outcome(server, first.call_id),
+        Some(RingOutcome::Waiting)
+    );
+    calls.resolve(server, later.id, InvitationOutcome::Expired);
+    assert_eq!(
+        calls.outgoing_outcome(server, first.call_id),
+        Some(RingOutcome::Missed)
+    );
+    assert_eq!(calls.outgoing_outcome(server, CallId::generate()), None);
+}

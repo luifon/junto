@@ -80,11 +80,20 @@ impl Shell {
             }
         };
 
+        // The notices of the server are drawn above its content. A state panel draws them
+        // under its actions, so that a notice that arrives later does not move an action
+        // that is already shown (ADR 0732).
+        let mut notices = Some(self.render_notices(view, &theme, cx));
+        let mut stated = |panel: StatePanel| {
+            panel
+                .after_actions(notices.take().unwrap_or_default())
+                .into_any_element()
+        };
         let (body, side): (AnyElement, Option<AnyElement>) = match (&view.selected, workspace) {
             (None, _) => (
-                StatePanel::new(text::NO_SERVER_TITLE, text::NO_SERVER)
-                    .selector("no-server")
-                    .into_any_element(),
+                stated(
+                    StatePanel::new(text::NO_SERVER_TITLE, text::NO_SERVER).selector("no-server"),
+                ),
                 None,
             ),
             (Some(server), Some(shown)) => match (call, channel, shown.conversation.as_ref()) {
@@ -108,25 +117,25 @@ impl Shell {
                     side_of(self, shown, window, cx),
                 ),
                 (None, None, None) => (
-                    StatePanel::new(text::NO_CHANNEL_TITLE, text::NO_CHANNELS)
-                        .selector("no-channel")
-                        .into_any_element(),
+                    stated(
+                        StatePanel::new(text::NO_CHANNEL_TITLE, text::NO_CHANNELS)
+                            .selector("no-channel"),
+                    ),
                     side_of(self, shown, window, cx),
                 ),
             },
             (Some(server), None) => (
                 match server.content {
-                    Content::NoWorkspace => {
+                    Content::NoWorkspace => stated(
                         StatePanel::new(text::NO_CHANNEL_TITLE, text::NO_WORKSPACES)
-                            .selector("no-workspace")
-                            .into_any_element()
-                    }
+                            .selector("no-workspace"),
+                    ),
                     // A server that waits for a device link shows its code and the key
                     // of this device (ADR 0782).
-                    _ => match self.render_link_wait_panel(server, cx) {
+                    _ => stated(match self.render_link_wait_panel(server, cx) {
                         Some(panel) => panel,
-                        None => self.render_server_state(server, cx).into_any_element(),
-                    },
+                        None => self.render_server_state(server, cx),
+                    }),
                 },
                 None,
             ),
@@ -149,7 +158,7 @@ impl Shell {
                     .flex_col()
                     .flex_1()
                     .min_w_0()
-                    .children(self.render_notices(view, &theme, cx))
+                    .children(notices.into_iter().flatten())
                     .child(body),
             )
             .when_some(side, |split, side| {
@@ -871,7 +880,7 @@ impl Shell {
         &mut self,
         server: &SelectedServer,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    ) -> StatePanel {
         let server_id = server.id;
         let busy = server.busy
             || self

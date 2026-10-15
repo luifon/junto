@@ -356,25 +356,42 @@ impl RenderOnce for WaitBox {
 }
 
 /// The statement that fills the main area when a server or a channel has no content to
-/// show: a heading with a mark, a sentence, and the actions that the state accepts.
+/// show: a heading with a mark, a sentence or another detail, and the actions that the
+/// state accepts.
+///
+/// What arrives after the statement is drawn (the failure of an action, and the notices
+/// of the server) is drawn under the actions, in a part that scrolls. The heading, the
+/// detail and the actions stay centred in the main area at a place that does not depend
+/// on that part, so an arriving line never moves an action under the pointer.
 #[derive(IntoElement)]
 pub struct StatePanel {
     title: SharedString,
-    text: SharedString,
+    detail: Detail,
     icon: Option<Icon>,
     error: Option<SharedString>,
     actions: Vec<AnyElement>,
+    after: Vec<AnyElement>,
     selector: Option<&'static str>,
 }
 
 impl StatePanel {
     pub fn new(title: impl Into<SharedString>, text: impl Into<SharedString>) -> Self {
+        Self::stating(title, Detail::Sentence(text.into()))
+    }
+
+    /// A statement whose detail under the heading is `detail` in place of a sentence.
+    pub fn with_detail(title: impl Into<SharedString>, detail: impl IntoElement) -> Self {
+        Self::stating(title, Detail::Element(detail.into_any_element()))
+    }
+
+    fn stating(title: impl Into<SharedString>, detail: Detail) -> Self {
         Self {
             title: title.into(),
-            text: text.into(),
+            detail,
             icon: None,
             error: None,
             actions: Vec::new(),
+            after: Vec::new(),
             selector: None,
         }
     }
@@ -384,7 +401,7 @@ impl StatePanel {
         self
     }
 
-    /// Why the last action of the state failed.
+    /// Why the last action of the state failed. It is drawn under the actions.
     pub fn error(mut self, error: Option<SharedString>) -> Self {
         self.error = error;
         self
@@ -395,73 +412,103 @@ impl StatePanel {
         self
     }
 
+    /// Elements that are drawn under the actions and the failure, such as the notices of
+    /// the server.
+    pub fn after_actions(mut self, elements: impl IntoIterator<Item = AnyElement>) -> Self {
+        self.after.extend(elements);
+        self
+    }
+
     pub fn selector(mut self, selector: &'static str) -> Self {
         self.selector = Some(selector);
         self
     }
 }
 
+/// What a state panel shows under its heading.
+enum Detail {
+    Sentence(SharedString),
+    Element(AnyElement),
+}
+
 impl RenderOnce for StatePanel {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = theme(cx);
         let colors = theme.colors;
+        let stated = div()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .items_center()
+            .max_w(u(520.0))
+            .child(
+                div()
+                    .id("state-title")
+                    .role(Role::Heading)
+                    .aria_level(2)
+                    .aria_label(self.title.clone())
+                    .flex()
+                    .items_center()
+                    .gap(u(10.0))
+                    .typeface(theme.types.state_title, &theme)
+                    .ink(colors.ink)
+                    .text_center()
+                    .when_some(self.icon, |title, shown| {
+                        title.child(icon(shown, 22.0, colors.bronze))
+                    })
+                    .child(self.title),
+            )
+            .child(match self.detail {
+                Detail::Sentence(text) => div()
+                    .mt(u(8.0))
+                    .typeface(theme.types.notice, &theme)
+                    .ink(colors.ink_2)
+                    .text_center()
+                    .child(text)
+                    .into_any_element(),
+                Detail::Element(element) => element,
+            })
+            .when(!self.actions.is_empty(), |column| {
+                column.child(
+                    div()
+                        .mt(u(14.0))
+                        .flex()
+                        .flex_wrap()
+                        .justify_center()
+                        .gap(u(8.0))
+                        .children(self.actions),
+                )
+            });
+        // The space above the statement and the part under it grow alike from nothing,
+        // so the statement is centred whatever the part under it holds. The part under it
+        // keeps a height of its own also when it is empty, so that a short main area
+        // shows the start of what arrives there without a move of the statement.
+        let after = div()
+            .id("state-after")
+            .flex_1()
+            .min_h(u(96.0))
+            .w_full()
+            .max_w(u(520.0))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .when_some(self.error, |part, error| {
+                part.child(div().mt(u(12.0)).child(Notice::error(error)))
+            })
+            .children(self.after);
         div()
             .flex_1()
             .min_h_0()
             .flex()
             .flex_col()
             .items_center()
-            .justify_center()
             .px(u(24.0))
             .pb(u(48.0))
             .when_some(self.selector, |panel, selector| {
                 panel.debug_selector(|| selector.to_owned())
             })
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .max_w(u(520.0))
-                    .child(
-                        div()
-                            .id("state-title")
-                            .role(Role::Heading)
-                            .aria_level(2)
-                            .aria_label(self.title.clone())
-                            .flex()
-                            .items_center()
-                            .gap(u(10.0))
-                            .typeface(theme.types.state_title, &theme)
-                            .ink(colors.ink)
-                            .text_center()
-                            .when_some(self.icon, |title, shown| {
-                                title.child(icon(shown, 22.0, colors.bronze))
-                            })
-                            .child(self.title),
-                    )
-                    .child(
-                        div()
-                            .mt(u(8.0))
-                            .typeface(theme.types.notice, &theme)
-                            .ink(colors.ink_2)
-                            .text_center()
-                            .child(self.text),
-                    )
-                    .when_some(self.error, |column, error| {
-                        column.child(div().mt(u(12.0)).child(Notice::error(error)))
-                    })
-                    .when(!self.actions.is_empty(), |column| {
-                        column.child(
-                            div()
-                                .mt(u(14.0))
-                                .flex()
-                                .flex_wrap()
-                                .justify_center()
-                                .gap(u(8.0))
-                                .children(self.actions),
-                        )
-                    }),
-            )
+            .child(div().flex_1().min_h_0())
+            .child(stated)
+            .child(after)
     }
 }

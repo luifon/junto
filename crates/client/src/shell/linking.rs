@@ -21,7 +21,7 @@ use crate::state::linking::{
 use crate::state::view::{SelectedServer, ServerStatus};
 use crate::text;
 use crate::theme::{Theme, theme, u};
-use crate::ui::{Button, ButtonKind, Field, FieldEvent, Notice, StyleExt, icon};
+use crate::ui::{Button, ButtonKind, Field, FieldEvent, Notice, StatePanel, StyleExt, icon};
 
 /// The most characters of a link text that its box draws. "Copy" takes the whole text.
 const SHOWN_CHARACTERS: usize = 480;
@@ -1047,63 +1047,24 @@ impl Shell {
         &mut self,
         server: &SelectedServer,
         cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
+    ) -> Option<StatePanel> {
         if !matches!(server.status, ServerStatus::WaitingForLink { .. }) {
             return None;
         }
         let wait = self.state.read(cx).link_wait(server.id)?;
         let theme = theme(cx);
-        let colors = theme.colors;
         let error = server.error.as_ref().map(text::account::link_error);
         let [cancel, new_code] = self.link_wait_actions(server.id, server.busy, cx);
         Some(
-            div()
-                .flex_1()
-                .min_h_0()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .px(u(24.0))
-                .pb(u(48.0))
-                .debug_selector(|| "waiting-for-link".to_owned())
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .max_w(u(520.0))
-                        .child(
-                            div()
-                                .id("state-title")
-                                .role(Role::Heading)
-                                .aria_level(2)
-                                .aria_label(text::WAITING_FOR_LINK_TITLE)
-                                .flex()
-                                .items_center()
-                                .gap(u(10.0))
-                                .typeface(theme.types.state_title, &theme)
-                                .ink(colors.ink)
-                                .text_center()
-                                .child(icon(Icon::Clock, 22.0, colors.bronze))
-                                .child(text::WAITING_FOR_LINK_TITLE),
-                        )
-                        .child(link_wait_block(&wait, true, &theme).mt(u(12.0)))
-                        .when_some(error, |column, error| {
-                            column.child(div().mt(u(12.0)).child(Notice::error(error)))
-                        })
-                        .child(
-                            div()
-                                .mt(u(14.0))
-                                .flex()
-                                .flex_wrap()
-                                .justify_center()
-                                .gap(u(8.0))
-                                .child(new_code)
-                                .child(cancel),
-                        ),
-                )
-                .into_any_element(),
+            StatePanel::with_detail(
+                text::WAITING_FOR_LINK_TITLE,
+                link_wait_block(&wait, true, &theme).mt(u(12.0)),
+            )
+            .icon(Icon::Clock)
+            .selector("waiting-for-link")
+            .error(error.map(SharedString::from))
+            .action(new_code)
+            .action(cancel),
         )
     }
 }

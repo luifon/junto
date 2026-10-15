@@ -153,14 +153,28 @@ fn a_ban_a_removal_and_a_forgotten_account_show_their_states(cx: &mut TestAppCon
     let again = window.view().person.account_id.unwrap();
     assert_ne!(again, account_id);
 
-    // A banned person can forget the account: the key goes and the server stays.
+    // The device reads the notice of a ban after it shows the ban. The notice arrives
+    // under the actions of the state and moves none of them (ADR 0732): a click aimed at
+    // an action while the notice arrives lands on that action.
+    let read = "/api/v1/auth/moderation-notices";
+    let read_before = proxy.seen(read).len();
+    proxy.hold(read);
     world.run(api.ban_account(again)).unwrap();
     window.until("the second ban is shown", |window| window.shows("banned"));
-    // The notice of the ban arrives after the state of the ban and is drawn above it,
-    // which moves the actions of the state: the click waits for it.
+    window.until("the read of the notice of the second ban waits", |_| {
+        proxy.seen(read).len() > read_before
+    });
+    assert!(!window.shows("moderation-notice"));
+    let actions = ["check-server", "forget-account", "remove-server"];
+    let shown = actions.map(|action| window.cx.debug_bounds(action));
+    assert!(shown.iter().all(Option::is_some));
+    proxy.release();
     window.until("the notice of the second ban is drawn", |window| {
         window.shows("moderation-notice")
     });
+    assert_eq!(actions.map(|action| window.cx.debug_bounds(action)), shown);
+
+    // A banned person can forget the account: the key goes and the server stays.
     window.click("forget-account");
     assert!(window.shows("confirm-forget"));
     window.click("confirm");

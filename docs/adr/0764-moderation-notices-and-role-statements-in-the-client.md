@@ -14,7 +14,7 @@ Notices:
 
 - The snapshot answer is read with its notices; the state holds the newest 100, each name cut to 100 characters and each message to 1,000. No event changes them.
 - A device whose account was removed from the server or banned reads the notices of its key with a proof, once each time that the server comes into that state.
-- The main area shows above its content, for the account of a server: each removal from a workspace that the person has not put away, with the name of the workspace at the time, the day, and the message; and, for a removed or banned account, the newest notice of that action. Text of the notice is shown without control characters.
+- The main area shows above its content, for the account of a server: each removal from a workspace that the person has not put away, with the name of the workspace at the time, the day, and the message; and, for a removed or banned account, the newest notice of that action. When the main area shows a state panel, the notices are drawn under its actions (ADR 0732). Text of the notice is shown without control characters.
 - "Close" puts a notice of a removal from a workspace away. The server book keeps the identifiers of the newest 100 notices that were put away, so a notice does not return after a restart. The book is at format version 3 (ADR 0710).
 
 The message to the person:

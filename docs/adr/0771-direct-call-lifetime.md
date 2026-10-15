@@ -12,6 +12,7 @@ An unanswered direct call may have no invitation because the recipient muted the
 
 - An outgoing direct call waits at most sixty seconds for the other participant, whether or not an invitation exists. The device measures this interval with a monotonic clock. It leaves when the interval expires and shows No answer.
 - Once the other participant has joined, their departure ends this device's direct call. A temporarily unavailable participant snapshot does not count as a departure.
+- Before the other participant has joined, a decline or an expiry of the ring of the call ends the outgoing call at once, with the outcome Declined or No answer. The ring belongs to the call when its invitation names the call that the server state names as the own call of the account; the server sends that call in the same change as the ring. The device does not decide this when the resolution arrives, but each time it reconciles its direct calls: after each event, each change of its own call, and each second. A resolution that arrives before the answer to the join, or before the media connection, therefore ends the call as soon as the call exists on the device. Each way of ending records the same outcome in the history, so the history does not depend on whether the server or the device reached the deadline first.
 - An incoming invitation gets a local monotonic ringing interval bounded by the duration supplied by the server and by sixty seconds. Absolute server timestamps do not control the device's ring timer.
 - The server remains authoritative for acceptance, refusal and expiry. A reload that no longer contains an invitation stops its ring without inventing a missed-call outcome. A later authoritative resolution can supply the outcome.
 - Decline stops the local ring immediately. An incoming caller cancellation is a missed call for the recipient. Outgoing unanswered calls say No answer.
@@ -21,3 +22,5 @@ An unanswered direct call may have no invitation because the recipient muted the
 ## Consequences
 
 Quiet and muted conversations have the same unanswered behavior for the caller. A device that receives an old pending snapshot can ring for at most one local interval, and subsequent authoritative events or reloads end it sooner. Local history is not a durable record and does not infer what happened on another device.
+
+Tests: `state::direct::lifetime::tests` in `crates/client`, and in the window live tier `live::direct::an_outgoing_call_that_the_server_finds_unanswered_first_ends_with_no_answer` and `live::direct::a_decline_before_the_answer_to_the_join_ends_the_outgoing_call`, which holds the answer of the server to the join until the device holds the decline.

@@ -29,7 +29,9 @@ pub struct Ring {
 #[derive(Default)]
 pub struct DirectCalls {
     pub rings: HashMap<(ServerId, CallInvitationId), Ring>,
-    active: Option<(junto_media::calls::CallTarget, lifetime::Lifetime)>,
+    /// The direct call of this device, by the identity that the server gave the device
+    /// for it, and its lifetime.
+    active: Option<(String, lifetime::Lifetime)>,
     pub finished: HashMap<(ServerId, AccountId), RingOutcome>,
     early: HashMap<(ServerId, CallInvitationId), (InvitationOutcome, Instant)>,
     voice_invitations: HashMap<(ServerId, CallInvitationId), Instant>,
@@ -176,6 +178,20 @@ impl DirectCalls {
                 ring.outcome = RingOutcome::Missed;
             }
         }
+    }
+    /// The outcome of the newest ring that this account made for the call `call`.
+    fn outgoing_outcome(
+        &self,
+        server: ServerId,
+        call: junto_client_core::protocol::ids::CallId,
+    ) -> Option<RingOutcome> {
+        self.rings
+            .iter()
+            .filter(|((held, _), ring)| {
+                *held == server && !ring.incoming && ring.invitation.call_id == call
+            })
+            .max_by_key(|(_, ring)| ring.invitation.created_at)
+            .map(|(_, ring)| ring.outcome)
     }
     pub fn ringing(&self) -> bool {
         self.rings
@@ -334,29 +350,42 @@ impl super::AppState {
         } else {
             low_account_id
         };
+        // A new call to the same person can follow the last one without a moment in no
+        // call: the lifetime belongs to the identity of the call, not to its place.
         if self
             .direct
             .active
             .as_ref()
-            .is_none_or(|(held, _)| *held != target)
+            .is_none_or(|(held, _)| *held != call.identity)
         {
-            self.direct.active = Some((target, lifetime::Lifetime::new(Instant::now())));
+            self.direct.active = Some((
+                call.identity.clone(),
+                lifetime::Lifetime::new(Instant::now()),
+            ));
             self.direct.finished.remove(&(target.server_id, other));
         }
-        let present = self
+        let model = self
             .client
             .server(target.server_id)
-            .and_then(|server| server.live().view().model)
-            .and_then(|model| {
-                model
-                    .call_at(&target.place)
-                    .map(|call| call.participant(other).is_some())
-            });
+            .and_then(|server| server.live().view().model);
+        let present = model.as_ref().and_then(|model| {
+            model
+                .call_at(&target.place)
+                .map(|call| call.participant(other).is_some())
+        });
+        // The ring of this call is found by the call that the state of the server names
+        // for this device. The server tells that call in the same change as the ring, so
+        // it does not depend on when the media connection of the call is made.
+        let ring = model
+            .as_ref()
+            .and_then(|model| model.own_call.as_ref())
+            .filter(|own| own.place == target.place)
+            .and_then(|own| self.direct.outgoing_outcome(target.server_id, own.call_id));
         let outcome = self
             .direct
             .active
             .as_mut()
-            .and_then(|(_, lifetime)| lifetime.observe(present, Instant::now()));
+            .and_then(|(_, lifetime)| lifetime.observe(present, ring, Instant::now()));
         if let Some(outcome) = outcome {
             self.direct
                 .finished

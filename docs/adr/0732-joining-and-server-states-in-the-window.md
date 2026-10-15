@@ -37,6 +37,7 @@ States of a server:
 - A server whose connection is interrupted keeps its lists, and a line above the profile strip says that they are the last known state (ADR 0719).
 - A server that this device has an account on and that cannot be reached is contacted again every 20 seconds (ADR 0730).
 - A recovery that the device has not acknowledged is a notice above the content of its server, with the time in UTC and the button "I have seen this" (ADR 0118).
+- A state panel (the state of a server, no server, no workspace, no channel, the wait for a device link) does not move an action that it shows when content arrives later. The heading, the sentence and the actions are centred in the main area by two parts of equal growth above and under them. The failure of the last action and the notices of the server (the recovery notice, the moderation notices of ADR 0764 and the other notices above the content) are drawn in the part under the actions, which scrolls when they do not fit. A notice that is read after the state is shown, such as the notice of a ban that the device reads with a proof of its key, therefore leaves every action at its place, and a click aimed at an action while the notice arrives reaches that action. Above content that is not a state panel the notices stay above the content.
 - The menu of the selected server sets its connection mode and removes the server from this device. Removing and forgetting ask before they act, because neither can be undone on the device (ADR 0712). The question has a fixed title, and the name of the server, which the server chose, has a line of its own that is cut at the width of the dialog.
 
 ## Consequences
@@ -48,3 +49,5 @@ States of a server:
 - A ban, a removal and an unban are shown without an action of the person when the event stream tells them, and at the next check otherwise.
 - The time of a recovery is shown in UTC until the client reads the time zone of the system.
 - A typed code is held by the text input of the component library, in memory that this crate cannot overwrite (ADR 0714 states the same of the HTTP library). A code is used once.
+- The failure of an action of a state panel is drawn under its actions, not between the sentence and the actions.
+- Test: `states::a_ban_a_removal_and_a_forgotten_account_show_their_states` in `crates/client` holds the read of the notice of a ban, and requires that the actions of the state have the same bounds before and after the notice is drawn.
