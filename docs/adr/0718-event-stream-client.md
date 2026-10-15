@@ -58,6 +58,7 @@ Replacing the state:
 - Events that arrive between the cause and the `subscribed` answer are not applied. Their effect is in the snapshot, or the server delivers them again after the cursor of the snapshot.
 - The other design, to apply events while the snapshot is read and to apply the later ones again afterwards, needs a rule for every event about which copy it is applied to. One path without that rule was chosen; its cost is that the state does not change for the time of one request.
 - A snapshot request that fails is sent again after the waits below.
+- A replacement that the server causes (every cause above except the change of level) is paced. The first one after a state that stayed for 30 seconds reads the snapshot at once. Each further one before the state stayed for 30 seconds waits before its snapshot: 1 second, and each further one twice as long, up to 60 seconds, with the random part of the waits below. A server that answers every snapshot at once with `resync` or `permissions_changed` so gets one snapshot read in every 30 to 60 seconds, and a server that waits 30 seconds after each snapshot gets one read in every 30 seconds, and not one after each snapshot. A replacement for another level and a refresh that a reader asks for do not wait.
 - What the snapshot does not carry is discarded with the old state (ADR 0719).
 
 Loss of the connection:

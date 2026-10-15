@@ -83,6 +83,30 @@ pub const NO_CHANNELS: &str = "No channel is visible to your account.";
 pub const YOU: &str = "you";
 pub const UNKNOWN_PERSON: &str = "Unknown person";
 
+/// The most characters of a name or a label of a server that the window shows: the
+/// longest name of a file that a server accepts.
+pub const LONGEST_LABEL: usize = 200;
+
+/// A name or a label that a server states, as the window shows it: the name of an
+/// account, a member, a role and a file. A server is not trusted (ADR 0714): control
+/// characters and line breaks, and the characters that change the direction of the text
+/// after them (embeddings, overrides and isolates), are left out, and the text is cut at
+/// [`LONGEST_LABEL`] characters. Right-to-left letters stay.
+pub fn label(raw: &str) -> String {
+    raw.chars()
+        .filter(|character| !character.is_control() && !changes_direction(*character))
+        .take(LONGEST_LABEL)
+        .collect()
+}
+
+/// The characters of Unicode that change the direction of the text that follows them.
+fn changes_direction(character: char) -> bool {
+    matches!(
+        character,
+        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
+}
+
 pub const MICROPHONE_CLOSED: &str = "Microphone closed";
 pub const MICROPHONE_OPEN: &str = "Microphone open";
 pub const SPEAKING: &str = "Speaking";
@@ -1776,6 +1800,11 @@ pub fn transfer_failure(failure: junto_client_core::transfers::TransferFailure) 
             "The server ended its answer before the file was complete, several times in a row."
                 .to_owned()
         }
+        TransferFailure::OutOfStep => {
+            "The server did not confirm the parts of the file that were sent, several times \
+             in a row."
+                .to_owned()
+        }
     }
 }
 
@@ -2406,6 +2435,23 @@ mod tests {
     use junto_client_core::protocol::ids::{AccountId, ServerId};
 
     use super::*;
+
+    #[test]
+    fn all_remote_label_sources_use_display_sanitization() {
+        // Line breaks, other control characters and the characters that turn the
+        // direction of the text after them are left out.
+        assert_eq!(label("Ana\u{202e}gpj.exe"), "Anagpj.exe");
+        assert_eq!(label("line\nbreak\r\u{7}"), "linebreak");
+        assert_eq!(
+            label("\u{2066}a\u{2067}b\u{2068}c\u{2069}\u{202a}d\u{202b}e\u{202c}\u{202d}"),
+            "abcde"
+        );
+        assert_eq!(label("\u{200e}x\u{200f}y\u{061c}"), "xy");
+        // Right-to-left letters stay.
+        assert_eq!(label("שלום سلام"), "שלום سلام");
+        // A long name is cut.
+        assert_eq!(label(&"n".repeat(1_000)).chars().count(), LONGEST_LABEL);
+    }
 
     fn every_flow_error() -> Vec<FlowError> {
         let transport = |kind| FlowError::Unreachable(TransportError::new(kind, "detail"));

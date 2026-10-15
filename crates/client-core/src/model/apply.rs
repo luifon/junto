@@ -69,6 +69,10 @@ impl Part {
 pub(crate) struct Follow {
     /// The state must be replaced by a snapshot (ADR 0207, ADR 0208, ADR 0510).
     pub(crate) reload: bool,
+    /// What the account may see changed, and the state withdrew what it may have lost
+    /// (see [`ServerModel::withdraw`]): an answer to a read that was sent before is not
+    /// taken.
+    pub(crate) withdrawn: bool,
     /// The parts to read now. A read of the same part that is on its way is dropped.
     pub(crate) load: Vec<Part>,
 }
@@ -77,6 +81,15 @@ impl Follow {
     fn reload() -> Self {
         Self {
             reload: true,
+            withdrawn: false,
+            load: Vec::new(),
+        }
+    }
+
+    fn withdrawn() -> Self {
+        Self {
+            reload: true,
+            withdrawn: true,
             load: Vec::new(),
         }
     }
@@ -84,6 +97,7 @@ impl Follow {
     fn load(part: Part) -> Self {
         Self {
             reload: false,
+            withdrawn: false,
             load: vec![part],
         }
     }
@@ -91,6 +105,7 @@ impl Follow {
     fn loads(load: Vec<Part>) -> Self {
         Self {
             reload: false,
+            withdrawn: false,
             load,
         }
     }
@@ -286,9 +301,11 @@ impl ServerModel {
 
     fn apply_event(&mut self, event: &Event) -> Follow {
         match event {
-            Event::PermissionsChanged { .. } | Event::CallAccessEnded {} => {
-                return Follow::reload();
+            Event::PermissionsChanged { workspace_id } => {
+                self.withdraw(*workspace_id);
+                return Follow::withdrawn();
             }
+            Event::CallAccessEnded {} => return Follow::reload(),
             Event::AccountProfileUpdated { profile } => {
                 if profile.id == self.account.id {
                     self.account.name.clone_from(&profile.name);

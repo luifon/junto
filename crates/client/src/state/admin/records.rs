@@ -812,6 +812,35 @@ impl AppState {
         self.read_audit(server.api(), server_id, scope, Some(before), cx);
     }
 
+    /// What the account may see on a server changed (ADR 0748): the shown log of that
+    /// scope, or of the server, holds nothing of before, takes no answer of a read that
+    /// started before, and is read again from its start.
+    pub(in crate::state) fn audit_after_permission_change(
+        &mut self,
+        server_id: ServerId,
+        changed: Option<WorkspaceId>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((shown, scope)) = self.admin.audit.shown else {
+            return;
+        };
+        let concerned = match (scope, changed) {
+            (_, None) | (AuditScope::Server, Some(_)) => true,
+            (AuditScope::Workspace(of), Some(changed)) => of == changed,
+        };
+        if shown != server_id || !concerned {
+            return;
+        }
+        let Some(server) = self.client.server(server_id) else {
+            return;
+        };
+        let audit = &mut self.admin.audit;
+        audit.entries.clear();
+        audit.next_before = None;
+        audit.people.clear();
+        self.read_audit(server.api(), server_id, scope, None, cx);
+    }
+
     fn read_audit(
         &mut self,
         api: ServerApi,

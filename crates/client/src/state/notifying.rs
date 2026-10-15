@@ -177,7 +177,9 @@ impl AppState {
             PlaceId::Channel(channel_id) => {
                 if let Some(workspace_id) = jump.workspace_id {
                     self.selection.workspaces.insert(server_id, workspace_id);
-                    self.selection.channels.insert(workspace_id, channel_id);
+                    self.selection
+                        .channels
+                        .insert((server_id, workspace_id), channel_id);
                 }
                 self.selection.conversations.remove(&server_id);
                 if let Some(root_id) = jump.thread_root {
@@ -488,6 +490,7 @@ impl AppState {
         let Some(changing) = self.change_settings(server_id, scope, cx, change) else {
             return;
         };
+        let (navigation, owner) = (self.navigations, self.owner(server_id));
         cx.spawn(async move |this, cx| {
             if let Err(reason) = changing.await {
                 let _ = this.update(cx, |this, cx| {
@@ -497,10 +500,10 @@ impl AppState {
                         .is_some_and(|(of, shown)| of == server_id && shown.id() == scope.id());
                     if in_dialog {
                         this.known.notify_refused = Some((server_id, scope.id(), reason));
-                    } else {
+                    } else if this.navigations == navigation && this.owner(server_id) == owner {
                         // The change came from the menu of a row: no dialog is open
                         // that could tell the refusal.
-                        this.pending.message_refused = Some(reason);
+                        this.refuse(reason);
                     }
                     this.changed(cx);
                 });
@@ -573,7 +576,8 @@ impl AppState {
         let until =
             length.and_then(|length| length.until(OffsetDateTime::now_utc(), self.known.zone));
         self.message_asks += 1;
-        let number = self.message_asks;
+        let (number, navigation) = (self.message_asks, self.navigations);
+        let owner = self.owner(server_id);
         self.pending.message_refused = None;
         cx.spawn(async move |this, cx| {
             let asked = match length {
@@ -584,8 +588,11 @@ impl AppState {
                 return;
             };
             let _ = this.update(cx, |this, cx| {
-                if this.message_asks == number {
-                    this.pending.message_refused = Some(refusal(&error));
+                if this.message_asks == number
+                    && this.navigations == navigation
+                    && this.owner(server_id) == owner
+                {
+                    this.refuse(refusal(&error));
                     cx.notify();
                 }
             });

@@ -290,6 +290,58 @@ fn pages_extend_the_range_at_both_ends_without_a_second_copy() {
 }
 
 #[test]
+fn a_change_of_permissions_withdraws_what_its_scope_holds() {
+    let mut scene = scene();
+    let direct = MessagePlace::Direct {
+        conversation_id: ConversationId::generate(),
+        low_account_id: scene.account_id,
+        high_account_id: AccountId::generate(),
+    };
+    scene.snapshot.messages = vec![state(scene.text_place(), 1, 3, 2), state(direct, 1, 2, 1)];
+    let place = general(&scene);
+    let (mut model, loaded) = opened(&scene, 1..=3);
+    model.open_pins(scene.general);
+    model.set_pins(scene.general, vec![loaded[0].clone()]);
+    Arc::make_mut(&mut model.workspaces[0]).members = Loadable::Loaded(Vec::new());
+    let admin = Arc::make_mut(&mut model.admin);
+    admin.accounts = Collection::Loaded(Vec::new());
+    admin.overrides = vec![(scene.general, Collection::Loaded(Vec::new()))];
+    admin.archived = vec![(scene.workspace_id, Collection::Loaded(Vec::new()))];
+
+    // A change in the workspace: what it holds is withdrawn until the next state.
+    let follow = model.apply(&Event::PermissionsChanged {
+        workspace_id: Some(scene.workspace_id),
+    });
+    assert!(follow.reload && follow.withdrawn);
+    let timeline = model.timeline(place).unwrap();
+    assert!(timeline.messages.is_empty() && !timeline.loaded && timeline.stale);
+    assert!(model.message_state(place).is_none());
+    assert!(model.message_state(PlaceId::of(&direct)).is_some());
+    assert_eq!(
+        model.pin_list(scene.general).unwrap().messages,
+        Loadable::Loading
+    );
+    assert_eq!(model.workspaces[0].members, Loadable::Loading);
+    assert_eq!(*model.admin.overrides(scene.general), Collection::Loading);
+    assert_eq!(
+        *model.admin.archived(scene.workspace_id),
+        Collection::Loading
+    );
+    // The structure stays until the snapshot replaces it, and so do the collections of
+    // the server.
+    assert!(model.channel(scene.general).is_some());
+    assert_eq!(model.admin.accounts, Collection::Loaded(Vec::new()));
+    // A page of messages is not taken by the withdrawn timeline: only the page that the
+    // next state reads fills it.
+    assert!(!model.put_message(message(scene.text_place(), 4, AccountId::generate(), "x")));
+
+    // A change on the server withdraws the collections of the server as well.
+    let follow = model.apply(&Event::PermissionsChanged { workspace_id: None });
+    assert!(follow.withdrawn);
+    assert_eq!(model.admin.accounts, Collection::Loading);
+}
+
+#[test]
 fn a_page_that_adds_no_message_does_not_promise_more_messages() {
     let scene = scene();
     let place = general(&scene);
@@ -887,6 +939,88 @@ fn a_timeline_holds_a_bounded_weight_of_messages() {
     let next = message(scene.text_place(), fit + 2, AccountId::generate(), "new");
     assert!(model.put_message(next.clone()));
     assert!(model.timeline(place).unwrap().message(next.id).is_some());
+}
+
+#[test]
+fn a_timeline_keeps_the_messages_that_the_reader_shows_when_it_passes_a_bound() {
+    let scene = scene();
+    let place = general(&scene);
+    let mut model = scene.model();
+    model.open_timeline(place);
+    let each = MOST_MESSAGE_WEIGHT - 4096;
+    let fit = (MOST_LOADED_WEIGHT / weight(&heavy(scene.text_place(), 1, each))) as u64;
+    let many = |positions: std::ops::Range<u64>| -> Vec<Message> {
+        positions
+            .map(|position| heavy(scene.text_place(), position, each))
+            .collect()
+    };
+
+    // The timeline holds the end of the history, and the reader shows its first
+    // messages. New heavy messages arrive at the end: the messages that the reader shows
+    // stay, the end gives way, and the history has more there.
+    let timeline = model.timeline_mut(place).unwrap();
+    timeline.replace(many(1..fit + 1), false, false);
+    assert!(model.anchor_timeline(place, Some(1)));
+    assert!(!model.anchor_timeline(place, Some(1)));
+    for position in fit + 1..=fit + 5 {
+        model.put_message(heavy(scene.text_place(), position, each));
+        let timeline = model.timeline(place).unwrap();
+        assert!(weight_of(&timeline.messages) <= MOST_LOADED_WEIGHT);
+        assert_eq!(timeline.messages[0].position, 1, "the shown start stays");
+        assert!(timeline.more_after && !timeline.more_before);
+    }
+    assert_eq!(positions(&model, place).last(), Some(&fit));
+
+    // The reader shows a position in the middle. A page after the last message and a
+    // page before the first one each make the messages give way at the end that holds
+    // more of them on its side of that position.
+    let middle = 1_000 + fit / 2;
+    let timeline = model.timeline_mut(place).unwrap();
+    timeline.replace(many(1_000..1_000 + fit), true, true);
+    model.anchor_timeline(place, Some(middle));
+    let timeline = model.timeline_mut(place).unwrap();
+    timeline.add_newer(MessagePage {
+        messages: many(1_000 + fit..1_000 + fit + 5),
+        has_more: true,
+    });
+    let first = timeline.messages[0].position;
+    timeline.add_older(MessagePage {
+        messages: many(first - 6..first),
+        has_more: true,
+    });
+    assert!(weight_of(&timeline.messages) <= MOST_LOADED_WEIGHT);
+    assert!(timeline.more_before && timeline.more_after);
+    let held = positions(&model, place);
+    assert!(held.contains(&middle));
+    let before = held.iter().filter(|position| **position < middle).count();
+    let after = held.len() - before;
+    assert!(
+        before.abs_diff(after) <= 1,
+        "{before} before, {after} after"
+    );
+
+    // The bound of the count: the reader shows the first of the most messages that a
+    // timeline holds, and a new message arrives at the end.
+    let most = MOST_LOADED as u64;
+    let small = |position| message(scene.text_place(), position, AccountId::generate(), "m");
+    let timeline = model.timeline_mut(place).unwrap();
+    timeline.replace((1..=most).map(small).collect(), false, false);
+    model.anchor_timeline(place, Some(1));
+    model.put_message(small(most + 1));
+    let timeline = model.timeline(place).unwrap();
+    assert_eq!(timeline.messages.len(), MOST_LOADED);
+    assert_eq!(timeline.messages[0].position, 1);
+    assert!(timeline.more_after && !timeline.more_before);
+
+    // The reader follows the end again: the start gives way, as before.
+    model.anchor_timeline(place, None);
+    let timeline = model.timeline_mut(place).unwrap();
+    timeline.add_newer(MessagePage {
+        messages: vec![small(most + 1)],
+        has_more: false,
+    });
+    assert_eq!(timeline.messages[0].position, 2);
+    assert!(!timeline.more_after && timeline.more_before);
 }
 
 #[test]

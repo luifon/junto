@@ -17,7 +17,7 @@ Changes of a message:
 
 - The window sends an edit, a deletion and a reaction for the account that the device has at that moment. A request fails when the device has another account by then.
 - The answer to an edit is not content of the state. The change of a message arrives with its event and is read in the order of the events (ADR 0721), as the change of a deletion and of a reaction does. The client core has no operation that puts a message of an answer into the state from outside the stream task.
-- A refusal of such a request is told only while the server still has the owner that asked. It is told above the composer that the window shows at that moment, also when that is the composer of another place; this record does not change that.
+- A refusal of such a request, of a pin, and of a change of the notification settings from the menu of a row is told only while the server still has the owner that asked and the person has not selected another server, workspace, channel or direct conversation since the request. It is told above the composer of that selection, and only while that selection stays. A refusal that arrives after the person selected another place is not told: the message in its place shows that the change did not happen.
 
 The file dialogs:
 
@@ -32,4 +32,5 @@ The file dialogs:
 - After a cut connection an edit shows when the stream has continued from its cursor or has loaded a snapshot.
 - A file that the person chose in a dialog is never uploaded to a place that the person did not see when the dialog was opened.
 - The answer to a send of the stream task is still put into the timeline when it arrives, as ADR 0721 states. It is the answer to a request of the stream task itself, and it ends with the account. A deletion that the events tell between the storing of the message and a late answer to its send is shown again until the place is read again.
+- A test of the window against the real server holds the refusal of a pin at a proxy while the person selects another channel: neither composer tells it, and a refusal in the place where the person stays is told.
 - Tests of the window against the real server hold the answer to an edit at a proxy until the message was deleted, for the same account and for the next account of the entry, and hold the file dialog of the test platform while another server or another place is selected, and the file dialog of the logo while the page of another server is opened.

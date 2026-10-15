@@ -23,7 +23,7 @@ use junto_client_core::protocol::message::{
 };
 use junto_client_core::transfers::{DownloadStage, UploadStage};
 
-use super::pictures::{MOST_PICTURES, Picture, PictureKey, Pictures};
+use super::pictures::{MOST_PICTURES, Outcome, Picture, PictureKey, Pictures};
 use super::{EmojiTarget, Layer, Pane, Shell};
 use crate::assets::Icon;
 use crate::compose;
@@ -1358,7 +1358,7 @@ impl Shell {
         let owner = self.state.read(cx).owner(server_id)?;
         let key = PictureKey::of(owner, attachment);
         let pictures = &mut self.message_pictures;
-        if pictures.held.touch(&key) {
+        if pictures.held.touch(&key, cx.background_executor().now()) {
             return Some(key);
         }
         if pictures.waiting.len() < MOST_PICTURES
@@ -1376,25 +1376,49 @@ impl Shell {
     }
 
     /// After a drawing: reads the pictures that the drawing asked for and that are not
-    /// held, each once for its owner, and decodes them away from the window. A picture
-    /// that finds no read and no place stays unread until a later drawing asks again.
+    /// held, or whose read got no answer and is due again, each once for its owner, and
+    /// decodes them away from the window. A picture that finds no read and no place stays
+    /// unread until a later drawing asks again.
     fn start_pictures(&mut self, cx: &mut Context<Self>) {
         self.message_pictures.starting = false;
         for (key, attachment) in std::mem::take(&mut self.message_pictures.waiting) {
-            let Some(number) = self.message_pictures.held.start(&key) else {
+            let Some(number) = self
+                .message_pictures
+                .held
+                .start(&key, cx.background_executor().now())
+            else {
                 continue;
             };
             let reading = self.state.read(cx).picture(key.owner, &attachment);
             cx.spawn(async move |this, cx| {
-                let decoded = match reading.await {
-                    Some(bytes) => cx.background_spawn(async move { decode(&bytes) }).await,
-                    None => None,
+                let outcome = match reading.await {
+                    Ok(bytes) => cx
+                        .background_spawn(async move { decode(&bytes) })
+                        .await
+                        .map_or(Outcome::Refused, Outcome::Read),
+                    Err(failure) if failure.is_transient() => Outcome::Unanswered,
+                    Err(_) => Outcome::Refused,
                 };
+                let again = matches!(outcome, Outcome::Unanswered);
                 let _ = this.update(cx, |this, cx| {
                     // An answer for a picture that is not held any more, or that was asked
                     // for again since, changes no picture. The window is drawn in both
                     // cases: a read has ended, and a picture that waited can start its own.
-                    this.message_pictures.held.settle(&key, number, decoded);
+                    let now = cx.background_executor().now();
+                    let held = &mut this.message_pictures.held;
+                    let settled = held.settle(&key, number, outcome, now);
+                    if settled
+                        && again
+                        && let Some(Picture::Unanswered { again }) = held.get(&key)
+                    {
+                        // A drawing after the wait reads the picture again.
+                        let wait = again.saturating_duration_since(now);
+                        cx.spawn(async move |this, cx| {
+                            cx.background_executor().timer(wait).await;
+                            let _ = this.update(cx, |_, cx| cx.notify());
+                        })
+                        .detach();
+                    }
                     this.release_dropped_pictures(cx);
                     cx.notify();
                 });
@@ -1423,7 +1447,7 @@ impl Shell {
             .enumerate()
             .map(|(index, attachment)| {
                 let download = self.download_control(server_id, attachment, index, theme, cx);
-                let name: SharedString = attachment.name.clone().into();
+                let name: SharedString = text::label(&attachment.name).into();
                 let size: SharedString = text::file_size(attachment.bytes).into();
                 if is_picture(attachment) {
                     let key = self.want_picture(server_id, attachment, cx);
@@ -1438,7 +1462,7 @@ impl Shell {
                             .size_full()
                             .object_fit(ObjectFit::Contain)
                             .into_any_element(),
-                        Some(Picture::Failed) => div()
+                        Some(Picture::Failed | Picture::Unanswered { .. }) => div()
                             .p(u(8.0))
                             .typeface(theme.types.small, theme)
                             .ink(colors.ink_3)
@@ -2179,7 +2203,7 @@ impl Shell {
                         .min_w_0()
                         .truncate()
                         .font_weight(FontWeight::BOLD)
-                        .child(SharedString::from(file.name.clone())),
+                        .child(SharedString::from(text::label(&file.name))),
                 )
                 .child(div().flex_none().ink(colors.ink_3).child(state))
         });

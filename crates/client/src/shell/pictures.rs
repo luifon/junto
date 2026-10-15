@@ -4,6 +4,7 @@
 //! server, find nothing that was read before.
 
 use std::collections::{HashMap, VecDeque};
+use std::time::{Duration, Instant};
 
 use junto_client_core::Owner;
 use junto_client_core::protocol::ids::AttachmentId;
@@ -16,6 +17,10 @@ pub(crate) const MOST_PICTURES: usize = 48;
 /// server do not count for another, so a server that answers slowly delays its own
 /// pictures only.
 pub(crate) const MOST_READS: usize = 4;
+/// The wait before a picture whose read got no answer is read again. Each further read
+/// without an answer doubles it, up to [`LONGEST_WAIT`].
+pub(crate) const FIRST_WAIT: Duration = Duration::from_secs(30);
+pub(crate) const LONGEST_WAIT: Duration = Duration::from_secs(16 * 60);
 
 /// What a held picture is the picture of.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -41,13 +46,41 @@ pub(crate) enum Picture<Image> {
     /// The read with this number is on its way.
     Reading(u64),
     Ready(Image),
+    /// The server answered, and its answer decides: it refused the file, or it sent bytes
+    /// that are not the file or not a picture. The picture is not read again while the
+    /// window holds it.
     Failed,
+    /// The read got no answer: the server was not reached, did not finish its answer, or
+    /// failed. The picture is read again at the first drawing after `again`.
+    Unanswered {
+        again: Instant,
+    },
+}
+
+/// How a read of a picture ended.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Outcome<Image> {
+    Read(Image),
+    /// The answer of the server decides (see [`Picture::Failed`]).
+    Refused,
+    /// See [`Picture::Unanswered`].
+    Unanswered,
 }
 
 struct Held<Image> {
     picture: Picture<Image>,
     /// The number of the last drawing of the window that asked for the picture.
     used: u64,
+    /// The reads in a row that got no answer.
+    unanswered: u32,
+}
+
+/// The wait after this many reads in a row without an answer.
+fn wait_after(unanswered: u32) -> Duration {
+    let doubled = 1u32
+        .checked_shl(unanswered.saturating_sub(1))
+        .unwrap_or(u32::MAX);
+    FIRST_WAIT.saturating_mul(doubled).min(LONGEST_WAIT)
 }
 
 /// The pictures that the window holds, the oldest first.
@@ -88,35 +121,41 @@ impl<Image> Pictures<Image> {
         self.drawing += 1;
     }
 
-    /// A drawing of the window asks for a picture. True when the picture is held: the
-    /// drawing uses it.
-    pub(crate) fn touch(&mut self, key: &PictureKey) -> bool {
+    /// A drawing of the window asks for a picture. True when the drawing uses what is
+    /// held; false when the picture is not held, or is due to be read again.
+    pub(crate) fn touch(&mut self, key: &PictureKey, now: Instant) -> bool {
         match self.held.get_mut(key) {
             Some(held) => {
                 held.used = self.drawing;
-                true
+                !matches!(held.picture, Picture::Unanswered { again } if again <= now)
             }
             None => false,
         }
     }
 
-    /// Starts to hold a picture that the last drawing asked for and that is not held, and
-    /// returns the number of the read that the caller starts for it. The caller asks
+    /// Starts the read of a picture that the last drawing asked for and that is not held,
+    /// or that is due to be read again, and returns the number of the read that the caller
+    /// starts for it. The caller asks
     /// after the drawing has ended, when every picture that it uses is known.
     ///
     /// At most [`MOST_READS`] reads of one owner run. A new picture takes the place of the
     /// oldest one that is not being read and that the last drawing did not ask for. So a
     /// read that runs is never forgotten and never started a second time, and the
     /// pictures of one view do not take the places of each other: a view with more
-    /// pictures than the window holds leaves the others unread.
-    pub(crate) fn start(&mut self, key: &PictureKey) -> Option<u64> {
-        if self.held.contains_key(key) {
-            return None;
-        }
+    /// pictures than the window holds leaves the others unread. A held picture whose
+    /// read got no answer is read again in its own place once its wait has passed.
+    pub(crate) fn start(&mut self, key: &PictureKey, now: Instant) -> Option<u64> {
+        let again = match self.held.get(key) {
+            None => false,
+            Some(held) => match held.picture {
+                Picture::Unanswered { again } if again <= now => true,
+                _ => return None,
+            },
+        };
         if self.flying.get(&key.owner).copied().unwrap_or(0) >= MOST_READS {
             return None;
         }
-        if self.order.len() >= MOST_PICTURES {
+        if !again && self.order.len() >= MOST_PICTURES {
             let free = |held: &Held<Image>| {
                 !matches!(held.picture, Picture::Reading(_)) && held.used < self.drawing
             };
@@ -130,32 +169,65 @@ impl<Image> Pictures<Image> {
         }
         self.reads += 1;
         *self.flying.entry(key.owner).or_default() += 1;
-        let held = Held {
-            picture: Picture::Reading(self.reads),
-            used: self.drawing,
-        };
-        self.held.insert(key.clone(), held);
-        self.order.push_back(key.clone());
+        let reading = Picture::Reading(self.reads);
+        match self.held.get_mut(key) {
+            Some(held) => {
+                held.picture = reading;
+                held.used = self.drawing;
+            }
+            None => {
+                let held = Held {
+                    picture: reading,
+                    used: self.drawing,
+                    unanswered: 0,
+                };
+                self.held.insert(key.clone(), held);
+                self.order.push_back(key.clone());
+            }
+        }
         Some(self.reads)
     }
 
-    /// Takes the end of the read with this number: its image, or none when the picture
-    /// was not read or not decoded. The image is held only when the picture still waits
-    /// for exactly this read. True when a held picture changed.
-    pub(crate) fn settle(&mut self, key: &PictureKey, number: u64, image: Option<Image>) -> bool {
+    fn end_read(&mut self, key: &PictureKey) {
         if let Some(flying) = self.flying.get_mut(&key.owner) {
             *flying = flying.saturating_sub(1);
             if *flying == 0 {
                 self.flying.remove(&key.owner);
             }
         }
+    }
+
+    /// Takes the end of the read with this number at the time `now`. The outcome is held
+    /// only when the picture still waits for exactly this read. True when a held picture
+    /// changed.
+    pub(crate) fn settle(
+        &mut self,
+        key: &PictureKey,
+        number: u64,
+        outcome: Outcome<Image>,
+        now: Instant,
+    ) -> bool {
+        self.end_read(key);
         match self.held.get_mut(key) {
             Some(held) if matches!(held.picture, Picture::Reading(of) if of == number) => {
-                held.picture = image.map_or(Picture::Failed, Picture::Ready);
+                held.picture = match outcome {
+                    Outcome::Read(image) => Picture::Ready(image),
+                    Outcome::Refused => Picture::Failed,
+                    Outcome::Unanswered => {
+                        held.unanswered = held.unanswered.saturating_add(1);
+                        let wait = wait_after(held.unanswered);
+                        match now.checked_add(wait) {
+                            Some(again) => Picture::Unanswered { again },
+                            None => Picture::Failed,
+                        }
+                    }
+                };
                 true
             }
             _ => {
-                self.dropped.extend(image);
+                if let Outcome::Read(image) = outcome {
+                    self.dropped.push(image);
+                }
                 false
             }
         }
@@ -230,14 +302,29 @@ mod tests {
         }
     }
 
+    fn now() -> Instant {
+        Instant::now()
+    }
+
     /// One drawing of the window that asks for these pictures, and the reads that start
     /// after it.
     fn draw<Image>(pictures: &mut Pictures<Image>, asked: &[PictureKey]) -> Vec<(PictureKey, u64)> {
+        draw_at(pictures, asked, now())
+    }
+
+    fn draw_at<Image>(
+        pictures: &mut Pictures<Image>,
+        asked: &[PictureKey],
+        now: Instant,
+    ) -> Vec<(PictureKey, u64)> {
         pictures.drawing_starts();
-        let waiting: Vec<&PictureKey> = asked.iter().filter(|key| !pictures.touch(key)).collect();
+        let waiting: Vec<&PictureKey> = asked
+            .iter()
+            .filter(|key| !pictures.touch(key, now))
+            .collect();
         waiting
             .into_iter()
-            .filter_map(|key| pictures.start(key).map(|number| (key.clone(), number)))
+            .filter_map(|key| pictures.start(key, now).map(|number| (key.clone(), number)))
             .collect()
     }
 
@@ -255,7 +342,12 @@ mod tests {
         let first = owner();
         let of_first = key(first, file, "aa");
         let number = read(&mut pictures, &of_first);
-        assert!(pictures.settle(&of_first, number, Some("the picture of the first server")));
+        assert!(pictures.settle(
+            &of_first,
+            number,
+            Outcome::Read("the picture of the first server"),
+            now()
+        ));
         // The picture is held: it is not read a second time.
         assert!(draw(&mut pictures, std::slice::from_ref(&of_first)).is_empty());
 
@@ -265,7 +357,12 @@ mod tests {
         assert_eq!(pictures.get(&of_second), None);
         let number = read(&mut pictures, &of_second);
         assert_eq!(pictures.get(&of_second), Some(&Picture::Reading(number)));
-        assert!(pictures.settle(&of_second, number, Some("the picture of the second server")));
+        assert!(pictures.settle(
+            &of_second,
+            number,
+            Outcome::Read("the picture of the second server"),
+            now()
+        ));
 
         // Another account of the first server, the entry of the first server after it was
         // removed and added again, and the same file with another hash: none finds the
@@ -281,7 +378,7 @@ mod tests {
         ] {
             assert_eq!(pictures.get(&other), None);
             let number = read(&mut pictures, &other);
-            assert!(pictures.settle(&other, number, None));
+            assert!(pictures.settle(&other, number, Outcome::Refused, now()));
             assert_eq!(pictures.get(&other), Some(&Picture::Failed));
         }
         assert_eq!(
@@ -302,7 +399,7 @@ mod tests {
         let (kept, gone) = (key(stays, file, "aa"), key(leaves, file, "aa"));
         for (key, image) in [(&kept, "kept"), (&gone, "gone")] {
             let number = read(&mut pictures, key);
-            pictures.settle(key, number, Some(image));
+            pictures.settle(key, number, Outcome::Read(image), now());
         }
         // A read of the account that leaves is on its way.
         let late = key(leaves, AttachmentId::generate(), "dd");
@@ -315,7 +412,7 @@ mod tests {
         assert_eq!(pictures.take_dropped(), ["gone"]);
 
         // The answer of that read arrives afterwards: nothing holds it.
-        assert!(!pictures.settle(&late, number, Some("late")));
+        assert!(!pictures.settle(&late, number, Outcome::Read("late"), now()));
         assert_eq!(pictures.get(&late), None);
         assert_eq!(pictures.take_dropped(), ["late"]);
     }
@@ -331,9 +428,9 @@ mod tests {
         pictures.keep(|_| false);
         let second = read(&mut pictures, &of);
         assert_ne!(first, second);
-        assert!(!pictures.settle(&of, first, Some("of the read before")));
+        assert!(!pictures.settle(&of, first, Outcome::Read("of the read before"), now()));
         assert_eq!(pictures.get(&of), Some(&Picture::Reading(second)));
-        assert!(pictures.settle(&of, second, Some("of this read")));
+        assert!(pictures.settle(&of, second, Outcome::Read("of this read"), now()));
         assert_eq!(pictures.get(&of), Some(&Picture::Ready("of this read")));
     }
 
@@ -350,14 +447,19 @@ mod tests {
         // The person selects another server: its pictures are read all the same.
         let of_other = key(other, AttachmentId::generate(), "bb");
         let number = read(&mut pictures, &of_other);
-        assert!(pictures.settle(&of_other, number, Some("of the other server")));
+        assert!(pictures.settle(
+            &of_other,
+            number,
+            Outcome::Read("of the other server"),
+            now()
+        ));
         // The first server gets no further read, also after its account is gone.
         assert!(draw(&mut pictures, &of_slow).is_empty());
         pictures.keep(|owner| *owner == other);
         assert!(draw(&mut pictures, &of_slow).is_empty());
         // One of its reads ends: one further read of that server can start.
         let (ended, number) = started[0].clone();
-        pictures.settle(&ended, number, None);
+        pictures.settle(&ended, number, Outcome::Refused, now());
         assert_eq!(draw(&mut pictures, &of_slow).len(), 1);
     }
 
@@ -382,7 +484,7 @@ mod tests {
         // the view asks for the others.
         for _ in 0..200 {
             if let Some((key, number)) = started.get(ended).cloned() {
-                assert!(pictures.settle(&key, number, Some(ended)));
+                assert!(pictures.settle(&key, number, Outcome::Read(ended), now()));
                 ended += 1;
             }
             started.extend(draw(&mut pictures, &keys));
@@ -402,10 +504,59 @@ mod tests {
         // that view starts its read, and the oldest picture of the view before gives way.
         let started = draw(&mut pictures, std::slice::from_ref(last));
         assert_eq!(started.len(), 1, "the first drawing of the next view reads");
-        assert!(pictures.settle(last, started[0].1, Some(MOST_PICTURES)));
+        assert!(pictures.settle(last, started[0].1, Outcome::Read(MOST_PICTURES), now()));
         assert_eq!(pictures.get(&keys[0]), None);
         assert_eq!(pictures.take_dropped(), [0]);
         assert_eq!(pictures.order.len(), MOST_PICTURES);
         assert_eq!(pictures.held.len(), MOST_PICTURES);
+    }
+
+    #[test]
+    fn a_picture_whose_read_got_no_answer_is_read_again_after_a_wait() {
+        let mut pictures = Pictures::<&str>::default();
+        let of = key(owner(), AttachmentId::generate(), "aa");
+        let start = now();
+        let number = draw_at(&mut pictures, std::slice::from_ref(&of), start)[0].1;
+        assert!(pictures.settle(&of, number, Outcome::Unanswered, start));
+        assert_eq!(
+            pictures.get(&of),
+            Some(&Picture::Unanswered {
+                again: start + FIRST_WAIT
+            })
+        );
+        // Drawings before the wait has passed read nothing.
+        let early = start + FIRST_WAIT - Duration::from_secs(1);
+        assert!(draw_at(&mut pictures, std::slice::from_ref(&of), early).is_empty());
+        // The first drawing after it reads the picture again, in its own place. Each
+        // further read without an answer doubles the wait, up to the longest wait.
+        let mut at = start + FIRST_WAIT;
+        let mut wait = FIRST_WAIT;
+        for _ in 0..8 {
+            let started = draw_at(&mut pictures, std::slice::from_ref(&of), at);
+            assert_eq!(started.len(), 1, "the picture is read again");
+            assert!(pictures.settle(&of, started[0].1, Outcome::Unanswered, at));
+            wait = (wait * 2).min(LONGEST_WAIT);
+            assert_eq!(
+                pictures.get(&of),
+                Some(&Picture::Unanswered { again: at + wait })
+            );
+            let early = at + wait - Duration::from_secs(1);
+            assert!(draw_at(&mut pictures, std::slice::from_ref(&of), early).is_empty());
+            at += wait;
+        }
+        assert_eq!(wait, LONGEST_WAIT);
+        assert_eq!(pictures.order.len(), 1);
+        let started = draw_at(&mut pictures, std::slice::from_ref(&of), at);
+        assert!(pictures.settle(&of, started[0].1, Outcome::Read("arrived"), at));
+        assert_eq!(pictures.get(&of), Some(&Picture::Ready("arrived")));
+
+        // A picture that the server refused, or whose bytes are no picture, is not read
+        // again while the window holds it.
+        let refused = key(owner(), AttachmentId::generate(), "bb");
+        let number = draw_at(&mut pictures, std::slice::from_ref(&refused), start)[0].1;
+        assert!(pictures.settle(&refused, number, Outcome::Refused, start));
+        let later = start + LONGEST_WAIT * 4;
+        assert!(draw_at(&mut pictures, std::slice::from_ref(&refused), later).is_empty());
+        assert_eq!(pictures.get(&refused), Some(&Picture::Failed));
     }
 }

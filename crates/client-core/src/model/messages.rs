@@ -11,7 +11,7 @@ use junto_protocol::message::{
 use time::OffsetDateTime;
 
 use super::ServerModel;
-use super::bounds::{MOST_LOADED_WEIGHT, excess};
+use super::bounds::{MOST_LOADED_WEIGHT, weight};
 use crate::api::{ApiError, ErrorCategory};
 
 /// A place that holds messages: a channel, a direct conversation, or the thread under one
@@ -146,6 +146,10 @@ pub struct Timeline {
     /// For a thread: the channels that it was forked into and that the account can read
     /// (ADR 0409).
     pub forks: Vec<ChannelId>,
+    /// The position that the reader shows. Absent while the reader follows the end of
+    /// the history. When the timeline passes a bound, the messages at this position
+    /// stay.
+    pub anchor: Option<u64>,
 }
 
 fn key(message: &Message) -> (u64, MessageId) {
@@ -166,6 +170,7 @@ impl Timeline {
             unread_after: None,
             root: None,
             forks: Vec::new(),
+            anchor: None,
         }
     }
 
@@ -230,11 +235,27 @@ impl Timeline {
         true
     }
 
-    /// Which end stays when the message at `index` made the timeline pass a bound. A
-    /// timeline that holds the end of the history keeps it, so the new messages of the
-    /// place still arrive. Another timeline keeps the half that the message is in.
+    /// Which end stays when the message at `index` made the timeline pass a bound while
+    /// the reader follows the end. A timeline that holds the end of the history keeps it,
+    /// so the new messages of the place still arrive. Another timeline keeps the half that
+    /// the message is in.
     fn keeps_end(&self, index: usize) -> bool {
         !self.more_after || index * 2 >= self.messages.len()
+    }
+
+    /// What the account may see of the place changed: nothing of it stays until the page
+    /// that the next state reads arrives. The reader keeps its place and its position.
+    pub(crate) fn withdraw(&mut self) {
+        self.messages.clear();
+        self.root = None;
+        self.forks.clear();
+        self.more_before = false;
+        self.more_after = false;
+        self.reading = Reading::default();
+        self.loaded = false;
+        self.failed = None;
+        self.stale = true;
+        self.unread_after = None;
     }
 
     pub(crate) fn remove(&mut self, message_id: MessageId) -> bool {
@@ -285,23 +306,39 @@ impl Timeline {
     }
 
     /// Keeps at most [`MOST_LOADED`] messages, and at most the weight of
-    /// [`MOST_LOADED_WEIGHT`](super::MOST_LOADED_WEIGHT): the end that was not added to
-    /// gives way, and the history is marked as having more there, so a reader reads those
-    /// messages again when the person goes back to them.
-    fn bound(&mut self, added_at_end: bool) {
-        let by_count = self.messages.len().saturating_sub(MOST_LOADED);
-        let messages = self.messages.iter().map(Arc::as_ref);
-        let by_weight = excess(messages, MOST_LOADED_WEIGHT, !added_at_end);
-        let over = by_count.max(by_weight);
-        if over == 0 {
-            return;
+    /// [`MOST_LOADED_WEIGHT`](super::MOST_LOADED_WEIGHT). While the reader shows a
+    /// position, the messages give way one at a time from the end that holds more of
+    /// them on its side of that position, so the messages that the reader shows stay.
+    /// While the reader follows the end, the start gives way when `keep_end`, and else
+    /// the end. The history is marked as having more where messages gave way, so a reader
+    /// reads those messages again when the person goes back to them.
+    fn bound(&mut self, keep_end: bool) {
+        let mut held: usize = self.messages.iter().map(|message| weight(message)).sum();
+        let (mut start, mut end) = (0, self.messages.len());
+        let anchor = self.anchor.map(|position| {
+            self.messages
+                .partition_point(|message| message.position < position)
+        });
+        while end - start > MOST_LOADED || held > MOST_LOADED_WEIGHT {
+            let from_start = match anchor {
+                Some(at) => at.saturating_sub(start) > end.saturating_sub(at),
+                None => keep_end,
+            };
+            if from_start {
+                held -= weight(&self.messages[start]);
+                start += 1;
+            } else {
+                end -= 1;
+                held -= weight(&self.messages[end]);
+            }
         }
-        if added_at_end {
-            self.messages.drain(..over);
-            self.more_before = true;
-        } else {
-            self.messages.truncate(self.messages.len() - over);
+        if end < self.messages.len() {
+            self.messages.truncate(end);
             self.more_after = true;
+        }
+        if start > 0 {
+            self.messages.drain(..start);
+            self.more_before = true;
         }
     }
 }
@@ -601,6 +638,21 @@ impl ServerModel {
         if self.timeline(place).is_none() {
             self.timelines.push(Arc::new(Timeline::new(place)));
         }
+    }
+
+    /// The reader of a place shows this position, or follows the end when `None`. True
+    /// when the timeline changed.
+    pub(crate) fn anchor_timeline(&mut self, place: PlaceId, anchor: Option<u64>) -> bool {
+        if self
+            .timeline(place)
+            .is_none_or(|timeline| timeline.anchor == anchor)
+        {
+            return false;
+        }
+        if let Some(timeline) = self.timeline_mut(place) {
+            timeline.anchor = anchor;
+        }
+        true
     }
 
     pub(crate) fn close_timeline(&mut self, place: PlaceId) {

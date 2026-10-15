@@ -141,23 +141,72 @@ pub struct RecordingList {
     pub(crate) reloads: Reloads,
     /// The wait before a read that a change of the server started. It ends with the list.
     pub(crate) waits: Option<Task<()>>,
+    /// The server told that what the account may see changed, after the read with this
+    /// number had started. The list holds nothing until a later read answers: the answers
+    /// of this read and of the reads before it are not taken.
+    pub(crate) withdrawn: Option<u64>,
 }
 
-/// True when a step of the event stream can have changed the list of a workspace: an
-/// event about a recording of that workspace, a state that replaced the one before, and a
-/// reader that missed steps (`None`).
-pub(crate) fn concerns(notice: Option<&Notice>, workspace_id: WorkspaceId) -> bool {
+impl RecordingList {
+    /// What the account may see changed: the list holds nothing of before, and a read
+    /// that had started takes nothing of its answer.
+    pub(crate) fn withdraw(&mut self) {
+        self.recordings.clear();
+        self.next_before = None;
+        self.failed = None;
+        self.withdrawn = Some(self.read);
+    }
+
+    /// True when the answer of the read with this number is taken.
+    pub(crate) fn takes(&self, number: u64) -> bool {
+        self.read == number && self.withdrawn.is_none_or(|before| number > before)
+    }
+}
+
+/// What a step of the event stream does to the list of a workspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Concern {
+    /// The list stays as it is.
+    None,
+    /// A recording of the workspace changed: the list is read again.
+    Changed,
+    /// What the account may see in the workspace can have changed: nothing of the list
+    /// stays, and it is read again.
+    Withdrawn,
+}
+
+/// What a step of the event stream does to the list of a workspace. An event about a
+/// recording of that workspace changes it. A change of the permissions of the account in
+/// the workspace or on the server, a deleted channel of the workspace, a state that
+/// replaced the one before, and a reader that missed steps (`None`) can each have taken
+/// recordings out of what the account may see.
+pub(crate) fn concerns(notice: Option<&Notice>, workspace_id: WorkspaceId) -> Concern {
+    let of = |held: bool| {
+        if held {
+            Concern::Changed
+        } else {
+            Concern::None
+        }
+    };
     match notice {
-        None | Some(Notice::Reloaded { .. }) => true,
-        Some(Notice::Ended { .. }) => false,
+        None | Some(Notice::Reloaded { .. }) => Concern::Withdrawn,
+        Some(Notice::Ended { .. }) => Concern::None,
         Some(Notice::Event { event, .. }) => match event.as_ref() {
             Event::RecordingStarted { recording } | Event::RecordingUpdated { recording } => {
-                recording.workspace_id == workspace_id
+                of(recording.workspace_id == workspace_id)
             }
             Event::RecordingRemoved {
-                workspace_id: of, ..
-            } => *of == workspace_id,
-            _ => false,
+                workspace_id: held, ..
+            } => of(*held == workspace_id),
+            Event::PermissionsChanged { workspace_id: held }
+                if held.is_none_or(|held| held == workspace_id) =>
+            {
+                Concern::Withdrawn
+            }
+            Event::ChannelDeleted {
+                workspace_id: held, ..
+            } if *held == workspace_id => Concern::Withdrawn,
+            _ => Concern::None,
         },
     }
 }
@@ -261,8 +310,14 @@ impl AppState {
                     return;
                 }
                 list.reading = false;
-                match read {
-                    Ok(page) => {
+                // A read that started before a change of what the account may see ends,
+                // and takes nothing: the read that follows it fills the list.
+                let taken = list.takes(number).then_some(read);
+                if taken.is_some() {
+                    list.withdrawn = None;
+                }
+                match taken {
+                    Some(Ok(page)) => {
                         if before.is_none() {
                             list.recordings.clear();
                         }
@@ -279,12 +334,13 @@ impl AppState {
                         }
                         list.next_before = page.next_before;
                     }
-                    Err(error) => {
+                    Some(Err(error)) => {
                         list.failed = Some(RecordingsFailure {
                             sentence: text::admin::recordings::read_failure(&error),
                             older: before.is_some(),
                         });
                     }
+                    None => {}
                 }
                 // The changes that arrived during the read are shown by one further read.
                 if let Some(reload) = list.reloads.ended(Instant::now()) {
@@ -311,10 +367,15 @@ impl AppState {
         let Some((shown, workspace_id)) = self.open_recordings() else {
             return;
         };
-        if shown != server_id || !concerns(notice, workspace_id) {
+        if shown != server_id {
             return;
         }
         let list = &mut self.admin.recordings;
+        match concerns(notice, workspace_id) {
+            Concern::None => return,
+            Concern::Changed => {}
+            Concern::Withdrawn => list.withdraw(),
+        }
         let reload = list.reloads.asked(Instant::now(), list.reading);
         self.reload_recordings(reload, server_id, workspace_id, cx);
     }
@@ -455,58 +516,126 @@ mod tests {
             workspace_id,
             channel_id: ChannelId::generate(),
         };
+        let (changed, none) = (Concern::Changed, Concern::None);
         for (event, concerned) in [
             (
                 Event::RecordingStarted {
                     recording: of(shown),
                 },
-                true,
+                changed,
             ),
             (
                 Event::RecordingUpdated {
                     recording: of(shown),
                 },
-                true,
+                changed,
             ),
-            (removed(shown), true),
+            (removed(shown), changed),
             (
                 Event::RecordingStarted {
                     recording: of(other),
                 },
-                false,
+                none,
             ),
             (
                 Event::RecordingUpdated {
                     recording: of(other),
                 },
-                false,
+                none,
             ),
-            (removed(other), false),
+            (removed(other), none),
             (
                 Event::WorkspaceDeleted {
                     workspace_id: shown,
                 },
-                false,
+                none,
             ),
         ] {
             let name = event.name();
             assert_eq!(concerns(Some(&told(event)), shown), concerned, "{name}");
         }
         // A state that replaced the one before, and steps that the reader missed, can
-        // hide such an event.
+        // hide such an event, and a change of what the account may see.
         let reloaded = Notice::Reloaded {
             cursor: Cursor {
                 epoch: StreamEpoch::generate(),
                 position: 1,
             },
         };
-        assert!(concerns(Some(&reloaded), shown));
-        assert!(concerns(None, shown));
+        assert_eq!(concerns(Some(&reloaded), shown), Concern::Withdrawn);
+        assert_eq!(concerns(None, shown), Concern::Withdrawn);
         let ended = Notice::Ended {
             reason: EndReason::SessionEnded,
             recovery: None,
         };
-        assert!(!concerns(Some(&ended), shown));
+        assert_eq!(concerns(Some(&ended), shown), Concern::None);
+    }
+
+    #[test]
+    fn recordings_of_a_hidden_channel_are_gone_after_access_reload() {
+        let (shown, other) = (WorkspaceId::generate(), WorkspaceId::generate());
+        // A change of the permissions in the workspace or on the server, and a deleted
+        // channel of the workspace, can take recordings out of what the account may see.
+        for (event, concern) in [
+            (
+                Event::PermissionsChanged {
+                    workspace_id: Some(shown),
+                },
+                Concern::Withdrawn,
+            ),
+            (
+                Event::PermissionsChanged { workspace_id: None },
+                Concern::Withdrawn,
+            ),
+            (
+                Event::PermissionsChanged {
+                    workspace_id: Some(other),
+                },
+                Concern::None,
+            ),
+            (
+                Event::ChannelDeleted {
+                    workspace_id: shown,
+                    channel_id: ChannelId::generate(),
+                },
+                Concern::Withdrawn,
+            ),
+            (
+                Event::ChannelDeleted {
+                    workspace_id: other,
+                    channel_id: ChannelId::generate(),
+                },
+                Concern::None,
+            ),
+        ] {
+            let name = event.name();
+            assert_eq!(concerns(Some(&told(event)), shown), concern, "{name}");
+        }
+
+        // The list holds two recordings, and a read of it is on its way when the change
+        // arrives. Nothing of the list stays, the answer of that read is not taken, and
+        // the answer of the read after it is.
+        let mut list = RecordingList {
+            shown: Some((ServerId::generate(), shown)),
+            account: Some(AccountId::generate()),
+            recordings: vec![recording(shown), recording(shown)],
+            next_before: Some(RecordingId::generate()),
+            read: 7,
+            reading: true,
+            ..RecordingList::default()
+        };
+        list.withdraw();
+        assert!(list.recordings.is_empty() && list.next_before.is_none());
+        assert!(!list.takes(7), "the read from before the change");
+        assert!(!list.takes(6));
+        list.read = 8;
+        assert!(list.takes(8), "the read after the change");
+        // A change while no read is on its way: the next read is taken.
+        list.withdrawn = None;
+        list.withdraw();
+        assert_eq!(list.withdrawn, Some(8));
+        list.read = 9;
+        assert!(list.takes(9));
     }
 
     #[test]

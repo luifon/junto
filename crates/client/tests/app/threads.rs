@@ -329,13 +329,15 @@ fn a_person_pins_a_message_and_reads_the_pin_list(cx: &mut TestAppContext) {
             PinsState::Loading | PinsState::Failed => None,
         }
     };
-    let row_of = |window: &mut Window| {
+    // A change of the permissions withdraws the messages of the workspace until the
+    // place is read again (ADR 0748): for that time the message has no row.
+    let held_row = |window: &mut Window| {
         window
             .messages()
             .into_iter()
             .find(|row| row.message.id == root_id)
-            .unwrap()
     };
+    let row_of = |window: &mut Window| held_row(window).unwrap();
 
     // The pin list of a channel without a pin.
     window.click("pins-button");
@@ -354,7 +356,7 @@ fn a_person_pins_a_message_and_reads_the_pin_list(cx: &mut TestAppContext) {
         });
     });
     window.until("the refusal of the pin", |window| {
-        window.in_shell(|shell, _, cx| shell.state().read(cx).pending().message_refused.clone())
+        window.in_shell(|shell, _, cx| shell.state().read(cx).message_refusal().map(str::to_owned))
             == Some(text::PIN_NOT_ALLOWED.to_owned())
     });
 
@@ -371,13 +373,15 @@ fn a_person_pins_a_message_and_reads_the_pin_list(cx: &mut TestAppContext) {
     admin.allow_everyone(&world, &[WorkspacePermission::ManageMessages]);
     // The change of the roles reloads the state, and the pin list is read again: for
     // that moment the list is not drawn. The person presses "Unpin" when it is there.
-    window.until("the permission", |window| row_of(window).can_pin);
+    window.until("the permission", |window| {
+        held_row(window).is_some_and(|row| row.can_pin)
+    });
     window.until("no pin", |window| {
         window.click_if_shown("unpin");
         pins(window) == Some(Vec::new())
     });
     window.until("the message without its pin", |window| {
-        !row_of(window).message.pinned
+        held_row(window).is_some_and(|row| !row.message.pinned)
     });
     // And pins the message from its menu.
     window.in_shell(|shell, window, cx| {

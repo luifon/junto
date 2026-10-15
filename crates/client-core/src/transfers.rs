@@ -17,7 +17,7 @@ use std::time::Duration;
 use futures_util::StreamExt as _;
 use junto_protocol::error::ErrorCode;
 use junto_protocol::ids::{AttachmentId, MessageId};
-use junto_protocol::message::{Attachment, Document, StartUpload};
+use junto_protocol::message::{Attachment, Document, StartUpload, Upload as Held};
 use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 
@@ -62,9 +62,25 @@ pub enum TransferFailure {
     /// The server ended its answer before the file was complete, several times in a
     /// row.
     Interrupted,
+    /// The answers of the server to an upload did not follow from the bytes that were
+    /// sent: another upload, more bytes than the file has, or no further byte, several
+    /// times in a row.
+    OutOfStep,
 }
 
 impl TransferFailure {
+    /// True when a later try of the same transfer can succeed: no answer arrived, the
+    /// answer ended before the file was complete, or the server failed. A refusal of the
+    /// server and bytes that are not the file are its answer, and a later try gets the
+    /// same.
+    pub fn is_transient(&self) -> bool {
+        match self {
+            Self::Stopped | Self::Interrupted => true,
+            Self::Refused { status, .. } => *status >= 500,
+            Self::File(_) | Self::Empty | Self::Changed | Self::Corrupt | Self::OutOfStep => false,
+        }
+    }
+
     fn of(error: &ApiError) -> Self {
         match error.rejection() {
             Some(rejection) => Self::Refused {
@@ -88,8 +104,12 @@ fn passes(error: &ApiError) -> bool {
     error.is_unavailable() || error.category() == Some(ErrorCategory::Limited)
 }
 
-/// How many answers in a row may add nothing to a file before its download ends.
+/// How many answers in a row may add nothing to a file before its download or its upload
+/// ends.
 const IDLE_TRIES: u8 = 5;
+/// How many answers to the completion of an upload may say that the server has not
+/// checked the file yet. With the waits between them they take more than ten minutes.
+const CHECK_TRIES: u8 = 30;
 
 struct Waits {
     next: Duration,
@@ -106,9 +126,43 @@ impl Waits {
 
     /// Waits before the next try: the time that the server names, or the next wait.
     async fn wait(&mut self, error: &ApiError) {
-        let wait = error.retry_after().unwrap_or(self.next).min(LONGEST_WAIT);
+        self.after(error.retry_after()).await;
+    }
+
+    /// Waits the next wait, after an answer that names no time.
+    async fn pause(&mut self) {
+        self.after(None).await;
+    }
+
+    async fn after(&mut self, named: Option<Duration>) {
+        let wait = named.unwrap_or(self.next).min(LONGEST_WAIT);
         self.next = self.next.saturating_mul(2).min(LONGEST_WAIT);
         tokio::time::sleep(wait).await;
+    }
+}
+
+/// Asks the server how many bytes of an upload it holds, after a wait: the time that
+/// `error` names, or the next wait. A server that cannot be reached is asked again
+/// after each wait. Answers that do not follow the upload end it after
+/// [`IDLE_TRIES`] in a row.
+async fn held_bytes(
+    api: &ServerApi,
+    attachment_id: AttachmentId,
+    follows: &impl Fn(&Held) -> bool,
+    waits: &mut Waits,
+    error: Option<&ApiError>,
+) -> Result<u64, TransferFailure> {
+    let mut named = error.and_then(ApiError::retry_after);
+    let mut astray = 0u8;
+    loop {
+        waits.after(named.take()).await;
+        match api.upload_status(attachment_id).await {
+            Ok(held) if follows(&held) => return Ok(held.received),
+            Ok(_) if astray + 1 >= IDLE_TRIES => return Err(TransferFailure::OutOfStep),
+            Ok(_) => astray += 1,
+            Err(failed) if passes(&failed) => named = failed.retry_after(),
+            Err(failed) => return Err(TransferFailure::of(&failed)),
+        }
     }
 }
 
@@ -403,7 +457,19 @@ async fn upload(
     let attachment_id = started.id;
     *lock(&shared.attachment_id) = Some(attachment_id);
     waits.reset();
+    // Each answer of the server names the bytes that it holds. One that names another
+    // upload or more bytes than the file has is not taken. The answer to a part names
+    // the end of that part; any other success is a round without progress;
+    // such rounds in a row end the upload, so a server that answers without progress
+    // does not make the client send without an end (ADR 0714). A server that cannot be
+    // reached is asked again after each wait, as before.
+    let follows = |held: &Held| held.id == attachment_id && held.received <= bytes;
+    if !follows(&started) {
+        return Err(TransferFailure::OutOfStep);
+    }
     let mut offset = started.received;
+    let mut most = offset;
+    let mut idle = 0u8;
     let mut refusals = 0u8;
     while offset < bytes {
         tell(&|progress| {
@@ -415,11 +481,23 @@ async fn upload(
             .min(CHUNK_BYTES);
         let part_of = source.clone();
         let part = blocking(move || read_part(&part_of, offset, length)).await?;
+        let sent = offset + length as u64;
         match api.put_chunk(attachment_id, offset, part).await {
-            Ok(held) => {
+            // The answer to a part holds the bytes up to its end.
+            Ok(held) if follows(&held) && held.received == sent => {
                 offset = held.received;
                 waits.reset();
                 refusals = 0;
+            }
+            Ok(_) => {
+                // Not the answer to this part: the server is asked what it holds, after
+                // a wait.
+                tell(&|progress| progress.interrupted = true);
+                offset = held_bytes(api, attachment_id, &follows, &mut waits, None).await?;
+                idle = if offset > most { 0 } else { idle + 1 };
+                if idle >= IDLE_TRIES {
+                    return Err(TransferFailure::OutOfStep);
+                }
             }
             Err(error) => {
                 let out_of_step = error.category() == Some(ErrorCategory::Conflict) && refusals < 2;
@@ -430,18 +508,12 @@ async fn upload(
                 tell(&|progress| progress.interrupted = true);
                 // The server tells how many bytes it holds: the answer to a part can be
                 // lost after the part was stored.
-                loop {
-                    waits.wait(&error).await;
-                    match api.upload_status(attachment_id).await {
-                        Ok(held) => {
-                            offset = held.received;
-                            break;
-                        }
-                        Err(error) if passes(&error) => {}
-                        Err(error) => return Err(TransferFailure::of(&error)),
-                    }
-                }
+                offset = held_bytes(api, attachment_id, &follows, &mut waits, Some(&error)).await?;
             }
+        }
+        if offset > most {
+            idle = 0;
+            most = offset;
         }
     }
     tell(&|progress| {
@@ -450,10 +522,18 @@ async fn upload(
         progress.stage = UploadStage::Checking;
     });
     waits.reset();
+    // The server checks the hash before it calls the upload complete. Each answer that
+    // says it is not complete yet makes the next wait longer, and a server that never
+    // says it is complete ends the upload.
+    let mut unchecked = 0u8;
     loop {
         match api.complete_upload(attachment_id).await {
-            Ok(held) if held.complete => return Ok(attachment_id),
-            Ok(_) => tokio::time::sleep(FIRST_WAIT).await,
+            Ok(held) if held.complete && follows(&held) => return Ok(attachment_id),
+            Ok(_) if unchecked + 1 >= CHECK_TRIES => return Err(TransferFailure::OutOfStep),
+            Ok(_) => {
+                unchecked += 1;
+                waits.pause().await;
+            }
             Err(error) if passes(&error) => waits.wait(&error).await,
             Err(error) if error.code() == Some(ErrorCode::InvalidRequest) => {
                 // The bytes that the server holds do not have the declared hash.
@@ -1522,6 +1602,219 @@ mod tests {
         let ended = tokio::time::timeout(Duration::from_secs(5), upload.finished()).await;
         assert_eq!(ended, Ok(Err(TransferFailure::Stopped)));
         assert_eq!(files.sent.load(Ordering::Relaxed), 0, "no request was sent");
+    }
+
+    /// How the played server of an upload answers.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Answers {
+        /// Each part is stored, and each answer names the bytes that the server holds.
+        Honest,
+        /// The answer to the first part is lost after the part was stored.
+        LosesOne,
+        /// Each answer names the offset of the part, as if it held nothing of it.
+        Unchanged,
+        /// Each answer names fewer bytes than the server was sent before.
+        Backward,
+        /// Each answer names more bytes than the file has.
+        Beyond,
+        /// Each answer names another upload.
+        Another,
+        /// Each answer names one byte after the start of the part.
+        OneByte,
+    }
+
+    /// A server of one upload that stores parts and answers as planned.
+    struct Uploads {
+        id: AttachmentId,
+        bytes: u64,
+        answers: Answers,
+        held: Mutex<u64>,
+        /// The method and the path of each request.
+        seen: Mutex<Vec<(crate::api::Method, String)>>,
+    }
+
+    impl Uploads {
+        fn state(&self, received: u64) -> Vec<u8> {
+            let id = match self.answers {
+                Answers::Another => AttachmentId::generate(),
+                _ => self.id,
+            };
+            let complete = received == self.bytes;
+            let state = Held {
+                id,
+                received,
+                bytes: self.bytes,
+                complete,
+                expires_at: time::OffsetDateTime::UNIX_EPOCH,
+            };
+            serde_json::to_vec(&state).unwrap()
+        }
+
+        /// What the server names as the bytes that it holds, in the answer to the part at
+        /// `offset`, or in the answer to a question for the state of the upload (`None`).
+        fn named(&self, held: u64, offset: Option<u64>) -> u64 {
+            match (self.answers, offset) {
+                (Answers::Honest | Answers::LosesOne | Answers::Another, _) => held,
+                (Answers::Unchanged, Some(offset)) => offset,
+                (Answers::Backward, Some(offset)) => offset.saturating_sub(1),
+                (Answers::OneByte, Some(offset)) => offset + 1,
+                (Answers::Unchanged | Answers::Backward | Answers::OneByte, None) => 0,
+                (Answers::Beyond, _) => self.bytes + 1,
+            }
+        }
+
+        fn puts(&self) -> usize {
+            self.seen
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(method, _)| *method == crate::api::Method::Put)
+                .count()
+        }
+    }
+
+    impl crate::api::Transport for Uploads {
+        fn send(&self, request: crate::api::HttpRequest) -> crate::api::TransportFuture {
+            use crate::api::{HttpResponse, Method};
+
+            let path = request.url.path().to_owned();
+            let method = request.method;
+            self.seen.lock().unwrap().push((method, path.clone()));
+            let first_put = method == Method::Put && self.puts() == 1;
+            let mut held = self.held.lock().unwrap();
+            let (status, body) = match method {
+                Method::Post if path.ends_with("/attachments") => (201, self.state(0)),
+                // A client that sends without an end gets a refusal after many parts, so
+                // that its test ends.
+                Method::Put if self.puts() > 1_000 => {
+                    let refused = r#"{"error":{"code":"invalid_request","message":""}}"#;
+                    (400, refused.as_bytes().to_vec())
+                }
+                Method::Put if path.contains("/chunks/") => {
+                    let offset: u64 = path.rsplit('/').next().unwrap().parse().unwrap();
+                    let length = request
+                        .body
+                        .as_ref()
+                        .map_or(0, |body| body.as_slice().len());
+                    if offset == *held {
+                        *held += length as u64;
+                    }
+                    let lost = self.answers == Answers::LosesOne && first_put;
+                    if lost {
+                        // The part is stored, and the connection breaks before the answer.
+                        return Box::pin(async {
+                            Err(crate::api::TransportError::new(
+                                crate::api::TransportErrorKind::Interrupted,
+                                "the answer was lost",
+                            ))
+                        });
+                    } else {
+                        (200, self.state(self.named(*held, Some(offset))))
+                    }
+                }
+                Method::Get if path.ends_with("/upload") => {
+                    (200, self.state(self.named(*held, None)))
+                }
+                Method::Post if path.ends_with("/complete") => (200, self.state(*held)),
+                _ => (404, Vec::new()),
+            };
+            Box::pin(async move {
+                Ok(HttpResponse {
+                    status,
+                    retry_after: None,
+                    body: body.into(),
+                })
+            })
+        }
+    }
+
+    fn uploads_of(bytes: u64, answers: Answers) -> (Arc<Uploads>, Transfers) {
+        use crate::api::{ApiClient, RetryPolicy};
+
+        let server = Arc::new(Uploads {
+            id: AttachmentId::generate(),
+            bytes,
+            answers,
+            held: Mutex::new(0),
+            seen: Mutex::default(),
+        });
+        let api = ApiClient::new(
+            server.clone(),
+            crate::address::ServerAddress::parse("chat.example.test").unwrap(),
+            junto_protocol::ids::ServerId::generate(),
+            crate::version::SupportedVersions::THIS_BUILD
+                .negotiate(&[1])
+                .unwrap(),
+            RetryPolicy::default(),
+        )
+        .with_token(crate::secret::SecretToken::new("jst_test".to_owned()));
+        let owner = super::recordings::tests::owner();
+        let transfers = Transfers {
+            live: LiveServer {
+                shared: crate::live::Shared::new(),
+            },
+            runtime: crate::runtime::Runtime::current_or_new().unwrap(),
+            owned: Arc::new(move || Some((owner, api.clone()))),
+        };
+        (server, transfers)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn successful_upload_answers_must_advance_the_acknowledged_offset() {
+        let place = PlaceId::Channel(junto_protocol::ids::ChannelId::generate());
+        // Two parts and some bytes more.
+        let length = 2 * CHUNK_BYTES + 10;
+        let source = || UploadSource::Bytes {
+            name: "notes.txt".to_owned(),
+            bytes: Arc::new(vec![7u8; length]),
+        };
+        // A server that answers each part as it should, and one whose answer to the first
+        // part is lost after the part was stored: both uploads complete.
+        for answers in [Answers::Honest, Answers::LosesOne] {
+            let (server, transfers) = uploads_of(length as u64, answers);
+            let ended = transfers.upload(place, source()).finished().await;
+            assert_eq!(ended, Ok(server.id));
+            assert_eq!(*server.held.lock().unwrap(), length as u64);
+            assert_eq!(server.puts(), 3);
+            // After the lost answer the client asked what the server holds, and
+            // continued after the stored part.
+            let asked = server
+                .seen
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, path)| path.ends_with("/upload"))
+                .count();
+            assert_eq!(asked, usize::from(answers == Answers::LosesOne));
+        }
+        // A server whose successful answers name no further byte, fewer bytes, more
+        // bytes than the file has, or another upload: the upload ends after a bounded
+        // number of requests, with a failure that the window tells.
+        for answers in [
+            Answers::Unchanged,
+            Answers::Backward,
+            Answers::Beyond,
+            Answers::Another,
+            Answers::OneByte,
+        ] {
+            let (server, transfers) = uploads_of(length as u64, answers);
+            let started = tokio::time::Instant::now();
+            let ended = tokio::time::timeout(
+                Duration::from_secs(3_600),
+                transfers.upload(place, source()).finished(),
+            )
+            .await
+            .expect("the upload ends");
+            assert_eq!(ended, Err(TransferFailure::OutOfStep));
+            let requests = server.seen.lock().unwrap().len();
+            assert!(
+                requests <= 1 + IDLE_TRIES as usize * (1 + IDLE_TRIES as usize),
+                "{requests}"
+            );
+            assert!(server.puts() <= IDLE_TRIES as usize);
+            // The waits between the requests grow: no request follows another at once.
+            assert!(started.elapsed() >= Duration::from_secs(5));
+        }
     }
 
     #[test]

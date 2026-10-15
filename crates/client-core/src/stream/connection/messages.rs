@@ -528,6 +528,19 @@ impl Client {
         }
     }
 
+    /// Gives the timeline of a place the position that its reader shows, so that a bound
+    /// keeps the messages at that position (ADR 0747).
+    fn anchor_timeline(&mut self, place: PlaceId) {
+        let anchor = self
+            .messages
+            .wanted
+            .get(&place)
+            .and_then(|held| held.anchor);
+        if let Some(model) = &mut self.model {
+            self.model_changed |= model.anchor_timeline(place, anchor);
+        }
+    }
+
     /// Marks in the state that a page of a place is being read.
     pub(super) fn mark_reading(&mut self, place: PlaceId, reach: Reach, reading: bool) {
         let Some(timeline) = self
@@ -841,6 +854,8 @@ impl Client {
         for place in &wanted {
             if model.place(*place).is_some() {
                 model.open_timeline(*place);
+                let anchor = self.messages.wanted.get(place).and_then(|held| held.anchor);
+                model.anchor_timeline(*place, anchor);
             } else {
                 model.close_timeline(*place);
                 unseen.push(*place);
@@ -914,6 +929,7 @@ impl Client {
                             _ => None,
                         };
                     }
+                    self.anchor_timeline(place);
                     // The pages before and after belong to what is replaced: their reads
                     // end, and the timeline does not wait for them any more.
                     self.pending.retain(|pending| {
@@ -934,6 +950,7 @@ impl Client {
                 if let Some(wanted) = self.messages.wanted.get_mut(&place) {
                     wanted.anchor = position;
                 }
+                self.anchor_timeline(place);
             }
             Command::MarkRead { place, position } => {
                 let read = self.model.as_ref().map_or(0, |model| match place {
@@ -1074,6 +1091,12 @@ impl Client {
                     return;
                 }
                 model.open_timeline(place);
+                let anchor = self
+                    .messages
+                    .wanted
+                    .get(&place)
+                    .and_then(|held| held.anchor);
+                model.anchor_timeline(place, anchor);
                 self.model_changed = true;
                 Some(model.timeline(place).is_some_and(|held| held.loaded))
             }

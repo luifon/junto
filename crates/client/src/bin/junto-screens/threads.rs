@@ -123,6 +123,7 @@ fn thread_timeline(root: &Arc<Message>, replies: Vec<Message>) -> Timeline {
         unread_after: None,
         root: Some(root.clone()),
         forks: Vec::new(),
+        anchor: None,
     }
 }
 

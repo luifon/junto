@@ -35,7 +35,7 @@ Reads:
 
 Changes:
 
-- While the page is open, an event about a recording of its workspace reads the list again from the start. A state that replaced the state before, and a reader of the event stream that missed steps, do the same, because either can hide such an event.
+- While the page is open, an event about a recording of its workspace reads the list again from the start. A state that replaced the state before, and a reader of the event stream that missed steps, do the same, because either can hide such an event. These two, a change of the permissions of the account in the workspace or on the server, and a deleted channel of the workspace also empty the list first and take nothing of a read that started before them (ADR 0748).
 - One read of a list runs at a time. Changes that arrive while a read is on its way cause one further read from the start after it. Reason: the list takes the answer to its newest read only, so a read that started during another one would drop the answer of the first, and a server that tells changes faster than it answers would never be shown.
 - A read that a change causes starts not sooner than one second after the start of the read before. A change that arrives sooner waits for the end of that second, and further changes in that time start no further read.
 - A read from the start replaces the loaded rows with the first page.

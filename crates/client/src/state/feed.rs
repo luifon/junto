@@ -491,7 +491,9 @@ fn mentions(document: &Document, own: AccountId, own_roles: &[WorkspaceRoleId]) 
 fn author_name(message: &Message, names: &Names) -> String {
     message
         .author_name
-        .clone()
+        .as_deref()
+        .map(crate::text::label)
+        .filter(|name| !name.trim().is_empty())
         .or_else(|| {
             message
                 .author_id
@@ -508,7 +510,7 @@ fn quote_of(message: &Message, names: &Names) -> Quote {
             Some(document) => {
                 let text = plain_text(document, names, EXCERPT_CHARACTERS);
                 match (text.is_empty(), message.attachments.first()) {
-                    (true, Some(file)) => QuoteText::File(file.name.clone()),
+                    (true, Some(file)) => QuoteText::File(crate::text::label(&file.name)),
                     _ => QuoteText::Text(text),
                 }
             }
@@ -1074,6 +1076,7 @@ mod tests {
                 unread_after: None,
                 root: None,
                 forks: Vec::new(),
+                anchor: None,
             }
         }
 

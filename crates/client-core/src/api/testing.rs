@@ -95,6 +95,11 @@ struct World {
     seen: Vec<String>,
     next_token: u32,
     challenge_server_id: Option<ServerId>,
+    /// Added to the expiry of each challenge: a negative time makes a challenge that the
+    /// clock of the device sees as expired.
+    challenge_expiry_shift: time::Duration,
+    /// Each session of a login names this account in place of the account of the key.
+    session_account: Option<AccountId>,
     link_code: Option<String>,
     notices: Vec<(DeviceId, RecoveryNotice)>,
     /// The public origins. Without a list the server accepts the origin of the address
@@ -139,6 +144,8 @@ impl FakeServer {
                 seen: Vec::new(),
                 next_token: 0,
                 challenge_server_id: None,
+                challenge_expiry_shift: time::Duration::ZERO,
+                session_account: None,
                 link_code: None,
                 notices: Vec::new(),
                 public_origins: None,
@@ -153,6 +160,16 @@ impl FakeServer {
 
     pub(crate) fn server_id(&self) -> ServerId {
         self.world().info.server_id
+    }
+
+    /// Moves the expiry of the challenges by this time from the clock of the test.
+    pub(crate) fn shift_challenge_expiry(&self, shift: time::Duration) {
+        self.world().challenge_expiry_shift = shift;
+    }
+
+    /// Makes the sessions of logins name this account.
+    pub(crate) fn set_session_account(&self, account_id: AccountId) {
+        self.world().session_account = Some(account_id);
     }
 
     /// Makes the challenges name another server than the server information does.
@@ -300,7 +317,13 @@ impl FakeServer {
     /// Ends every session of the account and leaves one recovery notice for each of its
     /// devices, as a recovery of the account does.
     pub(crate) fn recover(&self, account_id: AccountId) -> RecoveryId {
-        self.world().recover(account_id)
+        self.world().recover(account_id, RecoveryId::generate())
+    }
+
+    /// Like [`Self::recover`], with an identifier that the test chooses: a server can
+    /// state any identifier.
+    pub(crate) fn recover_with(&self, account_id: AccountId, recovery_id: RecoveryId) {
+        self.world().recover(account_id, recovery_id);
     }
 
     pub(crate) fn end_sessions(&self) {
@@ -395,11 +418,11 @@ fn refusal(code: &str) -> HttpResponse {
 }
 
 impl World {
-    fn recover(&mut self, account_id: AccountId) -> RecoveryId {
+    fn recover(&mut self, account_id: AccountId, recovery_id: RecoveryId) -> RecoveryId {
         let world = self;
         world.end_sessions_of(account_id);
         let notice = RecoveryNotice {
-            id: RecoveryId::generate(),
+            id: recovery_id,
             device_id: None,
             performed_by: None,
             performed_at: OffsetDateTime::now_utc().replace_nanosecond(0).unwrap(),
@@ -633,7 +656,8 @@ impl World {
                     public_key: body.public_key,
                     nonce: Nonce::from_bytes([9; 32]),
                     expires_at: OffsetDateTime::now_utc().replace_nanosecond(0).unwrap()
-                        + time::Duration::seconds(60),
+                        + time::Duration::seconds(60)
+                        + self.challenge_expiry_shift,
                 };
                 self.challenges.retain(|_, kept| {
                     !(kept.public_key == body.public_key && kept.operation == body.operation)
@@ -646,7 +670,11 @@ impl World {
                 let challenge = self
                     .consume(&body.proof, ChallengeOperation::Login, reached)
                     .map_err(plain)?;
-                json(201, &self.start_session(challenge.public_key)).map_err(plain)
+                let mut session = self.start_session(challenge.public_key);
+                if let Some(account_id) = self.session_account {
+                    session.account_id = account_id;
+                }
+                json(201, &session).map_err(plain)
             }
             (Method::Delete, "/auth/session") => {
                 self.session_device(request).map_err(plain)?;
@@ -681,7 +709,7 @@ impl World {
                             &body.device_name,
                             DeviceOrigin::OwnerCode,
                         );
-                        self.recover(owner);
+                        self.recover(owner, RecoveryId::generate());
                     }
                     None => {
                         let owner = self.create_account(

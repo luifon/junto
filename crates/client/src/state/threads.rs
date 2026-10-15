@@ -82,39 +82,25 @@ impl AppState {
         pinned: bool,
         cx: &mut Context<Self>,
     ) {
-        let Some(server) = self.client.server(server_id) else {
-            return;
+        let refusal = |error: &ApiError| match error.code() {
+            Some(ErrorCode::LimitReached) => text::PIN_LIMIT.to_owned(),
+            _ if error.category() == Some(ErrorCategory::NotAllowed) => {
+                text::PIN_NOT_ALLOWED.to_owned()
+            }
+            _ => text::flow_error(&FlowError::from(error)),
         };
-        let api = server.api();
-        self.message_asks += 1;
-        let number = self.message_asks;
-        self.pending.message_refused = None;
-        cx.spawn(async move |this, cx| {
-            let asked = if pinned {
-                api.pin_message(message_id).await
-            } else {
-                api.unpin_message(message_id).await
-            };
-            let Err(error) = asked else {
-                return;
-            };
-            let _ = this.update(cx, |this, cx| {
-                // A late refusal of an earlier request does not replace what the person
-                // did afterwards.
-                if this.message_asks == number {
-                    this.pending.message_refused = Some(match error.code() {
-                        Some(ErrorCode::LimitReached) => text::PIN_LIMIT.to_owned(),
-                        _ if error.category() == Some(ErrorCategory::NotAllowed) => {
-                            text::PIN_NOT_ALLOWED.to_owned()
-                        }
-                        _ => text::flow_error(&FlowError::from(&error)),
-                    });
-                    cx.notify();
+        self.ask_about_messages(
+            server_id,
+            cx,
+            move |api| async move {
+                if pinned {
+                    api.pin_message(message_id).await
+                } else {
+                    api.unpin_message(message_id).await
                 }
-            });
-        })
-        .detach();
-        cx.notify();
+            },
+            refusal,
+        );
     }
 
     /// Shows a message of an open place: the messages around its position replace what is

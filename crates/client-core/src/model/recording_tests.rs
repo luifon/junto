@@ -20,6 +20,7 @@ use super::*;
 fn asks(part: Part) -> Follow {
     Follow {
         reload: false,
+        withdrawn: false,
         load: vec![part],
     }
 }
@@ -326,6 +327,7 @@ fn recording_updated_replaces_the_recording_and_asks_for_its_routes() {
     let id = read.recording.id;
     let asks = |part| Follow {
         reload: false,
+        withdrawn: false,
         load: vec![part],
     };
 
@@ -355,6 +357,30 @@ fn recording_updated_replaces_the_recording_and_asks_for_its_routes() {
     };
     assert_eq!(model.apply(&started), asks(Part::Recording(other.id)));
     assert_eq!(held(&model, other.id).detail, Loadable::NotLoaded);
+}
+
+#[test]
+fn a_change_of_permissions_withdraws_the_open_recordings_of_its_scope() {
+    let scene = scene();
+    let (mut model, read) = opened(&scene, 2);
+    let id = read.recording.id;
+    model.add_transcript_lines(id, answer(first_page(LINES_PAGE), 0..2, false));
+    assert_eq!(positions(&model, id), [0, 1]);
+    // A change in another workspace leaves the recording as it is.
+    model.apply(&Event::PermissionsChanged {
+        workspace_id: Some(WorkspaceId::generate()),
+    });
+    assert_eq!(positions(&model, id), [0, 1]);
+    // A change in its workspace withdraws it, its transcript and its lines; the lines
+    // are read again with the next state.
+    model.apply(&Event::PermissionsChanged {
+        workspace_id: Some(scene.workspace_id),
+    });
+    let open = held(&model, id);
+    assert_eq!(open.detail, Loadable::Loading);
+    assert_eq!(open.transcript, Loadable::Loading);
+    assert!(open.lines.lines.is_empty() && !open.lines.loaded && open.lines.stale);
+    assert!(open.stale);
 }
 
 #[test]

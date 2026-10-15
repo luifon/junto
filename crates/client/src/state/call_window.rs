@@ -89,7 +89,9 @@ impl AppState {
                 selection
                     .workspaces
                     .insert(call.target.server_id, workspace_id);
-                selection.channels.insert(workspace_id, channel_id);
+                selection
+                    .channels
+                    .insert((call.target.server_id, workspace_id), channel_id);
                 selection.conversations.remove(&call.target.server_id);
             }
         }

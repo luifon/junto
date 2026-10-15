@@ -250,10 +250,8 @@ impl Profile {
     /// A profile is text of another party: the name is cut to the length that a server
     /// allows and holds no control character, and a hash in another form is no avatar.
     fn of(profile: &AccountProfile) -> Self {
-        let name: String = profile
-            .name
+        let name: String = crate::text::label(&profile.name)
             .chars()
-            .filter(|character| !character.is_control())
             .take(NAME_CHARACTERS)
             .collect();
         Self {

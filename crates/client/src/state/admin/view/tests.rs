@@ -881,11 +881,14 @@ fn the_main_area_shows_a_selected_archived_channel_as_archived() {
         unread_after: None,
         root: None,
         forks: Vec::new(),
+        anchor: None,
     }));
     let mut server = scene.server();
     server.model = Some(Arc::new(model));
     let mut selection = Selection::default();
-    selection.channels.insert(scene.studio, scene.plans);
+    selection
+        .channels
+        .insert((scene.server_id, scene.studio), scene.plans);
     let view = crate::state::view::derive(&[server.clone()], &selection, &Scene::known());
     let workspace = view.workspace().unwrap();
     let channel = workspace.channel.as_ref().unwrap();
@@ -972,6 +975,7 @@ fn the_thread_and_the_pins_of_an_archived_channel_offer_no_change() {
         unread_after: None,
         root: root.cloned().map(Arc::new),
         forks: Vec::new(),
+        anchor: None,
     };
     let thread = PlaceId::Thread {
         channel_id: scene.plans,
@@ -994,7 +998,9 @@ fn the_thread_and_the_pins_of_an_archived_channel_offer_no_change() {
     let mut server = scene.server();
     server.model = Some(Arc::new(model));
     let mut selection = Selection::default();
-    selection.channels.insert(scene.studio, scene.plans);
+    selection
+        .channels
+        .insert((scene.server_id, scene.studio), scene.plans);
     selection.thread = Some((scene.server_id, scene.plans, root.id));
     let offers = |row: &crate::state::feed::MessageRow| {
         row.can_edit || row.can_delete || row.can_pin || row.can_thread
@@ -1101,11 +1107,14 @@ fn an_archived_voice_channel_offers_no_recording_removal() {
             unread_after: None,
             root: None,
             forks: Vec::new(),
+            anchor: None,
         }));
         let mut server = scene.server();
         server.model = Some(Arc::new(model));
         let mut selection = Selection::default();
-        selection.channels.insert(scene.studio, scene.daily);
+        selection
+            .channels
+            .insert((scene.server_id, scene.studio), scene.daily);
         let view = crate::state::view::derive(&[server], &selection, &Scene::known());
         let feed = view.workspace().unwrap().feed.as_ref().unwrap();
         let card = feed

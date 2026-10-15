@@ -515,10 +515,12 @@ struct ServerState {
     /// Counts the changes of the account that the state of the profile preset belongs
     /// to. A try to send the avatar records its result only for the count that it read.
     preset_owner: u64,
-    /// The recoveries that this device acknowledged since the client started. The server
-    /// never tells them again, except in the answer of a login that it computed before the
-    /// acknowledgement.
-    acknowledged: Vec<RecoveryId>,
+    /// The recoveries that this device acknowledged since the client started, each with
+    /// the account and the device that acknowledged it. The server never tells them
+    /// again to that device, except in the answer of a login that it computed before the
+    /// acknowledgement. A recovery that the server tells another account or another
+    /// device of the entry is that one's to acknowledge.
+    acknowledged: Vec<(AccountId, DeviceId, RecoveryId)>,
     announced: Option<(ConnectionLevel, Option<SecretToken>)>,
     /// The account is in a call with this device, as the event stream tells it.
     in_call: bool,
@@ -1558,9 +1560,20 @@ impl Server {
     ) -> Result<(), FlowError> {
         {
             let mut state = lock(&self.state);
-            if let AccessState::LoggedIn { recoveries, .. } = &mut settled.state {
+            if let AccessState::LoggedIn {
+                account_id,
+                device_id,
+                recoveries,
+                ..
+            } = &mut settled.state
+            {
                 // The answer of a login can be older than an acknowledgement.
-                recoveries.retain(|notice| !state.acknowledged.contains(&notice.id));
+                let (account_id, device_id) = (*account_id, *device_id);
+                recoveries.retain(|notice| {
+                    !state
+                        .acknowledged
+                        .contains(&(account_id, device_id, notice.id))
+                });
             }
             state.access = settled.state;
             if session.is_some() {
@@ -1934,8 +1947,12 @@ impl Server {
         self: &Arc<Self>,
         recovery_id: RecoveryId,
     ) -> Result<(), ApiError> {
-        let account = match &lock(&self.state).access {
-            AccessState::LoggedIn { account_id, .. } => *account_id,
+        let (account, device) = match &lock(&self.state).access {
+            AccessState::LoggedIn {
+                account_id,
+                device_id,
+                ..
+            } => (*account_id, *device_id),
             _ => return Err(ApiError::NotLoggedIn),
         };
         let result = self
@@ -1949,10 +1966,20 @@ impl Server {
         if gone {
             {
                 let mut state = lock(&self.state);
-                if !state.acknowledged.contains(&recovery_id) {
-                    state.acknowledged.push(recovery_id);
+                let key = (account, device, recovery_id);
+                if !state.acknowledged.contains(&key) {
+                    state.acknowledged.push(key);
                 }
-                if let AccessState::LoggedIn { recoveries, .. } = &mut state.access {
+                // The answer belongs to the account and the device that asked: a notice
+                // that the entry shows for another one by now stays.
+                if let AccessState::LoggedIn {
+                    account_id,
+                    device_id,
+                    recoveries,
+                    ..
+                } = &mut state.access
+                    && (*account_id, *device_id) == (account, device)
+                {
                     recoveries.retain(|notice| notice.id != recovery_id);
                 }
             }

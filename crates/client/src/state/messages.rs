@@ -13,7 +13,7 @@ use junto_client_core::live::LoadError;
 use junto_client_core::model::PlaceId;
 use junto_client_core::protocol::ids::{AccountId, AttachmentId, MessageId, ServerId};
 use junto_client_core::protocol::message::{Attachment, Block, Document, Message};
-use junto_client_core::transfers::{Upload, UploadSource, UploadStage};
+use junto_client_core::transfers::{TransferFailure, Upload, UploadSource, UploadStage};
 
 use super::AppState;
 use super::feed;
@@ -304,6 +304,12 @@ impl AppState {
             self.known.quoted.retain(|key, _| key.0 != server_id);
             self.asked_quotes.retain(|key, _| key.0 != server_id);
             self.forget_recording_downloads_of(server_id);
+            // The remembered choices of the server belong to the owner too.
+            self.selection.workspaces.remove(&server_id);
+            self.selection
+                .channels
+                .retain(|(of, _), _| *of != server_id);
+            self.selection.conversations.remove(&server_id);
         }
     }
 
@@ -320,33 +326,50 @@ impl AppState {
         F: Future<Output = Result<R, ApiError>> + 'static,
         R: 'static,
     {
+        self.ask_about_messages(server_id, cx, ask, |error| {
+            text::flow_error(&FlowError::from(error))
+        });
+    }
+
+    /// Like [`Self::ask_messages`], with the sentence that tells a refusal.
+    pub(super) fn ask_about_messages<F, R>(
+        &mut self,
+        server_id: ServerId,
+        cx: &mut Context<Self>,
+        ask: impl FnOnce(ServerApi) -> F,
+        refusal: fn(&ApiError) -> String,
+    ) where
+        F: Future<Output = Result<R, ApiError>> + 'static,
+        R: 'static,
+    {
         let Some(server) = self.client.server(server_id) else {
             return;
         };
         let Some(owner) = server.owner() else {
             // The person is told that nothing was sent.
-            self.pending.message_refused =
-                Some(text::flow_error(&FlowError::from(&ApiError::NotLoggedIn)));
+            self.refuse(text::flow_error(&FlowError::from(&ApiError::NotLoggedIn)));
             cx.notify();
             return;
         };
         let asking = ask(server.api_for(owner.account_id));
         self.message_asks += 1;
         self.message_asks_flying += 1;
-        let number = self.message_asks;
+        let (number, navigation) = (self.message_asks, self.navigations);
         self.pending.message_refused = None;
         cx.spawn(async move |this, cx| {
             let result = asking.await;
             let _ = this.update(cx, |this, cx| {
                 this.message_asks_flying -= 1;
                 // A late refusal of an earlier request does not replace what the person
-                // did afterwards, and a refusal for an account that the device has no
-                // more is not told to the next one.
+                // did afterwards, a refusal for an account that the device has no more
+                // is not told to the next one, and a refusal that arrives after the person
+                // selected another place is not told at the composer of that place.
                 if let Err(error) = result
                     && this.message_asks == number
+                    && this.navigations == navigation
                     && this.owner(server_id) == Some(owner)
                 {
-                    this.pending.message_refused = Some(text::flow_error(&FlowError::from(&error)));
+                    this.refuse(refusal(&error));
                     cx.notify();
                 }
             });
@@ -358,6 +381,26 @@ impl AppState {
     /// How many requests for a change of a message have no answer yet.
     pub fn message_asks_flying(&self) -> usize {
         self.message_asks_flying
+    }
+
+    /// Why the server did not do what the person asked for with a message or a file. A
+    /// refusal belongs to the selection that the person made the request in: after the
+    /// person selected another server, workspace, channel or conversation, it is not
+    /// shown (ADR 0746).
+    pub fn message_refusal(&self) -> Option<&str> {
+        self.pending
+            .message_refused
+            .as_ref()
+            .filter(|refusal| refusal.navigation == self.navigations)
+            .map(|refusal| refusal.sentence.as_str())
+    }
+
+    /// Tells a refusal of a request that the person made in the present selection.
+    pub(super) fn refuse(&mut self, sentence: String) {
+        self.pending.message_refused = Some(super::Refusal {
+            sentence,
+            navigation: self.navigations,
+        });
     }
 
     pub fn dismiss_message_refusal(&mut self, cx: &mut Context<Self>) {
@@ -524,17 +567,11 @@ impl AppState {
         }
     }
 
-    /// The person has seen the messages of a place up to a position.
+    /// The person has seen the messages of a place up to a position. The event stream
+    /// client of the server sends a position once for the account that it has, and
+    /// leaves out one that the account has read already (ADR 0721), so the window keeps
+    /// no record of its own.
     pub fn mark_read(&mut self, server_id: ServerId, place: PlaceId, position: u64) {
-        let key = (server_id, place);
-        if self
-            .marked
-            .get(&key)
-            .is_some_and(|marked| *marked >= position)
-        {
-            return;
-        }
-        self.marked.insert(key, position);
         if let Some(server) = self.client.server(server_id) {
             server.live().mark_read(place, position);
         }
@@ -678,9 +715,12 @@ impl AppState {
             .collect();
         self.known.uploads = self
             .sent_uploads
-            .values()
-            .flatten()
-            .map(|upload| (upload.id, upload.progress()))
+            .iter()
+            .flat_map(|((server_id, _), uploads)| {
+                uploads
+                    .iter()
+                    .map(|upload| ((*server_id, upload.id), upload.progress()))
+            })
             .collect();
     }
 
@@ -717,8 +757,7 @@ impl AppState {
         // What the window holds of the downloads of a server belongs to its present owner.
         self.follow_owners();
         if !self.owners.contains_key(&server_id) {
-            self.pending.message_refused =
-                Some(text::flow_error(&FlowError::from(&ApiError::NotLoggedIn)));
+            self.refuse(text::flow_error(&FlowError::from(&ApiError::NotLoggedIn)));
             cx.notify();
             return;
         }
@@ -729,7 +768,7 @@ impl AppState {
         let (Some(server), Some(directory)) =
             (self.client.server(server_id), self.download_directory())
         else {
-            self.pending.message_refused = Some(text::NO_DOWNLOAD_DIRECTORY.to_owned());
+            self.refuse(text::NO_DOWNLOAD_DIRECTORY.to_owned());
             cx.notify();
             return;
         };
@@ -778,7 +817,10 @@ impl AppState {
         &mut self,
         zone: super::feed::Zone,
         drafts: std::collections::HashMap<(ServerId, PlaceId), Vec<DraftFile>>,
-        uploads: std::collections::HashMap<u64, junto_client_core::transfers::UploadProgress>,
+        uploads: std::collections::HashMap<
+            (ServerId, u64),
+            junto_client_core::transfers::UploadProgress,
+        >,
         downloads: std::collections::HashMap<
             (ServerId, AttachmentId),
             junto_client_core::transfers::DownloadProgress,
@@ -790,7 +832,10 @@ impl AppState {
         self.known.drafts = drafts;
         self.known.uploads = uploads;
         self.known.downloads = downloads;
-        self.pending.message_refused = refused;
+        self.pending.message_refused = None;
+        if let Some(refused) = refused {
+            self.refuse(refused);
+        }
         self.changed(cx);
     }
 
@@ -814,11 +859,16 @@ impl AppState {
         &self,
         owner: Owner,
         attachment: &Attachment,
-    ) -> impl Future<Output = Option<Vec<u8>>> + 'static + use<> {
+    ) -> impl Future<Output = Result<Vec<u8>, TransferFailure>> + 'static + use<> {
         let reading = self
             .client
             .server(owner.entry.server_id)
             .map(|server| server.transfers().picture(owner, attachment));
-        async move { reading?.await.ok() }
+        async move {
+            match reading {
+                Some(reading) => reading.await,
+                None => Err(TransferFailure::Stopped),
+            }
+        }
     }
 }

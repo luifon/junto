@@ -88,20 +88,26 @@ fn stated_by_the_server(scene: &Scene) -> ServerModel {
     ServerModel::from_snapshot(scene.snapshot.clone())
 }
 
-fn shown(scene: &Scene, channel_id: ChannelId) -> Selection {
+fn shown(server_id: ServerId, scene: &Scene, channel_id: ChannelId) -> Selection {
     Selection {
-        channels: [(scene.studio, channel_id)].into_iter().collect(),
+        channels: [((server_id, scene.studio), channel_id)]
+            .into_iter()
+            .collect(),
         ..Selection::default()
     }
 }
 
-fn view(scene: &Scene, selection: &Selection, known: &Known) -> ShellView {
+/// The view of the scene with this channel shown, or with no channel chosen.
+fn view(scene: &Scene, channel_id: Option<ChannelId>, known: &Known) -> ShellView {
     let server = server(
         "Acme Studio",
         Some(stated_by_the_server(scene)),
         logged_in(scene.own, Vec::new()),
     );
-    derive(std::slice::from_ref(&server), selection, known)
+    let selection = channel_id.map_or_else(Selection::default, |channel_id| {
+        shown(server.id, scene, channel_id)
+    });
+    derive(std::slice::from_ref(&server), &selection, known)
 }
 
 /// The state of the calls while this device is in the call of a voice channel.
@@ -165,15 +171,15 @@ fn the_shown_channel_offers_what_its_list_holds_and_not_what_a_role_gives() {
     // The server states one permission for the workspace, whatever the role holds: an
     // override can deny the rest in every channel.
     scene.states(&[ViewChannel]);
-    let general = shown(&scene, scene.general);
-    let held = view(&scene, &general, &Known::default())
+    let general = Some(scene.general);
+    let held = view(&scene, general, &Known::default())
         .workspace()
         .unwrap()
         .allowed;
     assert_eq!(held, Allowed::default());
     // A list without any permission is a list too: the role gives the window nothing.
     scene.states(&[]);
-    let held = view(&scene, &general, &Known::default())
+    let held = view(&scene, general, &Known::default())
         .workspace()
         .unwrap()
         .allowed;
@@ -181,7 +187,7 @@ fn the_shown_channel_offers_what_its_list_holds_and_not_what_a_role_gives() {
 
     // The list of the workspace holds for a channel without a list of its own.
     scene.states(&[ViewChannel, ManageMessages, MentionEveryone]);
-    let held = view(&scene, &general, &Known::default())
+    let held = view(&scene, general, &Known::default())
         .workspace()
         .unwrap()
         .allowed;
@@ -189,19 +195,19 @@ fn the_shown_channel_offers_what_its_list_holds_and_not_what_a_role_gives() {
 
     // A channel with a list of its own has that list, in both directions.
     scene.states_in(scene.general, &[ViewChannel, ManageChannel]);
-    let held = view(&scene, &general, &Known::default())
+    let held = view(&scene, general, &Known::default())
         .workspace()
         .unwrap()
         .allowed;
     assert!(held.manage && !held.manage_messages && !held.mention_everyone);
-    let random = shown(&scene, scene.random);
-    let held = view(&scene, &random, &Known::default())
+    let random = Some(scene.random);
+    let held = view(&scene, random, &Known::default())
         .workspace()
         .unwrap()
         .allowed;
     assert!(!held.manage && held.manage_messages && held.mention_everyone);
     // Each row of the channel column carries the list of its channel.
-    let workspace_view = view(&scene, &random, &Known::default());
+    let workspace_view = view(&scene, random, &Known::default());
     let row = |name: &str| {
         workspace_view
             .workspace()
@@ -242,11 +248,12 @@ fn the_message_of_another_person_offers_deletion_and_pin_by_the_list_of_its_chan
             unread_after: None,
             root: None,
             forks: Vec::new(),
+            anchor: None,
         }));
         let server = server("Acme Studio", Some(model), logged_in(scene.own, Vec::new()));
         let view = derive(
             std::slice::from_ref(&server),
-            &shown(scene, scene.general),
+            &shown(server.id, scene, scene.general),
             &Known::default(),
         );
         let feed = view.workspace().unwrap().feed.clone().unwrap();
@@ -282,7 +289,11 @@ fn the_controls_of_a_call_read_the_list_of_the_voice_channel_of_the_call() {
             logged_in(scene.own, Vec::new()),
         );
         let known = in_call(server.id, scene, daily);
-        let view = derive(std::slice::from_ref(&server), &shown(scene, daily), &known);
+        let view = derive(
+            std::slice::from_ref(&server),
+            &shown(server.id, scene, daily),
+            &known,
+        );
         view.workspace().unwrap().call.clone().unwrap()
     };
     let shown_panel = panel(&scene);
@@ -336,7 +347,7 @@ fn the_menu_of_a_person_reads_the_list_of_the_voice_channel_of_that_person() {
     scene.studio_mut().channels.push(focus);
     scene.calls(daily, &[ana]);
     let menu = |scene: &Scene| {
-        view(scene, &Selection::default(), &Known::default())
+        view(scene, None, &Known::default())
             .person_menu(daily, ana)
             .unwrap()
     };
@@ -411,7 +422,7 @@ fn an_archived_channel_offers_its_restore_when_its_own_list_is_read() {
         let server = server("Acme Studio", Some(model), logged_in(scene.own, Vec::new()));
         let view = derive(
             std::slice::from_ref(&server),
-            &shown(scene, general),
+            &shown(server.id, scene, general),
             &Known::default(),
         );
         let workspace = view.workspace().unwrap();

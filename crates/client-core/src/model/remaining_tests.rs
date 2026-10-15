@@ -206,6 +206,7 @@ fn a_member_who_was_removed_from_a_workspace_leaves_its_member_list() {
         }),
         Follow {
             reload: true,
+            withdrawn: true,
             load: Vec::new()
         }
     );

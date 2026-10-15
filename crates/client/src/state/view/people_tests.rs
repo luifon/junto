@@ -223,6 +223,7 @@ fn the_view_names_the_people_that_it_shows_the_most_visible_first() {
         unread_after: None,
         root: None,
         forks: Vec::new(),
+        anchor: None,
     }));
     model.conversations = vec![Conversation {
         id: junto_client_core::protocol::ids::ConversationId::generate(),

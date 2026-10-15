@@ -747,6 +747,7 @@ impl Shell {
             return notices;
         };
         let server_id = server.id;
+        let owner = self.state.read(cx).owner(server_id);
         notices.extend(
             server
                 .recoveries
@@ -754,7 +755,7 @@ impl Shell {
                 .enumerate()
                 .map(|(index, recovery)| {
                     let recovery_id = recovery.id;
-                    let sending = pending.acknowledging.contains(&recovery_id);
+                    let sending = pending.acknowledges(owner, recovery_id);
                     div()
                         .flex_none()
                         .px(u(16.0))
@@ -815,13 +816,13 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        if let Some(error) = pending.acknowledge_failed.get(&server_id) {
+        if let Some(error) = pending.acknowledge_failure(owner) {
             notices.push(
                 div()
                     .flex_none()
                     .px(u(16.0))
                     .pt(u(10.0))
-                    .child(Notice::error(error.clone()).selector("recovery-error"))
+                    .child(Notice::error(error.to_owned()).selector("recovery-error"))
                     .into_any_element(),
             );
         }

@@ -128,7 +128,7 @@ pub fn recordings(
             sentence: failed.sentence.clone(),
             older: failed.older,
         },
-        (true, None) if list.reading => RecordingsRead::Reading,
+        (true, None) if list.reading || list.withdrawn.is_some() => RecordingsRead::Reading,
         (true, None) => RecordingsRead::Loaded,
     };
     RecordingsPage {
@@ -345,6 +345,10 @@ mod tests {
         admin.recordings.reading = true;
         assert_eq!(scene.page(&admin).state, RecordingsRead::Reading);
         admin.recordings.reading = false;
+        // A list that a change of permissions emptied is being read until a read answers.
+        admin.recordings.withdraw();
+        assert_eq!(scene.page(&admin).state, RecordingsRead::Reading);
+        admin.recordings.withdrawn = None;
         // An empty list that was read is loaded and has no row.
         let page = scene.page(&admin);
         assert_eq!(page.state, RecordingsRead::Loaded);

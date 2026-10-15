@@ -381,10 +381,13 @@ fn a_recording_is_a_card_with_its_files_its_transcript_and_its_removal(cx: &mut 
     world
         .run(api.update_workspace_role(workspace_id, everyone.id, &update))
         .unwrap();
+    // Each change of the permissions withdraws the messages of the workspace until the
+    // place is read again (ADR 0748): the control is pressed once it is drawn.
     window.until("the permission to remove", |window| {
         window
             .card(recording_id)
             .is_some_and(|card| card.may_remove)
+            && window.shows("remove-recording")
     });
     window.click("remove-recording");
     assert!(window.shows("confirm-remove-recording"));

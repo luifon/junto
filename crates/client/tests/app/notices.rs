@@ -570,18 +570,20 @@ fn a_person_who_loses_a_channel_loses_its_notices_on_screen(cx: &mut TestAppCont
     // its scope as the menu of a row does: the refusal is told above the composer.
     let server_id = window.view().selected.unwrap().id;
     let state = window.state.clone();
-    assert!(window.state.read_with(&window.cx, |state, _| {
-        state.pending().message_refused.is_none()
-    }));
+    assert!(
+        window
+            .state
+            .read_with(&window.cx, |state, _| { state.message_refusal().is_none() })
+    );
     window.cx.update(|_, cx| {
         state.update(cx, |state, cx| {
             state.set_channel_mute(server_id, general, Some(MuteFor::OneHour), cx);
         });
     });
     window.until("the refusal of the mute is told", |window| {
-        window.state.read_with(&window.cx, |state, _| {
-            state.pending().message_refused.is_some()
-        })
+        window
+            .state
+            .read_with(&window.cx, |state, _| state.message_refusal().is_some())
     });
 }
 

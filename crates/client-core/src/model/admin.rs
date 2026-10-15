@@ -283,6 +283,77 @@ impl AdminModel {
         }
     }
 
+    /// The archived channels that the state knows in one workspace, or in all when
+    /// `scope` is `None`.
+    pub(crate) fn archived_in(&self, scope: Option<WorkspaceId>) -> Vec<ChannelId> {
+        self.archived
+            .iter()
+            .filter_map(|(_, list)| list.loaded())
+            .flatten()
+            .chain(&self.archived_known)
+            .filter(|held| scope.is_none_or(|scope| held.channel.workspace_id == scope))
+            .map(|held| held.channel.id)
+            .collect()
+    }
+
+    /// What the account may see changed in one workspace, or on the server when `scope`
+    /// is `None` (see [`ServerModel::withdraw`](super::ServerModel::withdraw)): every
+    /// loaded collection of that scope shows as being read until the next state reads it
+    /// again. `channels` are the channels of the scope.
+    pub(crate) fn withdraw(&mut self, scope: Option<WorkspaceId>, channels: &[ChannelId]) {
+        fn reading<T>(collection: &mut Collection<T>) {
+            if !collection.is_not_loaded() {
+                *collection = Collection::Loading;
+            }
+        }
+        fn reading_keyed<K: Copy, T>(list: &mut [(K, Collection<T>)], of: impl Fn(K) -> bool) {
+            for (key, collection) in list.iter_mut() {
+                if of(*key) {
+                    reading(collection);
+                }
+            }
+        }
+        if scope.is_none() {
+            reading(&mut self.accounts);
+            reading(&mut self.invites);
+            reading(&mut self.join_requests);
+            reading(&mut self.access_tokens);
+            self.access_tokens_more = false;
+            reading(&mut self.exports);
+            reading(&mut self.server_roles);
+            reading(&mut self.direct_retention);
+        }
+        let in_scope = |workspace_id: WorkspaceId| scope.is_none_or(|scope| scope == workspace_id);
+        // The archived channels are structure, which stays until the snapshot: the ones
+        // of a list that is read again are known by themselves meanwhile, so that a
+        // reader of one of them is carried through the snapshot (ADR 0762).
+        let listed: Vec<ArchivedChannel> = self
+            .archived
+            .iter()
+            .filter(|(workspace_id, _)| in_scope(*workspace_id))
+            .filter_map(|(_, list)| list.loaded())
+            .flatten()
+            .cloned()
+            .collect();
+        for channel in listed {
+            if !self
+                .archived_known
+                .iter()
+                .any(|held| held.channel.id == channel.channel.id)
+            {
+                self.archived_known.push(channel);
+            }
+        }
+        reading_keyed(&mut self.archived, in_scope);
+        reading_keyed(&mut self.settings, in_scope);
+        reading_keyed(&mut self.overrides, |channel_id| {
+            channels.contains(&channel_id)
+        });
+        reading_keyed(&mut self.channel_permissions, |channel_id| {
+            channels.contains(&channel_id)
+        });
+    }
+
     /// An archived channel that the state knows: from a loaded list, or by itself.
     pub fn archived_channel(&self, channel_id: ChannelId) -> Option<&ArchivedChannel> {
         self.archived
