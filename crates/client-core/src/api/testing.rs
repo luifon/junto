@@ -91,6 +91,9 @@ struct World {
     faults: Vec<(String, VecDeque<Fault>)>,
     /// Refusals with a status and a code of the test, by the end of the path.
     refusals: Vec<(String, u16, String)>,
+    /// The next request whose path ends with the text is answered after the work, when the
+    /// test gives a permit: the answer arrives late.
+    held_answers: Vec<(String, Arc<tokio::sync::Semaphore>)>,
     down: bool,
     seen: Vec<String>,
     next_token: u32,
@@ -140,6 +143,7 @@ impl FakeServer {
                 links: BTreeMap::new(),
                 faults: Vec::new(),
                 refusals: Vec::new(),
+                held_answers: Vec::new(),
                 down: false,
                 seen: Vec::new(),
                 next_token: 0,
@@ -245,6 +249,16 @@ impl FakeServer {
         self.world()
             .refusals
             .push((path.to_owned(), status, code.to_owned()));
+    }
+
+    /// The next request whose path ends with `path` is handled at once, and its answer
+    /// arrives when the test adds a permit to the returned semaphore.
+    pub(crate) fn hold_answer(&self, path: &str) -> Arc<tokio::sync::Semaphore> {
+        let permits = Arc::new(tokio::sync::Semaphore::new(0));
+        self.world()
+            .held_answers
+            .push((path.to_owned(), permits.clone()));
+        permits
     }
 
     /// Stores bytes as the avatar of an account without any check, as a server that does
@@ -1029,6 +1043,16 @@ impl Transport for FakeServer {
                 }),
             }
         };
-        Box::pin(async move { result })
+        let held = world
+            .held_answers
+            .iter()
+            .position(|(end, _)| path.ends_with(end.as_str()))
+            .map(|index| world.held_answers.remove(index).1);
+        Box::pin(async move {
+            if let Some(permits) = held {
+                permits.acquire().await.unwrap().forget();
+            }
+            result
+        })
     }
 }

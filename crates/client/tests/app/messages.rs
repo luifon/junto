@@ -372,6 +372,15 @@ fn a_file_is_sent_with_a_message_and_saved_from_one(cx: &mut TestAppContext) {
         std::fs::read(downloads.path().join("timings.csv")).unwrap(),
         b"mine"
     );
+
+    // A saved file of a message is not opened (ADR 0740), as a saved recording is. In a
+    // test the application keeps the path of a file that it opens, and an opening through
+    // the system panics on the test platform.
+    window.settle();
+    let opened = window
+        .state
+        .read_with(&window.cx, |state, _| state.kept_opened().to_vec());
+    assert!(opened.is_empty(), "{opened:?}");
 }
 
 #[gpui::test]

@@ -14,7 +14,7 @@ Transport:
 
 - The HTTP library of the API client makes the upgrade request `GET /api/v<version>/events`. A second client object of that library is used, with the settings of the first: no redirect, the same TLS library, the same trusted certificates and 10 seconds for a connection attempt. It speaks HTTP/1.1 only and has no time limit for a whole request, because a connection lasts for hours.
 - The session token is in the `Authorization` header of that request and goes to the origin of the server only (ADR 0714).
-- An answer with a status of 400 or above is read as the error body of ADR 0205. The client accepts the upgrade only with the status 101, the header `Upgrade: websocket` and the `Sec-WebSocket-Accept` value that belongs to its key.
+- An answer with a status of 400 or above is read as the error body of ADR 0205. The client accepts the upgrade only with the status 101, the header `Upgrade: websocket` (the protocol name in any case) and the `Sec-WebSocket-Accept` value that belongs to its key, compared exactly, because base64 is case-sensitive (RFC 6455).
 - After the upgrade the WebSocket library of the server, `tokio-tungstenite`, reads and writes frames on that connection, in a task of its own. The workspace already holds both libraries, so `Cargo.lock` gets no new crate.
 - A WebSocket library that opens its own TLS connection was not used: it would need a second configuration of the trusted certificates, of redirects and of the proxy settings, and the two could differ.
 - The client reads messages of at most 256 KiB, which is the size of a whole batch of events on the server (ADR 0116). A larger message and a binary frame end the connection. The library answers the pings of the server.

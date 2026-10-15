@@ -16,7 +16,7 @@ use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 use tokio_tungstenite::tungstenite::{self, Message};
 use url::Url;
 
-use crate::api::transport::{CONNECT_TIMEOUT, failure, read};
+use crate::api::transport::{client_builder, failure, read};
 use crate::api::{HttpResponse, TransportError, TransportErrorKind};
 use crate::secret::SecretToken;
 
@@ -100,15 +100,14 @@ impl ReqwestStreamTransport {
     /// The client has no time limit for a whole request: a connection lasts for hours. The
     /// stream client limits the time until the upgrade and the time without a frame.
     pub fn new() -> Result<Self, TransportError> {
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(CONNECT_TIMEOUT)
-            .http1_only()
-            .user_agent(concat!("junto-client/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .map_err(|error| {
-                TransportError::new(TransportErrorKind::Connect, error.without_url().to_string())
-            })?;
+        Self::from_settings(client_builder())
+    }
+
+    /// The tests add a certificate of their own to the settings of the product.
+    fn from_settings(settings: reqwest::ClientBuilder) -> Result<Self, TransportError> {
+        let client = settings.http1_only().build().map_err(|error| {
+            TransportError::new(TransportErrorKind::Connect, error.without_url().to_string())
+        })?;
         Ok(Self { client })
     }
 }
@@ -144,17 +143,20 @@ impl StreamTransport for ReqwestStreamTransport {
                     Err(error) => OpenError::Failed(error),
                 });
             }
-            let names = |name, expected: &str| {
+            let value = |name| {
                 response
                     .headers()
                     .get(name)
                     .and_then(|value| value.to_str().ok())
-                    .is_some_and(|value| value.eq_ignore_ascii_case(expected))
             };
-            if status != 101 || !names(UPGRADE, "websocket") {
+            // The protocol name is compared without case, the accept value, which is base64,
+            // exactly (RFC 6455, section 4.1).
+            let websocket =
+                value(UPGRADE).is_some_and(|name| name.eq_ignore_ascii_case("websocket"));
+            if status != 101 || !websocket {
                 return Err(invalid("the server did not upgrade the connection"));
             }
-            if !names(SEC_WEBSOCKET_ACCEPT, &derive_accept_key(key.as_bytes())) {
+            if value(SEC_WEBSOCKET_ACCEPT) != Some(derive_accept_key(key.as_bytes()).as_str()) {
                 return Err(invalid("the answer does not belong to the upgrade request"));
             }
             let upgraded = response
@@ -383,6 +385,287 @@ mod tests {
         drop(socket);
         let _ = let_go.await;
         assert_eq!(dropped.elapsed(), Duration::ZERO);
+    }
+
+    const TOKEN: &str = "jst_stream-token";
+    const AUTHORITY: &[u8] = include_bytes!("../../tests/data/stream-tls/authority.der");
+    const SERVER_CERTIFICATE: &[u8] = include_bytes!("../../tests/data/stream-tls/server.der");
+    const SERVER_KEY: &[u8] = include_bytes!("../../tests/data/stream-tls/server-key.der");
+
+    fn request_to(address: std::net::SocketAddr, scheme: &str) -> StreamRequest {
+        StreamRequest {
+            url: Url::parse(&format!("{scheme}://{address}/api/v1/events")).unwrap(),
+            bearer: SecretToken::new(TOKEN.to_owned()),
+        }
+    }
+
+    /// The request line and the headers of one request, with the names in lower case.
+    async fn read_head<S: AsyncRead + Unpin>(
+        connection: &mut S,
+    ) -> (String, Vec<(String, String)>) {
+        use tokio::io::AsyncReadExt;
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            head.push(connection.read_u8().await.unwrap());
+        }
+        let head = String::from_utf8(head).unwrap();
+        let mut lines = head.split("\r\n").filter(|line| !line.is_empty());
+        let request_line = lines.next().unwrap().to_owned();
+        let headers = lines
+            .map(|line| {
+                let (name, value) = line.split_once(':').unwrap();
+                (name.trim().to_ascii_lowercase(), value.trim().to_owned())
+            })
+            .collect();
+        (request_line, headers)
+    }
+
+    fn values<'a>(headers: &'a [(String, String)], name: &str) -> Vec<&'a str> {
+        headers
+            .iter()
+            .filter(|(header, _)| header == name)
+            .map(|(_, value)| value.as_str())
+            .collect()
+    }
+
+    fn upgraded(accept: &str) -> String {
+        format!(
+            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
+             Sec-WebSocket-Accept: {accept}\r\n\r\n"
+        )
+    }
+
+    /// Checks the upgrade request, upgrades the connection, sends `hello` and gives the first
+    /// message of the client.
+    async fn serve_upgrade<S>(mut connection: S) -> Message
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        use tokio::io::AsyncWriteExt;
+        let (request_line, headers) = read_head(&mut connection).await;
+        assert_eq!(request_line, "GET /api/v1/events HTTP/1.1");
+        let bearer = format!("Bearer {TOKEN}");
+        assert_eq!(values(&headers, "authorization"), [bearer.as_str()]);
+        assert_eq!(values(&headers, "upgrade"), ["websocket"]);
+        assert_eq!(values(&headers, "sec-websocket-version"), ["13"]);
+        let key = values(&headers, "sec-websocket-key")[0];
+        let answer = upgraded(&derive_accept_key(key.as_bytes()));
+        connection.write_all(answer.as_bytes()).await.unwrap();
+        let mut socket = WebSocketStream::from_raw_socket(connection, Role::Server, None).await;
+        socket.send(Message::text("hello")).await.unwrap();
+        socket.next().await.unwrap().unwrap()
+    }
+
+    async fn says_hello_and_takes_subscribe(
+        opened: Result<StreamSocket, OpenError>,
+        server: tokio::task::JoinHandle<Message>,
+    ) {
+        let mut socket = opened.unwrap();
+        assert_eq!(
+            socket.incoming.recv().await,
+            Some(Incoming::Text("hello".to_owned()))
+        );
+        socket.outgoing.send("subscribe".to_owned()).await.unwrap();
+        assert_eq!(server.await.unwrap(), Message::text("subscribe"));
+    }
+
+    #[tokio::test]
+    async fn the_upgrade_request_is_http_1_1_with_the_session_token_and_frames_follow() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let request = request_to(listener.local_addr().unwrap(), "http");
+        let server = tokio::spawn(async move {
+            let (connection, _) = listener.accept().await.unwrap();
+            serve_upgrade(connection).await
+        });
+        let opened = ReqwestStreamTransport::new().unwrap().open(request).await;
+        says_hello_and_takes_subscribe(opened, server).await;
+    }
+
+    /// Opens a connection to a server that answers the upgrade request with what `answer`
+    /// makes of the key of the request.
+    async fn answered(
+        answer: impl FnOnce(&str) -> String + Send + 'static,
+    ) -> Result<StreamSocket, OpenError> {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let request = request_to(listener.local_addr().unwrap(), "http");
+        let server = tokio::spawn(async move {
+            let (mut connection, _) = listener.accept().await.unwrap();
+            let (_, headers) = read_head(&mut connection).await;
+            let answer = answer(values(&headers, "sec-websocket-key")[0]);
+            connection.write_all(answer.as_bytes()).await.unwrap();
+            connection
+        });
+        let opened = ReqwestStreamTransport::new().unwrap().open(request).await;
+        drop(server.await.unwrap());
+        opened
+    }
+
+    fn refused_with(opened: Result<StreamSocket, OpenError>, detail: &str) -> bool {
+        matches!(
+            opened,
+            Err(OpenError::Failed(error))
+                if error == TransportError::new(TransportErrorKind::Interrupted, detail)
+        )
+    }
+
+    #[tokio::test]
+    async fn an_answer_that_is_not_the_upgrade_of_this_request_opens_no_connection() {
+        const NOT_UPGRADED: &str = "the server did not upgrade the connection";
+        const OTHER_KEY: &str = "the answer does not belong to the upgrade request";
+        let accept = |key: &str| derive_accept_key(key.as_bytes());
+
+        let ok = answered(|_| "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_owned()).await;
+        assert!(refused_with(ok, NOT_UPGRADED));
+        let without_upgrade = answered(move |key| {
+            format!(
+                "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\n\
+                 Sec-WebSocket-Accept: {}\r\n\r\n",
+                accept(key)
+            )
+        })
+        .await;
+        assert!(refused_with(without_upgrade, NOT_UPGRADED));
+        let other_protocol =
+            answered(move |key| upgraded(&accept(key)).replace("websocket", "h2c")).await;
+        assert!(refused_with(other_protocol, NOT_UPGRADED));
+        let for_another_key = answered(|_| upgraded(&generate_key())).await;
+        assert!(refused_with(for_another_key, OTHER_KEY));
+        let without_accept = answered(move |key| {
+            upgraded(&accept(key))
+                .replace(&format!("Sec-WebSocket-Accept: {}\r\n", accept(key)), "")
+        })
+        .await;
+        assert!(refused_with(without_accept, OTHER_KEY));
+        let not_101 = answered(move |key| {
+            upgraded(&accept(key)).replace("101 Switching Protocols", "200 OK")
+        })
+        .await;
+        assert!(refused_with(not_101, NOT_UPGRADED));
+        // The accept value is base64, which is case-sensitive (RFC 6455, section 4.1).
+        let in_other_case = answered(move |key| {
+            let exact = accept(key);
+            let changed: String = exact
+                .chars()
+                .map(|symbol| match symbol {
+                    'a'..='z' => symbol.to_ascii_uppercase(),
+                    'A'..='Z' => symbol.to_ascii_lowercase(),
+                    other => other,
+                })
+                .collect();
+            assert_ne!(changed, exact);
+            upgraded(&changed)
+        })
+        .await;
+        assert!(refused_with(in_other_case, OTHER_KEY));
+
+        let unauthenticated = answered(|_| {
+            let body = r#"{"error":{"code":"unauthenticated","message":"no session"}}"#;
+            format!(
+                "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+        })
+        .await;
+        assert!(matches!(
+            unauthenticated,
+            Err(OpenError::Refused(response)) if response.status == 401
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_redirect_is_not_followed_so_the_token_goes_to_no_other_server() {
+        use tokio::io::AsyncWriteExt;
+        // The other server records each request that reaches it, before its answer.
+        let other = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let elsewhere = format!("http://{}/api/v1/events", other.local_addr().unwrap());
+        let reached = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = reached.clone();
+        let other = tokio::spawn(async move {
+            loop {
+                let (mut connection, _) = other.accept().await.unwrap();
+                let head = read_head(&mut connection).await;
+                recorded.lock().unwrap().push(head);
+                let answer = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+                connection.write_all(answer.as_bytes()).await.unwrap();
+            }
+        });
+        for status in [
+            "301 Moved Permanently",
+            "307 Temporary Redirect",
+            "308 Permanent Redirect",
+        ] {
+            let location = elsewhere.clone();
+            let opened = answered(move |_| {
+                format!("HTTP/1.1 {status}\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n")
+            })
+            .await;
+            assert!(refused_with(
+                opened,
+                "the server did not upgrade the connection"
+            ));
+        }
+        // A redirect that was followed has reached the other server before its answer
+        // reached the caller.
+        assert!(reached.lock().unwrap().is_empty());
+        other.abort();
+    }
+
+    fn tls_acceptor() -> tokio_rustls::TlsAcceptor {
+        use tokio_rustls::rustls;
+        let provider = std::sync::Arc::new(rustls::crypto::ring::default_provider());
+        let chain = vec![rustls::pki_types::CertificateDer::from(
+            SERVER_CERTIFICATE.to_vec(),
+        )];
+        let key = rustls::pki_types::PrivateKeyDer::try_from(SERVER_KEY.to_vec()).unwrap();
+        let mut config = rustls::ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(chain, key)
+            .unwrap();
+        // The server prefers HTTP/2: it gets HTTP/1.1 only when the client offers nothing else.
+        // The HTTP library is built without HTTP/2 today, so this check fails only after
+        // HTTP/2 is added to it without `http1_only` on the stream client.
+        config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config))
+    }
+
+    #[tokio::test]
+    async fn the_upgrade_goes_over_tls_to_a_trusted_certificate_only_and_in_http_1_1() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let acceptor = tls_acceptor();
+        let server = tokio::spawn(async move {
+            let (connection, _) = listener.accept().await.unwrap();
+            assert!(acceptor.accept(connection).await.is_err());
+            let (connection, _) = listener.accept().await.unwrap();
+            let connection = acceptor.accept(connection).await.unwrap();
+            assert_eq!(
+                connection.get_ref().1.alpn_protocol(),
+                Some(&b"http/1.1"[..])
+            );
+            serve_upgrade(connection).await
+        });
+
+        // The certificates that the system trusts do not include the test authority.
+        let untrusted = ReqwestStreamTransport::new()
+            .unwrap()
+            .open(request_to(address, "https"))
+            .await;
+        assert!(matches!(
+            untrusted,
+            Err(OpenError::Failed(error)) if error.kind == TransportErrorKind::Connect
+        ));
+
+        let authority = reqwest::Certificate::from_der(AUTHORITY).unwrap();
+        let trusting = client_builder().add_root_certificate(authority);
+        let opened = ReqwestStreamTransport::from_settings(trusting)
+            .unwrap()
+            .open(request_to(address, "https"))
+            .await;
+        says_hello_and_takes_subscribe(opened, server).await;
     }
 
     #[tokio::test]
