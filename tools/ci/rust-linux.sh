@@ -20,6 +20,8 @@ step "Tests with PostgreSQL"
 tools/linux-container.sh cargo test --workspace --locked
 step "Packaging unit tests"
 python3 -m unittest discover -s packaging -p "test_*.py"
+step "Test service wrapper failure paths"
+python3 tools/test_test_services.py
 # The tarball and the AppImage of the client: their contents, the rule of the bundled
 # libraries, the first frame of each on a virtual display, and an update and a rollback of
 # the directory package while its program runs (ADR 0754).

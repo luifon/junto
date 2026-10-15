@@ -1,6 +1,8 @@
 #!/bin/sh
 # Runs a command with a temporary LiveKit server in Docker, in development mode, and removes
-# it afterwards. The command receives JUNTO_TEST_LIVEKIT_API_URL, JUNTO_TEST_LIVEKIT_URL,
+# it afterwards. A failed run prints the container state and timestamped logs on standard
+# error before removal, so the output of the test keeps the media-server evidence too.
+# The command receives JUNTO_TEST_LIVEKIT_API_URL, JUNTO_TEST_LIVEKIT_URL,
 # JUNTO_TEST_LIVEKIT_API_KEY, JUNTO_TEST_LIVEKIT_API_SECRET, JUNTO_TEST_WEBHOOK_ADDRESS and
 # JUNTO_TEST_LIVEKIT_CONTAINER, the name of the container: a test restarts it to test a
 # reconnect.
@@ -35,8 +37,19 @@ remove() {
     docker rm -f -v "$name" >/dev/null 2>&1 || true
 }
 
+finish() {
+    test_status=$?
+    if [ "$test_status" -ne 0 ]; then
+        printf '\nLiveKit container %s after failure (exit %s):\n' "$name" "$test_status" >&2
+        docker inspect --format '{{json .State}}' "$name" >&2 || true
+        docker logs --timestamps "$name" >&2 || true
+    fi
+    remove
+    exit "$test_status"
+}
+
 remove
-trap remove EXIT
+trap finish EXIT
 trap 'exit 130' INT TERM
 
 config="port: 7880
@@ -68,7 +81,6 @@ until curl -fsS -o /dev/null "http://127.0.0.1:${port}/"; do
     attempts=$((attempts + 1))
     if [ "$attempts" -ge 120 ]; then
         echo "LiveKit did not become ready" >&2
-        docker logs "$name" >&2 || true
         exit 1
     fi
     sleep 0.5

@@ -1,6 +1,8 @@
 #!/bin/sh
 # Runs a command with a temporary PostgreSQL in Docker and removes it with its volume
-# afterwards. The command receives JUNTO_TEST_DATABASE_URL.
+# afterwards. A failed run prints the container state and timestamped logs on standard
+# error before removal, so the output of the test keeps the database evidence too.
+# The command receives JUNTO_TEST_DATABASE_URL.
 #
 # The container is named by JUNTO_TEST_POSTGRES_CONTAINER (default junto-dev-postgres). Two
 # checkouts on one machine run their tests at the same time when each sets another name.
@@ -18,8 +20,19 @@ remove() {
     docker rm -f -v "$name" >/dev/null 2>&1 || true
 }
 
+finish() {
+    test_status=$?
+    if [ "$test_status" -ne 0 ]; then
+        printf '\nPostgreSQL container %s after failure (exit %s):\n' "$name" "$test_status" >&2
+        docker inspect --format '{{json .State}}' "$name" >&2 || true
+        docker logs --timestamps "$name" >&2 || true
+    fi
+    remove
+    exit "$test_status"
+}
+
 remove
-trap remove EXIT
+trap finish EXIT
 trap 'exit 130' INT TERM
 
 docker run -d --name "$name" \

@@ -1,19 +1,25 @@
-//! Test statistics sampled at the boundaries of a measured interval.
+//! Sound diagnostics and test statistics of the media connection.
 
 use std::time::Duration;
 
+#[cfg(feature = "test-support")]
 use livekit::rtc_engine::SessionStats;
+#[cfg(feature = "test-support")]
 use tokio::sync::oneshot;
 
-use super::{Actor, Command, Controls, Engine, Publication};
+use super::{Actor, Controls, Publication};
+#[cfg(feature = "test-support")]
+use super::{Command, Engine};
 
+#[cfg(feature = "test-support")]
 pub(crate) type Reply = oneshot::Sender<Result<SessionStats, String>>;
+#[cfg(feature = "test-support")]
 pub(crate) type SoundReply = oneshot::Sender<SoundCheck>;
 
 /// The time that the lines of a [`SoundCheck`] cover.
 const SPAN: Duration = Duration::from_millis(600);
 
-/// What an engine knows of its sound at one moment, for a live test that failed. Each
+/// What an engine knows of its sound at one moment. Each
 /// line has one character for each 10 ms of the last 600 ms, the oldest first: a point for
 /// no frame, a digit for the number of frames.
 #[derive(Debug)]
@@ -80,6 +86,7 @@ impl std::fmt::Display for SoundCheck {
     }
 }
 
+#[cfg(feature = "test-support")]
 impl Engine {
     pub(crate) fn statistics(&self, reply: Reply) {
         let _ = self.commands.send(Command::Statistics(reply));
@@ -90,6 +97,7 @@ impl Engine {
     }
 }
 
+#[cfg(feature = "test-support")]
 impl Actor {
     pub(super) async fn statistics(&mut self, reply: Reply) {
         let Some(room) = self.room.as_ref() else {
@@ -105,7 +113,12 @@ impl Actor {
 }
 
 impl Actor {
+    #[cfg(feature = "test-support")]
     pub(super) fn sound_check(&self, reply: SoundReply) {
+        let _ = reply.send(self.sound_snapshot());
+    }
+
+    pub(super) fn sound_snapshot(&self) -> SoundCheck {
         let state = self.state.borrow().clone();
         let remote_tracks = self
             .room
@@ -129,7 +142,7 @@ impl Actor {
             .collect();
         let passed = &self.mixer.passed;
         let order = std::sync::atomic::Ordering::Relaxed;
-        let _ = reply.send(SoundCheck {
+        SoundCheck {
             connected_for: self.connected_at.map(|at| at.elapsed()),
             connection: state.connection,
             microphone: state.microphone,
@@ -151,6 +164,6 @@ impl Actor {
             queues_ran_empty: passed.ran_empty.load(order),
             queues_cut: passed.cut.load(order),
             queues: self.mixer.queues(),
-        });
+        }
     }
 }
