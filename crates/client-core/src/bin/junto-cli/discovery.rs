@@ -398,7 +398,8 @@ async fn threads(
             vec![thread_line(
                 &api.set_thread_follow(root_id, following)
                     .await
-                    .map_err(failed)?,
+                    .map_err(failed)?
+                    .value,
             )]
         }
         "clear-follow" => {
@@ -518,7 +519,8 @@ async fn notices(
             let settings = api
                 .set_notification_settings(scope, &wanted)
                 .await
-                .map_err(failed)?;
+                .map_err(failed)?
+                .value;
             settings_lines(scope, &settings)
         }
         "default" => {
@@ -538,7 +540,11 @@ async fn notices(
         }
         "read-all" => {
             let until = time_of(arguments, "until")?;
-            let read = api.mark_notifications_read(until).await.map_err(failed)?;
+            let read = api
+                .mark_notifications_read(until)
+                .await
+                .map_err(failed)?
+                .value;
             vec![format!(
                 "notices read: {}  until {}",
                 read.marked, read.until
@@ -550,7 +556,8 @@ async fn notices(
             let held = api
                 .set_notification_default(workspace_id, wanted)
                 .await
-                .map_err(failed)?;
+                .map_err(failed)?
+                .value;
             vec![format!("default level: {}", default_word(held))]
         }
         other => return Err(usage(format!("unknown action of notices: {other}"))),

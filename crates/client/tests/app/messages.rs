@@ -546,6 +546,7 @@ fn a_quoted_message_that_is_not_loaded_follows_its_changes(cx: &mut TestAppConte
     let channel_id = world
         .run(api.snapshot())
         .unwrap()
+        .snapshot
         .workspaces
         .iter()
         .flat_map(|workspace| &workspace.channels)

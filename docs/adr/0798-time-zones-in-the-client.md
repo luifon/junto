@@ -21,4 +21,4 @@ A daily quiet time names a zone of the IANA time zone database, and the server h
 
 - The database of a build is the one of its release of `chrono-tz`. A zone whose rules changed afterwards has the old clock in the client until a new build, while the server uses its own database. A test sets a quiet time in several zones against the real server and checks that the server holds a notice back at the minute that the client computed.
 - The binary grows by the tables of the database.
-- The settings of the window send the zone of the system with a daily quiet time, and the window applies a quiet time by the clock of the zone that the settings name. A control that chooses another zone is not built.
+- The settings of the window offer the zone of the stored quiet time, or the zone of the system, and a search of the names to choose another one (ADR 0742). The window applies a quiet time by the clock of the zone that the settings name.

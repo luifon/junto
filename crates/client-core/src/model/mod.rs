@@ -33,7 +33,9 @@ pub(crate) mod tests;
 
 use std::sync::Arc;
 
-use junto_protocol::account::{Avatar, OwnAccount};
+use junto_protocol::account::{Avatar, ModerationNotice, OwnAccount};
+
+use crate::api::Receipt;
 use junto_protocol::call::{
     Call, CallInvitation, CallLock, CallMove, CallParticipant, CallPlace, ChannelCall, DirectMute,
     EntryRequest, Meeting, OwnCall, OwnCallState,
@@ -75,7 +77,30 @@ pub use rank::{RoleRank, outranks};
 pub use recordings::{
     LINES_PAGE, MOST_LINES, MOST_SEGMENTS, MOST_SPEAKERS, OpenRecording, TranscriptLines,
 };
-pub(crate) use recordings::{LinesAsk, LinesRead};
+pub(crate) use recordings::{LinesAsk, LinesFrom, LinesRead};
+
+/// Whether the state holds the events of a change, by the receipt of its answer
+/// (ADR 0214).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Followed {
+    /// The state holds every event of the change that the account receives.
+    Yes,
+    /// The stream has not reached the last event of the change.
+    NotYet,
+    /// The answer stated no position, or one of another epoch than the state: the state
+    /// holds the change after the next snapshot that is read after the answer.
+    Unknown,
+}
+
+/// How many moderation notices the state holds: one page of the server (ADR 0120).
+pub const MOST_MODERATION_NOTICES: usize = 100;
+/// The longest name of a workspace or a server that a moderation notice keeps.
+const LONGEST_NOTICE_NAME: usize = 100;
+
+/// The first `most` characters of a text.
+fn cut(text: &str, most: usize) -> String {
+    text.chars().take(most).collect()
+}
 
 /// How many notices a snapshot carries at most (ADR 0409).
 const SNAPSHOT_NOTICES: usize = 50;
@@ -325,6 +350,10 @@ pub struct ServerModel {
     /// in the call, because the statement holds at the position of its answer only
     /// (ADR 0785); and after a change of the own call, which is followed by a new read.
     pub own_seat: Option<SeatStated>,
+    /// The seat whose grant of meeting mode the person has not answered, as the last answer
+    /// of `GET /call` in the state stated it, with the position of that answer (ADR 0521).
+    /// The statement holds at that position; a change of the own call ends it.
+    pub own_grant: Option<(String, u64)>,
     /// The direct-message calls of the account. One without `started_at` is not in
     /// progress yet.
     pub direct_calls: Vec<CallModel>,
@@ -368,6 +397,12 @@ pub struct ServerModel {
     /// The messages that the unread threads and the notices name, as far as they were
     /// read.
     pub named: Vec<(MessageId, Named)>,
+    /// The named messages that a reload carried from the state before and that are not
+    /// read again yet.
+    pub(crate) named_carried: Vec<MessageId>,
+    /// The newest private moderation notices of the account as the snapshot stated them,
+    /// the newest first (ADR 0120). No event changes them.
+    pub moderation_notices: Vec<ModerationNotice>,
     /// The pin lists of the channels that a reader has open.
     pub pins: Vec<PinList>,
     /// The recordings that a reader has open, each with its segments, its transcript and
@@ -382,6 +417,35 @@ pub struct ServerModel {
 }
 
 impl ServerModel {
+    /// Whether the state holds the events of a change whose answer stated `receipt`. The
+    /// stream cursor moves by events and by checkpoints, so a state at or after the position
+    /// holds the change (ADR 0214). A receipt that states no event needs no event.
+    pub fn followed(&self, receipt: Receipt) -> Followed {
+        match receipt {
+            Receipt::Nothing => Followed::Yes,
+            Receipt::NotStated => Followed::Unknown,
+            Receipt::At(cursor) if cursor.epoch != self.cursor.epoch => Followed::Unknown,
+            Receipt::At(cursor) if cursor.position <= self.cursor.position => Followed::Yes,
+            Receipt::At(_) => Followed::NotYet,
+        }
+    }
+
+    /// Takes the moderation notices of a snapshot answer, up to the size of one page of
+    /// the server. The name and the message are cut to what a server may send.
+    pub(crate) fn take_moderation_notices(&mut self, notices: Vec<ModerationNotice>) {
+        self.moderation_notices = notices
+            .into_iter()
+            .take(MOST_MODERATION_NOTICES)
+            .map(|mut notice| {
+                notice.name = cut(&notice.name, LONGEST_NOTICE_NAME);
+                notice.message = notice
+                    .message
+                    .map(|message| cut(&message, crate::api::LONGEST_REASON));
+                notice
+            })
+            .collect();
+    }
+
     pub fn from_snapshot(snapshot: Snapshot) -> Self {
         let mut conversations: Vec<Conversation> = snapshot
             .messages
@@ -424,6 +488,7 @@ impl ServerModel {
             own_call: snapshot.own_call,
             own_call_cursor: None,
             own_seat: None,
+            own_grant: None,
             direct_calls: snapshot
                 .direct_calls
                 .into_iter()
@@ -447,6 +512,8 @@ impl ServerModel {
             notices_more,
             notification_settings: snapshot.notification_settings,
             named: Vec::new(),
+            named_carried: Vec::new(),
+            moderation_notices: Vec::new(),
             pins: Vec::new(),
             recordings: Vec::new(),
             seen_positions: std::collections::BTreeMap::new(),
@@ -552,6 +619,15 @@ impl ServerModel {
             .is_some_and(|seat| seat.identity == identity && !seat.inside)
     }
 
+    /// The position of the last read of the own call when it stated a grant of meeting
+    /// mode for the seat `identity` that the person has not answered (ADR 0521).
+    pub fn grant_stated(&self, identity: &str) -> Option<u64> {
+        self.own_grant
+            .as_ref()
+            .filter(|(held, _)| held == identity)
+            .map(|(_, position)| *position)
+    }
+
     /// True when the account is in a call with the device `device_id`.
     pub fn in_call_with(&self, device_id: DeviceId) -> bool {
         self.own_call
@@ -618,7 +694,8 @@ impl ServerModel {
     /// Puts the answer of `GET /call` into the state: the call of the account with the
     /// people in it, and the requests to enter that wait there. An answer for another
     /// call than the one that the state holds is not used.
-    pub(crate) fn set_own_call(&mut self, loaded: Option<OwnCallState>) {
+    /// `read_at` is the position of the answer; a server from before ADR 0519 states none.
+    pub(crate) fn set_own_call(&mut self, loaded: Option<OwnCallState>, read_at: Option<u64>) {
         let Some(loaded) = loaded else {
             return;
         };
@@ -630,6 +707,9 @@ impl ServerModel {
             identity: loaded.own.identity.clone(),
             inside,
         });
+        let read_at = read_at.unwrap_or(self.cursor.position);
+        self.own_grant =
+            (loaded.meeting_grant == Some(true)).then(|| (loaded.own.identity.clone(), read_at));
         let speaking = self
             .call_at(&loaded.call.place)
             .filter(|held| held.id == loaded.call.id)

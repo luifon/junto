@@ -959,6 +959,33 @@ async fn request(
     }
 }
 
+/// A request for a new token of the seat `identity` (ADR 0520): the server renews that
+/// seat or refuses with `seat_ended`; it makes, ends and takes no seat.
+async fn request_renewal(
+    server: &ServerHandle,
+    place: &CallPlace,
+    identity: &str,
+) -> Result<CallJoin, ApiError> {
+    let api = server.api();
+    match place {
+        CallPlace::Channel { channel_id, .. } => {
+            api.renew_channel_call(*channel_id, identity).await
+        }
+        CallPlace::Direct {
+            low_account_id,
+            high_account_id,
+        } => {
+            let own = server.account();
+            let other = if own == Some(*low_account_id) {
+                *high_account_id
+            } else {
+                *low_account_id
+            };
+            api.renew_direct_call(other, identity).await
+        }
+    }
+}
+
 async fn join(
     inner: Arc<Inner>,
     key: u64,
@@ -1080,6 +1107,16 @@ fn start(
         position: 0,
     };
     let read_at = read_at(&answer, &server, unknown);
+    // A grant that the server states with the answer came before this session read any
+    // event: it closes the setting once (ADR 0521).
+    let granted = (answer.meeting_grant == Some(true)).then(|| {
+        answer
+            .call
+            .participants
+            .iter()
+            .find(|person| person.identity == answer.identity)
+            .is_some_and(|person| person.hand_raised)
+    });
     let mut grants = MeetingHistory::new(
         read_at,
         &answer.call,
@@ -1179,6 +1216,8 @@ fn start(
         retry: None,
         backoff: Backoff::new(timing.reconnect_first, timing.reconnect_longest),
         rejoining: false,
+        renew_open: false,
+        grant_closed: granted.is_some(),
         state_report: Reporter::new(timing.state_spacing, None),
         speaking_report: Reporter::new(timing.speaking_spacing, Some(timing.speaking_renewal)),
         share_report: Reporter::holding(timing.share_spacing, None),
@@ -1187,6 +1226,10 @@ fn start(
         speaking: false,
         timing,
     };
+    let mut session = session;
+    if let Some(hand_raised) = granted {
+        session.close_for_grant(read_at.position, hand_raised);
+    }
     session.show();
     inner.runtime.spawn(session.run(taken));
     true
@@ -1684,18 +1727,24 @@ enum Done {
     Rejoined(Box<Result<CallJoin, ApiError>>, oneshot::Sender<()>),
 }
 
-/// Asks the server for a new token for the place of a session, in its turn.
+/// Asks the server for a new token for the place of a session, in its turn: for the seat
+/// that the session holds, or with `None` for a place, after the server stated that the
+/// seat ended because no media connection used it (ADR 0520).
 async fn renew(
     inner: Arc<Inner>,
     server: ServerHandle,
     target: CallTarget,
+    seat: Option<String>,
     done: mpsc::UnboundedSender<Done>,
 ) {
     if done.is_closed() {
         // The call ended while the request waited for its turn.
         return;
     }
-    let answer = request(&server, &target.place, Entry::Open).await;
+    let answer = match &seat {
+        Some(identity) => request_renewal(&server, &target.place, identity).await,
+        None => request(&server, &target.place, Entry::Open).await,
+    };
     let given = answer.as_ref().ok().map(|answer| answer.identity.clone());
     let (taken, confirmed) = oneshot::channel();
     let used =
@@ -1928,6 +1977,12 @@ struct Session {
     retry: Option<Instant>,
     backoff: Backoff,
     rejoining: bool,
+    /// The server stated that the seat ended because no media connection used it: the
+    /// next request asks for a place without naming the seat (ADR 0520).
+    renew_open: bool,
+    /// The setting was closed for a grant that a read of the server stated, and no read
+    /// has stated the end of that statement since (ADR 0521).
+    grant_closed: bool,
     state_report: Reporter<(bool, bool)>,
     speaking_report: Reporter<bool>,
     /// The sound of the share that the server was told. Absent: no share.
@@ -2619,6 +2674,10 @@ impl Session {
             .and_then(|call| call.meeting.as_ref())
             .is_some_and(|meeting| meeting.presenter != model.account.id);
         self.take_blocks(blocks, run_by_another, hand_raised);
+        match model.grant_stated(self.place.identity()) {
+            Some(position) => self.grant_stated(true, position, hand_raised),
+            None => self.grant_stated(false, cursor.position, hand_raised),
+        }
         if told || newly_inside {
             self.apply_controls();
         }
@@ -2720,6 +2779,29 @@ impl Session {
         self.apply_controls();
         self.show();
         true
+    }
+
+    /// The server states a grant of meeting mode that the person has not answered, at
+    /// `position` (ADR 0521). The event of a grant closes the setting when the session
+    /// reads it; the statement closes it only when events were not delivered after the
+    /// last grant that the session handled, so that the event of this grant can be among
+    /// them. A grant that the session handled, or a microphone that the person opened,
+    /// after `position` is not closed again.
+    ///
+    /// `stated` is false for a read that states no grant: the next statement of one is a
+    /// grant again. A statement closes the setting once.
+    fn grant_stated(&mut self, stated: bool, position: u64, hand_raised: bool) {
+        if !stated {
+            self.grant_closed = false;
+            return;
+        }
+        let since = self.grants.handled.unwrap_or(0);
+        if !self.grant_closed && self.grants.lost_after(since) {
+            // A grant handled, or a microphone opened, at or after the position of the
+            // statement answered it: nothing is closed then.
+            self.close_for_grant(position, hand_raised);
+            self.grant_closed = true;
+        }
     }
 
     /// A block ended, and the session cannot read how. The end is taken as a grant: the
@@ -2882,6 +2964,9 @@ impl Session {
                                     run_by_another,
                                     hand_raised,
                                 );
+                                if let Some(stated) = answer.meeting_grant.filter(|_| !new_seat) {
+                                    self.grant_stated(stated, read_at.position, hand_raised);
+                                }
                                 if answer.cursor.is_none() {
                                     // No order with the events: what the states showed
                                     // of the block stays as it was.
@@ -2894,6 +2979,33 @@ impl Session {
                         self.apply_controls();
                         self.engine.reconnect(media_join(&answer));
                         self.show();
+                    }
+                    Err(ApiError::Rejected(rejection))
+                        if rejection.code == ErrorCode::SeatEnded =>
+                    {
+                        match rejection.left {
+                            // The seat ended because no media connection used it. A
+                            // person who is still in the call asks for a place at once.
+                            Some(LeaveReason::ConnectionLost | LeaveReason::NeverConnected) => {
+                                self.renew_open = true;
+                                self.retry = Some(now);
+                            }
+                            // The seat ended by a move. The events of the move decide: the
+                            // session follows the move when it reads its completion, as
+                            // without the request. Nothing is asked again.
+                            Some(LeaveReason::Moved) => {}
+                            // Every other reason ends the call with it: a removal, a seat
+                            // on another device and an end of the access are not undone
+                            // (ADR 0520).
+                            Some(LeaveReason::Switched) => {
+                                self.fate = Fate::End(EndReason::Elsewhere);
+                                self.review = false;
+                            }
+                            reason => {
+                                self.fate = Fate::End(EndReason::Server(reason));
+                                self.review = false;
+                            }
+                        }
                     }
                     Err(error) => {
                         let passes = error.is_unavailable()
@@ -2935,10 +3047,15 @@ impl Session {
                 self.retry = None;
                 self.rejoining = true;
                 self.apply_controls();
+                // The seat is named, unless the server stated that it ended without a
+                // media connection: then a place is asked for.
+                let seat = (!std::mem::take(&mut self.renew_open))
+                    .then(|| self.place.identity().to_owned());
                 drop(self.inner.in_turn(renew(
                     self.inner.clone(),
                     self.server.clone(),
                     self.target,
+                    seat,
                     done.clone(),
                 )));
             }

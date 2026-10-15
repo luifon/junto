@@ -13,8 +13,8 @@ ADR 0761 describes the administration layer and ADR 0791 the pages of the roles.
 Reason:
 
 - The question before a ban, before a removal from the server and before a removal from a workspace has one field for a reason under it. The field is optional. A text of more than 1,000 characters or with a control character holds the confirmation, and the page says why. The reason is sent without the space around it.
-- The page states under the field that the reason is kept in the audit entry and is not sent to the person.
-- A row of the audit log shows the reason of its entry as a line of its own under the sentence of the action, without a control character and cut at 1,000 characters. The sentence of the action does not hold the reason.
+- The page states under the field that the reason is kept in the audit entry and is not sent to the person. A second optional field takes a message to the person (ADR 0764).
+- A row of the audit log shows the reason of its entry as a line of its own under the sentence of the action, without a control character and cut at 1,000 characters, and under it the message to the person in the same way. The sentence of the action holds neither.
 
 Removal from a workspace:
 
@@ -41,7 +41,7 @@ Overrides:
 Notification level of a workspace:
 
 - The page "Notifications" of the shown workspace, for an administrator, has one control with four choices: "Not set", "All messages", "Mentions only", "Nothing". "Not set" removes the level. The page states under the control what holds for a member with the present choice.
-- The control shows the choice of the state of the server and takes no choice while a request of the level is on its way. Every other choice is sent, also the one that the control shows: the answer of a request can arrive before the event of its change, the control shows the level of before for that time, and a choice of that level reverses the change. The server changes and records nothing for the level that it holds already. The window does not wait for the event: the answer and the events have no common order, so no comparison of levels tells that the event of the own change has arrived.
+- The control shows the choice of the state of the server, or of a change that the state does not hold yet, and takes no choice while a change of the level is on its way or waits for the state. The receipt of the answer tells when the state holds the event of the change (ADR 0763). A choice of the shown level sends nothing.
 
 Last device:
 

@@ -189,6 +189,7 @@ mod tests {
             status: 201,
             retry_after: None,
             body: b"{}".to_vec().into(),
+            receipt: crate::api::Receipt::NotStated,
         })
     }
 
@@ -199,6 +200,7 @@ mod tests {
             body: format!(r#"{{"error":{{"code":"{code}","message":""}}}}"#)
                 .into_bytes()
                 .into(),
+            receipt: crate::api::Receipt::NotStated,
         })
     }
 
@@ -340,6 +342,7 @@ mod tests {
             status: 307,
             retry_after: None,
             body: Vec::new().into(),
+            receipt: crate::api::Receipt::NotStated,
         })]);
         let error = send(
             &script,

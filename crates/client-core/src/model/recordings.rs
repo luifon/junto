@@ -26,8 +26,9 @@ pub const LINES_PAGE: usize = 200;
 /// most. A glossary has 200 terms (ADR 0607).
 const MOST_TERMS: usize = 200;
 
-/// The lines of the transcript of an open recording, from the first line of the
-/// transcript on, as far as a reader asked for them.
+/// The lines of the transcript of an open recording: one range without a hole, from the
+/// first line of the transcript on, or around a line that a reader asked for, as far as a
+/// reader asked for them.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TranscriptLines {
     /// In the order of the timeline. Each line is shared between a copy of the state and
@@ -37,6 +38,11 @@ pub struct TranscriptLines {
     pub loaded: bool,
     /// The transcript has lines after the loaded ones, and the state can take them.
     pub more: bool,
+    /// The transcript has lines before the loaded ones.
+    pub more_before: bool,
+    /// The line around which a reader asked for the lines. The lines are read around it
+    /// while the state does not hold it, and again after a reload.
+    pub around: Option<u32>,
     /// A page is on its way.
     pub reading: bool,
     /// Why the last read of lines failed. The next read that succeeds clears it.
@@ -127,15 +133,59 @@ impl OpenRecording {
     }
 }
 
+/// Where the lines of one read start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LinesFrom {
+    /// After this position, or from the first line of the transcript.
+    After(Option<u32>),
+    /// The lines nearest before this position.
+    Before(u32),
+    /// A page with the line at this position in its middle.
+    Around(u32),
+}
+
 /// Which lines one read asks the server for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LinesAsk {
-    /// The position of the last line before the ones that are asked for.
-    pub(crate) after: Option<u32>,
+    pub(crate) from: LinesFrom,
     /// How many lines are asked for.
     pub(crate) count: usize,
     /// The lines replace the loaded ones.
     pub(crate) replace: bool,
+}
+
+/// Puts a page of the lines before the first loaded line in front of the loaded ones.
+/// Each line must come before the next one and before the first loaded line; the first
+/// line that does not ends the page (ADR 0714). Over the bound the state drops lines at
+/// the end, which the next read after them asks for again.
+fn add_earlier_lines(
+    lines: &mut TranscriptLines,
+    before: u32,
+    page: Vec<TranscriptLine>,
+    more_before: bool,
+) {
+    if lines.lines.first().map(|first| first.line) != Some(before) {
+        return;
+    }
+    let mut taken: Vec<Arc<TranscriptLine>> = Vec::with_capacity(page.len());
+    let mut foreign = false;
+    for line in page {
+        let next = taken.last().map_or(before, |held| held.line);
+        if !taken.is_empty() && line.line <= next || line.line >= before {
+            foreign = true;
+            break;
+        }
+        taken.push(Arc::new(line));
+    }
+    let added = !taken.is_empty();
+    taken.append(&mut lines.lines);
+    if taken.len() > MOST_LINES {
+        taken.truncate(MOST_LINES);
+        lines.more = true;
+    }
+    lines.lines = taken;
+    lines.more_before = more_before && added && !foreign;
+    lines.failed = foreign.then_some(ReadFailure::NoAnswer);
 }
 
 /// The answer to a read of lines.
@@ -145,6 +195,8 @@ pub(crate) struct LinesRead {
     pub(crate) lines: Vec<TranscriptLine>,
     /// The server states that lines follow.
     pub(crate) more: bool,
+    /// The server states that lines come before the page.
+    pub(crate) more_before: bool,
 }
 
 impl ServerModel {
@@ -317,19 +369,55 @@ impl ServerModel {
         let open = self.recording(recording_id).filter(|open| !open.gone)?;
         let lines = &open.lines;
         let held = lines.lines.len();
+        // A line that a reader asked for and that the state does not hold, and the lines
+        // around such a line after a reload, are read as one page around it.
+        if let Some(line) = lines.around
+            && (lines.stale || !lines.loaded || open.line(line).is_none())
+        {
+            return Some(LinesAsk {
+                from: LinesFrom::Around(line),
+                count: LINES_PAGE,
+                replace: true,
+            });
+        }
         if lines.stale || !lines.loaded {
             // The loaded lines are read again from the first one, as many as were held.
             return Some(LinesAsk {
-                after: None,
+                from: LinesFrom::After(None),
                 count: held.max(LINES_PAGE),
                 replace: true,
             });
         }
         lines.more.then(|| LinesAsk {
-            after: lines.lines.last().map(|last| last.line),
+            from: LinesFrom::After(lines.lines.last().map(|last| last.line)),
             count: LINES_PAGE.min(MOST_LINES.saturating_sub(held)),
             replace: false,
         })
+    }
+
+    /// What a read of the lines before the loaded ones asks for. `None` when the state
+    /// holds the first line, or no line.
+    pub(crate) fn earlier_lines_ask(&self, recording_id: RecordingId) -> Option<LinesAsk> {
+        let open = self.recording(recording_id).filter(|open| !open.gone)?;
+        let lines = &open.lines;
+        if lines.stale || !lines.loaded || !lines.more_before {
+            return None;
+        }
+        Some(LinesAsk {
+            from: LinesFrom::Before(lines.lines.first()?.line),
+            count: LINES_PAGE,
+            replace: false,
+        })
+    }
+
+    /// A reader asks for the lines around a line of the transcript of an open recording.
+    /// True when the state does not hold the line and a read is due.
+    pub(crate) fn want_lines_around(&mut self, recording_id: RecordingId, line: u32) -> bool {
+        let Some(open) = self.recording_mut(recording_id).filter(|open| !open.gone) else {
+            return false;
+        };
+        open.lines.around = Some(line);
+        open.line(line).is_none()
     }
 
     /// Marks in the state whether lines of a recording are on their way.
@@ -358,16 +446,27 @@ impl ServerModel {
             ask,
             lines: page,
             more,
+            more_before,
         } = read;
+        if let LinesFrom::Before(before) = ask.from {
+            add_earlier_lines(lines, before, page, more_before);
+            return;
+        }
         let previous = if ask.replace {
             std::mem::take(&mut lines.lines)
         } else {
-            if lines.lines.last().map(|last| last.line) != ask.after {
+            let LinesFrom::After(after) = ask.from else {
+                return;
+            };
+            if lines.lines.last().map(|last| last.line) != after {
                 return;
             }
             Vec::new()
         };
-        let mut last = ask.after;
+        let mut last = match ask.from {
+            LinesFrom::After(after) => after,
+            LinesFrom::Before(_) | LinesFrom::Around(_) => None,
+        };
         let mut added = false;
         let mut foreign = false;
         for line in page {
@@ -394,6 +493,9 @@ impl ServerModel {
         // A page that adds no line does not promise more lines: the next read would start
         // at the same line.
         lines.more = more && added && !foreign && lines.lines.len() < MOST_LINES;
+        if ask.replace {
+            lines.more_before = more_before && added && !foreign;
+        }
         lines.failed = foreign.then_some(ReadFailure::NoAnswer);
     }
 

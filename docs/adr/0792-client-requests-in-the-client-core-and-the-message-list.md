@@ -38,8 +38,8 @@ The lines of a direct call:
 
 Not built in this record:
 
-- The followed threads of a channel in the channel column, and a control for the choice in the thread panel. The routes and the event are in the client core.
-- The window parts of "mark all as read", of a default that is not set, of the quiet time with a list of zones, of a search result that opens at its position, and of the lines of a transcript around a line. Their screens are not in this branch of the client.
+- The followed threads of a channel in the channel column, and a control for the choice in the thread panel. ADR 0796 builds them.
+- The window parts of "mark all as read", of a default that is not set, of the quiet time with a list of zones, of a search result that opens at its position, and of the lines of a transcript around a line. ADR 0742, ADR 0743, ADR 0744 and ADR 0797 build them.
 
 ## Consequences
 

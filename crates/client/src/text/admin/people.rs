@@ -63,8 +63,14 @@ pub const fn blocked(reason: Blocked) -> &'static str {
         Blocked::NotBanned => "The account is not banned.",
         Blocked::Outranked => OUTRANKED,
         Blocked::OrderNotRead => "The order of the server roles is on its way.",
+        Blocked::NotUnbannable => NOT_UNBANNABLE,
     }
 }
+
+/// The sentence in the row of a banned account that the server does not let the person
+/// unban (ADR 0311).
+pub const NOT_UNBANNABLE: &str = "The server states that you cannot unban this account. With the \
+     roles that it gets back in its workspaces it would stand at or above you.";
 
 /// The sentence in the row of an account that role order protects (ADR 0309).
 pub const OUTRANKED: &str = "This account holds a server role at or above your highest server role. You cannot \
@@ -91,13 +97,25 @@ pub const REASON: &str = "Reason";
 pub const REASON_PLACEHOLDER: &str = "Reason (optional)";
 pub const REASON_HELP: &str =
     "The reason is kept in the entry of the audit log. It is not sent to the person.";
-pub const REASON_REFUSED: &str = "The server did not accept the reason. A reason has at most 1,000 characters and no \
-     control character.";
+pub const REASON_REFUSED: &str = "The server did not accept the reason or the message. Each has at \
+     most 1,000 characters and no control character.";
 
 pub const fn reason_fault(fault: ReasonFault) -> &'static str {
     match fault {
         ReasonFault::TooLong => "A reason has at most 1,000 characters.",
         ReasonFault::Control => "A reason holds no control character.",
+    }
+}
+
+// The message to the person of a ban and of a removal (ADR 0120).
+pub const MESSAGE: &str = "Message to the person";
+pub const MESSAGE_PLACEHOLDER: &str = "Message to the person (optional)";
+pub const MESSAGE_HELP: &str = "The person reads the message in the notice of this action for      30 days. It does not contain the reason.";
+
+pub const fn message_fault(fault: ReasonFault) -> &'static str {
+    match fault {
+        ReasonFault::TooLong => "A message has at most 1,000 characters.",
+        ReasonFault::Control => "A message holds no control character, also no line break.",
     }
 }
 

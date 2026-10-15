@@ -815,6 +815,7 @@ impl ServerModel {
             Event::OwnCallChanged { call, .. } => {
                 let before = std::mem::replace(&mut self.own_call, call.clone());
                 self.own_seat = None;
+                self.own_grant = None;
                 let same_call = match (&before, call) {
                     (Some(before), Some(now)) => before.call_id == now.call_id,
                     _ => false,

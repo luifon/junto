@@ -3,8 +3,8 @@
 
 use std::sync::Arc;
 
-use junto_protocol::account::RecoveryNotice;
 use junto_protocol::account::{DeviceLinkCreated, RequestDeviceLink};
+use junto_protocol::account::{ModerationNoticePage, ReadModerationNotices, RecoveryNotice};
 use junto_protocol::auth::{
     Challenge, ChallengeOperation, ClaimOwner, CreateChallenge, Login, Proof,
 };
@@ -202,6 +202,7 @@ impl ApiClient {
             status: opened.status,
             retry_after: opened.retry_after,
             body,
+            receipt: crate::api::Receipt::NotStated,
         }))
     }
 
@@ -361,6 +362,26 @@ impl ApiClient {
             )
             .await?;
         Ok(status)
+    }
+
+    /// The private moderation notices that are addressed to this device key (ADR 0120).
+    /// The device proves its key without a session: a removed or banned account has none.
+    /// A key without notices gets an empty page.
+    pub async fn moderation_notices(
+        &self,
+        key: &DeviceKey,
+        before: Option<uuid::Uuid>,
+    ) -> Result<ModerationNoticePage, ApiError> {
+        let (page, _) = self
+            .prove(
+                key,
+                ChallengeOperation::ModerationNotices,
+                ExpectedAccount::None,
+                "/auth/moderation-notices",
+                |proof| ReadModerationNotices { proof, before },
+            )
+            .await?;
+        Ok(page)
     }
 
     /// Asks for the code that a logged-in device of the account approves.

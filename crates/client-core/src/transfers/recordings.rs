@@ -278,6 +278,7 @@ pub(super) mod tests {
                     status: 500,
                     retry_after: None,
                     body: Vec::new().into(),
+                    receipt: crate::api::Receipt::NotStated,
                 })
             })
         }

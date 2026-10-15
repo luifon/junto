@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use junto_client_core::api::Receipt;
+
 use junto_client_core::protocol::account::OwnAccount;
 use junto_client_core::protocol::call::{CallInvitation, CallPlace, DirectMute};
 use junto_client_core::protocol::discovery::{Notification, ScopedNotificationSettings};
@@ -275,7 +277,9 @@ fn a_notice_is_listed_with_the_place_and_the_text_of_its_message() {
         ]
     );
     assert!(panel.reading && !panel.more && !panel.marking);
-    assert_eq!(panel.unread, 3);
+    // Every unread notice of the state counts, also those that the list does not show
+    // while their messages are read; a notice whose message is gone does not.
+    assert_eq!(panel.unread, 5);
 
     let unreadable = &panel.rows[0];
     assert_eq!(unreadable.text, text::NOTICE_NOT_READ);
@@ -331,7 +335,7 @@ fn a_notice_is_listed_with_the_place_and_the_text_of_its_message() {
 fn the_list_tells_a_mark_that_runs_and_one_that_failed() {
     let mut scene = scene();
     scene.model.notices_more = true;
-    scene.known.notices_marking.insert(scene.server_id);
+    scene.known.marking_all.insert(scene.server_id, None);
     scene
         .known
         .notices_failed
@@ -342,6 +346,27 @@ fn the_list_tells_a_mark_that_runs_and_one_that_failed() {
     // Another server tells nothing here.
     let other = notices_panel(ServerId::generate(), &scene.model, &scene.known);
     assert!(!other.marking && other.failed.is_none());
+}
+
+#[test]
+fn the_list_offers_to_mark_every_notice_while_their_messages_are_read() {
+    let mut scene = scene();
+    let mention = scene.message(scene.in_channel(scene.general), 7, "can you review this?");
+    scene.notice(NotificationKind::Mention, mention, 0);
+    assert_eq!(
+        notices_panel(scene.server_id, &scene.model, &scene.known)
+            .rows
+            .len(),
+        1
+    );
+    // A state that holds the notices without their messages, as a state replaced by a
+    // snapshot before the messages are read again.
+    scene.model.named.clear();
+    let panel = notices_panel(scene.server_id, &scene.model, &scene.known);
+    assert!(panel.rows.is_empty() && panel.reading);
+    // The count and "Mark all as read" follow the notices of the state, not the rows.
+    assert_eq!(panel.unread, scene.model.unread_notices().count());
+    assert!(panel.unread > 0);
 }
 
 #[test]
@@ -356,18 +381,19 @@ fn the_level_without_a_stored_one_follows_the_order_of_the_server() {
             .level
     };
 
-    // The level of the administrators was not read: the client cannot tell.
-    assert_eq!(inherited(&scene, channel).inherited, None);
+    // The level of the administrators is the one of the state (ADR 0792).
     assert_eq!(
         inherited(&scene, SettingsScope::Account).inherited,
         Some(NotificationLevel::Mentions)
     );
+    let set_default = |scene: &mut Scene, level: Option<NotificationLevel>| {
+        for workspace in &mut scene.model.workspaces {
+            std::sync::Arc::make_mut(workspace).notification_default = level;
+        }
+    };
 
     // The administrators set "all messages".
-    scene.known.workspace_defaults.insert(
-        (server_id, studio),
-        DefaultRead::Read(Some(NotificationLevel::All)),
-    );
+    set_default(&mut scene, Some(NotificationLevel::All));
     assert_eq!(
         inherited(&scene, channel).inherited,
         Some(NotificationLevel::All)
@@ -378,10 +404,7 @@ fn the_level_without_a_stored_one_follows_the_order_of_the_server() {
     );
 
     // The administrators set "mentions only": the level of the account does not count.
-    scene.known.workspace_defaults.insert(
-        (server_id, studio),
-        DefaultRead::Read(Some(NotificationLevel::Mentions)),
-    );
+    set_default(&mut scene, Some(NotificationLevel::Mentions));
     assert_eq!(
         inherited(&scene, channel).inherited,
         Some(NotificationLevel::Mentions)
@@ -396,11 +419,22 @@ fn the_level_without_a_stored_one_follows_the_order_of_the_server() {
         Some(NotificationLevel::Mentions)
     );
 
+    // A change of the level that the state does not hold yet is shown.
+    scene.known.defaults_sent.insert(
+        (server_id, studio),
+        SentDefault {
+            level: Some(NotificationLevel::All),
+            answered: None,
+        },
+    );
+    assert_eq!(
+        inherited(&scene, workspace).inherited,
+        Some(NotificationLevel::All)
+    );
+    scene.known.defaults_sent.clear();
+
     // The workspace sets no level: the level of the account holds (ADR 0412).
-    scene
-        .known
-        .workspace_defaults
-        .insert((server_id, studio), DefaultRead::Read(None));
+    set_default(&mut scene, None);
     assert_eq!(
         inherited(&scene, channel).inherited,
         Some(NotificationLevel::Nothing)
@@ -458,22 +492,28 @@ fn the_dialog_of_a_scope_shows_what_belongs_to_it() {
     assert_eq!(
         workspace.workspace_default,
         Some(WorkspaceDefault {
-            level: DefaultRead::Reading,
-            may_set: false
+            level: None,
+            may_set: false,
+            changing: false,
         })
     );
     scene.model.account.is_owner = true;
-    scene
-        .known
-        .workspace_defaults
-        .insert((server_id, studio), DefaultRead::Failed);
+    scene.known.defaults_sent.insert(
+        (server_id, studio),
+        SentDefault {
+            level: Some(NotificationLevel::Nothing),
+            answered: None,
+        },
+    );
     assert_eq!(
         panel(&scene, SettingsScope::Workspace(studio)).workspace_default,
         Some(WorkspaceDefault {
-            level: DefaultRead::Failed,
-            may_set: true
+            level: Some(NotificationLevel::Nothing),
+            may_set: true,
+            changing: true,
         })
     );
+    scene.known.defaults_sent.clear();
 
     // A channel: the two mention switches are on until the person turns one off.
     let scope = SettingsScope::Channel(general);
@@ -506,10 +546,13 @@ fn the_dialog_of_a_scope_shows_what_belongs_to_it() {
     assert!(panel(&scene, scope).busy);
     assert!(!panel(&scene, SettingsScope::Account).busy);
     scene.known.notify_busy.clear();
-    scene
-        .known
-        .notify_sent
-        .insert(key, level(NotificationLevel::All));
+    scene.known.notify_sent.insert(
+        key,
+        SentSettings {
+            settings: level(NotificationLevel::All),
+            answered: crate::state::receipts::Awaited::new(Receipt::NotStated),
+        },
+    );
     let shown = panel(&scene, scope);
     assert_eq!(shown.level.stored, Some(NotificationLevel::All));
     assert_eq!(shown.channel.unwrap().mute, Mute::Off);
@@ -641,10 +684,13 @@ fn the_quiet_times_are_shown_for_all_servers_and_tell_where_they_differ() {
     // A change that the second server took and that its state does not hold yet.
     known.notify_sent.insert(
         (second.server_id, SettingsScope::Account.id()),
-        NotificationSettings {
-            do_not_disturb: true,
-            daily_quiet: Some(quiet.clone()),
-            ..NotificationSettings::default()
+        SentSettings {
+            settings: NotificationSettings {
+                do_not_disturb: true,
+                daily_quiet: Some(quiet.clone()),
+                ..NotificationSettings::default()
+            },
+            answered: crate::state::receipts::Awaited::new(Receipt::NotStated),
         },
     );
     let shown = view(&first, &known);

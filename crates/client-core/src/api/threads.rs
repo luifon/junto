@@ -10,8 +10,8 @@ use junto_protocol::structure::{Channel, ChannelKind};
 use super::client::read_json;
 use super::error::ApiError;
 use super::messages::{PageQuery, all_bounded, bounded};
-use super::session::ServerApi;
-use super::transport::Method;
+use super::session::{Changed, ServerApi};
+use super::transport::{Method, Receipt};
 
 fn thread_of(root_id: MessageId) -> String {
     format!("/messages/{root_id}/thread")
@@ -107,16 +107,16 @@ impl ServerApi {
         &self,
         root_id: MessageId,
         following: bool,
-    ) -> Result<ThreadState, ApiError> {
+    ) -> Result<Changed<ThreadState>, ApiError> {
         let path = format!("{}/follow", thread_of(root_id));
-        self.send(Method::Put, path, &SetThreadFollow { following })
+        self.change(Method::Put, path, Some(&SetThreadFollow { following }))
             .await
     }
 
     /// Removes the choice of the caller for a thread. The rule decides again: an account
     /// that wrote in the thread or was named in it follows it.
-    pub async fn clear_thread_follow(&self, root_id: MessageId) -> Result<(), ApiError> {
-        self.act(Method::Delete, format!("{}/follow", thread_of(root_id)))
+    pub async fn clear_thread_follow(&self, root_id: MessageId) -> Result<Receipt, ApiError> {
+        self.change_without_body(Method::Delete, format!("{}/follow", thread_of(root_id)))
             .await
     }
 

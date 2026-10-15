@@ -22,7 +22,7 @@ use junto_protocol::events::{
 use junto_protocol::ids::WorkspaceId;
 use junto_protocol::message::{AttachmentLimits, Message, MessageState, ThreadPage, UnreadThreads};
 use junto_protocol::recording::RecordingDetail;
-use junto_protocol::snapshot::Snapshot;
+use junto_protocol::snapshot::SnapshotResponse;
 use junto_protocol::structure::WorkspaceMember;
 use junto_protocol::transcript::Transcript;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -57,7 +57,7 @@ enum Load {
 }
 
 enum Payload {
-    Snapshot(Box<Snapshot>),
+    Snapshot(Box<SnapshotResponse>),
     Members(Vec<WorkspaceMember>),
     OwnCall(OwnCallView),
     MessageState(MessageState),
@@ -1237,7 +1237,7 @@ impl Client {
                             {
                                 model.own_call_cursor = Some((call.own.call_id, read_at));
                             }
-                            model.set_own_call(view.call);
+                            model.set_own_call(view.call, Some(read_at.position));
                             model.replay(
                                 part,
                                 pending
@@ -1253,7 +1253,7 @@ impl Client {
                         }
                         // A server from before ADR 0519 names no position: as before it,
                         // every event that arrived during the read is applied again.
-                        model.set_own_call(view.call);
+                        model.set_own_call(view.call, None);
                         self.own_call_backoff.reset();
                     }
                     _ => return,
@@ -1303,8 +1303,9 @@ impl Client {
     /// Replaces the state by a snapshot. What the snapshot does not carry is discarded
     /// (ADR 0207); the parts that a reader asked for and the call of the account are read
     /// again.
-    fn install(&mut self, snapshot: Snapshot) {
-        let model = ServerModel::from_snapshot(snapshot);
+    fn install(&mut self, answer: SnapshotResponse) {
+        let mut model = ServerModel::from_snapshot(answer.snapshot);
+        model.take_moderation_notices(answer.moderation_notices);
         let cursor = model.cursor;
         let in_call = model.own_call.is_some();
         let before = self.model.take();
@@ -1403,7 +1404,9 @@ impl Client {
             }
             command @ (Command::OpenRecording { .. }
             | Command::ReleaseRecording(_)
-            | Command::MoreTranscriptLines(_)) => self.recording_command(command),
+            | Command::MoreTranscriptLines(_)
+            | Command::EarlierTranscriptLines(_)
+            | Command::TranscriptLinesAround { .. }) => self.recording_command(command),
             Command::ReleaseMembers(workspace_id) => {
                 self.wanted_members.remove(&workspace_id);
                 self.waiting_for_members.remove(&workspace_id);

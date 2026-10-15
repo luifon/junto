@@ -33,8 +33,9 @@ Panel:
 
 Jump:
 
-- A message result names no position and no thread. A press on it reads the message, and then shows it as a notice does (ADR 0742): its place is selected, the thread of a reply is opened, and the list goes to the message and marks it. A message that is gone leaves the results, and the panel says so. A person who goes to another place before the message was read stays there.
-- A transcript result shows the voice channel of its recording and opens the transcript in the side panel (ADR 0744).
+- A message result states its place, its position and the root of its thread (ADR 0413). A press on it shows the message as a notice does (ADR 0742), without a read of the message: its place is selected, the thread of a reply is opened, the messages around the position are read when the list does not hold the message, and the list goes to the message and marks it. When the list holds the messages around the position and not the message, the message is gone: it leaves the results, and the panel says so.
+- A result of a server that states no position reads the message first, as before ADR 0413. A person who goes to another place before the message was read stays there.
+- A transcript result shows the voice channel of its recording, the time of its line from the start of the recording, and opens the transcript in the side panel at its line (ADR 0744). A server that states no time gives the number of the line.
 
 ## Consequences
 

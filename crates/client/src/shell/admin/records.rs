@@ -188,6 +188,13 @@ fn audit_row(row: &AuditLine, theme: &Theme) -> AnyElement {
                     .typeface(theme.types.small, theme)
                     .ink(theme.colors.ink)
                     .child(txt::audit_reason(reason))
+            }))
+            .children(row.message.as_ref().map(|message| {
+                div()
+                    .debug_selector(move || format!("audit-message-{id}"))
+                    .typeface(theme.types.small, theme)
+                    .ink(theme.colors.ink)
+                    .child(txt::audit_message(message))
             })),
     );
     framed(format!("audit-row-{}", row.id), content, Vec::new())

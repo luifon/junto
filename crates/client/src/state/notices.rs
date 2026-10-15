@@ -21,6 +21,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::feed::{self, Names, Zone};
+use super::receipts::Awaited;
 use super::view::{Known, Shown};
 use crate::{text, zones};
 
@@ -96,7 +97,8 @@ pub struct NoticeRow {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NoticesPanel {
     pub rows: Vec<NoticeRow>,
-    /// The notices of the list that the person has not read.
+    /// The notices of the state that the person has not read, also those that the list
+    /// does not show while their messages are read.
     pub unread: usize,
     /// The server may hold more notices after the listed ones.
     pub more: bool,
@@ -283,11 +285,13 @@ pub fn notices_panel(server_id: ServerId, model: &ServerModel, known: &Known) ->
         rows.push(row);
     }
     NoticesPanel {
-        unread: rows.iter().filter(|row| !row.read).count(),
+        // The notices of the state count, also those whose messages are being read: the
+        // panel offers "Mark all as read" for them (ADR 0742).
+        unread: unread_notices(model),
         rows,
         more: model.notices_more,
         reading,
-        marking: known.notices_marking.contains(&server_id),
+        marking: known.marking_all.contains_key(&server_id),
         failed: known.notices_failed.get(&server_id).cloned(),
     }
 }
@@ -405,20 +409,47 @@ pub struct ChannelNotify {
     pub everyone_mentions: bool,
 }
 
-/// The level that the administrators set for the members of a workspace.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DefaultRead {
-    Reading,
-    /// The level, or none while the workspace sets no level (ADR 0412).
-    Read(Option<NotificationLevel>),
-    Failed,
-}
-
+/// The level that the administrators set for the members of a workspace, as the state
+/// holds it, or as a change that the server took and the state does not hold yet asked
+/// for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WorkspaceDefault {
-    pub level: DefaultRead,
+    /// The level, or none while the workspace sets no level (ADR 0412).
+    pub level: Option<NotificationLevel>,
     /// The account administers the server and can set the level.
     pub may_set: bool,
+    /// A change of the level is on its way, or waits for the state: the control takes no
+    /// further choice.
+    pub changing: bool,
+}
+
+/// A change of the level of a workspace that the state does not hold yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SentDefault {
+    pub level: Option<NotificationLevel>,
+    /// The receipt of the answer. Absent while the request is on its way.
+    pub answered: Option<Awaited>,
+}
+
+/// A change of the notification settings of a scope that the server took and the state
+/// does not hold yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SentSettings {
+    pub settings: NotificationSettings,
+    pub answered: Awaited,
+}
+
+/// The level of a workspace as the window shows it: the level of a change that waits for
+/// the state, and otherwise the level of the state.
+pub fn shown_default(
+    server_id: ServerId,
+    workspace: &junto_client_core::model::WorkspaceModel,
+    known: &Known,
+) -> Option<NotificationLevel> {
+    known
+        .defaults_sent
+        .get(&(server_id, workspace.workspace.id))
+        .map_or(workspace.notification_default, |sent| sent.level)
 }
 
 /// The notification settings of one scope, as their dialog shows them.
@@ -450,22 +481,9 @@ pub fn stored_settings(
     known
         .notify_sent
         .get(&(server_id, scope.id()))
-        .cloned()
+        .map(|sent| sent.settings.clone())
         .or_else(|| model.notification_settings(scope).cloned())
         .unwrap_or_default()
-}
-
-/// The level that the administrators set for a workspace, or that they set none, when
-/// the client has read it (ADR 0412).
-fn known_default(
-    server_id: ServerId,
-    workspace_id: WorkspaceId,
-    known: &Known,
-) -> Option<Option<NotificationLevel>> {
-    match known.workspace_defaults.get(&(server_id, workspace_id)) {
-        Some(DefaultRead::Read(level)) => Some(*level),
-        Some(DefaultRead::Reading | DefaultRead::Failed) | None => None,
-    }
 }
 
 /// The level that holds for a scope while the account stored none for it (ADR 0409): the
@@ -479,8 +497,10 @@ fn inherited_level(
 ) -> Option<NotificationLevel> {
     let stored = |scope| stored_settings(server_id, scope, model, known).level;
     let account = stored(SettingsScope::Account).unwrap_or(NotificationLevel::Mentions);
-    let below_workspace =
-        |workspace_id| Some(known_default(server_id, workspace_id, known)?.unwrap_or(account));
+    let below_workspace = |workspace_id| {
+        let workspace = model.workspace(workspace_id)?;
+        Some(shown_default(server_id, workspace, known).unwrap_or(account))
+    };
     match scope {
         SettingsScope::Account => Some(NotificationLevel::Mentions),
         SettingsScope::Workspace(workspace_id) => below_workspace(workspace_id),
@@ -508,17 +528,13 @@ pub fn notify_panel(
         SettingsScope::Account => (server_name.to_owned(), None, None),
         SettingsScope::Workspace(workspace_id) => {
             let workspace = model.workspace(workspace_id)?;
-            let level = known
-                .workspace_defaults
-                .get(&(server_id, workspace_id))
-                .copied()
-                .unwrap_or(DefaultRead::Reading);
             (
                 workspace.workspace.name.clone(),
                 None,
                 Some(WorkspaceDefault {
-                    level,
+                    level: shown_default(server_id, workspace, known),
                     may_set: model.is_administrator(),
+                    changing: known.defaults_sent.contains_key(&(server_id, workspace_id)),
                 }),
             )
         }

@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use gpui::Context;
 use junto_client_core::ServerHandle;
-use junto_client_core::api::{ApiError, SettingsScope};
+use junto_client_core::api::{ApiError, Receipt, SettingsScope};
 use junto_client_core::flow::FlowError;
 use junto_client_core::flow::access::AccessState;
 use junto_client_core::model::PlaceId;
@@ -17,11 +17,12 @@ use uuid::Uuid;
 
 use super::AppState;
 use super::notices::{
-    AlertScene, AlertTarget, DefaultRead, Jump, MuteFor, alerts, stored_settings,
+    AlertScene, AlertTarget, Jump, MuteFor, SentDefault, SentSettings, alerts, stored_settings,
 };
+use super::receipts::Awaited;
 use super::view::{ServerSnapshot, Shown};
 use crate::notify::{Kept, SystemNotifier};
-use crate::{text, zones};
+use crate::text;
 
 /// One of the two mention switches of a channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,17 +75,69 @@ impl AppState {
         self.mark_notices(server_id, vec![notice_id], cx);
     }
 
-    /// Marks every listed notice that the person has not read. The server has a route
-    /// for one notice: the requests follow each other, and the first one that fails ends
-    /// them with its reason.
+    /// Marks every notice that the person has not read, up to the newest one that the
+    /// state holds, in one request (ADR 0412). A notice that arrives later stays unread.
+    /// The panel shows the marking until the state holds the event of the change
+    /// (ADR 0214); a second press meanwhile sends nothing.
     pub fn mark_all_notices_read(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
-        let unread: Vec<Uuid> = self
-            .client
-            .server(server_id)
-            .and_then(|server| server.live().view().model)
-            .map(|model| model.unread_notices().map(|notice| notice.id).collect())
-            .unwrap_or_default();
-        self.mark_notices(server_id, unread, cx);
+        if self.known.marking_all.contains_key(&server_id) {
+            return;
+        }
+        let Some(server) = self.client.server(server_id) else {
+            return;
+        };
+        let until = server
+            .live()
+            .view()
+            .model
+            .and_then(|model| model.unread_notices().map(|notice| notice.created_at).max());
+        let Some(until) = until else {
+            return;
+        };
+        self.known.marking_all.insert(server_id, None);
+        self.known.notices_failed.remove(&server_id);
+        let api = server.api();
+        cx.spawn(async move |this, cx| {
+            let marked = api.mark_notifications_read(Some(until)).await;
+            let _ = this.update(cx, |this, cx| {
+                match marked {
+                    Ok(marked) => {
+                        let awaited = Awaited::new(marked.receipt);
+                        this.known.marking_all.insert(server_id, Some(awaited));
+                        let model = this
+                            .client
+                            .server(server_id)
+                            .and_then(|server| server.live().view().model);
+                        if let Some(model) = model {
+                            this.refresh_for(
+                                server_id,
+                                &model,
+                                awaited,
+                                move |this| {
+                                    this.known.marking_all.get(&server_id) == Some(&Some(awaited))
+                                },
+                                move |this| {
+                                    if let Some(Some(held)) =
+                                        this.known.marking_all.get_mut(&server_id)
+                                        && *held == awaited
+                                    {
+                                        held.refreshed = true;
+                                    }
+                                },
+                                cx,
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        this.known.marking_all.remove(&server_id);
+                        this.known.notices_failed.insert(server_id, refusal(&error));
+                    }
+                }
+                this.changed(cx);
+            });
+        })
+        .detach();
+        self.changed(cx);
     }
 
     /// Marks notices as read, one request after the other. Marks that are asked for
@@ -111,7 +164,7 @@ impl AppState {
     }
 
     fn send_marks(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
-        if self.known.notices_marking.contains(&server_id) {
+        if self.marks_sending.contains_key(&server_id) {
             return;
         }
         let notices = self.marks_waiting.remove(&server_id).unwrap_or_default();
@@ -122,7 +175,6 @@ impl AppState {
         else {
             return;
         };
-        self.known.notices_marking.insert(server_id);
         self.marks_sending.insert(server_id, notices.clone());
         let api = server.api();
         cx.spawn(async move |this, cx| {
@@ -142,7 +194,6 @@ impl AppState {
                 }
             }
             let _ = this.update(cx, |this, cx| {
-                this.known.notices_marking.remove(&server_id);
                 this.marks_sending.remove(&server_id);
                 // The first request that fails ends the marks that were sent with it.
                 if let Some(failed) = failed {
@@ -202,7 +253,7 @@ impl AppState {
     }
 
     /// The place whose list shows the message of a jump.
-    fn jump_place(jump: &Jump) -> PlaceId {
+    pub(super) fn jump_place(jump: &Jump) -> PlaceId {
         match (jump.place, jump.thread_root) {
             (PlaceId::Channel(channel_id), Some(root_id)) => PlaceId::Thread {
                 channel_id,
@@ -244,6 +295,7 @@ impl AppState {
     /// The person went to another place: no jump waits, and no message is marked.
     pub(super) fn end_jump(&mut self) {
         self.jump = None;
+        self.result_jump = None;
         self.known.target = None;
         // The answer for a result of a search that is being read leads nowhere then.
         if let Some(search) = &mut self.known.search {
@@ -253,9 +305,7 @@ impl AppState {
 
     // Notification settings.
 
-    /// Shows the notification settings of a scope in their dialog. The level that the
-    /// administrators set for the workspace is read for the dialog of a workspace and of
-    /// a channel.
+    /// Shows the notification settings of a scope in their dialog.
     pub fn open_notify_settings(
         &mut self,
         server_id: ServerId,
@@ -264,34 +314,7 @@ impl AppState {
     ) {
         self.selection.notify = Some((server_id, scope));
         self.known.notify_refused = None;
-        self.read_default_of(server_id, scope, false, cx);
         self.changed(cx);
-    }
-
-    /// Reads the level that the administrators set for the workspace of a scope.
-    fn read_default_of(
-        &mut self,
-        server_id: ServerId,
-        scope: SettingsScope,
-        again: bool,
-        cx: &mut Context<Self>,
-    ) {
-        let workspace_id = match scope {
-            SettingsScope::Account => None,
-            SettingsScope::Workspace(workspace_id) => Some(workspace_id),
-            SettingsScope::Channel(channel_id) => self
-                .client
-                .server(server_id)
-                .and_then(|server| server.live().view().model)
-                .and_then(|model| {
-                    model
-                        .channel(channel_id)
-                        .map(|channel| channel.channel.workspace_id)
-                }),
-        };
-        if let Some(workspace_id) = workspace_id {
-            self.read_workspace_default(server_id, workspace_id, again, cx);
-        }
     }
 
     pub fn close_notify_settings(&mut self, cx: &mut Context<Self>) {
@@ -300,71 +323,9 @@ impl AppState {
         self.changed(cx);
     }
 
-    fn read_workspace_default(
-        &mut self,
-        server_id: ServerId,
-        workspace_id: WorkspaceId,
-        again: bool,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(server) = self.client.server(server_id) else {
-            return;
-        };
-        let key = (server_id, workspace_id);
-        // A read after the state was replaced takes the place of one that is on its
-        // way: that one can carry the level of before.
-        if !again && self.known.workspace_defaults.get(&key) == Some(&DefaultRead::Reading) {
-            return;
-        }
-        self.known
-            .workspace_defaults
-            .insert(key, DefaultRead::Reading);
-        let number = self.next_default_ask(key);
-        let api = server.api();
-        cx.spawn(async move |this, cx| {
-            let read = api.notification_default(workspace_id).await;
-            let _ = this.update(cx, |this, cx| {
-                // A later read or change of this level decides what is shown.
-                if this.default_asks.get(&key) != Some(&number) {
-                    return;
-                }
-                this.known.workspace_defaults.insert(
-                    key,
-                    match read {
-                        Ok(level) => DefaultRead::Read(level),
-                        Err(_) => DefaultRead::Failed,
-                    },
-                );
-                this.changed(cx);
-            });
-        })
-        .detach();
-    }
-
-    /// The number of a new read or change of the level of a workspace. The answer of
-    /// an earlier one is not shown.
-    fn next_default_ask(&mut self, key: (ServerId, WorkspaceId)) -> u64 {
-        let number = self.default_asks.entry(key).or_default();
-        *number += 1;
-        *number
-    }
-
-    /// The state of a server was replaced: the level of the administrators that an open
-    /// dialog shows is read again. A change of that level replaces the state (ADR 0792).
-    pub(super) fn read_default_after_reload(
-        &mut self,
-        server_id: ServerId,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some((of, scope)) = self.selection.notify
-            && of == server_id
-        {
-            self.read_default_of(server_id, scope, true, cx);
-        }
-    }
-
-    /// Sets the level of the members of a workspace who chose none. Only an
-    /// administrator of the server can do this.
+    /// Sets the level of the members of a workspace who chose none, from the dialog of
+    /// the notification settings. Only an administrator of the server can do this. A
+    /// refusal is told in the dialog.
     pub fn set_workspace_default(
         &mut self,
         server_id: ServerId,
@@ -375,33 +336,100 @@ impl AppState {
         let Some(server) = self.client.server(server_id) else {
             return;
         };
-        let key = (server_id, workspace_id.as_uuid());
-        if !self.known.notify_busy.insert(key) {
+        if !self.begin_default_change(server_id, workspace_id, Some(level)) {
             return;
         }
+        let key = (server_id, workspace_id.as_uuid());
         self.known.notify_refused = None;
-        let number = self.next_default_ask((server_id, workspace_id));
         let api = server.api();
         cx.spawn(async move |this, cx| {
             let set = api.set_notification_default(workspace_id, level).await;
             let _ = this.update(cx, |this, cx| {
-                this.known.notify_busy.remove(&key);
-                match set {
-                    Ok(level) => {
-                        if this.default_asks.get(&(server_id, workspace_id)) == Some(&number) {
-                            this.known
-                                .workspace_defaults
-                                .insert((server_id, workspace_id), DefaultRead::Read(level));
-                        }
-                    }
+                let receipt = match set {
+                    Ok(set) => Ok(set.receipt),
                     Err(error) => {
                         this.known.notify_refused = Some((key.0, key.1, refusal(&error)));
+                        Err(())
                     }
-                }
-                this.changed(cx);
+                };
+                this.default_answered(server_id, workspace_id, receipt, cx);
             });
         })
         .detach();
+        self.changed(cx);
+    }
+
+    /// Notes a change of the level of a workspace. False when a change of that level is on
+    /// its way or waits for the state: the new one is not sent.
+    pub(super) fn begin_default_change(
+        &mut self,
+        server_id: ServerId,
+        workspace_id: WorkspaceId,
+        level: Option<NotificationLevel>,
+    ) -> bool {
+        let key = (server_id, workspace_id);
+        if self.known.defaults_sent.contains_key(&key) {
+            return false;
+        }
+        self.known.defaults_sent.insert(
+            key,
+            SentDefault {
+                level,
+                answered: None,
+            },
+        );
+        true
+    }
+
+    /// The answer to a change of the level of a workspace: a refusal ends the change, and
+    /// a change that the server did is shown until the state holds it (ADR 0214).
+    pub(super) fn default_answered(
+        &mut self,
+        server_id: ServerId,
+        workspace_id: WorkspaceId,
+        receipt: Result<Receipt, ()>,
+        cx: &mut Context<Self>,
+    ) {
+        let key = (server_id, workspace_id);
+        match receipt {
+            Err(()) => {
+                self.known.defaults_sent.remove(&key);
+            }
+            Ok(receipt) => {
+                let awaited = Awaited::new(receipt);
+                if let Some(sent) = self.known.defaults_sent.get_mut(&key) {
+                    sent.answered = Some(awaited);
+                }
+                let model = self
+                    .client
+                    .server(server_id)
+                    .and_then(|server| server.live().view().model);
+                if let Some(model) = model {
+                    self.refresh_for(
+                        server_id,
+                        &model,
+                        awaited,
+                        move |this| {
+                            this.known
+                                .defaults_sent
+                                .get(&key)
+                                .is_some_and(|sent| sent.answered == Some(awaited))
+                        },
+                        move |this| {
+                            if let Some(answered) = this
+                                .known
+                                .defaults_sent
+                                .get_mut(&key)
+                                .and_then(|sent| sent.answered.as_mut())
+                            {
+                                answered.refreshed = true;
+                            }
+                        },
+                        cx,
+                    );
+                }
+            }
+        }
         self.changed(cx);
     }
 
@@ -450,19 +478,47 @@ impl AppState {
             self.known.notify_refused = None;
         }
         let api = server.api();
-        let reloads = self.reloads.get(&server_id).copied().unwrap_or(0);
         let task = cx.spawn(async move |this, cx| {
             let set = api.set_notification_settings(scope, &settings).await;
             this.update(cx, |this, cx| {
                 this.known.notify_busy.remove(&key);
                 let result = match set {
                     Ok(taken) => {
-                        // The state holds the change after the event of the server was
-                        // followed. Until then the dialog shows what the server took. A
-                        // state that was replaced since the request holds the change, or
-                        // a later one of another device.
-                        if this.reloads.get(&server_id).copied().unwrap_or(0) == reloads {
-                            this.known.notify_sent.insert(key, taken);
+                        // The state holds the change when it holds the events up to the
+                        // position of the answer (ADR 0214). Until then the dialog shows
+                        // what the server took.
+                        let answered = Awaited::new(taken.receipt);
+                        this.known.notify_sent.insert(
+                            key,
+                            SentSettings {
+                                settings: taken.value,
+                                answered,
+                            },
+                        );
+                        let model = this
+                            .client
+                            .server(server_id)
+                            .and_then(|server| server.live().view().model);
+                        if let Some(model) = model {
+                            this.refresh_for(
+                                server_id,
+                                &model,
+                                answered,
+                                move |this| {
+                                    this.known
+                                        .notify_sent
+                                        .get(&key)
+                                        .is_some_and(|sent| sent.answered == answered)
+                                },
+                                move |this| {
+                                    if let Some(sent) = this.known.notify_sent.get_mut(&key)
+                                        && sent.answered == answered
+                                    {
+                                        sent.answered.refreshed = true;
+                                    }
+                                },
+                                cx,
+                            );
                         }
                         Ok(())
                     }
@@ -664,43 +720,50 @@ impl AppState {
         self.change_quiet(cx, move |settings| settings.do_not_disturb = on);
     }
 
-    /// Sets the daily quiet time as two minutes of a day on the clock of the time zone of
-    /// the system, or ends it with `None`. The server keeps the name of the zone
-    /// (ADR 0412).
-    pub fn set_daily_quiet(&mut self, span: Option<(u16, u16)>, cx: &mut Context<Self>) {
+    /// Sets the daily quiet time as two minutes of a day on the clock of a named time
+    /// zone, or ends it with `None`. The server keeps the name of the zone (ADR 0412,
+    /// ADR 0798).
+    pub fn set_daily_quiet(
+        &mut self,
+        span: Option<(u16, u16)>,
+        time_zone: String,
+        cx: &mut Context<Self>,
+    ) {
         let daily = span.map(|(start_minute, end_minute)| DailyQuiet {
             start_minute,
             end_minute,
-            time_zone: zones::system(),
+            time_zone,
         });
         self.change_quiet(cx, move |settings| settings.daily_quiet.clone_from(&daily));
     }
 
-    /// A change of the settings that a server took is shown until the state of that
-    /// server holds it, and no longer than until the state was replaced.
+    /// A change of the settings or of the level of a workspace that a server took is
+    /// shown until the state of that server holds its events (ADR 0214). A server whose
+    /// state is gone holds nothing of it.
     pub(super) fn settle_sent_settings(&mut self, servers: &[ServerSnapshot]) {
+        let model_of = |server_id: ServerId| {
+            servers
+                .iter()
+                .find(|server| server.id == server_id)
+                .and_then(|server| server.model.as_ref())
+        };
+        self.known.notify_sent.retain(|(server_id, _), sent| {
+            model_of(*server_id).is_some_and(|model| !sent.answered.shown_by(model))
+        });
+        self.known.marking_all.retain(|server_id, answered| {
+            model_of(*server_id)
+                .is_some_and(|model| answered.is_none_or(|answered| !answered.shown_by(model)))
+        });
         self.known
-            .notify_sent
-            .retain(|(server_id, scope_id), sent| {
-                servers
-                    .iter()
-                    .find(|server| server.id == *server_id)
-                    .and_then(|server| server.model.as_ref())
-                    .is_some_and(|model| {
-                        let held = model
-                            .notification_settings
-                            .iter()
-                            .find(|held| held.scope_id == *scope_id)
-                            .map(|held| &held.settings);
-                        held != Some(sent)
-                    })
+            .defaults_sent
+            .retain(|(server_id, workspace_id), sent| {
+                model_of(*server_id).is_some_and(|model| {
+                    model.workspace(*workspace_id).is_some()
+                        && sent
+                            .answered
+                            .is_none_or(|answered| !answered.shown_by(model))
+                })
             });
-    }
-
-    /// The state of a server was replaced: it holds every change that the server took
-    /// before.
-    pub(super) fn forget_sent_settings(&mut self, server_id: ServerId) {
-        self.known.notify_sent.retain(|(of, _), _| *of != server_id);
     }
 
     /// Draws for this moment, and with this change of what the application holds beside

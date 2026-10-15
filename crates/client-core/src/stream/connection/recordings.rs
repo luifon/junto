@@ -10,13 +10,13 @@ use std::sync::Arc;
 
 use junto_protocol::ids::RecordingId;
 use junto_protocol::recording::RecordingDetail;
-use junto_protocol::transcript::Transcript;
+use junto_protocol::transcript::{Transcript, TranscriptLineQuery};
 use tokio::sync::oneshot;
 
 use super::{Client, Load};
 use crate::api::{ApiError, ServerApi};
 use crate::live::{Command, LoadError};
-use crate::model::{LinesAsk, LinesRead, Part, ReadFailure, ServerModel};
+use crate::model::{LinesAsk, LinesFrom, LinesRead, Part, ReadFailure, ServerModel};
 
 /// The most lines that one request asks for. The server gives at most 500 (ADR 0607).
 const LARGEST_PAGE: usize = 500;
@@ -29,6 +29,8 @@ pub(super) struct Work {
     open: BTreeMap<RecordingId, usize>,
     /// The readers that wait for a recording.
     opening: BTreeMap<RecordingId, Vec<Reply>>,
+    /// The recordings whose lines before the loaded ones a reader asked for.
+    earlier: std::collections::BTreeSet<RecordingId>,
 }
 
 impl Work {
@@ -45,22 +47,54 @@ pub(super) async fn read_recording(
     futures_util::future::try_join(api.recording(recording_id), api.transcript(recording_id)).await
 }
 
-/// The lines that `ask` names, in as many requests as their number needs.
+/// The lines that `ask` names, in as many requests as their number needs. A read before
+/// a line or around it is one page.
 pub(super) async fn read_lines(
     api: &ServerApi,
     recording_id: RecordingId,
     ask: LinesAsk,
 ) -> Result<LinesRead, ApiError> {
+    let limit = |count: usize| Some(u32::try_from(count.min(LARGEST_PAGE)).unwrap_or(u32::MAX));
+    let one_page = |query: TranscriptLineQuery| async move {
+        let page = api.transcript_lines_at(recording_id, &query).await?;
+        Ok(LinesRead {
+            ask,
+            more: page.next_after.is_some(),
+            more_before: page.previous_before.is_some(),
+            lines: page.lines,
+        })
+    };
+    let mut after = match ask.from {
+        LinesFrom::After(after) => after,
+        LinesFrom::Before(before) => {
+            return one_page(TranscriptLineQuery {
+                before: Some(before),
+                limit: limit(ask.count),
+                ..TranscriptLineQuery::default()
+            })
+            .await;
+        }
+        LinesFrom::Around(around) => {
+            return one_page(TranscriptLineQuery {
+                around: Some(around),
+                limit: limit(ask.count),
+                ..TranscriptLineQuery::default()
+            })
+            .await;
+        }
+    };
     let mut lines = Vec::new();
-    let mut after = ask.after;
     let mut more = false;
-    for _ in 0..ask.count.div_ceil(LARGEST_PAGE) {
-        let wanted = ask.count.saturating_sub(lines.len()).min(LARGEST_PAGE);
-        let limit = u32::try_from(wanted).unwrap_or(u32::MAX);
+    let mut more_before = false;
+    for page_number in 0..ask.count.div_ceil(LARGEST_PAGE) {
+        let wanted = ask.count.saturating_sub(lines.len());
         let page = api
-            .transcript_lines(recording_id, after, Some(limit))
+            .transcript_lines(recording_id, after, limit(wanted))
             .await?;
         more = page.next_after.is_some();
+        if page_number == 0 {
+            more_before = page.previous_before.is_some();
+        }
         // The next request starts after the last line that arrived. A page that does not
         // go on from where it was asked to start ends the read.
         let last = page.lines.last().map(|line| line.line);
@@ -71,7 +105,12 @@ pub(super) async fn read_lines(
         }
         after = last;
     }
-    Ok(LinesRead { ask, lines, more })
+    Ok(LinesRead {
+        ask,
+        lines,
+        more,
+        more_before,
+    })
 }
 
 impl Client {
@@ -95,6 +134,24 @@ impl Client {
                 if self.recordings.wants(recording_id) && !self.stale =>
             {
                 self.read(Part::TranscriptLines(recording_id));
+            }
+            Command::EarlierTranscriptLines(recording_id)
+                if self.recordings.wants(recording_id) && !self.stale =>
+            {
+                self.recordings.earlier.insert(recording_id);
+                self.read(Part::TranscriptLines(recording_id));
+            }
+            Command::TranscriptLinesAround { recording_id, line }
+                if self.recordings.wants(recording_id) && !self.stale =>
+            {
+                let due = self
+                    .model
+                    .as_mut()
+                    .is_some_and(|model| model.want_lines_around(recording_id, line));
+                self.model_changed = true;
+                if due {
+                    self.read(Part::TranscriptLines(recording_id));
+                }
             }
             _ => {}
         }
@@ -149,6 +206,7 @@ impl Client {
         }
         self.recordings.open.remove(&recording_id);
         self.recordings.opening.remove(&recording_id);
+        self.recordings.earlier.remove(&recording_id);
         let of_recording = |part: &Part| matches!(part, Part::Recording(of) | Part::TranscriptLines(of) if *of == recording_id);
         self.messages.drop_retries(of_recording);
         self.messages.drop_queued(of_recording);
@@ -165,10 +223,33 @@ impl Client {
     /// way. `None` when there is nothing to read.
     pub(super) fn lines_ask(&mut self, recording_id: RecordingId) -> Option<LinesAsk> {
         let model = self.model.as_mut()?;
-        let ask = model.lines_ask(recording_id)?;
+        // A read that replaces the lines comes first; the lines before the loaded ones are
+        // asked for when none is due.
+        let ask = match model.lines_ask(recording_id) {
+            Some(ask) if ask.replace => ask,
+            due => match self.recordings.earlier.remove(&recording_id) {
+                true => model.earlier_lines_ask(recording_id).or(due)?,
+                false => due?,
+            },
+        };
         model.set_lines_reading(recording_id, true);
         self.model_changed = true;
         Some(ask)
+    }
+
+    /// After an answer of lines: a read that a reader asked for while that read was on its
+    /// way is due now. A read around a line that was just read around that line is not
+    /// repeated: the transcript has no such line.
+    pub(super) fn lines_due_after(&mut self, recording_id: RecordingId, answered: LinesAsk) {
+        let Some(model) = &self.model else {
+            return;
+        };
+        let around = model
+            .lines_ask(recording_id)
+            .filter(|ask| matches!(ask.from, LinesFrom::Around(_)) && ask.from != answered.from);
+        if around.is_some() || self.recordings.earlier.contains(&recording_id) {
+            self.read(Part::TranscriptLines(recording_id));
+        }
     }
 
     pub(super) fn answer_recording(

@@ -15,10 +15,12 @@ mod followed;
 pub mod linking;
 pub mod logo;
 mod messages;
+pub mod moderation;
 pub mod notices;
 mod notifying;
 pub mod people;
 pub mod person_drop;
+pub mod receipts;
 pub mod recorded;
 mod recorded_work;
 pub mod recording;
@@ -445,6 +447,14 @@ pub struct AppState {
     /// The jump to a message that waits until the client core holds the list of its
     /// place.
     jump: Option<notices::Jump>,
+    /// The jump to a search result by its position, until the list of its place shows
+    /// whether the message is there.
+    result_jump: Option<notices::Jump>,
+    /// The transcript, the line and the opening of the side panel for which the lines
+    /// around that line were asked for.
+    lines_asked_around: Option<(ServerId, RecordingId, u32, u64)>,
+    /// The number of the last read of moderation notices with a proof of the key.
+    moderation_asks: u64,
     /// The notifications of the system.
     notifier: std::rc::Rc<dyn crate::notify::SystemNotifier>,
     /// The notifier of a start without the notifications of the system.
@@ -464,8 +474,6 @@ pub struct AppState {
     marks_waiting: HashMap<ServerId, Vec<uuid::Uuid>>,
     /// The read marks of notices that are on their way.
     marks_sending: HashMap<ServerId, Vec<uuid::Uuid>>,
-    /// The number of the last read or change of the level of a workspace.
-    default_asks: HashMap<(ServerId, WorkspaceId), u64>,
     /// The servers that the view is derived from in place of the client core.
     #[cfg(feature = "test-support")]
     fixture: Option<Vec<ServerSnapshot>>,
@@ -676,6 +684,9 @@ impl AppState {
             search_asks: 0,
             search_next: None,
             jump: None,
+            result_jump: None,
+            lines_asked_around: None,
+            moderation_asks: 0,
             notifier: std::rc::Rc::new(kept.clone()),
             kept,
             window_active: false,
@@ -685,7 +696,6 @@ impl AppState {
             reloads: HashMap::new(),
             marks_waiting: HashMap::new(),
             marks_sending: HashMap::new(),
-            default_asks: HashMap::new(),
             #[cfg(feature = "test-support")]
             fixture: None,
             #[cfg(feature = "test-support")]
@@ -1322,13 +1332,10 @@ impl AppState {
     }
 
     /// The state of a server was replaced, or the reader of its changes fell behind and
-    /// can have missed that: every message can have changed meanwhile, and the state
-    /// holds every change of the settings that the server took.
+    /// can have missed that: every message can have changed meanwhile.
     fn reloaded(&mut self, server_id: ServerId, cx: &mut Context<Self>) {
         *self.reloads.entry(server_id).or_default() += 1;
-        self.forget_sent_settings(server_id);
         self.forget_quotes(server_id, None, cx);
-        self.read_default_after_reload(server_id, cx);
         self.search_after_reload(server_id, cx);
         self.changed(cx);
     }
@@ -1972,6 +1979,7 @@ impl AppState {
         self.shown = shown;
         self.follow_people(&view, cx);
         self.follow_followed(&view, cx);
+        self.follow_moderation(&snapshots, cx);
         let archived = shown.server.zip(
             view.workspace()
                 .filter(|workspace| workspace.archived.is_some())
@@ -1987,6 +1995,7 @@ impl AppState {
         self.follow_places(shown, cx);
         self.follow_recordings(shown, cx);
         self.follow_jump(shown);
+        self.follow_result_jump(shown);
         self.tell_alerts(&snapshots, shown, cx);
         self.follow_owners();
         self.ask_missing_quotes(shown, cx);

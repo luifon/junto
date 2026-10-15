@@ -16,10 +16,11 @@ use tokio::task::AbortHandle;
 use tokio::time::Instant;
 
 use super::{Client, Load, Payload};
-use crate::api::{ApiError, ErrorCategory, PageQuery, ServerApi};
+use crate::api::{ApiError, Changed, ErrorCategory, PageQuery, ServerApi};
 use crate::live::{Command, LoadError};
 use crate::model::{
-    Part, PendingMessage, PlaceId, Reach, ReadFailure, SendFailure, SendState, ServerModel,
+    Followed, Part, PendingMessage, PlaceId, Reach, ReadFailure, SendFailure, SendState,
+    ServerModel,
 };
 use crate::secret::SecretToken;
 
@@ -216,7 +217,7 @@ struct Sending {
 pub(super) enum Outcome {
     Sent {
         id: u64,
-        result: Result<Box<Message>, ApiError>,
+        result: Result<Box<Changed<Message>>, ApiError>,
     },
     /// The history after the attempt, read to find a message without an answer.
     Searched {
@@ -484,9 +485,7 @@ impl Client {
             };
             let wanted = self.model.as_ref().is_some_and(|model| match part {
                 Part::Message(place, message_id) => model.wants_message(place, message_id, None),
-                Part::Named(message_id) => {
-                    model.names(message_id) && model.named(message_id).is_none()
-                }
+                Part::Named(message_id) => model.needs_named(message_id),
                 Part::Recording(recording_id) | Part::TranscriptLines(recording_id) => {
                     self.recordings.wants(recording_id)
                 }
@@ -579,6 +578,7 @@ impl Client {
         let Some(model) = &mut self.model else {
             return;
         };
+        let mut lines_answered = None;
         match (part, payload) {
             (Part::MessageState(asked), Payload::MessageState(state)) => {
                 if model.place(PlaceId::of(&state.place)).is_some() {
@@ -698,6 +698,7 @@ impl Client {
                 }
             }
             (Part::TranscriptLines(recording_id), Payload::Lines(read)) => {
+                lines_answered = Some((recording_id, read.ask));
                 model.add_transcript_lines(recording_id, read);
             }
             _ => return,
@@ -713,6 +714,9 @@ impl Client {
         }
         for read in reads {
             self.read(read);
+        }
+        if let Some((recording_id, asked)) = lines_answered {
+            self.lines_due_after(recording_id, asked);
         }
         self.read_missing_named();
     }
@@ -849,6 +853,7 @@ impl Client {
         };
         if let Some(before) = before {
             model.carry_messages(before, &wanted);
+            model.carry_named(before);
         }
         let mut unseen = Vec::new();
         for place in &wanted {
@@ -1011,6 +1016,8 @@ impl Client {
             | Command::OpenRecording { .. }
             | Command::ReleaseRecording(_)
             | Command::MoreTranscriptLines(_)
+            | Command::EarlierTranscriptLines(_)
+            | Command::TranscriptLinesAround { .. }
             | Command::OpenAdmin { .. }
             | Command::ReleaseAdmin(_)
             | Command::ReadAdminAgain(_) => {}
@@ -1442,7 +1449,10 @@ impl Client {
                     attachments,
                 };
                 tokio::spawn(async move {
-                    let result = api.send_message(place, &message).await.map(Box::new);
+                    let result = api
+                        .send_message_with_receipt(place, &message)
+                        .await
+                        .map(Box::new);
                     let outcome = Outcome::Sent { id, result };
                     let _ = done.send(Done { token, outcome });
                 })
@@ -1451,18 +1461,23 @@ impl Client {
         }
     }
 
-    fn sent(&mut self, id: u64, result: Result<Box<Message>, ApiError>, current: bool) {
+    fn sent(&mut self, id: u64, result: Result<Box<Changed<Message>>, ApiError>, current: bool) {
         let Some(sending) = self.messages.sends.get_mut(&id) else {
             return;
         };
         sending.request = None;
         match result {
-            Ok(message) => {
+            Ok(sent) => {
                 self.messages.sends.remove(&id);
                 if let Some(model) = &mut self.model {
                     model.outbox.retain(|pending| pending.id != id);
-                    model.note_sent(message.id);
-                    model.put_message(*message);
+                    model.note_sent(sent.value.id);
+                    // The events of the message decide when the state has followed them
+                    // already: a later edit or deletion is not undone by the answer
+                    // (ADR 0214). An answer without a stated position is used as before.
+                    if model.followed(sent.receipt) != Followed::Yes {
+                        model.put_message(sent.value);
+                    }
                     self.model_changed = true;
                 }
             }

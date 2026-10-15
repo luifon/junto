@@ -19,7 +19,6 @@ use junto_client_core::model::{
 use junto_client_core::protocol::WorkspacePermission;
 use junto_client_core::protocol::account::RecoveryNotice;
 use junto_client_core::protocol::call::{BlockReason, CallPlace, LeaveReason, ShareAudio};
-use junto_client_core::protocol::discovery::NotificationSettings;
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::protocol::ids::{
     AccountId, AttachmentId, CallId, CallInvitationId, ChannelId, ConversationId, EntryRequestId,
@@ -43,7 +42,7 @@ use uuid::Uuid;
 
 use super::feed::{self, Feed, MessageRow, Names, Quoted, Zone};
 use super::followed::{Followed, held_root};
-use super::notices::{DefaultRead, Mute, NoticesPanel, NotifyPanel, QuietView};
+use super::notices::{Mute, NoticesPanel, NotifyPanel, QuietView};
 use super::people::{self, Faces, People, Wanted};
 use super::recorded::TranscriptShown;
 use super::search::SearchPanel;
@@ -202,20 +201,29 @@ pub struct Known {
     pub conversation_asked: Option<(ServerId, AccountId)>,
     /// The time of the derivation, for the end of a mute and for a quiet time.
     pub clock: Option<OffsetDateTime>,
-    /// The servers whose notices are being marked as read, one after the other.
-    pub notices_marking: HashSet<ServerId>,
+    /// The servers whose notices are being marked as read in one request (ADR 0412), with
+    /// the receipt of the answer while the state does not hold its event (ADR 0214).
+    pub marking_all: HashMap<ServerId, Option<super::receipts::Awaited>>,
     /// Why the last mark of a notice did not reach its server.
     pub notices_failed: HashMap<ServerId, String>,
     /// The scopes whose notification settings are on their way to their server.
     pub notify_busy: HashSet<(ServerId, Uuid)>,
     /// The notification settings that a server took and that its state does not hold
     /// yet, by their scope.
-    pub notify_sent: HashMap<(ServerId, Uuid), NotificationSettings>,
+    pub notify_sent: HashMap<(ServerId, Uuid), super::notices::SentSettings>,
     /// Why a server did not take the last notification settings of a scope.
     pub notify_refused: Option<(ServerId, Uuid, String)>,
-    /// The level that the administrators set for the members of a workspace, as it was
-    /// read for the dialog of the notification settings.
-    pub workspace_defaults: HashMap<(ServerId, WorkspaceId), DefaultRead>,
+    /// The moderation notices that a removed or banned device read with a proof of its
+    /// key, by server (ADR 0120).
+    pub moderation_read: HashMap<ServerId, super::moderation::ModerationRead>,
+    /// The moderation notices that the person put away, as the server book holds them.
+    pub moderation_shown: HashMap<ServerId, Vec<Uuid>>,
+    /// Why the server book did not take that a notice was put away.
+    pub moderation_away_failed: Option<(ServerId, String)>,
+    /// The changes of the level of a workspace that are on their way or that the state
+    /// does not hold yet (ADR 0214). The dialog of the notification settings and the
+    /// page "Notifications" show them.
+    pub defaults_sent: HashMap<(ServerId, WorkspaceId), super::notices::SentDefault>,
     /// The message that the person went to from a notice or a search result, with its
     /// server. Its list marks it.
     pub target: Option<(ServerId, MessageId, u64)>,
@@ -1205,6 +1213,10 @@ pub struct SelectedServer {
     /// The key of this device belonged to another account at the last contact
     /// (ADR 0712).
     pub account_changed: bool,
+    /// The private moderation notices that the window shows for the server (ADR 0120).
+    pub moderation: Vec<super::moderation::ModerationLine>,
+    /// Why the server book did not take that a notice was put away.
+    pub moderation_failed: Option<String>,
     pub content: Content,
 }
 
@@ -3022,6 +3034,12 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
                     ..
                 }
             ),
+            moderation: super::moderation::lines(server, known),
+            moderation_failed: known
+                .moderation_away_failed
+                .as_ref()
+                .filter(|(of, _)| *of == server.id)
+                .map(|(_, reason)| reason.clone()),
             content,
         }
     });

@@ -7,8 +7,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use junto_protocol::account::{
-    AccountProfile, AccountSummary, ApproveDeviceLink, Avatar, Device, ImageType, LookUpDeviceLink,
-    OwnAccount, PendingDeviceLink, RecoverAccount, RecoveryNotice, RenameDevice, UpdateProfile,
+    AccountProfile, AccountSummary, ApproveDeviceLink, Avatar, Device, ImageType, ListedAccount,
+    LookUpDeviceLink, ModerationNoticePage, OwnAccount, PendingDeviceLink, RecoverAccount,
+    RecoveryNotice, RenameDevice, UpdateProfile,
 };
 use junto_protocol::ids::{
     AccountId, CategoryId, ChannelId, DeviceId, InviteId, JoinRequestId, RecoveryId, ServerRoleId,
@@ -20,8 +21,8 @@ use junto_protocol::invite::{
 };
 use junto_protocol::keys::PublicKey;
 use junto_protocol::roles::{
-    CreateServerRole, CreateWorkspaceRole, ServerRole, UpdateServerRole, UpdateWorkspaceRole,
-    WorkspaceRole,
+    CreateServerRole, CreateWorkspaceRole, ListedServerRole, ListedWorkspaceRole, ServerRole,
+    UpdateServerRole, UpdateWorkspaceRole, WorkspaceRole,
 };
 use junto_protocol::secret::{InviteCode, LinkCode};
 use junto_protocol::structure::{
@@ -35,7 +36,7 @@ use serde::de::DeserializeOwned;
 use super::client::{ApiClient, encode, read_json};
 use super::error::ApiError;
 use super::retry::Repeat;
-use super::transport::{HttpResponse, Method, OpenedResponse, RequestBody};
+use super::transport::{HttpResponse, Method, OpenedResponse, Receipt, RequestBody};
 use crate::profile::{self, InvalidAvatar};
 use crate::secret::{SecretBytes, SecretToken};
 
@@ -145,6 +146,24 @@ pub struct AvatarImage {
     pub bytes: Vec<u8>,
 }
 
+/// The answer to a change, with what the answer states about the position of the events of
+/// the change (ADR 0214). A caller that shows the change until the state holds it compares
+/// the receipt with the state (`ServerModel::followed`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Changed<T> {
+    pub value: T,
+    pub receipt: Receipt,
+}
+
+impl<T> Changed<T> {
+    pub fn map<U>(self, change: impl FnOnce(T) -> U) -> Changed<U> {
+        Changed {
+            value: change(self.value),
+            receipt: self.receipt,
+        }
+    }
+}
+
 /// The operations of a logged-in account on one server.
 #[derive(Clone)]
 pub struct ServerApi {
@@ -218,6 +237,31 @@ impl ServerApi {
 
     pub(super) async fn act(&self, method: Method, path: String) -> Result<(), ApiError> {
         self.call(method, path, Vec::new(), None).await.map(|_| ())
+    }
+
+    /// Sends a change with a JSON body and returns its answer with its receipt.
+    pub(super) async fn change<B: Serialize, R: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: String,
+        body: Option<&B>,
+    ) -> Result<Changed<R>, ApiError> {
+        let body = body.map(encode).transpose()?;
+        let response = self.call(method, path, Vec::new(), body).await?;
+        Ok(Changed {
+            value: read_json(&response)?,
+            receipt: response.receipt,
+        })
+    }
+
+    /// Sends a change whose answer has no body that the client reads, and returns its
+    /// receipt.
+    pub(super) async fn change_without_body(
+        &self,
+        method: Method,
+        path: String,
+    ) -> Result<Receipt, ApiError> {
+        Ok(self.call(method, path, Vec::new(), None).await?.receipt)
     }
 
     // The account of the caller and its devices.
@@ -311,6 +355,19 @@ impl ServerApi {
         self.act(Method::Delete, path).await
     }
 
+    /// The private moderation notices of the account, the newest first, before the notice
+    /// `before` (ADR 0120).
+    pub async fn moderation_notices(
+        &self,
+        before: Option<uuid::Uuid>,
+    ) -> Result<ModerationNoticePage, ApiError> {
+        let query = before
+            .map(|before| vec![("before", before.to_string())])
+            .unwrap_or_default();
+        let path = "/account/moderation-notices".to_owned();
+        read_json(&self.call(Method::Get, path, query, None).await?)
+    }
+
     /// The public key and the device name behind a link code, for the user to compare.
     pub async fn look_up_device_link(&self, code: LinkCode) -> Result<PendingDeviceLink, ApiError> {
         let path = "/account/device-links/lookup".to_owned();
@@ -376,6 +433,12 @@ impl ServerApi {
     // Moderation.
 
     pub async fn accounts(&self) -> Result<Vec<AccountSummary>, ApiError> {
+        let listed = self.listed_accounts().await?;
+        Ok(listed.into_iter().map(|listed| listed.account).collect())
+    }
+
+    /// Every account, each with whether the caller may unban it (ADR 0311).
+    pub async fn listed_accounts(&self) -> Result<Vec<ListedAccount>, ApiError> {
         self.get("/accounts".to_owned()).await
     }
 
@@ -397,6 +460,12 @@ impl ServerApi {
     // Server roles.
 
     pub async fn server_roles(&self) -> Result<Vec<ServerRole>, ApiError> {
+        let listed = self.listed_server_roles().await?;
+        Ok(listed.into_iter().map(|listed| listed.role).collect())
+    }
+
+    /// The server roles, each with what the caller may do with it (ADR 0311).
+    pub async fn listed_server_roles(&self) -> Result<Vec<ListedServerRole>, ApiError> {
         self.get("/server-roles".to_owned()).await
     }
 
@@ -479,6 +548,15 @@ impl ServerApi {
         &self,
         workspace_id: WorkspaceId,
     ) -> Result<Vec<WorkspaceRole>, ApiError> {
+        let listed = self.listed_workspace_roles(workspace_id).await?;
+        Ok(listed.into_iter().map(|listed| listed.role).collect())
+    }
+
+    /// The roles of a workspace, each with what the caller may do with it (ADR 0311).
+    pub async fn listed_workspace_roles(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<Vec<ListedWorkspaceRole>, ApiError> {
         self.get(format!("/workspaces/{workspace_id}/roles")).await
     }
 

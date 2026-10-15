@@ -4,7 +4,8 @@
 use junto_protocol::ids::{RecordingId, RecordingSegmentId, WorkspaceId};
 use junto_protocol::recording::{Recording, RecordingDetail, RecordingPage};
 use junto_protocol::transcript::{
-    CorrectLine, RenameSpeaker, Transcript, TranscriptLine, TranscriptLinePage, TranscriptSpeaker,
+    CorrectLine, RenameSpeaker, Transcript, TranscriptLine, TranscriptLinePage,
+    TranscriptLineQuery, TranscriptSpeaker,
 };
 
 use super::client::read_json;
@@ -102,15 +103,34 @@ impl ServerApi {
         after: Option<u32>,
         limit: Option<u32>,
     ) -> Result<TranscriptLinePage, ApiError> {
-        let mut query = Vec::new();
-        if let Some(after) = after {
-            query.push(("after", after.to_string()));
-        }
-        if let Some(limit) = limit {
-            query.push(("limit", limit.to_string()));
+        let query = TranscriptLineQuery {
+            after,
+            limit,
+            ..TranscriptLineQuery::default()
+        };
+        self.transcript_lines_at(recording_id, &query).await
+    }
+
+    /// A page of lines of a transcript: after a line, before a line, or with a line in
+    /// its middle (ADR 0607). The page states whether lines follow and come before it.
+    pub async fn transcript_lines_at(
+        &self,
+        recording_id: RecordingId,
+        query: &TranscriptLineQuery,
+    ) -> Result<TranscriptLinePage, ApiError> {
+        let mut pairs = Vec::new();
+        for (name, value) in [
+            ("after", query.after),
+            ("before", query.before),
+            ("around", query.around),
+            ("limit", query.limit),
+        ] {
+            if let Some(value) = value {
+                pairs.push((name, value.to_string()));
+            }
         }
         let path = format!("{}/lines", transcript_of(recording_id));
-        read_json(&self.call(Method::Get, path, query, None).await?)
+        read_json(&self.call(Method::Get, path, pairs, None).await?)
     }
 
     /// The transcript as plain text: one line of text for each line, with its time, its
@@ -239,6 +259,7 @@ mod tests {
                     status,
                     retry_after: None,
                     body: body.into(),
+                    receipt: crate::api::Receipt::NotStated,
                 })
             })
         }

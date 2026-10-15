@@ -4,7 +4,9 @@
 use junto_client_core::protocol::ServerPermission;
 
 use crate::state::admin::roles::{RoleLevel, RolePermission};
-use crate::state::admin::view::roles::{Fixed, Locked, NoAssignment, NoCreation, Standing};
+use crate::state::admin::view::roles::{
+    Fixed, Locked, NoAssignment, NoCreation, NoDeletion, Standing,
+};
 
 pub const SERVER_HELP: &str = "The server roles hold the permissions that act on the whole server. A role higher in \
      the list stands above the roles below it.";
@@ -128,8 +130,28 @@ pub const fn no_assignment(reason: NoAssignment) -> &'static str {
             "The role holds a permission that you do not hold. You cannot give it."
         }
         NoAssignment::Full => "The account holds 64 roles, which is the most.",
+        NoAssignment::NotAllowed => {
+            "The server states that you cannot give or take this role. Its overrides in \
+             channels allow or deny a permission that you do not hold."
+        }
+        NoAssignment::Reading => STATEMENT_READING,
     }
 }
+
+pub const fn no_deletion(reason: NoDeletion) -> &'static str {
+    match reason {
+        NoDeletion::Locked(locked) => self::locked(locked),
+        NoDeletion::NotAllowed => {
+            "The server states that you cannot delete this role. An override of the role in a \
+             channel denies a permission that you do not hold."
+        }
+        NoDeletion::Reading => STATEMENT_READING,
+    }
+}
+
+/// What the server states that the person may do with the roles is read again after a
+/// change of the order of the roles or of an override.
+pub const STATEMENT_READING: &str = "What you may do with this role is on its way from the server.";
 
 /// The second line of the row of a role.
 pub fn summary(granted: usize) -> String {

@@ -30,7 +30,8 @@ impl Shell {
         let theme = theme(cx);
         let (server_id, workspace_id) = (view.server_id, page.workspace_id);
         let what = AskKind::NotificationDefault(workspace_id);
-        let sending = view.sending(what);
+        // A change is on its way, or the state does not hold its events yet.
+        let sending = view.sending(what) || page.changing;
         let mut level = Segmented::new(
             "notification-default",
             txt::LEVEL,
@@ -44,12 +45,17 @@ impl Shell {
                 .position(|choice| *choice == page.choice),
         )
         .selector("notification-default");
-        // One request at a time. Every choice is sent, also the one that the control
-        // shows: the server does nothing for the level that it holds.
+        // One change at a time. The control shows the level of the state, or of the
+        // change that the state does not hold yet, so the shown choice sends nothing.
         if !sending {
+            let shown = page.choice;
             level = level.on_select({
                 let select = cx.listener(move |this, index: &usize, _, cx| {
-                    if let Some(choice) = DefaultChoice::ALL.get(*index).copied() {
+                    if let Some(choice) = DefaultChoice::ALL
+                        .get(*index)
+                        .copied()
+                        .filter(|choice| *choice != shown)
+                    {
                         this.state.update(cx, |state, cx| {
                             state.set_notification_default(server_id, workspace_id, choice, cx);
                         });

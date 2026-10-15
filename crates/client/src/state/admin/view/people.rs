@@ -58,6 +58,9 @@ pub enum Blocked {
     /// The order of the server roles is on its way, so the page cannot tell yet whether
     /// the account stands below the person.
     OrderNotRead,
+    /// The server states that the person may not unban the account: with the roles that
+    /// it gets back in its workspaces it would stand at or above the person (ADR 0311).
+    NotUnbannable,
 }
 
 /// Why a member cannot be removed from the shown workspace (ADR 0106).
@@ -159,6 +162,15 @@ impl AccountLine {
         } else {
             Ok(())
         };
+        // The server decides the unban with the roles that the account gets back, which
+        // the client does not hold (ADR 0311). While its statement is read again the
+        // action waits; a read that failed leaves the decision to the request.
+        let unbannable = match model.admin.may_unban(account.id) {
+            Some(true) => Ok(()),
+            Some(false) => Err(Blocked::NotUnbannable),
+            None if matches!(model.admin.accounts, Collection::Failed(_)) => Ok(()),
+            None => Err(Blocked::OrderNotRead),
+        };
         let (remove, ban, unban) = match account.status {
             AccountStatus::Active => (Ok(()), Ok(()), Err(Blocked::NotBanned)),
             AccountStatus::Banned => (Ok(()), Err(Blocked::Banned), Ok(())),
@@ -187,7 +199,7 @@ impl AccountLine {
             created: known.zone.local(account.created_at),
             remove: target.and(remove).and(order),
             ban: target.and(ban).and(order),
-            unban: target.and(unban).and(order),
+            unban: target.and(unban).and(order).and(unbannable),
             assignable: (administrator && account.status == AccountStatus::Active)
                 .then(|| server_choices(model, &account.server_role_ids))
                 .flatten(),
@@ -857,12 +869,51 @@ mod tests {
         ];
         scene.snapshot.account.server_role_ids = vec![roles[1].id];
         scene.snapshot.account.server_permissions = vec![ServerPermission::BanMembers];
-        let admin = AdminModel {
+        let mut admin = AdminModel {
             accounts: Collection::Loaded(accounts),
             server_roles: Collection::Loaded(roles.to_vec()),
             ..AdminModel::default()
         };
+        state_flags(&mut admin, Some(roles[1].position));
         (admin, roles)
+    }
+
+    /// What the server states with the lists for a person who stands at the position
+    /// `own` among the server roles, or for the owner: the person may unban, give, take
+    /// and delete what stands below (ADR 0311).
+    fn state_flags(admin: &mut AdminModel, own: Option<i32>) {
+        let roles = admin.server_roles.loaded().cloned().unwrap_or_default();
+        let below = |position: i32| own.is_none_or(|own| position < own);
+        admin.server_role_actions = roles
+            .iter()
+            .map(|role| {
+                let may = below(role.position);
+                (
+                    role.id,
+                    junto_client_core::protocol::roles::RoleActions {
+                        may_assign: may,
+                        may_remove: may,
+                        may_delete: may,
+                    },
+                )
+            })
+            .collect();
+        let highest = |account: &AccountSummary| {
+            roles
+                .iter()
+                .filter(|role| account.server_role_ids.contains(&role.id))
+                .map(|role| role.position)
+                .max()
+                .unwrap_or(0)
+        };
+        admin.unbannable = admin
+            .accounts
+            .loaded()
+            .into_iter()
+            .flatten()
+            .filter(|account| account.status == AccountStatus::Banned && below(highest(account)))
+            .map(|account| account.id)
+            .collect();
     }
 
     fn member(
@@ -1031,6 +1082,7 @@ mod tests {
         below.server_role_ids = vec![clerks.id];
         banned.server_role_ids = vec![stewards.id];
         admin.accounts = Collection::Loaded(vec![above, equal, below, banned, plain]);
+        state_flags(&mut admin, Some(wardens.position));
         let page = people(&scene.model(admin.clone()), &known());
         let states = |page: &PeoplePage, index: usize| {
             let row = line(page, accounts[index]);
@@ -1061,6 +1113,7 @@ mod tests {
 
         // The owner stands above every account.
         scene.snapshot.account.is_owner = true;
+        state_flags(&mut admin, None);
         let page = people(&scene.model(admin.clone()), &known());
         assert_eq!(
             states(&page, 0),
@@ -1071,6 +1124,30 @@ mod tests {
             (Ok(()), Err(Blocked::Banned), Ok(()), false)
         );
         scene.snapshot.account.is_owner = false;
+        state_flags(&mut admin, Some(wardens.position));
+
+        // The server states that the person may not unban an account that it would let
+        // back with roles above the person in a workspace (ADR 0311). The row says so.
+        admin.unbannable.clear();
+        scene.snapshot.account.is_owner = true;
+        let page = people(&scene.model(admin.clone()), &known());
+        assert_eq!(
+            states(&page, 3),
+            (
+                Ok(()),
+                Err(Blocked::Banned),
+                Err(Blocked::NotUnbannable),
+                false
+            )
+        );
+        // While the accounts are read again after a change of the order, the unban waits.
+        state_flags(&mut admin, None);
+        admin.flags_stale = vec![junto_client_core::model::AdminPart::Accounts];
+        let page = people(&scene.model(admin.clone()), &known());
+        assert_eq!(states(&page, 3).2, Err(Blocked::OrderNotRead));
+        admin.flags_stale.clear();
+        scene.snapshot.account.is_owner = false;
+        state_flags(&mut admin, Some(wardens.position));
 
         // The order of the roles is on its way: nothing is offered yet. After a read that
         // failed the server decides.
@@ -1099,6 +1176,7 @@ mod tests {
         ana.server_role_ids = vec![clerks.id];
         let (ana_id, banned_id) = (ana.id, banned.id);
         admin.accounts = Collection::Loaded(vec![ana, banned]);
+        state_flags(&mut admin, Some(wardens.position));
         let page = people(&scene.model(admin), &known());
         let choices = line(&page, ana_id).assignable.clone().unwrap();
         let shown: Vec<(&str, bool, bool)> = choices

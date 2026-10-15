@@ -3,6 +3,8 @@
 //! the roles that an account or a member holds.
 
 use gpui::Context;
+use junto_client_core::api::{Changed, Receipt};
+use junto_client_core::model::ServerModel;
 use junto_client_core::protocol::ids::{
     AccountId, ServerId, ServerRoleId, WorkspaceId, WorkspaceRoleId,
 };
@@ -14,6 +16,7 @@ use junto_client_core::protocol::{ServerPermission, WorkspacePermission};
 
 use super::AskKind;
 use crate::state::AppState;
+use crate::state::receipts::Awaited;
 
 /// The two levels of roles (ADR 0301).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -73,16 +76,16 @@ impl RolePermission {
     }
 }
 
-/// The changes of the permissions of roles that the state does not show yet. A change
-/// states the whole list of its role as the state held it, so a second change of the
-/// same role that was built on that list would undo the first. A role takes no further
-/// change until the server answered and the state shows the change, until the request
-/// failed, or until the role is gone.
+/// The changes of single permissions of roles that the state does not show yet
+/// (ADR 0311). A change names one permission, so changes of different permissions of one
+/// role go at the same time and none undoes another. A permission takes no further change
+/// while its change is on its way, and its switch shows the asked state until the state
+/// holds the events of the change (ADR 0214).
 #[derive(Debug, Default)]
 pub struct RoleChanges {
     waiting: Vec<Waiting>,
     /// The number of changes that were begun. A change is named by its number, so the
-    /// answer to an earlier request of a role does not settle a later one.
+    /// answer to an earlier request does not settle a later one.
     begun: u64,
 }
 
@@ -91,44 +94,40 @@ struct Waiting {
     number: u64,
     server_id: ServerId,
     role: RoleRef,
-    /// The permission that the change gives or takes.
     permission: RolePermission,
     on: bool,
-    /// The list that the state held when the server answered. Absent until then: before
-    /// the answer, another list in the state is the change of another person.
-    seen_at_answer: Option<Vec<RolePermission>>,
-}
-
-/// What the state holds of a role whose change waits.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Held {
-    /// The permissions of the role.
-    List(Vec<RolePermission>),
-    /// The state cannot tell now: the collection of the role is not loaded.
-    Unknown,
-    /// The state holds no such role, or no such server for the account.
-    Gone,
+    /// The receipt of the answer. Absent while the request is on its way.
+    answered: Option<Awaited>,
 }
 
 impl RoleChanges {
-    /// True while a change of the role waits for the state.
-    pub fn waits(&self, server_id: ServerId, role: RoleRef) -> bool {
+    /// The state that a change asked for, while it waits for the state.
+    pub fn asked(
+        &self,
+        server_id: ServerId,
+        role: RoleRef,
+        permission: RolePermission,
+    ) -> Option<bool> {
         self.waiting
             .iter()
-            .any(|held| held.server_id == server_id && held.role == role)
+            .find(|held| {
+                held.server_id == server_id && held.role == role && held.permission == permission
+            })
+            .map(|held| held.on)
     }
 
-    /// The roles of one server whose change waits.
-    pub fn of(&self, server_id: ServerId) -> Vec<RoleRef> {
+    /// The permissions of the roles of one server whose change waits, with the asked
+    /// state.
+    pub fn of(&self, server_id: ServerId) -> Vec<(RoleRef, RolePermission, bool)> {
         self.waiting
             .iter()
             .filter(|held| held.server_id == server_id)
-            .map(|held| held.role)
+            .map(|held| (held.role, held.permission, held.on))
             .collect()
     }
 
     /// Notes a change of one permission of a role, and returns its number. Nothing when
-    /// a change of the role waits already: the new one is not sent.
+    /// a change of the same permission waits already.
     pub(crate) fn begin(
         &mut self,
         server_id: ServerId,
@@ -136,7 +135,7 @@ impl RoleChanges {
         permission: RolePermission,
         on: bool,
     ) -> Option<u64> {
-        if self.waits(server_id, role) {
+        if self.asked(server_id, role, permission).is_some() {
             return None;
         }
         self.begun += 1;
@@ -146,44 +145,51 @@ impl RoleChanges {
             role,
             permission,
             on,
-            seen_at_answer: None,
+            answered: None,
         });
         Some(self.begun)
     }
 
-    /// The request of a change failed: the role takes a change again.
+    /// The request of a change failed: the permission takes a change again.
     pub(crate) fn failed(&mut self, number: u64) {
         self.waiting.retain(|held| held.number != number);
     }
 
-    /// The server did the request of a change. `held` is what the state holds of the
-    /// role now; the role waits until the state shows the change.
-    pub(crate) fn answered(&mut self, number: u64, held: &Held) {
-        for waiting in &mut self.waiting {
-            if waiting.number == number {
-                waiting.seen_at_answer = Some(match held {
-                    Held::List(list) => list.clone(),
-                    Held::Unknown | Held::Gone => Vec::new(),
-                });
+    /// The server did the request of a change, with this receipt.
+    pub(crate) fn answered(&mut self, number: u64, receipt: Receipt) {
+        for waiting in self.waiting.iter_mut().filter(|held| held.number == number) {
+            waiting.answered = Some(Awaited::new(receipt));
+        }
+    }
+
+    /// True while the change with this number waits for the state.
+    pub(crate) fn waits_for(&self, number: u64) -> bool {
+        self.waiting.iter().any(|held| held.number == number)
+    }
+
+    /// A snapshot that was read after the answer replaced the state.
+    pub(crate) fn refreshed(&mut self, number: u64) {
+        for waiting in self.waiting.iter_mut().filter(|held| held.number == number) {
+            if let Some(answered) = &mut waiting.answered {
+                answered.refreshed = true;
             }
         }
     }
 
-    /// Frees the roles whose change the state shows. A change stays while the server has
-    /// not answered, and while the state can tell nothing of the role. After the answer
-    /// the role is free when the state holds the permission as the change set it, and
-    /// when the list of the state changed since the answer: the event of the change, or
-    /// of a later one, has arrived then. A role that the state does not hold waits for
+    /// Frees the permissions whose change the state holds. `state` gives the state of a
+    /// server for the account that asked, when it holds the role. A change waits while the
+    /// server has not answered; a role or a server that the state does not hold waits for
     /// nothing.
-    pub(crate) fn settle(&mut self, held: impl Fn(ServerId, RoleRef) -> Held) {
+    pub(crate) fn settle<'a>(
+        &mut self,
+        state: impl Fn(ServerId, RoleRef) -> Option<&'a ServerModel>,
+    ) {
         self.waiting
-            .retain(|waiting| match held(waiting.server_id, waiting.role) {
-                Held::Gone => false,
-                Held::Unknown => true,
-                Held::List(now) => match &waiting.seen_at_answer {
-                    None => true,
-                    Some(seen) => now.contains(&waiting.permission) != waiting.on && now == *seen,
-                },
+            .retain(|waiting| match state(waiting.server_id, waiting.role) {
+                None => false,
+                Some(model) => waiting
+                    .answered
+                    .is_none_or(|answered| !answered.shown_by(model)),
             });
     }
 
@@ -193,54 +199,24 @@ impl RoleChanges {
     }
 }
 
-/// The permissions of a role as a state holds them, in the order of the protocol.
-fn held_permissions(model: &junto_client_core::model::ServerModel, role: RoleRef) -> Held {
+/// True when the state holds the role.
+fn holds_role(model: &ServerModel, role: RoleRef) -> bool {
     match role {
-        RoleRef::Server(role_id) => match model.admin.server_roles.loaded() {
-            // The collection is read while a page needs it. A page that does not need
-            // it tells nothing of the role.
-            None => Held::Unknown,
-            Some(roles) => {
-                roles
-                    .iter()
-                    .find(|held| held.id == role_id)
-                    .map_or(Held::Gone, |held| {
-                        Held::List(
-                            held.permissions
-                                .iter()
-                                .copied()
-                                .map(RolePermission::Server)
-                                .collect(),
-                        )
-                    })
-            }
-        },
-        RoleRef::Workspace(workspace_id, role_id) => model
-            .workspace_role(workspace_id, role_id)
-            .map_or(Held::Gone, |held| {
-                Held::List(
-                    held.permissions
-                        .iter()
-                        .copied()
-                        .map(RolePermission::Workspace)
-                        .collect(),
-                )
-            }),
+        // A page that does not read the server roles tells nothing of a role: its
+        // change waits for the receipt alone.
+        RoleRef::Server(role_id) => model
+            .admin
+            .server_roles
+            .loaded()
+            .is_none_or(|roles| roles.iter().any(|held| held.id == role_id)),
+        RoleRef::Workspace(workspace_id, role_id) => {
+            model.workspace_role(workspace_id, role_id).is_some()
+        }
     }
 }
 
 impl AppState {
-    /// What the state of a server holds of a role now, for the account that it shows.
-    fn held_of_role(&self, server_id: ServerId, role: RoleRef) -> Held {
-        let snapshots = self.snapshots();
-        snapshots
-            .iter()
-            .find(|server| server.id == server_id)
-            .and_then(super::view::shown)
-            .map_or(Held::Gone, |model| held_permissions(model, role))
-    }
-
-    /// The roles whose change of permissions the state shows now take a change again.
+    /// The permissions whose change the state shows now take a change again.
     pub(super) fn settle_role_changes(&mut self) {
         let snapshots = self.snapshots();
         self.admin.role_changes.settle(|server_id, role| {
@@ -248,14 +224,13 @@ impl AppState {
                 .iter()
                 .find(|server| server.id == server_id)
                 .and_then(super::view::shown)
-                .map_or(Held::Gone, |model| held_permissions(model, role))
+                .filter(|model| holds_role(model, role))
         });
     }
 
-    /// Sends the new list of a role, and frees the role for a further change when the
-    /// request failed. A request that the server did frees the role when the state shows
-    /// the change.
-    fn send_role_permissions<T, F>(
+    /// Sends the change of one permission of a role. A request that failed frees the
+    /// permission at once; one that the server did frees it when the state holds it.
+    fn send_role_permission<T, F>(
         &mut self,
         server_id: ServerId,
         role: RoleRef,
@@ -264,7 +239,8 @@ impl AppState {
         cx: &mut Context<Self>,
     ) where
         T: 'static,
-        F: std::future::Future<Output = Result<T, junto_client_core::api::ApiError>> + 'static,
+        F: std::future::Future<Output = Result<Changed<T>, junto_client_core::api::ApiError>>
+            + 'static,
     {
         let (told, outcome) = futures_channel::oneshot::channel();
         self.admin_ask(
@@ -274,24 +250,38 @@ impl AppState {
                 let asked = request(api);
                 async move {
                     let answer = asked.await;
-                    let _ = told.send(answer.is_ok());
+                    let _ = told.send(answer.as_ref().ok().map(|changed| changed.receipt));
                     answer
                 }
             },
             |_, _, _| {},
             cx,
         );
-        // The page tells the refusal of its newest request only. The role is freed for
-        // every failed request, also for one that the page tells nothing about.
+        // The page tells the refusal of its newest request only. The permission is freed
+        // for every failed request, also for one that the page tells nothing about.
         cx.spawn(async move |this, cx| {
-            let done = outcome.await.unwrap_or(false);
+            let receipt = outcome.await.ok().flatten();
             let _ = this.update(cx, |this, cx| {
-                if done {
-                    let held = this.held_of_role(server_id, role);
-                    this.admin.role_changes.answered(number, &held);
-                    this.settle_role_changes();
-                } else {
-                    this.admin.role_changes.failed(number);
+                match receipt {
+                    Some(receipt) => {
+                        this.admin.role_changes.answered(number, receipt);
+                        let model = this
+                            .client
+                            .server(server_id)
+                            .and_then(|server| server.live().view().model);
+                        if let Some(model) = model {
+                            this.refresh_for(
+                                server_id,
+                                &model,
+                                Awaited::new(receipt),
+                                move |this| this.admin.role_changes.waits_for(number),
+                                move |this| this.admin.role_changes.refreshed(number),
+                                cx,
+                            );
+                        }
+                        this.settle_role_changes();
+                    }
+                    None => this.admin.role_changes.failed(number),
                 }
                 cx.notify();
             });
@@ -380,9 +370,9 @@ impl AppState {
         }
     }
 
-    /// Gives a role one permission or takes it. The request states the whole list of the
-    /// role as the state holds it now with this one change. Nothing is sent while an
-    /// earlier change of the role waits for the state (ADR 0791).
+    /// Gives a role one permission or takes it, with one request that names that
+    /// permission (ADR 0311). Nothing is sent while a change of the same permission waits
+    /// for the state, or when the role holds the permission as asked.
     pub fn set_role_permission(
         &mut self,
         server_id: ServerId,
@@ -404,23 +394,20 @@ impl AppState {
                 let Some(stored) = model.server_role(role_id) else {
                     return;
                 };
-                let next = changed(ServerPermission::ALL, &stored.permissions, permission, on);
-                // The role holds the permission as asked already: nothing is sent.
-                if next == stored.permissions {
+                if stored.permissions.contains(&permission) == on {
                     return;
                 }
-                let change = UpdateServerRole {
-                    name: None,
-                    permissions: Some(next),
-                };
                 let Some(number) = self.admin.role_changes.begin(server_id, role, asked, on) else {
                     return;
                 };
-                self.send_role_permissions(
+                self.send_role_permission(
                     server_id,
                     role,
                     number,
-                    move |api| async move { api.update_server_role(role_id, &change).await },
+                    move |api| async move {
+                        api.change_server_role_permission(role_id, permission, on)
+                            .await
+                    },
                     cx,
                 );
             }
@@ -428,28 +415,18 @@ impl AppState {
                 let Some(stored) = model.workspace_role(workspace_id, role_id) else {
                     return;
                 };
-                let next = changed(
-                    WorkspacePermission::ALL,
-                    &stored.permissions,
-                    permission,
-                    on,
-                );
-                if next == stored.permissions {
+                if stored.permissions.contains(&permission) == on {
                     return;
                 }
-                let change = UpdateWorkspaceRole {
-                    name: None,
-                    permissions: Some(next),
-                };
                 let Some(number) = self.admin.role_changes.begin(server_id, role, asked, on) else {
                     return;
                 };
-                self.send_role_permissions(
+                self.send_role_permission(
                     server_id,
                     role,
                     number,
                     move |api| async move {
-                        api.update_workspace_role(workspace_id, role_id, &change)
+                        api.change_workspace_role_permission(workspace_id, role_id, permission, on)
                             .await
                     },
                     cx,
@@ -591,162 +568,115 @@ impl AppState {
     }
 }
 
-/// The list of a role after one permission was given or taken, in the order of the
-/// protocol.
-fn changed<P: Copy + PartialEq>(all: &[P], held: &[P], permission: P, on: bool) -> Vec<P> {
-    all.iter()
-        .copied()
-        .filter(|of| {
-            if *of == permission {
-                on
-            } else {
-                held.contains(of)
-            }
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
+    use junto_client_core::api::Receipt;
+    use junto_client_core::model::ServerModel;
+    use junto_client_core::protocol::events::Cursor;
+
     use super::*;
 
     #[test]
-    fn a_role_takes_one_change_of_its_permissions_at_a_time_until_the_state_shows_it() {
+    fn a_permission_takes_one_change_at_a_time_until_the_state_holds_its_event() {
         use RolePermission::Workspace as P;
-        use WorkspacePermission::{ManageChannel, ManageMessages, ViewChannel};
-        let (server_id, other_server) = (ServerId::generate(), ServerId::generate());
+        use WorkspacePermission::{ManageChannel, ManageMessages};
+        let model = crate::state::fixtures::model_at(40);
+        let server_id = ServerId::generate();
         let workspace_id = WorkspaceId::generate();
         let (first, second) = (
             RoleRef::Workspace(workspace_id, WorkspaceRoleId::generate()),
             RoleRef::Workspace(workspace_id, WorkspaceRoleId::generate()),
         );
-        // What the state holds of the two roles of the first server.
-        let state = |lists: Vec<(RoleRef, Held)>| {
-            move |server: ServerId, role: RoleRef| {
-                if server != server_id {
-                    return Held::Gone;
-                }
-                lists
-                    .iter()
-                    .find(|(of, _)| *of == role)
-                    .map_or(Held::Gone, |(_, held)| held.clone())
+        let at = |position| {
+            Receipt::At(Cursor {
+                epoch: model.cursor.epoch,
+                position,
+            })
+        };
+        fn state<'a>(
+            server_id: ServerId,
+            model: &'a ServerModel,
+            held: Vec<RoleRef>,
+        ) -> impl Fn(ServerId, RoleRef) -> Option<&'a ServerModel> {
+            move |of: ServerId, role: RoleRef| {
+                (of == server_id && held.contains(&role)).then_some(model)
             }
-        };
-        let list = |permissions: &[WorkspacePermission]| {
-            Held::List(permissions.iter().copied().map(P).collect())
-        };
+        }
         let mut changes = RoleChanges::default();
-        // "Manage messages" is given to the first role, which holds "view channel".
+        // Two permissions of one role and a permission of another role go at the same
+        // time; a second change of a waiting permission is not sent.
         let one = changes
             .begin(server_id, first, P(ManageMessages), true)
             .unwrap();
-        // A second change of the same role would be built on the list of before the
-        // first one: it is not sent. Another role, and the same role of another server,
-        // are free.
+        let two = changes
+            .begin(server_id, first, P(ManageChannel), false)
+            .unwrap();
+        let three = changes
+            .begin(server_id, second, P(ManageChannel), true)
+            .unwrap();
         assert_eq!(
-            changes.begin(server_id, first, P(ManageChannel), true),
+            changes.begin(server_id, first, P(ManageMessages), false),
             None
         );
-        let two = changes
-            .begin(server_id, second, P(ViewChannel), true)
-            .unwrap();
-        assert!(
-            changes
-                .begin(other_server, first, P(ViewChannel), true)
-                .is_some()
+        assert_eq!(
+            changes.asked(server_id, first, P(ManageMessages)),
+            Some(true)
         );
-        assert_eq!(changes.of(server_id), [first, second]);
+        assert_eq!(
+            changes.asked(server_id, first, P(ManageChannel)),
+            Some(false)
+        );
 
-        // Nothing is answered: both wait, also when the state shows another list, which
-        // is the change of another person then. The server of the third change is gone.
-        let before = vec![(first, list(&[ViewChannel])), (second, list(&[]))];
-        changes.settle(state(before.clone()));
-        let by_another = vec![
-            (first, list(&[ViewChannel, ManageChannel])),
-            (second, list(&[])),
-        ];
-        changes.settle(state(by_another.clone()));
-        assert_eq!(changes.of(server_id), [first, second]);
-        assert!(!changes.waits(other_server, first));
+        // Nothing is answered: every change waits.
+        changes.settle(state(server_id, &model, vec![first, second]));
+        assert_eq!(changes.of(server_id).len(), 3);
 
-        // The server answered the first change while the state holds the list of the
-        // other person, without the own change: the role still waits.
-        changes.answered(one, &by_another[0].1);
-        changes.settle(state(by_another));
-        assert!(changes.waits(server_id, first));
-        // The own event arrives: the state holds the permission as the change set it.
-        changes.settle(state(vec![
-            (first, list(&[ViewChannel, ManageChannel, ManageMessages])),
-            (second, list(&[])),
-        ]));
-        assert_eq!(changes.of(server_id), [second]);
+        // An answer at a position that the state has not reached waits; one at or before
+        // the position of the state is held by the state.
+        changes.answered(one, at(41));
+        changes.answered(two, at(40));
+        changes.settle(state(server_id, &model, vec![first, second]));
+        assert_eq!(
+            changes.asked(server_id, first, P(ManageMessages)),
+            Some(true)
+        );
+        assert_eq!(changes.asked(server_id, first, P(ManageChannel)), None);
+        let later = crate::state::fixtures::model_at(41);
+        assert_eq!(later.cursor.epoch, model.cursor.epoch);
+        changes.settle(state(server_id, &later, vec![first, second]));
+        assert_eq!(changes.asked(server_id, first, P(ManageMessages)), None);
 
-        // The second change: answered while the state shows the list of before. The role
-        // waits for its event, and a state that tells nothing of the role frees nothing.
-        changes.answered(two, &list(&[]));
-        changes.settle(state(vec![(second, list(&[]))]));
-        changes.settle(state(vec![(second, Held::Unknown)]));
-        assert_eq!(changes.of(server_id), [second]);
-        changes.settle(state(vec![(second, list(&[ViewChannel]))]));
+        // A change without an event is held at once. An answer that states no position
+        // waits for a snapshot read after it.
+        changes.answered(three, Receipt::NotStated);
+        changes.settle(state(server_id, &later, vec![first, second]));
+        assert!(changes.asked(server_id, second, P(ManageChannel)).is_some());
+        changes.refreshed(three);
+        changes.settle(state(server_id, &later, vec![first, second]));
+        assert!(changes.of(server_id).is_empty());
+        let four = changes
+            .begin(server_id, second, P(ManageChannel), true)
+            .unwrap();
+        changes.answered(four, Receipt::Nothing);
+        changes.settle(state(server_id, &later, vec![first, second]));
         assert!(changes.of(server_id).is_empty());
 
-        // The answer to an earlier request of a role does not settle a later one.
-        let three = changes
-            .begin(server_id, first, P(ViewChannel), false)
-            .unwrap();
-        changes.failed(one);
-        changes.answered(two, &list(&[]));
-        assert!(changes.waits(server_id, first));
-        // A request that failed frees its role at once.
-        changes.failed(three);
-        assert!(!changes.waits(server_id, first));
-
-        // A change whose event another person undid before the answer: the state does
-        // not hold the permission as the change set it. The next change of the list
-        // frees the role, so that it does not wait for ever.
-        let four = changes
+        // A request that failed frees its permission; a role that the state does not
+        // hold, and another account, end every wait.
+        let five = changes
             .begin(server_id, first, P(ManageChannel), true)
             .unwrap();
-        changes.answered(four, &list(&[ViewChannel]));
-        changes.settle(state(vec![(first, list(&[ViewChannel]))]));
-        assert!(changes.waits(server_id, first));
-        changes.settle(state(vec![(first, list(&[]))]));
-        assert!(!changes.waits(server_id, first));
-
-        // A role that the state does not hold any more waits for nothing, and neither
-        // does anything after another account took the place.
+        changes.failed(five);
+        assert!(changes.of(server_id).is_empty());
         changes
-            .begin(server_id, first, P(ViewChannel), true)
+            .begin(server_id, first, P(ManageChannel), true)
             .unwrap();
-        changes.settle(state(Vec::new()));
-        assert!(!changes.waits(server_id, first));
+        changes.settle(state(server_id, &later, vec![second]));
+        assert!(changes.of(server_id).is_empty());
         changes
-            .begin(server_id, second, P(ViewChannel), true)
+            .begin(server_id, second, P(ManageChannel), true)
             .unwrap();
         changes.forget();
-        assert!(!changes.waits(server_id, second));
-    }
-
-    #[test]
-    fn one_permission_changes_and_the_others_stay_in_the_order_of_the_protocol() {
-        use WorkspacePermission::{ManageChannel, ManageRoles, ViewChannel};
-        let all = WorkspacePermission::ALL;
-        assert_eq!(
-            changed(all, &[ManageChannel, ViewChannel], ManageRoles, true),
-            [ViewChannel, ManageRoles, ManageChannel]
-        );
-        assert_eq!(
-            changed(all, &[ManageChannel, ViewChannel], ViewChannel, false),
-            [ManageChannel]
-        );
-        // A permission that the role holds already, and one that it does not hold.
-        assert_eq!(
-            changed(all, &[ViewChannel], ViewChannel, true),
-            [ViewChannel]
-        );
-        assert_eq!(
-            changed(all, &[ViewChannel], ManageRoles, false),
-            [ViewChannel]
-        );
+        assert!(changes.of(server_id).is_empty());
     }
 }

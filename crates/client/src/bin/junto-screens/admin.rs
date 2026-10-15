@@ -759,6 +759,7 @@ pub(crate) fn refused(what: AskKind, code: ErrorCode) -> Option<Ask> {
         status: code.http_status(),
         retry_after: None,
         message: String::new(),
+        left: None,
     });
     Some(Ask {
         what,
@@ -1270,6 +1271,25 @@ fn draw_people(studio: &mut Studio) -> Result<(), String> {
             shell.set_people_open(Some(open), window, cx);
             shell.type_reason(
                 "Sent the same advertisement to every channel after two warnings.",
+                window,
+                cx,
+            );
+        },
+    )?;
+    // The question takes a message to the person beside the reason (ADR 0764).
+    studio.draw(
+        Screen::new("admin-people-ban-message", everyone()),
+        |shell, window, cx| {
+            open_page(shell, AdminPage::People, window, cx);
+            let open = PeopleOpen::BanAccount(person("Carla"));
+            shell.set_people_open(Some(open), window, cx);
+            shell.type_reason(
+                "Sent the same advertisement to every channel after two warnings.",
+                window,
+                cx,
+            );
+            shell.type_moderation_message(
+                "You can ask the owner for an unban by mail.",
                 window,
                 cx,
             );

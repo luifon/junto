@@ -21,8 +21,8 @@ use crate::assets::Icon;
 use crate::state::MentionSwitch;
 use crate::state::admin::view::notifications::DefaultChoice;
 use crate::state::notices::{
-    Agreement, DefaultRead, Jump, Mute, MuteFor, NoticeRow, NoticesPanel, NotifyPanel, QuietView,
-    Whereabouts, clock_text, parse_clock,
+    Agreement, Jump, Mute, MuteFor, NoticeRow, NoticesPanel, NotifyPanel, QuietView, Whereabouts,
+    clock_text, parse_clock,
 };
 use crate::state::view::{ShellView, WorkspaceView};
 use crate::text;
@@ -848,13 +848,11 @@ impl Shell {
             (panel.workspace_default, scope)
         {
             dialog = dialog.child(div().mt(u(16.0)).child(group(text::WORKSPACE_DEFAULT)));
-            dialog = match default.level {
-                DefaultRead::Reading => dialog.child(help(text::WORKSPACE_DEFAULT_READING.into())),
-                DefaultRead::Failed => dialog.child(
-                    Notice::error(text::WORKSPACE_DEFAULT_FAILED)
-                        .selector("workspace-default-failed"),
-                ),
-                DefaultRead::Read(held) if default.may_set => dialog.child(
+            let held = default.level;
+            dialog = if default.may_set {
+                let shown = held;
+                let changing = default.changing;
+                dialog.child(
                     div().flex().child(
                         Segmented::new(
                             "workspace-default",
@@ -870,7 +868,7 @@ impl Shell {
                                 let Some(level) = levels.get(*index).copied() else {
                                     return;
                                 };
-                                if busy {
+                                if busy || changing || shown == Some(level) {
                                     return;
                                 }
                                 this.state.update(cx, |state, cx| {
@@ -880,9 +878,10 @@ impl Shell {
                             move |index, window, cx| select(&index, window, cx)
                         }),
                     ),
-                ),
+                )
+            } else {
                 // A member reads the level and does not set it.
-                DefaultRead::Read(held) => dialog.child(
+                dialog.child(
                     div()
                         .id("workspace-default-held")
                         .debug_selector(|| "workspace-default-held".to_owned())
@@ -890,10 +889,16 @@ impl Shell {
                         .font_weight(FontWeight::SEMIBOLD)
                         .ink(colors.ink)
                         .child(text::admin::notifications::choice(DefaultChoice::of(held))),
-                ),
+                )
             };
+            if default.changing {
+                dialog = dialog.child(
+                    help(text::admin::SENDING.into())
+                        .debug_selector(|| "workspace-default-sending".to_owned()),
+                );
+            }
             // An administrator sees no selected level for a workspace that sets none.
-            if default.may_set && default.level == DefaultRead::Read(None) {
+            if default.may_set && held.is_none() {
                 dialog = dialog.child(
                     help(text::admin::notifications::stated(DefaultChoice::NotSet).into())
                         .id("workspace-default-not-set")
@@ -935,33 +940,173 @@ impl Shell {
         cx.notify();
     }
 
-    /// Fills the two fields with the stored daily quiet time, when the dialog opens.
+    /// Fills the two fields and the zone with the stored daily quiet time, when the dialog
+    /// opens. Without one stored quiet time the zone of the system is offered (ADR 0798).
     pub(crate) fn show_quiet_times(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let daily = match self.state.read(cx).view().quiet.daily {
             Some(Agreement::All(Some(daily))) => Some(daily),
             _ => None,
         };
-        let (from, until) = match daily {
+        let (from, until) = match &daily {
             Some(daily) => (clock_text(daily.start_minute), clock_text(daily.end_minute)),
             None => (clock_text(22 * 60), clock_text(7 * 60)),
         };
+        self.quiet_zone = daily.map_or_else(crate::zones::system, |daily| daily.time_zone);
+        self.quiet_zone_open = false;
         self.type_quiet_times(&from, &until, window, cx);
     }
 
-    /// Stores the two typed times as the daily quiet time.
+    /// Chooses the time zone of the daily quiet time, and closes the list of zones. The
+    /// zone is sent with the next change of the quiet time.
+    pub fn choose_quiet_zone(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.quiet_zone = name.to_owned();
+        self.quiet_zone_open = false;
+        self.quiet_zone_search
+            .update(cx, |field, cx| field.set_value("", window, cx));
+        cx.notify();
+    }
+
+    /// Puts text into the search of the list of time zones, as typing does.
+    pub fn type_quiet_zone_search(
+        &mut self,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let text = text.to_owned();
+        self.quiet_zone_search
+            .update(cx, |field, cx| field.set_value(text, window, cx));
+        cx.notify();
+    }
+
+    /// Opens or closes the list of time zones.
+    pub fn toggle_quiet_zones(&mut self, cx: &mut Context<Self>) {
+        self.quiet_zone_open = !self.quiet_zone_open;
+        cx.notify();
+    }
+
+    /// Stores the two typed times as the daily quiet time, in the chosen zone.
     pub fn submit_quiet_times(&mut self, cx: &mut Context<Self>) {
         let from = parse_clock(&self.quiet_from.read(cx).value());
         let until = parse_clock(&self.quiet_until.read(cx).value());
+        let zone = self.quiet_zone.clone();
         match (from, until) {
             (Some(from), Some(until)) if from != until => {
                 self.quiet_refused = false;
                 self.state.update(cx, |state, cx| {
-                    state.set_daily_quiet(Some((from, until)), cx);
+                    state.set_daily_quiet(Some((from, until)), zone, cx);
                 });
             }
             _ => self.quiet_refused = true,
         }
         cx.notify();
+    }
+
+    /// The time zone of the daily quiet time: its name, what holds when it is not the zone
+    /// of the system or not a zone of this build, and the list to choose another one
+    /// (ADR 0798).
+    fn render_quiet_zone(
+        &mut self,
+        busy: bool,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let colors = theme.colors;
+        let help = |sentence: String| {
+            div()
+                .typeface(theme.types.small, theme)
+                .ink(colors.ink_2)
+                .child(sentence)
+        };
+        let zone = self.quiet_zone.clone();
+        let system = crate::zones::system();
+        let mut rows = vec![
+            div()
+                .flex()
+                .items_center()
+                .gap(u(8.0))
+                .mt(u(8.0))
+                .child(
+                    div()
+                        .id("quiet-zone")
+                        .debug_selector(|| "quiet-zone".to_owned())
+                        .flex_1()
+                        .min_w_0()
+                        .typeface(theme.types.control, theme)
+                        .ink(colors.ink)
+                        .child(text::quiet_zone(&crate::zones::shown(&zone))),
+                )
+                .child(
+                    Button::new("quiet-zone-change")
+                        .label(if self.quiet_zone_open {
+                            text::CLOSE
+                        } else {
+                            text::QUIET_ZONE_CHANGE
+                        })
+                        .disabled(busy)
+                        .selector("quiet-zone-change")
+                        .h(u(28.0))
+                        .px(u(10.0))
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_quiet_zones(cx))),
+                )
+                .into_any_element(),
+        ];
+        if !crate::zones::is_known(&zone) {
+            rows.push(
+                help(text::QUIET_ZONE_UNKNOWN.to_owned())
+                    .debug_selector(|| "quiet-zone-unknown".to_owned())
+                    .into_any_element(),
+            );
+        } else if zone != system {
+            rows.push(
+                help(text::quiet_zone_not_system(&crate::zones::shown(&system)))
+                    .debug_selector(|| "quiet-zone-not-system".to_owned())
+                    .into_any_element(),
+            );
+        }
+        if !self.quiet_zone_open {
+            return rows;
+        }
+        let typed = self.quiet_zone_search.read(cx).value().to_string();
+        let (names, more) = crate::zones::matching(&typed);
+        let choices = names.into_iter().enumerate().map(|(index, name)| {
+            let chosen = name == zone;
+            div()
+                .flex_none()
+                .debug_selector(move || format!("quiet-zone-choice:{name}"))
+                .child(
+                    Button::new(("quiet-zone-choice", index))
+                        .kind(if chosen {
+                            ButtonKind::Primary
+                        } else {
+                            ButtonKind::Ghost
+                        })
+                        .label(crate::zones::shown(name))
+                        .h(u(26.0))
+                        .px(u(8.0))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.choose_quiet_zone(name, window, cx);
+                        })),
+                )
+                .into_any_element()
+        });
+        rows.push(
+            div()
+                .flex()
+                .flex_col()
+                .gap(u(6.0))
+                .mt(u(6.0))
+                .child(
+                    Field::new(&self.quiet_zone_search, text::QUIET_ZONE_SEARCH)
+                        .selector("quiet-zone-search"),
+                )
+                .child(div().flex().flex_wrap().gap(u(4.0)).children(choices))
+                .when(more, |list| {
+                    list.child(help(text::QUIET_ZONE_MORE.to_owned()))
+                })
+                .into_any_element(),
+        );
+        rows
     }
 
     /// "Do not disturb" and the daily quiet time, in the settings of the application.
@@ -1076,8 +1221,10 @@ impl Shell {
                                 return;
                             }
                             if daily_on {
-                                this.state
-                                    .update(cx, |state, cx| state.set_daily_quiet(None, cx));
+                                let zone = this.quiet_zone.clone();
+                                this.state.update(cx, |state, cx| {
+                                    state.set_daily_quiet(None, zone, cx);
+                                });
                             } else {
                                 this.submit_quiet_times(cx);
                             }
@@ -1106,6 +1253,7 @@ impl Shell {
                     )
                     .into_any_element(),
             ];
+        rows.extend(self.render_quiet_zone(busy, theme, cx));
         if self.quiet_refused {
             rows.push(
                 div()

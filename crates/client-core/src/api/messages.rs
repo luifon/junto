@@ -9,7 +9,7 @@ use junto_protocol::message::{
 
 use super::client::read_json;
 use super::error::ApiError;
-use super::session::ServerApi;
+use super::session::{Changed, ServerApi};
 use super::transport::{BodyStream, Method, RequestBody};
 use crate::model::PlaceId;
 use crate::secret::SecretBytes;
@@ -132,7 +132,24 @@ impl ServerApi {
         place: PlaceId,
         message: &SendMessage,
     ) -> Result<Message, ApiError> {
-        bounded(self.send(Method::Post, messages_of(place), message).await?)
+        Ok(self.send_message_with_receipt(place, message).await?.value)
+    }
+
+    /// Sends a message, and returns the receipt of the answer with it (ADR 0214): the
+    /// stream task puts the message of the answer into the state only while the state has
+    /// not followed the event of the message.
+    pub async fn send_message_with_receipt(
+        &self,
+        place: PlaceId,
+        message: &SendMessage,
+    ) -> Result<Changed<Message>, ApiError> {
+        let sent: Changed<Message> = self
+            .change(Method::Post, messages_of(place), Some(message))
+            .await?;
+        Ok(Changed {
+            value: bounded(sent.value)?,
+            receipt: sent.receipt,
+        })
     }
 
     pub async fn message(&self, message_id: MessageId) -> Result<Message, ApiError> {

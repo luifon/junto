@@ -1723,6 +1723,7 @@ mod tests {
                     status,
                     retry_after: None,
                     body: body.into(),
+                    receipt: crate::api::Receipt::NotStated,
                 })
             })
         }

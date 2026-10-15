@@ -6,7 +6,6 @@
 use std::sync::Arc;
 
 use junto_client::shell::{FilterKind, Open, Shell};
-use junto_client::state::notices::DefaultRead;
 use junto_client::state::search::{DateFilter, Filters, Hit, Progress, Search};
 use junto_client::state::view::{Known, ServerSnapshot};
 use junto_client::text;
@@ -175,6 +174,9 @@ fn hit(number: u32, place_id: uuid::Uuid, author: &str, minutes: i64, text: &str
         author_id: person(author),
         created_at: morning() + Duration::minutes(minutes),
         text: text.to_owned(),
+        position: Some(u64::from(number)),
+        thread_root: None,
+        start_ms: None,
     }
 }
 
@@ -188,6 +190,9 @@ fn retention() -> Search {
         author_id: person("Ana"),
         created_at: morning() + Duration::minutes(41),
         text: "Diego writes the retention spec, and Luca sends Marta the demo invite.".to_owned(),
+        position: None,
+        thread_root: None,
+        start_ms: Some(1_843_000),
     };
     Search {
         server_id: server_id(),
@@ -260,7 +265,7 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
             fixed(
                 shell,
                 |known| {
-                    known.notices_marking.insert(server_id());
+                    known.marking_all.insert(server_id(), None);
                 },
                 cx,
             );
@@ -344,17 +349,7 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
     let dialog = |scope: SettingsScope, change: fn(&mut Known)| {
         move |shell: &mut Shell, window: &mut gpui::Window, cx: &mut gpui::Context<Shell>| {
             shell.open_notify_settings(server_id(), scope, window, cx);
-            fixed(
-                shell,
-                |known| {
-                    known.workspace_defaults.insert(
-                        (server_id(), studio_id()),
-                        DefaultRead::Read(Some(NotificationLevel::Mentions)),
-                    );
-                    change(known);
-                },
-                cx,
-            );
+            fixed(shell, change, cx);
         }
     };
     studio.draw(
@@ -405,24 +400,30 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
         Screen::new("notify-workspace-member", chosen()),
         dialog(SettingsScope::Workspace(studio_id()), |_| {}),
     )?;
+    let administered = || {
+        acme(|model| {
+            model.account.is_owner = true;
+            for workspace in &mut model.workspaces {
+                std::sync::Arc::make_mut(workspace).notification_default =
+                    Some(NotificationLevel::All);
+            }
+        })
+    };
     studio.draw(
-        Screen::new(
-            "notify-workspace-administrator",
-            acme(|model| model.account.is_owner = true),
-        ),
-        dialog(SettingsScope::Workspace(studio_id()), |known| {
-            known.workspace_defaults.insert(
-                (server_id(), studio_id()),
-                DefaultRead::Read(Some(NotificationLevel::All)),
-            );
-        }),
+        Screen::new("notify-workspace-administrator", administered()),
+        dialog(SettingsScope::Workspace(studio_id()), |_| {}),
     )?;
+    // A change of the level that the state does not hold yet (ADR 0214).
     studio.draw(
-        Screen::new("notify-workspace-reading", acme(|_| {})),
+        Screen::new("notify-workspace-changing", administered()),
         dialog(SettingsScope::Workspace(studio_id()), |known| {
-            known
-                .workspace_defaults
-                .insert((server_id(), studio_id()), DefaultRead::Reading);
+            known.defaults_sent.insert(
+                (server_id(), studio_id()),
+                junto_client::state::notices::SentDefault {
+                    level: Some(NotificationLevel::Nothing),
+                    answered: None,
+                },
+            );
         }),
     )?;
     studio.draw(
@@ -471,6 +472,36 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
         servers
     };
     studio.draw(Screen::new("settings-quiet-on", quiet_on()), open_settings)?;
+    // The list of time zones of the daily quiet time (ADR 0798).
+    studio.draw(
+        Screen::new("settings-quiet-zones", quiet_on()),
+        |shell, window, cx| {
+            fixed(shell, |_| {}, cx);
+            shell.open(Open::Settings, window, cx);
+            shell.toggle_quiet_zones(cx);
+            shell.type_quiet_zone_search("america", window, cx);
+        },
+    )?;
+    // The notice of a removal from a workspace, with the message of the moderator
+    // (ADR 0764).
+    studio.draw(
+        Screen::new(
+            "moderation-workspace-removed",
+            acme(|model| {
+                model.moderation_notices = vec![
+                    junto_client_core::protocol::account::ModerationNotice {
+                        id: uuid::Uuid::from_u128(6500),
+                        kind: junto_client_core::protocol::account::ModerationNoticeKind::WorkspaceRemoved,
+                        workspace_id: Some(id(6501)),
+                        name: "Lab".to_owned(),
+                        message: Some("Thank you for your work on the project.".to_owned()),
+                        at: now() - time::Duration::days(1),
+                    },
+                ];
+            }),
+        ),
+        |shell, _, cx| fixed(shell, |_| {}, cx),
+    )?;
     studio.draw(
         Screen::new(
             "settings-quiet-differs",

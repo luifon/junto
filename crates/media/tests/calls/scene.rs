@@ -368,6 +368,13 @@ impl Room {
         }
     }
 
+    /// The path of the request for a new token of the seat `identity` in a voice channel
+    /// (ADR 0520).
+    pub fn renew_path(target: &CallTarget, identity: &str) -> String {
+        let named: String = url::form_urlencoded::byte_serialize(identity.as_bytes()).collect();
+        format!("{}?renews={named}", Self::join_path(target))
+    }
+
     /// The path of the request for a place in a voice channel.
     pub fn join_path(target: &CallTarget) -> String {
         match target.place {

@@ -985,6 +985,34 @@ pub const LINK_EXPIRED: &str = "No logged-in device approved the link in time.";
 pub const KEY_MISSING_TITLE: &str = "The key of this device is missing";
 pub const KEY_MISSING: &str = "The server book names an account, and the key file of this \
      device for the server is gone. Join again with a code, or ask for access.";
+/// A private moderation notice of the account (ADR 0120), with the message of the person
+/// who acted.
+pub fn moderation_notice(line: &crate::state::moderation::ModerationLine) -> String {
+    use junto_client_core::protocol::account::ModerationNoticeKind as Kind;
+    let what = match line.kind {
+        Kind::WorkspaceRemoved => format!(
+            "You were removed from the workspace “{}” on {}.",
+            line.name, line.day
+        ),
+        Kind::ServerRemoved => format!(
+            "Your account was removed from the server “{}” on {}.",
+            line.name, line.day
+        ),
+        Kind::Banned => format!(
+            "Your account was banned on the server “{}” on {}.",
+            line.name, line.day
+        ),
+        Kind::Unknown => format!(
+            "A moderator acted on your account on the server “{}” on {}.",
+            line.name, line.day
+        ),
+    };
+    match &line.message {
+        Some(message) => format!("{what} Message from the moderator: {message}"),
+        None => what,
+    }
+}
+
 pub const BANNED_TITLE: &str = "Your account is banned on this server";
 pub const BANNED: &str = "An administrator can lift the ban. The key of this device stays, \
      so the account is the same after that.";
@@ -1962,8 +1990,6 @@ pub fn level_default_now(
 pub const WORKSPACE_DEFAULT: &str = "For every member";
 pub const WORKSPACE_DEFAULT_HELP: &str =
     "The level of a member who chose none. Only an administrator of the server can change it.";
-pub const WORKSPACE_DEFAULT_READING: &str = "Reading the level of the workspace…";
-pub const WORKSPACE_DEFAULT_FAILED: &str = "The level of the workspace could not be read.";
 pub const MUTE: &str = "Mute";
 pub const MUTE_HELP: &str = "A muted channel sends no notification and shows no unread sign.";
 pub const MUTE_CHANNEL: &str = "Mute channel";
@@ -2100,6 +2126,7 @@ pub const TRANSCRIPT_REFRESH_FAILED: &str = "The transcript could not be refresh
 pub const TRANSCRIPT_LINES_FAILED: &str = "The lines of the transcript could not be read.";
 pub const SHOW_ALL: &str = "Show all";
 pub const SHOW_MORE_LINES: &str = "Show more lines";
+pub const SHOW_EARLIER_LINES: &str = "Show earlier lines";
 pub const LINE_MICROPHONE: &str = "Microphone";
 pub const LINE_CORRECTED: &str = "corrected";
 
@@ -2381,6 +2408,21 @@ pub const DAILY_QUIET_HELP: &str = "The same as \"do not disturb\", every day be
 pub const QUIET_FROM: &str = "From";
 pub const QUIET_UNTIL: &str = "Until";
 pub const QUIET_SET: &str = "Set";
+pub const QUIET_ZONE_CHANGE: &str = "Change time zone";
+pub const QUIET_ZONE_SEARCH: &str = "Search time zones";
+pub const QUIET_ZONE_MORE: &str = "More time zones match. Type more of the name.";
+pub const QUIET_ZONE_UNKNOWN: &str = "This version of the application does not know this time zone. The server holds notices \
+     back in the quiet time; this device does not know when the quiet time is.";
+
+/// The time zone in which the two times of the daily quiet time are read.
+pub fn quiet_zone(name: &str) -> String {
+    format!("Time zone: {name}")
+}
+
+/// The zone of the quiet time is not the zone of the system.
+pub fn quiet_zone_not_system(system: &str) -> String {
+    format!("The time zone of this computer is {system}.")
+}
 pub const QUIET_TIME_REFUSED: &str =
     "Write each time as hours and minutes, such as 22:00, and use two different times.";
 pub const QUIET_DIFFERS: &str =

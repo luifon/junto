@@ -453,6 +453,7 @@ mod tests {
             status: code.http_status(),
             retry_after: retry_after.map(std::time::Duration::from_secs),
             message: "a sentence of the server".to_owned(),
+            left: None,
         })
     }
 

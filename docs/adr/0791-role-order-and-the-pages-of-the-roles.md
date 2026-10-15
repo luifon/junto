@@ -33,8 +33,8 @@ The pages:
 - A role at or above the person is locked: its row carries a mark and a sentence that states it, and every action that changes the role is disabled. The sentence is drawn in the row and not as a tooltip, so a person who uses the keyboard reads it. "Permissions" stays usable and shows the switches of the locked role as disabled: the person reads what the role holds.
 - A form or a question of a role that becomes locked while it is open is put away, and the row shows the role as locked.
 - A new role has no permission and enters at the bottom. The form is disabled, with its reason, for a person who stands at zero and at the ceiling of 250 roles (ADR 0306, ADR 0309).
-- "Permissions" shows one switch for each permission of the level. A change of a switch is sent at once, with the whole list of the role as the state holds it. The switches of that role take no further change until the server answered and the state shows the change, until the request failed, or until the role is gone: a second change that was built on the list of before would undo the first. The state shows the change when it holds the permission as the change set it, or when its list changed after the answer. The application keeps this for each role by itself, whichever page or role the person looks at meanwhile and also while the layer is closed; another account on the server ends it. A switch that would give a permission that the person does not hold in the workspace is disabled, with the sentence under it (ADR 0304). A switch that takes a permission is never disabled for that reason. Every server permission can be given by a person who has the page.
-- The deletion is a question that states what the server removes (ADR 0308). The client does not know the overrides of the role in every channel, so the refusal `exceeds_own_permissions` is a sentence at the row.
+- "Permissions" shows one switch for each permission of the level. A change of a switch is sent at once, as one request that names that permission (ADR 0311). A switch whose change is on its way, or whose change the state does not hold yet, shows the asked state and takes no further change until the state holds the events of the change, the request failed, or the role is gone (ADR 0763); the other switches of the role stay usable. The application keeps this for each permission by itself, whichever page or role the person looks at meanwhile and also while the layer is closed; another account on the server ends it. A switch that would give a permission that the person does not hold in the workspace is disabled, with the sentence under it (ADR 0304). A switch that takes a permission is never disabled for that reason. Every server permission can be given by a person who has the page.
+- The deletion is a question that states what the server removes (ADR 0308). It is offered when the server states that the person may delete the role, which takes the overrides of the role in every channel into account (ADR 0764).
 - The "everyone" role takes a change of its permissions by a person who holds a role. It has no new name, no deletion and no move.
 
 Order by drag and by keyboard:
@@ -48,13 +48,13 @@ Roles of an account:
 
 - The page "People" has the action "Roles" for an administrator and an active account, and the page "Members" has it for a holder of "manage roles". It shows one switch for each role of the level under the row.
 - A switch is disabled with its reason in the row: the role is at or above the person; giving the role would give a permission that the person does not hold; the account holds 64 roles. Taking a role that the account holds is disabled only by role order.
-- The grant rule for the overrides of a role in single channels (ADR 0304) is not known to the client. Its refusal is a sentence under the switches.
+- The grant rule for the overrides of a role in single channels (ADR 0304) is in the statement of the server of what the person may give and take (ADR 0764). A switch that the statement refuses states it in the row.
 
 Removal, ban and unban:
 
 - A row of "People" compares where the account stands on the server with where the person stands. An account at or above the person takes no removal, no ban and no unban: the three actions are disabled, and the row states the reason as a sentence. A question about an account that comes to stand at or above the person while the question is open is put away. While the order of the roles is read again, the question stays and its answer waits.
 - The page "People" reads the server roles for every person who has it. While they are on their way the three actions are disabled with that reason. When their read failed, the actions are enabled and the server decides.
-- An unban also compares the roles that return in every workspace (ADR 0309). The client does not hold the workspace roles of a banned account, so that refusal is a sentence after the request.
+- An unban also compares the roles that return in every workspace (ADR 0309). The server states with each account whether the person may unban it (ADR 0764); the row of a banned account that the server keeps from the person states why.
 
 Refusals:
 

@@ -250,6 +250,8 @@ fn open(state: RecordingState, transcript: TranscriptState) -> OpenRecording {
             reading: false,
             failed: None,
             stale: false,
+            more_before: false,
+            around: None,
         },
         failed: None,
         gone: false,

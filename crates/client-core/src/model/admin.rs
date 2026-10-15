@@ -10,13 +10,13 @@ use std::sync::Arc;
 
 use junto_protocol::WorkspacePermission;
 use junto_protocol::access_token::AccessTokenInfo;
-use junto_protocol::account::AccountSummary;
+use junto_protocol::account::{AccountSummary, ListedAccount};
 use junto_protocol::discovery::Retention;
 use junto_protocol::events::Event;
 use junto_protocol::export::Export;
-use junto_protocol::ids::{ChannelId, WorkspaceId, WorkspaceRoleId};
+use junto_protocol::ids::{AccountId, ChannelId, ServerRoleId, WorkspaceId, WorkspaceRoleId};
 use junto_protocol::invite::{Invite, JoinRequest, JoinRequestState};
-use junto_protocol::roles::ServerRole;
+use junto_protocol::roles::{ListedServerRole, ListedWorkspaceRole, RoleActions, ServerRole};
 use junto_protocol::structure::{ArchivePeriod, ArchivedChannel, Channel, ChannelOverride};
 
 use super::rank::sort_server_roles;
@@ -107,6 +107,9 @@ pub enum AdminPart {
     /// The workspace permissions of the account in one archived channel (ADR 0310). The
     /// snapshot states them for the channels of the channel lists only.
     ChannelPermissions(ChannelId),
+    /// What the account may do with each role of one workspace: give it, take it, delete
+    /// it (ADR 0311). The roles themselves are in the snapshot.
+    RoleActions(WorkspaceId),
 }
 
 /// The settings of a workspace that only an administrator reads.
@@ -120,7 +123,7 @@ pub struct WorkspaceSettings {
 /// The answer of the route of one collection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AdminPayload {
-    Accounts(Vec<AccountSummary>),
+    Accounts(Vec<ListedAccount>),
     Invites(Vec<Invite>),
     JoinRequests(Vec<JoinRequest>),
     AccessTokens {
@@ -129,13 +132,17 @@ pub(crate) enum AdminPayload {
         more: bool,
     },
     Exports(Vec<Export>),
-    ServerRoles(Vec<ServerRole>),
+    ServerRoles(Vec<ListedServerRole>),
     DirectRetention(Retention),
     Overrides(Vec<ChannelOverride>),
     Archived(Vec<ArchivedChannel>),
     WorkspaceSettings(WorkspaceSettings),
     ChannelPermissions(Vec<WorkspacePermission>),
+    RoleActions(Vec<ListedWorkspaceRole>),
 }
+
+/// What the account may do with each role of one workspace or of the server, by role.
+pub type RoleActionList<R> = Vec<(R, RoleActions)>;
 
 /// What the stream client puts in the place of a collection.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,6 +158,10 @@ pub(crate) enum AdminSet {
 pub struct AdminModel {
     /// In the order of their identifiers.
     pub accounts: Collection<Vec<AccountSummary>>,
+    /// The banned accounts that the account may unban, as the last read of the accounts
+    /// stated them (ADR 0311). They describe the account at that read and are no authority
+    /// for a request: the server decides.
+    pub unbannable: Vec<AccountId>,
     /// The newest first.
     pub invites: Collection<Vec<Invite>>,
     /// The oldest first.
@@ -163,12 +174,20 @@ pub struct AdminModel {
     pub exports: Collection<Vec<Export>>,
     /// From the highest position to the lowest (ADR 0309).
     pub server_roles: Collection<Vec<ServerRole>>,
+    /// What the account may do with each server role, as the last read of the server roles
+    /// stated it (ADR 0311). A role that an event added has none until the next read.
+    pub server_role_actions: RoleActionList<ServerRoleId>,
     pub direct_retention: Collection<Retention>,
     pub overrides: Vec<(ChannelId, Collection<Vec<ChannelOverride>>)>,
     pub archived: Vec<(WorkspaceId, Collection<Vec<ArchivedChannel>>)>,
     pub settings: Vec<(WorkspaceId, Collection<WorkspaceSettings>)>,
     /// The permissions of the account in the archived channels that a reader asked for.
     pub channel_permissions: Vec<(ChannelId, Collection<Vec<WorkspacePermission>>)>,
+    /// What the account may do with the roles of the workspaces that a reader asked for.
+    pub role_actions: Vec<(WorkspaceId, Collection<RoleActionList<WorkspaceRoleId>>)>,
+    /// The collections whose flags an event made stale and whose new read has not
+    /// answered: their flags state nothing until then.
+    pub flags_stale: Vec<AdminPart>,
     /// The archived channels that the state knows outside the loaded lists: a channel
     /// that was archived while a reader had its messages open, and a channel that a
     /// reload carried for such a reader until the list of its workspace answers.
@@ -263,6 +282,58 @@ impl AdminModel {
         keyed(&self.channel_permissions, channel_id)
     }
 
+    /// What the account may do with the roles of a workspace, while a reader has them
+    /// open.
+    pub fn role_actions(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> &Collection<RoleActionList<WorkspaceRoleId>> {
+        keyed(&self.role_actions, workspace_id)
+    }
+
+    /// What the account may do with one role of a workspace. Absent while the list is not
+    /// read, and for a role that the list does not name.
+    pub fn workspace_role_actions(
+        &self,
+        workspace_id: WorkspaceId,
+        role_id: WorkspaceRoleId,
+    ) -> Option<&RoleActions> {
+        if self
+            .flags_stale
+            .contains(&AdminPart::RoleActions(workspace_id))
+        {
+            return None;
+        }
+        self.role_actions(workspace_id)
+            .loaded()?
+            .iter()
+            .find(|(held, _)| *held == role_id)
+            .map(|(_, actions)| actions)
+    }
+
+    /// What the account may do with one server role. Absent while the server roles are not
+    /// read, and for a role that their read did not name.
+    pub fn server_role_actions(&self, role_id: ServerRoleId) -> Option<&RoleActions> {
+        self.server_roles.loaded()?;
+        if self.flags_stale.contains(&AdminPart::ServerRoles) {
+            return None;
+        }
+        self.server_role_actions
+            .iter()
+            .find(|(held, _)| *held == role_id)
+            .map(|(_, actions)| actions)
+    }
+
+    /// Whether the last read of the accounts stated that the account may unban this one.
+    /// Absent while the accounts are not read.
+    pub fn may_unban(&self, account_id: AccountId) -> Option<bool> {
+        self.accounts.loaded()?;
+        if self.flags_stale.contains(&AdminPart::Accounts) {
+            return None;
+        }
+        Some(self.unbannable.contains(&account_id))
+    }
+
     pub fn state(&self, part: AdminPart) -> CollectionState {
         match part {
             AdminPart::Accounts => state_of(&self.accounts),
@@ -280,6 +351,7 @@ impl AdminModel {
             AdminPart::ChannelPermissions(channel_id) => {
                 state_of(self.channel_permissions(channel_id))
             }
+            AdminPart::RoleActions(workspace_id) => state_of(self.role_actions(workspace_id)),
         }
     }
 
@@ -346,6 +418,9 @@ impl AdminModel {
         }
         reading_keyed(&mut self.archived, in_scope);
         reading_keyed(&mut self.settings, in_scope);
+        // What the account may do with the roles of a workspace follows its permissions
+        // there (ADR 0764).
+        reading_keyed(&mut self.role_actions, in_scope);
         reading_keyed(&mut self.overrides, |channel_id| {
             channels.contains(&channel_id)
         });
@@ -365,6 +440,9 @@ impl AdminModel {
     }
 
     fn set(&mut self, part: AdminPart, set: AdminSet) {
+        if set != AdminSet::Loading {
+            self.flags_stale.retain(|held| *held != part);
+        }
         fn plain<T>(
             set: AdminSet,
             loaded: impl FnOnce(AdminPayload) -> Option<T>,
@@ -400,18 +478,30 @@ impl AdminModel {
                 AdminPart::ChannelPermissions(channel_id) => {
                     mark_keyed_loading(&mut self.channel_permissions, channel_id);
                 }
+                AdminPart::RoleActions(workspace_id) => {
+                    mark_keyed_loading(&mut self.role_actions, workspace_id);
+                }
             }
             return;
         }
         match part {
             AdminPart::Accounts => {
+                let mut unbannable = Vec::new();
                 self.accounts = plain(set, |payload| match payload {
-                    AdminPayload::Accounts(mut accounts) => {
+                    AdminPayload::Accounts(listed) => {
+                        let mut accounts = Vec::with_capacity(listed.len());
+                        for held in listed {
+                            if held.may_unban {
+                                unbannable.push(held.account.id);
+                            }
+                            accounts.push(held.account);
+                        }
                         accounts.sort_by_key(|held| held.id);
                         Some(accounts)
                     }
                     _ => None,
                 });
+                self.unbannable = unbannable;
             }
             AdminPart::Invites => {
                 self.invites = plain(set, |payload| match payload {
@@ -456,13 +546,20 @@ impl AdminModel {
                 });
             }
             AdminPart::ServerRoles => {
+                let mut actions = Vec::new();
                 self.server_roles = plain(set, |payload| match payload {
-                    AdminPayload::ServerRoles(mut roles) => {
+                    AdminPayload::ServerRoles(listed) => {
+                        let mut roles = Vec::with_capacity(listed.len());
+                        for held in listed {
+                            actions.push((held.role.id, held.actions));
+                            roles.push(held.role);
+                        }
                         sort_server_roles(&mut roles);
                         Some(roles)
                     }
                     _ => None,
                 });
+                self.server_role_actions = actions;
             }
             AdminPart::DirectRetention => {
                 self.direct_retention = plain(set, |payload| match payload {
@@ -502,6 +599,19 @@ impl AdminModel {
                     _ => None,
                 });
                 set_keyed(&mut self.settings, workspace_id, collection);
+            }
+            AdminPart::RoleActions(workspace_id) => {
+                let collection = plain(set, |payload| match payload {
+                    AdminPayload::RoleActions(listed) => Some(
+                        listed
+                            .into_iter()
+                            .filter(|held| held.role.workspace_id == workspace_id)
+                            .map(|held| (held.role.id, held.actions))
+                            .collect(),
+                    ),
+                    _ => None,
+                });
+                set_keyed(&mut self.role_actions, workspace_id, collection);
             }
             AdminPart::ChannelPermissions(channel_id) => {
                 let collection = plain(set, |payload| match payload {
@@ -556,6 +666,7 @@ impl AdminModel {
 
     fn forget_workspace(&mut self, workspace_id: WorkspaceId, channels: &[ChannelId]) {
         self.archived.retain(|(held, _)| *held != workspace_id);
+        self.role_actions.retain(|(held, _)| *held != workspace_id);
         self.settings.retain(|(held, _)| *held != workspace_id);
         self.overrides.retain(|(held, _)| !channels.contains(held));
         self.channel_permissions
@@ -806,7 +917,9 @@ impl AdminPart {
                 } => of == workspace_id,
                 _ => false,
             },
-            Self::WorkspaceSettings(_) | Self::DirectRetention => self.is_stale_after(event),
+            Self::WorkspaceSettings(_) | Self::DirectRetention | Self::RoleActions(_) => {
+                self.is_stale_after(event)
+            }
             // No event carries the list: a change of it is `permissions_changed`, which
             // replaces the state, and every open collection is read again then.
             Self::ChannelPermissions(_) => false,
@@ -815,13 +928,54 @@ impl AdminPart {
 
     /// True when `event` tells that this collection changed without carrying the change:
     /// the collection is read again.
+    ///
+    /// The authority of the account over accounts and roles (ADR 0311) follows role order,
+    /// the roles of the accounts, and for the roles of a workspace the overrides of its
+    /// channels: an event that changes one of them makes the flags of the server stale.
+    /// `permissions_changed` replaces the state, and every collection is read again then.
     pub(crate) fn is_stale_after(&self, event: &Event) -> bool {
+        let server_order = matches!(
+            event,
+            Event::ServerRoleCreated { .. }
+                | Event::ServerRoleUpdated { .. }
+                | Event::ServerRoleDeleted { .. }
+                | Event::ServerRolePositionsShifted { .. }
+                | Event::AccountServerRolesChanged { .. }
+                | Event::OwnerChanged { .. }
+        );
         match (self, event) {
             (
                 Self::WorkspaceSettings(workspace_id),
                 Event::RetentionChanged { workspace_id: of },
             ) => *of == Some(*workspace_id),
             (Self::DirectRetention, Event::RetentionChanged { workspace_id: None }) => true,
+            (Self::Accounts, Event::AccountStatusChanged { .. }) => true,
+            (Self::Accounts | Self::ServerRoles, _) => server_order,
+            (Self::RoleActions(workspace_id), event) => {
+                server_order
+                    || match event {
+                        Event::WorkspaceRoleCreated { role }
+                        | Event::WorkspaceRoleUpdated { role } => {
+                            role.workspace_id == *workspace_id
+                        }
+                        Event::WorkspaceRoleDeleted {
+                            workspace_id: of, ..
+                        }
+                        | Event::WorkspaceRolePositionsShifted {
+                            workspace_id: of, ..
+                        }
+                        | Event::WorkspaceMemberRolesChanged {
+                            workspace_id: of, ..
+                        }
+                        | Event::ChannelOverrideSet {
+                            workspace_id: of, ..
+                        }
+                        | Event::ChannelDeleted {
+                            workspace_id: of, ..
+                        } => of == workspace_id,
+                        _ => false,
+                    }
+            }
             _ => false,
         }
     }
@@ -829,9 +983,9 @@ impl AdminPart {
     /// The workspace that the state must hold for this collection.
     pub(crate) const fn workspace(&self) -> Option<WorkspaceId> {
         match self {
-            Self::Archived(workspace_id) | Self::WorkspaceSettings(workspace_id) => {
-                Some(*workspace_id)
-            }
+            Self::Archived(workspace_id)
+            | Self::WorkspaceSettings(workspace_id)
+            | Self::RoleActions(workspace_id) => Some(*workspace_id),
             _ => None,
         }
     }
@@ -989,15 +1143,7 @@ impl ServerModel {
                         .retain(|(of, _)| of != channel_id);
                 }
             }
-            Event::RetentionChanged { workspace_id } => {
-                let part = match workspace_id {
-                    Some(workspace_id) => AdminPart::WorkspaceSettings(*workspace_id),
-                    None => AdminPart::DirectRetention,
-                };
-                if self.admin.state(part) != CollectionState::NotLoaded {
-                    stale.push(part);
-                }
-            }
+            Event::RetentionChanged { .. } => {}
             Event::ServerRoleDeleted { role_id } => {
                 self.account.server_role_ids.retain(|held| held != role_id);
                 self.admin_mut().apply(event);
@@ -1020,6 +1166,42 @@ impl ServerModel {
                 ) && !self.admin.overrides.is_empty());
                 if touched {
                     self.admin_mut().apply(event);
+                }
+            }
+        }
+        // The collections that the event names without carrying the change are read
+        // again.
+        let parts: Vec<AdminPart> = [
+            AdminPart::Accounts,
+            AdminPart::ServerRoles,
+            AdminPart::DirectRetention,
+        ]
+        .into_iter()
+        .chain(
+            self.admin
+                .settings
+                .iter()
+                .map(|(of, _)| AdminPart::WorkspaceSettings(*of)),
+        )
+        .chain(
+            self.admin
+                .role_actions
+                .iter()
+                .map(|(of, _)| AdminPart::RoleActions(*of)),
+        )
+        .collect();
+        for part in parts {
+            if part.is_stale_after(event)
+                && self.admin.state(part) != CollectionState::NotLoaded
+                && !stale.contains(&part)
+            {
+                stale.push(part);
+                let flagged = matches!(
+                    part,
+                    AdminPart::Accounts | AdminPart::ServerRoles | AdminPart::RoleActions(_)
+                );
+                if flagged && !self.admin.flags_stale.contains(&part) {
+                    self.admin_mut().flags_stale.push(part);
                 }
             }
         }

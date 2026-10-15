@@ -788,6 +788,42 @@ impl Shell {
                         .into_any_element()
                 }),
         );
+        // The private moderation notices of the account (ADR 0120).
+        notices.extend(server.moderation.iter().map(|line| {
+            let notice_id = line.id;
+            let mut notice = Notice::new(text::moderation_notice(line))
+                .icon(Icon::Warning)
+                .selector("moderation-notice");
+            if line.dismissable {
+                notice = notice.action(
+                    Button::new(("moderation-seen", notice_id.as_u128() as u64))
+                        .label(text::DISMISS)
+                        .selector("moderation-seen")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.state.update(cx, |state, cx| {
+                                state.put_moderation_notice_away(server_id, notice_id, cx);
+                            });
+                        })),
+                );
+            }
+            div()
+                .flex_none()
+                .px(u(16.0))
+                .pt(u(10.0))
+                .debug_selector(move || format!("moderation-notice:{notice_id}"))
+                .child(notice)
+                .into_any_element()
+        }));
+        if let Some(error) = &server.moderation_failed {
+            notices.push(
+                div()
+                    .flex_none()
+                    .px(u(16.0))
+                    .pt(u(10.0))
+                    .child(Notice::error(error.clone()).selector("moderation-away-failed"))
+                    .into_any_element(),
+            );
+        }
         if let Some(error) = pending
             .remove_failed
             .get(&server_id)

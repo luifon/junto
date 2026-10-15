@@ -362,6 +362,10 @@ pub fn audit_reason(reason: &str) -> String {
     format!("Reason: {reason}")
 }
 
+pub fn audit_message(message: &str) -> String {
+    format!("Message to the person: {message}")
+}
+
 /// An account of a filter by person.
 pub fn audit_actor_choice(choice: &ActorChoice) -> String {
     choice

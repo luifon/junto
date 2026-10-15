@@ -369,6 +369,21 @@ impl Window {
         }
     }
 
+    /// Waits until `value` gives a value, and returns it.
+    #[track_caller]
+    pub fn until_value<T>(
+        &mut self,
+        what: &str,
+        mut value: impl FnMut(&mut Self) -> Option<T>,
+    ) -> T {
+        let mut found = None;
+        self.until(what, |window| {
+            found = value(window);
+            found.is_some()
+        });
+        found.expect("the value that was waited for")
+    }
+
     /// True when an element with this name is drawn now.
     pub fn shows(&mut self, selector: &'static str) -> bool {
         self.settle();

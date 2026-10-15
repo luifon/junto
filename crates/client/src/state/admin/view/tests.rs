@@ -579,10 +579,16 @@ fn each_page_holds_open_the_collections_that_it_shows() {
         needs(&server(AdminPage::People), &model, studio),
         [AdminPart::Accounts, AdminPart::ServerRoles]
     );
-    // An administrator stands in a workspace at a server role (ADR 0309).
+    // An administrator stands in a workspace at a server role (ADR 0309), and the
+    // server states what the administrator may do with the roles of the workspace
+    // (ADR 0311).
     assert_eq!(
         needs(&server(AdminPage::Members), &model, studio),
-        [AdminPart::Accounts, AdminPart::ServerRoles]
+        [
+            AdminPart::Accounts,
+            AdminPart::ServerRoles,
+            AdminPart::RoleActions(scene.studio)
+        ]
     );
     assert_eq!(
         needs(&server(AdminPage::Archive), &model, studio),

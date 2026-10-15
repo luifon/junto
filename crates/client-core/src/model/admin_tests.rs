@@ -855,3 +855,143 @@ fn a_deleted_workspace_leaves_no_notification_setting_of_itself() {
         .collect();
     assert_eq!(scopes, [uuid::Uuid::nil(), other]);
 }
+
+#[test]
+fn the_flags_of_the_server_are_held_by_their_read_and_read_again_after_a_change_of_order() {
+    use junto_protocol::account::ListedAccount;
+    use junto_protocol::roles::{ListedServerRole, ListedWorkspaceRole, RoleActions};
+    let scene = scene();
+    let mut model = scene.model();
+    let (ana, bruno) = (account("Ana"), account("Bruno"));
+    let listed = |account: &AccountSummary, may_unban| ListedAccount {
+        account: account.clone(),
+        may_unban,
+    };
+    // Unread: no statement.
+    assert_eq!(model.admin.may_unban(ana.id), None);
+    loaded(
+        &mut model,
+        AdminPart::Accounts,
+        AdminPayload::Accounts(vec![listed(&ana, true), listed(&bruno, false)]),
+    );
+    assert_eq!(model.admin.may_unban(ana.id), Some(true));
+    assert_eq!(model.admin.may_unban(bruno.id), Some(false));
+
+    let role = ServerRole {
+        position: 1,
+        id: ServerRoleId::generate(),
+        name: "hosts".to_owned(),
+        permissions: Vec::new(),
+    };
+    let may = RoleActions {
+        may_assign: true,
+        may_remove: true,
+        may_delete: false,
+    };
+    loaded(
+        &mut model,
+        AdminPart::ServerRoles,
+        AdminPayload::ServerRoles(vec![ListedServerRole {
+            role: role.clone(),
+            actions: may.clone(),
+        }]),
+    );
+    assert_eq!(model.admin.server_role_actions(role.id), Some(&may));
+
+    let workspace = AdminPart::RoleActions(scene.workspace_id);
+    assert_eq!(
+        model
+            .admin
+            .workspace_role_actions(scene.workspace_id, scene.helpers),
+        None
+    );
+    let helpers = model
+        .workspace(scene.workspace_id)
+        .unwrap()
+        .roles
+        .iter()
+        .find(|held| held.id == scene.helpers)
+        .unwrap()
+        .clone();
+    loaded(
+        &mut model,
+        workspace,
+        AdminPayload::RoleActions(vec![ListedWorkspaceRole {
+            role: helpers.clone(),
+            actions: may.clone(),
+        }]),
+    );
+    assert_eq!(
+        model
+            .admin
+            .workspace_role_actions(scene.workspace_id, scene.helpers),
+        Some(&may)
+    );
+
+    // A ban changes what may be unbanned: the accounts are read again, and only they.
+    let banned = Event::AccountStatusChanged {
+        account_id: bruno.id,
+        status: AccountStatus::Banned,
+    };
+    let follow = model.apply(&banned);
+    assert_eq!(follow.load, [Part::Admin(AdminPart::Accounts)]);
+    // Until that read answers, the flags of the accounts state nothing.
+    assert_eq!(model.admin.may_unban(ana.id), None);
+    loaded(
+        &mut model,
+        AdminPart::Accounts,
+        AdminPayload::Accounts(vec![listed(&ana, true), listed(&bruno, true)]),
+    );
+    assert_eq!(model.admin.may_unban(bruno.id), Some(true));
+    // A change of the order of the server roles reads every flag again.
+    let shifted = Event::ServerRoleUpdated { role: role.clone() };
+    let follow = model.apply(&shifted);
+    for part in [AdminPart::Accounts, AdminPart::ServerRoles, workspace] {
+        assert!(follow.load.contains(&Part::Admin(part)), "{part:?}");
+    }
+    assert_eq!(model.admin.server_role_actions(role.id), None);
+    assert_eq!(
+        model
+            .admin
+            .workspace_role_actions(scene.workspace_id, scene.helpers),
+        None
+    );
+    // An override of a channel changes the grant ceiling of the roles of its workspace.
+    let overridden = Event::ChannelOverrideSet {
+        workspace_id: scene.workspace_id,
+        channel_id: scene.general,
+        role_id: scene.helpers,
+        allow: vec![WorkspacePermission::ManageChannel],
+        deny: Vec::new(),
+    };
+    let follow = model.apply(&overridden);
+    assert_eq!(follow.load, [Part::Admin(workspace)]);
+    // A deleted channel takes its overrides with it, which lifts their denies.
+    let deleted = Event::ChannelDeleted {
+        workspace_id: scene.workspace_id,
+        channel_id: scene.general,
+    };
+    assert!(workspace.is_stale_after(&deleted));
+    // The roles of another workspace change nothing here.
+    let mut elsewhere = helpers;
+    elsewhere.workspace_id = WorkspaceId::generate();
+    let follow = model.apply(&Event::WorkspaceRoleUpdated { role: elsewhere });
+    assert!(follow.load.is_empty());
+    // An answer that names a role of another workspace is not taken.
+    let mut foreign = model.workspace(scene.workspace_id).unwrap().roles[0].clone();
+    foreign.workspace_id = WorkspaceId::generate();
+    loaded(
+        &mut model,
+        workspace,
+        AdminPayload::RoleActions(vec![ListedWorkspaceRole {
+            role: foreign.clone(),
+            actions: may,
+        }]),
+    );
+    assert_eq!(
+        model
+            .admin
+            .workspace_role_actions(scene.workspace_id, foreign.id),
+        None
+    );
+}

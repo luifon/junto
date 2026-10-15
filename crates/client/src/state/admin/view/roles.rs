@@ -4,8 +4,11 @@
 //! (`junto-authz`); every refusal that it would give is a state of a row before the
 //! person tries. The server decides every request.
 
-use junto_client_core::model::{RoleRank, ServerModel, WorkspaceModel, outranks};
-use junto_client_core::protocol::ids::{ServerRoleId, WorkspaceRoleId};
+use junto_client_core::model::{
+    AdminPart, CollectionState, RoleRank, ServerModel, WorkspaceModel, outranks,
+};
+use junto_client_core::protocol::ids::{ServerRoleId, WorkspaceId, WorkspaceRoleId};
+use junto_client_core::protocol::roles::RoleActions;
 use junto_client_core::protocol::{ServerPermission, WorkspacePermission};
 
 use super::Listed;
@@ -60,6 +63,57 @@ pub enum Fixed {
     OutOfRange,
 }
 
+/// What the server states that the person may do with a role: give it, take it, delete
+/// it (ADR 0311). The statement takes the overrides of the channels into account, which
+/// the client does not hold.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Stated {
+    Known(RoleActions),
+    /// The statement is on its way: the list of the roles is read, or read again after a
+    /// change of the order or of an override.
+    Reading,
+    /// The read failed: the server decides each request.
+    Unknown,
+}
+
+impl Stated {
+    /// True when the statement allows the action, or when no statement can be had.
+    fn allows(&self, action: impl Fn(&RoleActions) -> bool) -> bool {
+        match self {
+            Self::Known(actions) => action(actions),
+            Self::Reading => false,
+            Self::Unknown => true,
+        }
+    }
+}
+
+/// What the server states of one role, from the collection that holds the statements.
+/// A collection that no reader has open, and one whose read failed, state nothing: the
+/// client decides by role order and the server decides the request.
+fn stated(state: CollectionState, actions: Option<&RoleActions>) -> Stated {
+    match (actions, state) {
+        (Some(actions), _) => Stated::Known(actions.clone()),
+        (None, CollectionState::Failed(_) | CollectionState::NotLoaded) => Stated::Unknown,
+        // The first read is on its way, or the list was read before an event that added
+        // the role or changed the order: the read after that event is on its way.
+        (None, CollectionState::Loading | CollectionState::Loaded) => Stated::Reading,
+    }
+}
+
+/// What the server states of each role of a workspace.
+fn stated_of_workspace(
+    model: &ServerModel,
+    workspace_id: WorkspaceId,
+) -> impl Fn(WorkspaceRoleId) -> Stated + '_ {
+    let state = model.admin.state(AdminPart::RoleActions(workspace_id));
+    move |role_id| {
+        stated(
+            state,
+            model.admin.workspace_role_actions(workspace_id, role_id),
+        )
+    }
+}
+
 /// One permission of a role.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PermissionSwitch {
@@ -89,9 +143,35 @@ pub struct RoleRow {
     pub named: bool,
     /// In the order of the protocol.
     pub permissions: Vec<PermissionSwitch>,
+    /// What the server states that the person may do with the role.
+    pub stated: Stated,
+}
+
+/// Why a role cannot be deleted, beside role order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoDeletion {
+    Locked(Locked),
+    /// The server states that the person may not delete the role: an override of the
+    /// role in a channel gives a permission that the person does not hold (ADR 0311).
+    NotAllowed,
+    /// The statement of the server is on its way.
+    Reading,
 }
 
 impl RoleRow {
+    /// Whether the person can delete the role, and why not. A role without a name cannot
+    /// be deleted at all.
+    pub fn deletion(&self) -> Result<(), NoDeletion> {
+        if let Some(locked) = self.locked {
+            return Err(NoDeletion::Locked(locked));
+        }
+        match &self.stated {
+            Stated::Reading => Err(NoDeletion::Reading),
+            stated if !stated.allows(|actions| actions.may_delete) => Err(NoDeletion::NotAllowed),
+            _ => Ok(()),
+        }
+    }
+
     /// The number of permissions that the role holds.
     pub fn granted(&self) -> usize {
         self.permissions.iter().filter(|held| held.on).count()
@@ -191,6 +271,11 @@ pub enum NoAssignment {
     BeyondOwn,
     /// The account holds the most roles of the level (ADR 0306).
     Full,
+    /// The server states that the person may not give the role, or not take it
+    /// (ADR 0311).
+    NotAllowed,
+    /// The statement of the server is on its way.
+    Reading,
 }
 
 /// The most roles that one reorder names (ADR 0309).
@@ -274,7 +359,11 @@ fn set_moves(rows: &mut [RoleRow]) {
     }
 }
 
-fn workspace_rows(workspace: &WorkspaceModel, own: RoleRank) -> Vec<RoleRow> {
+fn workspace_rows(
+    workspace: &WorkspaceModel,
+    own: RoleRank,
+    stated: impl Fn(WorkspaceRoleId) -> Stated,
+) -> Vec<RoleRow> {
     let workspace_id = workspace.workspace.id;
     let highest = workspace
         .roles
@@ -314,6 +403,7 @@ fn workspace_rows(workspace: &WorkspaceModel, own: RoleRank) -> Vec<RoleRow> {
                         beyond_own: !workspace.holds(permission),
                     })
                     .collect(),
+                stated: stated(role.id),
             }
         })
         .collect();
@@ -329,9 +419,11 @@ fn server_rows(model: &ServerModel, own: RoleRank) -> Option<Vec<RoleRow>> {
         .filter(|role| held(role.id))
         .map(|role| role.position)
         .max();
+    let state = model.admin.state(AdminPart::ServerRoles);
     let mut rows: Vec<RoleRow> = roles
         .iter()
         .map(|role| RoleRow {
+            stated: stated(state, model.admin.server_role_actions(role.id)),
             role: RoleRef::Server(role.id),
             name: role.name.clone(),
             position: role.position,
@@ -420,7 +512,11 @@ pub fn derive(model: &ServerModel, level: RoleLevel) -> Option<RolesPage> {
                 .max_by_key(|role| role.position)
                 .map(|role| role.name.clone());
             let roles = match own {
-                Some(own) => Listed::Loaded(workspace_rows(workspace, own)),
+                Some(own) => Listed::Loaded(workspace_rows(
+                    workspace,
+                    own,
+                    stated_of_workspace(model, workspace_id),
+                )),
                 // An administrator stands at a server role whose position is not read
                 // yet (ADR 0309).
                 None => match &model.admin.server_roles {
@@ -459,6 +555,32 @@ fn creation(own: Option<RoleRank>, lowest: RoleRank, count: usize) -> Result<(),
     }
 }
 
+/// Why the person cannot give a role or take it, by the statement of the server when it
+/// has one (ADR 0311): role order and the grant rule then only explain a refusal of the
+/// server. Without a statement the client decides by role order and the grant rule.
+fn assignment(row: &RoleRow, holds: bool, full: bool, beyond: bool) -> Option<NoAssignment> {
+    let stated_refusal = match &row.stated {
+        Stated::Reading => return Some(NoAssignment::Reading),
+        Stated::Known(actions) => {
+            let allowed = if holds {
+                actions.may_remove
+            } else {
+                actions.may_assign
+            };
+            if allowed {
+                return (full && !holds).then_some(NoAssignment::Full);
+            }
+            Some(NoAssignment::NotAllowed)
+        }
+        Stated::Unknown => None,
+    };
+    row.locked
+        .map(NoAssignment::Locked)
+        .or((beyond && !holds).then_some(NoAssignment::BeyondOwn))
+        .or(stated_refusal)
+        .or((full && !holds).then_some(NoAssignment::Full))
+}
+
 /// The server roles that an account holds or can be given, from the highest to the
 /// lowest. Absent while the server roles or the place of the person are not read.
 pub fn server_choices(model: &ServerModel, held: &[ServerRoleId]) -> Option<Vec<RoleChoice>> {
@@ -470,10 +592,7 @@ pub fn server_choices(model: &ServerModel, held: &[ServerRoleId]) -> Option<Vec<
             .map(|row| {
                 let holds = matches!(row.role, RoleRef::Server(role_id) if held.contains(&role_id));
                 RoleChoice {
-                    blocked: row
-                        .locked
-                        .map(NoAssignment::Locked)
-                        .or((full && !holds).then_some(NoAssignment::Full)),
+                    blocked: assignment(&row, holds, full, false),
                     role: row.role,
                     name: row.name,
                     held: holds,
@@ -492,8 +611,9 @@ pub fn workspace_choices(
 ) -> Option<Vec<RoleChoice>> {
     let own = model.workspace_rank(workspace.workspace.id)?;
     let full = held.len() >= MOST_HELD_ROLES;
+    let stated = stated_of_workspace(model, workspace.workspace.id);
     Some(
-        workspace_rows(workspace, own)
+        workspace_rows(workspace, own, stated)
             .into_iter()
             .filter(|row| !row.is_everyone)
             .map(|row| {
@@ -506,11 +626,7 @@ pub fn workspace_choices(
                     .iter()
                     .any(|switch| switch.on && switch.beyond_own);
                 RoleChoice {
-                    blocked: row
-                        .locked
-                        .map(NoAssignment::Locked)
-                        .or((beyond && !holds).then_some(NoAssignment::BeyondOwn))
-                        .or((full && !holds).then_some(NoAssignment::Full)),
+                    blocked: assignment(&row, holds, full, beyond),
                     role: row.role,
                     name: row.name,
                     held: holds,
@@ -653,11 +769,34 @@ mod tests {
         }
     }
 
+    /// The server roles as the server lists them for the account of the state: what the
+    /// account may do with each one follows role order, as the server states it without
+    /// channel overrides (ADR 0311).
     fn with_server_roles(model: &mut ServerModel, roles: Vec<ServerRole>) {
         let mut roles = roles;
         roles.sort_by_key(|role| std::cmp::Reverse(role.position));
+        let own = roles
+            .iter()
+            .filter(|role| model.account.server_role_ids.contains(&role.id))
+            .map(|role| role.position)
+            .max();
+        let actions = roles
+            .iter()
+            .map(|role| {
+                let below = model.account.is_owner || own.is_some_and(|own| role.position < own);
+                (
+                    role.id,
+                    RoleActions {
+                        may_assign: below,
+                        may_remove: below,
+                        may_delete: below,
+                    },
+                )
+            })
+            .collect();
         model.admin = Arc::new(AdminModel {
             server_roles: Collection::Loaded(roles),
+            server_role_actions: actions,
             ..AdminModel::default()
         });
     }
@@ -980,6 +1119,76 @@ mod tests {
     }
 
     #[test]
+    fn the_statement_of_the_server_decides_giving_taking_and_deleting_a_role() {
+        let mut scene = scene();
+        scene.snapshot.workspaces[0].own_role_ids = vec![scene.leads];
+        let mut model = scene.model();
+        let allowed = RoleActions {
+            may_assign: true,
+            may_remove: true,
+            may_delete: true,
+        };
+        let refused = RoleActions {
+            may_assign: false,
+            may_remove: false,
+            may_delete: false,
+        };
+        let set = |model: &mut ServerModel,
+                   actions: Option<Vec<(WorkspaceRoleId, RoleActions)>>| {
+            let mut admin = model.admin.as_ref().clone();
+            admin.role_actions = vec![(
+                scene.studio,
+                match actions {
+                    Some(actions) => Collection::Loaded(actions),
+                    None => Collection::Loading,
+                },
+            )];
+            model.admin = Arc::new(admin);
+        };
+        // The server allows "helpers" and refuses "guests": an override of "guests" in a
+        // channel denies a permission that the person does not hold.
+        set(
+            &mut model,
+            Some(vec![(scene.helpers, allowed), (scene.guests, refused)]),
+        );
+        let page = scene.page(&model);
+        let row = |role_id| page.row(scene.role(role_id)).unwrap().clone();
+        assert_eq!(row(scene.helpers).deletion(), Ok(()));
+        assert_eq!(row(scene.guests).deletion(), Err(NoDeletion::NotAllowed));
+        // Role order explains a refusal of a role above the person.
+        assert_eq!(
+            row(scene.leads).deletion(),
+            Err(NoDeletion::Locked(Locked::OwnHighest))
+        );
+        let workspace = model.workspace(scene.studio).unwrap();
+        let choices = workspace_choices(&model, workspace, &[scene.guests]).unwrap();
+        let of = |role_id| {
+            choices
+                .iter()
+                .find(|choice| choice.role == scene.role(role_id))
+                .unwrap()
+                .blocked
+        };
+        assert_eq!(of(scene.helpers), None);
+        assert_eq!(of(scene.guests), Some(NoAssignment::NotAllowed));
+        // A role that the list does not name was added after the read: the read after
+        // that event is on its way, and so is the first read.
+        assert_eq!(row(scene.everyone).stated, Stated::Reading);
+        set(&mut model, None);
+        let page = scene.page(&model);
+        let guests = page.row(scene.role(scene.guests)).unwrap();
+        assert_eq!(guests.deletion(), Err(NoDeletion::Reading));
+        let workspace = model.workspace(scene.studio).unwrap();
+        let choices = workspace_choices(&model, workspace, &[]).unwrap();
+        assert!(
+            choices
+                .iter()
+                .filter(|choice| choice.role != scene.role(scene.leads))
+                .all(|choice| choice.blocked == Some(NoAssignment::Reading))
+        );
+    }
+
+    #[test]
     fn the_server_roles_of_an_account_are_offered_below_the_person() {
         let scene = scene();
         let mut model = scene.model();
@@ -1027,8 +1236,12 @@ mod tests {
         assert!(pages(&model).contains(&AdminPage::Roles));
         assert!(!pages(&model).contains(&AdminPage::ServerRoles));
         // A person who is no administrator stands at a role of the workspace: no server
-        // role is read for the page.
-        assert!(needed(&model, AdminPage::Roles).is_empty());
+        // role is read for the page. The server states what the person may do with each
+        // role of the workspace (ADR 0311).
+        assert_eq!(
+            needed(&model, AdminPage::Roles),
+            [AdminPart::RoleActions(scene.studio)]
+        );
 
         // Without the permission in the list, the role of the person changes nothing.
         scene.snapshot.workspaces[0].permissions = vec![WorkspacePermission::ViewChannel];
@@ -1042,7 +1255,7 @@ mod tests {
         assert!(offered.contains(&AdminPage::Roles) && offered.contains(&AdminPage::ServerRoles));
         assert_eq!(
             needed(&administrator, AdminPage::Roles),
-            [AdminPart::ServerRoles]
+            [AdminPart::RoleActions(scene.studio), AdminPart::ServerRoles]
         );
         assert_eq!(
             needed(&administrator, AdminPage::ServerRoles),
@@ -1050,7 +1263,10 @@ mod tests {
         );
         // The owner stands above every role without a position.
         administrator.account.is_owner = true;
-        assert!(needed(&administrator, AdminPage::Roles).is_empty());
+        assert_eq!(
+            needed(&administrator, AdminPage::Roles),
+            [AdminPart::RoleActions(scene.studio)]
+        );
         // The people page reads the order of the server roles for every person who has
         // it: a holder of "ban members" too (ADR 0309).
         assert_eq!(

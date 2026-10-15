@@ -54,6 +54,7 @@ fn json<T: serde::Serialize>(body: &T) -> Result<HttpResponse, TransportError> {
         status: 200,
         retry_after: None,
         body: serde_json::to_vec(body).unwrap().into(),
+        receipt: crate::api::Receipt::NotStated,
     })
 }
 
@@ -190,6 +191,7 @@ impl crate::api::Transport for AdminHttp {
                 status,
                 retry_after: None,
                 body: body.into_bytes().into(),
+                receipt: crate::api::Receipt::NotStated,
             })
         })
     }

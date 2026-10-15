@@ -164,6 +164,11 @@ pub(crate) enum Command {
     ReleaseRecording(RecordingId),
     /// The lines of the transcript of an open recording after the loaded ones.
     MoreTranscriptLines(RecordingId),
+    EarlierTranscriptLines(RecordingId),
+    TranscriptLinesAround {
+        recording_id: RecordingId,
+        line: u32,
+    },
     OpenAdmin {
         part: AdminPart,
         reply: oneshot::Sender<Result<(), LoadError>>,
@@ -485,6 +490,21 @@ impl LiveServer {
     /// reads the held lines again through the authorized route.
     pub fn read_transcript_lines(&self, recording_id: RecordingId) {
         self.shared.send(Command::MoreTranscriptLines(recording_id));
+    }
+
+    /// Reads the page of lines before the first loaded line, while the state says that the
+    /// transcript has lines before it.
+    pub fn read_earlier_transcript_lines(&self, recording_id: RecordingId) {
+        self.shared
+            .send(Command::EarlierTranscriptLines(recording_id));
+    }
+
+    /// Reads the lines around one line of the transcript of an open recording, in place of
+    /// the loaded ones, when the state does not hold that line. After a reload the lines
+    /// are read around it again.
+    pub fn read_transcript_lines_around(&self, recording_id: RecordingId, line: u32) {
+        self.shared
+            .send(Command::TranscriptLinesAround { recording_id, line });
     }
 }
 

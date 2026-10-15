@@ -112,6 +112,8 @@ pub struct TranscriptShown {
     pub lines: Vec<LineRow>,
     /// The transcript has lines after the read ones.
     pub more: bool,
+    /// The transcript has lines before the read ones: the panel was opened at a line.
+    pub more_before: bool,
     pub reading: bool,
     /// The last read of lines or transcript metadata failed.
     pub failed: bool,
@@ -291,6 +293,7 @@ pub fn transcript(open: &OpenRecording, names: &HashMap<AccountId, String>) -> T
         held: open.lines.lines.len(),
         lines: first_lines(open, &open.lines, names),
         more: open.lines.more,
+        more_before: open.lines.more_before,
         reading: open.lines.reading,
         failed: open.lines.failed.is_some() || open.failed.is_some(),
         refresh_failed: open.failed.is_some(),

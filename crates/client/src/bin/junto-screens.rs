@@ -450,6 +450,7 @@ impl Transport for OneServer {
                 status: 200,
                 retry_after: None,
                 body: SecretBytes::from_vec(body),
+                receipt: junto_client_core::api::Receipt::NotStated,
             })
         })
     }

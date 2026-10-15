@@ -1126,10 +1126,11 @@ impl Shell {
             None => self.transcript_list.went = None,
         }
         let state = self.transcript_list.list.clone();
-        let (total, language, reading) = (
+        let (total, language, reading, earlier) = (
             transcript.total,
             transcript.language.clone(),
             transcript.reading,
+            transcript.more_before,
         );
         let (open, names, marked) = (open.clone(), names.clone(), panel.line);
         let render = cx.processor(move |_: &mut Self, index: usize, _, cx| {
@@ -1202,6 +1203,24 @@ impl Shell {
             .flex_col()
             .flex_1()
             .min_h_0()
+            // The panel was opened at a line: the lines before the read ones are read on
+            // demand, from a control above the list that stays in view.
+            .when(earlier, |column| {
+                column.child(
+                    div().flex().flex_none().px(u(14.0)).pt(u(8.0)).child(
+                        Button::new("earlier-lines")
+                            .kind(ButtonKind::Ghost)
+                            .label(text::SHOW_EARLIER_LINES)
+                            .disabled(reading)
+                            .selector("earlier-lines")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.state.update(cx, |state, _| {
+                                    state.read_earlier_transcript_lines(server_id, recording_id);
+                                });
+                            })),
+                    ),
+                )
+            })
             .child(
                 div()
                     .id("transcript-lines")

@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
+use junto_protocol::account::ModerationNoticePage;
 use junto_protocol::error::ErrorCode;
 use junto_protocol::ids::{AccountId, DeviceId, RecoveryId, ServerId};
 use junto_protocol::invite::JoinRequestState;
@@ -762,6 +763,25 @@ impl ServerHandle {
         async move { work.await.unwrap_or(Err(ApiError::Stopped)) }
     }
 
+    /// The private moderation notices that the server addresses to the key of this device
+    /// (ADR 0120): the device proves its key without a session, so the notices of a removed
+    /// or banned account are read too. A device without a stored key gets none.
+    pub fn moderation_notices(
+        &self,
+    ) -> impl Future<Output = Result<ModerationNoticePage, FlowError>> + Send + 'static + use<>
+    {
+        let server = self.server.clone();
+        let work = self
+            .server
+            .core
+            .runtime
+            .run(async move { server.moderation_notices().await });
+        async move {
+            work.await
+                .unwrap_or_else(|_| Err(FlowError::from(ApiError::Stopped)))
+        }
+    }
+
     /// Sets the state of the access flow, without a server.
     #[cfg(feature = "test-support")]
     pub fn set_access_for_test(&self, access: AccessState) {
@@ -867,6 +887,30 @@ impl ServerHandle {
     /// The level that the event stream of this server should have now.
     pub fn connection_level(&self) -> ConnectionLevel {
         self.server.level().0
+    }
+
+    /// The private moderation notices that the person put away on this device.
+    pub fn moderation_notices_shown(&self) -> Vec<uuid::Uuid> {
+        lock(&self.server.state)
+            .entry
+            .moderation_notices_shown
+            .clone()
+    }
+
+    /// Records in the server book that the person put a moderation notice away. The book
+    /// keeps the newest [`crate::book::MOST_SHOWN_NOTICES`].
+    pub fn put_moderation_notice_away(&self, notice_id: uuid::Uuid) -> Result<(), BookError> {
+        let entry = self.server.core.book.update(self.server.key, |entry| {
+            let shown = &mut entry.moderation_notices_shown;
+            if !shown.contains(&notice_id) {
+                shown.push(notice_id);
+            }
+            let over = shown.len().saturating_sub(crate::book::MOST_SHOWN_NOTICES);
+            shown.drain(..over);
+        })?;
+        lock(&self.server.state).entry.moderation_notices_shown = entry.moderation_notices_shown;
+        self.server.core.notify();
+        Ok(())
     }
 
     /// Whether the avatar of the profile preset still waits to be sent to the account on
@@ -1918,6 +1962,17 @@ impl Server {
             server: self.clone(),
             account: Some(account_id),
         }))
+    }
+
+    async fn moderation_notices(&self) -> Result<ModerationNoticePage, FlowError> {
+        let api = self.contact(false).await?;
+        let key = self.stored_key().map_err(FlowError::from)?;
+        let Some(key) = key else {
+            return Ok(ModerationNoticePage::default());
+        };
+        api.moderation_notices(&key, None)
+            .await
+            .map_err(FlowError::from)
     }
 
     /// The logo from the route of the API version that was chosen for the server. Before
