@@ -489,34 +489,39 @@ fn participant(record: ParticipantRecord) -> ApiResult<CallParticipant> {
     })
 }
 
-/// The members of a call whom the media server lists, or the one of `only`.
-pub async fn participants(
-    connection: &mut PgConnection,
-    call_id: CallId,
-    only: Option<AccountId>,
-) -> ApiResult<Vec<CallParticipant>> {
-    let records: Vec<ParticipantRecord> = sqlx::query_as(
-        "select m.account_id, m.identity, m.connected_at, m.self_muted, m.self_deafened,
+/// The members of a call (`$1`) whom the media server lists, or the one of `$2` when it is
+/// not null, in the order in which they connected. The avatar of each member is read by its
+/// account, once for each member: a join could read the avatars of the whole server
+/// (ADR 0119).
+pub const PARTICIPANTS: &str =
+    "select m.account_id, m.identity, m.connected_at, m.self_muted, m.self_deafened,
                 m.hand_raised_at is not null as hand_raised, m.share_audio, m.share_started_at,
                 mb.blocked_by as microphone_blocked_by, mb.reason as microphone_block_reason,
                 sb.blocked_by as sound_blocked_by,
-                case when av.account_id is not null then jsonb_build_object(
+                (select jsonb_build_object(
                     'hash', encode(av.hash, 'hex'), 'media_type', av.media_type,
-                    'bytes', octet_length(av.content), 'width', av.width, 'height', av.height) end as avatar
+                    'bytes', octet_length(av.content), 'width', av.width, 'height', av.height)
+                 from account_avatars av where av.account_id = m.account_id) as avatar
          from call_members m
-         left join account_avatars av on av.account_id = m.account_id
          left join call_microphone_blocks mb
              on mb.call_id = m.call_id and mb.account_id = m.account_id
          left join call_sound_blocks sb
              on sb.call_id = m.call_id and sb.account_id = m.account_id
          where m.call_id = $1 and m.connected_at is not null
            and ($2::uuid is null or m.account_id = $2)
-         order by m.connected_at, m.account_id",
-    )
-    .bind(call_id)
-    .bind(only)
-    .fetch_all(connection)
-    .await?;
+         order by m.connected_at, m.account_id";
+
+/// The members of a call whom the media server lists, or the one of `only`.
+pub async fn participants(
+    connection: &mut PgConnection,
+    call_id: CallId,
+    only: Option<AccountId>,
+) -> ApiResult<Vec<CallParticipant>> {
+    let records: Vec<ParticipantRecord> = sqlx::query_as(PARTICIPANTS)
+        .bind(call_id)
+        .bind(only)
+        .fetch_all(connection)
+        .await?;
     records.into_iter().map(participant).collect()
 }
 

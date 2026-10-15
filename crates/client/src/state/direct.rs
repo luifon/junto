@@ -1,6 +1,6 @@
 //! Direct-call rings and their outcomes during this client session.
 
-use junto_client_core::protocol::call::{CallInvitation, CallPlace, InvitationOutcome};
+use junto_client_core::protocol::call::{CallInvitation, CallPlace, InvitationOutcome, OwnCall};
 use junto_client_core::protocol::ids::{AccountId, CallInvitationId, ServerId};
 use std::{collections::HashMap, time::Instant};
 mod lifetime;
@@ -193,6 +193,20 @@ impl DirectCalls {
             .max_by_key(|(_, ring)| ring.invitation.created_at)
             .map(|(_, ring)| ring.outcome)
     }
+    /// The outcome of the newest ring that this account made for the call in which this
+    /// device has the seat `seat`. `own_call`, the own call that the state of the server
+    /// names, identifies that call only when it names the same seat: every new place of the
+    /// account in a call has a new seat (ADR 0508), so an own call that the state still
+    /// holds from an older call at the same place says nothing of this call.
+    pub(super) fn ring_of_seat(
+        &self,
+        seat: &junto_media::calls::Seat,
+        own_call: Option<&OwnCall>,
+    ) -> Option<RingOutcome> {
+        own_call
+            .filter(|own| own.place == seat.target.place && own.identity == seat.identity)
+            .and_then(|own| self.outgoing_outcome(seat.target.server_id, own.call_id))
+    }
     pub fn ringing(&self) -> bool {
         self.rings
             .values()
@@ -376,11 +390,10 @@ impl super::AppState {
         // The ring of this call is found by the call that the state of the server names
         // for this device. The server tells that call in the same change as the ring, so
         // it does not depend on when the media connection of the call is made.
-        let ring = model
-            .as_ref()
-            .and_then(|model| model.own_call.as_ref())
-            .filter(|own| own.place == target.place)
-            .and_then(|own| self.direct.outgoing_outcome(target.server_id, own.call_id));
+        let ring = self.direct.ring_of_seat(
+            &call.seat(),
+            model.as_ref().and_then(|model| model.own_call.as_ref()),
+        );
         let outcome = self
             .direct
             .active

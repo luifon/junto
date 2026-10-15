@@ -308,6 +308,22 @@ pub(crate) async fn delete(
     .await
 }
 
+/// The members of a workspace (`$1`) with their roles and avatars, in the order of their
+/// accounts. The name and the avatar of each member are read by its account, once for each
+/// member: a join could read the accounts and avatars of the whole server (ADR 0119).
+pub const MEMBER_LIST: &str = "select m.account_id,
+                    (select a.name from accounts a where a.id = m.account_id) as name,
+                    array(select r.role_id from member_roles r
+                          where r.workspace_id = m.workspace_id and r.account_id = m.account_id
+                          order by r.role_id) as role_ids,
+                    (select jsonb_build_object(
+                        'hash', encode(av.hash, 'hex'), 'media_type', av.media_type,
+                        'bytes', octet_length(av.content), 'width', av.width, 'height', av.height)
+                     from account_avatars av where av.account_id = m.account_id) as avatar
+             from workspace_members m
+             where m.workspace_id = $1
+             order by m.account_id";
+
 /// The members of a workspace with their roles.
 #[utoipa::path(
     get,
@@ -327,23 +343,10 @@ pub async fn list_members(
         let access = Access::open(connection, &bearer, now).await?;
         let scope = access.workspace(connection, workspace_id).await?;
         access.require(Request::ViewWorkspace(&scope))?;
-        let rows: Vec<MemberRow> = sqlx::query_as(
-            "select m.account_id, a.name,
-                    array(select r.role_id from member_roles r
-                          where r.workspace_id = m.workspace_id and r.account_id = m.account_id
-                          order by r.role_id) as role_ids,
-                    case when av.account_id is not null then jsonb_build_object(
-                        'hash', encode(av.hash, 'hex'), 'media_type', av.media_type,
-                        'bytes', octet_length(av.content), 'width', av.width, 'height', av.height) end as avatar
-             from workspace_members m
-             join accounts a on a.id = m.account_id
-             left join account_avatars av on av.account_id = m.account_id
-             where m.workspace_id = $1
-             order by m.account_id",
-        )
-        .bind(workspace_id)
-        .fetch_all(&mut *connection)
-        .await?;
+        let rows: Vec<MemberRow> = sqlx::query_as(MEMBER_LIST)
+            .bind(workspace_id)
+            .fetch_all(&mut *connection)
+            .await?;
         Ok(rows
             .into_iter()
             .map(|row| WorkspaceMember {

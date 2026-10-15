@@ -54,7 +54,7 @@ Limit:
 Member and participant descriptions:
 
 - `WorkspaceMember.avatar` in the member list and `workspace_member_added`, and `CallParticipant.avatar` in call reads, snapshots and participant events, carry the same optional metadata as the profile. Older payloads without the field read it as absent. The image still requires the avatar route and its authorization.
-- These fields have exactly the audience of the containing member or participant; a hidden call exposes no additional participant. The database joins avatar metadata by account primary key, without reading image bytes or sending a request per profile. Profile change events remain the notification of a later image change.
+- These fields have exactly the audience of the containing member or participant; a hidden call exposes no additional participant. The database reads the avatar metadata of each listed member by its account primary key, once for each member, without reading image bytes or sending a request per profile. The statement reads it in a subquery of the member, not in a join: for a join the planner may choose a merge join or a hash join, which reads the avatars of every account whose identifier sorts before the last member, or of every account, so the rows read follow the size of the server instead of the length of the list. The member list reads the account name in the same way. Test: `profiles::profile_metadata_reads_follow_the_members` in `crates/server`, which explains both statements under each join method, with ten thousand other accounts whose identifiers sort before the members. Profile change events remain the notification of a later image change.
 
 ## Consequences
 

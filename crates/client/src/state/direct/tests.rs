@@ -298,3 +298,51 @@ fn the_outcome_of_a_call_is_the_one_of_its_newest_outgoing_ring() {
     );
     assert_eq!(calls.outgoing_outcome(server, CallId::generate()), None);
 }
+
+#[test]
+fn an_own_call_held_from_an_older_call_at_the_same_place_does_not_end_a_new_call() {
+    use junto_client_core::protocol::ids::DeviceId;
+    use junto_media::calls::{CallTarget, Seat};
+    let (server, _, older) = ring();
+    let caller = older.invited_by;
+    let mut calls = DirectCalls::default();
+    // The ring of the older call was declined.
+    calls.see(server, caller, &older, Instant::now());
+    calls.resolve(server, older.id, InvitationOutcome::Declined);
+    let seat_of = |call_id, identity: &str| OwnCall {
+        hides_occupants: None,
+        call_id,
+        place: older.place,
+        device_id: DeviceId::generate(),
+        identity: identity.to_owned(),
+    };
+    let held = seat_of(older.call_id, &format!("{caller}:{}", "a".repeat(32)));
+    // The device is in a new call at the same place, with a new seat. The state of the
+    // server missed the leave of the older call and still names it as the own call.
+    let seat = Seat {
+        target: CallTarget {
+            server_id: server,
+            place: older.place,
+        },
+        identity: format!("{caller}:{}", "b".repeat(32)),
+    };
+    assert_eq!(calls.ring_of_seat(&seat, Some(&held)), None);
+    // When the state names the new call, its ring is the one that counts.
+    let new = CallInvitation {
+        id: CallInvitationId::generate(),
+        call_id: CallId::generate(),
+        created_at: older.created_at + time::Duration::seconds(5),
+        ..older.clone()
+    };
+    calls.see(server, caller, &new, Instant::now());
+    let current = seat_of(new.call_id, &seat.identity);
+    assert_eq!(
+        calls.ring_of_seat(&seat, Some(&current)),
+        Some(RingOutcome::Waiting)
+    );
+    calls.resolve(server, new.id, InvitationOutcome::Declined);
+    assert_eq!(
+        calls.ring_of_seat(&seat, Some(&current)),
+        Some(RingOutcome::Declined)
+    );
+}

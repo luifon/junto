@@ -448,16 +448,19 @@ async fn members_and_call_participants_carry_avatar_descriptions() {
 }
 
 #[tokio::test]
-async fn profile_metadata_joins_use_account_indexes() {
+async fn profile_metadata_reads_follow_the_members() {
     use crate::calls_support::Scene;
     use crate::plan_support::{analyze, explained, index_names, visited_rows};
     let scene = Scene::start().await;
     let server = &scene.server;
     server.enter_call(&scene.ann, scene.voice.id).await;
     let call = server.own_call(&scene.ann).await.call.unwrap().call.id;
+    // Other accounts of the server, all with an avatar, whose identifiers sort before those
+    // of the members: a merge join on the account reads all of them before the members,
+    // and a hash join reads all of them.
     sqlx::query(
         "insert into accounts(id,name,status,created_at)
-        select gen_random_uuid(),'Other','active',now() from generate_series(1,10000)",
+        select lpad(to_hex(i),32,'0')::uuid,'Other','active',now() from generate_series(1,10000) i",
     )
     .execute(&server.db)
     .await
@@ -476,28 +479,50 @@ async fn profile_metadata_joins_use_account_indexes() {
         ],
     )
     .await;
-    for (statement, scope) in [
-        (
-            "select m.account_id,av.hash,octet_length(av.content) from workspace_members m left join account_avatars av on av.account_id=m.account_id where m.workspace_id=$1 order by m.account_id",
-            scene.workspace_id.as_uuid(),
-        ),
-        (
-            "select m.account_id,av.hash,octet_length(av.content) from call_members m left join account_avatars av on av.account_id=m.account_id where m.call_id=$1 and m.connected_at is not null order by m.account_id",
-            call.as_uuid(),
-        ),
+    // The rows that a list reads follow its members under each way of joining that the
+    // planner can choose from the statistics of the tables.
+    for settings in [
+        "",
+        "set local enable_nestloop = off; set local enable_hashjoin = off",
+        "set local enable_nestloop = off; set local enable_mergejoin = off",
     ] {
-        let plan: serde_json::Value = sqlx::query_scalar(explained(statement))
-            .bind(scope)
-            .fetch_one(&server.db)
-            .await
-            .unwrap();
-        assert!(
-            index_names(&plan)
-                .iter()
-                .any(|name| name == "account_avatars_pkey"),
-            "{plan}"
-        );
-        assert!(visited_rows(&plan[0]["Plan"]) < 100, "{plan}");
+        for (name, statement, scope, only) in [
+            (
+                "workspace members",
+                junto_server::routes::workspaces::MEMBER_LIST,
+                scene.workspace_id.as_uuid(),
+                false,
+            ),
+            (
+                "call participants",
+                junto_server::calls::store::PARTICIPANTS,
+                call.as_uuid(),
+                true,
+            ),
+        ] {
+            let mut transaction = server.db.begin().await.unwrap();
+            if !settings.is_empty() {
+                sqlx::raw_sql(settings)
+                    .execute(&mut *transaction)
+                    .await
+                    .unwrap();
+            }
+            let mut query = sqlx::query_scalar(explained(statement)).bind(scope);
+            if only {
+                query = query.bind(None::<uuid::Uuid>);
+            }
+            let plan: serde_json::Value = query.fetch_one(&mut *transaction).await.unwrap();
+            assert!(
+                index_names(&plan)
+                    .iter()
+                    .any(|name| name == "account_avatars_pkey"),
+                "{name} with {settings:?}: {plan}"
+            );
+            assert!(
+                visited_rows(&plan[0]["Plan"]) < 100,
+                "{name} with {settings:?}: {plan}"
+            );
+        }
     }
     let plan: serde_json::Value = sqlx::query_scalar(explained("select i.id,creator.name from invites i join accounts creator on creator.id=i.created_by order by i.id desc"))
         .fetch_one(&server.db).await.unwrap();
