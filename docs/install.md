@@ -51,6 +51,19 @@ Open these ports in the firewall of the host with the public address, for IPv4 a
 | 3478/udp | TURN |
 | 51820/udp | The private link, on the public host of the two-host form only |
 
+Before adding rules, inspect the existing rules (`sudo ufw status numbered` and `sudo iptables -S` on a host with `ufw`). Preserve rules for other services and operator access. Add only missing rules; do not reset the firewall. With `ufw` and IPv6 enabled, these commands add the public rules for both address families:
+
+```sh
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw allow 7882/udp
+sudo ufw allow 7881/tcp
+sudo ufw allow 3478/udp
+sudo ufw allow 51820/udp    # the public host of two hosts only
+```
+
+Check the rules again after adding them. Earlier rules must retain their order within each address family; new IPv4 entries can change the displayed numbers of IPv6 entries. Add the source-specific API rule below as well. An earlier rule that allows port 7880 from any source does not establish that the source-specific rule works; restrict that earlier rule after checking which services use it.
+
 Keep every other port closed. The media server and the entry use the network of the host, so a rule of the host firewall applies to them. Two ports of the media server listen on every address of the host and must stay closed in the firewall: 5349/tcp (TURN without TLS, which only the entry uses) and the UDP ports that TURN allocates. The API port 7880 of the media server listens on the loopback address and on the address of the container network only.
 
 A port that Docker publishes is reachable even when the host firewall has no rule for it (ADR 0003). In these files only the link publishes a port, 51820/udp, which is meant to be public. PostgreSQL, Redis and the server publish no port.
@@ -71,16 +84,18 @@ sudo ufw allow from 172.31.240.12 to 172.31.240.1 port 7880 proto tcp    # the p
 
 With `firewalld`, Docker puts the bridges of its networks into a zone of its own, which accepts these connections; no rule is needed. To verify on any host: the health route (step 8) states `"media_server":true` when the server reaches the API, and `"media_server":false` when it does not.
 
+The addresses above are the defaults. If `.env` changes `JUNTO_BACKEND_GATEWAY`, `JUNTO_BACKEND_SERVER` or `JUNTO_BACKEND_LINK`, use those addresses in the firewall rule too. The rule is needed on the public host only in the two-host form; the data host needs no inbound rule for this connection.
+
 ### Kernel setting of the media host
 
 The media server asks for UDP buffers of 5,000,000 bytes (ADR 0003). On the host that runs `livekit`:
 
 ```sh
-printf 'net.core.rmem_max=5000000\nnet.core.wmem_max=5000000\n' | sudo tee /etc/sysctl.d/90-junto.conf
+sudo test ! -e /etc/sysctl.d/90-junto.conf && printf 'net.core.rmem_max=5000000\nnet.core.wmem_max=5000000\n' | sudo tee /etc/sysctl.d/90-junto.conf
 sudo sysctl -p /etc/sysctl.d/90-junto.conf
 ```
 
-The second command applies the two values of this file. `sysctl --system` would apply every settings file of the host again.
+The first command refuses to overwrite an existing file. If the file exists, inspect it and preserve any other settings before editing these two values. The second command applies the two values of this file. Check them with `sysctl net.core.rmem_max net.core.wmem_max`. `sysctl --system` would apply every settings file of the host again.
 
 ## One host: from an empty host to the first login
 
@@ -113,6 +128,8 @@ The second command applies the two values of this file. `sysctl --system` would 
 
    These two containers are no services of a Compose file, so the commands name their limits. The download is 1.7 GB. The worker's user (10001) reads the directory and cannot write to it. To run without transcripts, set `JUNTO_TRANSCRIBE_COMMAND=` (empty) in `.env`, point `JUNTO_MODELS_DIR` to any empty directory, and add `--scale worker=0` to the `up` command.
 
+   `/srv/junto/models` is an example: use the directory set in `JUNTO_MODELS_DIR` in the directory-creation command and both mounts. Fetch runs as the directory owner, separate from the worker's user. When installing as root, `id` selects user and group 0 for the fetch; verification still uses the image's user 10001. The fetch removes write permission from the model files and directories (ADR 0612).
+
 4. Apply the kernel setting and the firewall rules above, with the rule for the API port of the media server. Check that the three DNS names resolve to the host. Compare the CPU limits with the host; the command prints nothing when every limit fits:
 
    ```sh
@@ -133,6 +150,14 @@ The second command applies the two values of this file. `sysctl --system` would 
    ```sh
    docker compose -f one-host.yaml logs --no-log-prefix server | grep -A 3 "no owner"
    ```
+
+   If the code is no longer available, issue a new one in the running server container:
+
+   ```sh
+   docker compose -f one-host.yaml exec -T server junto-server issue-owner-code
+   ```
+
+   This replaces the previous code. After an owner exists, the new code is valid for 60 minutes and gives a device access to the existing owner account; claiming it ends that account's existing sessions (ADR 0114). Keep the code private.
 
 7. Become the owner with a client. In the desktop client (installed as `docs/client-macos.md`, `docs/client-linux.md` or `docs/client-windows.md` describe), add the server `https://chat.example.test` and enter the owner code. With the command-line client of this repository (`cargo build -p junto-client-core --bin junto-cli`):
 
@@ -165,16 +190,34 @@ Both hosts get the repository and a `deploy/.env`. The LiveKit key, the LiveKit 
 
    Put the key that the data host printed into the `.env` of the public host as `JUNTO_LINK_DATA_PUBLIC_KEY`, and the key that the public host printed into the `.env` of the data host as `JUNTO_LINK_PUBLIC_PUBLIC_KEY`. A link container does not start while its line is missing, and its log names the setting.
 4. On the public host: the kernel setting, the firewall rules including 51820/udp and the rule for the API port of the media server, then `docker compose -f two-hosts-public.yaml up -d --build`.
-5. On the data host: the transcription models as in step 3 of the one-host form (the image is `junto-data-worker`), then `docker compose -f two-hosts-data.yaml up -d --build`. The data host needs outbound connections to the public host: UDP to port 51820 for the link, and what a client of a call needs, because the recorder connects to the media server on its public name: TCP to port 443, UDP to the ports 7882 and 3478, and TCP to port 7881.
-6. Continue with step 6 of the one-host form, with `two-hosts-data.yaml`.
+5. On the data host: build its worker image, fetch the transcription models as the directory owner, and verify them without a network. Use the directory set in `JUNTO_MODELS_DIR` in place of the example below:
 
-The server is unavailable while the link is down, because the entry reaches the server through it. Calls and recordings continue during a short loss of the link (ADR 0003).
+   ```sh
+   docker compose -f two-hosts-data.yaml build worker
+   sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 /srv/junto/models
+   docker run --rm --user "$(id -u):$(id -g)" --memory 2g --cpus 1 --pids-limit 256 \
+       -v /srv/junto/models:/models junto-data-worker models fetch --dir /models
+   docker run --rm --network none --memory 2g --cpus 1 --pids-limit 256 \
+       -v /srv/junto/models:/models:ro junto-data-worker models verify --dir /models
+   docker compose -f two-hosts-data.yaml up -d --build
+   ```
+
+   The image name is for the default Compose project `junto-data`. If you change the project name, use its worker image name from `docker compose -f two-hosts-data.yaml config --images`. Fetch and verification have the same limits and ownership requirements as step 3 of the one-host form. The data host needs outbound connections to the public host: UDP to port 51820 for the link, and what a client of a call needs, because the recorder connects to the media server on its public name: TCP to port 443, UDP to the ports 7882 and 3478, and TCP to port 7881.
+6. On the data host, read the owner code and complete login and the health check as in steps 6–8 of the one-host form, using `two-hosts-data.yaml`. To issue a replacement code:
+
+   ```sh
+   docker compose -f two-hosts-data.yaml exec -T server junto-server issue-owner-code
+   ```
+
+The server is unavailable while the link is down, because the entry reaches the server through it. On 2026-10-16, calls continued through a 30-second link loss on two Linux hosts, and health recovered after the link returned. The recording ended `partly_failed`: six validated files covered the composite, three microphones and two shares, with three failed segments (two `recorder_lost`, one `recorder_error`). The recorder's media path uses the public address, but its Redis control path uses the private link. A short link loss can therefore interrupt recording jobs even when the call continues; complete uninterrupted recording is not guaranteed (ADR 0003, ADR 0601, ADR 0604).
 
 ## TLS
 
 The entry (Caddy with its layer-4 module) obtains one certificate for each of the three names from a public certificate authority with ACME and renews them by itself. It keeps the certificates and its ACME account key in the volume `entry-data`. `JUNTO_ACME_EMAIL` is the contact address that the authority gets.
 
 A connection with the TURN name is ended at the entry and passed to the media server as plain TCP on the loopback address. The other two names are HTTP sites that the entry forwards. The entry does not forward `/internal/` and `/recording-layout/` of the server; only the media server and the recorder call them, from inside.
+
+Known limit as of 2026-10-16: a Linux client restricted to TCP 443 and DNS could not join through TURN over TLS. Its WebRTC dependency rejected the valid public certificate with `unknown certificate authority`; the same Linux image's system TLS verifier accepted the chain and name. The pinned WebRTC build lacks the ISRG root in its compiled certificate set and has no Linux system-trust fallback. Direct media worked. Linux calls on networks that permit only TCP 443 remain unsupported until certificate trust is corrected and this path passes a new test (ADR 0004).
 
 The server itself has no TLS. It is reachable only through the entry, and it accepts a login only for the origin `https://<JUNTO_SERVER_HOST>` (ADR 0117).
 
@@ -415,17 +458,25 @@ Then remove the model directory, `/etc/sysctl.d/90-junto.conf`, the firewall rul
 
 The images that were pulled stay; `docker compose -f <form file> config --images` names the images of a form, before `down`. The layers of the builds stay in the build cache of Docker. `docker buildx du` shows it, and `docker builder prune` deletes the unused cache of every project of the host.
 
-## What was not run
+## Verification and remaining limits
 
-- The entry was tested with certificates that it signed itself (`deploy/tests/entry.sh`). A certificate request to a public authority, and a call over TURN on port 443, were not run (ADR 0004).
-- `one-host.yaml` and the two files of the two-host form were started on one machine, with certificates that the entry signed itself (`deploy/tests/one-host.sh`, `deploy/tests/two-hosts.sh`). They were not started on a host with a public address, and no call ran through them.
+On 2026-10-16 the two-host form ran on two Linux hosts with a public entry:
+
+- ACME issued public certificates for all three names. Chain and hostname verification, HTTPS reachability and HTTP redirects passed. TURN certificate verification passed independently with TLS 1.2 and TLS 1.3; the Linux TCP-443-only call failed for the trust limitation in "TLS" (ADR 0004).
+- First-owner claim, stored-key login, message send/read, voice join, the advertised public media address and health passed.
+- Three synthetic publishers and two subscribers exchanged five audio and five video tracks. One 1080p H.264/AAC composite and five Opus audio files were downloaded, matched their stated sizes and passed full decode. CPU transcription reached `ready` with the expected speech. This was a short synthetic call, not a capacity or endurance measurement.
+- A backup and an isolated restore on the data host preserved every original audit row, all other table counts and all stored-file checksums. The restored server was healthy and added the one expected `event_epoch_renewed` audit row. The temporary restore runtime was removed without changing the running deployment's containers or images (ADR 0021).
+- A 30-second link loss kept every subscriber track arriving; the link and public health recovered. The recording ended `partly_failed` with six validated files and three failed segments, as described in "Two hosts".
+- The public services ran on a one-CPU host with `JUNTO_LIVEKIT_CPUS=1`. `check-limits.sh` rejected the default beforehand, and Docker refused a separate container with a two-CPU limit.
+- Model fetch and offline verification ran with the documented 2 GiB memory, one CPU and 256-process limits. Fetch ran as the directory owner, root in this installation; verification ran as the worker image's user.
+- The recorder ran without capabilities under the Linux host's existing container security profile. This does not establish compatibility with every seccomp or AppArmor profile (ADR 0020).
+
+Remaining limits:
+
+- The public one-host form has only been started on one machine with certificates signed by the entry (`deploy/tests/one-host.sh`); no public one-host call or recording has been verified. The earlier same-machine test of the two-host files remains in `deploy/tests/two-hosts.sh`.
 - `worker-gpu.yaml` was checked as a rendered configuration only.
-- The rule of the host firewall for the API port of the media server follows from the rules that `ufw` writes on a host. No form was started on a host with `ufw` that had no other rule for port 7880.
-- `deploy/check-limits.sh` was run with a stated number of CPUs (`deploy/tests/compose-config.sh`), and Docker's refusal was seen with a limit above the CPUs of a machine with eight. No form was started on a host with one CPU.
-- The two commands for the transcription models were run without limits. They were not run with the memory, CPU and process limits that step 3 names.
+- The source-specific API firewall rule was added on the public host and health passed, but a pre-existing broader rule for port 7880 matched the observed connection first. Effectiveness with that broader rule absent remains unverified.
 - The address that the server sees for a request of the entry was not observed on a Linux host. `JUNTO_TRUSTED_PROXIES` names the address of the host in the container network. The setting also takes a network; the forms name one address, because the recorder and Redis are containers of the same network.
-- The backup, the restore, the upgrade and `deploy/database-user.sh` were run in the local form only (`deploy/tests/backup-restore.sh`, `deploy/tests/upgrade.sh`), with recordings that the test wrote as rows and files, not with the recorder. In the one-host form and on the data host, the commands of the server binary run in the container of the server, which has a fixed address there.
+- Upgrade and `deploy/database-user.sh` have been run in the local form only (`deploy/tests/upgrade.sh`), with recordings represented by test rows and files. Public one-host backup and restore remain unverified.
 - The way back to a release that has the command `unnamed-files` was run with a copy that the test made by hand, because no later release exists. The scripts of an earlier checkout were not run on a deployment that has the role `junto_server`, except the server of that checkout and `upgrade-undo.sh`.
-- A recording through the recorder was made in the local form only (`deploy/tests/recording.sh`, ADR 0910), on one machine with Docker Desktop on arm64. In the one-host form and in the two-host form the recorder reaches the media server on its public name, and no recording was made there.
-- The recorder ran without a capability in the local form. It was not run on a Linux host with another seccomp or AppArmor profile (ADR 0020).
 - In the local form, `rtc.stun_servers` stopped the recorder's requests to public STUN servers of third parties. The one-host form names its TURN port in the same setting; it was not observed there (ADR 0007).

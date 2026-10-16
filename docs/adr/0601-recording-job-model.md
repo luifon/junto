@@ -76,6 +76,7 @@ Recorder restarts:
 - After a crash of the recorder, the composite has a gap of about 9 seconds and each audio track a gap of about 6 seconds, with a recorder that starts again by its restart policy. What was recorded before the crash is kept, except the last seconds (ADR 0602).
 - A restart of the LiveKit server loses only the seconds of the restart. The audio files end and new ones start for the new tracks, and the composite continues with a period without sound: 10 seconds in the measured case.
 - A recording with a failed segment keeps its other segments, and the participants see which time ranges exist.
+- A private-link loss can fail recorder jobs while call media continues. On 2026-10-16 a 30-second loss in the deployed two-host form ended with six validated files and three failed segments, and the recording was `partly_failed` (ADR 0003). Preserving and checking available output and starting replacement jobs do not guarantee an uninterrupted recording (ADR 0604, ADR 0606).
 - A recording does not start when disk space cannot be reserved or when the limit on concurrent recordings is reached, and a running recording is stopped in order when free space reaches the reserve (ADR 0006).
 - No database migration runs while a recording runs, and the recorder is not replaced while a recording runs (ADR 0005).
 - Recording start and stop are written to the audit log (ADR 0303) and to the text chat of the voice channel (ADR 0501).

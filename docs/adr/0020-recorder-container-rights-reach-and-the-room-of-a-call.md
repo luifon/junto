@@ -4,7 +4,7 @@
 
 Accepted
 
-Open: the recorder ran with these rights in the local form on one machine (ADR 0910). The one-host form and the two-host form were not run with a recording. The browser of the recorder runs without its sandbox.
+On 2026-10-16 the recorder ran with these rights in the two-host form on Linux: its recording files passed full decode and the CPU transcript was ready. A 30-second link loss left a partly failed recording with valid files (ADR 0003, ADR 0601). Open: recording in the public one-host form and compatibility with other seccomp or AppArmor profiles. The earlier local test is ADR 0910. The browser of the recorder runs without its sandbox.
 
 ## Context
 
@@ -57,4 +57,4 @@ The room of a call:
 - A room without people stays for one minute. The server lets nobody into a room without a call (ADR 0509).
 - A recording whose last person lost the connection ends with complete files and without a failed segment. In the run before the change of the timeout its composite was declared lost, and the recording was `partly_failed`.
 - The 40 seconds between the two limits hold while the admission check runs at its interval. A server that is stopped, or that does not reach the media server, for longer than that ends the call after the room has closed; the rule of ADR 0604 for a job without a participant then decides.
-- The reduction to no capability was run on Docker Desktop with the image `livekit/egress:v1.15.0`. On a Linux host with another seccomp or AppArmor profile it was not run.
+- The reduction to no capability was run on Docker Desktop and, on 2026-10-16, in the two-host form on Linux with the image `livekit/egress:v1.15.0`. This verifies the security profile of that installation, not every seccomp or AppArmor profile.

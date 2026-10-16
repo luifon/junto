@@ -4,7 +4,7 @@
 
 Accepted
 
-Open: the scripts were run in the local form only, with recordings that the test wrote as rows and files. The way back to a release that has the command `unnamed-files` was run with a copy that the test made, because no later release exists.
+On 2026-10-16 a backup and isolated restore ran on the Linux data host of the two-host form with actual recorder output. All original audit rows, other table counts and all stored-file checksums matched; the restored server was healthy and added exactly one expected epoch-renewal audit row. Temporary image aliases supplied the built images under the isolated project's names. Open: a public one-host backup and restore, and upgrade outside the local form. The earlier local tests use recordings represented by rows and files. The way back to a release that has the command `unnamed-files` was run with a copy that the test made, because no later release exists.
 
 ## Context
 

@@ -4,7 +4,7 @@
 
 Accepted, pending step 0
 
-Open: a call on a network that allows only TLS on port 443 was not run. The entry on port 443 with three server names and TURN over TLS is the configuration of the deployment (ADR 0015). It selected each of the three names in tests with certificates that the entry signed itself, and was not applied on a public address (`docs/step-0/README.md`, test 5, first check). The UDP path and the TCP fallback are tested.
+On 2026-10-16 the entry ran on a public address in the two-host form with ACME certificates for all three names. Certificate chain and hostname verification passed, including TURN with TLS 1.2 and TLS 1.3. A Linux participant restricted to TCP 443 and DNS failed to join: WebRTC rejected the valid TURN certificate with an unknown-CA error, while the system TLS verifier in the same Linux image accepted it. The pinned WebRTC build lacks an ISRG root in its compiled set and has no Linux system-trust fallback. Open: correct that trust path and pass a TCP-443-only call. Direct media worked; the UDP path and the TCP media-port fallback remain tested separately.
 
 ## Context
 
@@ -29,5 +29,5 @@ Step 0 measured the paths without TLS (`docs/step-0/README.md`, test 5): a call 
 - A server keeps its address when it moves to another host, because the address is a name.
 - The public host must run a router that selects by server name on port 443. In the one-host form that host is the only host.
 - The firewall of the public address opens port 80 in addition to port 443 and the media ports.
-- A network that blocks UDP and the TCP media port, and allows only port 443, depends on TURN over TLS. That path is not tested, so the first version cannot yet state that a call works on such a network.
+- A network that blocks UDP and the TCP media port, and allows only port 443, depends on TURN over TLS. Linux calls on that path remain unsupported after the certificate-trust failure observed on 2026-10-16; a trust correction needs a new test on that restricted network.
 - TURN relays media through the media host. The CPU cost of the relay was not measured (ADR 0003).

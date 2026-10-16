@@ -6,8 +6,9 @@
 #   cd deploy && docker compose -f two-hosts-data.yaml up -d --build
 #
 # The server reaches the API of the media server through the link, and the recorder reaches
-# Redis through it. The recorder reaches the media server on its public address, so a loss
-# of the link does not interrupt a recording (ADR 0003).
+# Redis through it. The recorder reaches the media server on its public address, but its
+# Redis control path depends on the link. A link loss can leave a recording partly_failed
+# while calls continue (ADR 0003, ADR 0601).
 
 name: junto-data
 
