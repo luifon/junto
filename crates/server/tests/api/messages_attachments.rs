@@ -438,15 +438,21 @@ async fn completion_keeps_running_after_the_request_deadline_and_a_retry_reuses_
         .fetch_one(&mut *lock)
         .await
         .unwrap();
-    strict
+    let response = strict
         .post(
             &files.owner,
             &format!("/api/v1/attachments/{}/complete", upload.id),
             &json!({}),
         )
-        .await
-        .error(ErrorCode::Timeout);
+        .await;
     lock.commit().await.unwrap();
+    assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
+    response.error(ErrorCode::Unavailable);
+    assert!(response.retry_after.is_none(), "{}", response.text());
+    assert_eq!(
+        response.ok::<serde_json::Value>(StatusCode::SERVICE_UNAVAILABLE)["error"]["message"],
+        "the request could not be confirmed; state may have changed; read current state before sending it again"
+    );
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             let state: Upload = files

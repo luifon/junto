@@ -57,7 +57,8 @@ Broken database connections:
   reads current state before deciding whether to repeat an operation. An idempotent
   operation can be repeated according to its own protocol.
 - `busy` and `timeout` promise an unchanged outcome only before a request has made a
-  durable change. Attachment chunks follow the partial-change rule of ADR 0408.
+  durable change or started work that can commit after its deadline. Attachment chunks
+  and background completion follow the partial-change rule of ADR 0408.
 
 Other writers:
 

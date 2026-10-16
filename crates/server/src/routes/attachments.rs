@@ -300,6 +300,7 @@ pub async fn complete_upload(
         ApiError::new(ErrorCode::Busy, "attachment transfers are busy")
             .retry_after(Duration::seconds(1))
     })?;
+    crate::error::mark_possible_change();
     tokio::spawn(async move {
         let _check = check;
         let root = files::root(&app)?.to_path_buf();

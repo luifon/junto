@@ -168,6 +168,10 @@ Attachments:
   complete or attach its bytes to a message.
 - Completion reads and verifies all chunks and the declared hash in a background job that
   survives a request deadline; status polling and retries reuse completed verification.
+  Before spawning that job, the request records that state may change. A later request
+  deadline returns `unavailable` (503), without `Retry-After`, and directs the caller to
+  read current state before sending the request again. The job can still commit its
+  result after that response, so the response never promises an unchanged upload.
   A hash mismatch is recorded durably and releases the reservation; later completion
   attempts return that failure without reading or hashing the file again.
   Still PNG, JPEG and WebP files up to 8 MiB with dimensions up to 1,024 per side get
