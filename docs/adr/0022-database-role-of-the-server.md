@@ -4,7 +4,7 @@
 
 Accepted
 
-Open: the role, the access rules and the step for an existing deployment were run in the local form, and the first two also in the one-host and the two-host form on one machine. The scripts of a checkout from before this decision were not run on a deployment that has the role, except the server of that checkout and `deploy/upgrade-undo.sh`.
+The role, the access rules and the step for an existing deployment were run in the local form, and the first two also in the one-host and the two-host form on one machine. On 2026-10-16 the role and access rules were used by the running two-host Linux deployment and its successful backup and isolated restore (ADR 0021). Open: the existing-deployment conversion on public hosts. The scripts of a checkout from before this decision were not run on a deployment that has the role, except the server of that checkout and `deploy/upgrade-undo.sh`.
 
 ## Context
 

@@ -4,7 +4,7 @@
 
 Accepted
 
-Open: `one-host.yaml` and the two files of the two-host form were started on one machine with certificates that the entry signed itself, and not on a host with a public address. The address that the server sees for the entry, a call, and a recording through the recorder were not observed in these forms. In the local form a call was recorded with the recorder and transcribed by the worker container (ADR 0910).
+On 2026-10-16 the two-host files ran on two Linux hosts with a public entry and ACME certificates. A call, recording, CPU transcription, backup, isolated restore and 30-second link loss were exercised; the loss preserved the call and left the recording partly failed (ADR 0003). Public services ran on a one-CPU host after lowering the media-server CPU limit; the default was rejected by `check-limits.sh` and Docker separately refused an excessive limit. Open: the public one-host form, the address that the server sees for the entry, and the Linux TCP-443-only TURN path (ADR 0004). The source-specific API firewall rule was present, but a pre-existing broader rule matched the observed connection first, so the narrower rule alone remains unverified. Earlier same-machine form tests used certificates signed by the entry; the local recording test is ADR 0910.
 
 ## Context
 

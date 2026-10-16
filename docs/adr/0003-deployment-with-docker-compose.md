@@ -4,7 +4,7 @@
 
 Accepted, pending step 0
 
-Open: the public entry on port 443 with three server names and TURN over TLS was not run on a public address (`docs/step-0/README.md`, test 5, first check), and the capacity of a media host that also carries that entry and TURN was not measured (test 6). The configuration of the entry selected each of the three names in a test with certificates that the entry signed itself, and both forms were started on one machine in that way (ADR 0015); a certificate from a public authority and a call over TURN were not run. The recorder in the two-host form is tested (test 3).
+On 2026-10-16 the two-host form ran on two Linux hosts with a public entry, ACME certificates for all three names, a call, recording, CPU transcription, backup and isolated restore. A 30-second link loss preserved the call but left the recording `partly_failed`. The Linux TCP-443-only TURN call failed because WebRTC rejected the valid certificate (ADR 0004). Open: that TURN path, a public one-host installation, and the capacity of a media host that also carries the entry and TURN. The earlier same-machine tests used certificates signed by the entry (ADR 0015).
 
 ## Context
 
@@ -17,6 +17,8 @@ Step 0 measured the following (`docs/step-0/README.md`, tests 3, 5 and 6):
 - With the private link down for 30 seconds, calls and recordings continued and every recording file was complete.
 - A port that Docker publishes was reachable before any rule for it existed in the host firewall.
 - A plain restart of the recorder container ended the recorder after about one second and lost every recording in progress.
+
+The deployed two-host form on 2026-10-16 gave a different recording result from the step-0 link test: subscriber media continued during a 30-second stopped link, but the recording ended `partly_failed`, with six validated files and three failed segments (two `recorder_lost`, one `recorder_error`). Recorder logs showed signal-connection and deadline failures, without a recorder restart or an out-of-memory event. The step-0 result does not establish uninterrupted recording for this deployment.
 
 ## Decision
 
@@ -65,7 +67,7 @@ Media host:
 
 - In the two-host form the private link is required from the first version, because the recorder uses it for Redis.
 - In the two-host form the server is unavailable while the network connection of the data host is down.
-- A loss of the private link of 30 seconds interrupts neither calls nor recordings. During the loss a stop request to the recorder is not delivered, and a state change of the recorder reaches the LiveKit server after the link returns: 16 seconds after it in the measured case (ADR 0601). A loss longer than 30 seconds was not tested.
+- A 30-second loss of the private link can leave a recording partly failed while calls continue. The recorder's public media path does not remove its Redis control dependency on the link. The server preserves valid files, declares lost jobs and starts replacements when the call still runs (ADR 0601, ADR 0604, ADR 0606); it does not guarantee uninterrupted recording through link loss. During the step-0 loss a stop request was not delivered, and a state change reached the LiveKit server 16 seconds after the link returned. A loss longer than 30 seconds was not tested.
 - A stop of Redis ends every call within seconds. After Redis returns, a client whose SDK has ended its reconnection attempts is no longer in the call, so the client joins again by itself.
 - The host that runs the recorder needs CPU cores that no other component takes while a recording runs. The measured use for one recording is in ADR 0602. The transcription worker on the same host must not take those cores during a recording.
 - The capacity of a media host depends on its hardware and is measured per deployment with test participants. The load points that step 0 measured are in `docs/step-0/README.md`, test 6. A recording did not raise the CPU use of the media server by a measurable amount. The CPU use follows the number of packets and of connections, so many participants who send audio at the same time cost more than a few video streams of the same total bitrate.
