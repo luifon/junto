@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified: this file differs from the published livekit 0.9.4. The mute requests of the
+// local tracks are sent in their order through `in_order.rs` (`ParticipantInner`,
+// `new_inner`, `add_publication`).
 
 use std::{collections::HashMap, fmt::Debug, sync::Arc};
 
@@ -20,6 +24,7 @@ use parking_lot::{Mutex, RwLock};
 
 use crate::{prelude::*, rtc_engine::RtcEngine};
 
+mod in_order;
 mod local_participant;
 mod remote_participant;
 mod rpc;
@@ -179,6 +184,10 @@ pub(super) struct ParticipantInner {
     events: Arc<ParticipantEvents>,
     is_encrypted: RwLock<bool>,
     is_data_encrypted: RwLock<Option<bool>>,
+    // Modified: added.
+    /// Sends the mute requests of the local tracks one after the other, in the order of
+    /// the mutes and unmutes.
+    mute_requests: Arc<in_order::InOrder>,
 }
 
 #[derive(Clone)]
@@ -227,6 +236,7 @@ pub(super) fn new_inner(
         events: Default::default(),
         is_encrypted: RwLock::new(false),
         is_data_encrypted: RwLock::new(None),
+        mute_requests: Default::default(),
     })
 }
 
@@ -451,12 +461,14 @@ pub(super) fn add_publication(
         let events = inner.events.clone();
         let participant = participant.clone();
         let rtc_engine = inner.rtc_engine.clone();
+        let mute_requests = inner.mute_requests.clone();
         move |publication| {
             if let Some(cb) = events.track_muted.lock().as_ref() {
                 if !publication.is_remote() {
                     let rtc_engine = rtc_engine.clone();
                     let publication_cloned = publication.clone();
-                    tokio::spawn(async move {
+                    // Modified: in the order of the changes, not on a task of its own.
+                    mute_requests.run(async move {
                         let engine_request = rtc_engine
                             .mute_track(proto::MuteTrackRequest {
                                 sid: publication_cloned.sid().to_string(),
@@ -477,12 +489,14 @@ pub(super) fn add_publication(
         let events = inner.events.clone();
         let participant = participant.clone();
         let rtc_engine = inner.rtc_engine.clone();
+        let mute_requests = inner.mute_requests.clone();
         move |publication| {
             if let Some(cb) = events.track_unmuted.lock().as_ref() {
                 if !publication.is_remote() {
                     let rtc_engine = rtc_engine.clone();
                     let publication_cloned = publication.clone();
-                    tokio::spawn(async move {
+                    // Modified: in the order of the changes, not on a task of its own.
+                    mute_requests.run(async move {
                         let engine_request = rtc_engine
                             .mute_track(proto::MuteTrackRequest {
                                 sid: publication_cloned.sid().to_string(),

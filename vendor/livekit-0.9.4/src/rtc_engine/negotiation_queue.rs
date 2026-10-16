@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified: this file is not in the published livekit 0.9.4. It is an extract of
+// `rtc_session.rs` of that version (the `NegotiationState` enum), changed so that one state
+// under one lock decides the publisher negotiation queue.
 
 //! The decisions of the publisher negotiation queue of the fast publish mode, apart from the
 //! session so that a test can order them. The file uses the standard library only.

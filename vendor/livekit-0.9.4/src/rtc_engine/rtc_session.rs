@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified: this file differs from the published livekit 0.9.4. The publisher negotiation
+// queue decides with the state of `negotiation_queue.rs` (`NegotiationQueue`,
+// `publisher_negotiation_needed`, `queue_negotiation`, `execute_negotiation_with_retry`).
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -98,6 +102,7 @@ pub const DEFAULT_MAX_MESSAGE_SIZE: u64 = 64000;
 /// before SCTP accepts them — queueing below that is bounded by OS/qdisc.
 pub const DATA_TRACK_BUFFERED_AMOUNT_LOW_THRESHOLD: u64 = 8 * 1024;
 
+// Modified: one state under one lock in place of the state and a separate running flag.
 struct NegotiationQueue {
     /// Whether a task negotiates, and whether it negotiates again (see `negotiation_queue`).
     tasks: super::negotiation_queue::NegotiationQueue,
@@ -2480,13 +2485,15 @@ impl SessionInner {
         log::debug!("publisher_negotiation_needed: fast_publish={}", fast_publish);
 
         if fast_publish {
-            // A task that waits for an answer negotiates again after it: the queue decides that.
+            // Modified: a task that waits for an answer negotiates again after it: the queue
+            // decides that.
             self.queue_negotiation();
         } else {
             self.debounce_negotiation();
         }
     }
 
+    // Modified: the queue decides whether a new task starts.
     fn queue_negotiation(self: &Arc<Self>) {
         if self.negotiation_queue.tasks.request() {
             log::debug!("queue_negotiation: starting new negotiation");
@@ -2526,6 +2533,7 @@ impl SessionInner {
                 }
             }
 
+            // Modified: the task ends only after it has set the state to idle.
             if self.negotiation_queue.tasks.finished() {
                 log::debug!("retrying negotiation");
                 continue;

@@ -20,7 +20,7 @@ The SDK (`livekit` 0.9.4) offers two ways to carry sound:
 Crate:
 
 - The crate `junto-media` holds the media engine and the calls of a client (ADR 0734). It depends on `junto-client-core` and on the SDK, and has no dependency on gpui. The desktop client depends on it; the client core and `junto-cli` do not, so they do not link the WebRTC library.
-- The SDK is pinned at `livekit` 0.9.4, as the step 0 participant used it. The workspace and the standalone test participant use its build inputs from `vendor/`, with the corrections that this ADR names (publisher negotiation, below). Its WebRTC library is downloaded once, when the crate is built first.
+- The SDK is pinned at `livekit` 0.9.4, as the step 0 participant used it. The workspace and the standalone test participant use its build inputs from `vendor/`, with the corrections that this ADR names (publisher negotiation and the order of mute requests, below). Its WebRTC library is downloaded once, when the crate is built first.
 - A binary that links the crate passes `-ObjC` to the linker on macOS, in its build script. Without it the binary stops at its start.
 
 Sound devices:
@@ -68,7 +68,15 @@ Publisher negotiation:
 - In the fast publish mode the SDK negotiates in one task at a time. A request while the task negotiates makes it negotiate once more after the current answer. In the published version the task set its state to idle and cleared a separate running flag in a later step. A request between those two steps found the state idle and the flag set, marked a retry and started no task; the task then ended. From then on every request found the retry marked and was dropped. In the window live test this left one person unheard for the rest of the call.
 - The vendored copy decides with one state under one lock: idle, a task negotiates, or a task negotiates and then negotiates again. A task ends only after it has set the state to idle under that lock, so a request that comes later starts a new task. A request while a task waits for an answer is decided by the same state.
 - The decisions are in their own file, which uses the standard library only. `crates/media/tests/negotiation_queue.rs` compiles that file and runs its tests in the workspace suite: a request between the last decision of a task and its end starts a new task, and requests from eight threads leave the queue idle. Both failed with the published decisions.
-- The copy is removed when a pinned upstream version decides the queue under one state. Its provenance, the changed files and the retained licence notices are kept beside the dependency.
+- This correction is removed when a pinned upstream version decides the queue under one state. Its provenance, the changed files and the retained licence notices are kept beside the dependency.
+
+Order of mute requests:
+
+- A mute or an unmute of a local track sends a request to the media server, which forwards nothing of a muted track. The SDK sends each request from a task of its own, and the task first waits until a restoration of the connection has ended. In the published version every change started a new task. Tasks that waited together for one restoration were released together and sent in the order in which the threads of the runtime ran them. A mute that reached the media server after the unmute that followed it left the track muted at the server while the device sent and showed it open: the others heard nothing for the rest of the connection. The media live test `devices::the_chosen_devices_are_opened_and_a_missing_one_gives_way_to_the_default` failed this way at its last step, when a restoration spanned the close of the setting and the open that followed it.
+- The vendored copy sends the mute requests of the local tracks of a participant one after the other. Each request starts on its own task, as before, and sends only after the request that was given before it has ended, or its task has ended without finishing. A request that waits for a restoration therefore holds back the requests after it, and the media server receives them in the order of the changes.
+- The ordering is in its own file, which uses the standard library and Tokio only. `crates/media/tests/mute_order.rs` compiles that file and runs its tests in the workspace suite: an unmute does not overtake a mute that waits, 200 requests that each wait a different time arrive in their order on four threads, and a request whose task panics does not hold back the next. The first two failed with a task for each request, as in the published version.
+- The media live test `sound::a_mute_and_an_open_during_a_restored_connection_reach_the_media_server_in_order` pauses the media server until the clients restore their connection, mutes and opens the microphone three times 200 ms apart, and checks that the other person hears the device and that the server does not hold its track as muted. It failed in 2 of 8 runs with the published version.
+- This correction is removed when a pinned upstream version sends the mute requests of a track in their order. The copy is removed when no correction remains.
 
 Call diagnostics:
 

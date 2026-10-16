@@ -11,6 +11,9 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified: this file differs from the published livekit 0.9.4 by the module
+// `negotiation_queue`.
 
 use libwebrtc::prelude::*;
 use livekit_datatrack::backend as dt;
@@ -47,6 +50,7 @@ use crate::{ChatMessage, E2eeManager, TranscriptionSegment};
 
 mod dc_sender;
 pub mod lk_runtime;
+// Modified: the decisions of the publisher negotiation queue.
 mod negotiation_queue;
 mod peer_transport;
 mod reconnect_strategy;

@@ -380,6 +380,61 @@ async fn the_call_returns_after_the_media_server_was_restarted() {
     ben.until_heard_afresh(&ann).await;
 }
 
+/// The call library sends each mute and each open of the microphone track to the media
+/// server. While it restores its signal connection, these requests wait, and they go out in
+/// the order in which the person made them: the media server holds the last one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn a_mute_and_an_open_during_a_restored_connection_reach_the_media_server_in_order() {
+    // No other test of this run uses the media server while it is paused.
+    let _media = MEDIA_SERVER.write().await;
+    let container = std::env::var("JUNTO_TEST_LIVEKIT_CONTAINER")
+        .expect("JUNTO_TEST_LIVEKIT_CONTAINER names the LiveKit server of the test run");
+    let (ann, ben) = (Person::new(440.0), Person::new(880.0));
+    let (room, ann_at) = Room::new("Acme", &ann, "Ann").await;
+    room.member(&ann_at, &ben, "Ben").await;
+    ann.enter(room.target).await;
+    ben.enter(room.target).await;
+    ben.until_heard(&ann).await;
+
+    // The paused media server answers nothing, and the clients start to restore their
+    // signal connection when its pings are not answered. Ann closes and opens her
+    // microphone while hers is restored, so both requests wait for the connection.
+    docker(&["pause", &container]).await;
+    ann.until("the interruption is shown", |view| {
+        view.call
+            .as_ref()
+            .is_some_and(|call| call.phase == Phase::Reconnecting)
+    })
+    .await;
+    // The changes are apart in time, as the changes of a person are, so that each one
+    // waits for the connection on its own.
+    for _ in 0..3 {
+        ann.calls.set_muted(true);
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        ann.calls.set_muted(false);
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    docker(&["unpause", &container]).await;
+    ann.until("the call is back", |view| {
+        view.call
+            .as_ref()
+            .is_some_and(|call| call.phase == Phase::Connected)
+    })
+    .await;
+
+    // The media server holds the track of Ann as open, and Ben hears her.
+    ben.until_heard_afresh(&ann).await;
+    let check = ben.calls.sound_check().await.unwrap();
+    assert!(
+        check
+            .remote_tracks
+            .iter()
+            .all(|(_, source, _, muted)| source != "Microphone" || !muted),
+        "the media server holds a microphone track as muted: {check}"
+    );
+}
+
 async fn docker(arguments: &[&str]) {
     let done = tokio::process::Command::new("docker")
         .args(arguments)
