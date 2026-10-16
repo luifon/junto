@@ -251,7 +251,10 @@ impl ScreenCapture for SyntheticCapture {
             ScreenAccess::Allowed | ScreenAccess::AskOnStart => Ok(state.sources.clone()),
             ScreenAccess::NotAllowed => Err(CaptureError::NotAllowed),
         };
-        Box::pin(async move { result })
+        Box::pin(async move {
+            crate::executor::require_runtime("the source list of the synthetic capture");
+            result
+        })
     }
 
     fn start(
@@ -261,6 +264,7 @@ impl ScreenCapture for SyntheticCapture {
     ) -> Pending<Result<CaptureStream, CaptureError>> {
         let capture = self.clone();
         Box::pin(async move {
+            crate::executor::require_runtime("the start of the synthetic capture");
             let delay = capture.lock().start_delay;
             if !delay.is_zero() {
                 tokio::time::sleep(delay).await;

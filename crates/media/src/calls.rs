@@ -446,7 +446,8 @@ async fn turns(runtime: tokio::runtime::Handle, mut turns: mpsc::UnboundedReceiv
     }
 }
 
-/// The calls of one client. Every clone is the same object.
+/// The calls of one client. Every clone is the same object. Any executor can poll the
+/// futures that it returns (ADR 0733).
 #[derive(Clone)]
 pub struct Calls {
     inner: Arc<Inner>,
@@ -630,26 +631,22 @@ impl Calls {
         self.inner.options.capture.open_settings();
     }
 
-    /// The screens, windows and applications that can be shared now.
+    /// The screens, windows and applications that can be shared now. The capture reads
+    /// them in a task of the runtime of the client: the capture of each system waits with
+    /// Tokio, and the window polls the returned future on an executor without a runtime
+    /// (ADR 0733).
     pub fn share_sources(&self) -> Pending<Result<ShareSources, CaptureError>> {
-        // The Linux capture reads its sources with work that needs the runtime of the
-        // client, and the window polls this future on a thread without one.
-        #[cfg(target_os = "linux")]
-        {
-            let reading = self
-                .inner
-                .runtime
-                .spawn(self.inner.options.capture.sources());
-            Box::pin(async move {
-                reading
-                    .await
-                    .map_err(|error| CaptureError::Failed(error.to_string()))?
-            })
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            self.inner.options.capture.sources()
-        }
+        let capture = self.inner.options.capture.clone();
+        let reading =
+            crate::executor::on_runtime(
+                &self.inner.runtime,
+                async move { capture.sources().await },
+            );
+        Box::pin(async move {
+            reading
+                .await
+                .map_err(|error| CaptureError::Failed(error.to_string()))?
+        })
     }
 
     /// Starts the share of this device at the seat for which the person chose it. The
@@ -744,7 +741,7 @@ impl Calls {
     #[cfg(feature = "test-support")]
     pub fn statistics(
         &self,
-    ) -> impl Future<Output = Result<livekit::rtc_engine::SessionStats, String>> + Send + 'static
+    ) -> impl Future<Output = Result<livekit::rtc_engine::SessionStats, String>> + Send + 'static + use<>
     {
         let (reply, stats) = oneshot::channel();
         self.inner.tell(SessionCommand::Statistics(reply));
@@ -760,7 +757,8 @@ impl Calls {
     #[cfg(feature = "test-support")]
     pub fn sound_check(
         &self,
-    ) -> impl Future<Output = Option<crate::engine::statistics::SoundCheck>> + Send + 'static {
+    ) -> impl Future<Output = Option<crate::engine::statistics::SoundCheck>> + Send + 'static + use<>
+    {
         let (reply, check) = oneshot::channel();
         self.inner.tell(SessionCommand::SoundCheck(reply));
         async move { check.await.ok() }
@@ -3189,40 +3187,54 @@ mod tests {
         );
     }
 
-    #[test]
-    #[cfg(target_os = "linux")]
-    #[allow(clippy::unwrap_used)]
-    fn source_discovery_polled_by_a_window_uses_the_client_runtime() {
-        struct RuntimeCapture;
-        impl ScreenCapture for RuntimeCapture {
-            fn access(&self) -> ScreenAccess {
-                ScreenAccess::AskOnStart
-            }
-            fn request_access(&self) {}
-            fn open_settings(&self) {}
-            fn sources(&self) -> Pending<Result<ShareSources, CaptureError>> {
-                Box::pin(async {
-                    if tokio::runtime::Handle::try_current().is_err() {
-                        return Err(CaptureError::Failed(
-                            "source discovery has no client runtime".into(),
-                        ));
-                    }
-                    tokio::time::sleep(Duration::from_millis(1)).await;
-                    Ok(ShareSources::default())
-                })
-            }
-            fn start(
-                &self,
-                _: CaptureRequest,
-                _: Arc<dyn crate::share::CaptureSink>,
-            ) -> Pending<Result<crate::share::CaptureStream, CaptureError>> {
-                Box::pin(async { Err(CaptureError::Unsupported) })
+    /// A capture that waits for the answer of the system with a timer of Tokio, as the
+    /// capture of macOS does: its futures need the runtime of the client.
+    struct TimedCapture;
+
+    impl TimedCapture {
+        async fn answer<T: Send + 'static>(value: T) -> Result<T, CaptureError> {
+            let (answer, answered) = oneshot::channel();
+            std::thread::spawn(move || {
+                let _ = answer.send(value);
+            });
+            match tokio::time::timeout(Duration::from_secs(10), answered).await {
+                Ok(Ok(value)) => Ok(value),
+                Ok(Err(_)) | Err(_) => Err(CaptureError::Failed("no answer".to_owned())),
             }
         }
-        assert!(tokio::runtime::Handle::try_current().is_err());
+    }
+
+    impl ScreenCapture for TimedCapture {
+        fn access(&self) -> ScreenAccess {
+            ScreenAccess::Allowed
+        }
+        fn request_access(&self) {}
+        fn open_settings(&self) {}
+        fn sources(&self) -> Pending<Result<ShareSources, CaptureError>> {
+            Box::pin(Self::answer(ShareSources::default()))
+        }
+        fn start(
+            &self,
+            _: CaptureRequest,
+            _: Arc<dyn crate::share::CaptureSink>,
+        ) -> Pending<Result<crate::share::CaptureStream, CaptureError>> {
+            Box::pin(async {
+                Self::answer(()).await?;
+                Err(CaptureError::Unsupported)
+            })
+        }
+    }
+
+    /// The window polls the futures of the calls on the executor of gpui, which has no
+    /// Tokio runtime (ADR 0733). Here a plain thread polls each of them with an executor
+    /// that has no runtime either.
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn every_future_of_the_calls_ends_on_an_executor_without_a_tokio_runtime() {
+        use junto_client_core::protocol::ids::{ChannelId, WorkspaceId};
         let directory = tempfile::Builder::new()
-            .prefix("junto-linux-source-runtime-")
-            .tempdir_in("/tmp")
+            .prefix("junto-calls-executor-")
+            .tempdir()
             .unwrap();
         let client = Client::open(junto_client_core::ClientOptions::new(
             directory.path().join("client"),
@@ -3233,25 +3245,33 @@ mod tests {
             MediaOptions {
                 camera: Arc::new(crate::camera::synthetic::SyntheticCamera::new()),
                 host: Arc::new(crate::audio::synthetic::SyntheticHost::with_tone(440.0)),
-                permission: Arc::new(crate::permission::SystemPermission),
-                capture: Arc::new(RuntimeCapture),
+                permission: Arc::new(crate::permission::FixedPermission::allowed()),
+                capture: Arc::new(TimedCapture),
                 timing: CallTiming::default(),
             },
         );
-        let mut reading = calls.share_sources();
-        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-        let started = std::time::Instant::now();
-        loop {
-            if let std::task::Poll::Ready(result) = reading.as_mut().poll(&mut context) {
-                assert_eq!(result, Ok(ShareSources::default()));
-                break;
-            }
-            assert!(
-                started.elapsed() < Duration::from_secs(10),
-                "source discovery did not finish"
+        let target = CallTarget {
+            server_id: ServerId::generate(),
+            place: CallPlace::Channel {
+                workspace_id: WorkspaceId::generate(),
+                channel_id: ChannelId::generate(),
+            },
+        };
+        std::thread::spawn(move || {
+            assert!(tokio::runtime::Handle::try_current().is_err());
+            use futures_executor::block_on;
+            assert_eq!(block_on(calls.share_sources()), Ok(ShareSources::default()));
+            assert_eq!(block_on(calls.join(target)), Err(JoinError::NoServer));
+            assert_eq!(
+                block_on(calls.join_invited(target, CallInvitationId::generate())),
+                Err(JoinError::NoServer)
             );
-            std::thread::sleep(Duration::from_millis(1));
-        }
+            block_on(calls.leave());
+            assert!(block_on(calls.statistics()).is_err());
+            assert!(block_on(calls.sound_check()).is_none());
+        })
+        .join()
+        .unwrap();
     }
 
     #[tokio::test(start_paused = true)]

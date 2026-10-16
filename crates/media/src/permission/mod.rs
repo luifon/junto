@@ -25,6 +25,8 @@ pub enum MicrophoneAccess {
 
 pub type Answer = Pin<Box<dyn Future<Output = MicrophoneAccess> + Send + 'static>>;
 
+/// The microphone permission of one system. The crate calls `request`, and polls its
+/// future, only in tasks of the runtime of the client (ADR 0733).
 pub trait MicrophonePermission: Send + Sync + 'static {
     /// The state now. The call shows no question.
     fn state(&self) -> MicrophoneAccess;
@@ -111,7 +113,11 @@ impl MicrophonePermission for FixedPermission {
             held.2 += 1;
             held.0 = held.1;
         }
-        Box::pin(std::future::ready(held.0))
+        let answer = held.0;
+        Box::pin(async move {
+            crate::executor::require_runtime("the request of the fixed microphone permission");
+            answer
+        })
     }
 }
 

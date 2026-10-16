@@ -34,6 +34,7 @@ screen, the fixture refuses to start.
 | `c1` | Native camera dimensions, conversion to the 601 matrix (every frame that is not a native 601 buffer arrives converted), publication, remote progression, stop and reopen. |
 | `s1-s2` | Real display/window marker pixels locally and remotely, source closure and capture-sink release. |
 | `s3` | Distinct application tones, own-process exclusion, system sound and sound None. |
+| `w1` | The window of the client lists the screens of the system on its own executor, starts a share of the first screen without sound through its dialog, and the other side receives the pictures. |
 
 Permission requests are separate operator steps. Ask before each possible prompt.
 For `request-microphone`, `request-camera` or `request-screen`, set

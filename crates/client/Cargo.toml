@@ -43,6 +43,9 @@ test-support = [
     "gpui-base/test-support",
     "junto-media/test-support",
 ]
+# The native stage of the window (ADR 0913): a share of a real screen through the window.
+# Only `tools/native-devices.sh` builds with it.
+native-device-tests = ["test-support", "junto-media/native-device-tests"]
 
 [dependencies]
 junto-client-core = { path = "../client-core" }

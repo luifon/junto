@@ -50,6 +50,12 @@ tests need permissions and must never select a physical sound output by fallback
 - The ordinary camera factory in test-support builds continues to return
   `NoCamera`. The native test feature exposes a separate explicit factory, which
   uses the production implementation and never requests permission during creation.
+- A window stage, `w1`, runs a test of the window of `junto-client`, built with its
+  `native-device-tests` feature, with the screen capture of the system in the place
+  of the synthetic one. The window lists the screens on the executor of gpui, starts
+  a share of the first screen without sound through its dialog, and the other side
+  of the call receives the pictures. The stage requests no permission and fails
+  when the screen permission is missing.
 - Captured media is analyzed in memory. Results keep counts, dimensions, timings
   and signal measurements, without saving microphone, camera or desktop recordings.
 

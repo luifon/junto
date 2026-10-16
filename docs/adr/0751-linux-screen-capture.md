@@ -11,7 +11,7 @@ A Wayland client cannot enumerate another application's windows or obtain their 
 ## Decision
 
 - Linux implements the same `ScreenCapture` interface as macOS. The source list represents a request to choose a screen or window with the desktop, rather than inventing a display or window identifier. Only source kinds advertised by the portal are offered.
-- Source discovery runs on the client’s existing asynchronous runtime, so the window executor can await its D-Bus and PipeWire work without entering that runtime.
+- Source discovery runs on the client’s existing asynchronous runtime, so the window executor can await its D-Bus and PipeWire work without entering that runtime. The same rule holds for the capture of every system (ADR 0733).
 - Permission is requested for each new share, after the person presses Share. Listing choices causes no portal dialog. The Linux permission state means that authorisation takes place at the start; it does not claim that the desktop has granted permanent access.
 - Each share owns a portal session and a private D-Bus connection. It selects one source, asks for an embedded pointer when the backend supports it, and uses no persistent restore token. Cancellation, refusal, session revocation and a disappearing source end the request or capture. Dropping a pending request closes its resources as well as dropping an active capture.
 - The two portal requests that show no dialog, the creation of the session and the selection of the sources, have a limit of 15 seconds. The request that shows the desktop's dialog has no limit, because a person answers it. During all three the share watches the owner of the portal's bus name: a portal process that ends sends no answer, and the start then fails with that reason.

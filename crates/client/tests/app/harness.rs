@@ -17,6 +17,7 @@ use junto_client_core::{Client, ServerHandle};
 use junto_media::audio::synthetic::SyntheticHost;
 use junto_media::calls::{CallTiming, MediaOptions};
 use junto_media::permission::FixedPermission;
+use junto_media::share::ScreenCapture;
 use junto_media::share::synthetic::SyntheticCapture;
 
 use crate::support::{Device, TestServer, claim, logged_in};
@@ -150,7 +151,8 @@ pub struct Window {
     /// measures. No test opens a real device.
     pub sound: SyntheticHost,
     /// The screen capture of the application: a picture and a tone that the program
-    /// makes. No test captures a screen.
+    /// makes. Only the native stage of a share (ADR 0913) gives the application the capture
+    /// of the system in its place; this one is then unused.
     pub capture: SyntheticCapture,
     pub camera: junto_media::camera::synthetic::SyntheticCamera,
 }
@@ -176,7 +178,19 @@ pub fn open(cx: &mut TestAppContext, data_dir: &Path) -> Window {
 pub fn open_with(cx: &mut TestAppContext, data_dir: &Path, scale: Option<u32>) -> Window {
     log_into_test_output();
     let client: Client = Device::open(data_dir, SupportedVersions::THIS_BUILD);
-    open_client(cx, client, scale)
+    open_client(cx, client, scale, None)
+}
+
+/// Opens the application with this screen capture in the place of the synthetic one.
+#[cfg(all(target_os = "macos", feature = "native-device-tests"))]
+pub fn open_with_capture(
+    cx: &mut TestAppContext,
+    data_dir: &Path,
+    capture: std::sync::Arc<dyn ScreenCapture>,
+) -> Window {
+    log_into_test_output();
+    let client: Client = Device::open(data_dir, SupportedVersions::THIS_BUILD);
+    open_client(cx, client, None, Some(capture))
 }
 
 /// Opens the application with a source of releases, and with the version that the build
@@ -191,7 +205,7 @@ pub fn open_with_updates(
     let mut options = junto_client_core::ClientOptions::new(data_dir.join("junto"));
     options.update_source = Some(source);
     options.build = build;
-    open_client(cx, Client::open(options).unwrap(), None)
+    open_client(cx, Client::open(options).unwrap(), None, None)
 }
 
 /// Sends the log of the client into the output of the test, which the test runner keeps for
@@ -212,8 +226,14 @@ fn log_into_test_output() {
     });
 }
 
-/// Opens the window of the application on an opened client.
-fn open_client(cx: &mut TestAppContext, client: Client, scale: Option<u32>) -> Window {
+/// Opens the window of the application on an opened client. Without `system_capture` the
+/// application captures the synthetic screen of the window.
+fn open_client(
+    cx: &mut TestAppContext,
+    client: Client,
+    scale: Option<u32>,
+    system_capture: Option<std::sync::Arc<dyn ScreenCapture>>,
+) -> Window {
     log_into_test_output();
     // The client core answers from threads of its own runtime, at real times. The
     // scheduler of the test accepts that only when it is told so.
@@ -230,7 +250,7 @@ fn open_client(cx: &mut TestAppContext, client: Client, scale: Option<u32>) -> W
         camera: std::sync::Arc::new(camera.clone()),
         host: std::sync::Arc::new(sound.clone()),
         permission: std::sync::Arc::new(FixedPermission::allowed()),
-        capture: std::sync::Arc::new(capture.clone()),
+        capture: system_capture.unwrap_or_else(|| std::sync::Arc::new(capture.clone())),
         timing: CallTiming::default(),
     };
     let state = cx.update(|cx| {
@@ -660,6 +680,27 @@ pub fn named(cx: &mut TestAppContext, name: &str) -> (tempfile::TempDir, Window)
     let directory = tempfile::tempdir().unwrap();
     let mut window = open(cx, directory.path());
     window.choose_name(name);
+    (directory, window)
+}
+
+/// Opens the application with this screen capture as a new member of a server, as
+/// [`member`] does.
+#[cfg(all(target_os = "macos", feature = "native-device-tests"))]
+pub fn member_with_capture(
+    cx: &mut TestAppContext,
+    world: &World,
+    address: &str,
+    admin: &Admin,
+    name: &str,
+    capture: std::sync::Arc<dyn ScreenCapture>,
+) -> (tempfile::TempDir, Window) {
+    let directory = tempfile::tempdir().unwrap();
+    let mut window = open_with_capture(cx, directory.path(), capture);
+    window.choose_name(name);
+    let code = admin.invite(world, 1);
+    window.find_server(address);
+    window.join_with_code(code.expose());
+    window.until_ready();
     (directory, window)
 }
 

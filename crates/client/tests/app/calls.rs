@@ -4,9 +4,13 @@
 use gpui::TestAppContext;
 use junto_client::state::view::{CallNotice, MicrophoneButton, Relation};
 use junto_client_core::flow::FlowError;
+use junto_client_core::protocol::call::CallPlace;
 use junto_client_core::protocol::error::ErrorCode;
+use junto_client_core::protocol::ids::{CallInvitationId, ChannelId, ServerId, WorkspaceId};
 use junto_client_core::protocol::structure::{ChannelKind, CreateChannel};
 use junto_client_core::voice::{InputMode, TalkKey, VoiceSettings};
+
+use junto_media::calls::{CallTarget, JoinError};
 
 use crate::harness::{Admin, Window, World, member, open};
 
@@ -37,6 +41,46 @@ fn relation(window: &mut Window, name: &str) -> Relation {
         .and_then(|row| row.voice)
         .map(|voice| voice.relation)
         .unwrap()
+}
+
+/// The window polls the futures of its calls on the executor of gpui, which has no Tokio
+/// runtime (ADR 0733). The test devices of the application fail outside a runtime, as the
+/// devices of the systems do.
+#[gpui::test]
+fn the_futures_of_the_calls_end_on_the_executor_of_the_window(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let mut window = open(cx, directory.path());
+    let calls = window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().clone());
+    let target = CallTarget {
+        server_id: ServerId::generate(),
+        place: CallPlace::Channel {
+            workspace_id: WorkspaceId::generate(),
+            channel_id: ChannelId::generate(),
+        },
+    };
+    let ended = std::rc::Rc::new(std::cell::Cell::new(false));
+    let done = ended.clone();
+    window
+        .cx
+        .foreground_executor()
+        .spawn(async move {
+            assert!(tokio::runtime::Handle::try_current().is_err());
+            let sources = calls.share_sources().await.unwrap();
+            assert!(!sources.displays.is_empty());
+            assert_eq!(calls.join(target).await, Err(JoinError::NoServer));
+            assert_eq!(
+                calls
+                    .join_invited(target, CallInvitationId::generate())
+                    .await,
+                Err(JoinError::NoServer)
+            );
+            calls.leave().await;
+            done.set(true);
+        })
+        .detach();
+    window.until("every future of the calls has ended", |_| ended.get());
 }
 
 #[gpui::test]

@@ -465,7 +465,15 @@ impl Shell {
 
     /// True when the dialog of a share shows what the system lists.
     pub fn share_picker_is_listed(&self) -> bool {
-        matches!(&self.layer, Layer::SharePicker(picker) if picker.sources().is_some())
+        self.share_picker_sources().is_some()
+    }
+
+    /// What the system lists in the dialog of a share, when the dialog has read it.
+    pub fn share_picker_sources(&self) -> Option<&ShareSources> {
+        match &self.layer {
+            Layer::SharePicker(picker) => picker.sources(),
+            _ => None,
+        }
     }
 
     /// Chooses the picture of the share in its dialog, as a click on its row does.

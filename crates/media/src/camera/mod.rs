@@ -87,6 +87,8 @@ pub trait CameraSink: Send + Sync + 'static {
     fn ended(&self, error: CameraError);
 }
 
+/// The camera of one system. The crate calls the functions that return a future, and polls
+/// those futures, only in tasks of the runtime of the client (ADR 0733).
 pub trait CameraCapture: Send + Sync + 'static {
     fn access(&self) -> CameraAccess;
     fn request_access(&self) -> Pending<CameraAccess>;
