@@ -39,8 +39,19 @@ impl Tone {
     }
 }
 
+/// What a microphone gives in place of its tone: speech that a test queued, and a pause of
+/// the tone. A stream that is open follows a change at once.
+#[derive(Default)]
+struct Voice {
+    /// Mono samples at the rate of the device, delivered before the tone.
+    queued: VecDeque<f32>,
+    hushed: bool,
+}
+
 struct State {
     inputs: Vec<(DeviceInfo, Tone)>,
+    /// The voice of each microphone that has one, by the identifier of the device.
+    voices: Vec<(String, Arc<Mutex<Voice>>)>,
     outputs: Vec<DeviceInfo>,
     /// The devices that were opened, in their order: the identifier, or the default.
     opened_inputs: Vec<Option<DeviceId>>,
@@ -75,6 +86,7 @@ impl SyntheticHost {
             state: Arc::new(Mutex::new(State {
                 inputs: vec![(device("tone", "Tone microphone", true), Tone::new(hz))],
                 outputs: vec![device("sink", "Measuring sink", true)],
+                voices: Vec::new(),
                 opened_inputs: Vec::new(),
                 opened_outputs: Vec::new(),
                 input_fault: None,
@@ -103,6 +115,66 @@ impl SyntheticHost {
                 tone.hz = hz;
             }
         }
+    }
+
+    /// The voice of a microphone, made at its first use.
+    fn voice(state: &mut State, id: &str) -> Arc<Mutex<Voice>> {
+        if let Some((_, voice)) = state.voices.iter().find(|(held, _)| held == id) {
+            return voice.clone();
+        }
+        let voice = Arc::new(Mutex::new(Voice::default()));
+        state.voices.push((id.to_owned(), voice.clone()));
+        voice
+    }
+
+    /// The format of a microphone of the list.
+    fn input_format(state: &State, id: &str) -> Option<Format> {
+        state
+            .inputs
+            .iter()
+            .find(|(held, _)| held.id.0 == id)
+            .map(|(_, tone)| tone.format)
+    }
+
+    /// Queues mono speech for a microphone. Its stream delivers the speech in place of the
+    /// tone, converted to the rate of the device, then the tone again. The sound of a call
+    /// can carry spoken words this way, from a file that a test read.
+    pub fn say(&self, id: &str, samples: &[f32], rate: u32) {
+        let mut state = self.lock();
+        let Some(format) = Self::input_format(&state, id) else {
+            return;
+        };
+        let voice = Self::voice(&mut state, id);
+        drop(state);
+        let converted = convert_rate(samples, rate, format.sample_rate);
+        voice
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .queued
+            .extend(converted);
+    }
+
+    /// Pauses the tone of a microphone, so that it gives silence when no speech is queued,
+    /// or lets it sound again.
+    pub fn hush(&self, id: &str, hushed: bool) {
+        let voice = Self::voice(&mut self.lock(), id);
+        voice.lock().unwrap_or_else(PoisonError::into_inner).hushed = hushed;
+    }
+
+    /// How long the queued speech of a microphone still lasts.
+    pub fn speaking(&self, id: &str) -> Duration {
+        let mut state = self.lock();
+        let Some(format) = Self::input_format(&state, id) else {
+            return Duration::ZERO;
+        };
+        let voice = Self::voice(&mut state, id);
+        drop(state);
+        let queued = voice
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .queued
+            .len();
+        Duration::from_secs_f64(queued as f64 / f64::from(format.sample_rate))
     }
 
     pub fn add_output(&self, id: &str, name: &str) {
@@ -259,6 +331,7 @@ impl AudioHost for SyntheticHost {
             .cloned()
             .ok_or(AudioError::NoDevice)?;
         state.input_failed = Some(failed);
+        let voice = Self::voice(&mut state, &info.id.0);
         drop(state);
         let rate = u64::from(tone.format.sample_rate);
         let channels = usize::from(tone.format.channels);
@@ -271,13 +344,21 @@ impl AudioHost for SyntheticHost {
             ticks += 1;
             let due = ticks * rate / 100;
             buffer.clear();
+            let mut voice = voice.lock().unwrap_or_else(PoisonError::into_inner);
             while position < due {
-                let phase =
-                    std::f64::consts::TAU * f64::from(tone.hz) * position as f64 / rate as f64;
-                let sample = phase.sin() as f32 * tone.amplitude;
+                let sample = match voice.queued.pop_front() {
+                    Some(spoken) => spoken,
+                    None if voice.hushed => 0.0,
+                    None => {
+                        let phase = std::f64::consts::TAU * f64::from(tone.hz) * position as f64
+                            / rate as f64;
+                        phase.sin() as f32 * tone.amplitude
+                    }
+                };
                 buffer.extend(std::iter::repeat_n(sample, channels));
                 position += 1;
             }
+            drop(voice);
             deliver(&buffer, tone.format);
         });
         Ok(OpenStream::new(info, ticker))
@@ -321,6 +402,25 @@ impl AudioHost for SyntheticHost {
         });
         Ok(OpenStream::new(info, ticker))
     }
+}
+
+/// Converts mono samples from one rate to another by linear interpolation. Speech for a
+/// synthetic microphone needs no better conversion: the words are what is checked.
+fn convert_rate(samples: &[f32], from: u32, to: u32) -> Vec<f32> {
+    if from == to || samples.is_empty() || from == 0 {
+        return samples.to_vec();
+    }
+    let count = (samples.len() as u64 * u64::from(to) / u64::from(from)) as usize;
+    let step = f64::from(from) / f64::from(to);
+    (0..count)
+        .map(|index| {
+            let at = index as f64 * step;
+            let before = at.floor() as usize;
+            let after = (before + 1).min(samples.len() - 1);
+            let part = (at - before as f64) as f32;
+            samples[before] * (1.0 - part) + samples[after] * part
+        })
+        .collect()
 }
 
 /// The level of one frequency in a block of samples, in dB relative to full scale, with a
@@ -416,6 +516,53 @@ mod tests {
         assert!(played.iter().all(|sample| *sample == 0.5));
         assert_eq!(host.opened_inputs(), [None]);
         assert_eq!(host.opened_outputs(), [None]);
+    }
+
+    /// The left channel of what one open microphone delivers until `count` samples.
+    fn record(host: &SyntheticHost, count: usize, during: impl FnOnce()) -> Vec<f32> {
+        let heard: Arc<Mutex<Vec<f32>>> = Arc::default();
+        let into = heard.clone();
+        let input = host
+            .open_input(
+                None,
+                Box::new(move |samples, _| {
+                    into.lock().unwrap().extend(samples.iter().step_by(2));
+                }),
+                Box::new(|_| {}),
+            )
+            .unwrap();
+        during();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while heard.lock().unwrap().len() < count && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        drop(input);
+        let heard = heard.lock().unwrap();
+        assert!(heard.len() >= count);
+        heard[..count].to_vec()
+    }
+
+    #[test]
+    fn queued_speech_takes_the_place_of_the_tone_and_a_hushed_microphone_is_silent() {
+        let host = SyntheticHost::with_tone(440.0);
+        // Speech at another rate is converted to the rate of the device. Here a tone of
+        // 1000 Hz at 22.05 kHz stands for speech: the microphone delivers it at 44.1 kHz.
+        let speech = sine(1000.0, 0.5, 22_050, 22_050);
+        host.hush("tone", true);
+        let heard = record(&host, 44_100 + 22_050, || {
+            host.say("tone", &speech, 22_050);
+        });
+        assert!(host.speaking("tone") == Duration::ZERO);
+        // The speech comes first, whole and at its pitch, and the tone does not sound.
+        let (spoken, after) = heard.split_at(44_100);
+        assert!((tone_level(&spoken[4_410..39_690], 44_100, 1000.0) - -6.02).abs() < 0.5);
+        assert!(tone_level(spoken, 44_100, 440.0) < -40.0);
+        assert!(level(after) < -150.0, "a hushed microphone gives silence");
+
+        // Without the pause the tone returns when the speech has ended.
+        host.hush("tone", false);
+        let heard = record(&host, 22_050, || {});
+        assert!((tone_level(&heard, 44_100, 440.0) - -12.04).abs() < 0.5);
     }
 
     #[test]
