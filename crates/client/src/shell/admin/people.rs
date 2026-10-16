@@ -151,6 +151,7 @@ fn framed(
     under: impl IntoIterator<Item = AnyElement>,
 ) -> AnyElement {
     div()
+        .id(SharedString::from(selector.clone()))
         .flex()
         .flex_col()
         .flex_none()
@@ -301,9 +302,11 @@ impl Shell {
                     .selector("moderation-reason-field"),
             )
             .child(sentence(txt::REASON_HELP, theme))
-            .children(
-                reason_fault
-                    .map(|fault| Notice::error(fault).selector("moderation-reason-invalid")),
+            .child(
+                crate::ui::notice_slot("moderation-reason-invalid-slot").children(
+                    reason_fault
+                        .map(|fault| Notice::error(fault).selector("moderation-reason-invalid")),
+                ),
             )
             .child(
                 div().mt(u(6.0)).child(
@@ -312,9 +315,11 @@ impl Shell {
                 ),
             )
             .child(sentence(txt::MESSAGE_HELP, theme))
-            .children(
-                message_fault
-                    .map(|fault| Notice::error(fault).selector("moderation-message-invalid")),
+            .child(
+                crate::ui::notice_slot("moderation-message-invalid-slot").children(
+                    message_fault
+                        .map(|fault| Notice::error(fault).selector("moderation-message-invalid")),
+                ),
             )
             .into_any_element()
     }
@@ -1262,11 +1267,13 @@ impl Shell {
                     .child(sentence(txt::INVITE_GRANTS_HELP, theme))
                     .child(self.render_grant(grant, GrantFor::Invite, theme, cx)),
             )
-            .children(
-                self.admin
-                    .people
-                    .invalid
-                    .map(|invalid| Notice::error(invalid).selector("invite-form-invalid")),
+            .child(
+                crate::ui::notice_slot("invite-form-invalid-slot").children(
+                    self.admin
+                        .people
+                        .invalid
+                        .map(|invalid| Notice::error(invalid).selector("invite-form-invalid")),
+                ),
             )
             .child(
                 div()

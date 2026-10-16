@@ -1,7 +1,10 @@
 //! The page of the categories and channels of a workspace, and the overview of the
 //! settings of one channel (ADR 0304, ADR 0402, ADR 0504).
 
-use gpui::{AnyElement, Context, IntoElement, ParentElement, SharedString, Styled, Window, div};
+use gpui::{
+    AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString, Styled,
+    Window, div,
+};
 use junto_client_core::protocol::call::UpdateCallSettings;
 use junto_client_core::protocol::ids::{CategoryId, ChannelId, ServerId, WorkspaceId};
 use junto_client_core::protocol::structure::{ChannelKind, UpdateChannel};
@@ -372,6 +375,7 @@ impl Shell {
             .refused(AskKind::UpdateCategory(category_id))
             .or(view.refused(AskKind::DeleteCategory(category_id)));
         div()
+            .id(SharedString::from(format!("category-result-{category_id}")))
             .flex()
             .flex_col()
             .flex_none()
@@ -473,6 +477,7 @@ impl Shell {
             }
         };
         div()
+            .id(SharedString::from(format!("channel-result-{channel_id}")))
             .flex()
             .flex_col()
             .flex_none()

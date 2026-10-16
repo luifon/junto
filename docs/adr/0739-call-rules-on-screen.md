@@ -14,13 +14,13 @@ Requests and refusals:
 
 - While the media is connected but the server has not admitted the current place, the call shows "Entering call…". Invitations, answers to entry requests, recording controls, the hand and room settings are not offered. Their action handlers also require the current calls view to be connected and admitted, with the target and identity captured when the control was rendered, so an earlier view cannot send an inside-only request during entry or into a replacement call.
 - Each control asks the server and changes nothing on screen by itself. The change arrives with the state of the server.
-- A request that the server refuses is told by one notice above the content, with the sentence for the code of the refusal, until the person closes it, the next request starts, or the call ends. A refusal that arrives after a later request has started, or after the call of its request has ended, is not told.
+- A request that the server refuses is told by one notice in the notice area of the shown view, with the sentence for the code of the refusal, until the person closes it, the next request starts, or the call ends. A refusal that arrives after a later request has started, or after the call of its request has ended, is not told.
 - A control whose request the roles of the person do not allow is drawn disabled, and its tooltip states the missing permission. The roles are a prediction: the server decides, because an override of the channel can differ.
 
 Meeting mode:
 
 - The header of the voice channel of the call has "Meeting mode" with "On" or "Off", and the Settings tab has the same switch. It turns meeting mode on for a person who shares, has "run meeting mode" and has no microphone block; in the other cases it is disabled and states why. While another person runs meeting mode it is disabled and names that person.
-- While meeting mode is on, a bar under the header states that it is on and who runs it.
+- While meeting mode is on, a bar in the reserved notice area at the end of the stage column states that it is on and who runs it.
 - The presenter sees in the bar the first person with a raised hand and a closed microphone, the number of further ones, and "Allow". "Allow" removes the microphone block of that person. After that the bar names a person who was allowed and has not opened the microphone.
 - "Lower hand" of the design, for the hand of another person, is not built: the server has no route for it.
 - While another person runs meeting mode, the end of the microphone block of a person does not open the microphone: the calls of the client set the person's own microphone setting to "closed" in the same step and lower the hand of the person. This holds for a block of any reason and whoever removed it, the presenter or a moderator: the presenter removes a block whatever its reason (ADR 0512), and the state of the server does not tell who removed a block. It holds for a block that ends with a new token after a lost connection too. The bar shows "You may speak" and "Unmute", and "Unmute" opens the microphone. While the window shows another channel, a notice with the same button tells it.
@@ -37,14 +37,14 @@ A room that a person cannot enter without help:
 - A voice channel is closed for a person outside when it is in use and locked or full, or when the server refused the last join of the person as locked or full. The second case tells it for a voice channel that hides who is inside.
 - A voice channel in use whose call the server does not show is drawn as hidden, whatever the setting of the channel is now.
 - The row of the person of this device shows "connecting" until the server lists the person in the call. The server lists a person when its admission check has seen the device in the room, and it takes an action of a person inside (the lock, an invitation, the answer to a request, meeting mode) only from then on (ADR 0517).
-- Under the row of a closed voice channel that the person selected, the channel list shows a box with the reason and "Ask to enter". Under another full voice channel it shows one line.
+- Below the scrolling channel list, a bounded scrolling notice area shows the selected closed voice channel with its name, reason and "Ask to enter". It names another full voice channel on one line. Entry notices therefore consume space from the bottom of the list without moving its rows.
 - The box shows the request of the person: on its way, waiting with "Withdraw request", denied, or without an answer, the last two with "Ask again". An acceptance enters the call at once.
 - A person has one request at a time. A new request withdraws the earlier one, and so does the entry into any call: an acceptance does not replace a call that the person entered meanwhile. An answer that arrives before the server has told the identifier of the request is kept and used when the identifier is known. A request without an answer is shown as ended after the time that the server gave it and 5 seconds.
 - A full room has the request too, as the server has it. The design draws it for a locked room only.
 
 Prompts:
 
-- A person inside sees a request to enter as a notice above the content with "Let in" and "Deny", whatever channel the window shows.
+- A person inside sees a request to enter as a notice in the notice area of the shown view with "Let in" and "Deny", whatever channel the window shows.
 - An invitation for the person is a notice with "Join" and "Decline", whatever server and channel the window shows. "Join" accepts it and enters the call, in place of a call that the device is in.
 - The application remembers each invitation that the person made on this device, from the answer of the server, for the time that the invitation can wait and 5 seconds, and tells the person when it was declined or got no answer.
 
@@ -66,6 +66,8 @@ A move of the person of this device:
 - When the server tells that the move is completed, the connection is closed and the device enters the call of the destination as it enters any call, which ends the call of the source on the device. A notice tells the person that a moderator moved them.
 - The connection to the room of the destination is closed with a request to the media server, when the move has its outcome, when the call ends and when another move replaces it. A connection that is only dropped stays in the room.
 - The outcome of a move can be among the changes that a snapshot replaced. After a snapshot, a move that the state no longer holds is decided from the state: completed when the account is in the call of the destination, without effect otherwise. A move without an outcome after 45 seconds is given up.
+
+The notice area is the fixed scrolling area at the end of a call stage, the area above a message list and under its direct-call controls, or the part below the actions of a state panel (ADR 0730).
 
 ## Consequences
 

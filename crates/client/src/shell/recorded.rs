@@ -1008,30 +1008,32 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        if let Some(reason) = card.refused.clone() {
-            body.push(
-                div()
-                    .px(u(8.0))
-                    .pb(u(8.0))
-                    .child(
-                        Notice::error(reason).selector("recording-refused").action(
-                            Button::new(("dismiss-recording-refusal", index))
-                                .label(text::DISMISS)
-                                .selector("dismiss-recording-refusal")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.state.update(cx, |state, cx| {
-                                        state.dismiss_recording_refusal(
-                                            server_id,
-                                            recording_id,
-                                            cx,
-                                        );
-                                    });
-                                })),
-                        ),
-                    )
-                    .into_any_element(),
-            );
-        }
+        body.push(
+            crate::ui::notice_slot(("recording-refusal-slot", index))
+                .children(card.refused.clone().map(|reason| {
+                    div()
+                        .px(u(8.0))
+                        .pb(u(8.0))
+                        .child(
+                            Notice::error(reason).selector("recording-refused").action(
+                                Button::new(("dismiss-recording-refusal", index))
+                                    .label(text::DISMISS)
+                                    .selector("dismiss-recording-refusal")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.state.update(cx, |state, cx| {
+                                            state.dismiss_recording_refusal(
+                                                server_id,
+                                                recording_id,
+                                                cx,
+                                            );
+                                        });
+                                    })),
+                            ),
+                        )
+                        .into_any_element()
+                }))
+                .into_any_element(),
+        );
         body.extend(self.card_transcript(card, &detail.transcript, theme, cx));
         body
     }
@@ -1119,7 +1121,7 @@ impl Shell {
         let lines = open.lines.lines.len();
         let (failed, more) = (transcript.failed, transcript.more || transcript.failed);
         let refresh_failed = transcript.refresh_failed;
-        let tail = usize::from(failed) + usize::from(more);
+        let tail = 1 + usize::from(more);
         self.transcript_list.take(recording_id, open, tail);
         match panel.line {
             Some(line) => self.transcript_list.go_to(line, panel.jump),
@@ -1133,70 +1135,75 @@ impl Shell {
             transcript.more_before,
         );
         let (open, names, marked) = (open.clone(), names.clone(), panel.line);
-        let render = cx.processor(move |_: &mut Self, index: usize, _, cx| {
-            let theme = theme(cx);
-            let colors = theme.colors;
-            if index == 0 {
-                return div()
+        let render =
+            cx.processor(move |_: &mut Self, index: usize, _, cx| {
+                let theme = theme(cx);
+                let colors = theme.colors;
+                if index == 0 {
+                    return div()
+                        .flex()
+                        .items_center()
+                        .gap(u(8.0))
+                        .px(u(14.0))
+                        .py(u(8.0))
+                        .text_size(u(13.0))
+                        .ink(colors.ink_2)
+                        .child(SharedString::from(text::lines(total)))
+                        .when(!language.is_empty(), |line| {
+                            line.child(Chip::new(text::transcript_language(&language)))
+                        })
+                        .into_any_element();
+                }
+                if let Some(line) = open.lines.lines.get(index - 1) {
+                    let row = line_row(&open, line, &names);
+                    return Self::transcript_line(&row, false, marked == Some(row.line), &theme);
+                }
+                if index == lines + 1 {
+                    return div()
+                        .px(u(14.0))
+                        .pt(u(8.0))
+                        .child(crate::ui::notice_slot("transcript-error-slot").children(
+                            failed.then(|| {
+                                Notice::error(if refresh_failed {
+                                    text::TRANSCRIPT_REFRESH_FAILED
+                                } else {
+                                    text::TRANSCRIPT_LINES_FAILED
+                                })
+                                .selector("transcript-lines-failed")
+                            }),
+                        ))
+                        .into_any_element();
+                }
+                div()
                     .flex()
-                    .items_center()
-                    .gap(u(8.0))
-                    .px(u(14.0))
-                    .py(u(8.0))
-                    .text_size(u(13.0))
-                    .ink(colors.ink_2)
-                    .child(SharedString::from(text::lines(total)))
-                    .when(!language.is_empty(), |line| {
-                        line.child(Chip::new(text::transcript_language(&language)))
-                    })
-                    .into_any_element();
-            }
-            if let Some(line) = open.lines.lines.get(index - 1) {
-                let row = line_row(&open, line, &names);
-                return Self::transcript_line(&row, false, marked == Some(row.line), &theme);
-            }
-            if failed && index == lines + 1 {
-                return div()
+                    .w_full()
                     .px(u(14.0))
                     .pt(u(8.0))
+                    .pb(u(14.0))
                     .child(
-                        Notice::error(if refresh_failed {
-                            text::TRANSCRIPT_REFRESH_FAILED
-                        } else {
-                            text::TRANSCRIPT_LINES_FAILED
-                        })
-                        .selector("transcript-lines-failed"),
+                        Button::new("more-lines")
+                            .w_full()
+                            .label(if reading {
+                                text::READING_MORE_RESULTS
+                            } else if failed {
+                                text::TRY_AGAIN
+                            } else {
+                                text::SHOW_MORE_LINES
+                            })
+                            .disabled(reading)
+                            .selector("more-lines")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.state.update(cx, |state, cx| {
+                                    if refresh_failed {
+                                        state.reload_recording(server_id, recording_id, cx);
+                                    } else {
+                                        state.read_transcript_lines(server_id, recording_id);
+                                    }
+                                });
+                            })),
                     )
-                    .into_any_element();
-            }
-            div()
-                .flex()
-                .px(u(14.0))
-                .pt(u(8.0))
-                .pb(u(14.0))
-                .child(
-                    Button::new("more-lines")
-                        .label(if reading {
-                            text::READING_MORE_RESULTS
-                        } else if failed {
-                            text::TRY_AGAIN
-                        } else {
-                            text::SHOW_MORE_LINES
-                        })
-                        .disabled(reading)
-                        .selector("more-lines")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.state.update(cx, |state, cx| {
-                                if refresh_failed {
-                                    state.reload_recording(server_id, recording_id, cx);
-                                } else {
-                                    state.read_transcript_lines(server_id, recording_id);
-                                }
-                            });
-                        })),
-                )
-                .into_any_element()
-        });
+                    .into_any_element()
+            });
         div()
             .relative()
             .flex()

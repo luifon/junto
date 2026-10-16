@@ -364,6 +364,7 @@ impl Shell {
             }
         };
         div()
+            .id(SharedString::from(format!("device-result-{device_id}")))
             .flex()
             .flex_col()
             .flex_none()
@@ -430,9 +431,10 @@ impl Shell {
                         column
                             .child(sentence(text::account::more_devices(*hidden), theme).mt(u(6.0)))
                     })
-                    .when_some(failed.as_deref(), |column, reason| {
-                        column.child(not_read(reason, cx))
-                    })
+                    .child(
+                        crate::ui::notice_slot("devices-read-failed-slot")
+                            .children(failed.as_deref().map(|reason| not_read(reason, cx))),
+                    )
                     .into_any_element()
             }
         }
@@ -446,12 +448,13 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let failure = |error: &Option<String>| {
-            error.clone().map(|error| {
-                div()
-                    .flex_none()
-                    .mt(u(6.0))
-                    .child(Notice::error(error).selector("link-error"))
-            })
+            Some(
+                crate::ui::notice_slot("link-error-slot").children(
+                    error
+                        .clone()
+                        .map(|error| Notice::error(error).selector("link-error")),
+                ),
+            )
         };
         let cancel = |cx: &mut Context<Self>| {
             Button::new("link-cancel")

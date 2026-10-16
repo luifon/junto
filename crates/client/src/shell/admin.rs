@@ -270,13 +270,11 @@ pub(crate) fn row_action(
 
 /// The statement of a refusal under the control that asked.
 pub(crate) fn refusal(reason: Option<&str>, selector: &'static str) -> Option<AnyElement> {
-    reason.map(|reason| {
-        div()
-            .flex_none()
-            .mt(u(6.0))
-            .child(Notice::error(reason.to_owned()).selector(selector))
-            .into_any_element()
-    })
+    Some(
+        crate::ui::notice_slot(selector)
+            .children(reason.map(|reason| Notice::error(reason.to_owned()).selector(selector)))
+            .into_any_element(),
+    )
 }
 
 /// A question in the row that it is about: the sentence, and the two answers.
@@ -639,13 +637,13 @@ impl Shell {
                             })),
                     ),
             )
-            .when_some(self.admin.invalid, |column, invalid| {
-                column.child(
-                    div()
-                        .mt(u(6.0))
-                        .child(Notice::error(invalid).selector("admin-form-invalid")),
-                )
-            })
+            .child(
+                crate::ui::notice_slot("admin-form-invalid-slot").children(
+                    self.admin
+                        .invalid
+                        .map(|invalid| Notice::error(invalid).selector("admin-form-invalid")),
+                ),
+            )
             .when_some(form.help, |column, help| {
                 column.child(sentence(help, theme).mt(u(5.0)))
             })

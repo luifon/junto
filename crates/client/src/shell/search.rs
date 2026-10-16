@@ -577,7 +577,7 @@ impl Shell {
         side_panel(&theme, text::SEARCH, "search-panel")
             .child(header)
             .child(filters)
-            .children(go_failed)
+            .child(crate::ui::notice_slot("search-go-failed-slot").children(go_failed))
             .child(body)
             .into_any_element()
     }

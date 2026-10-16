@@ -222,13 +222,14 @@ impl Shell {
                         .child(text::STATUS_RECONNECTING),
                 )
             })
-            .when_some(view.call.as_ref(), |column, strip| {
-                column.child(self.render_call_strip(strip, &theme, cx))
-            })
             .when_some(view.controls.warning.as_ref(), |column, warning| {
                 column.child(self.render_sound_warning(warning, &theme, cx))
             })
             .children(self.render_update_notice(view, &theme, cx))
+            .children(self.render_camera_notice(cx))
+            .when_some(view.call.as_ref(), |column, strip| {
+                column.child(self.render_call_strip(strip, &theme, cx))
+            })
             .child(self.render_profile_strip(view, &theme, cx))
     }
 
@@ -258,6 +259,7 @@ impl Shell {
             _ => (None, None),
         };
         let mut rows: Vec<AnyElement> = vec![self.render_notices_row(workspace, cx)];
+        let mut entries = Vec::new();
         let mut channel_index = 0usize;
         for (position, section) in workspace.sections.iter().enumerate() {
             let title: SharedString = match &section.title {
@@ -469,8 +471,7 @@ impl Shell {
                 if let (Some(server_id), Some(voice)) = (server_id, channel.voice.as_ref())
                     && let Some(entry) = self.render_entry_box(server_id, channel, voice, theme, cx)
                 {
-                    after_occupants = true;
-                    rows.push(entry);
+                    entries.push(entry);
                 }
             }
         }
@@ -530,7 +531,7 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        ScrollArea::new(
+        let list = ScrollArea::new(
             "channel-list",
             &self.channels_scroll,
             workspace.name.clone(),
@@ -538,7 +539,21 @@ impl Shell {
         .selector("channel-list")
         .child(div().flex_none().h(u(6.0)))
         .children(rows)
-        .child(div().flex_none().h(u(8.0)))
+        .child(div().flex_none().h(u(8.0)));
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .child(list)
+            .child(
+                div()
+                    .id("channel-entry-notices")
+                    .flex_none()
+                    .max_h(u(180.0))
+                    .overflow_y_scroll()
+                    .children(entries),
+            )
     }
 
     fn render_profile_strip(

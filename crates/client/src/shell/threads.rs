@@ -85,7 +85,7 @@ impl Shell {
                 self.render_fork_bar(thread, &theme, cx),
                 self.render_follow_bar(thread, &theme, cx),
                 self.render_thread_root(thread, &theme, window, cx),
-                self.render_pane(Pane::Thread, &shown, window, cx),
+                self.render_pane(Pane::Thread, &shown, Vec::new(), window, cx),
             ]
         };
         div()
@@ -309,11 +309,13 @@ impl Shell {
                     .child(change)
                     .children(default),
             )
-            .children(
-                follow
-                    .refused
-                    .clone()
-                    .map(|reason| Notice::error(reason).selector("thread-follow-refused")),
+            .child(
+                crate::ui::notice_slot("thread-follow-refused-slot").children(
+                    follow
+                        .refused
+                        .clone()
+                        .map(|reason| Notice::error(reason).selector("thread-follow-refused")),
+                ),
             )
             .into_any_element()
     }
@@ -655,11 +657,13 @@ impl Shell {
                     .child(kind_name(kind)),
             )
             .child(Field::new(&self.fork_name, text::FORK_NAME).selector("fork-name"))
-            .children(refused.map(|reason| {
-                div()
-                    .mt(u(10.0))
-                    .child(Notice::error(reason).selector("fork-refused"))
-            }))
+            .child(
+                crate::ui::notice_slot("fork-refused-slot").children(refused.map(|reason| {
+                    div()
+                        .mt(u(10.0))
+                        .child(Notice::error(reason).selector("fork-refused"))
+                })),
+            )
             .child(dialog_footer([
                 Button::new("cancel-fork")
                     .label(text::CANCEL)

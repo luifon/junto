@@ -115,6 +115,7 @@ impl Ui {
 /// A row with what belongs under it. `selector` names the row for a test.
 fn framed(selector: String, row: gpui::Div, under: Vec<AnyElement>) -> AnyElement {
     div()
+        .id(SharedString::from(selector.clone()))
         .flex()
         .flex_col()
         .flex_none()
@@ -488,11 +489,13 @@ impl Shell {
                 theme,
             ))
             .child(sentence(txt::TOKEN_EXPIRY_HELP, theme))
-            .children(
-                self.admin
-                    .records
-                    .token_invalid
-                    .map(|invalid| Notice::error(invalid).selector("token-form-invalid")),
+            .child(
+                crate::ui::notice_slot("token-form-invalid-slot").children(
+                    self.admin
+                        .records
+                        .token_invalid
+                        .map(|invalid| Notice::error(invalid).selector("token-form-invalid")),
+                ),
             )
             .child(
                 div()
@@ -769,6 +772,11 @@ impl Shell {
             ),
             None => {}
         }
+        let mut under = vec![
+            crate::ui::notice_slot("export-save-slot")
+                .children(under)
+                .into_any_element(),
+        ];
         under.extend(refusal(
             view.refused(AskKind::RemoveExport(export_id)),
             "export-remove-refused",
@@ -1236,10 +1244,11 @@ impl Shell {
                     .debug_selector(|| "audit-empty".to_owned())
             });
         }
+        let mut result = crate::ui::notice_slot("audit-result-slot");
         // The end of the list: a read that runs or failed, the older entries, the bound.
         match &page.state {
             AuditRead::NotRead | AuditRead::Reading => {
-                column = column.child(
+                result = result.child(
                     sentence(text::admin::READING, &theme)
                         .py(u(6.0))
                         .debug_selector(|| "audit-reading".to_owned()),
@@ -1251,7 +1260,7 @@ impl Shell {
             } => {
                 let older = *older;
                 let scope = page.scope;
-                column = column.child(
+                result = result.child(
                     div().flex_none().child(
                         Notice::error(reason.clone())
                             .selector("audit-failed")
@@ -1275,7 +1284,7 @@ impl Shell {
                 );
             }
             AuditRead::Loaded if page.older => {
-                column = column.child(
+                result = result.child(
                     div().flex().flex_none().child(
                         Button::new("audit-older")
                             .label(txt::LOAD_OLDER)
@@ -1293,10 +1302,11 @@ impl Shell {
             AuditRead::Loaded => {}
         }
         if page.at_bound {
-            column = column.child(
+            result = result.child(
                 sentence(txt::AUDIT_BOUND, &theme).debug_selector(|| "audit-bound".to_owned()),
             );
         }
+        column = column.child(result);
         if page.state != AuditRead::NotRead {
             let scope = page.scope;
             column = column.child(

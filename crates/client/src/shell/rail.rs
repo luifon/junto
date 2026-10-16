@@ -252,6 +252,8 @@ impl Shell {
             .child(
                 div()
                     .id("address-help")
+                    .h(u(64.0))
+                    .overflow_y_scroll()
                     .debug_selector(|| "address-help".to_owned())
                     .when(failed, |help| help.role(Role::Alert))
                     .aria_label(help.clone())

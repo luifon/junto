@@ -12,6 +12,7 @@ mod field;
 mod marks;
 mod menu;
 mod mosaic;
+mod notice;
 mod panel;
 mod pattern;
 mod rows;
@@ -32,6 +33,7 @@ pub use field::{Field, FieldEvent, FieldKind};
 pub use marks::{Badge, Chip, Flag, FlagKind, RecordingMark, StatusLine, unread_dot};
 pub use menu::{Menu, MenuItem, menu_label, menu_separator};
 pub use mosaic::{Mosaic, MosaicKind};
+pub use notice::notice_slot;
 pub use panel::{Notice, NoticeKind, SectionLabel, SideHeader, StatePanel, WaitBox};
 pub use pattern::{Band, BandKind, Meter, selection_mark};
 pub use rows::{

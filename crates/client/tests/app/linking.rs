@@ -278,6 +278,8 @@ fn a_second_installation_is_linked_on_two_servers_with_two_texts(
     // The settings lead to both roles. The first device shows its offer.
     first.in_shell(|shell, window, cx| shell.open(Open::Settings, window, cx));
     assert!(first.shows("settings-link-first") && first.shows("settings-link-new"));
+    let scroll = first.in_shell(|shell, _, _| shell.settings_scroll_handle());
+    first.reveal(&scroll, "settings-link-first");
     first.click("settings-link-first");
     assert!(first.shows("link-all") && first.shows("link-offer-text"));
     let Some(LinkAllView::First(shown)) = first.link_all() else {
@@ -301,6 +303,8 @@ fn a_second_installation_is_linked_on_two_servers_with_two_texts(
     // The new device: a first start, the settings, the other role.
     let (_new_directory, mut new) = named(new_cx, "Luca");
     new.in_shell(|shell, window, cx| shell.open(Open::Settings, window, cx));
+    let scroll = new.in_shell(|shell, _, _| shell.settings_scroll_handle());
+    new.reveal(&scroll, "settings-link-new");
     new.click("settings-link-new");
     assert!(new.shows("link-all") && new.shows("link-offer-field"));
     assert!(new.shows("link-device-name-field"));
@@ -392,6 +396,10 @@ fn a_second_installation_is_linked_on_two_servers_with_two_texts(
     assert_eq!(devices(&world), [1, 1]);
     assert_eq!(new.link_lines(), [LinkShown::Waiting, LinkShown::Waiting]);
 
+    let new_scroll = new.in_shell(|shell, _, _| shell.linking_scroll_handle());
+    let check_bounds = new.reveal(&new_scroll, "link-check-all");
+    let first_scroll = first.in_shell(|shell, _, _| shell.linking_scroll_handle());
+    first.reveal(&first_scroll, "link-all-approve");
     first.click("link-all-approve");
     first.until("both links are approved", |first| {
         first.approval_lines() == [ApprovalShown::Approved, ApprovalShown::Approved]
@@ -402,8 +410,10 @@ fn a_second_installation_is_linked_on_two_servers_with_two_texts(
     // The new device is linked on both servers by the check that the application makes
     // by itself.
     new.until("both servers are linked", |new| {
-        new.link_lines() == [LinkShown::Linked, LinkShown::Linked] && new.shows("link-all-linked")
+        new.link_lines() == [LinkShown::Linked, LinkShown::Linked]
     });
+    assert_eq!(new.cx.debug_bounds("link-check-all").unwrap(), check_bounds);
+    new.reveal(&new_scroll, "link-all-linked");
     assert!(!new.shows("link-request-text"));
     new.click("link-all-close");
     assert!(!new.shows("link-all"));

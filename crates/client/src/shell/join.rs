@@ -438,13 +438,10 @@ impl Shell {
                     .mt(u(10.0))
                     .child(Notice::new(text::OPERATOR_NOTICE).selector("operator-notice")),
             );
-        if let Some(error) = error {
-            dialog = dialog.child(
-                div()
-                    .mt(u(10.0))
-                    .child(Notice::error(error).selector("join-error")),
-            );
-        }
+        dialog = dialog.child(
+            crate::ui::notice_slot("join-error-slot")
+                .children(error.map(|error| Notice::error(error).selector("join-error"))),
+        );
         let busy = running.is_some() || cancelling;
         match body {
             Body::Paths { .. } => {

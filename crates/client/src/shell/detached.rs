@@ -232,9 +232,7 @@ impl Shell {
             .and_then(|workspace| workspace.call.as_ref())
             .and_then(|panel| panel.room.meeting.as_ref())
             .map(|meeting| self.render_meeting_bar(meeting, &theme, cx));
-        body = body
-            .children(meeting)
-            .children(self.render_call_notices(&view, cx));
+        let notices = self.render_call_notices(&view, cx);
         if let Some(workspace) = view.workspace()
             && let (Some(channel), Some(panel)) = (&workspace.channel, &workspace.call)
         {
@@ -264,6 +262,19 @@ impl Shell {
                     )),
             );
         }
+        body = body.child(
+            crate::ui::notice_slot("call-notice-area")
+                .h(u(128.0))
+                .children(meeting)
+                .children(notices)
+                .children(
+                    view.controls
+                        .warning
+                        .as_ref()
+                        .map(|warning| self.render_sound_warning(warning, &theme, cx)),
+                )
+                .children(self.render_camera_notice(cx)),
+        );
         let controls = div()
             .flex()
             .flex_wrap()
@@ -332,9 +343,6 @@ impl Shell {
             controls
         };
         body = body.child(controls);
-        if let Some(warning) = &view.controls.warning {
-            body = body.child(self.render_sound_warning(warning, &theme, cx));
-        }
         if let Some(strip) = &view.call {
             body = body.child(self.render_call_strip(strip, &theme, cx));
         }
