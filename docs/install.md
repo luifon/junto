@@ -29,11 +29,11 @@ The `docker compose` commands of this document run in the directory `deploy/`, w
 
 ## Requirements
 
-- A Linux host on x86-64 or arm64 with Docker Engine and the Compose plugin. The files were run with Docker Engine 29.2 and Compose 5.0.
+- A Linux host on x86-64 or arm64 with Docker Engine and the Compose plugin. The files were run with Docker Engine 29.2 and Compose 5.0. The trial of "Trial on one machine" also runs on a Mac with Docker Desktop, and needs none of the names, addresses and ports below.
 - `git` and `openssl` on the host.
 - A domain with three names that point to the public address of the host (of the public host in the two-host form), for example `chat.example.test`, `livekit.example.test` and `turn.example.test`. Each needs an A record, and an AAAA record when the host has IPv6.
 - The public IPv4 address of that host.
-- Memory: the default limits of all containers add up to 14.4 GB; in the two-host form, to 12.3 GB on the data host and 2.7 GB on the public host. Measured use: the recorder 1.6 GiB for one recording of 1080p, the worker 3.2 GB for a transcription on a CPU, the media server up to 0.5 GiB. Each limit is a setting in `deploy/.env`.
+- Memory: the default limits of all containers add up to 14.4 GB; in the two-host form, to 12.3 GB on the data host and 2.7 GB on the public host. Measured use: the recorder 1.6 GiB for one recording of 1080p, the worker 3.2 GB for a transcription on a CPU (the machine and the model of that measurement are not recorded) and up to 4.1 GiB with the default model `large-v3-turbo` on Docker Desktop for macOS on arm64 (2026-10-16), the media server up to 0.5 GiB. Each limit is a setting in `deploy/.env`.
 - CPU: one recording used 2.5 to 3.9 cores of the recorder. The server records two calls at a time. A transcription does not start while a call is recorded.
 - CPU limits: Docker creates no container whose CPU limit is above the number of CPUs of its host. `up` stops with the message `range of CPUs is from 0.01 to 1.00, as there are only 1 CPUs available`, with the numbers of the host. The largest default is 6 CPUs, for the recorder; on the public host of the two-host form it is 2, for the media server. On a host with fewer CPUs, set each limit that is above that number to that number in `deploy/.env`. `deploy/check-limits.sh <form file>` compares the limits of a form with the host and prints the line for each of them. A public host with one CPU needs `JUNTO_LIVEKIT_CPUS=1`.
 - Disk: the server keeps 5 GiB free on the volume of the recordings and reserves 8 GiB for each recording, so a recording starts only with 13 GiB free. The transcription models need 1.7 GB. An export, an upgrade and a restore need further space for a time (see "Exports", "Upgrade" and "Restore").
@@ -126,7 +126,7 @@ The first command refuses to overwrite an existing file. If the file exists, ins
        -v /srv/junto/models:/models:ro junto-worker models verify --dir /models
    ```
 
-   These two containers are no services of a Compose file, so the commands name their limits. The download is 1.7 GB. The worker's user (10001) reads the directory and cannot write to it. To run without transcripts, set `JUNTO_TRANSCRIBE_COMMAND=` (empty) in `.env`, point `JUNTO_MODELS_DIR` to any empty directory, and add `--scale worker=0` to the `up` command.
+   The image name `junto-worker` is that of the Compose project `junto`, which `one-host.yaml` names; another project name gives another image name, which `docker compose -f one-host.yaml config --images` states. These two containers are no services of a Compose file, so the commands name their limits. The download is 1.7 GB. The worker's user (10001) reads the directory and cannot write to it. To run without transcripts, set `JUNTO_TRANSCRIBE_COMMAND=` (empty) in `.env`, point `JUNTO_MODELS_DIR` to any empty directory, and add `--scale worker=0` to the `up` command.
 
    `/srv/junto/models` is an example: use the directory set in `JUNTO_MODELS_DIR` in the directory-creation command and both mounts. Fetch runs as the directory owner, separate from the worker's user. When installing as root, `id` selects user and group 0 for the fetch; verification still uses the image's user 10001. The fetch removes write permission from the model files and directories (ADR 0612).
 
@@ -223,13 +223,47 @@ The server itself has no TLS. It is reachable only through the entry, and it acc
 
 ## Trial on one machine
 
-`local.yaml` starts every container except the entry on one machine, with all ports on the loopback address. It needs only the four secrets and `JUNTO_MODELS_DIR` in `.env`.
+`local.yaml` starts every container except the entry on one machine, with all ports on the loopback address. It needs the four secrets and `JUNTO_MODELS_DIR` in `.env`. The optional settings of `env.example` whose comment names the form `local` apply to it too, as do the memory and CPU limits of "Limits of the containers" and `JUNTO_LOG_MAX_SIZE`; the four `JUNTO_LOCAL_*` ports are needed when the default ports 8080, 7880, 7881 (TCP) and 7882 (UDP) are in use. It does not read the three names, `JUNTO_PUBLIC_IP`, `JUNTO_ACME_EMAIL`, the settings of the container network or those of the private link. It needs no DNS name, no firewall rule and no kernel setting. Its Compose project is `junto-local`, so its built images are `junto-local-server`, `junto-local-init` and `junto-local-worker`.
 
-```sh
-docker compose -f local.yaml up -d --build
-docker compose -f local.yaml logs --no-log-prefix server | grep -A 3 "no owner"
-junto-cli add http://127.0.0.1:8080
-```
+The machine is a Linux host with Docker Engine, or a Mac with Docker Desktop. On 2026-10-16 the trial ran on Docker Desktop for macOS, with Docker Engine 29.2 and Compose 5.0, 8 CPUs and 7.65 GiB of memory for its virtual machine. A memory limit is an upper bound and reserves nothing, so the defaults, which add up to 14.4 GB, start on that machine; a recording and a transcription do not run at the same time (see "Requirements"). Measured there: the recorder used up to 1.1 GiB for a recording of two people with two shares, and the worker up to 4.1 GiB for the transcription of its two microphone files of 85 seconds with the default model, below its limit of 6 GB (see "Requirements").
+
+1. Create the settings file with new secrets, and set `JUNTO_MODELS_DIR` to a directory of your user, for example `/Users/<you>/junto-models` on a Mac:
+
+   ```sh
+   umask 077
+   cp env.example .env
+   ./generate-secrets.sh >> .env
+   ```
+
+2. Install the transcription models as in step 3 of "One host", with the file `local.yaml` and the image `junto-local-worker`. A directory of your user needs no `sudo`:
+
+   ```sh
+   docker compose -f local.yaml build worker
+   install -d -m 0755 /Users/<you>/junto-models
+   docker run --rm --user "$(id -u):$(id -g)" --memory 2g --cpus 1 --pids-limit 256 \
+       -v /Users/<you>/junto-models:/models junto-local-worker models fetch --dir /models
+   docker run --rm --network none --memory 2g --cpus 1 --pids-limit 256 \
+       -v /Users/<you>/junto-models:/models:ro junto-local-worker models verify --dir /models
+   ```
+
+   On Docker Desktop for macOS, `ls` on the Mac shows the model directories with mode 0755 after the fetch; inside a container they have mode 0555, which is what the worker sees. The files have mode 0444 on both sides.
+
+3. Compare the CPU limits with the machine (`./check-limits.sh local.yaml`), then build and start:
+
+   ```sh
+   docker compose -f local.yaml up -d --build
+   docker compose -f local.yaml ps
+   ```
+
+4. Read the owner code, and become the owner. In the desktop client, type `http://127.0.0.1:8080` into "Add server", with `http://`: an address without a scheme is taken as `https://`, which this form does not answer. Then enter the owner code in the dialog of the server. With the command-line client, `junto-cli add http://127.0.0.1:8080` and `junto-cli claim --name "Your name"`, as in step 7 of "One host". With `JUNTO_LOCAL_PORT` set, use that port in the address.
+
+   ```sh
+   docker compose -f local.yaml logs --no-log-prefix server | grep -A 3 "no owner"
+   ```
+
+5. Check the health route: `curl http://127.0.0.1:8080/api/v1/health` answers 200 with `"media_server":true`.
+
+To remove the trial: `docker compose -f local.yaml down -v`, then `docker image rm junto-local-server junto-local-init junto-local-worker`, and remove the model directory. The fetch left its files and directories without write permission, so give it back first: `chmod -R u+w <model directory> && rm -r <model directory>`.
 
 A client on another machine cannot log in to this form: the server accepts `http` origins for a loopback address only. `deploy/tests/smoke.sh` starts this form with new secrets, checks it and removes it. `deploy/tests/recording.sh` records a call in this form with test participants and checks the video, the audio files, the transcript and the downloads (ADR 0910).
 
@@ -384,7 +418,7 @@ The server is never updated automatically (ADR 0005). An upgrade is a new checko
    ```
 
 5. Only when the deployment was created by a release in which the server connected as the user `junto`: run `deploy/database-user.sh one-host.yaml` (see "The database user of an earlier release").
-6. Build and start. When the release has a migration, the server first copies the database to `junto_before_<number>` on the same PostgreSQL server, then applies the migrations (ADR 0018). Its log names the copy. An interrupted first installation is marked separately: if no installed server state exists, a restart logs that it continues the initial migrations without a copy, even while an old connection remains open. A marker on a database with installed state is cleared with a warning and the ordinary copy is made.
+6. Build and start. When the release has a migration, the server first copies the database to `junto_before_<number>` on the same PostgreSQL server, then applies the migrations (ADR 0018). Its log names the copy. A database without installed server state gets no copy: with the default `JUNTO_MIGRATION_COPY=database`, every start on it, the first start of a new installation as well as a restart of an interrupted first installation, logs `continuing the first installation without a migration copy: no installed server state exists`, even while an old connection remains open. A marker on a database with installed state is cleared with a warning and the ordinary copy is made.
 
    ```sh
    docker compose -f one-host.yaml up -d --build
@@ -475,7 +509,7 @@ docker compose -f two-hosts-public.yaml down -v    # on the public host
 docker image rm junto-public-link
 ```
 
-Then remove the model directory, `/etc/sysctl.d/90-junto.conf`, the firewall rules and the DNS records. `down -v` cannot be undone.
+Then remove the model directory (`chmod -R u+w` first: the fetch left its files and directories without write permission), `/etc/sysctl.d/90-junto.conf`, the firewall rules and the DNS records. `down -v` cannot be undone.
 
 The images that were pulled stay; `docker compose -f <form file> config --images` names the images of a form, before `down`. The layers of the builds stay in the build cache of Docker. `docker buildx du` shows it, and `docker builder prune` deletes the unused cache of every project of the host.
 
@@ -491,6 +525,8 @@ On 2026-10-16 the two-host form ran on two Linux hosts with a public entry:
 - The public services ran on a one-CPU host with `JUNTO_LIVEKIT_CPUS=1`. `check-limits.sh` rejected the default beforehand, and Docker refused a separate container with a two-CPU limit.
 - Model fetch and offline verification ran with the documented 2 GiB memory, one CPU and 256-process limits. Fetch ran as the directory owner, root in this installation; verification ran as the worker image's user.
 - The recorder ran without capabilities under the Linux host's existing container security profile. This does not establish compatibility with every seccomp or AppArmor profile (ADR 0020).
+
+On 2026-10-16 the trial on one machine was installed with "Trial on one machine" on Docker Desktop for macOS, with the default transcription model, and two windows of the desktop client went through its first use (ADR 0902): the owner code, an invite for one use, messages with a change and a deletion, a thread, a call, two screen shares, a recording with known speech, the download of its three files, the transcript, search for a message and for a spoken word, and a second start of both profiles. The recording was `ready` with three segments and no failed one; the composite video and both microphone files decoded completely; the transcript had the words of each person under that person's name. The windows were real macOS windows driven by the test target `rehearsal`, with synthetic sound, camera and screen; that run does not cover the run loop of the application, real devices, a packaged application or a second machine.
 
 Remaining limits:
 

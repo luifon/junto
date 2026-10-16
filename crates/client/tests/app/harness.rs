@@ -307,29 +307,37 @@ impl Window {
     /// was drawn, also when the state of the application has changed since.
     #[track_caller]
     pub fn press_as_drawn(&mut self, selector: &'static str) {
-        use gpui::InputEvent;
         let bounds = self
             .cx
             .debug_bounds(selector)
             .unwrap_or_else(|| panic!("{selector} is not drawn"));
-        let (position, modifiers) = (bounds.center(), Modifiers::none());
-        let down = gpui::MouseDownEvent {
-            position,
-            modifiers,
-            button: gpui::MouseButton::Left,
-            click_count: 1,
-            first_mouse: false,
-        };
-        let up = gpui::MouseUpEvent {
-            position,
-            modifiers,
-            button: gpui::MouseButton::Left,
-            click_count: 1,
-        };
+        let (down, up) = pointer_press(bounds.center(), gpui::MouseButton::Left);
         self.cx.update(|window, cx| {
-            window.dispatch_event(down.to_platform_input(), cx);
-            window.dispatch_event(up.to_platform_input(), cx);
+            window.dispatch_event(down, cx);
+            window.dispatch_event(up, cx);
         });
+    }
+
+    /// Gives one event of the pointer or the keyboard to the window, as the input handler
+    /// of the system does, and runs the work that it started. The test platform of gpui
+    /// and a native window take events on this one path (ADR 0902).
+    pub fn dispatch(&mut self, event: impl gpui::InputEvent) {
+        let input = event.to_platform_input();
+        self.cx.update(|window, cx| {
+            window.dispatch_event(input, cx);
+        });
+        self.cx.run_until_parked();
+    }
+
+    /// Presses and releases a button of the pointer at a point of the window.
+    pub fn press_at(&mut self, position: gpui::Point<gpui::Pixels>, button: gpui::MouseButton) {
+        let (down, up) = pointer_press(position, button);
+        for input in [down, up] {
+            self.cx.update(|window, cx| {
+                window.dispatch_event(input, cx);
+            });
+            self.cx.run_until_parked();
+        }
     }
 
     /// Ends the application, as closing its window does: the window is removed, and the
@@ -450,7 +458,7 @@ impl Window {
             .cx
             .debug_bounds(selector)
             .unwrap_or_else(|| panic!("{selector} is not drawn"));
-        self.cx.simulate_click(bounds.center(), Modifiers::none());
+        self.press_at(bounds.center(), gpui::MouseButton::Left);
         self.settle();
     }
 
@@ -461,7 +469,7 @@ impl Window {
         let Some(bounds) = self.cx.debug_bounds(selector) else {
             return false;
         };
-        self.cx.simulate_click(bounds.center(), Modifiers::none());
+        self.press_at(bounds.center(), gpui::MouseButton::Left);
         self.settle();
         true
     }
@@ -487,11 +495,7 @@ impl Window {
             .cx
             .debug_bounds(name)
             .unwrap_or_else(|| panic!("{name} is not drawn"));
-        let at = bounds.center();
-        self.cx
-            .simulate_mouse_down(at, gpui::MouseButton::Right, Modifiers::none());
-        self.cx
-            .simulate_mouse_up(at, gpui::MouseButton::Right, Modifiers::none());
+        self.press_at(bounds.center(), gpui::MouseButton::Right);
         self.settle();
     }
 
@@ -501,7 +505,7 @@ impl Window {
         for key in keys.split(' ') {
             let keystroke = gpui::Keystroke::parse(key).unwrap();
             self.cx.simulate_keystrokes(key);
-            self.cx.simulate_event(gpui::KeyUpEvent { keystroke });
+            self.dispatch(gpui::KeyUpEvent { keystroke });
             self.settle();
         }
     }
@@ -620,6 +624,29 @@ impl Window {
         assert!(more.is_none(), "two members are named {name}");
         self.shows(selector(format!("member-row:{}", row.account_id)))
     }
+}
+
+/// The two events of one press of a pointer button at one point.
+fn pointer_press(
+    position: gpui::Point<gpui::Pixels>,
+    button: gpui::MouseButton,
+) -> (gpui::PlatformInput, gpui::PlatformInput) {
+    use gpui::InputEvent;
+    let modifiers = Modifiers::none();
+    let down = gpui::MouseDownEvent {
+        position,
+        modifiers,
+        button,
+        click_count: 1,
+        first_mouse: false,
+    };
+    let up = gpui::MouseUpEvent {
+        position,
+        modifiers,
+        button,
+        click_count: 1,
+    };
+    (down.to_platform_input(), up.to_platform_input())
 }
 
 /// gpui finds a drawn element by a name that lives as long as the program. A test builds

@@ -27,6 +27,14 @@ name = "app"
 path = "tests/app/main.rs"
 required-features = ["test-support"]
 
+# Native windows against an installed deployment, on the main thread (ADR 0902). It does
+# nothing unless its variables name the deployment.
+[[test]]
+name = "rehearsal"
+path = "tests/rehearsal/main.rs"
+harness = false
+required-features = ["test-support"]
+
 [features]
 # The headless renderer and the test platform of gpui, for the tests and for `junto-screens`.
 test-support = [
@@ -93,6 +101,8 @@ workspace = true
 
 [dev-dependencies]
 junto-client = { path = ".", features = ["test-support"] }
+# The description of the generated speech that the rehearsal says.
+serde_json = { workspace = true }
 # The server inside the test process, for the tests that need its recorder in memory.
 junto-server = { path = "../server" }
 sqlx = { workspace = true }

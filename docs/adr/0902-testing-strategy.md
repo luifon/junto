@@ -26,6 +26,39 @@ Tests on real systems:
   screen capture through the production implementations (ADR 0913). It is separate
   from ordinary and ignored CI tests and requires operator-managed permissions.
 
+- The rehearsal installs a deployment with `docs/install.md` ("Trial on one machine") and
+  runs two windows of the application through its first use: owner code, invite,
+  messages, a thread, a call, shares, a recording with known speech, the saved files,
+  the transcript, search, and a second start on both profiles. The steps are in
+  `crates/client/tests/app/rehearsal.rs`.
+  - On macOS the test target `rehearsal` runs them in two real windows of the system on
+    the main thread. The windows are drawn by Metal, and the picture of each step is read
+    from the GPU with `Window::render_to_image`, without screen capture. A shared screen
+    is checked by the colours that the receiving window draws.
+  - The windows use gpui's `VisualTestAppContext`: real windows and rendering, with the
+    tasks on gpui's test scheduler. The harness reaches them through a `TestAppContext`
+    whose public application and executor fields are set to the native ones, because
+    gpui gives the drawn positions of named elements only to its test contexts. The run
+    loop and the dispatcher of the product are therefore not exercised, and the
+    production entry point (`main.rs`, `app::state`) is not the one that runs.
+  - Pointer events reach the window through `Window::dispatch_event`, the call that the
+    input callback of the platform window makes. Text is typed one key at a time with
+    `Window::dispatch_keystroke`, gpui's simulation of a key: it runs the key bindings and
+    gives the text of the key to the input handler of the focused field. The key events of
+    AppKit and the text input client of macOS are not exercised.
+  - The checks read the view state from which the window draws (`ShellView` and the
+    administration view) and the drawn bounds of named elements; the share check reads
+    drawn pixels. One action is not made through the window: the download directory is
+    set on the application state, so that saved files go into the work directory of the
+    run and not into the Downloads folder of the user.
+  - Sound, camera and screen are the synthetic devices of `junto-media`. The microphone
+    of each window plays a tone, or queued speech from the speech generator of the
+    transcription worker, so the real worker transcribes known words. Nothing opens a
+    device, asks for a permission or plays a sound.
+  - The steps that need no recorder also run against the server of the tests in the
+    window live tier, on gpui's test platform, so that a change of the window that breaks
+    a step fails there.
+
 - Real capture of screen, sound and microphone is tested on each operating system:
   - a real macOS machine;
   - a real Linux desktop, in an X11 session first and then in a Wayland session;

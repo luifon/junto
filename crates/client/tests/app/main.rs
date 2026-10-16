@@ -35,6 +35,10 @@ mod notices;
 mod people;
 mod permissions;
 mod recordings;
+// The steps of a recording need the recorder of a deployment: only the native rehearsal
+// (`tests/rehearsal/`) runs them.
+#[allow(dead_code)]
+mod rehearsal;
 mod remaining;
 mod roles;
 mod search;
