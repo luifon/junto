@@ -4,7 +4,7 @@
 
 Accepted
 
-Open: the engine was built and tested on macOS and in a Linux container with virtual sound devices (ADR 0750). The Windows build was not run. No real microphone and no real output device was opened by a test (ADR 0902); a person does the first call with real devices.
+Open: the engine was built and tested on macOS and in a Linux container with virtual sound devices (ADR 0750). The explicit native macOS tier checks the production capture and playout paths through BlackHole (ADR 0913). The Windows build was not run. Physical microphones and physical audio outputs still require operator verification.
 
 ## Context
 

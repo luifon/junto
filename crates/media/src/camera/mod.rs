@@ -6,10 +6,45 @@ use livekit::webrtc::video_frame::VideoBuffer;
 
 use crate::share::{CaptureStream, Pending};
 
-#[cfg(any(test, all(target_os = "macos", not(feature = "test-support"))))]
+#[cfg(any(
+    test,
+    all(
+        target_os = "macos",
+        any(not(feature = "test-support"), feature = "native-device-tests")
+    )
+))]
 mod format;
 
-#[cfg(all(target_os = "macos", not(any(test, feature = "test-support"))))]
+#[cfg(any(
+    test,
+    all(
+        target_os = "macos",
+        any(not(feature = "test-support"), feature = "native-device-tests")
+    )
+))]
+mod matrix;
+
+#[cfg(all(
+    target_os = "macos",
+    any(test, not(feature = "test-support"), feature = "native-device-tests")
+))]
+#[allow(unsafe_code)]
+mod color;
+
+#[cfg(all(
+    target_os = "macos",
+    any(test, not(feature = "test-support"), feature = "native-device-tests")
+))]
+#[allow(unsafe_code)]
+mod settings;
+
+#[cfg(all(
+    target_os = "macos",
+    any(
+        not(any(test, feature = "test-support")),
+        feature = "native-device-tests"
+    )
+))]
 #[allow(unsafe_code)]
 mod macos;
 #[cfg(any(test, feature = "test-support"))]
@@ -106,6 +141,19 @@ impl CameraCapture for NoCamera {
 #[cfg(any(test, feature = "test-support"))]
 pub fn system() -> Arc<NoCamera> {
     Arc::new(NoCamera)
+}
+
+/// Explicit native factory for the opt-in device executable. Creation requests no access.
+#[cfg(all(target_os = "macos", feature = "native-device-tests"))]
+pub fn native_for_test() -> Arc<dyn CameraCapture> {
+    Arc::new(macos::SystemCamera)
+}
+
+/// For the native stage: whether a camera buffer delivered without conversion is in the 601
+/// matrix of the publication path. `None` for a buffer that the camera code converted.
+#[cfg(all(target_os = "macos", feature = "native-device-tests"))]
+pub fn native_is_601_for_test(buffer: &dyn VideoBuffer) -> Option<bool> {
+    color::native_is_601(buffer)
 }
 
 #[cfg(not(any(test, feature = "test-support")))]

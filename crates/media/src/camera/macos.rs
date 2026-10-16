@@ -1,16 +1,13 @@
 //! AVFoundation capture. Session objects stay on one capture thread.
 
-use std::ffi::c_void;
-use std::ptr::NonNull;
 use std::sync::{Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use block2::RcBlock;
 use dispatch2::DispatchQueue;
-use livekit::webrtc::video_frame::native::NativeBuffer;
 use objc2::rc::{Retained, autoreleasepool};
-use objc2::runtime::{AnyObject, Bool, NSObject, NSObjectProtocol, ProtocolObject};
+use objc2::runtime::{Bool, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, define_class, msg_send};
 use objc2_av_foundation::{
     AVAuthorizationStatus, AVCaptureConnection, AVCaptureDevice, AVCaptureDeviceInput,
@@ -18,9 +15,8 @@ use objc2_av_foundation::{
     AVCaptureSessionPreset640x480, AVCaptureSessionPreset1280x720, AVCaptureVideoDataOutput,
     AVCaptureVideoDataOutputSampleBufferDelegate, AVMediaTypeVideo,
 };
-use objc2_core_foundation::CFRetained;
 use objc2_core_media::CMSampleBuffer;
-use objc2_foundation::{NSDictionary, NSNumber, NSString};
+use objc2_foundation::NSString;
 use tokio::sync::oneshot;
 
 use super::*;
@@ -196,10 +192,16 @@ define_class!(
                 let Some(image) = sample.image_buffer() else {
                     return;
                 };
-                let image: NonNull<c_void> = CFRetained::into_raw(image).cast();
-                self.ivars()
-                    .sink
-                    .picture(Arc::new(NativeBuffer::from_cv_pixel_buffer(image.as_ptr())));
+                use core_foundation::base::TCFType;
+                let image = core_video::pixel_buffer::CVPixelBuffer::wrap_under_get_rule(
+                    (&*image as *const _ as *mut std::ffi::c_void).cast(),
+                );
+                if let Some(buffer) = super::color::convert(&image) {
+                    self.ivars().sink.picture(buffer);
+                } else {
+                    // A pixel format other than the one that the output settings request.
+                    self.ivars().sink.ended(CameraError::Unsupported);
+                }
             }
         }
     }
@@ -238,9 +240,7 @@ impl Session {
             session.setSessionPreset(preset(size));
             let output = AVCaptureVideoDataOutput::new();
             output.setAlwaysDiscardsLateVideoFrames(true);
-            let key = NSString::from_str("PixelFormatType");
-            let format = NSNumber::new_u32(u32::from_be_bytes(*b"420v"));
-            let settings = NSDictionary::<NSString, AnyObject>::from_slices(&[&*key], &[&*format]);
+            let settings = super::settings::video(size).ok_or(CameraError::Unsupported)?;
             output.setVideoSettings(Some(&settings));
             if !session.canAddOutput(&output) {
                 return Err(CameraError::Failed("camera output is unavailable".into()));

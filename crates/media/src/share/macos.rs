@@ -8,8 +8,8 @@
 //!
 //! The functions that decide something are plain functions with tests: which application
 //! is the client itself, which windows are listed, and how a sound buffer of the system
-//! becomes interleaved samples. The calls to the system are not run by a test: a test
-//! captures no screen and causes no permission question (ADR 0902).
+//! becomes interleaved samples. Ordinary tests capture no screen and cause no permission
+//! question; the explicit native tier exercises the system calls (ADR 0913).
 
 use std::ffi::c_void;
 use std::ptr::{self, NonNull};
@@ -26,7 +26,7 @@ use objc2_core_audio_types::{AudioBuffer, AudioBufferList, AudioStreamBasicDescr
 use objc2_core_foundation::CFRetained;
 use objc2_core_graphics::{
     CGDisplayCopyDisplayMode, CGDisplayMode, CGMainDisplayID, CGPreflightScreenCaptureAccess,
-    CGRequestScreenCaptureAccess,
+    CGRequestScreenCaptureAccess, kCGColorSpaceSRGB, kCGDisplayStreamYCbCrMatrix_ITU_R_601_4,
 };
 use objc2_core_media::{
     CMAudioFormatDescriptionGetStreamBasicDescription, CMBlockBuffer, CMSampleBuffer, CMTime,
@@ -744,6 +744,7 @@ impl Content {
             configuration.setHeight(height as usize);
             configuration.setScalesToFit(true);
             configuration.setPixelFormat(PIXEL_FORMAT);
+            configure_color(&configuration);
             configuration.setShowsCursor(true);
             configuration.setMinimumFrameInterval(CMTime::new(
                 1,
@@ -896,9 +897,31 @@ impl ScreenCapture for SystemCapture {
     }
 }
 
+fn configure_color(configuration: &SCStreamConfiguration) {
+    // SAFETY: these framework constants are immutable and setters retain their values.
+    unsafe {
+        configuration.setColorSpaceName(kCGColorSpaceSRGB);
+        configuration.setColorMatrix(kCGDisplayStreamYCbCrMatrix_ITU_R_601_4);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn picture_color_configuration_is_independent_of_the_display_profile() {
+        // Constructing a configuration opens no screen and requests no permission.
+        unsafe {
+            let configuration = SCStreamConfiguration::new();
+            configure_color(&configuration);
+            assert_eq!(&*configuration.colorSpaceName(), kCGColorSpaceSRGB);
+            assert_eq!(
+                &*configuration.colorMatrix(),
+                kCGDisplayStreamYCbCrMatrix_ITU_R_601_4
+            );
+        }
+    }
 
     fn own() -> Own {
         Own {

@@ -22,6 +22,10 @@ Automated tests:
 
 Tests on real systems:
 
+- An explicitly selected native macOS tier verifies virtual audio, camera and visible
+  screen capture through the production implementations (ADR 0913). It is separate
+  from ordinary and ignored CI tests and requires operator-managed permissions.
+
 - Real capture of screen, sound and microphone is tested on each operating system:
   - a real macOS machine;
   - a real Linux desktop, in an X11 session first and then in a Wayland session;
@@ -32,6 +36,6 @@ Tests on real systems:
 ## Consequences
 
 - The recording path is tested from a published signal to the content of the output file, without a person.
-- Capture on real systems is tested by a person and is not part of CI, so an error in capture can pass CI.
+- Native capture is checked separately from CI, with explicit device tests and operator-assisted checks, so an error in capture can pass CI.
 - A release needs a macOS machine, a Linux desktop with both session types, a Windows 11 virtual machine and a clean system of each kind.
 - Capture on Windows is tested in a virtual machine. Real microphones and GPUs on Windows are covered only by the physical-machine tests before a release.
