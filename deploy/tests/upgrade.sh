@@ -43,6 +43,8 @@ mkdir "$work/models" "$work/earlier"
         echo "JUNTO_LOCAL_PORT=$port"
         echo "JUNTO_POSTGRES_MEMORY=512m"
         echo "JUNTO_SERVER_MEMORY=512m"
+        echo "JUNTO_SERVER_IMAGE=$project-server"
+        echo "JUNTO_INIT_IMAGE=$project-init"
     } > "$work/env"
 )
 export JUNTO_ENV_FILE="$work/env" COMPOSE_PROJECT_NAME="$project"
@@ -140,6 +142,7 @@ cp upgrade-undo.sh "$work/earlier/deploy/upgrade-undo.sh"
 
 # The earlier release, with content.
 old up -d --build --wait --wait-timeout 600 postgres server
+new pull recorder
 driver seed --count 3
 before=$(schema)
 old stop server

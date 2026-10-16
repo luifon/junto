@@ -1,0 +1,8 @@
+# A restore uses existing release images for the server and volume initialization.
+services:
+  init:
+    image: ${JUNTO_INIT_IMAGE:?Set JUNTO_INIT_IMAGE to the prebuilt init image of the backup release (docs/install.md, Restore)}
+    build: !reset null
+  server:
+    image: ${JUNTO_SERVER_IMAGE:?Set JUNTO_SERVER_IMAGE to the prebuilt image of the backup release (docs/install.md, Restore)}
+    build: !reset null

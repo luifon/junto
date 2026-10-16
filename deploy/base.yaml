@@ -28,6 +28,7 @@ services:
   # Sets owner and mode of the volume directories, then exits. The only container of the
   # deployment's own images that runs as root: no network, two capabilities.
   init:
+    image: ${JUNTO_INIT_IMAGE:-}
     build: *server-build
     restart: "no"
     user: "0:0"
@@ -93,6 +94,7 @@ services:
 
   server:
     <<: *service
+    image: ${JUNTO_SERVER_IMAGE:-}
     build: *server-build
     init: true
     # The group of the worker process (10001) and the group of the spool (10002): the

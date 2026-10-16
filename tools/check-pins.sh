@@ -115,12 +115,12 @@ if [ -d .github/workflows ]; then
     fi
 fi
 
-unpinned=$(grep -n '^ *image:' deploy/*.yaml | grep -v "$digest" || true)
+unpinned=$(grep -n '^ *image:' deploy/*.yaml | grep -v -F -e 'image: ${JUNTO_SERVER_IMAGE:' -e 'image: ${JUNTO_INIT_IMAGE:' | grep -v "$digest" || true)
 if [ -n "$unpinned" ]; then
     echo "$unpinned"
     fail "a Compose file names an image without a digest"
 else
-    echo "ok    every image of the Compose files has a digest"
+    echo "ok    every external image of the Compose files has a digest"
 fi
 for file in "$server" "$worker" "$speech" deploy/images/link/Dockerfile; do
     unpinned=$(grep -n -e '^ARG [A-Z_]*_IMAGE=' -e '^# syntax=' "$file" | grep -v "$digest" || true)

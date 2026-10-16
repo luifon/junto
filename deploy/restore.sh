@@ -9,6 +9,7 @@
 #
 # A backup is restored with the release that wrote it: the script refuses a backup of
 # another schema than the one of the server of this checkout, before it stops a container.
+# JUNTO_SERVER_IMAGE and JUNTO_INIT_IMAGE name its prebuilt images. No image is built or pulled.
 #
 # The server, the recorder and the worker are stopped and stay stopped. Start the deployment
 # afterwards with "docker compose -f <form file> up -d".
@@ -33,7 +34,7 @@ if [ ! -f "$form" ] || [ ! -f "$settings" ]; then
     exit 2
 fi
 compose() {
-    docker compose --env-file "$settings" -f "$form" "$@"
+    docker compose --env-file "$settings" -f "$form" -f restore-images.yaml "$@"
 }
 verify() {
     if command -v sha256sum >/dev/null 2>&1; then
@@ -96,6 +97,31 @@ case "$(sed -n 's/^JUNTO_POSTGRES_PASSWORD=//p' "$settings" | tail -n 1)" in
         ;;
 esac
 
+# PostgreSQL starts init as a dependency. The temporary server and recorder containers
+# start without dependencies. Check all four services before even the schema container.
+configuration=$(compose config)
+service_image() {
+    printf '%s\n' "$configuration" | sed -n "/^  $1:/,/^  [^ ]/s/^    image: //p" | tr -d "\"'"
+}
+image=$(service_image server)
+for service in init postgres server recorder; do
+    required=$(service_image "$service")
+    if [ -z "$required" ]; then
+        echo "restore: $form names no image for $service. Nothing was changed." >&2
+        exit 1
+    fi
+    if ! docker image inspect "$required" > /dev/null 2>&1; then
+        echo "restore: required image $required is not available locally. Nothing was changed." >&2
+        if [ "$service" = server ] || [ "$service" = init ]; then
+            echo "restore: load the saved release image: docker image load --input <release-images.tar>" >&2
+            echo "restore: or build it explicitly in the checkout of the backup release: docker compose --env-file \"$settings\" -f $form build $service" >&2
+        else
+            echo "restore: provide it before restoring: docker pull $required" >&2
+        fi
+        exit 1
+    fi
+done
+
 # The schema of the backup and the schema of the server image of this deployment
 # (ADR 0018). The command "restored" accepts the schema of its own binary only, and a
 # server does not start on a newer schema, so every other backup is refused here, before a
@@ -110,16 +136,8 @@ if [ -f "$backup/schema" ]; then
         echo "restore: $backup/schema is not one line \"schema <number>\"" >&2
         exit 1
     fi
-    image=$(compose config --images | grep -e '-server$' | head -n 1)
-    if [ -z "$image" ]; then
-        echo "restore: $form names no image of the server" >&2
-        exit 1
-    fi
-    if ! docker image inspect "$image" > /dev/null 2>&1; then
-        compose build server
-    fi
-    named=$(compose config | sed -n 's/^name: //p' | head -n 1 | tr -d '"')
-    stated=$(docker run --rm --network none --name "${named:-junto}-server-schema-$$" \
+    named=$(printf '%s\n' "$configuration" | sed -n 's/^name: //p' | head -n 1 | tr -d '"')
+    stated=$(docker run --rm --pull never --network none --name "${named:-junto}-server-schema-$$" \
         --memory 64m --cpus 0.5 --pids-limit 32 --read-only --cap-drop ALL \
         --security-opt no-new-privileges:true "$image" schema-version < /dev/null) || stated=""
     of_server=$(printf '%s\n' "$stated" | sed -n 's/^schema \([0-9][0-9]*\)$/\1/p')
@@ -141,7 +159,7 @@ fi
 copy_comment='junto: copy of the database junto before a migration'
 
 compose stop server worker recorder
-compose up -d --wait postgres
+compose up -d --wait --no-build --pull never postgres
 # A run of this script that was ended by force can have left a container that still
 # unpacks or replaces files. The containers of this script have a label; one that still
 # runs is ended before the staging starts.
@@ -153,7 +171,7 @@ if [ -n "$earlier" ]; then
     docker rm -f $earlier > /dev/null
 fi
 once() {
-    compose run --rm --no-deps -T --label junto.script=restore "$@"
+    compose run --rm --no-deps --pull never -T --label junto.script=restore "$@"
 }
 
 sql() {

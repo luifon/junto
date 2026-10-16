@@ -48,6 +48,8 @@ docker run --rm --network none -v "$PWD:/repository:ro" -w /repository "$JUNTO_C
     deploy/tests/transcribe-handover.sh deploy/tests/transcribe-handover-inside.sh
 step "Compose files of every form"
 deploy/tests/compose-config.sh
+step "Restore image checks before container changes"
+python3 -B -m unittest discover -s deploy/tests -p 'test_restore_images.py'
 step "Server image"
 docker build -f deploy/images/server/Dockerfile -t junto-ci-server .
 step "Link image"

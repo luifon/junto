@@ -35,7 +35,7 @@ Restore, `deploy/restore.sh`:
 
 - Before a container is stopped: the list of checksums names the dump, the archive, the settings and the file `schema` when the backup has one, the checksums are right, and the archive holds no member outside the two directories and no link.
 - Before a container is stopped: the schema of the backup is the schema that `junto-server schema-version` of the server image states. A backup of a newer and of an earlier schema is refused, with both numbers. The command `restored` accepts the schema of its own binary only, and a server does not start on a newer schema, so no other backup can be restored by this image.
-- The image is the one that the staging runs: the image of the service `server` by its name, in a container without a network, with a name of the project and the limits of `init` (ADR 0015). A server that runs can be of another image, when the image was built again after its start, and a second container of the service cannot start beside it in the forms that give the server a fixed address. The image is built when it does not exist.
+- The image is the one that the staging runs: the image explicitly named by `JUNTO_SERVER_IMAGE` (ADR 0005), in a container without a network, with a name of the project and the limits of `init` (ADR 0015). A second container of the service cannot start beside a running server in the forms that give the server a fixed address. The server, init, PostgreSQL and recorder images must exist before this container starts. The restore builds and pulls no image.
 - A backup without the file `schema`, which the first release with the backup commands wrote, is staged, and `restored` decides: its message names both schemas, and nothing is replaced.
 - Each container that the script starts has a label. A container with that label that an earlier run left, for example a run that was ended by force while it unpacked the archive, is ended before the staging starts.
 - The staging also starts a container of the recorder once, because the replacement needs one; a host on which it cannot start fails before anything is replaced.
@@ -82,7 +82,7 @@ Trusted proxy:
 - A recording that runs or is processed during a backup is not in the backup. The operator reads `left-out`.
 - A restore needs free space for a second copy of the files and of the database until the replacement.
 - While a restore replaces the data, and after an interruption of that step, the log of a server that is started states that the database `junto` does not exist. It does not name the restore.
-- A restore needs the release of the backup: the image of the server of that checkout must exist or be built before anything is stopped, because the script asks it for its schema.
+- A restore needs the release of the backup: the operator provides its images before running the script. The script asks the server image for its schema and never builds it.
 - A restore needs the image of the recorder, because a container of the recorder service empties its temporary directory.
 - A checkout that is older than `deploy/upgrade-undo.sh` gets the script of the newer release by hand.
 - `deploy/backup.sh` reads the table of the applied migrations of the database, with the statement of the server for the newest one.
