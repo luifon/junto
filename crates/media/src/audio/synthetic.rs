@@ -518,8 +518,9 @@ mod tests {
         assert_eq!(host.opened_outputs(), [None]);
     }
 
-    /// The left channel of what one open microphone delivers until `count` samples.
-    fn record(host: &SyntheticHost, count: usize, during: impl FnOnce()) -> Vec<f32> {
+    /// The left channel of the first `count` samples that one microphone delivers after it
+    /// was opened.
+    fn record(host: &SyntheticHost, count: usize) -> Vec<f32> {
         let heard: Arc<Mutex<Vec<f32>>> = Arc::default();
         let into = heard.clone();
         let input = host
@@ -531,7 +532,6 @@ mod tests {
                 Box::new(|_| {}),
             )
             .unwrap();
-        during();
         let deadline = Instant::now() + Duration::from_secs(20);
         while heard.lock().unwrap().len() < count && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
@@ -548,10 +548,12 @@ mod tests {
         // Speech at another rate is converted to the rate of the device. Here a tone of
         // 1000 Hz at 22.05 kHz stands for speech: the microphone delivers it at 44.1 kHz.
         let speech = sine(1000.0, 0.5, 22_050, 22_050);
+        // The speech is queued before the stream opens, so the first sample that the stream
+        // delivers is the first sample of the speech, however late its thread runs.
         host.hush("tone", true);
-        let heard = record(&host, 44_100 + 22_050, || {
-            host.say("tone", &speech, 22_050);
-        });
+        host.say("tone", &speech, 22_050);
+        assert!(host.speaking("tone") == Duration::from_secs(1));
+        let heard = record(&host, 44_100 + 22_050);
         assert!(host.speaking("tone") == Duration::ZERO);
         // The speech comes first, whole and at its pitch, and the tone does not sound.
         let (spoken, after) = heard.split_at(44_100);
@@ -561,7 +563,7 @@ mod tests {
 
         // Without the pause the tone returns when the speech has ended.
         host.hush("tone", false);
-        let heard = record(&host, 22_050, || {});
+        let heard = record(&host, 22_050);
         assert!((tone_level(&heard, 44_100, 440.0) - -12.04).abs() < 0.5);
     }
 

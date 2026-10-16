@@ -4,7 +4,8 @@
 //! synthetic sound, camera and screen, and saves what the windows drew.
 //!
 //! It runs on the main thread, which the windows of the system need, so it is a test
-//! without the test runner. Without its variables it does nothing:
+//! without the test runner. It does nothing on other systems than macOS, and nothing
+//! without its variables:
 //!
 //! ```sh
 //! JUNTO_REHEARSAL_ADDRESS=http://127.0.0.1:8080 \
@@ -20,31 +21,50 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+// The visual test context of gpui exists only on macOS, so everything below except the
+// `main` of other systems is compiled there only (ADR 0902).
+#[cfg(target_os = "macos")]
+use std::panic::{AssertUnwindSafe, catch_unwind};
+#[cfg(target_os = "macos")]
+use std::path::{Path, PathBuf};
+
+#[cfg(target_os = "macos")]
 #[allow(dead_code)]
 #[path = "../../../client-core/tests/e2e/recording_server.rs"]
 mod recording_server;
+#[cfg(target_os = "macos")]
 #[allow(dead_code)]
 #[path = "../../../client-core/tests/e2e/support.rs"]
 mod support;
 
+#[cfg(target_os = "macos")]
 #[allow(dead_code)]
 #[path = "../app/harness.rs"]
 mod harness;
+#[cfg(target_os = "macos")]
 mod native;
+#[cfg(target_os = "macos")]
 #[allow(dead_code)]
 #[path = "../app/rehearsal.rs"]
 mod rehearsal;
 
+#[cfg(target_os = "macos")]
 use rehearsal::{Deployment, Rehearsal, Speech};
 
+#[cfg(not(target_os = "macos"))]
+fn main() -> ExitCode {
+    println!("rehearsal: not run, the native rehearsal runs only on macOS");
+    ExitCode::SUCCESS
+}
+
+#[cfg(target_os = "macos")]
 fn variable(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
 }
 
+#[cfg(target_os = "macos")]
 fn main() -> ExitCode {
     let Some(address) = variable("JUNTO_REHEARSAL_ADDRESS") else {
         println!("rehearsal: not run, JUNTO_REHEARSAL_ADDRESS is not set");
@@ -133,8 +153,12 @@ fn main() -> ExitCode {
         .into_iter()
         .filter(|word| word.len() >= 6 && !a_words.contains(word))
         .find(|word| rehearsal::words(&heard_from_b).contains(word));
+    // The native run always searches for a spoken word: without one the step fails.
     step("10-search", &mut run, &mut |run| {
-        run.search(spoken.as_deref())
+        let word = spoken
+            .as_deref()
+            .expect("no word of six or more letters that only B said is in the transcript of B");
+        run.search(Some(word));
     });
     let files = run
         .found
@@ -172,6 +196,7 @@ fn main() -> ExitCode {
     }
 }
 
+#[cfg(target_os = "macos")]
 /// A generated speech file: a WAV file of 16-bit mono samples, and the description that
 /// the generator wrote beside it, with the text.
 fn read_speech(directory: &Path, name: &str) -> Speech {
@@ -188,6 +213,7 @@ fn read_speech(directory: &Path, name: &str) -> Speech {
     }
 }
 
+#[cfg(target_os = "macos")]
 /// The samples and the rate of a WAV file with one channel of 16-bit samples.
 fn wav(bytes: &[u8]) -> (Vec<f32>, u32) {
     assert!(&bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE");

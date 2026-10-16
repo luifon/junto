@@ -41,9 +41,16 @@ Tests on real systems:
     gpui gives the drawn positions of named elements only to its test contexts. The run
     loop and the dispatcher of the product are therefore not exercised, and the
     production entry point (`main.rs`, `app::state`) is not the one that runs.
-  - Pointer and keys reach the window through `Window::dispatch_event` and
-    `Window::dispatch_keystroke`, the calls that the input handler of the system makes.
-    Text is typed one key at a time into the drawn field.
+  - Pointer events reach the window through `Window::dispatch_event`, the call that the
+    input callback of the platform window makes. Text is typed one key at a time with
+    `Window::dispatch_keystroke`, gpui's simulation of a key: it runs the key bindings and
+    gives the text of the key to the input handler of the focused field. The key events of
+    AppKit and the text input client of macOS are not exercised.
+  - The checks read the view state from which the window draws (`ShellView` and the
+    administration view) and the drawn bounds of named elements; the share check reads
+    drawn pixels. One action is not made through the window: the download directory is
+    set on the application state, so that saved files go into the work directory of the
+    run and not into the Downloads folder of the user.
   - Sound, camera and screen are the synthetic devices of `junto-media`. The microphone
     of each window plays a tone, or queued speech from the speech generator of the
     transcription worker, so the real worker transcribes known words. Nothing opens a

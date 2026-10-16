@@ -8,9 +8,12 @@
 //! this file runs the steps that need no recorder against the server of the tests, so that
 //! a change of the window that breaks a step fails in the ordinary live tier.
 //!
-//! Every action is a press of the pointer on a drawn control or keys typed into a drawn
-//! field. Every check reads what the window drew. Nothing is written into the server
-//! directly.
+//! Every action of a person is a press of the pointer on a drawn control, given to the
+//! window as a pointer event, or keys typed into a drawn field with gpui's simulation of a
+//! key (ADR 0902). One setting is made on the application state: the download directory of
+//! step 8, so that saved files go into the work directory of the run. The checks read the
+//! view state from which the window draws, the drawn bounds of named elements and, for a
+//! share, drawn pixels. Nothing is written into the server directly.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
