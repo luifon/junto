@@ -158,6 +158,7 @@ pub async fn put_chunk(
     })?;
     let digest = files::hash(&bytes);
     let now = app.now();
+    crate::error::mark_possible_change();
     let already = transact!(app, |connection| {
         let access = Access::open(connection, &bearer, now).await?;
         let (_, upload) = files::writable(connection, &access, id, now).await?;
@@ -232,30 +233,33 @@ pub async fn put_chunk(
         .await
         .map_err(|error| ApiError::internal(&error))??;
     }
-    transact!(app, |connection| {
-        let access = Access::open(connection, &bearer, app.now()).await?;
-        files::writable(connection, &access, id, app.now()).await?;
-        let changed = sqlx::query(
-            "update attachment_chunks set stored=true
+    let upload: ApiResult<Upload> = async {
+        transact!(app, |connection| {
+            let access = Access::open(connection, &bearer, app.now()).await?;
+            files::writable(connection, &access, id, app.now()).await?;
+            let changed = sqlx::query(
+                "update attachment_chunks set stored=true
                  where attachment_id=$1
                  and offset_bytes=$2
                  and not stored",
-        )
-        .bind(id)
-        .bind(offset as i64)
-        .execute(&mut *connection)
-        .await?
-        .rows_affected();
-        if changed > 0 {
-            sqlx::query("update attachments set received=received+$2 where id=$1")
-                .bind(id)
-                .bind(bytes.len() as i64)
-                .execute(&mut *connection)
-                .await?;
-        }
-        Ok(files::owned(connection, &access, id, app.now()).await?.1)
-    })
-    .map(Json)
+            )
+            .bind(id)
+            .bind(offset as i64)
+            .execute(&mut *connection)
+            .await?
+            .rows_affected();
+            if changed > 0 {
+                sqlx::query("update attachments set received=received+$2 where id=$1")
+                    .bind(id)
+                    .bind(bytes.len() as i64)
+                    .execute(&mut *connection)
+                    .await?;
+            }
+            Ok(files::owned(connection, &access, id, app.now()).await?.1)
+        })
+    }
+    .await;
+    upload.map_err(ApiError::after_partial_change).map(Json)
 }
 #[utoipa::path(post,path="/api/v1/attachments/{attachment_id}/complete",tag="messages",params(("attachment_id"=AttachmentId,Path)),security(("session"=[])),responses((status=200,body=Upload),ApiError))]
 pub async fn complete_upload(

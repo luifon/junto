@@ -154,6 +154,18 @@ Attachments:
   rechecking the session and access. All paths use server identifiers and offsets, never
   the supplied filename. Opens and writes refuse symbolic links using the recording-file
   helpers. A crash before completion allows the same chunk to be sent again.
+- After a chunk intent commits, a failure can leave that intent and immutable file
+  bytes even when the transaction that marks the chunk stored fails. A later `busy`
+  or database `timeout` becomes `unavailable` (503), without `Retry-After`, and states
+  that upload state may have changed. A request deadline once the intent transaction
+  starts uses the same conservative response, including when its commit answer is
+  lost. It never promises an unchanged upload. Before that transaction starts, `busy`
+  and `timeout` retain their unchanged-outcome meaning.
+- The client returns `unavailable` without automatically repeating it. The caller can
+  read upload status and resend identical bytes at the same offset; the durable intent
+  requires the same length and hash, immutable storage can be reused, and acceptance
+  increments the received length once. A failed acceptance does not make the upload
+  complete or attach its bytes to a message.
 - Completion reads and verifies all chunks and the declared hash in a background job that
   survives a request deadline; status polling and retries reuse completed verification.
   A hash mismatch is recorded durably and releases the reservation; later completion

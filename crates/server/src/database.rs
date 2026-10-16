@@ -32,6 +32,18 @@ pub fn is_timeout(error: &sqlx::Error) -> bool {
         .is_some_and(|code| TIME_LIMIT_STATES.contains(&code.as_ref()))
 }
 
+pub fn is_unavailable(error: &sqlx::Error) -> bool {
+    matches!(
+        error,
+        sqlx::Error::Io(_) | sqlx::Error::Tls(_) | sqlx::Error::PoolClosed
+    ) || error
+        .as_database_error()
+        .and_then(|database| database.code())
+        .is_some_and(|code| {
+            code.starts_with("08") || matches!(code.as_ref(), "57P01" | "57P02" | "57P03")
+        })
+}
+
 pub fn is_conflict(error: &sqlx::Error) -> bool {
     error
         .as_database_error()
