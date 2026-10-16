@@ -238,7 +238,12 @@ impl Shell {
             }));
         row = row.child(named(format!("override-role-{role_id}"), toggle));
 
-        let mut block = div().flex().flex_col().flex_none().child(row);
+        let mut block = div()
+            .id(SharedString::from(format!("override-result-{role_id}")))
+            .flex()
+            .flex_col()
+            .flex_none()
+            .child(row);
         if let Some(reason) = cannot_remove {
             block = block.child(sentence(reason, theme).mt(u(4.0)).ink(theme.colors.ink));
         }

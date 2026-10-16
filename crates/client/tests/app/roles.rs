@@ -117,17 +117,8 @@ fn send_role_form(window: &mut Window, name: &str) {
 /// Drags the handle of one role onto the row of another, as the pointer does. Returns
 /// whether a drag started.
 fn drag_role(window: &mut Window, from: &'static str, to: &'static str) -> bool {
-    window.cx.run_until_parked();
-    let start = window
-        .cx
-        .debug_bounds(from)
-        .unwrap_or_else(|| panic!("{from} is not drawn"))
-        .center();
-    let end = window
-        .cx
-        .debug_bounds(to)
-        .unwrap_or_else(|| panic!("{to} is not drawn"))
-        .center();
+    let scroll = window.in_shell(|shell, _, _| shell.admin_scroll_handle());
+    let start = window.reveal(&scroll, from).center();
     window
         .cx
         .simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
@@ -137,6 +128,7 @@ fn drag_role(window: &mut Window, from: &'static str, to: &'static str) -> bool 
         Modifiers::none(),
     );
     let started = window.cx.update(|_, cx| cx.has_active_drag());
+    let end = window.reveal(&scroll, to).center();
     window
         .cx
         .simulate_mouse_move(end, MouseButton::Left, Modifiers::none());

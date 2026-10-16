@@ -412,6 +412,36 @@ impl Window {
         self.cx.debug_bounds(selector).is_some()
     }
 
+    /// Reveals a control by visiting the measured scroll range once, without clicking.
+    #[track_caller]
+    pub fn reveal(
+        &mut self,
+        scroll: &gpui::ScrollHandle,
+        selector: &'static str,
+    ) -> gpui::Bounds<gpui::Pixels> {
+        self.settle();
+        let visible = |this: &mut Self| {
+            let page = scroll.bounds();
+            this.cx
+                .debug_bounds(selector)
+                .filter(|bounds| bounds.top() >= page.top() && bounds.bottom() <= page.bottom())
+        };
+        if let Some(bounds) = visible(self) {
+            return bounds;
+        }
+        let maximum = f32::from(scroll.max_offset().y);
+        let step = (f32::from(scroll.bounds().size.height) * 0.75).max(1.0);
+        for page in 0..=(maximum / step).ceil() as usize {
+            let offset = (page as f32 * step).min(maximum);
+            scroll.set_offset(gpui::point(gpui::px(0.0), gpui::px(-offset)));
+            self.in_shell(|_, _, cx| cx.notify());
+            if let Some(bounds) = visible(self) {
+                return bounds;
+            }
+        }
+        panic!("{selector} is not in the measured scroll range");
+    }
+
     /// Clicks the middle of the element with this name.
     #[track_caller]
     pub fn click(&mut self, selector: &'static str) {

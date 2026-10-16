@@ -435,8 +435,8 @@ impl Shell {
         };
         side_panel(&theme, text::NOTIFICATIONS, "notices-panel")
             .child(header)
-            .children(bar)
-            .children(failed)
+            .child(crate::ui::notice_slot("notices-bar-slot").children(bar))
+            .child(crate::ui::notice_slot("notices-failed-slot").children(failed))
             .child(body)
             .into_any_element()
     }
@@ -909,11 +909,15 @@ impl Shell {
         }
 
         dialog
-            .children(panel.refused.map(|reason| {
-                div()
-                    .mt(u(12.0))
-                    .child(Notice::error(reason).selector("notify-refused"))
-            }))
+            .child(
+                crate::ui::notice_slot("notify-refused-slot").children(panel.refused.map(
+                    |reason| {
+                        div()
+                            .mt(u(12.0))
+                            .child(Notice::error(reason).selector("notify-refused"))
+                    },
+                )),
+            )
             .into_any_element()
     }
 
@@ -1254,8 +1258,9 @@ impl Shell {
                     .into_any_element(),
             ];
         rows.extend(self.render_quiet_zone(busy, theme, cx));
+        let mut notices = Vec::new();
         if self.quiet_refused {
-            rows.push(
+            notices.push(
                 div()
                     .mt(u(8.0))
                     .child(Notice::error(text::QUIET_TIME_REFUSED).selector("quiet-time-refused"))
@@ -1263,7 +1268,7 @@ impl Shell {
             );
         }
         if differs {
-            rows.push(
+            notices.push(
                 div()
                     .mt(u(8.0))
                     .child(
@@ -1275,7 +1280,7 @@ impl Shell {
             );
         }
         for (server, reason) in &quiet.failed {
-            rows.push(
+            notices.push(
                 div()
                     .mt(u(8.0))
                     .child(
@@ -1284,6 +1289,11 @@ impl Shell {
                     .into_any_element(),
             );
         }
+        rows.push(
+            crate::ui::notice_slot("quiet-notice-slot")
+                .children(notices)
+                .into_any_element(),
+        );
         rows
     }
 }

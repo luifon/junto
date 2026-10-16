@@ -300,13 +300,14 @@ impl Shell {
                             })),
                     ),
             )
-            .when_some(self.admin.roles.invalid, |column, invalid| {
-                column.child(
-                    div()
-                        .mt(u(6.0))
-                        .child(Notice::error(invalid).selector("role-form-invalid")),
-                )
-            })
+            .child(
+                crate::ui::notice_slot("role-form-invalid-slot").children(
+                    self.admin
+                        .roles
+                        .invalid
+                        .map(|invalid| Notice::error(invalid).selector("role-form-invalid")),
+                ),
+            )
             .when_some(help, |column, help| {
                 column.child(sentence(help, theme).mt(u(5.0)))
             })

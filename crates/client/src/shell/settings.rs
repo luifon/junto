@@ -1,9 +1,7 @@
 //! The first start, where the person chooses a name, and the settings of the application:
 //! the name of the profile preset and the interface scale (ADR 0703, ADR 0717).
 
-use gpui::{
-    Context, IntoElement, ParentElement, SharedString, Styled, Window, div, prelude::FluentBuilder,
-};
+use gpui::{Context, IntoElement, ParentElement, SharedString, Styled, Window, div};
 
 use junto_client_core::voice::{InputMode, TalkKey};
 
@@ -98,13 +96,13 @@ impl Shell {
                     .mt(u(12.0))
                     .child(Field::new(&self.name, text::NAME_FIELD).selector("name-field")),
             )
-            .when_some(self.name_error.clone(), |dialog, error| {
-                dialog.child(
-                    div()
-                        .mt(u(10.0))
-                        .child(Notice::error(error).selector("name-error")),
-                )
-            })
+            .child(
+                crate::ui::notice_slot("name-error-slot").children(
+                    self.name_error
+                        .clone()
+                        .map(|error| Notice::error(error).selector("name-error")),
+                ),
+            )
             .child(dialog_footer([Button::new("continue")
                 .kind(ButtonKind::Primary)
                 .label(text::CONTINUE)
@@ -170,13 +168,13 @@ impl Shell {
                     ),
             )
             .child(help(text::PROFILE_NAME_HELP, &theme))
-            .when_some(self.name_error.clone(), |dialog, error| {
-                dialog.child(
-                    div()
-                        .mt(u(8.0))
-                        .child(Notice::error(error).selector("name-error")),
-                )
-            })
+            .child(
+                crate::ui::notice_slot("name-error-slot").children(
+                    self.name_error
+                        .clone()
+                        .map(|error| Notice::error(error).selector("name-error")),
+                ),
+            )
             .children(self.render_preset_picture(&theme, cx))
             .child(
                 div()
@@ -219,20 +217,18 @@ impl Shell {
                     ),
             )
             .child(help(text::SCALE_HELP, &theme))
-            .when_some(settings_error, |dialog, error| {
-                dialog.child(
-                    div()
-                        .mt(u(8.0))
-                        .child(Notice::error(error).selector("settings-error")),
-                )
-            })
+            .child(crate::ui::notice_slot("settings-error-slot").children(
+                settings_error.map(|error| Notice::error(error).selector("settings-error")),
+            ))
             .child(div().mt(u(16.0)).child(group_label(text::VOICE, &theme)))
             .children(self.render_voice_settings(&theme, cx))
-            .when_some(
-                self.state.read(cx).notifications_unavailable(),
-                |dialog, reason| {
-                    dialog.child(Notice::new(reason).selector("notifications-unavailable"))
-                },
+            .child(
+                crate::ui::notice_slot("notifications-unavailable-slot").children(
+                    self.state
+                        .read(cx)
+                        .notifications_unavailable()
+                        .map(|reason| Notice::new(reason).selector("notifications-unavailable")),
+                ),
             )
             .child(div().mt(u(16.0)).child(group_label(text::QUIET, &theme)))
             .children(self.render_quiet_settings(&quiet, &theme, cx))
@@ -394,14 +390,11 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        if let Some(error) = error {
-            rows.push(
-                div()
-                    .mt(u(8.0))
-                    .child(Notice::error(error).selector("voice-settings-error"))
-                    .into_any_element(),
-            );
-        }
+        rows.push(
+            crate::ui::notice_slot("voice-settings-error-slot")
+                .children(error.map(|error| Notice::error(error).selector("voice-settings-error")))
+                .into_any_element(),
+        );
         rows
     }
 }

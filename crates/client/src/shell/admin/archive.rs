@@ -616,8 +616,9 @@ impl Shell {
                     }),
                 )),
         );
+        let mut result = crate::ui::notice_slot("channel-export-result-slot");
         if matches!(view.made, Some(Made::Export(_))) {
-            column = column.child(
+            result = result.child(
                 div().flex_none().mt(u(6.0)).child(
                     Notice::new(text::admin::EXPORT_ASKED)
                         .selector("export-asked")
@@ -634,6 +635,7 @@ impl Shell {
                 ),
             );
         }
+        column = column.child(result);
         column = column.children(refusal(
             view.refused(AskKind::RequestExport),
             "channel-export-refused",

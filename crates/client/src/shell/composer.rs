@@ -1535,7 +1535,11 @@ impl Shell {
             .children(permanence)
             .children(banner)
             .children(files)
-            .children(problem)
+            .child(
+                crate::ui::notice_slot(pane.id("compose-problem-slot"))
+                    .h(u(24.0))
+                    .children(problem),
+            )
             .child(frame)
             .into_any_element()
     }

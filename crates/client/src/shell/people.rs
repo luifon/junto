@@ -175,17 +175,18 @@ impl Shell {
                 .into_any_element(),
             note(txt::PICTURE_HELP).into_any_element(),
         ];
+        let mut notices = Vec::new();
         if !picture.stored {
-            rows.push(note(txt::NO_PICTURE).into_any_element());
+            notices.push(note(txt::NO_PICTURE).into_any_element());
         } else if picture.image.is_none() && !picture.saving {
-            rows.push(
+            notices.push(
                 note(txt::PICTURE_NOT_SHOWN)
                     .debug_selector(|| "picture-not-shown".to_owned())
                     .into_any_element(),
             );
         }
         if let Some(failed) = picture.failed {
-            rows.push(
+            notices.push(
                 div()
                     .mt(u(8.0))
                     .child(Notice::error(failed).selector("picture-error"))
@@ -193,7 +194,7 @@ impl Shell {
             );
         }
         for (server_id, server) in refused {
-            rows.push(
+            notices.push(
                 div()
                     .mt(u(8.0))
                     .debug_selector(move || format!("preset-refused:{server_id}"))
@@ -203,6 +204,11 @@ impl Shell {
                     .into_any_element(),
             );
         }
+        rows.push(
+            crate::ui::notice_slot("picture-notice-slot")
+                .children(notices)
+                .into_any_element(),
+        );
         rows
     }
 }

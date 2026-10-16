@@ -88,6 +88,12 @@ impl Shell {
         self.book.settings_scroll.scroll_to_bottom();
     }
 
+    /// The settings scroll position used by the window tests.
+    #[cfg(feature = "test-support")]
+    pub fn settings_scroll_handle(&self) -> ScrollHandle {
+        self.book.settings_scroll.clone()
+    }
+
     pub(crate) fn settings_scroll(&self) -> &ScrollHandle {
         &self.book.settings_scroll
     }
@@ -141,16 +147,11 @@ impl Shell {
             .read(cx)
             .move_failure(server_id)
             .map(str::to_owned);
-        if let Some(failed) = failed {
-            items.push(
-                div()
-                    .flex_none()
-                    .px(u(12.0))
-                    .py(u(4.0))
-                    .child(Notice::error(failed).selector("move-server-error"))
-                    .into_any_element(),
-            );
-        }
+        items.push(
+            crate::ui::notice_slot("move-server-error-slot")
+                .children(failed.map(|failed| Notice::error(failed).selector("move-server-error")))
+                .into_any_element(),
+        );
         items
     }
 
@@ -277,8 +278,11 @@ impl Shell {
                 .debug_selector(|| "version-build".to_owned())
                 .child(txt::this_build(version.build))
                 .into_any_element(),
-            sentence(txt::check_shown(&version.check).into(), "version-state")
-                .mt(u(3.0))
+            crate::ui::notice_slot("version-state-slot")
+                .child(sentence(
+                    txt::check_shown(&version.check).into(),
+                    "version-state",
+                ))
                 .into_any_element(),
         ];
         if let Some(address) = page {

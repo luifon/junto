@@ -361,8 +361,11 @@ fn a_quiet_time_shows_no_system_notification_and_mark_all_reads_the_list(cx: &mu
     // A daily quiet time is written as two times of day, in the zone of the system or in
     // a zone that the person chooses from the list (ADR 0798).
     assert!(window.shows("quiet-zone"));
+    let scroll = window.in_shell(|shell, _, _| shell.settings_scroll_handle());
+    window.reveal(&scroll, "quiet-zone-change");
     window.click("quiet-zone-change");
     window.in_shell(|shell, window, cx| shell.type_quiet_zone_search("tokyo", window, cx));
+    window.reveal(&scroll, "quiet-zone-choice:Asia/Tokyo");
     window.click("quiet-zone-choice:Asia/Tokyo");
     assert!(!window.shows("quiet-zone-search"));
     window.in_shell(|shell, window, cx| shell.type_quiet_times("22:00", "7:30", window, cx));

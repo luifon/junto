@@ -234,13 +234,12 @@ fn step_title(title: &'static str, theme: &Theme) -> gpui::Div {
         .child(title)
 }
 
-fn failure(reason: Option<&str>, selector: &'static str) -> Option<gpui::Div> {
-    reason.map(|reason| {
-        div()
-            .flex_none()
-            .mt(u(8.0))
-            .child(Notice::error(reason.to_owned()).selector(selector))
-    })
+fn failure(reason: Option<&str>, selector: &'static str) -> Option<AnyElement> {
+    Some(
+        crate::ui::notice_slot(selector)
+            .children(reason.map(|reason| Notice::error(reason.to_owned()).selector(selector)))
+            .into_any_element(),
+    )
 }
 
 /// The name of a server and under it a second line, in a line of the layer.
@@ -306,6 +305,12 @@ fn progress_named(
 }
 
 impl Shell {
+    /// The device-link scroll position used by the window tests.
+    #[cfg(feature = "test-support")]
+    pub fn linking_scroll_handle(&self) -> ScrollHandle {
+        self.linking.scroll.clone()
+    }
+
     /// Opens the link on all servers in one role.
     pub fn open_link_all(&mut self, role: LinkRole, window: &mut Window, cx: &mut Context<Self>) {
         self.reset_linking_ui(window, cx);
@@ -536,7 +541,14 @@ impl Shell {
         };
         let content = line(theme)
             .child(server_text(&row.server, Some(account), theme))
-            .child(state)
+            .child(
+                crate::ui::notice_slot((
+                    "approval-progress",
+                    row.server_id.as_uuid().as_u128() as u64,
+                ))
+                .w(u(330.0))
+                .child(state),
+            )
             .when(
                 matches!(row.progress, ApprovalShown::AccountChanged(_)),
                 |content| {
@@ -669,15 +681,13 @@ impl Shell {
                 }
                 column = column
                     .children(failure(view.error.as_deref(), "link-all-error"))
-                    .when(*all_approved, |column| {
-                        column.child(
-                            div().flex_none().mt(u(8.0)).child(
-                                Notice::new(text::account::ALL_APPROVED)
-                                    .icon(Icon::Check)
-                                    .selector("link-all-approved"),
-                            ),
-                        )
-                    })
+                    .child(crate::ui::notice_slot("link-all-approved-slot").children(
+                        all_approved.then(|| {
+                            Notice::new(text::account::ALL_APPROVED)
+                                .icon(Icon::Check)
+                                .selector("link-all-approved")
+                        }),
+                    ))
                     .child(
                         div()
                             .flex()
@@ -726,7 +736,14 @@ impl Shell {
             format!("link-line-{}", row.server_id),
             line(theme)
                 .child(server_text(&row.server, None, theme))
-                .child(state),
+                .child(
+                    crate::ui::notice_slot((
+                        "link-progress",
+                        row.server_id.as_uuid().as_u128() as u64,
+                    ))
+                    .w(u(330.0))
+                    .child(state),
+                ),
         )
         .flex_1()
         .into_any_element()
@@ -788,8 +805,9 @@ impl Shell {
                 let mut column = column
                     .child(step_title(text::account::REQUEST_TEXT_TITLE, theme))
                     .child(sentence(text::account::REQUEST_TEXT_HELP, theme));
-                column = match (request, fingerprint) {
-                    (Some(request), Some(fingerprint)) => column
+                let result = crate::ui::notice_slot("link-request-result").h(u(256.0));
+                let result = match (request, fingerprint) {
+                    (Some(request), Some(fingerprint)) => result
                         .child(div().flex_none().mt(u(8.0)).child(text_box(
                             request.expose(),
                             text::account::REQUEST_LABEL,
@@ -809,19 +827,20 @@ impl Shell {
                             true,
                             theme,
                         )),
-                    _ if *all_linked => column.child(
+                    _ if *all_linked => result.child(
                         div().flex_none().mt(u(8.0)).child(
                             Notice::new(text::account::ALL_LINKED)
                                 .icon(Icon::Check)
                                 .selector("link-all-linked"),
                         ),
                     ),
-                    _ => column.child(
+                    _ => result.child(
                         sentence(text::account::NO_REQUEST, theme)
                             .mt(u(8.0))
                             .debug_selector(|| "link-no-request".to_owned()),
                     ),
                 };
+                column = column.child(result);
                 column = column.child(group_label(text::account::SERVERS, theme));
                 for row in lines {
                     column = column.child(Self::render_link_line(row, theme));

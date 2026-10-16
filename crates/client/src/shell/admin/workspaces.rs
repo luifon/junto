@@ -2,7 +2,10 @@
 //! workspace, a new name, the deletion, and the invite code that enters a further
 //! workspace.
 
-use gpui::{AnyElement, Context, IntoElement, ParentElement, SharedString, Styled, Window, div};
+use gpui::{
+    AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString, Styled,
+    Window, div,
+};
 use junto_client_core::protocol::ids::WorkspaceId;
 
 use super::{
@@ -173,6 +176,9 @@ impl Shell {
             .refused(AskKind::RenameWorkspace(workspace_id))
             .or(view.refused(AskKind::DeleteWorkspace(workspace_id)));
         div()
+            .id(SharedString::from(format!(
+                "workspace-result-{workspace_id}"
+            )))
             .flex()
             .flex_col()
             .flex_none()

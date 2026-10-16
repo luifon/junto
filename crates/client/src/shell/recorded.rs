@@ -1008,30 +1008,32 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        if let Some(reason) = card.refused.clone() {
-            body.push(
-                div()
-                    .px(u(8.0))
-                    .pb(u(8.0))
-                    .child(
-                        Notice::error(reason).selector("recording-refused").action(
-                            Button::new(("dismiss-recording-refusal", index))
-                                .label(text::DISMISS)
-                                .selector("dismiss-recording-refusal")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.state.update(cx, |state, cx| {
-                                        state.dismiss_recording_refusal(
-                                            server_id,
-                                            recording_id,
-                                            cx,
-                                        );
-                                    });
-                                })),
-                        ),
-                    )
-                    .into_any_element(),
-            );
-        }
+        body.push(
+            crate::ui::notice_slot(("recording-refusal-slot", index))
+                .children(card.refused.clone().map(|reason| {
+                    div()
+                        .px(u(8.0))
+                        .pb(u(8.0))
+                        .child(
+                            Notice::error(reason).selector("recording-refused").action(
+                                Button::new(("dismiss-recording-refusal", index))
+                                    .label(text::DISMISS)
+                                    .selector("dismiss-recording-refusal")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.state.update(cx, |state, cx| {
+                                            state.dismiss_recording_refusal(
+                                                server_id,
+                                                recording_id,
+                                                cx,
+                                            );
+                                        });
+                                    })),
+                            ),
+                        )
+                        .into_any_element()
+                }))
+                .into_any_element(),
+        );
         body.extend(self.card_transcript(card, &detail.transcript, theme, cx));
         body
     }

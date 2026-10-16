@@ -70,6 +70,12 @@ impl Shell {
         self.admin.recordings.asked = None;
     }
 
+    /// The administration scroll position used by the window tests.
+    #[cfg(feature = "test-support")]
+    pub fn admin_scroll_handle(&self) -> gpui::ScrollHandle {
+        self.admin.page_scroll.clone()
+    }
+
     /// Shows the end of the open page of the administration. The screen tool uses it.
     #[cfg(feature = "test-support")]
     pub fn scroll_admin_page_to_end(&mut self) {
