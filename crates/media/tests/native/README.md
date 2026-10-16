@@ -31,7 +31,7 @@ screen, the fixture refuses to start.
 | `a1` | Native capture through the call engine and LiveKit, fresh tones and silence, mute and push-to-talk. |
 | `a2` | Native playout measured by a BlackHole input probe, volume, sound-off and leave, with microphone publication disabled. |
 | `a3` | Native stop/start and refusal of the engine's default fallback for a missing choice. |
-| `c1` | Native camera dimensions, conversion, publication, remote progression, stop and reopen. |
+| `c1` | Native camera dimensions, conversion to the 601 matrix (every frame that is not a native 601 buffer arrives converted), publication, remote progression, stop and reopen. |
 | `s1-s2` | Real display/window marker pixels locally and remotely, source closure and capture-sink release. |
 | `s3` | Distinct application tones, own-process exclusion, system sound and sound None. |
 
@@ -67,6 +67,7 @@ display arrangements and other operating systems need separate runs.
 Audio stages refuse admission unless CoreAudio reports BlackHole idle before the
 first stream opens. Fixture audio requires the admitted parent's private file.
 At the end of a stage, a process other than the runner and its helpers that
-still uses BlackHole fails the stage. These checks do not prevent another
+still uses BlackHole fails the stage, and so does a CoreAudio process list that
+does not contain the runner. These checks do not prevent another
 application from opening BlackHole during the stage and receiving the tones;
 keep monitoring, recording and meeting applications stopped for the entire stage.

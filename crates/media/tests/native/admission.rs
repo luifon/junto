@@ -13,8 +13,15 @@ pub struct Client {
 }
 
 /// Accepts the end of a stage only when each client that uses the device is this process or a
-/// helper that runs this executable.
+/// helper that runs this executable. CoreAudio lists every process that has read one of its
+/// properties, and this process reads them before the check, so a list without this process
+/// (including an empty list) is a list that cannot be trusted.
 pub fn exclusive(clients: &[Client], device: u32, own: (i32, &Path)) -> Result<(), String> {
+    if !clients.iter().any(|client| client.pid == Some(own.0)) {
+        return Err(format!(
+            "the process list does not contain this process: {clients:?}"
+        ));
+    }
     for client in clients {
         let devices = client
             .devices

@@ -46,3 +46,18 @@ fn only_this_process_and_its_helpers_may_have_used_the_device() {
         );
     }
 }
+
+#[test]
+fn a_process_list_without_this_process_fails_the_stage() {
+    let own = (40, Path::new("/invented/runner"));
+    for clients in [
+        vec![],
+        vec![client(Some(41), Some("/invented/runner"), Some(&[7]))],
+        vec![client(Some(42), Some("/invented/player"), Some(&[3]))],
+    ] {
+        assert!(
+            admission::exclusive(&clients, 7, own).is_err(),
+            "unsafe stage end: {clients:?}"
+        );
+    }
+}

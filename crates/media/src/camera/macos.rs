@@ -199,6 +199,7 @@ define_class!(
                 if let Some(buffer) = super::color::convert(&image) {
                     self.ivars().sink.picture(buffer);
                 } else {
+                    // A pixel format other than the one that the output settings request.
                     self.ivars().sink.ended(CameraError::Unsupported);
                 }
             }

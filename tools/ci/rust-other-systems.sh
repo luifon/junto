@@ -22,7 +22,11 @@ if [ "$system" = macos ]; then
     # this build with and without that module and reads the built binary.
     step "Condition waits of the client on macOS"
     tools/check-condition-wait.sh "${CARGO_TARGET_DIR:-target}/debug/junto"
-    cargo test --locked -p junto-media --lib condition_wait
+    # The unit tests of the media crate, with those of the condition waits and those that the
+    # Linux job does not compile: camera colour and capture settings, and screen capture
+    # configuration. They open no device and ask for no permission.
+    step "Media unit tests on macOS"
+    cargo test --locked -p junto-media --lib
 fi
 # The tests that need PostgreSQL run on Linux only, except the window tests on Windows.
 step "Tests that need no database"

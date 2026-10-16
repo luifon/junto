@@ -15,6 +15,15 @@ use crate::share::{CaptureStream, Pending};
 ))]
 mod format;
 
+#[cfg(any(
+    test,
+    all(
+        target_os = "macos",
+        any(not(feature = "test-support"), feature = "native-device-tests")
+    )
+))]
+mod matrix;
+
 #[cfg(all(
     target_os = "macos",
     any(test, not(feature = "test-support"), feature = "native-device-tests")
@@ -138,6 +147,13 @@ pub fn system() -> Arc<NoCamera> {
 #[cfg(all(target_os = "macos", feature = "native-device-tests"))]
 pub fn native_for_test() -> Arc<dyn CameraCapture> {
     Arc::new(macos::SystemCamera)
+}
+
+/// For the native stage: whether a camera buffer delivered without conversion is in the 601
+/// matrix of the publication path. `None` for a buffer that the camera code converted.
+#[cfg(all(target_os = "macos", feature = "native-device-tests"))]
+pub fn native_is_601_for_test(buffer: &dyn VideoBuffer) -> Option<bool> {
+    color::native_is_601(buffer)
 }
 
 #[cfg(not(any(test, feature = "test-support")))]

@@ -29,8 +29,11 @@ tests need permissions and must never select a physical sound output by fallback
   process list must show no process other than the runner and its helpers, which
   run the runner's executable, that uses BlackHole for input or output. A process
   whose device list is unknown, or that uses BlackHole and has an unknown process
-  identifier or executable, also fails the stage. D0 checks that
-  this list reports the runner while its own output stream runs.
+  identifier or executable, also fails the stage. CoreAudio lists every process
+  that has read one of its properties, and the runner reads them before the
+  check, so a list that does not contain the runner, including an empty list,
+  fails the stage. D0 checks that this list reports the runner as a client of
+  BlackHole while its own output stream runs.
 - These checks do not prevent sound from leaving BlackHole. Another application
   can open the device after admission; the end check detects it only if it still
   uses the device when the stage ends, and then the test tones have already

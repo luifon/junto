@@ -22,10 +22,11 @@ impl CameraSink for Sink {
     fn picture(&self, buffer: Arc<dyn VideoBuffer>) {
         let dimensions = (buffer.width(), buffer.height());
         let valid = junto_media::share::picture::convert(&*buffer, (32, 24)).is_some();
-        let normalized = buffer.buffer_type() == VideoBufferType::I420;
+        let converted = buffer.buffer_type() == VideoBufferType::I420;
+        let native_601 = junto_media::camera::native_is_601_for_test(&*buffer);
         self.progress.send_modify(|p| {
             p.picture(dimensions, valid);
-            p.normalized += usize::from(normalized);
+            p.delivered(converted, native_601);
         });
         self.inner.picture(buffer);
     }
@@ -141,6 +142,11 @@ pub async fn capture() {
         .expect("ten remote camera frames within ten seconds");
         let during = *observed.borrow();
         assert!(during.frames >= before.frames + 10);
+        let (expected, converted) = during.conversions(&before);
+        assert_eq!(
+            converted, expected,
+            "every frame that is not a native 601 buffer must arrive converted to 601"
+        );
         assert!(!during.invalid);
         assert_eq!(
             during.dimensions, during.configured,
@@ -155,9 +161,9 @@ pub async fn capture() {
         .expect("native camera shutdown within two seconds")
         .unwrap();
         println!(
-            "C1 session={session} native_frames={} normalized_709_frames={} remote_frames={received} dimensions={:?} elapsed={:?}",
+            "C1 session={session} native_frames={} converted_frames={converted} native_601_frames={} remote_frames={received} dimensions={:?} elapsed={:?}",
             during.frames - before.frames,
-            during.normalized - before.normalized,
+            during.native_601 - before.native_601,
             during.dimensions,
             started.elapsed()
         );
