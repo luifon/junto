@@ -1,11 +1,19 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 #[cfg(target_os = "macos")]
+mod admission;
+#[cfg(target_os = "macos")]
 mod audio;
+#[cfg(target_os = "macos")]
+static ADMISSION: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 #[cfg(target_os = "macos")]
 mod calls;
 #[cfg(target_os = "macos")]
 mod camera;
+#[cfg(target_os = "macos")]
+mod camera_progress;
+#[cfg(target_os = "macos")]
+mod colors;
 #[cfg(target_os = "macos")]
 mod fixture;
 #[cfg(target_os = "macos")]
@@ -66,6 +74,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if stage == "fixture-audio" {
         use std::io::{BufRead, Write};
+        let admission = std::env::args()
+            .nth(2)
+            .ok_or("parent admission is required")?;
+        if std::fs::read_to_string(admission)? != "coreaudio:BlackHole2ch_UID" {
+            return Err("invalid parent admission".into());
+        }
         let host = audio::host()?;
         let tone = calls::Tone::new(&host);
         println!("ready {}", host.id());
@@ -96,8 +110,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         return Err("NOT RUN: microphone permission must already be allowed".into());
     }
+    // Keep the private admission directory alive until the stage and its helpers stop.
+    let admission = if matches!(stage.as_str(), "d0" | "a1" | "a2" | "a3" | "s3") {
+        let id = route::verify_idle()?;
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("admitted");
+        std::fs::write(&path, id.to_string())?;
+        ADMISSION.set(path).map_err(|_| "stage already admitted")?;
+        Some(directory)
+    } else {
+        None
+    };
     match stage.as_str() {
-        "inspect" => println!("verified BlackHole id={}", route::verify()?),
+        "inspect" => println!("verified idle BlackHole id={}", route::verify_idle()?),
         "d0" => audio::devices()?,
         "a1" | "a2" | "a3" | "c1" | "s1-s2" | "s3" => {
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -115,6 +140,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
         }
         _ => return Err("unknown stage".into()),
+    }
+    if admission.is_some() {
+        // A process that opened BlackHole after admission and still uses it fails the stage.
+        route::exclusive()?;
+        println!("stage end: no other process uses BlackHole");
     }
     Ok(())
 }

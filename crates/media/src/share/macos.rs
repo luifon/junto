@@ -744,8 +744,7 @@ impl Content {
             configuration.setHeight(height as usize);
             configuration.setScalesToFit(true);
             configuration.setPixelFormat(PIXEL_FORMAT);
-            configuration.setColorSpaceName(kCGColorSpaceSRGB);
-            configuration.setColorMatrix(kCGDisplayStreamYCbCrMatrix_ITU_R_601_4);
+            configure_color(&configuration);
             configuration.setShowsCursor(true);
             configuration.setMinimumFrameInterval(CMTime::new(
                 1,
@@ -898,9 +897,31 @@ impl ScreenCapture for SystemCapture {
     }
 }
 
+fn configure_color(configuration: &SCStreamConfiguration) {
+    // SAFETY: these framework constants are immutable and setters retain their values.
+    unsafe {
+        configuration.setColorSpaceName(kCGColorSpaceSRGB);
+        configuration.setColorMatrix(kCGDisplayStreamYCbCrMatrix_ITU_R_601_4);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn picture_color_configuration_is_independent_of_the_display_profile() {
+        // Constructing a configuration opens no screen and requests no permission.
+        unsafe {
+            let configuration = SCStreamConfiguration::new();
+            configure_color(&configuration);
+            assert_eq!(&*configuration.colorSpaceName(), kCGColorSpaceSRGB);
+            assert_eq!(
+                &*configuration.colorMatrix(),
+                kCGDisplayStreamYCbCrMatrix_ITU_R_601_4
+            );
+        }
+    }
 
     fn own() -> Own {
         Own {

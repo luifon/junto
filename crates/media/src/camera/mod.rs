@@ -17,6 +17,20 @@ mod format;
 
 #[cfg(all(
     target_os = "macos",
+    any(test, not(feature = "test-support"), feature = "native-device-tests")
+))]
+#[allow(unsafe_code)]
+mod color;
+
+#[cfg(all(
+    target_os = "macos",
+    any(test, not(feature = "test-support"), feature = "native-device-tests")
+))]
+#[allow(unsafe_code)]
+mod settings;
+
+#[cfg(all(
+    target_os = "macos",
     any(
         not(any(test, feature = "test-support")),
         feature = "native-device-tests"

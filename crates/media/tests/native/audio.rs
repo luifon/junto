@@ -26,6 +26,19 @@ pub fn devices() -> Result<(), Box<dyn std::error::Error>> {
         Box::new(|error| eprintln!("output failed: {error}")),
     )?;
     let observed = output_seen.recv_timeout(Duration::from_secs(10))?;
+    assert!(
+        route::verify_idle().is_err(),
+        "a running device must refuse a new stage"
+    );
+    let object = route::object()?;
+    assert!(
+        route::clients()?.iter().any(|client| {
+            client.pid == Some(std::process::id() as i32)
+                && client.devices.as_ref().is_some_and(|d| d.contains(&object))
+        }),
+        "CoreAudio must list this process as a client of BlackHole"
+    );
+    route::exclusive()?;
     println!(
         "D0 output id={} samples={} format={:?} elapsed={:?}",
         stream.device.id,

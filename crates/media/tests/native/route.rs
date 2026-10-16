@@ -6,7 +6,11 @@ use core_foundation::{
 };
 use cpal::traits::{DeviceTrait, HostTrait};
 use junto_media::audio::{AudioError, DeviceId};
-use std::ffi::c_void;
+use std::ffi::{OsStr, c_void};
+use std::os::unix::ffi::OsStrExt;
+use std::path::PathBuf;
+
+use super::admission::Client;
 
 #[repr(C)]
 struct Address {
@@ -32,6 +36,11 @@ unsafe extern "C" {
         size: *mut u32,
         data: *mut c_void,
     ) -> i32;
+}
+
+#[link(name = "System")]
+unsafe extern "C" {
+    fn proc_pidpath(pid: i32, buffer: *mut c_void, size: u32) -> i32;
 }
 
 fn address(selector: &[u8; 4], scope: &[u8; 4]) -> Address {
@@ -64,8 +73,11 @@ fn numbers(object: u32, selector: &[u8; 4], scope: &[u8; 4]) -> Result<Vec<u32>,
             &address,
         )?;
     }
-    if size == 0 || size % 4 != 0 {
+    if size % 4 != 0 {
         return Err(AudioError::NoDevice);
+    }
+    if size == 0 {
+        return Ok(Vec::new());
     }
     let mut values = vec![0u32; size as usize / 4];
     // SAFETY: the allocation has the size returned by CoreAudio. A changed size fails.
@@ -118,7 +130,68 @@ fn string(object: u32, selector: &[u8; 4]) -> Result<String, AudioError> {
     }
 }
 
+fn executable(pid: i32) -> Option<PathBuf> {
+    let mut buffer = vec![0u8; 4096];
+    // SAFETY: the buffer is writable for the length passed to the system.
+    let length = unsafe { proc_pidpath(pid, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
+    buffer.truncate(usize::try_from(length).ok().filter(|l| *l > 0)?);
+    std::fs::canonicalize(OsStr::from_bytes(&buffer)).ok()
+}
+
+/// The CoreAudio client processes with the devices that each uses for input or output.
+pub fn clients() -> Result<Vec<Client>, AudioError> {
+    let mut clients = Vec::new();
+    for process in numbers(1, b"prs#", b"glob")? {
+        let pid = number(process, b"ppid").ok().map(|pid| pid as i32);
+        let devices = match (
+            numbers(process, b"pdv#", b"inpt"),
+            numbers(process, b"pdv#", b"outp"),
+        ) {
+            (Ok(mut input), Ok(output)) => {
+                input.extend(output);
+                Some(input)
+            }
+            _ => None,
+        };
+        clients.push(Client {
+            pid,
+            executable: pid.and_then(executable),
+            devices,
+        });
+    }
+    Ok(clients)
+}
+
+/// The CoreAudio object of the one device with the BlackHole identifier.
+pub fn object() -> Result<u32, AudioError> {
+    let mut found = Vec::new();
+    for object in numbers(1, b"dev#", b"glob")? {
+        if string(object, b"uid ")? == "BlackHole2ch_UID" {
+            found.push(object);
+        }
+    }
+    if found.len() != 1 {
+        return Err(AudioError::NoDevice);
+    }
+    Ok(found[0])
+}
+
+/// Refuses when a process other than this runner and its helpers uses BlackHole now.
+pub fn exclusive() -> Result<(), Box<dyn std::error::Error>> {
+    let own = std::fs::canonicalize(std::env::current_exe()?)?;
+    let own = (std::process::id() as i32, own.as_path());
+    Ok(super::admission::exclusive(&clients()?, object()?, own)?)
+}
+
 pub fn verify() -> Result<DeviceId, AudioError> {
+    verify_route(false)
+}
+
+pub fn verify_idle() -> Result<DeviceId, AudioError> {
+    verify_route(true)
+}
+
+fn verify_route(require_idle: bool) -> Result<DeviceId, AudioError> {
     let mut plugins = Vec::new();
     for plugin in numbers(1, b"plg#", b"glob")? {
         if string(plugin, b"piid")? == "audio.existential.BlackHole2ch" {
@@ -140,6 +213,9 @@ pub fn verify() -> Result<DeviceId, AudioError> {
             || number(object, b"livn")? != 1
             || !owned.contains(&object)
         {
+            return Err(AudioError::Refused);
+        }
+        if require_idle && !super::admission::idle(number(object, b"gone").ok()) {
             return Err(AudioError::Refused);
         }
         let host = cpal::default_host();

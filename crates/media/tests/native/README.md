@@ -18,6 +18,11 @@ The runner takes the machine lock, builds the needed executables, starts tempora
 services, and removes their containers after the stage. Screen stages also build
 an AppKit fixture and launch temporary application bundles with distinct identities.
 The fixture apps exit when their control connection closes.
+A fixture window opens on the first screen, the one with the menu bar, unless that
+display's colour space clips one of the four fixture colours; then it uses the next
+screen that shows all four. The colour check uses a 12-level tolerance, so a
+clipping display would fail it for a reason outside the capture code. With no such
+screen, the fixture refuses to start.
 
 | Stage | Evidence |
 | --- | --- |
@@ -58,3 +63,10 @@ these checks. Screen sink release proves removal of callback owners; the public
 capture interface does not expose ScreenCaptureKit's asynchronous stop completion.
 Packaged application permissions, physical device loss, acoustic quality, multiple
 display arrangements and other operating systems need separate runs.
+
+Audio stages refuse admission unless CoreAudio reports BlackHole idle before the
+first stream opens. Fixture audio requires the admitted parent's private file.
+At the end of a stage, a process other than the runner and its helpers that
+still uses BlackHole fails the stage. These checks do not prevent another
+application from opening BlackHole during the stage and receiving the tones;
+keep monitoring, recording and meeting applications stopped for the entire stage.

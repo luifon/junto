@@ -25,18 +25,28 @@ func reply(_ fd: Int32, _ value: String) {
 }
 
 final class Pattern: NSView {
+    static let colors: [NSColor] = [
+        NSColor(srgbRed: 0.8, green: 0.1, blue: 0.1, alpha: 1),
+        NSColor(srgbRed: 0.1, green: 0.8, blue: 0.1, alpha: 1),
+        NSColor(srgbRed: 0.1, green: 0.1, blue: 0.8, alpha: 1),
+        NSColor(srgbRed: 0.8, green: 0.8, blue: 0.1, alpha: 1)
+    ]
+    // A display whose gamut lacks a colour clips it, and capture then returns the clipped colour.
+    static func shown(on screen: NSScreen) -> Bool {
+        guard let space = screen.colorSpace else { return false }
+        return colors.allSatisfy { color in
+            guard let source = color.usingColorSpace(.sRGB),
+                  let shown = color.usingColorSpace(space)?.usingColorSpace(.sRGB) else { return false }
+            return [(source.redComponent, shown.redComponent), (source.greenComponent, shown.greenComponent),
+                    (source.blueComponent, shown.blueComponent)].allSatisfy { abs($0.0 - $0.1) * 255 < 2 }
+        }
+    }
     var marker: UInt32 = 0
     override var isFlipped: Bool { true }
     override var isOpaque: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
-        let colors: [NSColor] = [
-            NSColor(srgbRed: 0.8, green: 0.1, blue: 0.1, alpha: 1),
-            NSColor(srgbRed: 0.1, green: 0.8, blue: 0.1, alpha: 1),
-            NSColor(srgbRed: 0.1, green: 0.1, blue: 0.8, alpha: 1),
-            NSColor(srgbRed: 0.8, green: 0.8, blue: 0.1, alpha: 1)
-        ]
         for index in 0..<4 {
-            colors[index].setFill()
+            Pattern.colors[index].setFill()
             NSRect(x: CGFloat(index % 2) * bounds.width / 2, y: bounds.height * 0.1 + CGFloat(index / 2) * bounds.height * 0.45, width: bounds.width / 2, height: bounds.height * 0.45).fill()
         }
         for bit in 0..<32 {
@@ -55,11 +65,16 @@ final class Fixture: NSObject, NSApplicationDelegate {
     let socketPath: String
     let helper: String
     let title: String
-    init(socketPath: String, helper: String, title: String) {
-        self.socketPath = socketPath; self.helper = helper; self.title = title
+    let admission: String
+    init(socketPath: String, helper: String, title: String, admission: String) {
+        self.socketPath = socketPath; self.helper = helper; self.title = title; self.admission = admission
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
-        guard let screen = NSScreen.main else { exit(2) }
+        // The first screen is the one with the menu bar; another is used only when it clips a colour.
+        guard let screen = NSScreen.screens.first(where: Pattern.shown(on:)) else {
+            DispatchQueue.global().async { self.serve("error no display shows the fixture colours") }
+            return
+        }
         let visible = screen.visibleFrame
         let width = min(800, visible.width - 80)
         let height = min(600, visible.height - 80)
@@ -85,7 +100,7 @@ final class Fixture: NSObject, NSApplicationDelegate {
         if player == nil {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: helper)
-            process.arguments = ["fixture-audio"]
+            process.arguments = ["fixture-audio", admission]
             var environment = ProcessInfo.processInfo.environment
             environment["JUNTO_TEST_NATIVE_DEVICES"] = "1"
             process.environment = environment
@@ -115,7 +130,7 @@ final class Fixture: NSObject, NSApplicationDelegate {
         }
         guard bound == 0 else { exit(2) }
         reply(client, geometry)
-        while let command = line(client) {
+        while geometry.hasPrefix("ready "), let command = line(client) {
             let parts = command.split(separator: " ")
             if parts.count == 2, parts[0] == "pattern", let marker = UInt32(parts[1]) {
                 DispatchQueue.main.sync {
@@ -138,9 +153,9 @@ final class Fixture: NSObject, NSApplicationDelegate {
 
 signal(SIGPIPE, SIG_IGN)
 let args = CommandLine.arguments
-if args.count != 4 { exit(2) }
+if args.count != 5 { exit(2) }
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
-let fixture = Fixture(socketPath: args[1], helper: args[2], title: args[3])
+let fixture = Fixture(socketPath: args[1], helper: args[2], title: args[3], admission: args[4])
 app.delegate = fixture
 app.run()

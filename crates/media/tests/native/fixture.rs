@@ -40,6 +40,7 @@ impl Fixture {
             .arg(&path)
             .arg(std::env::current_exe().unwrap())
             .arg(format!("Junto fixture {name}"))
+            .arg(crate::ADMISSION.get().cloned().unwrap_or_default())
             .spawn()
             .unwrap();
         let (stream, _) = tokio::time::timeout(Duration::from_secs(10), listener.accept())

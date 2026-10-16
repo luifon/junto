@@ -22,6 +22,20 @@ tests need permissions and must never select a physical sound output by fallback
   device class, virtual transport and driver bundle identity must match, and CPAL
   must expose that same stable identifier in both directions with supported formats.
   Aggregate and multi-output devices are excluded. System defaults are unchanged.
+- Before a top-level audio stage opens any stream, CoreAudio must report that
+  BlackHole is not running anywhere. Busy, missing and unknown states refuse the
+  stage. Its helpers require an admission file in the parent's private temporary
+  directory, removed when the stage exits. At the end of the stage, CoreAudio's
+  process list must show no process other than the runner and its helpers, which
+  run the runner's executable, that uses BlackHole for input or output. A process
+  whose device list is unknown, or that uses BlackHole and has an unknown process
+  identifier or executable, also fails the stage. D0 checks that
+  this list reports the runner while its own output stream runs.
+- These checks do not prevent sound from leaving BlackHole. Another application
+  can open the device after admission; the end check detects it only if it still
+  uses the device when the stage ends, and then the test tones have already
+  reached it. The operator must keep monitoring, recording and meeting
+  applications stopped throughout the stage.
 - A test host checks identity before every open, rejects absent or different
   choices, and verifies the device returned by the production host. Output remains
   zero until that verification completes. Any verification or stream failure

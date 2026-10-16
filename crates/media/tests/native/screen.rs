@@ -122,11 +122,8 @@ fn matches(frame: &PictureFrame, geometry: &Geometry, display: bool, marker: u32
             if index % 2 == 0 { 0.25 } else { 0.75 },
             if index < 2 { 0.325 } else { 0.775 },
         )
-        .is_some_and(|p| {
-            p.0.abs_diff(expected.0) < 45
-                && p.1.abs_diff(expected.1) < 45
-                && p.2.abs_diff(expected.2) < 45
-        }) {
+        .is_some_and(|p| super::colors::matches(p, expected))
+        {
             return false;
         }
     }

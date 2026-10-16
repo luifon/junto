@@ -3,19 +3,12 @@ use junto_media::camera::{
     CameraAccess, CameraCapture, CameraDevice, CameraError, CameraSink, CameraState,
 };
 use junto_media::share::{CaptureStream, Pending};
-use livekit::webrtc::video_frame::VideoBuffer;
+use livekit::webrtc::video_frame::{VideoBuffer, VideoBufferType};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
-#[derive(Clone, Copy, Debug, Default)]
-struct Progress {
-    frames: usize,
-    stopped: usize,
-    invalid: bool,
-    dimensions: (u32, u32),
-    configured: (u32, u32),
-}
+use super::camera_progress::Progress;
 
 struct Observed {
     native: Arc<dyn CameraCapture>,
@@ -29,10 +22,10 @@ impl CameraSink for Sink {
     fn picture(&self, buffer: Arc<dyn VideoBuffer>) {
         let dimensions = (buffer.width(), buffer.height());
         let valid = junto_media::share::picture::convert(&*buffer, (32, 24)).is_some();
+        let normalized = buffer.buffer_type() == VideoBufferType::I420;
         self.progress.send_modify(|p| {
-            p.frames += 1;
-            p.dimensions = dimensions;
-            p.invalid |= !valid || dimensions.0 == 0 || dimensions.1 == 0;
+            p.picture(dimensions, valid);
+            p.normalized += usize::from(normalized);
         });
         self.inner.picture(buffer);
     }
@@ -72,7 +65,7 @@ impl CameraCapture for Observed {
         let progress = self.progress.clone();
         Box::pin(async move {
             let stream = result.await?;
-            progress.send_modify(|p| p.configured = (stream.width, stream.height));
+            progress.send_modify(|p| p.configure((stream.width, stream.height)));
             Ok(stream)
         })
     }
@@ -162,8 +155,9 @@ pub async fn capture() {
         .expect("native camera shutdown within two seconds")
         .unwrap();
         println!(
-            "C1 session={session} native_frames={} remote_frames={received} dimensions={:?} elapsed={:?}",
+            "C1 session={session} native_frames={} normalized_709_frames={} remote_frames={received} dimensions={:?} elapsed={:?}",
             during.frames - before.frames,
+            during.normalized - before.normalized,
             during.dimensions,
             started.elapsed()
         );
