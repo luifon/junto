@@ -1,5 +1,7 @@
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::collections::BTreeMap;
+use std::future::Future;
 
 use axum::Json;
 use axum::http::header::RETRY_AFTER;
@@ -15,6 +17,18 @@ use crate::database::TransactionError;
 use crate::secrets::RandomnessUnavailable;
 
 pub type ApiResult<T> = Result<T, ApiError>;
+
+tokio::task_local! {
+    static MAY_HAVE_CHANGED: Cell<bool>;
+}
+
+pub(crate) async fn track_changes<F: Future>(work: F) -> F::Output {
+    MAY_HAVE_CHANGED.scope(Cell::new(false), work).await
+}
+
+pub(crate) fn mark_possible_change() {
+    let _ = MAY_HAVE_CHANGED.try_with(|changed| changed.set(true));
+}
 
 #[derive(Debug)]
 pub struct ApiError {
@@ -62,13 +76,31 @@ impl ApiError {
         )
     }
 
-    /// The request reached a time limit and changed nothing.
+    /// A time limit is safe to repeat only before a possible durable change.
     pub fn timeout() -> Self {
+        if MAY_HAVE_CHANGED.try_with(Cell::get).unwrap_or(false) {
+            return Self::unavailable();
+        }
         Self::new(
             ErrorCode::Timeout,
             "the request took too long and changed nothing; send the same request again",
         )
         .retry_after(Duration::seconds(1))
+    }
+
+    pub fn unavailable() -> Self {
+        Self::new(
+            ErrorCode::Unavailable,
+            "the request could not be confirmed; state may have changed; read current state before sending it again",
+        )
+    }
+
+    pub(crate) fn after_partial_change(self) -> Self {
+        if matches!(self.code, ErrorCode::Busy | ErrorCode::Timeout) {
+            Self::unavailable()
+        } else {
+            self
+        }
     }
 
     /// The error of an insert that can meet the row of a concurrent request. The server reads
@@ -96,7 +128,7 @@ impl ApiError {
         if self.retryable
             || matches!(
                 self.code,
-                ErrorCode::Busy | ErrorCode::Timeout | ErrorCode::Internal
+                ErrorCode::Busy | ErrorCode::Timeout | ErrorCode::Unavailable | ErrorCode::Internal
             )
         {
             return self;
@@ -152,6 +184,9 @@ impl From<sqlx::Error> for ApiError {
             // another wait for the pool would hold the request longer than its limit allows.
             tracing::warn!("no database connection was free within the wait for one");
             <Self as TransactionError>::exhausted()
+        } else if crate::database::is_unavailable(&error) {
+            tracing::warn!(%error, "database connection unavailable; request outcome may be unknown");
+            Self::unavailable()
         } else {
             Self::internal(&error)
         }
@@ -302,6 +337,30 @@ mod tests {
         for (denial, code) in cases {
             assert_eq!(ApiError::from(denial).code(), code);
         }
+    }
+
+    #[test]
+    fn a_broken_database_link_does_not_claim_an_internal_defect_or_an_unchanged_outcome() {
+        for kind in [
+            std::io::ErrorKind::ConnectionReset,
+            std::io::ErrorKind::BrokenPipe,
+            std::io::ErrorKind::UnexpectedEof,
+        ] {
+            let error = ApiError::from(sqlx::Error::Io(std::io::Error::from(kind)));
+            assert_eq!(error.code(), ErrorCode::Unavailable);
+            assert!(!error.is_conflict());
+            let response = error.into_response();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert!(!response.headers().contains_key(RETRY_AFTER));
+        }
+    }
+
+    #[test]
+    fn an_unavailable_change_does_not_claim_that_a_batch_changed_nothing() {
+        let error = ApiError::new(ErrorCode::Unavailable, "outcome unknown")
+            .in_change(2, "rename_workspace");
+        assert_eq!(error.code(), ErrorCode::Unavailable);
+        assert_eq!(error.message, "outcome unknown");
     }
 
     #[test]

@@ -280,3 +280,61 @@ async fn a_request_that_gets_no_connection_of_the_pool_gets_the_busy_error() {
         .await
         .ok::<serde_json::Value>(StatusCode::CREATED);
 }
+
+#[tokio::test]
+async fn a_connection_terminated_during_a_statement_is_unavailable() {
+    let server = TestServer::start_with(reads_the_log_after_writes_only).await;
+    let owner = server.owner().await;
+    let workspace = server.default_workspace(&owner).await;
+    let (holder, holder_pid) = hold_workspace_row(&server, &workspace).await;
+    let path = format!("/api/v1/workspaces/{}", workspace.id);
+    let body = json!({"name":"Renamed"});
+    let mut request = std::pin::pin!(server.patch(&owner, &path, &body));
+    let blocked = async {
+        loop {
+            let pid: Option<i32> = sqlx::query_scalar(
+                "select pid from pg_stat_activity where datname=current_database()
+                 and $1=any(pg_blocking_pids(pid)) and wait_event_type='Lock' limit 1",
+            )
+            .bind(holder_pid)
+            .fetch_optional(&server.db)
+            .await
+            .unwrap();
+            if let Some(pid) = pid {
+                break pid;
+            }
+            tokio::task::yield_now().await;
+        }
+    };
+    let pid = tokio::select! {
+        biased;
+        pid = tokio::time::timeout(PATIENCE, blocked) => pid.unwrap(),
+        reply = &mut request => panic!("request did not wait: {}", reply.text()),
+    };
+    let terminated: bool = sqlx::query_scalar("select pg_terminate_backend($1)")
+        .bind(pid)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert!(terminated);
+    let reply = tokio::time::timeout(PATIENCE, &mut request).await.unwrap();
+    assert_eq!(
+        reply.status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{}",
+        reply.text()
+    );
+    assert!(reply.retry_after.is_none());
+    reply.error(ErrorCode::Unavailable);
+    holder.rollback().await.unwrap();
+    let name: String = sqlx::query_scalar("select name from workspaces where id=$1")
+        .bind(workspace.id)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(name, "Acme");
+    server
+        .patch(&owner, &path, &body)
+        .await
+        .ok::<Workspace>(StatusCode::OK);
+}

@@ -34,8 +34,11 @@ Errors:
 - A missing permission gets `forbidden`. A limit of ADR 0301 gets its own code: `owner_only`, `owner_protected`, `own_account_target`, `exceeds_own_permissions`.
 - A missing, unknown or expired session token gets `unauthenticated`.
 - An internal failure gets `internal` with a fixed message. Its cause is written to the log and not sent.
-- An unknown path gets `not_found`, a known path with another method gets `method_not_allowed` (405), a request that reaches the time limit gets `timeout` (503), and a request whose transaction lost eight times gets `busy` (503, ADR 0009). These responses have the same body form as every other error.
+- An unknown path gets `not_found`, a known path with another method gets `method_not_allowed` (405), a request that reaches the time limit before a possible durable change gets `timeout` (503), and a request whose transaction lost eight times gets `busy` (503, ADR 0009). These responses have the same body form as every other error.
 - After `busy` and `timeout` nothing was changed, and the client sends the same request again. This holds for a signed request too, because its challenge is still unused (ADR 0108).
+- A broken database connection gives `unavailable` (503) without `Retry-After`; its
+  outcome may be unknown (ADR 0009). A chunk upload that may have committed its intent
+  also uses `unavailable` after a later capacity failure or time limit (ADR 0408).
 - A ceiling of the whole server gets its own code with the status 429: `challenges_full`, `device_links_full`, `join_requests_full`.
 - A body that cannot be read as the expected JSON gets `invalid_request`.
 

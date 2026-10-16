@@ -41,6 +41,25 @@ Time limits in the database:
 - The migrations run on a connection of their own without these limits.
 - Each attempt of a transaction waits at most 10 seconds for a free connection of the pool. The wait includes the check that the pool makes on an idle connection and the opening of a new one, so it also ends when PostgreSQL stops answering for a while. A request whose attempt gets no connection in this time gets the error `busy` with the status 503 and `Retry-After: 1`: no transaction began and nothing was changed, so the client sends the same request again. The server logs a warning. The server does not run the request again, because another wait for the pool would hold the request longer than its time limit allows.
 
+Broken database connections:
+
+- An I/O or TLS error on the database link, a closed pool, a PostgreSQL connection
+  exception (SQLSTATE class 08), or PostgreSQL shutting down or refusing connections
+  (57P01, 57P02, 57P03) gives `unavailable` with status 503. The server logs the cause
+  as a warning and does not run the transaction again.
+- This response has no `Retry-After` and does not state that nothing changed. Terminating a
+  backend before COMMIT rolls back its transaction, but a lost connection while
+  awaiting COMMIT can leave a committed transaction without its answer. The
+  transport error alone cannot distinguish these outcomes. The server uses the same
+  conservative response at both stages.
+- The client already treats `unavailable` as a server failure, keeps the session state,
+  and returns it to the caller without automatically repeating the request. The caller
+  reads current state before deciding whether to repeat an operation. An idempotent
+  operation can be repeated according to its own protocol.
+- `busy` and `timeout` promise an unchanged outcome only before a request has made a
+  durable change or started work that can commit after its deadline. Attachment chunks
+  and background completion follow the partial-change rule of ADR 0408.
+
 Other writers:
 
 - The start of the server, the host commands (ADR 0114) and the maintenance task use the same macros.
@@ -56,7 +75,8 @@ Test hook:
 - The result of concurrent requests is the result of running them one after the other in some order. A ban and an invite creation, a login, or a role change by the banned account cannot both take effect in an order that no sequence allows.
 - A new route gets this protection by using the macros. It needs no decision about locks.
 - A request can run its database work several times. Under many concurrent writes, PostgreSQL also ends transactions that did not truly conflict, and those are retried as well.
-- A client must be prepared for `busy` and send the request again.
+- A client must be prepared for `busy` and send the request again. A database link
+  failure gives `unavailable` instead, because the outcome may be unknown.
 - PostgreSQL detects conflicts only between serializable transactions. A program that writes to the database with another isolation level is outside this rule.
 - No transaction of a request holds a lock or a connection for longer than the database limits allow. A request that waits behind a lock for 5 seconds fails with `timeout`, also when it would have succeeded a moment later.
 - A server whose pool stays full, or whose database does not answer, answers `busy` and not an internal error, so a client can tell this state from a defect of the server.

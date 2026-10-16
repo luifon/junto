@@ -438,15 +438,21 @@ async fn completion_keeps_running_after_the_request_deadline_and_a_retry_reuses_
         .fetch_one(&mut *lock)
         .await
         .unwrap();
-    strict
+    let response = strict
         .post(
             &files.owner,
             &format!("/api/v1/attachments/{}/complete", upload.id),
             &json!({}),
         )
-        .await
-        .error(ErrorCode::Timeout);
+        .await;
     lock.commit().await.unwrap();
+    assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
+    response.error(ErrorCode::Unavailable);
+    assert!(response.retry_after.is_none(), "{}", response.text());
+    assert_eq!(
+        response.ok::<serde_json::Value>(StatusCode::SERVICE_UNAVAILABLE)["error"]["message"],
+        "the request could not be confirmed; state may have changed; read current state before sending it again"
+    );
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             let state: Upload = files
@@ -641,4 +647,125 @@ async fn one_account_can_hold_only_two_upload_places_and_other_accounts_can_uplo
         .await
         .ok(StatusCode::OK);
     assert!(complete.complete);
+}
+
+#[tokio::test]
+async fn a_chunk_with_a_committed_intent_does_not_claim_that_nothing_changed() {
+    let files = Files::open().await;
+    let upload = files.start(b"content").await;
+    let route = format!("/api/v1/attachments/{}/chunks/0", upload.id);
+    files.server.gate().arm(1);
+    let mut request = std::pin::pin!(files.server.put_bytes(
+        &files.owner,
+        &route,
+        None,
+        b"content".to_vec(),
+    ));
+    crate::support::drive_until(&mut request, files.server.gate().arrived()).await;
+    files.server.gate().lose_next(8);
+    files.server.gate().release();
+    // The intent transaction was already allowed through its loss check.
+    // Each attempt of the final transaction now loses.
+    let reply = request.await;
+    let intent: bool = sqlx::query_scalar(
+        "select stored from attachment_chunks where attachment_id=$1 and offset_bytes=0",
+    )
+    .bind(upload.id)
+    .fetch_one(&files.server.db)
+    .await
+    .unwrap();
+    assert!(!intent);
+    assert_eq!(
+        std::fs::read(files.directory.0.join(upload.id.to_string()).join("0")).unwrap(),
+        b"content"
+    );
+    assert_eq!(reply.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(reply.retry_after.is_none(), "{}", reply.text());
+    reply.error(ErrorCode::Unavailable);
+    let resumed: Upload = files
+        .server
+        .put_bytes(&files.owner, &route, None, b"content".to_vec())
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(resumed.received, 7);
+    let repeated: Upload = files
+        .server
+        .put_bytes(&files.owner, &route, None, b"content".to_vec())
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(repeated.received, 7);
+}
+
+#[tokio::test]
+async fn a_chunk_deadline_after_its_intent_does_not_claim_that_nothing_changed() {
+    let files = Files::open().await;
+    let upload = files.start(b"content").await;
+    let strict = files
+        .server
+        .strict(|config| {
+            config.limits.request_timeout = Duration::seconds(1);
+        })
+        .await;
+    let route = format!("/api/v1/attachments/{}/chunks/0", upload.id);
+    strict.gate().arm(2);
+    let mut request =
+        std::pin::pin!(strict.put_bytes(&files.owner, &route, None, b"content".to_vec(),));
+    crate::support::drive_until(&mut request, strict.gate().arrived()).await;
+    let reply = request.await;
+    strict.gate().release();
+    assert_eq!(
+        std::fs::read(files.directory.0.join(upload.id.to_string()).join("0")).unwrap(),
+        b"content"
+    );
+    assert!(reply.retry_after.is_none(), "{}", reply.text());
+    reply.error(ErrorCode::Unavailable);
+    let resumed: Upload = files
+        .server
+        .put_bytes(&files.owner, &route, None, b"content".to_vec())
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(resumed.received, 7);
+}
+
+#[tokio::test]
+async fn a_chunk_acceptance_lock_timeout_does_not_claim_that_nothing_changed() {
+    let files = Files::open().await;
+    let upload = files.start(b"content").await;
+    sqlx::raw_sql(
+        "create function hold_chunk_acceptance() returns trigger language plpgsql as $$
+         begin perform pg_advisory_xact_lock(1); return new; end $$;
+         create trigger hold_chunk_acceptance before update of stored on attachment_chunks
+         for each row execute function hold_chunk_acceptance()",
+    )
+    .execute(&files.server.db)
+    .await
+    .unwrap();
+    let strict = files
+        .server
+        .strict(|config| {
+            config.limits.database.lock = Duration::milliseconds(300);
+        })
+        .await;
+    let mut holder = files.server.db.begin().await.unwrap();
+    sqlx::query("select pg_advisory_xact_lock(1)")
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+    let route = format!("/api/v1/attachments/{}/chunks/0", upload.id);
+    let reply = strict
+        .put_bytes(&files.owner, &route, None, b"content".to_vec())
+        .await;
+    assert_eq!(
+        std::fs::read(files.directory.0.join(upload.id.to_string()).join("0")).unwrap(),
+        b"content"
+    );
+    assert!(reply.retry_after.is_none(), "{}", reply.text());
+    reply.error(ErrorCode::Unavailable);
+    holder.rollback().await.unwrap();
+    let resumed: Upload = files
+        .server
+        .put_bytes(&files.owner, &route, None, b"content".to_vec())
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(resumed.received, 7);
 }

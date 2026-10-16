@@ -280,6 +280,20 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn unavailable_is_returned_without_repeating_even_signed_requests_or_parts() {
+        for repeat in [Repeat::WhenUnchanged, Repeat::Signed, Repeat::Part] {
+            let script = Script::new([refusal("unavailable", 503, None)]);
+            let error = send(&script, &request(), repeat, &RetryPolicy::default())
+                .await
+                .unwrap_err();
+            assert_eq!(error.code(), Some(ErrorCode::Unavailable));
+            assert_eq!(error.category(), Some(ErrorCategory::ServerFault));
+            assert!(error.is_unavailable());
+            assert_eq!(script.bodies().len(), 1);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn a_signed_request_is_repeated_after_a_lost_answer() {
         let script = Script::new([lost(TransportErrorKind::Timeout), ok()]);
         send(&script, &request(), Repeat::Signed, &RetryPolicy::default())

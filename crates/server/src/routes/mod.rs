@@ -505,10 +505,13 @@ async fn call_changes(State(app): State<AppState>, request: Request, next: Next)
 
 async fn time_limit(State(app): State<AppState>, request: Request, next: Next) -> Response {
     let limit = app.config.limits.request_timeout.unsigned_abs();
-    match tokio::time::timeout(limit, next.run(request)).await {
-        Ok(response) => response,
-        Err(_) => ApiError::timeout().into_response(),
-    }
+    crate::error::track_changes(async {
+        match tokio::time::timeout(limit, next.run(request)).await {
+            Ok(response) => response,
+            Err(_) => ApiError::timeout().into_response(),
+        }
+    })
+    .await
 }
 
 /// Reads the body of a request before its route runs (ADR 0013).
