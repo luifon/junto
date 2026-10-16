@@ -4,7 +4,7 @@
 
 Accepted
 
-Open: the calls to ScreenCaptureKit were not run. An automated run captures no screen and causes no permission question (ADR 0902), and the capture needs the permission of the application that the system holds responsible. A person runs the first share. ADR 0751 records the Linux implementation and its verification status. The Windows capture is not built; its share button is disabled and says so.
+The explicit native macOS tier verifies display and window pixels and application/system audio through ScreenCaptureKit (ADR 0913). Ordinary CI tests capture no screen and cause no permission question. Packaged-app permission identity and system stop-completion remain separate verification items. ADR 0751 records the Linux implementation and its verification status. The Windows capture is not built; its share button is disabled and says so.
 
 ## Context
 
@@ -23,6 +23,7 @@ macOS:
 - The binding is `objc2-screen-capture-kit`, which gpui already links. It needs no Swift tool chain at build time.
 - A share uses two streams. The stream of the picture has a filter of one screen or of one window, the pixel format `420v`, the size and the frame rate that the person set, and no sound. The stream of the sound has the configuration of the step 0 test, and its filter follows the choice of the sharer: one application (the screen with that application included), all system sound (the screen with nothing excluded), or no stream.
 - The two streams are apart, so each choice of sound is possible with each picture, and the sound path is the one that was measured.
+- Picture capture requests sRGB and the ITU-R 601 YCbCr matrix explicitly. The untagged I420 conversion and publication path uses that matrix. The display's default color space can differ; using it changed the fixture's green and yellow regions beyond the native test's fixed conversion tolerance.
 - The sound of a shared window, when the person chooses "this application", is the sound of the application that owns the window (ADR 0502).
 - A share whose sound stream does not start does not run without sound.
 - The system has 10 seconds to answer the request for its lists and the start of each stream. Without an answer the share does not start, and a stream that had started is stopped. A start that completes when nobody waits for it any more stops its stream again.

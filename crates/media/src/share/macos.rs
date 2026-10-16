@@ -8,8 +8,8 @@
 //!
 //! The functions that decide something are plain functions with tests: which application
 //! is the client itself, which windows are listed, and how a sound buffer of the system
-//! becomes interleaved samples. The calls to the system are not run by a test: a test
-//! captures no screen and causes no permission question (ADR 0902).
+//! becomes interleaved samples. Ordinary tests capture no screen and cause no permission
+//! question; the explicit native tier exercises the system calls (ADR 0913).
 
 use std::ffi::c_void;
 use std::ptr::{self, NonNull};
@@ -26,7 +26,7 @@ use objc2_core_audio_types::{AudioBuffer, AudioBufferList, AudioStreamBasicDescr
 use objc2_core_foundation::CFRetained;
 use objc2_core_graphics::{
     CGDisplayCopyDisplayMode, CGDisplayMode, CGMainDisplayID, CGPreflightScreenCaptureAccess,
-    CGRequestScreenCaptureAccess,
+    CGRequestScreenCaptureAccess, kCGColorSpaceSRGB, kCGDisplayStreamYCbCrMatrix_ITU_R_601_4,
 };
 use objc2_core_media::{
     CMAudioFormatDescriptionGetStreamBasicDescription, CMBlockBuffer, CMSampleBuffer, CMTime,
@@ -744,6 +744,8 @@ impl Content {
             configuration.setHeight(height as usize);
             configuration.setScalesToFit(true);
             configuration.setPixelFormat(PIXEL_FORMAT);
+            configuration.setColorSpaceName(kCGColorSpaceSRGB);
+            configuration.setColorMatrix(kCGDisplayStreamYCbCrMatrix_ITU_R_601_4);
             configuration.setShowsCursor(true);
             configuration.setMinimumFrameInterval(CMTime::new(
                 1,

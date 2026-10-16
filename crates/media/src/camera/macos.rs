@@ -239,8 +239,15 @@ impl Session {
             let output = AVCaptureVideoDataOutput::new();
             output.setAlwaysDiscardsLateVideoFrames(true);
             let key = NSString::from_str("PixelFormatType");
+            let width_key = NSString::from_str("Width");
+            let height_key = NSString::from_str("Height");
             let format = NSNumber::new_u32(u32::from_be_bytes(*b"420v"));
-            let settings = NSDictionary::<NSString, AnyObject>::from_slices(&[&*key], &[&*format]);
+            let width = NSNumber::new_u32(size.0);
+            let height = NSNumber::new_u32(size.1);
+            let settings = NSDictionary::<NSString, AnyObject>::from_slices(
+                &[&*key, &*width_key, &*height_key],
+                &[&*format, &*width, &*height],
+            );
             output.setVideoSettings(Some(&settings));
             if !session.canAddOutput(&output) {
                 return Err(CameraError::Failed("camera output is unavailable".into()));
