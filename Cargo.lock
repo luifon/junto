@@ -4189,8 +4189,6 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 [[package]]
 name = "livekit"
 version = "0.9.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4dc818741891a8179eafd4665156482761d5084fb15238c1de9c211fdb974e3e"
 dependencies = [
  "bmrng",
  "bytes",

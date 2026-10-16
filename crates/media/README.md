@@ -113,3 +113,7 @@ The image `junto-linux-build:1` and volumes `junto-linux-cargo` and `junto-linux
 `JUNTO_LINUX_ARTIFACTS` names a host directory to receive `/tmp/junto-linux-artifacts` from the build container. The command must create that container directory when it produces artifacts. A copy failure is reported and does not replace an earlier command failure with a different exit status.
 
 The workspace patches the native peer-connection destructor to close before releasing its interface and observer, including when runtime shutdown cancels a task. The build inputs and provenance are in `vendor/`; ADR 0733 records the order and the native regression checks.
+
+The workspace also patches the publisher negotiation queue of the call library, so that a request that comes while a negotiation task ends starts a new negotiation. Without it, one lost request left every later remote track of the connection without media. `tests/negotiation_queue.rs` runs the queue tests; ADR 0733 records the defect, and `vendor/README.md` the provenance.
+
+It also sends the mute and unmute requests of a track to the media server in the order of the changes. Without it, a mute and an unmute that waited for one restored connection could arrive in the other order, and the media server held an open microphone as muted. `tests/mute_order.rs` runs the ordering tests; ADR 0733 records the defect.
