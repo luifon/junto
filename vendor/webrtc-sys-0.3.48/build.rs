@@ -61,6 +61,9 @@ fn main() {
     if is_desktop {
         rust_files.push("src/desktop_capturer.rs");
     }
+    if target_os == "linux" {
+        rust_files.push("src/system_certificate_verifier.rs");
+    }
 
     let mut builder = cxx_build::bridges(rust_files);
 
@@ -171,6 +174,7 @@ fn main() {
                 .flag("/EHsc");
         }
         "linux" => {
+            builder.file("src/system_certificate_verifier.cpp");
             println!("cargo:rustc-link-lib=dylib=rt");
             println!("cargo:rustc-link-lib=dylib=dl");
             println!("cargo:rustc-link-lib=dylib=pthread");

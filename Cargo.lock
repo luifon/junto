@@ -3889,6 +3889,7 @@ dependencies = [
  "junto-client-core",
  "junto-media",
  "livekit",
+ "log",
  "objc2 0.6.5",
  "objc2-av-foundation",
  "objc2-core-audio-types",
@@ -8866,6 +8867,8 @@ dependencies = [
  "glob",
  "log",
  "pkg-config",
+ "rustls",
+ "rustls-native-certs",
  "webrtc-sys-build",
 ]
 

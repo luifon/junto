@@ -30,6 +30,10 @@
 #include "rtc_base/crypto_random.h"
 #include "rtc_base/synchronization/mutex.h"
 
+#if defined(WEBRTC_LINUX) && !defined(WEBRTC_ANDROID)
+#include "livekit/system_certificate_verifier.h"
+#endif
+
 #ifdef WEBRTC_WIN
 #include "rtc_base/win32.h"
 #endif
@@ -49,6 +53,10 @@ RtcRuntime::RtcRuntime() {
     webrtc::MutexLock lock(&g_mutex);
     if (g_release_counter == 0) {
       RTC_CHECK(webrtc::InitializeSSL()) << "Failed to InitializeSSL()";
+
+#if defined(WEBRTC_LINUX) && !defined(WEBRTC_ANDROID)
+      initialize_system_certificate_verifier();
+#endif
 
 #ifdef WEBRTC_WIN
       WSADATA data;

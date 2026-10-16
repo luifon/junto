@@ -12,7 +12,7 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Command {
     /// Join a room and publish generated audio and video.
-    Publish(PublishArgs),
+    Publish(Box<PublishArgs>),
     /// Join a room, subscribe to every track and report what arrives.
     Subscribe(SubscribeArgs),
 }

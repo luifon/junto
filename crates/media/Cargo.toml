@@ -65,6 +65,7 @@ cc = "1"
 
 [dev-dependencies]
 junto-media = { path = ".", features = ["test-support"] }
+log = { version = "0.4", features = ["std"] }
 sqlx = { workspace = true }
 tempfile = "3"
 tokio = { workspace = true, features = ["io-util", "test-util"] }
