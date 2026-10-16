@@ -20,7 +20,7 @@ The SDK (`livekit` 0.9.4) offers two ways to carry sound:
 Crate:
 
 - The crate `junto-media` holds the media engine and the calls of a client (ADR 0734). It depends on `junto-client-core` and on the SDK, and has no dependency on gpui. The desktop client depends on it; the client core and `junto-cli` do not, so they do not link the WebRTC library.
-- The SDK is pinned at `livekit` 0.9.4, as the step 0 participant used it. Its WebRTC library is downloaded once, when the crate is built first.
+- The SDK is pinned at `livekit` 0.9.4, as the step 0 participant used it. The workspace and the standalone test participant use its build inputs from `vendor/`, with the corrections that this ADR names (publisher negotiation, below). Its WebRTC library is downloaded once, when the crate is built first.
 - A binary that links the crate passes `-ObjC` to the linker on macOS, in its build script. Without it the binary stops at its start.
 
 Sound devices:
@@ -61,6 +61,14 @@ Native connection shutdown:
 - Without this order, the last release enters `PeerConnectionProxyWithInternal` destruction on the runtime thread while the signaling thread can still execute `OnTrack`. That callback copies the wrapper's interface reference to an `RtpTransceiver`; its `AddRef` then calls a pure virtual function on the partially destroyed proxy. The wrapper's observer is also still registered during member destruction.
 - The workspace uses the build inputs of `webrtc-sys` 0.3.48 from `vendor/`, with this destructor correction. The WebRTC binary revision is unchanged. The patch is removed when a pinned upstream version guarantees this order. Source provenance and the retained licence notices are kept beside the dependency.
 - Native tests observe the closed-state callback on last-owner release, cancellation during runtime shutdown, and a stopped transceiver that outlives its wrapper. Dropping one of several owners does not close the connection; an explicit close followed by destruction remains valid. These checks use no media server or real device.
+
+Publisher negotiation:
+
+- With media server v1.13.9 the SDK connects in its single peer connection mode. A track that another participant publishes while this device is in the room reaches this device only through a new offer of this device: the media server asks for one, and its answer names the track of each media section. The device's own publications use the same offers. A negotiation request that is lost leaves every later remote track and every later publication of the connection without media, while the connection, the devices and the other tracks stay as they were.
+- In the fast publish mode the SDK negotiates in one task at a time. A request while the task negotiates makes it negotiate once more after the current answer. In the published version the task set its state to idle and cleared a separate running flag in a later step. A request between those two steps found the state idle and the flag set, marked a retry and started no task; the task then ended. From then on every request found the retry marked and was dropped. In the window live test this left one person unheard for the rest of the call.
+- The vendored copy decides with one state under one lock: idle, a task negotiates, or a task negotiates and then negotiates again. A task ends only after it has set the state to idle under that lock, so a request that comes later starts a new task. A request while a task waits for an answer is decided by the same state.
+- The decisions are in their own file, which uses the standard library only. `crates/media/tests/negotiation_queue.rs` compiles that file and runs its tests in the workspace suite: a request between the last decision of a task and its end starts a new task, and requests from eight threads leave the queue idle. Both failed with the published decisions.
+- The copy is removed when a pinned upstream version decides the queue under one state. Its provenance, the changed files and the retained licence notices are kept beside the dependency.
 
 Call diagnostics:
 
