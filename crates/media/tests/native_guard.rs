@@ -93,8 +93,9 @@ fn default_missing_and_other_devices_never_reach_the_host() {
                 )
                 .is_err()
         );
+        let input_guard = Guard::new(host.clone(), || Ok(id())).unwrap();
         assert!(
-            guarded
+            input_guard
                 .open_input(chosen.as_ref(), Box::new(|_, _| {}), Box::new(|_| {}))
                 .is_err()
         );

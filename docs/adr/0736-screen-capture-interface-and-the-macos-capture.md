@@ -4,7 +4,9 @@
 
 Accepted
 
-The explicit native macOS tier verifies display and window pixels and application/system audio through ScreenCaptureKit (ADR 0913). Ordinary CI tests capture no screen and cause no permission question. Packaged-app permission identity and system stop-completion remain separate verification items. ADR 0751 records the Linux implementation and its verification status. The Windows capture is not built; its share button is disabled and says so.
+The explicit native macOS tier verifies display and window pixels and application/system audio through ScreenCaptureKit (ADR 0913). Ordinary CI tests capture no screen and cause no permission question.
+
+Open: Packaged-app permission identity and system stop-completion remain separate verification items. ADR 0751 records the Linux implementation and its verification status. The Windows capture is not built; its share button is disabled and says so.
 
 ## Context
 
