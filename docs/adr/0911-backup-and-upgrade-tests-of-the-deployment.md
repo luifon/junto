@@ -22,6 +22,11 @@ Both tests:
 
 `deploy/tests/backup-restore.sh`:
 
+- A missing release image is refused with its preparation command before the running
+  server is stopped, and no image is built. The empty restore deployment uses a second
+  Compose project name and the prebuilt images of the first; neither a server nor an init
+  image is created under the second project's name.
+
 - Before the backup one channel and one recording are deleted, and the test waits until their directories have left the disk.
 - During the backup a process sends messages with attachments to a channel that stays. The backup starts when three of them are stored.
 - Before the call of `backup-files`, and so after the copy of the database, the test deletes a second channel and removes a second recording, waits 150 seconds, and records that their directories are on the disk. After the backup it waits until the server has deleted them. The first wait fails the later checks when the backup does not hold deletions back; the second shows that the server does delete such directories in that time.
@@ -56,6 +61,11 @@ Both tests:
 Continuous integration:
 
 - Both tests run in the job of the deployment (ADR 0905). The job fetches the whole history for `git archive`.
+- `deploy/tests/test_restore_images.py` runs the restore with real Compose rendering and
+  simulated container commands. Missing server/init, PostgreSQL and recorder images, and
+  a missing explicit image setting, must fail before any container command. The check
+  also covers backups without a schema file, selection by image ID, absence of builds
+  and pulls, and build definitions removed in all data-bearing deployment forms.
 
 ## Consequences
 

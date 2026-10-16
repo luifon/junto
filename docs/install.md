@@ -306,11 +306,32 @@ A backup is restored with the release that wrote it. On a host with the reposito
 
 ```sh
 cp /srv/junto-backups/2026-10-11/env deploy/.env
+# Select prebuilt images of the release that wrote the backup.
+printf '\nJUNTO_SERVER_IMAGE=junto-server:release\nJUNTO_INIT_IMAGE=junto-init:release\n' >> deploy/.env
 deploy/restore.sh one-host.yaml /srv/junto-backups/2026-10-11
 (cd deploy && docker compose -f one-host.yaml up -d)
 ```
 
-`restore.sh` first verifies the checksums and refuses an archive that `backup.sh` did not write: one with a member outside the two directories, or with a link. It compares the file `schema` of the backup with the answer of `junto-server schema-version` of the server image, and refuses a backup of a newer and of an earlier schema; its message names both numbers. The image is the one that the restore then works with, the image of the service `server` by its name. It is built when it does not exist; when it was built from another release than the checkout, build it again first (`docker compose -f one-host.yaml build server`). Until here no container is stopped. Then it stops `server`, `worker` and `recorder`, ends a container that an earlier run of the script left, and works in two steps (ADR 0021). It needs the image of the recorder on the host, because a container of the recorder empties its temporary directory:
+`JUNTO_SERVER_IMAGE` and `JUNTO_INIT_IMAGE` in `.env` or the environment are required for a restore. They name existing server and init images of the release that wrote the backup. The restore uses these explicit references even under a different Compose project name. Ordinary installation builds keep their project-derived image names when these settings are absent. Use distinct tags when building server and init: Compose builds them in parallel, and concurrent exports to one tag can fail.
+
+Provide the images before running `restore.sh`. To reuse the exact images of an original deployment, obtain their image IDs and put those IDs in the restore settings; this also works when their tags have since changed:
+
+```sh
+docker inspect --format '{{.Image}}' "$(docker compose -p junto -f one-host.yaml ps -q server)"
+# In the restore settings: JUNTO_SERVER_IMAGE=sha256:<the printed server image ID>
+docker inspect --format '{{.Image}}' "$(docker compose -p junto -f one-host.yaml ps -a -q init)"
+# In the restore settings: JUNTO_INIT_IMAGE=sha256:<the printed init image ID>
+```
+
+On another host, save the release images with `docker image save --output release-images.tar junto-server:release junto-init:release`, transfer the archive, and load it with `docker image load --input release-images.tar`. If the images are unavailable, an explicit build is a separate preparation step in the checkout of the backup release: `(cd deploy && docker compose -f one-host.yaml build server init)`. This command uses the distinct tags set by `JUNTO_SERVER_IMAGE` and `JUNTO_INIT_IMAGE`. Fetch the pinned dependencies with `(cd deploy && docker compose -f one-host.yaml pull postgres recorder)`.
+
+For an isolated restore, set `COMPOSE_PROJECT_NAME=junto-restore` for both the restore and subsequent Compose commands, and use separate settings with nonconflicting addresses and ports. Keep `JUNTO_SERVER_IMAGE` and `JUNTO_INIT_IMAGE` pointing at the original release images; no project-specific image aliases are needed. Prepare images for the other services separately before starting the whole deployment after the restore.
+
+For a later upgrade, set `JUNTO_SERVER_IMAGE` and `JUNTO_INIT_IMAGE` to distinct tags for the new release before its explicit build. An image ID selects an existing image.
+
+`restore.sh` builds and pulls no image. It first verifies the checksums and refuses an archive that `backup.sh` did not write: one with a member outside the two directories, or with a link. It requires the server/init, PostgreSQL and recorder images to exist locally before starting even the schema-check container. A missing image names a load, build or pull command and exits before any container or data changes. The script applies `restore-images.yaml`, which removes the server and init build definitions; every start also forbids pulls.
+
+It compares the file `schema` of the backup with the answer of `junto-server schema-version` of the selected server image, and refuses a backup of a newer and of an earlier schema; its message names both numbers. The same image runs staging. Until here no container is stopped. Then it stops `server`, `worker` and `recorder`, ends a container that an earlier run of the script left, and works in two steps (ADR 0021):
 
 1. Staging. A new database `junto_restore` is created. The role `junto_server` is created when the database server does not have it, gets the password of `.env`, and becomes the owner of that database (ADR 0022). The role loads the dump. `junto-server restored` gives that database a new epoch of the event stream, so that every client loads a new snapshot (ADR 0010), and removes its exports and its running backup, and the archive is unpacked into a staging directory of each volume. When one of these fails, the database and the files of the host are as they were; the role of the server can have the password of `.env` then.
 2. Replacement. The database `junto` is deleted, the staged files take the places of the files, and `junto_restore` gets the name `junto`. What belonged to the replaced data is deleted: the exports, the transcription jobs in the spool, the partial files in the temporary directory of the recorder, and the copy of the database from before a migration.

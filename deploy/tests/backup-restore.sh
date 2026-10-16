@@ -19,6 +19,8 @@
 #   deploy/tests/backup-restore.sh [<project name>]
 set -eu
 project=${1:-junto-backup-test}
+server_image="$project-server"
+init_image="$project-init"
 deploy=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d "${TMPDIR:-/tmp}/$project.XXXXXX")
 port=${JUNTO_LOCAL_PORT:-8080}
@@ -34,6 +36,8 @@ settings() {
             echo "JUNTO_LOCAL_PORT=$port"
             echo "JUNTO_POSTGRES_MEMORY=512m"
             echo "JUNTO_SERVER_MEMORY=512m"
+            echo "JUNTO_SERVER_IMAGE=$server_image"
+            echo "JUNTO_INIT_IMAGE=$init_image"
         } > "$1"
     )
 }
@@ -58,6 +62,7 @@ remove() {
         compose logs --tail 30 server postgres || true
     fi
     compose down -v --timeout 20 > /dev/null 2>&1 || true
+    docker image rm "$server_image" "$init_image" > /dev/null 2>&1 || true
     rm -rf "$work"
     exit "$code"
 }
@@ -128,6 +133,7 @@ EOF
 }
 
 compose up -d --build --wait --wait-timeout 600 postgres server
+compose pull recorder
 storage "before the first message"
 first_id=$(server_id)
 driver prepare
@@ -208,6 +214,19 @@ status=0
 ./restore.sh local.yaml "$work/unlisted" > "$work/restore.log" 2>&1 || status=$?
 check "a restore without a checksum of the archive is refused" "$([ "$status" -ne 0 ] && grep -c 'has no checksum of files.tar' "$work/restore.log")" "1"
 
+# An explicit image that is absent must not trigger a build or stop the running server.
+before_missing=$(docker inspect --format '{{.State.StartedAt}}' "$(compose ps -q server)")
+status=0
+JUNTO_SERVER_IMAGE="$project-unavailable" ./restore.sh local.yaml "$work/backup" > "$work/restore.log" 2>&1 || status=$?
+check "a restore with a missing release image is refused before any change" \
+    "$([ "$status" -ne 0 ] && grep -c "required image $project-unavailable .*Nothing was changed" "$work/restore.log")" "1"
+check "the missing image error names an explicit build command" \
+    "$(grep -c 'docker compose .* build server' "$work/restore.log")" "1"
+check "the refused restore did not build the missing image" \
+    "$(docker image inspect "$project-unavailable" > /dev/null 2>&1 && echo built || echo absent)" "absent"
+check "the refused restore did not restart the server" \
+    "$(docker inspect --format '{{.State.StartedAt}}' "$(compose ps -q server)")" "$before_missing"
+
 # A backup of another schema than the one of the server binary is refused before a
 # container is stopped (ADR 0018). The container that states the schema of the image is no
 # container of a service: the call that starts it is kept, for its name and its limits
@@ -257,8 +276,10 @@ check "after the failed restore the files are as they were" \
 
 # A new, empty deployment with other secrets, as on a new host.
 compose down -v --timeout 20
+project="$project-restored"
+export COMPOSE_PROJECT_NAME="$project"
 settings "$work/env"
-compose up -d --wait --wait-timeout 300 postgres server
+compose up -d --no-build --pull never --wait --wait-timeout 300 postgres server
 second_id=$(server_id)
 check "the new deployment is another server" "$([ -n "$second_id" ] && [ "$second_id" != "$first_id" ] && echo other)" "other"
 # What the other server left: an export, a transcription job in the spool, and a partial
@@ -296,6 +317,10 @@ check "that server is not healthy" "$(docker inspect --format '{{.State.Health.S
 # The second run restores everything again.
 ./restore.sh local.yaml "$work/backup" > "$work/restore.log" 2>&1 || { cat "$work/restore.log"; exit 1; }
 check "the second run of the restore ends" "$(grep -c 'restore: done' "$work/restore.log")" "1"
+for service in server init; do
+    check "the second project did not build its own $service image" \
+        "$(docker image inspect "$project-$service" > /dev/null 2>&1 && echo built || echo absent)" "absent"
+done
 check "the output of the restore holds no secret" "$(secrets_in "$work/env" "$work/restore.log")" "0"
 compose up -d --wait --wait-timeout 300 postgres server
 check "after the restore the server has the identifier of the backup" "$(server_id)" "$first_id"

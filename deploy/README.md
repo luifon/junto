@@ -14,6 +14,7 @@ The files that install a Junto server with Docker Compose. The steps are in [`do
 | `worker-gpu.yaml` | Addition to a form: the transcription worker on an NVIDIA GPU. |
 | `backup.sh` | Backup of the database, the attachments and the recordings while the server runs. |
 | `restore.sh` | Restore of such a backup. An interrupted run is followed by a second run. |
+| `restore-images.yaml` | Restore override: requires explicit prebuilt server and init images and removes their build definitions. |
 | `upgrade-undo.sh` | The way back to the copy of the database from before a migration. |
 | `database-user.sh` | Once, for a deployment of an earlier release: gives the database to the role of the server. |
 | `entry/Caddyfile` | The entry on port 443 with three server names. |
@@ -29,6 +30,7 @@ The files that install a Junto server with Docker Compose. The steps are in [`do
 ```sh
 tools/check-pins.sh                                   # pinned versions agree
 deploy/tests/compose-config.sh                        # every form renders and follows the rules
+python3 -B -m unittest discover -s deploy/tests -p 'test_restore_images.py' # restore image checks before container changes
 docker build -f deploy/images/server/Dockerfile -t junto-server .
 deploy/tests/transcribe-handover.sh junto-server      # the hand-over scripts, with two users
 deploy/tests/recorder-start.sh junto-server           # the start script of the recorder
