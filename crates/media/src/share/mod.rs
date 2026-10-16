@@ -253,7 +253,9 @@ impl fmt::Debug for CaptureStream {
 
 pub type Pending<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
-/// The capture of screens, windows and their sound on one system.
+/// The capture of screens, windows and their sound on one system. The crate calls the
+/// functions that return a future, and polls those futures, only in tasks of the runtime of
+/// the client (ADR 0733); the window reads the sources through [`crate::Calls`].
 pub trait ScreenCapture: Send + Sync + 'static {
     /// Whether this build has a capture for the system that it runs on.
     fn supported(&self) -> bool {

@@ -70,6 +70,8 @@ objc2-core-graphics = { version = "0.3.2", default-features = false, features = 
 cc = "1"
 
 [dev-dependencies]
+# An executor without a tokio runtime, as the window has (ADR 0733).
+futures-executor = "0.3"
 junto-media = { path = ".", features = ["test-support"] }
 log = { version = "0.4", features = ["std"] }
 sqlx = { workspace = true }

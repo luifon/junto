@@ -3885,6 +3885,7 @@ dependencies = [
  "core-video",
  "cpal",
  "dispatch2",
+ "futures-executor",
  "futures-util",
  "junto-client-core",
  "junto-media",

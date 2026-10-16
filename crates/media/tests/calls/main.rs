@@ -16,6 +16,7 @@
 mod support;
 
 mod devices;
+mod executor;
 mod hidden;
 mod rules;
 mod scene;

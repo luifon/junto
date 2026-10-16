@@ -82,6 +82,7 @@ impl CameraCapture for SyntheticCamera {
     fn request_access(&self) -> Pending<CameraAccess> {
         let this = self.clone();
         Box::pin(async move {
+            crate::executor::require_runtime("the permission request of the synthetic camera");
             let mut state = this.lock();
             if state.access == CameraAccess::NotAsked {
                 state.access = CameraAccess::Allowed;
@@ -101,6 +102,7 @@ impl CameraCapture for SyntheticCamera {
     ) -> Pending<Result<CaptureStream, CameraError>> {
         let this = self.clone();
         Box::pin(async move {
+            crate::executor::require_runtime("the start of the synthetic camera");
             let delay = this.lock().delay;
             if !delay.is_zero() {
                 tokio::time::sleep(delay).await;
