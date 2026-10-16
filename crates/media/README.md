@@ -49,6 +49,12 @@ tools/linux-container.sh cargo clippy --workspace --all-targets -- -D warnings
 
 The ignored tier starts real media connections against the runner's LiveKit service. On Linux it also exercises the production sound host with private PipeWire null devices. `--no-fail-fast` lets Cargo reach the separate audio-test binary even when a call test fails. Test concurrency remains the default unless a command explicitly changes it.
 
+The Linux ignored tier also runs `tls_trust`: the actual call library sends a TURN Allocate request to a loopback TLS server with a locally trusted certificate chain. It rejects an unknown issuer, a wrong hostname and a certificate restricted to client use. Python and OpenSSL generate fresh keys and certificate chains in a temporary directory; `SSL_CERT_FILE` selects the test root only in a child test process. No host trust store or real network service is changed. To run this check alone:
+
+```sh
+tools/linux-container.sh cargo test -p junto-media --test tls_trust -- --ignored
+```
+
 The server’s real-media tier also needs its standalone synthetic participant. This helper builds that participant in the same target volume before running the tier:
 
 ```sh

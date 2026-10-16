@@ -77,8 +77,10 @@ pub fn read_wav(path: &Path) -> Result<Arc<Vec<i16>>> {
     }
     let source: Vec<i16> = data
         .ok_or_else(|| anyhow!("the WAV file has no data"))?
-        .chunks_exact(2)
-        .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| i16::from_le_bytes(*pair))
         .collect();
     if source.is_empty() {
         bail!("the WAV file has no samples");

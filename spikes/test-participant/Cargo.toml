@@ -5,6 +5,9 @@ edition = "2021"
 license = "Apache-2.0"
 publish = false
 
+[patch.crates-io]
+webrtc-sys = { path = "../../vendor/webrtc-sys-0.3.48" }
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
