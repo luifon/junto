@@ -707,3 +707,46 @@ fn a_pressed_notification_brings_the_window_to_the_front(cx: &mut TestAppContext
     assert!(window.cx.update(|window, _| window.is_window_active()));
     window.close();
 }
+
+#[gpui::test]
+fn a_workspace_default_result_keeps_the_dialog_controls_in_place(cx: &mut TestAppContext) {
+    let world = World::new();
+    let mut server = world.server("Studio");
+    let proxy = world.run(crate::support::FaultProxy::start(&server));
+    let (_directory, mut window) = crate::harness::named(cx, "Owner");
+    window.find_server(&proxy.address());
+    window.join_with_code(&server.owner_code().unwrap());
+    window.until_ready();
+    window.click("server-menu-button");
+    window.click("workspace-notifications");
+    window.until("the workspace default is drawn", |window| {
+        window.shows("workspace-default-not-set") && window.shows("notify-level-0")
+    });
+    let before = window.cx.debug_bounds("notify-level-0").unwrap();
+    proxy.hold_ending("/notification-default");
+    window.click("workspace-default-1");
+    window.until("the default request is pending", |window| {
+        window.shows("workspace-default-sending")
+    });
+    let pending = window.cx.debug_bounds("notify-level-0").unwrap();
+    proxy.release();
+    window.until("the default request has completed", |window| {
+        window
+            .view()
+            .notify
+            .and_then(|panel| panel.workspace_default)
+            .is_some_and(|default| {
+                !default.changing && default.level == Some(NotificationLevel::Mentions)
+            })
+    });
+    let completed = window.cx.debug_bounds("notify-level-0").unwrap();
+    assert_eq!(pending, completed);
+    assert_eq!(before, completed);
+
+    server.stop();
+    window.click("workspace-default-0");
+    window.until("the default request failure is drawn", |window| {
+        window.shows("notify-refused")
+    });
+    assert_eq!(window.cx.debug_bounds("notify-level-0"), Some(before));
+}

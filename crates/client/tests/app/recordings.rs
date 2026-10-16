@@ -539,3 +539,82 @@ fn a_search_result_opens_a_long_transcript_around_its_line_and_reads_the_earlier
     assert!(held_now.contains(&first) && held_now.contains(&line));
     assert!(held_now.windows(2).all(|pair| pair[0] < pair[1]));
 }
+
+#[gpui::test]
+fn a_transcript_read_error_keeps_the_pagination_control_in_place(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.run(RecordingServer::start("Acme Studio"));
+    let admin = world.run(async {
+        let device = Device::new();
+        let handle = device.add(&server.address()).await;
+        let claim = AccessAction::ClaimOwner {
+            code: OwnerCode::new(server.owner_code()),
+            name: "Ada".to_owned(),
+            device_name: "First device".to_owned(),
+        };
+        handle.dispatch(claim).await.unwrap();
+        logged_in(&handle);
+        Admin { device, handle }
+    });
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let server_id = window.view().selected.unwrap().id;
+    let own = window.own_account();
+    voice_channel(&world, &admin, &mut window, "Daily");
+    let luca = window
+        .state
+        .read_with(&window.cx, |state, _| state.server(server_id))
+        .unwrap();
+    let voice = window
+        .channels()
+        .into_iter()
+        .find(|row| row.kind == ChannelKind::Voice && row.name == "Daily")
+        .unwrap();
+    let recording_id = world.run(server.record(voice.id, &[&admin.handle, &luca]));
+    let found = 420u64;
+    let said: Vec<Spoken> = (0..450u64)
+        .map(|number| Spoken {
+            account_id: own,
+            speaker: None,
+            start_ms: 100 + number * 1_000,
+            end_ms: 100 + number * 1_000 + 20,
+            text: if number == found {
+                "The quartz review is the last point.".to_owned()
+            } else {
+                format!("Point {number} of the agenda.")
+            },
+        })
+        .collect();
+    world.run(server.transcribe(recording_id, &said));
+    window.click_channel("Daily");
+    window.until("the card of the recording with its transcript", |window| {
+        window
+            .detail(recording_id)
+            .is_some_and(|detail| detail.transcript.state == TranscriptState::Ready)
+    });
+
+    window.click_named(format!("show-transcript:{recording_id}"));
+    window.until("the first transcript page is drawn", |window| {
+        window
+            .view()
+            .workspace()
+            .and_then(|workspace| workspace.transcript.clone())
+            .is_some_and(|panel| {
+                matches!(panel.state,
+                TranscriptPanelState::Shown { open, transcript, .. }
+                if open.lines.lines.len() == 200 && !transcript.reading)
+            })
+    });
+    window.in_shell(|shell, _, cx| shell.show_transcript_row(200, cx));
+    window.until("the pagination control is drawn", |window| {
+        window.shows("more-lines")
+    });
+    let before = window.cx.debug_bounds("more-lines").unwrap();
+    drop(server);
+    window.state.update(&mut window.cx, |state, _| {
+        state.read_transcript_lines(server_id, recording_id);
+    });
+    window.until("the transcript read error is drawn", |window| {
+        window.shows("transcript-lines-failed")
+    });
+    assert_eq!(window.cx.debug_bounds("more-lines"), Some(before));
+}

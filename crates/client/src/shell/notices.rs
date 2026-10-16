@@ -891,20 +891,22 @@ impl Shell {
                         .child(text::admin::notifications::choice(DefaultChoice::of(held))),
                 )
             };
-            if default.changing {
-                dialog = dialog.child(
-                    help(text::admin::SENDING.into())
-                        .debug_selector(|| "workspace-default-sending".to_owned()),
-                );
-            }
-            // An administrator sees no selected level for a workspace that sets none.
-            if default.may_set && held.is_none() {
-                dialog = dialog.child(
-                    help(text::admin::notifications::stated(DefaultChoice::NotSet).into())
-                        .id("workspace-default-not-set")
-                        .debug_selector(|| "workspace-default-not-set".to_owned()),
-                );
-            }
+            dialog = dialog.child(
+                crate::ui::notice_slot("workspace-default-status-slot")
+                    .when(default.changing, |slot| {
+                        slot.child(
+                            help(text::admin::SENDING.into())
+                                .debug_selector(|| "workspace-default-sending".to_owned()),
+                        )
+                    })
+                    .when(default.may_set && held.is_none(), |slot| {
+                        slot.child(
+                            help(text::admin::notifications::stated(DefaultChoice::NotSet).into())
+                                .id("workspace-default-not-set")
+                                .debug_selector(|| "workspace-default-not-set".to_owned()),
+                        )
+                    }),
+            );
             dialog = dialog.child(help(text::WORKSPACE_DEFAULT_HELP.into()));
         }
 
