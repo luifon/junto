@@ -127,26 +127,43 @@ mod tests {
         Some(unsafe { CFString::wrap_under_get_rule(name) })
     }
 
-    /// Converts a buffer and decodes its centre as the receiver does, with the 601 matrix.
-    fn received(image: &CVPixelBuffer) -> (VideoBufferType, (u8, u8, u8)) {
+    /// The luma, Cb and Cr samples and the colour that the receiver decodes with the 601
+    /// matrix, at the centre of a converted buffer.
+    type Centre = ((u8, u8, u8), (u8, u8, u8));
+
+    /// Converts a buffer and reads its centre as the receiver does.
+    fn received(image: &CVPixelBuffer) -> (VideoBufferType, Centre) {
         let buffer = convert(image).expect("the camera buffer is accepted");
         let size = (buffer.width(), buffer.height());
+        let (x, y) = (size.0 as usize / 2, size.1 as usize / 2);
+        let i420 = crate::share::picture::planes(&*buffer).unwrap();
+        let (sy, su, sv) = i420.strides();
+        let (luma, cb, cr) = i420.data();
+        let samples = (
+            luma[y * sy as usize + x],
+            cb[y / 2 * su as usize + x / 2],
+            cr[y / 2 * sv as usize + x / 2],
+        );
         let frame = crate::share::picture::convert(&*buffer, size).unwrap();
         let pixel = frame.pixel(size.0 / 2, size.1 / 2).unwrap();
-        (buffer.buffer_type(), (pixel.0, pixel.1, pixel.2))
+        (buffer.buffer_type(), (samples, (pixel.0, pixel.1, pixel.2)))
     }
 
-    fn assert_green(actual: (u8, u8, u8)) {
-        for (a, expected) in [(actual.0, 26), (actual.1, 204), (actual.2, 26)] {
-            assert!(a.abs_diff(expected) <= 4, "{actual:?}");
+    /// The converted samples must equal the 601 encoding exactly: a conversion with the
+    /// coefficients of another matrix changes a sample by 2 levels or more, and the tolerance of
+    /// the decoded colour can accept that change (see `matrix::tests`).
+    fn assert_green((samples, colour): Centre) {
+        assert_eq!(samples, GREEN_601, "{colour:?}");
+        for (a, expected) in [(colour.0, 25), (colour.1, 220), (colour.2, 16)] {
+            assert!(a.abs_diff(expected) <= 4, "{colour:?}");
         }
     }
 
-    // The limited-range encodings of the colour (26, 204, 26) under each matrix.
-    const GREEN_601: (u8, u8, u8) = (128, 76, 63);
-    const GREEN_709: (u8, u8, u8) = (148, 68, 57);
-    const GREEN_240M: (u8, u8, u8) = (145, 68, 58);
-    const GREEN_2020: (u8, u8, u8) = (142, 72, 56);
+    // The limited-range encodings of the colour (25, 220, 16) under each matrix.
+    const GREEN_601: (u8, u8, u8) = (135, 67, 57);
+    const GREEN_709: (u8, u8, u8) = (157, 58, 51);
+    const GREEN_240M: (u8, u8, u8) = (154, 58, 52);
+    const GREEN_2020: (u8, u8, u8) = (151, 62, 50);
 
     #[test]
     fn tagged_709_camera_green_reaches_the_receiver_as_green() {
@@ -155,9 +172,9 @@ mod tests {
             GREEN_709,
             tag(unsafe { kCVImageBufferYCbCrMatrix_ITU_R_709_2 }),
         );
-        let (kind, colour) = received(&image);
+        let (kind, centre) = received(&image);
         assert_eq!(kind, VideoBufferType::I420);
-        assert_green(colour);
+        assert_green(centre);
     }
 
     #[test]
@@ -167,9 +184,9 @@ mod tests {
             GREEN_601,
             tag(unsafe { kCVImageBufferYCbCrMatrix_ITU_R_601_4 }),
         );
-        let (kind, colour) = received(&image);
+        let (kind, centre) = received(&image);
         assert_eq!(kind, VideoBufferType::Native);
-        assert_green(colour);
+        assert_green(centre);
     }
 
     #[test]
@@ -181,32 +198,32 @@ mod tests {
             ),
             (unsafe { kCVImageBufferYCbCrMatrix_ITU_R_2020 }, GREEN_2020),
         ] {
-            let (kind, colour) = received(&camera_buffer((4, 4), encoded, tag(name)));
+            let (kind, centre) = received(&camera_buffer((4, 4), encoded, tag(name)));
             assert_eq!(kind, VideoBufferType::I420);
-            assert_green(colour);
+            assert_green(centre);
         }
     }
 
     #[test]
     fn untagged_camera_buffers_use_the_matrix_of_their_size() {
-        let (kind, colour) = received(&camera_buffer((640, 480), GREEN_601, None));
+        let (kind, centre) = received(&camera_buffer((640, 480), GREEN_601, None));
         assert_eq!(kind, VideoBufferType::Native);
-        assert_green(colour);
-        let (kind, colour) = received(&camera_buffer((1280, 720), GREEN_709, None));
+        assert_green(centre);
+        let (kind, centre) = received(&camera_buffer((1280, 720), GREEN_709, None));
         assert_eq!(kind, VideoBufferType::I420);
-        assert_green(colour);
+        assert_green(centre);
     }
 
     #[test]
     fn camera_buffers_with_another_matrix_tag_use_the_matrix_of_their_size() {
         let unknown = Some(CFString::from_static_string("Matrix_Unknown_To_Junto"));
         for other in [tag(unsafe { kCVImageBufferYCbCrMatrix_P3_D65 }), unknown] {
-            let (kind, colour) = received(&camera_buffer((352, 288), GREEN_601, other.clone()));
+            let (kind, centre) = received(&camera_buffer((352, 288), GREEN_601, other.clone()));
             assert_eq!(kind, VideoBufferType::Native);
-            assert_green(colour);
-            let (kind, colour) = received(&camera_buffer((1280, 720), GREEN_709, other));
+            assert_green(centre);
+            let (kind, centre) = received(&camera_buffer((1280, 720), GREEN_709, other));
             assert_eq!(kind, VideoBufferType::I420);
-            assert_green(colour);
+            assert_green(centre);
         }
     }
 

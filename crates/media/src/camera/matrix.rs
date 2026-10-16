@@ -135,16 +135,40 @@ mod tests {
             .collect()
     }
 
+    /// The luma, Cb and Cr samples of each pixel, without the padding of the rows.
+    fn samples(buffer: &I420Buffer) -> Vec<(u8, u8, u8)> {
+        let (sy, su, sv) = buffer.strides();
+        let (y, u, v) = buffer.data();
+        (0..3)
+            .flat_map(|py| (0..5).map(move |px| (px, py)))
+            .map(|(px, py)| {
+                let chroma = |plane: &[u8], stride: u32| plane[py / 2 * stride as usize + px / 2];
+                (y[py * sy as usize + px], chroma(u, su), chroma(v, sv))
+            })
+            .collect()
+    }
+
     #[test]
     fn each_matrix_converts_to_the_same_601_colour() {
-        // The limited-range encodings of the colour (26, 204, 26) under each matrix.
+        // The limited-range encodings of the colour (25, 220, 16) under each matrix. The exact
+        // conversion of each encoding is at least 0.1 level from a rounding boundary of the 601
+        // encoding (135, 67, 57), so a correct conversion gives these samples exactly. With the
+        // coefficients of another matrix, a sample differs by 2 levels or more: the 240M
+        // encoding converted with the 709 coefficients gives (132, 67, 58), and the 709
+        // encoding converted with the 240M coefficients gives (137, 67, 56). Decoded with exact
+        // arithmetic, these two differ from the colour by at most 4 levels, which the tolerance
+        // of the decoded check accepts; the samples detect them.
         for (from, encoded) in [
-            (Matrix::BT709, (148, 68, 57)),
-            (Matrix::SMPTE_240M, (145, 68, 58)),
-            (Matrix::BT2020, (142, 72, 56)),
+            (Matrix::BT709, (157, 58, 51)),
+            (Matrix::SMPTE_240M, (154, 58, 52)),
+            (Matrix::BT2020, (151, 62, 50)),
         ] {
-            for actual in decoded(&to_601(&planes(encoded), from)) {
-                for (a, expected) in [(actual.0, 26), (actual.1, 204), (actual.2, 26)] {
+            let converted = to_601(&planes(encoded), from);
+            for actual in samples(&converted) {
+                assert_eq!(actual, (135, 67, 57), "{from:?}");
+            }
+            for actual in decoded(&converted) {
+                for (a, expected) in [(actual.0, 25), (actual.1, 220), (actual.2, 16)] {
                     assert!(a.abs_diff(expected) <= 4, "{from:?} {actual:?}");
                 }
             }
