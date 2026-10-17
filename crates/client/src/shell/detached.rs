@@ -88,6 +88,10 @@ pub fn open(state: Entity<AppState>, cx: &mut App) {
                 title: Some(title.into()),
                 ..Default::default()
             }),
+            // The identifier and the icon of the application, as for the main window: the
+            // desktop shows this window with the icon of Junto (ADR 0756).
+            app_id: Some(crate::app::APP_ID.to_owned()),
+            icon: crate::window_icon::icon(),
             ..Default::default()
         },
         move |window, cx| {

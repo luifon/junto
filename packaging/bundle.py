@@ -5,35 +5,14 @@ import pathlib
 import plistlib
 import re
 import shutil
-import struct
 import sys
 import tomllib
-import zlib
+
+import icons
 
 
-def png(size=128):
-    """The application mark: two joined rings in the interface's cypress colour on its light
-    background, as a PNG picture of `size` by `size` pixels."""
-    scale = size / 128
-    pixels = bytearray()
-    for y in range(size):
-        pixels.append(0)
-        for x in range(size):
-            ring = any((18 * scale)**2 <= (x - center * scale)**2 + (y - 64 * scale)**2 <= (28 * scale)**2
-                       for center in (47, 81))
-            pixels.extend((40, 83, 65, 255) if ring else (244, 240, 231, 255))
-    def chunk(kind, data):
-        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
-    picture = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0))
-    return picture + chunk(b"IDAT", zlib.compress(pixels)) + chunk(b"IEND", b"")
-
-
-def icon():
-    picture = png(128)
-    return b"icns" + struct.pack(">I", 16 + len(picture)) + b"ic07" + struct.pack(">I", 8 + len(picture)) + picture
-
-
-def assemble(binary, destination, version, recovery=None):
+def assemble(binary, destination, version, recovery=None, *, icon_tool):
+    """Writes `destination`; `icon_tool` is the program `junto-icon` that writes the icon file."""
     binary, destination = pathlib.Path(binary), pathlib.Path(destination)
     if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version):
         raise ValueError("a release version has three decimal numbers")
@@ -64,7 +43,7 @@ def assemble(binary, destination, version, recovery=None):
             "NSScreenCaptureUsageDescription": "Junto shares the screen or window you choose in a call.",
         }
         (contents / "Info.plist").write_bytes(plistlib.dumps(info))
-        (contents / "Resources/Junto.icns").write_bytes(icon())
+        icons.run(icon_tool, "icns", contents / "Resources/Junto.icns")
         return destination
     except BaseException:
         shutil.rmtree(destination)
@@ -72,8 +51,12 @@ def assemble(binary, destination, version, recovery=None):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 4:
-        sys.exit("usage: packaging/bundle.py <release binary> <new Junto.app path> <recovery program>")
+    if len(sys.argv) != 5:
+        sys.exit("usage: packaging/bundle.py <release binary> <new Junto.app path> <recovery program> <icon program>")
     root = pathlib.Path(__file__).resolve().parent.parent
     version = tomllib.loads((root / "Cargo.toml").read_text())["workspace"]["package"]["version"]
-    assemble(sys.argv[1], sys.argv[2], os.environ.get("JUNTO_TEST_BUILD_VERSION", version), sys.argv[3])
+    try:
+        assemble(sys.argv[1], sys.argv[2], os.environ.get("JUNTO_TEST_BUILD_VERSION", version), sys.argv[3],
+                 icon_tool=sys.argv[4])
+    except ValueError as error:
+        sys.exit(str(error))

@@ -3823,6 +3823,7 @@ dependencies = [
  "image",
  "junto-client",
  "junto-client-core",
+ "junto-icon",
  "junto-media",
  "junto-server",
  "objc2-foundation 0.3.2",
@@ -3873,6 +3874,14 @@ dependencies = [
  "uuid",
  "windows-sys 0.61.2",
  "zeroize",
+]
+
+[[package]]
+name = "junto-icon"
+version = "0.1.0"
+dependencies = [
+ "resvg",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

@@ -298,6 +298,7 @@ The variable `JUNTO_SCREENS_ONLY` limits the run to one set: `shares`, `rules`, 
 | `src/theme.rs` | Every colour, font, type size, radius and fixed measure, and the interface scale. |
 | `src/text.rs` | The catalog of the interface text, with the sentence for each failure of a flow. |
 | `src/assets.rs`, `assets/` | The fonts and the icons, carried in the binary. The fonts are under the SIL Open Font License; the licence texts are beside the files. |
+| `build.rs`, `src/window_icon.rs` | The application icon in the program: the icon group of the Windows program, and the picture that the windows give to an X11 window manager (ADR 0756). |
 | `src/ui/` | The components. |
 | `src/state/` | The state of the application over the client core, and the derivation of what the window shows. |
 | `src/compose.rs` | The marks of the composer and the document of a message, in both directions, and the limits of a document. |

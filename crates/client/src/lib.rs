@@ -17,5 +17,6 @@ pub mod state;
 pub mod text;
 pub mod theme;
 pub mod ui;
+pub mod window_icon;
 pub mod window_level;
 pub mod zones;

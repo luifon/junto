@@ -6,7 +6,11 @@ import tarfile
 import tempfile
 import unittest
 
+import icons
 import linux
+
+# The sizes of the hicolor icon theme that the packages hold (ADR 0754).
+SIZES = [16, 22, 24, 32, 48, 64, 128, 256, 512]
 
 LDD = """\tlinux-vdso.so.1 (0x0000ffff9ba6c000)
 \tlibxkbcommon.so.0 => /lib/x86_64-linux-gnu/libxkbcommon.so.0 (0x0000ffff93b80000)
@@ -59,7 +63,7 @@ class LinuxPackageTests(unittest.TestCase):
             root = pathlib.Path(temporary)
             copy = root / "copy with spaces/junto"
             linux.write(copy / f"share/applications/{linux.APPLICATION_ID}.desktop", linux.DESKTOP)
-            linux.write(copy / f"share/icons/hicolor/scalable/apps/{linux.APPLICATION_ID}.svg", linux.SVG)
+            linux.icon_theme(copy, icons.TOOL)
             linux.write(copy / "install-menu-entry", linux.INSTALL_ENTRY, 0o755)
             data = root / "data"
             subprocess.run([str(copy / "install-menu-entry")], check=True, capture_output=True,
@@ -67,7 +71,27 @@ class LinuxPackageTests(unittest.TestCase):
             entry = (data / f"applications/{linux.APPLICATION_ID}.desktop").read_text()
             self.assertIn(f'Exec="{copy}/junto"\n', entry)
             self.assertIn(f"StartupWMClass={linux.APPLICATION_ID}\n", entry)
-            self.assertTrue((data / f"icons/hicolor/scalable/apps/{linux.APPLICATION_ID}.svg").is_file())
+            for size in [*(f"{size}x{size}" for size in SIZES), "scalable"]:
+                ending = "svg" if size == "scalable" else "png"
+                self.assertEqual((data / f"icons/hicolor/{size}/apps/{linux.APPLICATION_ID}.{ending}").read_bytes(),
+                                 (copy / f"share/icons/hicolor/{size}/apps/{linux.APPLICATION_ID}.{ending}").read_bytes())
+
+    def test_the_icon_theme_holds_the_source_and_its_rendering_at_each_size(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary) / "junto"
+            linux.icon_theme(directory, icons.TOOL)
+            theme = directory / "share/icons/hicolor"
+            self.assertEqual(sorted(path.name for path in theme.iterdir()),
+                             sorted([*(f"{size}x{size}" for size in SIZES), "scalable"]))
+            self.assertEqual((theme / f"scalable/apps/{linux.APPLICATION_ID}.svg").read_bytes(),
+                             icons.SOURCE.read_bytes())
+            for size in SIZES:
+                with self.subTest(size):
+                    self.assertEqual([path.name for path in (theme / f"{size}x{size}/apps").iterdir()],
+                                     [f"{linux.APPLICATION_ID}.png"])
+                    picture = (theme / f"{size}x{size}/apps/{linux.APPLICATION_ID}.png").read_bytes()
+                    self.assertEqual(picture, icons.rendering(icons.TOOL, size))
+                    self.assertEqual(icons.png(picture).size, size)
 
 
 if __name__ == "__main__":

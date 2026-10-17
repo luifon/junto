@@ -1,0 +1,22 @@
+[package]
+name = "junto-icon"
+description = "The application icon: renderings of its SVG source and the icon files of macOS and Windows"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Writes the icon files that the packaging scripts put into the packages (ADR 0756).
+[[bin]]
+name = "junto-icon"
+path = "src/main.rs"
+
+[dependencies]
+# The SVG renderer of gpui, in the version that gpui uses. The icon has no text and no
+# raster pictures, so the features that read fonts and pictures are off.
+resvg = { version = "0.46", default-features = false }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

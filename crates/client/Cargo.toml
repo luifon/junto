@@ -99,6 +99,10 @@ gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.8" }
 raw-window-handle = "0.6"
 x11rb = "0.13"
 
+[build-dependencies]
+# The icon of the program on Windows and of its windows on X11 (ADR 0756).
+junto-icon = { path = "../icon" }
+
 [lints]
 workspace = true
 

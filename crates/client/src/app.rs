@@ -131,6 +131,7 @@ pub fn open_main_window(
             focus: start.activate,
             show: true,
             app_id: Some(APP_ID.to_owned()),
+            icon: crate::window_icon::icon(),
             window_min_size: Some(size(px(WINDOW_MIN_SIZE.0), px(WINDOW_MIN_SIZE.1))),
             ..WindowOptions::default()
         },

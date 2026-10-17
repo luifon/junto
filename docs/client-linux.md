@@ -17,7 +17,7 @@ tar -xzf junto-<version>-linux-x86_64.tar.gz -C ~/.local/opt
 ~/.local/opt/junto/junto
 ```
 
-To add Junto to the application menu, run `~/.local/opt/junto/install-menu-entry`. It writes the menu entry and the icon into `~/.local/share` (or `$XDG_DATA_HOME`) with the path of this copy; run it again after you move the directory.
+To add Junto to the application menu, run `~/.local/opt/junto/install-menu-entry`. It writes the menu entry and the icons into `~/.local/share` (or `$XDG_DATA_HOME`) with the path of this copy; run it again after you move the directory.
 
 ## The AppImage
 
