@@ -124,6 +124,7 @@ pub struct Message {
     pub permanent: bool,
     #[serde(default)]
     pub deleted: bool,
+    /// The files in the order of `attachments` in the request that sent the message.
     pub attachments: Vec<Attachment>,
     pub reactions: Vec<Reaction>,
     #[serde(default)]
@@ -154,6 +155,7 @@ pub struct Reaction {
 pub struct SendMessage {
     pub document: Document,
     pub reply_to: Option<MessageId>,
+    /// The completed uploads that the message holds. The message lists them in this order.
     #[serde(default)]
     pub attachments: Vec<AttachmentId>,
 }

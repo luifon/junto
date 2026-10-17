@@ -745,9 +745,9 @@ async fn fix_fork_copies_more_than_one_thousand_attachments_in_batches() {
     let upload = files.upload(b"shared content").await;
     let root = files.attach(&[upload.id]).await;
     sqlx::query("with copies as (insert into
-             attachments(id,storage_id,place_id,owner_id,message_id,name,bytes,received,sha256,complete,media_type,expires_at,touched_at,attached,staging_cleaned)
+             attachments(id,storage_id,place_id,owner_id,message_id,name,bytes,received,sha256,complete,media_type,expires_at,touched_at,attached,staging_cleaned,position)
              select
-             gen_random_uuid(),storage_id,place_id,owner_id,message_id,name,bytes,received,sha256,complete,media_type,expires_at,touched_at,attached,staging_cleaned
+             gen_random_uuid(),storage_id,place_id,owner_id,message_id,name,bytes,received,sha256,complete,media_type,expires_at,touched_at,attached,staging_cleaned,n
              from attachments cross join generate_series(1,1000) n where id=$1 returning id) insert into
              attachment_chunks(attachment_id,offset_bytes,bytes,sha256,stored) select
              copies.id,c.offset_bytes,c.bytes,c.sha256,c.stored from copies cross join attachment_chunks c where

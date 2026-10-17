@@ -100,6 +100,13 @@ async fn migration_backfills_notes_and_audit_actions_in_order_without_private_de
     .execute(&server.db)
     .await
     .unwrap();
+    // The current API reads the position of each attached file.
+    sqlx::raw_sql(include_str!(
+        "../../migrations/0025_attachment_positions.sql"
+    ))
+    .execute(&server.db)
+    .await
+    .unwrap();
     let outside: MessagePage = server
         .get(
             &scene.owner,

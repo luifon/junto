@@ -101,7 +101,8 @@ pub async fn of_messages(
     connection: &mut PgConnection,
     ids: &[MessageId],
 ) -> ApiResult<std::collections::HashMap<MessageId, Vec<Attachment>>> {
-    let rows = sqlx::query("select * from attachments where message_id=any($1) and complete and removed_at is null order by id")
+    let rows = sqlx::query("select * from attachments where message_id=any($1) and complete and removed_at is null order by
+             position,id")
         .bind(ids)
         .fetch_all(connection)
         .await?;
@@ -142,17 +143,18 @@ pub async fn attach(
     {
         return Err(ApiError::invalid("too many or repeated attachments"));
     }
-    for id in ids {
+    for (position, id) in ids.iter().enumerate() {
         let (uploaded, u) = owned(connection, access, *id, app.now()).await?;
         if uploaded.id != place.id || !u.complete {
             return Err(ApiError::invalid(
                 "attachment is incomplete or belongs to another place",
             ));
         }
-        sqlx::query("update attachments set message_id=$2,attached=true,retention_at=(select created_at from messages where
-             id=$2 and not permanent) where id=$1")
+        sqlx::query("update attachments set message_id=$2,attached=true,position=$3,retention_at=(select created_at from
+             messages where id=$2 and not permanent) where id=$1")
             .bind(id)
             .bind(message)
+            .bind(position as i32)
             .execute(&mut *connection)
             .await?;
     }
@@ -391,9 +393,9 @@ pub async fn copy_attachments(
             })
             .collect::<ApiResult<_>>()?;
         sqlx::query("insert into
-             attachments(id,place_id,owner_id,message_id,name,bytes,received,sha256,complete,media_type,width,height,expires_at,touched_at,attached,staging_cleaned,storage_id,retention_at)
+             attachments(id,place_id,owner_id,message_id,name,bytes,received,sha256,complete,media_type,width,height,expires_at,touched_at,attached,staging_cleaned,storage_id,retention_at,position)
              select
-             mapping.new_id,$1,a.owner_id,mapping.message_id,a.name,a.bytes,a.received,a.sha256,true,a.media_type,a.width,a.height,a.expires_at,$2,true,true,a.storage_id,a.retention_at
+             mapping.new_id,$1,a.owner_id,mapping.message_id,a.name,a.bytes,a.received,a.sha256,true,a.media_type,a.width,a.height,a.expires_at,$2,true,true,a.storage_id,a.retention_at,a.position
              from unnest($3::uuid[],$4::uuid[],$5::uuid[]) mapping(old_id,new_id,message_id) join attachments a on
              a.id=mapping.old_id")
             .bind(channel)

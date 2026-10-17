@@ -180,6 +180,15 @@ Attachments:
   as untrusted files.
 - Sending claims complete uploads once, in the message transaction. Upload ownership,
   place and expiry are checked again. An attachment cannot be reused by another message.
+- Each attachment of a message stores its index in the `attachments` list of the send
+  request (`attachments.position`). Every read of messages lists their files by that index
+  (the answer of the send, the history, a thread, the pins, a message read alone, which is
+  also how the client opens a search hit, and the messages of an export), and the copy of
+  a thread fork keeps it. The attachment id does not give this order: the server makes
+  the id when an upload starts, and a client starts the uploads of one message in any
+  order, for example as the reading of each file ends. Migration 0025 numbers the files
+  of the messages that existed before it in the order of their ids, the order that the
+  server returned for them until then.
 - Downloads require a session and current access to the message, use `nosniff`, `no-
   store`, an attachment disposition and the verified hash as ETag. Uploads have four
   places with at most two per account, separate from eight download places with at most
