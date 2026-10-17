@@ -7,10 +7,10 @@ use junto_media::calls::Phase;
 use junto_media::engine::{ShareId, ShareState};
 use junto_media::share::{CaptureRequest, PictureSource, ShareQuality, SoundChoice};
 
-use crate::scene::{MEDIA_SERVER, Person, Room, account};
+use crate::scene::{MEDIA_SERVER, PATIENCE, Person, Room, account};
 
 /// Makes a future with `make` and polls it to its end on a new thread, which has no Tokio
-/// runtime, with an executor that has none either.
+/// runtime, with an executor that has none either. The test waits at most [`PATIENCE`].
 async fn without_runtime<F, T>(make: impl FnOnce() -> F + Send + 'static) -> T
 where
     F: Future<Output = T>,
@@ -20,8 +20,9 @@ where
         assert!(tokio::runtime::Handle::try_current().is_err());
         futures_executor::block_on(make())
     });
-    tokio::task::spawn_blocking(move || thread.join())
+    tokio::time::timeout(PATIENCE, tokio::task::spawn_blocking(move || thread.join()))
         .await
+        .unwrap_or_else(|_| panic!("the future did not end within {PATIENCE:?}"))
         .unwrap()
         .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
@@ -84,4 +85,25 @@ async fn the_futures_of_the_calls_end_on_an_executor_without_a_tokio_runtime() {
             .is_some_and(|call| call.shares.is_empty())
     })
     .await;
+
+    // Ann invites Ben back, and Ben accepts the invitation.
+    let invitation = ann_at
+        .api()
+        .invite_to_call(room.voice, ben_id)
+        .await
+        .unwrap();
+    let calls = ben.calls.clone();
+    without_runtime(move || calls.join_invited(target, invitation.id))
+        .await
+        .unwrap();
+    ben.until("the media connection of the invited call", |view| {
+        view.call
+            .as_ref()
+            .is_some_and(|call| call.target == target && call.phase == Phase::Connected)
+    })
+    .await;
+    let calls = ben.calls.clone();
+    without_runtime(move || calls.leave()).await;
+    ben.until("Ben has left the call again", |view| view.call.is_none())
+        .await;
 }

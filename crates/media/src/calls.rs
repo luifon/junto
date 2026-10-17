@@ -3225,9 +3225,78 @@ mod tests {
         }
     }
 
+    /// How long a test waits for futures that a thread without a Tokio runtime polls. A
+    /// future that never ends fails the test here, and does not hold it.
+    const WITHOUT_RUNTIME_LIMIT: Duration = Duration::from_secs(30);
+
+    /// Runs `work` on a new thread, which has no Tokio runtime, and waits at most
+    /// [`WITHOUT_RUNTIME_LIMIT`] for its end. The wait uses a channel of the standard
+    /// library and no timer of Tokio.
+    fn without_runtime<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+        let (done, ended) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                assert!(tokio::runtime::Handle::try_current().is_err());
+                work()
+            }));
+            let _ = done.send(result);
+        });
+        match ended.recv_timeout(WITHOUT_RUNTIME_LIMIT) {
+            Ok(Ok(value)) => value,
+            Ok(Err(panic)) => std::panic::resume_unwind(panic),
+            Err(_) => panic!(
+                "the futures did not end within {WITHOUT_RUNTIME_LIMIT:?} on a thread without \
+                 a Tokio runtime"
+            ),
+        }
+    }
+
+    /// The media options of these tests, with this capture.
+    fn options_with(capture: Arc<dyn ScreenCapture>) -> MediaOptions {
+        MediaOptions {
+            camera: Arc::new(crate::camera::synthetic::SyntheticCamera::new()),
+            host: Arc::new(crate::audio::synthetic::SyntheticHost::with_tone(440.0)),
+            permission: Arc::new(crate::permission::FixedPermission::allowed()),
+            capture,
+            timing: CallTiming::default(),
+        }
+    }
+
+    /// A client that knows one server, whose address answers nothing: every request to it
+    /// fails.
+    #[allow(clippy::unwrap_used)]
+    fn client_with_a_silent_server(root: &std::path::Path) -> (Client, ServerId) {
+        use junto_client_core::address::ServerAddress;
+        use junto_client_core::book::{ConnectionMode, ProfileSync, ServerBook, ServerEntry};
+        use junto_client_core::paths::DataDir;
+        let server_id = ServerId::generate();
+        ServerBook::new(DataDir::open(root).unwrap())
+            .add(ServerEntry {
+                server_id,
+                generation: 0,
+                address: ServerAddress::parse("http://127.0.0.1:1").unwrap(),
+                name: "Silent".into(),
+                logo_path: None,
+                api_versions: vec![1],
+                connection_mode: ConnectionMode::Always,
+                membership: Membership::Member {
+                    account_id: AccountId::generate(),
+                    device_id: DeviceId::generate(),
+                },
+                last_cursor: None,
+                profile_sync: ProfileSync::NotNeeded,
+                moderation_notices_shown: Vec::new(),
+            })
+            .unwrap();
+        let client = Client::open(junto_client_core::ClientOptions::new(root)).unwrap();
+        (client, server_id)
+    }
+
     /// The window polls the futures of the calls on the executor of gpui, which has no
     /// Tokio runtime (ADR 0733). Here a plain thread polls each of them with an executor
-    /// that has no runtime either.
+    /// that has no runtime either. The server of the joins is known to the client, so each
+    /// join takes its turn on the runtime of the client and its future waits for the answer
+    /// of that turn: a refusal, because the server answers nothing.
     #[test]
     #[allow(clippy::unwrap_used)]
     fn every_future_of_the_calls_ends_on_an_executor_without_a_tokio_runtime() {
@@ -3236,42 +3305,83 @@ mod tests {
             .prefix("junto-calls-executor-")
             .tempdir()
             .unwrap();
-        let client = Client::open(junto_client_core::ClientOptions::new(
-            directory.path().join("client"),
-        ))
-        .unwrap();
-        let calls = Calls::new(
-            client,
-            MediaOptions {
-                camera: Arc::new(crate::camera::synthetic::SyntheticCamera::new()),
-                host: Arc::new(crate::audio::synthetic::SyntheticHost::with_tone(440.0)),
-                permission: Arc::new(crate::permission::FixedPermission::allowed()),
-                capture: Arc::new(TimedCapture),
-                timing: CallTiming::default(),
-            },
-        );
+        let (client, server_id) = client_with_a_silent_server(&directory.path().join("client"));
+        let calls = Calls::new(client, options_with(Arc::new(TimedCapture)));
         let target = CallTarget {
-            server_id: ServerId::generate(),
+            server_id,
             place: CallPlace::Channel {
                 workspace_id: WorkspaceId::generate(),
                 channel_id: ChannelId::generate(),
             },
         };
-        std::thread::spawn(move || {
-            assert!(tokio::runtime::Handle::try_current().is_err());
+        without_runtime(move || {
             use futures_executor::block_on;
             assert_eq!(block_on(calls.share_sources()), Ok(ShareSources::default()));
-            assert_eq!(block_on(calls.join(target)), Err(JoinError::NoServer));
-            assert_eq!(
-                block_on(calls.join_invited(target, CallInvitationId::generate())),
-                Err(JoinError::NoServer)
-            );
+            let joined = block_on(calls.join(target));
+            assert!(matches!(joined, Err(JoinError::Refused(_))), "{joined:?}");
+            let joined = block_on(calls.join_invited(target, CallInvitationId::generate()));
+            assert!(matches!(joined, Err(JoinError::Refused(_))), "{joined:?}");
             block_on(calls.leave());
+            // Without a call nothing asks the engine; the media live tier asks it in a call.
             assert!(block_on(calls.statistics()).is_err());
             assert!(block_on(calls.sound_check()).is_none());
-        })
-        .join()
-        .unwrap();
+        });
+    }
+
+    /// The sources are read in a task of the runtime of the client. When that runtime has
+    /// shut down, a reading that waited and a reading asked for afterwards both end as
+    /// cancelled, and neither panics nor waits forever.
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn a_reading_of_the_sources_ends_as_cancelled_when_the_runtime_has_shut_down() {
+        /// A capture whose list never arrives.
+        struct WaitingCapture;
+        impl ScreenCapture for WaitingCapture {
+            fn access(&self) -> ScreenAccess {
+                ScreenAccess::Allowed
+            }
+            fn request_access(&self) {}
+            fn open_settings(&self) {}
+            fn sources(&self) -> Pending<Result<ShareSources, CaptureError>> {
+                Box::pin(std::future::pending())
+            }
+            fn start(
+                &self,
+                _: CaptureRequest,
+                _: Arc<dyn crate::share::CaptureSink>,
+            ) -> Pending<Result<crate::share::CaptureStream, CaptureError>> {
+                Box::pin(std::future::pending())
+            }
+        }
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let directory = tempfile::Builder::new()
+            .prefix("junto-calls-shut-down-")
+            .tempdir()
+            .unwrap();
+        // The client uses the runtime of its caller.
+        let calls = {
+            let _inside = runtime.enter();
+            let client = Client::open(junto_client_core::ClientOptions::new(
+                directory.path().join("client"),
+            ))
+            .unwrap();
+            Calls::new(client, options_with(Arc::new(WaitingCapture)))
+        };
+        let waiting = calls.share_sources();
+        runtime.shutdown_timeout(Duration::from_secs(10));
+        without_runtime(move || {
+            use futures_executor::block_on;
+            for result in [block_on(waiting), block_on(calls.share_sources())] {
+                assert!(
+                    matches!(&result, Err(CaptureError::Failed(text)) if text.contains("cancelled")),
+                    "{result:?}"
+                );
+            }
+        });
     }
 
     #[tokio::test(start_paused = true)]
