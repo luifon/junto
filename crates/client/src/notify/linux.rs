@@ -327,5 +327,7 @@ async fn name_owner(bus: &zbus::fdo::DBusProxy<'_>) -> zbus::Result<Option<Strin
     }
 }
 
+// The tests start and remove their own session bus, on no thread of the window (ADR 0730).
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests;
