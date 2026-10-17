@@ -16,7 +16,7 @@ import subprocess
 import sys
 import tarfile
 
-from bundle import png
+import icons
 from configuration import architecture as machine_architecture
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -49,20 +49,22 @@ Categories=Network;Chat;InstantMessaging;
 StartupWMClass={APPLICATION_ID}
 """
 
-SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
-<rect width="128" height="128" fill="#f4f0e7"/>
-<g fill="none" stroke="#285341" stroke-width="10"><circle cx="47" cy="64" r="23"/><circle cx="81" cy="64" r="23"/></g>
-</svg>
-"""
+# The sizes of the hicolor icon theme that a package holds as PNG pictures, beside the SVG
+# source in `scalable` (ADR 0754, ADR 0756).
+ICON_SIZES = [16, 22, 24, 32, 48, 64, 128, 256, 512]
 
-# Writes the menu entry of a directory package for the person who runs it, with the absolute
-# path of this copy. Run it again after moving the directory.
+# Writes the menu entry and the icons of a directory package for the person who runs it, with
+# the absolute path of this copy. Run it again after moving the directory.
 INSTALL_ENTRY = f"""#!/bin/sh
 set -eu
 here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 data=${{XDG_DATA_HOME:-$HOME/.local/share}}
-mkdir -p "$data/applications" "$data/icons/hicolor/scalable/apps"
-cp "$here/share/icons/hicolor/scalable/apps/{APPLICATION_ID}.svg" "$data/icons/hicolor/scalable/apps/"
+mkdir -p "$data/applications"
+for icon in "$here"/share/icons/hicolor/*/apps/{APPLICATION_ID}.*; do
+    size=$(basename "$(dirname "$(dirname "$icon")")")
+    mkdir -p "$data/icons/hicolor/$size/apps"
+    cp "$icon" "$data/icons/hicolor/$size/apps/"
+done
 sed "s|^Exec=junto$|Exec=\\"$here/junto\\"|" "$here/share/applications/{APPLICATION_ID}.desktop" \\
     > "$data/applications/{APPLICATION_ID}.desktop"
 echo "Junto is in the application menu: $data/applications/{APPLICATION_ID}.desktop"
@@ -122,15 +124,26 @@ def copy(source, destination, mode):
     destination.chmod(mode)
 
 
-def tree(directory, client, recover, version, architecture, licence_texts):
+def icon_theme(directory, icon_tool):
+    """The icons of the program in `directory/share/icons/hicolor`: the SVG source, and a
+    rendering by `icon_tool` (the program `junto-icon`) for each size of ICON_SIZES."""
+    theme = directory / "share/icons/hicolor"
+    copy(icons.SOURCE, theme / f"scalable/apps/{APPLICATION_ID}.svg", 0o644)
+    for size in ICON_SIZES:
+        picture = theme / f"{size}x{size}/apps/{APPLICATION_ID}.png"
+        picture.parent.mkdir(parents=True, exist_ok=True)
+        icons.run(icon_tool, "png", size, picture)
+        picture.chmod(0o644)
+
+
+def tree(directory, client, recover, version, architecture, licence_texts, icon_tool):
     """The directory of the program: the AppDir of the AppImage has the same files."""
     copy(client, directory / "junto", 0o755)
     copy(recover, directory / "junto-recover", 0o755)
     for name, path in sorted(classify(libraries(client)).items()):
         copy(path, directory / "lib" / name, 0o644)
     write(directory / f"share/applications/{APPLICATION_ID}.desktop", DESKTOP)
-    write(directory / f"share/icons/hicolor/scalable/apps/{APPLICATION_ID}.svg", SVG)
-    write(directory / f"share/icons/hicolor/256x256/apps/{APPLICATION_ID}.png", png(256))
+    icon_theme(directory, icon_tool)
     for name, text in licence_texts.items():
         write(directory / "licences" / name, text)
 
@@ -183,7 +196,9 @@ def appimage(directory, output, runtime, epoch):
         shutil.rmtree(appdir)
 
 
-def assemble(client, recover, version, output, runtime=RUNTIME, epoch=None):
+def assemble(client, recover, version, output, runtime=RUNTIME, epoch=None, *, icon_tool):
+    """Writes the packages into the new directory `output`; `icon_tool` is the program
+    `junto-icon` that renders the icons."""
     client, recover, output = pathlib.Path(client), pathlib.Path(recover), pathlib.Path(output)
     if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version):
         raise ValueError("a release version has three decimal numbers")
@@ -192,14 +207,14 @@ def assemble(client, recover, version, output, runtime=RUNTIME, epoch=None):
     output.mkdir(parents=False, exist_ok=False)
     try:
         directory = output / "package-directory/junto"
-        tree(directory, client, recover, version, architecture, licence_texts())
+        tree(directory, client, recover, version, architecture, licence_texts(), icon_tool)
         write(directory / "junto-package.json", description(version, "directory", architecture))
         write(directory / "install-menu-entry", INSTALL_ENTRY, 0o755)
         tarball(directory, output / f"junto-{version}-linux-{architecture}.tar.gz", epoch)
         image = output / "package-appimage"
         image.mkdir()
         appimage_tree = output / ".appimage-tree"
-        tree(appimage_tree, client, recover, version, architecture, licence_texts())
+        tree(appimage_tree, client, recover, version, architecture, licence_texts(), icon_tool)
         write(appimage_tree / "licences/AppImage-runtime.txt",
               "The AppImage runtime of this file is the type 2 runtime of the AppImage project, "
               "release 20251108, under the MIT licence; it contains libfuse, squashfuse, zstd and "
@@ -223,8 +238,10 @@ if __name__ == "__main__":
     parser.add_argument("version")
     parser.add_argument("output", help="a new directory")
     parser.add_argument("--runtime", default=str(RUNTIME))
+    parser.add_argument("--icon-tool", required=True, help="the program junto-icon of the same build")
     arguments = parser.parse_args()
     try:
-        assemble(arguments.client, arguments.recover, arguments.version, arguments.output, arguments.runtime)
+        assemble(arguments.client, arguments.recover, arguments.version, arguments.output, arguments.runtime,
+                 icon_tool=arguments.icon_tool)
     except (ValueError, subprocess.CalledProcessError, OSError) as error:
         sys.exit(str(error))

@@ -25,7 +25,7 @@ For every release and every target the source holds the archive `junto-<version>
 
 ## macOS
 
-`bundle.py <binary> <new Junto.app> <recovery program>` assembles both executables and metadata using the workspace version. The fixed identifier is `org.junto.app` (ADR 0725).
+`bundle.py <binary> <new Junto.app> <recovery program> <icon program>` assembles both executables, metadata using the workspace version, and the icon file that the program `junto-icon` of the same build writes (ADR 0756). The fixed identifier is `org.junto.app` (ADR 0725).
 
 Create the code-signing identity once, outside every repository:
 
@@ -65,7 +65,7 @@ JUNTO_UPDATE_SOURCE='https://<your-release-host>/<release-directory>/' \
     packaging/release_linux.sh target/linux-release
 ```
 
-The output directory holds the tarball, the AppImage, and the source directories `package-directory` and `package-appimage` of the two update archives. `linux.py` stops when the client links a library that is neither in its bundled list nor in its host list (ADR 0754). Publish both with the release tool of the same checkout, on any system:
+The output directory holds the tarball, the AppImage, and the source directories `package-directory` and `package-appimage` of the two update archives. `linux.py` takes the program `junto-icon` of the same build with `--icon-tool` and renders the icon theme with it (ADR 0756). `linux.py` stops when the client links a library that is neither in its bundled list nor in its host list (ADR 0754). Publish both with the release tool of the same checkout, on any system:
 
 ```sh
 target/release/junto-release publish linux directory x86_64 target/linux-release/package-directory \
@@ -83,7 +83,7 @@ cargo build --locked --release -p junto-client --bin junto -p junto-client-core 
 python packaging/windows.py target/release/junto.exe target/release/junto-recover.exe <version> <new output directory>
 ```
 
-The output directory holds the ZIP and the source directory `package-directory`. Publish it with the release tool of the same checkout, on any system:
+The output directory holds the ZIP and the source directory `package-directory`. The build script of the client puts the icon into `junto.exe` as its icon group 1 (ADR 0756). Publish it with the release tool of the same checkout, on any system:
 
 ```sh
 target/release/junto-release publish windows directory x86_64 <output>/package-directory \
