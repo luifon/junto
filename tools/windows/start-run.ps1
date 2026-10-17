@@ -159,9 +159,14 @@ if ($Ended) {
 
 if ($Remove) {
     if ($After -gt 0) {
-        # ES_CONTINUOUS | ES_SYSTEM_REQUIRED: Windows does not sleep while this thread waits.
-        [JuntoCi.Native]::SetThreadExecutionState(0x80000001) | Out-Null
-        Wait-Process -Id $After -ErrorAction SilentlyContinue
+        try {
+            # ES_CONTINUOUS | ES_SYSTEM_REQUIRED (0x80000001, which PowerShell would read as a
+            # negative Int32): Windows does not sleep while this thread waits.
+            [JuntoCi.Native]::SetThreadExecutionState([uint32]2147483649) | Out-Null
+            Wait-Process -Id $After -ErrorAction SilentlyContinue
+        } catch {
+            Add-Content -Path (Join-Path $here 'task.log') -Value "the wait for the process of the run failed: $_"
+        }
     }
     try {
         Unregister-ScheduledTask -TaskPath $TaskPath -TaskName $Run -Confirm:$false

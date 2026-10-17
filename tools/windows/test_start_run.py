@@ -77,6 +77,31 @@ class Ended(unittest.TestCase):
                              "the run sample-run cannot start: the screen is locked")
             self.assertFalse((here / "commit.bundle").exists())
 
+    # The second copy of start-run.ps1 waits for the process of the run, then removes the task
+    # (here there is none, so it records that the task was not removed).
+    def test_the_removal_waits_until_the_process_of_the_run_has_ended(self):
+        with tempfile.TemporaryDirectory(prefix="junto-start-") as temporary:
+            here = pathlib.Path(temporary) / "runs" / "sample-run"
+            here.mkdir(parents=True)
+            child = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.readline()"],
+                                     stdin=subprocess.PIPE, text=True)
+            try:
+                removal = subprocess.Popen(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
+                                            "Bypass", "-File", str(SCRIPT), "-Directory", temporary, "-Run",
+                                            "sample-run", "-Remove", "-After", str(child.pid)],
+                                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                try:
+                    with self.assertRaises(subprocess.TimeoutExpired):
+                        removal.wait(timeout=10)
+                finally:
+                    child.communicate("end\n", timeout=60)
+                output, _ = removal.communicate(timeout=120)
+            finally:
+                child.kill()
+            self.assertEqual(removal.returncode, 1, output)
+            self.assertIn("the task of the run was not removed", (here / "task.log").read_text())
+            self.assertNotIn("the wait for the process of the run failed", (here / "task.log").read_text())
+
     def test_a_run_ends_when_its_recorded_process_no_longer_runs(self):
         with tempfile.TemporaryDirectory(prefix="junto-start-") as temporary:
             here = pathlib.Path(temporary) / "runs" / "sample-run"
