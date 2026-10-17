@@ -7,6 +7,7 @@ use junto_media::engine::MicrophoneState;
 use crate::scene::{
     ABSENT_DBFS, MEDIA_SERVER, PATIENCE, Person, Room, account, model_when, plain_voice, until,
 };
+use crate::signal_proxy::SignalProxy;
 use crate::support::FaultProxy;
 
 const REASON: &str = "needs a LiveKit server: run through tools/with-test-livekit.sh";
@@ -433,6 +434,76 @@ async fn a_mute_and_an_open_during_a_restored_connection_reach_the_media_server_
             .all(|(_, source, _, muted)| source != "Microphone" || !muted),
         "the media server holds a microphone track as muted: {check}"
     );
+}
+
+/// A network that drops the signal connection keeps the last bytes that a client wrote to it
+/// and can deliver them after the client has restored its connection on a new one. The call
+/// library counts a mute request as sent when it is written, and the media server discards a
+/// request that arrives on the replaced connection; it also ignores the mute state that the
+/// resume sends. After each resume the call library sends the mute state of each local track
+/// again, so the media server holds the last one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn an_open_written_to_a_lost_signal_connection_reaches_the_media_server_after_the_resume() {
+    let _media = MEDIA_SERVER.read().await;
+    let proxy = SignalProxy::start().await;
+    let (ann, ben) = (Person::new(440.0), Person::new(880.0));
+    let (room, ann_at) = Room::with_media_at("Acme", &ann, "Ann", &proxy.url()).await;
+    room.member(&ann_at, &ben, "Ben").await;
+    ann.enter(room.target).await;
+    ben.enter(room.target).await;
+    ben.until_heard(&ann).await;
+    ann.calls.set_muted(true);
+    until_microphone_muted(&ben, true).await;
+
+    // The signal connections of both people stop passing bytes. Ann opens her microphone
+    // before her client finds that its pings are not answered, so the request is written to
+    // the lost connection. The clients then restore their connections through new ones.
+    proxy.hold_open();
+    ann.calls.set_muted(false);
+    ann.until("the interruption is shown", |view| {
+        view.call
+            .as_ref()
+            .is_some_and(|call| call.phase == Phase::Reconnecting)
+    })
+    .await;
+    ann.until("the call is back", |view| {
+        view.call
+            .as_ref()
+            .is_some_and(|call| call.phase == Phase::Connected)
+    })
+    .await;
+    let late = proxy.release().await;
+    eprintln!("{late} bytes of the lost connections reached the media server late");
+
+    // The media server holds the track of Ann as open, and Ben hears her.
+    until_microphone_muted(&ben, false).await;
+    ben.until_heard_afresh(&ann).await;
+}
+
+/// Waits until the media server tells `listener` that the microphone track of the other
+/// person is muted or open.
+async fn until_microphone_muted(listener: &Person, muted: bool) {
+    let started = tokio::time::Instant::now();
+    loop {
+        let check = listener.calls.sound_check().await.unwrap();
+        let microphones: Vec<bool> = check
+            .remote_tracks
+            .iter()
+            .filter(|(_, source, _, _)| source == "Microphone")
+            .map(|(_, _, _, held)| *held)
+            .collect();
+        if !microphones.is_empty() && microphones.iter().all(|held| *held == muted) {
+            return;
+        }
+        assert!(
+            started.elapsed() < PATIENCE,
+            "after {PATIENCE:?} the media server does not hold the microphone track as {}: \
+             {check}",
+            if muted { "muted" } else { "open" }
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
 }
 
 async fn docker(arguments: &[&str]) {

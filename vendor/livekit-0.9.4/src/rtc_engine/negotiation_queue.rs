@@ -95,7 +95,32 @@ impl NegotiationQueue {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc::{self, RecvTimeoutError};
+    use std::time::Duration;
+
     use super::*;
+
+    /// How long a test may run. A task that negotiates forever fails the test instead of
+    /// stopping the suite.
+    const LIMIT: Duration = Duration::from_secs(60);
+
+    /// Runs `test` on a thread of its own and fails when it has not ended within [`LIMIT`].
+    /// The tests run outside an async runtime, so the limit uses the standard library only.
+    fn within_limit(test: impl FnOnce() + Send + 'static) {
+        let (ended, end) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            test();
+            let _ = ended.send(());
+        });
+        match end.recv_timeout(LIMIT) {
+            Ok(()) => thread.join().unwrap(),
+            // The test panicked: its message is the failure.
+            Err(RecvTimeoutError::Disconnected) => {
+                std::panic::resume_unwind(thread.join().unwrap_err())
+            }
+            Err(RecvTimeoutError::Timeout) => panic!("the test did not end within {LIMIT:?}"),
+        }
+    }
 
     /// Runs the task of the queue as the session runs it: negotiates while `finished` asks
     /// for it, then ends. Returns the number of negotiations.
@@ -109,68 +134,76 @@ mod tests {
 
     #[test]
     fn a_request_without_a_task_starts_one() {
-        let queue = NegotiationQueue::default();
-        assert!(queue.request());
-        assert_eq!(run_task(&queue), 1);
-        assert_eq!(queue.state(), NegotiationState::Idle);
-        assert!(queue.request(), "a later request starts a new task");
+        within_limit(|| {
+            let queue = NegotiationQueue::default();
+            assert!(queue.request());
+            assert_eq!(run_task(&queue), 1);
+            assert_eq!(queue.state(), NegotiationState::Idle);
+            assert!(queue.request(), "a later request starts a new task");
+        });
     }
 
     #[test]
     fn requests_during_a_negotiation_give_one_more_negotiation() {
-        let queue = NegotiationQueue::default();
-        assert!(queue.request());
-        assert!(!queue.request());
-        assert!(!queue.request());
-        assert_eq!(run_task(&queue), 2);
-        assert_eq!(queue.state(), NegotiationState::Idle);
+        within_limit(|| {
+            let queue = NegotiationQueue::default();
+            assert!(queue.request());
+            assert!(!queue.request());
+            assert!(!queue.request());
+            assert_eq!(run_task(&queue), 2);
+            assert_eq!(queue.state(), NegotiationState::Idle);
+        });
     }
 
     #[test]
     fn a_request_while_the_task_ends_is_negotiated() {
-        let queue = NegotiationQueue::default();
-        assert!(queue.request());
-        // The task has finished its last negotiation and runs the code after its loop.
-        assert!(!queue.finished());
-        let started = queue.request();
-        // The request is negotiated by a new task. Without it, every later request finds a
-        // retry that no task will make, and no negotiation happens again.
-        assert!(
-            started,
-            "the request was not negotiated, and the queue is {:?}",
-            queue.state()
-        );
-        assert_eq!(run_task(&queue), 1);
-        assert!(queue.request(), "a later request starts a new task");
+        within_limit(|| {
+            let queue = NegotiationQueue::default();
+            assert!(queue.request());
+            // The task has finished its last negotiation and runs the code after its loop.
+            assert!(!queue.finished());
+            let started = queue.request();
+            // The request is negotiated by a new task. Without it, every later request finds a
+            // retry that no task will make, and no negotiation happens again.
+            assert!(
+                started,
+                "the request was not negotiated, and the queue is {:?}",
+                queue.state()
+            );
+            assert_eq!(run_task(&queue), 1);
+            assert!(queue.request(), "a later request starts a new task");
+        });
     }
 
     #[test]
     fn requests_from_many_threads_are_all_negotiated() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
+        within_limit(|| {
+            use std::sync::Arc;
+            use std::sync::atomic::{AtomicUsize, Ordering};
 
-        let queue = Arc::new(NegotiationQueue::default());
-        let tasks = Arc::new(AtomicUsize::new(0));
-        let mut threads = Vec::new();
-        for _ in 0..8 {
-            let (queue, tasks) = (queue.clone(), tasks.clone());
-            threads.push(std::thread::spawn(move || {
-                for _ in 0..10_000 {
-                    if queue.request() {
-                        tasks.fetch_add(1, Ordering::Relaxed);
-                        let task = queue.clone();
-                        std::thread::spawn(move || run_task(&task)).join().unwrap();
+            let queue = Arc::new(NegotiationQueue::default());
+            let tasks = Arc::new(AtomicUsize::new(0));
+            let mut threads = Vec::new();
+            for _ in 0..8 {
+                let (queue, tasks) = (queue.clone(), tasks.clone());
+                threads.push(std::thread::spawn(move || {
+                    for _ in 0..10_000 {
+                        if queue.request() {
+                            tasks.fetch_add(1, Ordering::Relaxed);
+                            let task = queue.clone();
+                            std::thread::spawn(move || run_task(&task)).join().unwrap();
+                        }
                     }
-                }
-            }));
-        }
-        for thread in threads {
-            thread.join().unwrap();
-        }
-        // Every request has been negotiated or is held by a task: no task runs now, so the
-        // queue is idle, and a new request starts a task.
-        assert_eq!(queue.state(), NegotiationState::Idle);
-        assert!(queue.request());
-        assert!(tasks.load(Ordering::Relaxed) > 0);
+                }));
+            }
+            for thread in threads {
+                thread.join().unwrap();
+            }
+            // Every request has been negotiated or is held by a task: no task runs now, so
+            // the queue is idle, and a new request starts a task.
+            assert_eq!(queue.state(), NegotiationState::Idle);
+            assert!(queue.request());
+            assert!(tasks.load(Ordering::Relaxed) > 0);
+        });
     }
 }

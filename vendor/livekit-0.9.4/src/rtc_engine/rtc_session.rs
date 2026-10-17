@@ -113,6 +113,7 @@ struct NegotiationQueue {
 impl NegotiationQueue {
     fn new() -> Self {
         Self {
+            // Modified: in place of the state and the running flag.
             tasks: Default::default(),
             waker: Arc::new(Notify::new()),
             waiting_for_answer: AtomicBool::new(false),

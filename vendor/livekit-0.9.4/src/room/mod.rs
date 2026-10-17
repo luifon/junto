@@ -11,6 +11,9 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified: this file differs from the published livekit 0.9.4. After a resume the local
+// participant sends the mute state of each local track again (`handle_resumed`).
 
 pub use crate::utils::take_cell::TakeCell;
 use bmrng::unbounded::UnboundedRequestReceiver;
@@ -1678,6 +1681,10 @@ impl RoomSession {
     fn handle_resumed(self: &Arc<Self>, tx: oneshot::Sender<()>) {
         self.update_connection_state(ConnectionState::Connected);
         self.dispatcher.dispatch(&RoomEvent::Reconnected);
+
+        // Modified: a mute request written to the lost signal connection is not repeated
+        // otherwise, and the media server would hold the state from before it.
+        self.local_participant.send_mute_states();
 
         let _ = tx.send(());
 

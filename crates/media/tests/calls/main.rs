@@ -22,6 +22,7 @@ mod rules;
 mod scene;
 mod servers;
 mod share;
+mod signal_proxy;
 mod sound;
 mod statistics;
 

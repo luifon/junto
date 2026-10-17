@@ -5,11 +5,13 @@
 //! device sends.
 //!
 //! The ordering is private to the call library, so this test compiles the same source file.
-//! The file uses the standard library and Tokio only.
+//! The file uses the standard library and Tokio only. The participant that uses it needs a
+//! connected engine to run, so a test here reads its source.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tokio::sync::oneshot;
 
@@ -20,6 +22,18 @@ mod in_order;
 use in_order::InOrder;
 
 type Sent = Arc<Mutex<Vec<&'static str>>>;
+
+/// How long a test waits for the requests that it gave to end. A request that is held back
+/// forever fails the test instead of stopping the suite.
+const LIMIT: Duration = Duration::from_secs(10);
+
+/// Waits until the work given by `last` has ended.
+async fn until_ended(last: oneshot::Receiver<()>) {
+    tokio::time::timeout(LIMIT, last)
+        .await
+        .unwrap_or_else(|_| panic!("the requests did not end within {LIMIT:?}"))
+        .unwrap();
+}
 
 fn record(sent: &Sent, request: &'static str) -> impl Future<Output = ()> + Send + 'static {
     let sent = sent.clone();
@@ -51,7 +65,7 @@ async fn an_unmute_does_not_overtake_a_mute_that_waits() {
     order.run(async move {
         let _ = done.send(());
     });
-    finished.await.unwrap();
+    until_ended(finished).await;
     let sent = sent.lock().unwrap().clone();
     assert_eq!(sent, ["mute", "unmute"]);
 }
@@ -76,7 +90,7 @@ async fn requests_arrive_in_the_order_in_which_they_were_given() {
     order.run(async move {
         let _ = done.send(());
     });
-    finished.await.unwrap();
+    until_ended(finished).await;
     let sent = sent.lock().unwrap().clone();
     assert_eq!(sent, (0..200).collect::<Vec<_>>());
 }
@@ -92,7 +106,125 @@ async fn a_request_whose_task_panics_does_not_hold_back_the_next() {
     order.run(async move {
         let _ = done.send(());
     });
-    finished.await.unwrap();
+    until_ended(finished).await;
     let sent = sent.lock().unwrap().clone();
     assert_eq!(sent, ["unmute"]);
+}
+
+/// The participant of the call library, which gives the mute requests of its local tracks to
+/// one `InOrder`.
+const PARTICIPANT: &str = include_str!("../../../vendor/livekit-0.9.4/src/room/participant/mod.rs");
+
+/// The participant gives every mute request to its one `InOrder` and starts no task of its
+/// own. A handler that started a task for each request, as the published version does, or a
+/// new `InOrder` for each request, would send requests that wait together in any order.
+#[test]
+fn every_mute_request_of_the_participant_goes_through_its_one_in_order() {
+    let code = without_comments(PARTICIPANT);
+    let line = |at: usize| code[..at].matches('\n').count() + 1;
+    assert!(
+        !code.contains("spawn"),
+        "the participant starts a task at line {}",
+        line(code.find("spawn").unwrap())
+    );
+    assert!(code.contains("    mute_requests: Arc<in_order::InOrder>,\n"));
+    assert_eq!(
+        code.matches("InOrder").count(),
+        1,
+        "the participant names an InOrder outside the field that holds its own"
+    );
+    for (at, _) in code.match_indices("let mute_requests =") {
+        assert!(
+            code[at..].starts_with("let mute_requests = inner.mute_requests.clone();"),
+            "the requests at line {} are not given to the InOrder of the participant",
+            line(at)
+        );
+    }
+
+    let chains: Vec<(usize, usize)> = code
+        .match_indices("mute_requests.run(")
+        .map(|(at, call)| {
+            let open = at + call.len() - 1;
+            (open, closing(&code, open))
+        })
+        .collect();
+    let requests: Vec<usize> = code
+        .match_indices(".mute_track(")
+        .map(|(at, _)| at)
+        .collect();
+    for &request in &requests {
+        assert!(
+            chains
+                .iter()
+                .any(|&(open, close)| open < request && request < close),
+            "the request at line {} is not given to the InOrder",
+            line(request)
+        );
+    }
+    let add = code.find("pub(super) fn add_publication(").unwrap();
+    let body = code[add..].find('{').unwrap() + add;
+    let body = body..closing(&code, body);
+    for handler in ["publication.on_muted(", "publication.on_unmuted("] {
+        let open = code[body.clone()].find(handler).unwrap() + body.start + handler.len() - 1;
+        let close = closing(&code, open);
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|&&request| open < request && request < close)
+                .count(),
+            1,
+            "{handler} sends one request"
+        );
+    }
+}
+
+/// `source` with every `//` comment removed and every line kept, so that a comment that
+/// names code is not read as code.
+fn without_comments(source: &str) -> String {
+    let mut code = String::with_capacity(source.len());
+    for line in source.lines() {
+        let mut in_string = false;
+        let mut escaped = false;
+        let mut end = line.len();
+        for (at, character) in line.char_indices() {
+            match character {
+                _ if escaped => escaped = false,
+                '\\' if in_string => escaped = true,
+                '"' => in_string = !in_string,
+                '/' if !in_string && line[at..].starts_with("//") => {
+                    end = at;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        code.push_str(&line[..end]);
+        code.push('\n');
+    }
+    code
+}
+
+/// The position of the delimiter that closes the one at `open`. Delimiters inside string
+/// literals do not count.
+fn closing(code: &str, open: usize) -> usize {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (at, character) in code[open..].char_indices() {
+        match character {
+            _ if escaped => escaped = false,
+            '\\' if in_string => escaped = true,
+            '"' => in_string = !in_string,
+            _ if in_string => {}
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return open + at;
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("the delimiter at {open} is not closed");
 }

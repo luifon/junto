@@ -74,8 +74,9 @@ pub struct TestServer {
     port: u16,
     proxy: Mutex<Option<StdListener>>,
     proxy_port: u16,
-    /// The server uses the LiveKit server of `tools/with-test-livekit.sh`.
-    media: bool,
+    /// The server uses the LiveKit server of `tools/with-test-livekit.sh`, and gives its
+    /// clients this address of it.
+    media: Option<String>,
     /// Where the server stores the files of messages.
     attachments: tempfile::TempDir,
     /// Where the server writes the files of exports.
@@ -91,15 +92,21 @@ fn setting(name: &str) -> String {
 
 impl TestServer {
     pub async fn start(name: &str) -> Self {
-        Self::start_as(name, false).await
+        Self::start_as(name, None).await
     }
 
     /// A server with a media server, for the tests that need calls with people inside.
     pub async fn start_with_media(name: &str) -> Self {
-        Self::start_as(name, true).await
+        Self::start_with_media_at(name, &setting("JUNTO_TEST_LIVEKIT_URL")).await
     }
 
-    async fn start_as(name: &str, media: bool) -> Self {
+    /// A server with a media server whose clients reach it at `address`: the address of a
+    /// proxy.
+    pub async fn start_with_media_at(name: &str, address: &str) -> Self {
+        Self::start_as(name, Some(address.to_owned())).await
+    }
+
+    async fn start_as(name: &str, media: Option<String>) -> Self {
         let database = format!("junto_client_{}", uuid::Uuid::new_v4().simple());
         let admin = PgConnectOptions::from_str(&admin_url()).unwrap();
         let mut connection = admin.connect().await.unwrap();
@@ -184,13 +191,13 @@ impl TestServer {
     /// Starts the process. False when it stopped at once or nothing listens at its port.
     async fn launch(&mut self) -> bool {
         let mut command = Command::new(server_binary());
-        if self.media {
+        if let Some(address) = &self.media {
             command
                 .env(
                     "JUNTO_LIVEKIT_API_URL",
                     setting("JUNTO_TEST_LIVEKIT_API_URL"),
                 )
-                .env("JUNTO_LIVEKIT_URL", setting("JUNTO_TEST_LIVEKIT_URL"))
+                .env("JUNTO_LIVEKIT_URL", address)
                 .env(
                     "JUNTO_LIVEKIT_API_KEY",
                     setting("JUNTO_TEST_LIVEKIT_API_KEY"),
