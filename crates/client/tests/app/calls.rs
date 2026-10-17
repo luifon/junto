@@ -280,28 +280,17 @@ fn each_unsuccessful_move_outcome_is_shown_and_dismissible(cx: &mut gpui::TestAp
     }
 }
 
-/// ADR 0793: received pictures are drawn once per frame of the display, whatever their
-/// number, and the picture that is drawn is the newest one.
-#[gpui::test]
-fn received_pictures_cause_one_drawing_per_frame_of_the_display(cx: &mut TestAppContext) {
-    use junto_client::state::view::MediaSnapshot;
-    use junto_client_core::protocol::call::CallPlace;
-    use junto_media::calls::{ActiveCall, CallTarget, CallsView, Phase};
-    use junto_media::engine::{MainPicture, MicrophoneState, OutputState, ShareId, ShareState};
-    use junto_media::share::picture::PictureFrame;
+/// A connected call of this device in the voice channel with this name, as the media
+/// engine states it, without a media server.
+fn connected_call(window: &mut Window, channel: &str) -> junto_media::calls::ActiveCall {
+    use junto_media::calls::{ActiveCall, Phase};
+    use junto_media::engine::{MicrophoneState, OutputState, ShareState};
 
-    let world = World::new();
-    let server = world.server("Acme Studio");
-    let admin = world.owner(&server);
-    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
-    voice_channel(&world, &admin, &mut window, "Daily");
-    window.click_channel("Daily");
-    // The window draws a call of this device in the shown channel, without a media server.
     let view = window.view();
     let row = (window.channels().into_iter())
-        .find(|row| row.name == "Daily")
+        .find(|row| row.name == channel)
         .unwrap();
-    let call = ActiveCall {
+    ActiveCall {
         camera: junto_media::camera::CameraState::Off,
         cameras: Vec::new(),
         target: CallTarget {
@@ -324,7 +313,14 @@ fn received_pictures_cause_one_drawing_per_frame_of_the_display(cx: &mut TestApp
         share: ShareState::Off,
         shares: Vec::new(),
         watched: None,
-    };
+    }
+}
+
+/// The window draws this call of this device, without a media server.
+fn show_call(window: &mut Window, call: junto_media::calls::ActiveCall) {
+    use junto_client::state::view::MediaSnapshot;
+    use junto_media::calls::CallsView;
+
     let media = MediaSnapshot {
         calls: CallsView {
             call: Some(call),
@@ -337,6 +333,23 @@ fn received_pictures_cause_one_drawing_per_frame_of_the_display(cx: &mut TestApp
         state.update(cx, |state, cx| state.show_media_fixture(media, cx));
     });
     window.settle();
+}
+
+/// ADR 0793: received pictures are drawn once per frame of the display, whatever their
+/// number, and the picture that is drawn is the newest one.
+#[gpui::test]
+fn received_pictures_cause_one_drawing_per_frame_of_the_display(cx: &mut TestAppContext) {
+    use junto_media::engine::{MainPicture, ShareId};
+    use junto_media::share::picture::PictureFrame;
+
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let call = connected_call(&mut window, "Daily");
+    show_call(&mut window, call);
     let calls = window
         .state
         .read_with(&window.cx, |state, _| state.calls().clone());
@@ -404,6 +417,183 @@ fn received_pictures_cause_one_drawing_per_frame_of_the_display(cx: &mut TestApp
         "drawings of the window for any cause: {} for fifty pictures without a frame, {} in the whole test",
         all_after - all,
         all_end - all
+    );
+}
+
+/// ADR 0774: a picture of a call that a newer one replaced is removed from the GPU images of
+/// every window. Many pictures of the watched share, of the small pictures of the shares and
+/// of the cameras are drawn in the window and then in the separate call window; each window
+/// then holds GPU images only for the pictures that it draws now, whatever their number.
+#[gpui::test]
+fn a_window_holds_gpu_images_only_for_the_pictures_that_it_draws_now(cx: &mut TestAppContext) {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use gpui::{AppContext as _, RenderImage, VisualTestContext};
+    use gpui_base::Root;
+    use junto_client::shell::Shell;
+    use junto_client_core::protocol::call::ShareAudio;
+    use junto_client_core::protocol::ids::AccountId;
+    use junto_media::camera::{CameraFrame, CameraState};
+    use junto_media::engine::{MainPicture, SeenShare, ShareId, ShareInfo, ShareState};
+    use junto_media::share::ShareKind;
+    use junto_media::share::picture::PictureFrame;
+    use junto_media::share::synthetic::two_colours;
+
+    const PICTURES: u8 = 40;
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let other: AccountId = "0198f1c2-7d3a-7b1e-9c55-0a1b2c3d4e5f".parse().unwrap();
+    // The person shares and watches the share of another person; both cameras run.
+    let mut call = connected_call(&mut window, "Daily");
+    call.camera = CameraState::Running;
+    call.cameras = vec![other];
+    call.share = ShareState::Running(ShareInfo {
+        kind: ShareKind::Window,
+        sound: ShareAudio::None,
+        sound_held: false,
+        size: (64, 36),
+        frame_rate: 30,
+    });
+    call.shares = vec![SeenShare {
+        account_id: other,
+        kind: Some(ShareKind::Screen),
+        frame_rate: Some(30),
+        size: Some((64, 36)),
+    }];
+    call.watched = Some(ShareId::Of(other));
+    show_call(&mut window, call);
+    let calls = window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().clone());
+
+    // Each source gives a new picture, the window gets a frame of the display, and the test
+    // keeps every image that a window held for a picture.
+    let mut seen: Vec<Arc<RenderImage>> = Vec::new();
+    let mut give = |window: &mut Window, shells: &[&gpui::Entity<Shell>], shade: u8| {
+        let share = || {
+            Arc::new(PictureFrame {
+                width: 64,
+                height: 36,
+                bgra: vec![shade; 64 * 36 * 4].into(),
+                source: (64, 36),
+            })
+        };
+        let camera = |own: bool| {
+            let pixels = two_colours(64, 36, (shade, 0, 0), (0, 0, shade));
+            Arc::new(CameraFrame::new(&pixels, own, (64, 36)).unwrap())
+        };
+        calls.show_main_picture_for_test(Some(MainPicture {
+            share: ShareId::Of(other),
+            frame: share(),
+        }));
+        calls.show_small_pictures_for_test(HashMap::from([
+            (ShareId::Own, share()),
+            (ShareId::Of(other), share()),
+        ]));
+        calls.show_camera_pictures_for_test(HashMap::from([
+            (ShareId::Own, camera(true)),
+            (ShareId::Of(other), camera(false)),
+        ]));
+        window.settle();
+        for shell in shells {
+            for image in shell.read_with(&window.cx, |shell, _| shell.picture_images()) {
+                if !seen.iter().any(|known| Arc::ptr_eq(known, &image)) {
+                    seen.push(image);
+                }
+            }
+        }
+        seen.clone()
+    };
+    // How many of these images have a GPU image in the window.
+    let in_gpu = |cx: &mut VisualTestContext, images: &[Arc<RenderImage>]| {
+        cx.update(|window, _| {
+            (images.iter())
+                .filter(|image| window.has_image_atlas_entry(image))
+                .count()
+        })
+    };
+    let held = |window: &Window, shell: &gpui::Entity<Shell>| {
+        shell.read_with(&window.cx, |shell, _| shell.picture_images())
+    };
+
+    let main_shell = window.shell.clone();
+    let mut images = Vec::new();
+    for shade in 1..=PICTURES {
+        images = give(&mut window, &[&main_shell], shade);
+    }
+    let shown = held(&window, &main_shell);
+    assert!(
+        images.len() >= usize::from(PICTURES),
+        "{} images for {PICTURES} pictures of each source",
+        images.len()
+    );
+    assert!(
+        in_gpu(&mut window.cx, &shown) >= 2,
+        "the window did not draw the watched share and the small pictures"
+    );
+    assert!(
+        in_gpu(&mut window.cx, &images) <= shown.len(),
+        "the window holds {} GPU images of {} pictures, and draws {}",
+        in_gpu(&mut window.cx, &images),
+        images.len(),
+        shown.len()
+    );
+
+    // The call moves to its own window, which draws the pictures from then on.
+    let main = window.cx.update(|window, _| window.window_handle());
+    window.click("detach-call");
+    window.settle();
+    let handle = (cx.windows().into_iter())
+        .find(|handle| *handle != main)
+        .unwrap();
+    let detached_shell = cx
+        .update_window(handle, |root, _, cx| {
+            let root = root.downcast::<Root>().unwrap();
+            root.read(cx).view().clone().downcast::<Shell>().unwrap()
+        })
+        .unwrap();
+    let mut detached = VisualTestContext::from_window(handle, cx);
+    for shade in 1..=PICTURES {
+        images = give(&mut window, &[&main_shell, &detached_shell], shade);
+    }
+    let shown = held(&window, &detached_shell);
+    assert!(
+        in_gpu(&mut detached, &shown) >= 2,
+        "the call window did not draw the watched share and the small pictures"
+    );
+    assert!(
+        in_gpu(&mut detached, &images) <= shown.len(),
+        "the call window holds {} GPU images of {} pictures, and draws {}",
+        in_gpu(&mut detached, &images),
+        images.len(),
+        shown.len()
+    );
+    let main_shown = held(&window, &main_shell);
+    assert!(
+        in_gpu(&mut window.cx, &images) <= main_shown.len(),
+        "the main window holds {} GPU images of {} pictures, and draws {}",
+        in_gpu(&mut window.cx, &images),
+        images.len(),
+        main_shown.len()
+    );
+
+    // The shares and the cameras end: no window holds a GPU image of their pictures.
+    calls.show_main_picture_for_test(None);
+    calls.show_small_pictures_for_test(HashMap::new());
+    calls.show_camera_pictures_for_test(HashMap::new());
+    window.settle();
+    assert_eq!(
+        (
+            in_gpu(&mut window.cx, &images),
+            in_gpu(&mut detached, &images)
+        ),
+        (0, 0),
+        "GPU images of the main window and of the call window after the end of the shares"
     );
 }
 

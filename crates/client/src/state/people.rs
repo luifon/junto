@@ -1161,7 +1161,7 @@ impl AppState {
     /// An image that left the cache is no texture of a window any more.
     fn drop_people_images(&mut self, cx: &mut Context<Self>) {
         for image in self.known.people.take_dropped() {
-            cx.drop_image(image, None);
+            crate::images::release(image, cx);
         }
     }
 
@@ -1249,7 +1249,7 @@ impl AppState {
                 match stored {
                     Ok(image) => {
                         if let Some(before) = this.preset_picture.image.take() {
-                            cx.drop_image(before, None);
+                            crate::images::release(before, cx);
                         }
                         this.preset_picture.stored = true;
                         this.preset_picture.image = image;
@@ -1278,7 +1278,7 @@ impl AppState {
                 match cleared {
                     Ok(_) => {
                         if let Some(before) = this.preset_picture.image.take() {
-                            cx.drop_image(before, None);
+                            crate::images::release(before, cx);
                         }
                         this.preset_picture.stored = false;
                     }
