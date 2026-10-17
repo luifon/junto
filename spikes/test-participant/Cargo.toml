@@ -8,6 +8,7 @@ publish = false
 [patch.crates-io]
 livekit = { path = "../../vendor/livekit-0.9.4" }
 webrtc-sys = { path = "../../vendor/webrtc-sys-0.3.48" }
+webrtc-sys-build = { path = "../../vendor/webrtc-sys-build-0.3.19" }
 
 [dependencies]
 anyhow = "1"
