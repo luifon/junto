@@ -30,7 +30,7 @@ use junto_client_core::api::{
 use junto_client_core::flow::access::{AccessAction, AccessState, Notice};
 use junto_client_core::live::{LiveView, StreamStatus};
 use junto_client_core::model::{AdminPart, PlaceId, ServerModel};
-use junto_client_core::protocol::access_token::TokenAction;
+use junto_client_core::protocol::access_token::{CreateAccessToken, TokenAction};
 use junto_client_core::protocol::account::AccountStatus;
 use junto_client_core::protocol::audit::{AuditEvent, AuditFilterQuery};
 use junto_client_core::protocol::ids::{
@@ -50,7 +50,7 @@ use time::{Duration, OffsetDateTime};
 
 use crate::harness::{PATIENCE, Window, World, member, named};
 use crate::messages::document;
-use crate::support::{Device, TestServer, join, logged_in};
+use crate::support::{Device, FaultProxy, TestServer, join, logged_in};
 
 /// The open page of the administration of the server, when it is the named one.
 macro_rules! server_page {
@@ -78,8 +78,18 @@ pub(crate) fn owner_window(
     cx: &mut TestAppContext,
     server: &TestServer,
 ) -> (tempfile::TempDir, Window, ServerHandle) {
+    owner_window_at(cx, server, &server.address())
+}
+
+/// As [`owner_window`], with the window reaching the server at `address`: the address of
+/// the server or of a proxy in front of it.
+pub(crate) fn owner_window_at(
+    cx: &mut TestAppContext,
+    server: &TestServer,
+    address: &str,
+) -> (tempfile::TempDir, Window, ServerHandle) {
     let (directory, mut window) = named(cx, "Ada");
-    window.find_server(&server.address());
+    window.find_server(address);
     window.join_with_code(&server.owner_code().unwrap());
     window.until_ready();
     let owner = window
@@ -266,19 +276,25 @@ pub(crate) fn awaited<T>(
 /// visible part of the page. An element outside that part is brought nearer with the
 /// wheel, as a person does, and is not clicked. True when the element was clicked.
 pub(crate) fn try_click(window: &mut Window, selector: &'static str) -> bool {
-    window.cx.run_until_parked();
-    let (Some(page), Some(element)) = (
-        window.cx.debug_bounds("admin-page"),
-        window.cx.debug_bounds(selector),
-    ) else {
+    let Some(element) = try_reveal(window, selector) else {
         return false;
     };
+    window
+        .cx
+        .simulate_click(element.center(), Modifiers::none());
+    window.cx.run_until_parked();
+    true
+}
+
+/// The bounds of an element of the open page of the administration when it is drawn
+/// inside the visible part of the page. An element outside that part is brought nearer
+/// with the wheel, as a person does.
+fn try_reveal(window: &mut Window, selector: &'static str) -> Option<gpui::Bounds<gpui::Pixels>> {
+    window.cx.run_until_parked();
+    let page = window.cx.debug_bounds("admin-page")?;
+    let element = window.cx.debug_bounds(selector)?;
     if element.top() >= page.top() && element.bottom() <= page.bottom() {
-        window
-            .cx
-            .simulate_click(element.center(), Modifiers::none());
-        window.cx.run_until_parked();
-        return true;
+        return Some(element);
     }
     let distance = page.center().y - element.center().y;
     window.cx.simulate_event(ScrollWheelEvent {
@@ -286,7 +302,7 @@ pub(crate) fn try_click(window: &mut Window, selector: &'static str) -> bool {
         delta: ScrollDelta::Pixels(point(px(0.0), distance)),
         ..Default::default()
     });
-    false
+    None
 }
 
 /// Clicks an element of the open page of the administration. The click waits for an
@@ -1607,4 +1623,176 @@ fn a_member_who_manages_channels_deletes_none_with_permanent_messages(cx: &mut T
     window.settle();
     assert!(!window.shows("channel-delete-confirm"));
     assert!(window.shows("channel-delete"));
+}
+
+/// The answers to the questions before the ban and before the removal of an account close
+/// each question, and the row of the account under it keeps its place (ADR 0730). The row
+/// of an account stays in the list after both, marked "Banned" or "Removed".
+#[gpui::test]
+fn an_answer_to_a_question_about_an_account_moves_no_row_under_it(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner) = owner_window_at(cx, &server, &proxy.address());
+    let ada = logged_in(&owner);
+    let _devices: Vec<Device> = ["Bruno", "Carla", "Dario"]
+        .into_iter()
+        .map(|name| joined(&world, &server, &invite(&world, &owner, Vec::new()), name).0)
+        .collect();
+    window.open_administration();
+    open_page(&mut window, "admin-nav-people", |window| {
+        server_page!(window, People).is_some()
+    });
+    let order = awaited(&mut window, "the page lists the four accounts", |window| {
+        let rows = server_page!(window, People)?.accounts.loaded()?.clone();
+        (rows.len() == 4).then(|| rows.iter().map(|row| row.id).collect::<Vec<_>>())
+    });
+    // The first two accounts of the list that are not the owner: each has a row under it.
+    let asked: Vec<(AccountId, AccountId)> = order
+        .iter()
+        .enumerate()
+        .filter(|(_, id)| **id != ada)
+        .take(2)
+        .map(|(at, id)| (*id, order[at + 1]))
+        .collect();
+
+    let questions = [
+        ("account-ban", "PUT", "ban", AccountStatus::Banned),
+        ("account-remove", "POST", "removal", AccountStatus::Removed),
+    ];
+    for ((action, method, end, status), (asked, next)) in questions.into_iter().zip(asked) {
+        let under = sel("account-row", next);
+        click_in_page(&mut window, sel(action, asked));
+        // The confirmation is brought into the visible part of the page first, so that
+        // its click scrolls nothing.
+        window.until(
+            "the question is open and its confirmation is visible",
+            |window| try_reveal(window, "account-confirm").is_some(),
+        );
+        let row = sel("account-row", asked);
+        let before = window.cx.debug_bounds(under).unwrap();
+        let (row_before, page_before) = (
+            window.cx.debug_bounds(row).unwrap(),
+            window.cx.debug_bounds("admin-page").unwrap(),
+        );
+
+        // The server does the request, and its answer waits at the proxy.
+        proxy.hold_answer_ending(method, &format!("/accounts/{asked}/{end}"));
+        click_in_page(&mut window, "account-confirm");
+        window.until(
+            "the answer waits and the row has the new status",
+            |window| {
+                proxy.answers_waiting() == 1
+                    && account(window, asked).is_some_and(|row| row.status == status)
+            },
+        );
+        proxy.release();
+        window.until("the question is closed", |window| {
+            idle(window) && !window.shows("account-confirm")
+        });
+        assert_eq!(
+            window.cx.debug_bounds(under).unwrap(),
+            before,
+            "the answer to {action} moved the row under the question; the row asked about \
+             was at {row_before:?} and is at {:?}, the page was at {page_before:?} and is at \
+             {:?}",
+            window.cx.debug_bounds(row),
+            window.cx.debug_bounds("admin-page"),
+        );
+    }
+}
+
+/// The answer to the form of a new invite closes the form and shows the code in its place,
+/// and the row of an invite under the form keeps its place (ADR 0730).
+#[gpui::test]
+fn an_answer_to_the_form_of_a_new_invite_moves_no_control_under_it(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner) = owner_window_at(cx, &server, &proxy.address());
+    let older = world
+        .run(owner.api().create_invite(&CreateInvite::default()))
+        .unwrap()
+        .invite
+        .id;
+    let under = sel("invite-revoke", older);
+    window.open_administration();
+    open_page(&mut window, "admin-nav-invites", |window| {
+        server_page!(window, Invites).is_some()
+    });
+    window.until("the invite has its row", |window| window.shows(under));
+    click_in_page(&mut window, "invite-new");
+    window.until("the form of a new invite is open", |window| {
+        window.shows("invite-form")
+    });
+
+    // The server makes the invite and its row is drawn while the answer waits at the
+    // proxy.
+    proxy.hold_answer_ending("POST", "/invites");
+    click_in_page(&mut window, "invite-create");
+    window.until(
+        "the answer waits and the new invite has its row",
+        |window| {
+            proxy.answers_waiting() == 1
+                && server_page!(window, Invites)
+                    .and_then(|page| page.invites.loaded().map(|rows| rows.len()))
+                    == Some(2)
+                && window.shows(under)
+        },
+    );
+    let before = window.cx.debug_bounds(under).unwrap();
+    proxy.release();
+    window.until("the code is shown and the form is closed", |window| {
+        idle(window) && window.shows("invite-code") && !window.shows("invite-form")
+    });
+    assert_eq!(window.cx.debug_bounds(under).unwrap(), before);
+}
+
+/// The answer to the form of a new access token closes the form and shows the secret in
+/// its place, and the row of a token under the form keeps its place (ADR 0730).
+#[gpui::test]
+fn an_answer_to_the_form_of_a_new_access_token_moves_no_control_under_it(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner) = owner_window_at(cx, &server, &proxy.address());
+    let token = CreateAccessToken {
+        name: "older".to_owned(),
+        actions: vec![TokenAction::ReadStructure],
+        expires_at: OffsetDateTime::now_utc() + Duration::days(7),
+    };
+    let older = world
+        .run(owner.api().create_access_token(&token))
+        .unwrap()
+        .access_token
+        .id;
+    let under = sel("token-revoke", older);
+    window.open_administration();
+    open_page(&mut window, "admin-nav-tokens", |window| {
+        server_page!(window, Tokens).is_some()
+    });
+    window.until("the token has its row", |window| window.shows(under));
+    click_in_page(&mut window, "token-new");
+    window.until("the form of a new token is open", |window| {
+        window.shows("token-form")
+    });
+    window.in_shell(|shell, window, cx| shell.type_token_name("setup", window, cx));
+
+    // The server makes the token and its row is drawn while the answer waits at the
+    // proxy.
+    proxy.hold_answer_ending("POST", "/access-tokens");
+    click_in_page(&mut window, "token-create");
+    window.until("the answer waits and the new token has its row", |window| {
+        proxy.answers_waiting() == 1
+            && server_page!(window, Tokens)
+                .and_then(|page| page.tokens.loaded().map(|rows| rows.len()))
+                == Some(2)
+            && window.shows(under)
+    });
+    let before = window.cx.debug_bounds(under).unwrap();
+    proxy.release();
+    window.until("the secret is shown and the form is closed", |window| {
+        idle(window) && window.shows("token-secret") && !window.shows("token-form")
+    });
+    assert_eq!(window.cx.debug_bounds(under).unwrap(), before);
 }

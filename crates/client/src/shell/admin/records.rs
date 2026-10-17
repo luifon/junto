@@ -27,7 +27,8 @@ use crate::text;
 use crate::text::admin::records as txt;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Button, ButtonKind, Chip, Field, FieldEvent, Notice, Segmented, SelectBox, StyleExt, Toggle,
+    Button, ButtonKind, Chip, Field, FieldEvent, FormSpace, Notice, Segmented, SelectBox, StyleExt,
+    Toggle,
 };
 
 /// The width of the label before a control of a form or of a filter, in design pixels.
@@ -55,6 +56,15 @@ enum PersonFilter {
 /// changes nothing on the server.
 const FIRST_ACTIONS: [TokenAction; 1] = [TokenAction::ReadStructure];
 
+/// What a page of the records shows in place of the actions of a row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Open {
+    /// The form of a new access token.
+    NewToken,
+    /// The question before the removal of an export.
+    RemoveExport(ExportId),
+}
+
 /// What the pages of the records hold of the window itself.
 pub(crate) struct Ui {
     /// The name of a new access token.
@@ -74,6 +84,9 @@ pub(crate) struct Ui {
     pub(crate) removing: Option<ExportId>,
     /// The removal was confirmed, and the server has not answered or has done it.
     pub(crate) remove_sent: bool,
+    /// The space of the rows with the form of a new access token or the question before
+    /// the removal of an export (ADR 0730).
+    pub(crate) space: FormSpace<Open>,
     /// The log whose first read the page of the audit log asked for.
     pub(crate) audit_asked: Option<(ServerId, AuditScope)>,
     /// The filter of the audit log whose choices the page shows.
@@ -105,6 +118,7 @@ impl Ui {
             copied: None,
             removing: None,
             remove_sent: false,
+            space: FormSpace::default(),
             audit_asked: None,
             audit_menu: None,
         };
@@ -212,6 +226,7 @@ impl Shell {
         ui.copied = None;
         ui.removing = None;
         ui.remove_sent = false;
+        ui.space.release();
         ui.audit_asked = None;
         ui.audit_menu = None;
         self.reset_token_form(window, cx);
@@ -230,6 +245,7 @@ impl Shell {
         self.admin.records.token_form = open;
         self.admin.records.token_invalid = None;
         self.admin.records.token_sent = false;
+        self.admin.records.space.release();
         self.reset_token_form(window, cx);
         self.state
             .update(cx, |state, cx| state.dismiss_admin_ask(cx));
@@ -292,10 +308,22 @@ impl Shell {
             Some(AskState::Refused(_)) => self.admin.records.token_sent = false,
             None => {
                 self.admin.records.token_sent = false;
-                self.admin.records.token_form = false;
+                // The answer arrives while the person can be pointing at a control under
+                // the form: its row keeps the height of the form.
+                self.put_away_token_form();
                 self.admin.records.token_invalid = None;
                 self.reset_token_form(window, cx);
             }
+        }
+    }
+
+    /// The form of a new access token closes: its row keeps the height of the form.
+    fn put_away_token_form(&mut self) {
+        let ui = &mut self.admin.records;
+        if ui.token_form {
+            ui.token_form = false;
+            ui.token_sent = false;
+            ui.space.keep(Open::NewToken);
         }
     }
 
@@ -304,6 +332,7 @@ impl Shell {
     pub fn set_export_removing(&mut self, export_id: Option<ExportId>, cx: &mut Context<Self>) {
         self.admin.records.removing = export_id;
         self.admin.records.remove_sent = false;
+        self.admin.records.space.release();
         self.state
             .update(cx, |state, cx| state.dismiss_admin_ask(cx));
         cx.notify();
@@ -322,6 +351,9 @@ impl Shell {
             None => {
                 ui.remove_sent = false;
                 ui.removing = None;
+                // The row of the export stays until the state of the server removes it:
+                // until then it keeps the height of its question.
+                ui.space.keep(Open::RemoveExport(export_id));
             }
         }
     }
@@ -586,14 +618,23 @@ impl Shell {
                 &theme,
             ))
             .child(sentence(txt::TOKEN_ACTS_AS, &theme).mb(u(6.0)));
-        if let Some(made) = &page.made {
-            column = column.child(self.render_new_token(made, &theme, cx));
-        }
         // A new token.
         column = column.child(group_label(txt::NEW_TOKEN, &theme));
-        // A person who is no administrator any more gets no form, also when it was open.
-        column = if self.admin.records.token_form && page.may_create {
-            column.child(self.render_token_form(view, &theme, cx))
+        // A person who is no administrator any more gets no form, also when it was open:
+        // the form is put away for good, and its row keeps its height.
+        if !page.may_create {
+            self.put_away_token_form();
+        }
+        // The secret that the answer carries is drawn in the row of the form, in the place
+        // of the form, so that the answer moves no control under the row (ADR 0730).
+        let secret = page
+            .made
+            .as_ref()
+            .map(|made| self.render_new_token(made, &theme, cx));
+        let open = self.admin.records.token_form.then_some(Open::NewToken);
+        let new = div().flex().flex_col().children(secret);
+        let new = if open.is_some() {
+            new.child(self.render_token_form(view, &theme, cx))
         } else {
             let held = (!page.may_create).then_some(txt::TOKEN_NEEDS);
             let button = Button::new("token-new")
@@ -606,14 +647,14 @@ impl Shell {
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.set_token_form(true, window, cx);
                 }));
-            column
-                .child(div().flex().flex_none().child(button))
+            new.child(div().flex().flex_none().child(button))
                 .children(held.map(|reason| {
                     sentence(reason, &theme)
                         .mt(u(5.0))
                         .debug_selector(|| "token-new-held".to_owned())
                 }))
         };
+        column = column.child(self.admin.records.space.row(open, &[Open::NewToken], new));
         column = column.children(refusal(
             view.refused(AskKind::CreateToken),
             "token-create-refused",
@@ -781,7 +822,16 @@ impl Shell {
             view.refused(AskKind::RemoveExport(export_id)),
             "export-remove-refused",
         ));
-        framed(format!("export-row-{export_id}"), content, under)
+        let open = self.admin.records.removing.map(Open::RemoveExport);
+        self.admin
+            .records
+            .space
+            .row(
+                open,
+                &[Open::RemoveExport(export_id)],
+                framed(format!("export-row-{export_id}"), content, under),
+            )
+            .into_any_element()
     }
 
     pub(crate) fn render_exports_page(

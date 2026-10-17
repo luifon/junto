@@ -552,3 +552,68 @@ fn an_answer_to_the_name_of_a_device_moves_no_row_under_it(cx: &mut TestAppConte
     });
     assert_eq!(window.cx.debug_bounds(below).unwrap(), before);
 }
+
+/// At the largest interface scale in the narrowest window the help sentence of the form of
+/// a device name wraps, and the form is taller than the row of the device. The answer to
+/// the new name closes the form, and the row of the device under it keeps its place: the
+/// row keeps the height of its form (ADR 0730).
+#[gpui::test]
+fn an_answer_to_the_name_of_a_device_in_a_narrow_window_moves_no_row_under_it(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    let first = window.handle();
+    let (_second_directory, _second) = second_device(&world, &server, &first);
+    window.open_devices();
+    window.until("both devices are listed", |window| {
+        window.devices().len() == 2
+    });
+    let state = window.state.clone();
+    window.cx.update(|_, cx| {
+        state.update(cx, |state, cx| {
+            state.set_scale(junto_client::theme::SCALE_MAX, cx);
+        });
+    });
+    window
+        .cx
+        .simulate_resize(gpui::size(gpui::px(720.0), gpui::px(600.0)));
+    window.cx.run_until_parked();
+    let rows = window.devices();
+    let (upper, lower) = (rows[0].id, rows[1].id);
+    let (row, below) = (
+        selector(named_row(upper, "row")),
+        selector(named_row(lower, "row")),
+    );
+    let without = window.cx.debug_bounds(row).unwrap().size.height;
+    window.click_named(named_row(upper, "rename"));
+    window.until("the form is open", |window| {
+        window.shows("device-name-field")
+    });
+    let with = window.cx.debug_bounds(row).unwrap().size.height;
+    assert!(
+        with > without,
+        "the form ({with:?}) is taller than the row of the device ({without:?})"
+    );
+    let before = window.cx.debug_bounds(below).unwrap();
+
+    // The name reaches the server, and its answer waits at the proxy.
+    proxy.hold_answer_ending("PATCH", &format!("/account/devices/{upper}"));
+    window.in_shell(|shell, window, cx| shell.type_device_name("Pocket phone", window, cx));
+    window.click("device-form-send");
+    window.until("the answer waits and the new name is listed", |window| {
+        proxy.answers_waiting() == 1
+            && window
+                .devices()
+                .iter()
+                .any(|row| row.id == upper && row.name == "Pocket phone")
+    });
+    proxy.release();
+    window.until("the form is closed", |window| {
+        !window.shows("device-name-field")
+    });
+    assert_eq!(window.cx.debug_bounds(below).unwrap(), before);
+}

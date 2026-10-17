@@ -23,7 +23,7 @@ use crate::state::account::{AccountOpen, AccountPage, AccountView, AskKind, AskS
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Button, ButtonKind, ChannelRow, Field, FieldEvent, ScrollArea, SideHeader, StyleExt,
+    Button, ButtonKind, ChannelRow, Field, FieldEvent, FormSpace, ScrollArea, SideHeader, StyleExt,
     float_shadow,
 };
 
@@ -55,6 +55,8 @@ pub(crate) struct AccountUi {
     pub(crate) picture_refused: Option<&'static str>,
     /// The request that the open form or question was sent as.
     pub(crate) sent: Option<AskKind>,
+    /// The space of the rows of the devices with a form or a question (ADR 0730).
+    pub(crate) space: FormSpace<Mode>,
     pub(crate) nav_scroll: ScrollHandle,
     pub(crate) page_scroll: ScrollHandle,
     /// What the layer drew last. A test reads the layer from it.
@@ -104,6 +106,7 @@ impl AccountUi {
             invalid: None,
             picture_refused: None,
             sent: None,
+            space: FormSpace::default(),
             nav_scroll: ScrollHandle::new(),
             page_scroll: ScrollHandle::new(),
             #[cfg(feature = "test-support")]
@@ -266,6 +269,7 @@ impl Shell {
         self.account.invalid = None;
         self.account.picture_refused = None;
         self.account.sent = None;
+        self.account.space.release();
         #[cfg(feature = "test-support")]
         {
             self.account.drawn = None;
@@ -290,6 +294,7 @@ impl Shell {
     ) {
         self.account.mode = mode;
         self.account.sent = None;
+        self.account.space.release();
         let name = name.to_owned();
         self.account
             .device_name
@@ -316,7 +321,11 @@ impl Shell {
                 Some(AskState::Refused(_)) => self.account.sent = None,
                 None => {
                     self.account.sent = None;
-                    self.account.mode = None;
+                    // The answer arrives while the person can be pointing at a control
+                    // under the row: the row keeps the height of its form or question.
+                    if let Some(mode) = self.account.mode.take() {
+                        self.account.space.keep(mode);
+                    }
                     self.account
                         .device_name
                         .update(cx, |field, cx| field.set_value("", window, cx));
