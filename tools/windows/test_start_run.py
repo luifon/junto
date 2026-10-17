@@ -20,6 +20,33 @@ def script(directory, *arguments):
     return powershell("-File", str(SCRIPT), "-Directory", str(directory), "-Run", "sample-run", *arguments)
 
 
+def functions(directory, commands):
+    """Runs PowerShell commands after the functions of start-run.ps1 for the run sample-run of
+    `directory`. A function defined in `commands` replaces a command of the same name."""
+    return powershell("-Command", f". '{SCRIPT}' -Directory '{directory}' -Run sample-run -FunctionsOnly; {commands}")
+
+
+def creation_time(number):
+    """The creation time of a process as Windows stores it."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    handle = kernel32.OpenProcess(0x1000, False, number)  # PROCESS_QUERY_LIMITED_INFORMATION
+    times = [ctypes.c_uint64() for _ in range(4)]
+    if not handle or not kernel32.GetProcessTimes(wintypes.HANDLE(handle), *[ctypes.byref(value) for value in times]):
+        raise ctypes.WinError(ctypes.get_last_error())
+    kernel32.CloseHandle(wintypes.HANDLE(handle))
+    return times[0].value
+
+
+def run_folder(temporary):
+    here = pathlib.Path(temporary) / "runs" / "sample-run"
+    here.mkdir(parents=True)
+    return here
+
+
 @unittest.skipIf(os.name != "nt", "start-run.ps1 runs on Windows")
 class Session(unittest.TestCase):
     def test_an_account_without_a_desktop_session_cannot_start_a_run(self):
@@ -31,13 +58,14 @@ class Session(unittest.TestCase):
     def test_a_disconnected_or_locked_session_is_refused_with_its_state(self):
         sessions = {
             "@()": "is not logged on to the desktop",
-            "@([pscustomobject]@{ Connected = $false; Locked = $false })": "is disconnected",
-            "@([pscustomobject]@{ Connected = $true; Locked = $true })": "is locked",
-            "@([pscustomobject]@{ Connected = $false; Locked = $true },"
-            " [pscustomobject]@{ Connected = $true; Locked = $true })": "is locked",
-            "@([pscustomobject]@{ Connected = $true; Locked = $false })": "",
-            "@([pscustomobject]@{ Connected = $false; Locked = $false },"
-            " [pscustomobject]@{ Connected = $true; Locked = $false })": "",
+            "@([pscustomobject]@{ Connected = $false; Lock = 'unlocked' })": "is disconnected",
+            "@([pscustomobject]@{ Connected = $true; Lock = 'locked' })": "is locked",
+            "@([pscustomobject]@{ Connected = $false; Lock = 'locked' },"
+            " [pscustomobject]@{ Connected = $true; Lock = 'locked' })": "is locked",
+            "@([pscustomobject]@{ Connected = $true; Lock = 'unknown' })": "does not state whether the screen",
+            "@([pscustomobject]@{ Connected = $true; Lock = 'unlocked' })": "",
+            "@([pscustomobject]@{ Connected = $false; Lock = 'unlocked' },"
+            " [pscustomobject]@{ Connected = $true; Lock = 'unlocked' })": "",
         }
         for given, expected in sessions.items():
             with self.subTest(sessions=given):
@@ -48,6 +76,16 @@ class Session(unittest.TestCase):
                     self.assertIn(expected, result.stdout)
                 else:
                     self.assertEqual(result.stdout.strip(), "")
+
+    # A session whose lock state Windows does not know is not taken as unlocked.
+    def test_the_read_session_values_give_the_connect_and_lock_state(self):
+        values = {(0, 1): "True unlocked", (0, 0): "True locked", (0, -1): "True unknown", (0, 2): "True unknown",
+                  (4, 1): "False unlocked"}
+        for (state, flags), expected in values.items():
+            with self.subTest(state=state, flags=flags):
+                result = functions("x", f"$s = Get-SessionState {state} {flags}; \"$($s.Connected) $($s.Lock)\"")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), expected)
 
     # The tests of the Windows job run in the desktop session without elevation.
     def test_the_sessions_are_read_without_elevation(self):
@@ -104,24 +142,107 @@ class Ended(unittest.TestCase):
 
     def test_a_run_ends_when_its_recorded_process_no_longer_runs(self):
         with tempfile.TemporaryDirectory(prefix="junto-start-") as temporary:
-            here = pathlib.Path(temporary) / "runs" / "sample-run"
-            here.mkdir(parents=True)
-            self.assertEqual(script(temporary, "-Ended").returncode, 1, "a run without a process file has not ended")
+            here = run_folder(temporary)
             child = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.readline()"],
                                      stdin=subprocess.PIPE, text=True)
             try:
-                start = powershell("-Command", f"(Get-Process -Id {child.pid}).StartTime.ToFileTimeUtc()").stdout.strip()
+                start = creation_time(child.pid)
                 (here / "process").write_text(f"{child.pid} {start}\n")
                 self.assertEqual(script(temporary, "-Ended").returncode, 1, "the process still runs")
-                # The same number with another start time is another process.
-                (here / "process").write_text(f"{child.pid} {int(start) - 1}\n")
+                # The same number with another creation time is another process.
+                (here / "process").write_text(f"{child.pid} {start - 1}\n")
                 self.assertEqual(script(temporary, "-Ended").returncode, 0)
                 (here / "process").write_text(f"{child.pid} {start}\n")
+                # The creation time does not depend on the time zone of the reader. The local
+                # zone of .NET is replaced, as after a change of the zone of Windows.
+                zone = ("$cached = [TimeZoneInfo].GetField('s_cachedData', 'NonPublic,Static').GetValue($null); "
+                        "$cached.GetType().GetField('m_localTimeZone', 'NonPublic,Public,Instance').SetValue("
+                        "$cached, [TimeZoneInfo]::FindSystemTimeZoneById('{}')); ")
+                for name in ("Tokyo Standard Time", "Pacific Standard Time"):
+                    with self.subTest(zone=name):
+                        result = functions(temporary, zone.format(name) + "[TimeZoneInfo]::Local.Id; "
+                                           "Test-RunEnded $here sample-run")
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(result.stdout.split(), [*name.split(), "False"])
             finally:
                 child.communicate("end\n", timeout=60)
             result = script(temporary, "-Ended")
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual(result.stdout.strip(), "ended")
+
+    # Without the file "process" (the console host was not found, or the start ended before it
+    # wrote the file) the end of the run is read from its start and its task.
+    def test_a_run_without_its_process_ends_when_neither_its_start_nor_its_task_runs(self):
+        with tempfile.TemporaryDirectory(prefix="junto-start-") as temporary:
+            here = run_folder(temporary)
+            (here / "started").write_text("")
+            # No task \\junto-ci\\sample-run exists, and no start of it runs.
+            result = script(temporary, "-Ended")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            cases = {
+                "function Get-RunTask { [pscustomobject]@{ State = 'Running' } }; "
+                "function Get-RunStart { }": "False",
+                "function Get-RunTask { [pscustomobject]@{ State = 'Ready' } }; function Get-RunStart { }": "True",
+                "function Get-RunTask { }; function Get-RunStart { 'start' }": "False",
+                "function Get-RunTask { }; function Get-RunStart { }": "True",
+            }
+            for given, expected in cases.items():
+                with self.subTest(given=given):
+                    result = functions(temporary, f"{given}; Test-RunEnded $here sample-run")
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.strip(), expected)
+
+
+# The start with the commands that change scheduled tasks replaced, so that the tests create none.
+TASKS = ("function Get-DesktopSession { [pscustomobject]@{ Connected = $true; Lock = 'unlocked' } }; "
+         "function Get-ScheduledTask { }; function Stop-ScheduledTask { }; function Unregister-ScheduledTask { }; "
+         "function Register-ScheduledTask { }; function Start-ScheduledTask { }; ")
+
+
+@unittest.skipIf(os.name != "nt", "start-run.ps1 runs on Windows")
+class Start(unittest.TestCase):
+    # tools/ci/ci.sh then reports the run as failed, and "ci.sh forget" removes it.
+    def test_an_error_before_the_run_has_started_records_its_end(self):
+        with tempfile.TemporaryDirectory(prefix="junto-start-") as temporary:
+            here = run_folder(temporary)
+            (here / "commit.bundle").write_bytes(b"bundle")
+            result = functions(temporary, TASKS + "function New-ScheduledTaskAction { throw 'no action' }; Invoke-Start")
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertEqual((here / "finished").read_text(), "1\n")
+            self.assertIn("the run sample-run did not start: no action", (here / "runner.log").read_text())
+            self.assertFalse((here / "commit.bundle").exists())
+
+    def test_an_error_after_the_run_has_started_leaves_the_run(self):
+        with tempfile.TemporaryDirectory(prefix="junto-start-") as temporary:
+            here = run_folder(temporary)
+            (here / "started").write_text("")
+            result = functions(temporary, TASKS + "function Get-CimInstance { throw 'no processes' }; Invoke-Start")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("the run sample-run started, but its start did not complete: no processes", result.stdout)
+            self.assertIn("no processes", (here / "task.log").read_text())
+            self.assertFalse((here / "finished").exists())
+
+    # A start removes the tasks of runs that have ended, and leaves the task of a start that
+    # runs at the same time.
+    def test_a_start_removes_only_the_tasks_of_ended_runs(self):
+        with tempfile.TemporaryDirectory(prefix="junto-start-") as temporary:
+            runs = pathlib.Path(temporary) / "runs"
+            for name in ("finished-run", "starting-run", "ended-run", "running-run"):
+                (runs / name).mkdir(parents=True)
+            (runs / "finished-run" / "finished").write_text("0\n")
+            (runs / "ended-run" / "process").write_text("4 1\n")  # the System process has another creation time
+            (runs / "running-run" / "started").write_text("")
+            names = ["finished-run", "gone-run", "starting-run", "ended-run", "running-run", "sample-run"]
+            listed = ", ".join(f"[pscustomobject]@{{ TaskName = '{name}' }}" for name in names)
+            result = functions(temporary, f"function Get-ScheduledTask {{ @({listed}) }}; "
+                               "function Unregister-ScheduledTask { [CmdletBinding(SupportsShouldProcess)] param($TaskPath, $TaskName) "
+                               "\"removed $TaskName\" }; "
+                               "function Get-RunStart([string]$Name) { if ($Name -eq 'starting-run') { 'start' } }; "
+                               "function Get-RunTask([string]$Name) { [pscustomobject]@{ State = 'Running' } }; "
+                               "Remove-EndedTask")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.split("\n")[:-1], ["removed finished-run", "removed gone-run",
+                                                                "removed ended-run"])
 
 
 if __name__ == "__main__":
