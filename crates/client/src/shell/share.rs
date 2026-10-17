@@ -113,10 +113,11 @@ impl SharePicker {
             .filter(|kind| match kind {
                 SoundKind::None => true,
                 SoundKind::System => sources.system_sound,
-                // macOS offers the choice also with an empty list, and states why the
-                // list is empty. Linux lists the applications that play now.
+                // macOS and Windows list the applications with a window, and offer the
+                // choice also with an empty list, which states why it is empty. Linux
+                // lists the applications that play now.
                 SoundKind::Application => {
-                    cfg!(target_os = "macos")
+                    cfg!(any(target_os = "macos", target_os = "windows"))
                         || !sources.applications.is_empty()
                         || !sources.windows.is_empty()
                 }

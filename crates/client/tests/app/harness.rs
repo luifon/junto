@@ -182,7 +182,11 @@ pub fn open_with(cx: &mut TestAppContext, data_dir: &Path, scale: Option<u32>) -
 }
 
 /// Opens the application with this screen capture in the place of the synthetic one.
-#[cfg(all(target_os = "macos", feature = "native-device-tests"))]
+// The native window stage of macOS (ADR 0913) and the share test of Windows (ADR 0706).
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "macos", feature = "native-device-tests")
+))]
 pub fn open_with_capture(
     cx: &mut TestAppContext,
     data_dir: &Path,
@@ -727,7 +731,10 @@ pub fn named(cx: &mut TestAppContext, name: &str) -> (tempfile::TempDir, Window)
 
 /// Opens the application with this screen capture as a new member of a server, as
 /// [`member`] does.
-#[cfg(all(target_os = "macos", feature = "native-device-tests"))]
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "macos", feature = "native-device-tests")
+))]
 pub fn member_with_capture(
     cx: &mut TestAppContext,
     world: &World,

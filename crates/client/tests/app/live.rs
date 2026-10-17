@@ -41,6 +41,8 @@ mod lines;
 #[cfg(all(target_os = "macos", feature = "native-device-tests"))]
 mod native_share;
 mod rules;
+#[cfg(target_os = "windows")]
+mod windows_share;
 
 /// The voice channel of the tests. A new server has a voice channel of its own beside it.
 const ROOM: &str = "Daily";
