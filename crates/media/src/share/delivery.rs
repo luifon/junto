@@ -20,6 +20,9 @@ pub(crate) use latest::Latest;
 /// in it; the room is for the portions of the capture and for a late reader.
 pub(crate) const CAPACITY: usize = 48_000 * 2 / 5;
 
+/// A call that makes a waiting thread of a capture look at the state of the capture.
+type Waker = Box<dyn Fn() + Send + Sync>;
+
 /// The state of one capture that its threads share.
 #[derive(Default)]
 pub(crate) struct Life {
@@ -27,13 +30,30 @@ pub(crate) struct Life {
     /// The owner of the capture stopped it; the sink is not told an end.
     pub cancelled: AtomicBool,
     failure: Mutex<Option<CaptureError>>,
+    /// Called when the capture stops, so that no thread waits for a time limit to see it.
+    wakers: Mutex<Vec<Waker>>,
 }
 impl Life {
     pub fn stopped(&self) -> bool {
         self.stopped.load(Ordering::Acquire)
     }
     pub fn stop(&self) {
+        let wakers = self.wakers.lock().unwrap_or_else(PoisonError::into_inner);
         self.stopped.store(true, Ordering::Release);
+        for wake in wakers.iter() {
+            wake();
+        }
+    }
+    /// Calls `wake` when the capture stops, or now when it has stopped.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    pub fn on_stop(&self, wake: impl Fn() + Send + Sync + 'static) {
+        let mut wakers = self.wakers.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.stopped() {
+            drop(wakers);
+            wake();
+        } else {
+            wakers.push(Box::new(wake));
+        }
     }
     pub fn fail(&self, failure: CaptureError) {
         let mut held = self.failure.lock().unwrap_or_else(PoisonError::into_inner);
@@ -275,6 +295,102 @@ impl SoundClock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stop_wakes_each_waiting_thread_once_and_a_later_waker_at_once() {
+        use std::sync::atomic::AtomicUsize;
+        let life = Life::default();
+        let woken = Arc::new(AtomicUsize::new(0));
+        for _ in 0..2 {
+            let woken = woken.clone();
+            life.on_stop(move || {
+                woken.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        assert_eq!(woken.load(Ordering::SeqCst), 0);
+        life.fail(CaptureError::SourceGone);
+        assert_eq!(woken.load(Ordering::SeqCst), 2);
+        // A thread that comes after the stop does not wait.
+        let late = woken.clone();
+        life.on_stop(move || {
+            late.fetch_add(10, Ordering::SeqCst);
+        });
+        assert_eq!(woken.load(Ordering::SeqCst), 12);
+        assert_eq!(life.result(), Err(CaptureError::SourceGone));
+    }
+
+    /// Counts what the delivery gives to the sink.
+    #[derive(Default)]
+    struct Counted {
+        pictures: Mutex<usize>,
+        ended: Mutex<Vec<CaptureError>>,
+    }
+    #[allow(clippy::unwrap_used)]
+    impl CaptureSink for Counted {
+        fn picture(&self, _: Arc<dyn livekit::webrtc::video_frame::VideoBuffer>) {
+            *self.pictures.lock().unwrap() += 1;
+        }
+        fn sound(&self, _: &[f32], _: Format) {}
+        fn ended(&self, error: CaptureError) {
+            self.ended.lock().unwrap().push(error);
+        }
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn a_picture_that_cannot_be_read_ends_the_delivery_and_tells_the_sink_once() {
+        use std::sync::atomic::AtomicUsize;
+        let life = Arc::new(Life::default());
+        let pictures = Arc::new(Latest::default());
+        let sink = Arc::new(Counted::default());
+        let reads = Arc::new(AtomicUsize::new(0));
+        let (_capture, samples) = rtrb::RingBuffer::new(CAPACITY);
+        let delivery = std::thread::spawn({
+            let (life, sink, pictures, reads) =
+                (life.clone(), sink.clone(), pictures.clone(), reads.clone());
+            move || {
+                deliver(
+                    life,
+                    sink,
+                    pictures,
+                    move |frame: pixels::Frame| match reads.fetch_add(1, Ordering::SeqCst) {
+                        0 => Ok(Some(frame)),
+                        // The capture had a sign of a picture and no picture.
+                        1 => Ok(None),
+                        _ => Err(CaptureError::Failed("the texture was lost".to_owned())),
+                    },
+                    Some(samples),
+                    quality(30),
+                )
+            }
+        });
+        let started = Instant::now();
+        for (index, value) in [40, 80, 120].into_iter().enumerate() {
+            pictures.put(red(value));
+            while reads.load(Ordering::SeqCst) <= index {
+                assert!(
+                    started.elapsed() < Duration::from_secs(20),
+                    "picture {index}"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        // The delivery of the pictures and of the sound ends without a stop of the owner.
+        while !delivery.is_finished() {
+            assert!(
+                started.elapsed() < Duration::from_secs(20),
+                "the delivery did not end"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        delivery.join().unwrap();
+        assert_eq!(*sink.pictures.lock().unwrap(), 1);
+        assert_eq!(
+            *sink.ended.lock().unwrap(),
+            [CaptureError::Failed("the texture was lost".to_owned())]
+        );
+        assert!(life.stopped());
+    }
 
     #[test]
     fn the_audio_clock_supplies_silence_through_a_pause_and_restarts() {

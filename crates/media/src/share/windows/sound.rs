@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_EVENT, WAIT_OBJECT_0};
 use windows::Win32::Media::Audio::{
     AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
     AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK, AUDIOCLIENT_ACTIVATION_PARAMS,
@@ -25,7 +25,7 @@ use windows::Win32::Media::Audio::{
 use windows::Win32::Media::Multimedia::WAVE_FORMAT_IEEE_FLOAT;
 use windows::Win32::System::Com::BLOB;
 use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
-use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+use windows::Win32::System::Threading::{CreateEventW, INFINITE, SetEvent, WaitForMultipleObjects};
 use windows::Win32::System::Variant::VT_BLOB;
 use windows::core::{HRESULT, IUnknown, Interface, Ref, implement};
 
@@ -37,9 +37,12 @@ use crate::share::delivery::Life;
 const ACTIVATION_LIMIT: Duration = Duration::from_secs(10);
 /// The buffer of the capture at the system, in units of 100 nanoseconds: 200 ms.
 const BUFFER: i64 = 2_000_000;
-/// How long the capture thread waits for a packet before it looks at the state of the
-/// capture.
-const LOOK: u32 = 100;
+
+/// The frames that the system gave to the sound captures of this process, silent ones
+/// included: the tests see by it that a capture reads packets (ADR 0706).
+#[cfg(feature = "test-support")]
+pub(super) static CAPTURED_FRAMES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 fn failed(error: windows::core::Error) -> CaptureError {
     CaptureError::Failed(error.message())
@@ -67,8 +70,28 @@ impl IActivateAudioInterfaceCompletionHandler_Impl for Activated_Impl {
     }
 }
 
-/// An event of the system, closed when dropped.
-struct Event(HANDLE);
+/// An event of the system that resets itself when a wait ends, closed when dropped.
+pub(super) struct Event(HANDLE);
+
+// SAFETY: an event handle may be set and waited for from any thread.
+unsafe impl Send for Event {}
+// SAFETY: as above; setting an event from two threads at once is allowed.
+unsafe impl Sync for Event {}
+
+impl Event {
+    pub(super) fn new() -> Result<Self, CaptureError> {
+        // SAFETY: the call makes an unnamed event without security attributes.
+        unsafe { CreateEventW(None, false, false, None) }
+            .map(Self)
+            .map_err(failed)
+    }
+
+    /// Ends a wait for the event.
+    pub(super) fn set(&self) {
+        // SAFETY: the handle is valid while `self` lives.
+        let _ = unsafe { SetEvent(self.0) };
+    }
+}
 
 impl Drop for Event {
     fn drop(&mut self) {
@@ -171,7 +194,7 @@ impl Capture {
                     None,
                 )
                 .map_err(failed)?;
-            let event = Event(CreateEventW(None, false, false, None).map_err(failed)?);
+            let event = Event::new()?;
             client.SetEventHandle(event.0).map_err(failed)?;
             let capture: IAudioCaptureClient = client.GetService().map_err(failed)?;
             client.Start().map_err(failed)?;
@@ -183,17 +206,24 @@ impl Capture {
         }
     }
 
-    /// Gives the frames of the capture to `push` until the capture stops. Returns the
-    /// failure that stopped it.
+    /// Gives the frames of the capture to `push` until the capture stops; `stop` is set
+    /// when it stops. Returns the failure that stopped it.
     pub(super) fn run(
         &self,
         life: &Arc<Life>,
+        stop: &Event,
         mut push: impl FnMut([f32; 2]),
     ) -> Result<(), CaptureError> {
         while !life.stopped() {
-            // SAFETY: the event handle is valid while `self` lives.
-            if unsafe { WaitForSingleObject(self.event.0, LOOK) } != WAIT_OBJECT_0 {
+            // SAFETY: both handles are valid while `self` and `stop` live.
+            let woken = unsafe { WaitForMultipleObjects(&[self.event.0, stop.0], false, INFINITE) };
+            if woken == WAIT_EVENT(WAIT_OBJECT_0.0 + 1) {
                 continue;
+            }
+            if woken != WAIT_OBJECT_0 {
+                return Err(CaptureError::Failed(
+                    "the wait for the sound capture failed".to_owned(),
+                ));
             }
             loop {
                 // SAFETY: each buffer that `GetBuffer` gives is read before `ReleaseBuffer`
@@ -212,6 +242,9 @@ impl Capture {
                     let bytes = (!data.is_null()).then(|| std::slice::from_raw_parts(data, length));
                     let silent = flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0;
                     let read = packet_frames(bytes, frames as usize, silent, &mut push);
+                    #[cfg(feature = "test-support")]
+                    CAPTURED_FRAMES
+                        .fetch_add(u64::from(frames), std::sync::atomic::Ordering::Relaxed);
                     self.capture.ReleaseBuffer(frames).map_err(failed)?;
                     if !read {
                         return Err(CaptureError::Failed(

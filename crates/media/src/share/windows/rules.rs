@@ -1,10 +1,10 @@
 //! The decisions of the Windows capture as plain functions: which windows are listed, how a
 //! screen and a window are named by a number, how the client and an application are
-//! identified, and how a packet of the sound capture becomes stereo frames. They run in the
-//! ordinary tests of every system (ADR 0706).
+//! identified, which applications started the client, and how a packet of the sound capture
+//! becomes stereo frames. They run in the ordinary tests of every system (ADR 0706).
 
-use crate::share::listing::Own;
-use crate::share::{ApplicationId, WindowSource};
+use crate::share::listing::{Own, shareable_applications};
+use crate::share::{ApplicationId, ApplicationSource, WindowSource};
 
 /// A window is listed when each side has at least this many pixels. Smaller ones are parts
 /// of an interface that a system or an application draws as windows.
@@ -155,6 +155,81 @@ pub(crate) fn application(
         },
         application_name(description, path),
     )
+}
+
+/// A process as the process list of the system gives it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ListedProcess {
+    pub id: u32,
+    /// The identifier of the process that created it, recorded at its creation. That
+    /// process can have ended since, and its identifier can belong to a newer process.
+    pub parent: u32,
+}
+
+/// The processes that started the client: the process that created it, the process that
+/// created that one, and so on. `created` gives the creation time of a process.
+///
+/// A process that is younger than the process that it seems to have created took the
+/// identifier of an ended creator: the chain ends there, as it ends at a creator that is not
+/// in the list. A process whose creation time cannot be read is counted as a creator: an
+/// application that is withheld by mistake costs one choice of sound, an application that is
+/// offered by mistake would carry the sound of the call.
+pub(crate) fn ancestors(
+    own: u32,
+    processes: &[ListedProcess],
+    created: impl Fn(u32) -> Option<u64>,
+) -> Vec<u32> {
+    let mut found: Vec<u32> = Vec::new();
+    let (mut child, mut child_created) = (own, created(own));
+    while let Some(entry) = processes.iter().find(|process| process.id == child) {
+        let parent = entry.parent;
+        if parent == 0
+            || parent == own
+            || found.contains(&parent)
+            || !processes.iter().any(|process| process.id == parent)
+        {
+            break;
+        }
+        let parent_created = created(parent);
+        if let (Some(parent_time), Some(child_time)) = (parent_created, child_created)
+            && parent_time > child_time
+        {
+            break;
+        }
+        found.push(parent);
+        (child, child_created) = (parent, parent_created);
+    }
+    found
+}
+
+/// The choices of the sound of one application: the applications whose sound can be shared
+/// alone, and the applications of listed windows whose process started the client. Process
+/// loopback captures the sound of an application with the sound of every process that it
+/// started, so the sound of such an application includes the sound of the call that the
+/// client plays (ADR 0706).
+pub(crate) fn sound_choices(
+    windows: &[WindowSource],
+    own: &Own,
+    ancestors: &[u32],
+) -> (Vec<ApplicationSource>, Vec<ApplicationId>) {
+    let started = |id: &ApplicationId| {
+        u32::try_from(id.process_id).is_ok_and(|process| ancestors.contains(&process))
+    };
+    let applications = shareable_applications(
+        windows
+            .iter()
+            .filter(|window| !started(&window.application))
+            .map(|window| (window.application.clone(), window.application_name.clone()))
+            .collect(),
+        own,
+    );
+    let mut started_the_client: Vec<ApplicationId> = Vec::new();
+    for window in windows {
+        if started(&window.application) && !started_the_client.contains(&window.application) {
+            started_the_client.push(window.application.clone());
+        }
+    }
+    (applications, started_the_client)
 }
 
 /// The channels and the rate of the sound capture: the capture asks the system for 32-bit
@@ -349,6 +424,87 @@ mod tests {
                 "firefox.exe".to_owned()
             )
         );
+    }
+
+    fn process(id: u32, parent: u32) -> ListedProcess {
+        ListedProcess { id, parent }
+    }
+
+    #[test]
+    fn the_processes_that_started_the_client_are_its_creators_while_each_is_older() {
+        // The shell (4) started a terminal (20), which started the client (100). The shell
+        // was created by a process that ended (2).
+        let processes = [
+            process(4, 2),
+            process(20, 4),
+            process(100, 20),
+            process(30, 4),
+            process(7, 100),
+        ];
+        let times = |id: u32| match id {
+            4 => Some(10),
+            20 => Some(20),
+            100 => Some(30),
+            _ => Some(40),
+        };
+        assert_eq!(ancestors(100, &processes, times), [20, 4]);
+        // The terminal ended and a newer process took its identifier: it did not start the
+        // client, and the chain ends there.
+        let younger = |id: u32| if id == 20 { Some(50) } else { times(id) };
+        assert_eq!(ancestors(100, &processes, younger), Vec::<u32>::new());
+        // A creation time that cannot be read counts as a creator.
+        let unread = |id: u32| if id == 20 { None } else { times(id) };
+        assert_eq!(ancestors(100, &processes, unread), [20, 4]);
+        // The creator ended: nothing older is known.
+        assert_eq!(
+            ancestors(100, &[process(100, 20), process(4, 2)], times),
+            Vec::<u32>::new()
+        );
+        // A loop of identifiers in a damaged list ends.
+        let looped = [process(100, 20), process(20, 4), process(4, 20)];
+        assert_eq!(ancestors(100, &looped, |_| None), [20, 4]);
+        // The client is not in the list.
+        assert!(ancestors(100, &[process(20, 4)], times).is_empty());
+    }
+
+    fn listed(process_id: i32, path: &str, name: &str) -> WindowSource {
+        WindowSource {
+            id: process_id as u32,
+            title: format!("Window of {name}"),
+            application: ApplicationId {
+                process_id,
+                bundle_id: path.to_owned(),
+            },
+            application_name: name.to_owned(),
+            width: 800,
+            height: 600,
+        }
+    }
+
+    #[test]
+    fn an_application_that_started_the_client_is_not_offered_for_its_sound_alone() {
+        let explorer = listed(4, r"c:\windows\explorer.exe", "Windows Explorer");
+        let player = listed(7, r"c:\program files\player\player.exe", "Player");
+        let terminal = listed(20, r"c:\program files\terminal\terminal.exe", "Terminal");
+        let windows = [
+            explorer.clone(),
+            player.clone(),
+            terminal.clone(),
+            explorer.clone(),
+        ];
+        let (applications, started) = sound_choices(&windows, &own(), &[20, 4]);
+        assert_eq!(
+            applications,
+            [ApplicationSource {
+                id: player.application,
+                name: "Player".to_owned(),
+            }]
+        );
+        assert_eq!(started, [explorer.application, terminal.application]);
+        // Without creators every application is offered.
+        let (applications, started) = sound_choices(&windows, &own(), &[]);
+        assert_eq!(applications.len(), 3);
+        assert!(started.is_empty());
     }
 
     fn bytes(frames: &[[f32; 2]]) -> Vec<u8> {

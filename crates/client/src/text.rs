@@ -490,6 +490,15 @@ pub fn sound_of_window(application: &str) -> String {
     )
 }
 
+/// The sound of a shared window whose application started Junto: on Windows its sound
+/// includes the sound of every program that it started, Junto too (ADR 0706).
+pub fn sound_includes_junto(application: &str) -> String {
+    format!(
+        "Junto was started from {application}, so the sound of {application} includes the \
+         sound of this call. Share all system sound or no sound with this window."
+    )
+}
+
 /// Why a share did not start, or ended by itself.
 pub fn capture_error(error: &CaptureError) -> String {
     match error {
@@ -500,6 +509,11 @@ pub fn capture_error(error: &CaptureError) -> String {
         CaptureError::SourceGone => {
             "The screen, the window or the application is not available any more, or the \
              system stopped the capture."
+                .to_owned()
+        }
+        CaptureError::StartedTheClient => {
+            "Junto was started from this application, so its sound includes the sound of the \
+             call. Share all system sound or no sound instead."
                 .to_owned()
         }
         CaptureError::Unsupported => SHARE_UNSUPPORTED.to_owned(),
@@ -2862,6 +2876,7 @@ mod tests {
             CaptureError::Cancelled,
             CaptureError::NotAllowed,
             CaptureError::SourceGone,
+            CaptureError::StartedTheClient,
             CaptureError::Unsupported,
             CaptureError::Interrupted,
             CaptureError::Failed("the stream stopped".to_owned()),
@@ -2874,6 +2889,9 @@ mod tests {
                 .ends_with("The stream stopped.")
         );
         assert!(sound_of_window("Editor").contains("the sound of Editor,"));
+        assert!(sound_includes_junto("Windows Explorer").starts_with(
+            "Junto was started from Windows Explorer, so the sound of Windows Explorer includes"
+        ));
     }
 
     #[test]

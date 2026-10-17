@@ -88,6 +88,11 @@ pub struct ShareSources {
     /// Source kinds chosen by the desktop at start, without application-owned IDs.
     pub portal: Vec<ShareKind>,
     pub system_sound: bool,
+    /// Applications of listed windows whose sound includes the sound of the client, so that
+    /// their sound is not offered alone. On Windows these are the applications whose
+    /// process started the client, directly or through other processes (ADR 0706); the
+    /// other systems list none.
+    pub started_the_client: Vec<ApplicationId>,
 }
 
 /// The picture of a share.
@@ -205,6 +210,10 @@ pub enum CaptureError {
     /// The screen, the window or the application of the request is not there any more.
     #[error("the screen, the window or the application is not available any more")]
     SourceGone,
+    /// The sound of the requested application includes the sound of the client: on
+    /// Windows, the application started the client (ADR 0706).
+    #[error("the sound of this application includes the sound of Junto")]
+    StartedTheClient,
     /// This build has no capture for the system that it runs on.
     #[error("screen share is not available on this system")]
     Unsupported,

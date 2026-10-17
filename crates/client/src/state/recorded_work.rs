@@ -449,7 +449,7 @@ impl AppState {
     /// application state without that, such as a test, keeps the path.
     fn open_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         if self.opens_files {
-            cx.open_with_system(&path);
+            crate::opening::open_with_system(&path, cx);
         } else {
             self.kept_opened.push(path);
         }

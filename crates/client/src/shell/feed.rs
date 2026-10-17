@@ -399,7 +399,7 @@ impl Rich {
                 // The address is HTTP, HTTPS or mailto: the application of the system
                 // for it opens it.
                 if let Some((_, address)) = links.get(index) {
-                    cx.open_url(address);
+                    crate::opening::open_url(address, cx);
                 }
             })
             .tooltip(move |index, window, cx| {

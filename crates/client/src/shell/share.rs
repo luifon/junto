@@ -143,14 +143,18 @@ impl SharePicker {
             (SoundKind::None, _) => SoundChoice::None,
             (SoundKind::System, _) if sources.system_sound => SoundChoice::System,
             (SoundKind::System, _) => return None,
-            (SoundKind::Application, PictureSource::Window(id)) => SoundChoice::Application(
-                sources
+            (SoundKind::Application, PictureSource::Window(id)) => {
+                let application = &sources
                     .windows
                     .iter()
                     .find(|window| window.id == id)?
-                    .application
-                    .clone(),
-            ),
+                    .application;
+                // Its sound includes the sound of the call (ADR 0706); the dialog states why.
+                if sources.started_the_client.contains(application) {
+                    return None;
+                }
+                SoundChoice::Application(application.clone())
+            }
             (SoundKind::Application, PictureSource::Display(_) | PictureSource::Portal(_)) => {
                 let application = self.application.as_ref()?;
                 sources
@@ -432,12 +436,12 @@ impl Shell {
         if !calls.can_share() {
             let listed = Listed::Failed(CaptureError::Unsupported);
             let picker = SharePicker::new(ScreenAccess::NotAllowed, listed, read, seat);
-            self.open_layer(Layer::SharePicker(picker), window, cx);
+            self.open_layer(Layer::SharePicker(Box::new(picker)), window, cx);
             return;
         }
         let access = calls.screen_access();
         let picker = SharePicker::new(access, Listed::Reading, read, seat);
-        self.open_layer(Layer::SharePicker(picker), window, cx);
+        self.open_layer(Layer::SharePicker(Box::new(picker)), window, cx);
         if access == ScreenAccess::NotAllowed {
             return;
         }
@@ -887,14 +891,15 @@ impl Shell {
         }
 
         // The sound: the kind, and with a screen the application.
-        let window_application = match picture {
-            Some(PictureSource::Window(id)) => sources
-                .windows
-                .iter()
-                .find(|window| window.id == id)
-                .map(|window| window.application_name.clone()),
+        let shared_window = match picture {
+            Some(PictureSource::Window(id)) => {
+                sources.windows.iter().find(|window| window.id == id)
+            }
             _ => None,
         };
+        let window_application = shared_window.map(|window| window.application_name.clone());
+        let started_the_client = shared_window
+            .is_some_and(|window| sources.started_the_client.contains(&window.application));
         let kinds: Vec<SharedString> = sound_kinds
             .iter()
             .map(|kind| match kind {
@@ -910,6 +915,9 @@ impl Shell {
             (None, _) => text::SOUND_CHOICE_HELP.into(),
             (Some(SoundKind::None), _) => text::SOUND_NONE_HELP.into(),
             (Some(SoundKind::System), _) => text::SOUND_SYSTEM_HELP.into(),
+            (Some(SoundKind::Application), Some(name)) if started_the_client => {
+                text::sound_includes_junto(name).into()
+            }
             (Some(SoundKind::Application), Some(name)) => text::sound_of_window(name).into(),
             (Some(SoundKind::Application), None) => text::SOUND_APPLICATION_HELP.into(),
         };
@@ -1532,6 +1540,7 @@ mod tests {
         let sources = ShareSources {
             portal: Vec::new(),
             system_sound: true,
+            started_the_client: Vec::new(),
             displays: vec![DisplaySource {
                 id: 1,
                 width: 1920,
@@ -1669,6 +1678,23 @@ mod tests {
         picker.picture = Some(PictureSource::Window(11));
         picker.listed = Listed::Reading;
         assert_eq!(picker.chosen(), None);
+    }
+
+    #[test]
+    fn the_sound_of_a_window_whose_application_started_junto_is_not_shared() {
+        let mut picker = picker();
+        if let Listed::Sources(sources) = &mut picker.listed {
+            sources.started_the_client.push(player());
+        }
+        picker.picture = Some(PictureSource::Window(11));
+        picker.sound = Some(SoundKind::Application);
+        assert_eq!(picker.chosen(), None);
+        // The other choices of sound stay.
+        picker.sound = Some(SoundKind::System);
+        assert_eq!(
+            picker.chosen(),
+            Some((PictureSource::Window(11), SoundChoice::System))
+        );
     }
 
     #[test]

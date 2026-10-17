@@ -13,7 +13,7 @@ use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::CoIncrementMTAUsage;
 
 use super::graphics::{Gpu, Session, Target};
-use super::sound::{Capture, Loopback};
+use super::sound::{Capture, Event, Loopback};
 use super::{rules, sources};
 use crate::share::delivery::{CAPACITY, Latest, Life, deliver};
 use crate::share::listing::Own;
@@ -156,25 +156,28 @@ fn resolve(
             if id != *wanted || own.is(id.process_id, &id.bundle_id, &name) {
                 return Err(CaptureError::SourceGone);
             }
+            // The tree of an application that started the client holds the client.
+            if sources::ancestors(own).contains(&(id.process_id as u32)) {
+                return Err(CaptureError::StartedTheClient);
+            }
             Some(Loopback::Include(id.process_id as u32))
         }
     };
     Ok((target, loopback))
 }
 
+/// The threads of a share. Each waits for the system or for a picture without a time
+/// limit, and the stop of the life wakes it: a drop ends them at once.
 struct Workers {
     life: Arc<Life>,
     threads: Vec<JoinHandle<()>>,
-    pictures: Arc<Latest<()>>,
 }
 
 impl Drop for Workers {
     fn drop(&mut self) {
         self.life.cancelled.store(true, Ordering::Release);
         self.life.stop();
-        self.pictures.wake();
         for thread in self.threads.drain(..) {
-            thread.thread().unpark();
             if thread.thread().id() != std::thread::current().id() {
                 let _ = thread.join();
             }
@@ -223,10 +226,13 @@ async fn start(
     .map_err(|error| CaptureError::Failed(error.to_string()))??;
     let life = Arc::new(Life::default());
     let pictures = Arc::new(Latest::default());
+    life.on_stop({
+        let pictures = pictures.clone();
+        move || pictures.wake()
+    });
     let mut workers = Workers {
         life: life.clone(),
         threads: Vec::new(),
-        pictures: pictures.clone(),
     };
     let (ready, picture_ready) = oneshot::channel();
     workers.threads.push(spawn("share-picture", {
@@ -280,7 +286,8 @@ fn picture(
     let result = (|| {
         apartment()?;
         let owner = Thread::current();
-        let session = Session::start(target, life.clone(), pictures, owner)?;
+        life.on_stop(move || owner.wake());
+        let session = Session::start(target, life.clone(), pictures)?;
         if let Some(ready) = ready.take() {
             let _ = ready.send(Ok((session.gpu.clone(), session.size)));
         }
@@ -302,20 +309,25 @@ fn sound(
     let mut ready = Some(ready);
     let result = (|| {
         apartment()?;
+        let stop = Arc::new(Event::new()?);
+        life.on_stop({
+            let stop = stop.clone();
+            move || stop.set()
+        });
         let capture = Capture::start(loopback)?;
         if let Some(ready) = ready.take() {
             let _ = ready.send(Ok(()));
         }
         // A full queue refuses the frame: the delivery removes what waits too long.
-        capture.run(&life, |frame| {
+        capture.run(&life, &stop, |frame| {
             let _ = samples.push(frame);
         })
     })();
     finish(&life, &mut ready, result);
 }
 
-/// The picture thread of a capture, which runs a message loop, and which a handler of the
-/// system wakes when the capture ends.
+/// The picture thread of a capture, which runs a message loop, and which the stop of the
+/// capture wakes.
 #[derive(Clone, Copy)]
 pub(super) struct Thread(u32);
 
@@ -339,15 +351,17 @@ impl Thread {
         let _ = unsafe { PostThreadMessageW(self.0, WM_NULL, WPARAM(0), LPARAM(0)) };
     }
 
-    /// Handles the messages of the calling thread, waiting at most 100 ms for one.
+    /// Waits for messages of the calling thread and handles them. A message that waits
+    /// already ends the wait at once.
     pub(super) fn pump(&self) {
+        use windows::Win32::System::Threading::INFINITE;
         use windows::Win32::UI::WindowsAndMessaging::{
-            DispatchMessageW, MSG, MsgWaitForMultipleObjects, PM_REMOVE, PeekMessageW, QS_ALLINPUT,
-            TranslateMessage,
+            DispatchMessageW, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE,
+            PeekMessageW, QS_ALLINPUT, TranslateMessage,
         };
         // SAFETY: the calls wait for and handle the messages of this thread's own queue.
         unsafe {
-            let _ = MsgWaitForMultipleObjects(None, false, 100, QS_ALLINPUT);
+            let _ = MsgWaitForMultipleObjectsEx(None, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
             let mut message = MSG::default();
             while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
                 let _ = TranslateMessage(&message);

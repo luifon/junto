@@ -1,5 +1,6 @@
 //! The capture of Windows: Windows Graphics Capture for the picture and process loopback of
-//! the audio session API for the sound (ADR 0706).
+//! the audio session API for the sound, and the start of other applications by the shell,
+//! outside the process tree of the client (ADR 0706).
 //!
 //! The decisions are plain functions in `rules`, which the ordinary tests of every system
 //! run. The other modules call the system and are built on Windows only.
@@ -16,6 +17,9 @@ mod capture;
 mod graphics;
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
+mod shell;
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
 mod sound;
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
@@ -23,3 +27,18 @@ mod sources;
 
 #[cfg(target_os = "windows")]
 pub use capture::SystemCapture;
+#[cfg(target_os = "windows")]
+pub use shell::{Opened, open, open_through_the_shell};
+
+/// The frames that the system gave to the sound captures of this process, silent ones
+/// included.
+#[cfg(all(target_os = "windows", feature = "test-support"))]
+pub fn captured_sound_frames() -> u64 {
+    sound::CAPTURED_FRAMES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The graphics memory that this process uses, in bytes.
+#[cfg(all(target_os = "windows", feature = "test-support"))]
+pub fn graphics_memory_in_use() -> Result<u64, crate::share::CaptureError> {
+    graphics::memory_in_use()
+}

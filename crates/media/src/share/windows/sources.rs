@@ -3,7 +3,7 @@
 
 use std::ffi::c_void;
 
-use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, RECT, TRUE};
+use windows::Win32::Foundation::{CloseHandle, FILETIME, HWND, LPARAM, RECT, TRUE};
 use windows::Win32::Graphics::Dwm::{
     DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute,
 };
@@ -14,9 +14,12 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::Storage::FileSystem::{
     GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
 };
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+};
 use windows::Win32::System::Threading::{
-    GetCurrentProcessId, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
-    QueryFullProcessImageNameW,
+    GetCurrentProcessId, GetProcessTimes, OpenProcess, PROCESS_NAME_WIN32,
+    PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumChildWindows, EnumWindows, GW_OWNER, GWL_EXSTYLE, GetClassNameW, GetWindow,
@@ -25,8 +28,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{BOOL, PCWSTR, PWSTR};
 
-use super::rules::{self, FRAME_HOST, ListedWindow};
-use crate::share::listing::{Own, shareable_applications};
+use super::rules::{self, FRAME_HOST, ListedProcess, ListedWindow};
+use crate::share::listing::Own;
 use crate::share::{ApplicationId, DisplaySource, ShareSources, WindowSource};
 
 fn wide(text: &str) -> Vec<u16> {
@@ -117,6 +120,57 @@ pub(super) fn own() -> Own {
     let process_id = unsafe { GetCurrentProcessId() };
     let path = process_path(process_id).unwrap_or_default();
     rules::own(process_id, &path, file_description(&path).as_deref())
+}
+
+/// The processes of the system with the identifier of the process that created each.
+fn processes() -> Vec<ListedProcess> {
+    let mut processes = Vec::new();
+    // SAFETY: the snapshot handle is closed before the function returns; each entry has the
+    // size that its first field states.
+    unsafe {
+        let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+            return processes;
+        };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        let mut more = Process32FirstW(snapshot, &mut entry).is_ok();
+        while more {
+            processes.push(ListedProcess {
+                id: entry.th32ProcessID,
+                parent: entry.th32ParentProcessID,
+            });
+            more = Process32NextW(snapshot, &mut entry).is_ok();
+        }
+        let _ = CloseHandle(snapshot);
+    }
+    processes
+}
+
+/// The creation time of a process in units of 100 nanoseconds, or nothing for a process
+/// that this account may not read or that has ended.
+fn creation_time(process_id: u32) -> Option<u64> {
+    // SAFETY: the handle is closed before the function returns; the call writes the four
+    // times into the values.
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id).ok()?;
+        let (mut created, mut ended, mut kernel, mut user) = (
+            FILETIME::default(),
+            FILETIME::default(),
+            FILETIME::default(),
+            FILETIME::default(),
+        );
+        let read = GetProcessTimes(process, &mut created, &mut ended, &mut kernel, &mut user);
+        let _ = CloseHandle(process);
+        read.ok()?;
+        Some(u64::from(created.dwHighDateTime) << 32 | u64::from(created.dwLowDateTime))
+    }
+}
+
+/// The processes that started the client (ADR 0706).
+pub(super) fn ancestors(own: &Own) -> Vec<u32> {
+    rules::ancestors(own.process_id as u32, &processes(), creation_time)
 }
 
 /// The application of a process with its path and name.
@@ -322,16 +376,10 @@ pub(super) fn displays() -> Vec<Display> {
 }
 
 /// What a person can share now. Process loopback, which carries both choices of sound,
-/// exists on every version of Windows 11 (ADR 0705).
+/// exists on every version of Windows 11 (ADR 0705, ADR 0706).
 pub(super) fn sources(own: &Own) -> ShareSources {
     let windows = windows(own);
-    let applications = shareable_applications(
-        windows
-            .iter()
-            .map(|window| (window.application.clone(), window.application_name.clone()))
-            .collect(),
-        own,
-    );
+    let (applications, started_the_client) = rules::sound_choices(&windows, own, &ancestors(own));
     ShareSources {
         displays: displays()
             .into_iter()
@@ -341,5 +389,6 @@ pub(super) fn sources(own: &Own) -> ShareSources {
         applications,
         portal: Vec::new(),
         system_sound: true,
+        started_the_client,
     }
 }

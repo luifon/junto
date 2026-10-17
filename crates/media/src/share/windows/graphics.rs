@@ -29,7 +29,6 @@ use windows::Win32::System::WinRT::Direct3D11::{
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
 use windows::core::{IInspectable, Interface};
 
-use super::capture::Thread;
 use crate::share::CaptureError;
 use crate::share::delivery::pixels::{Format, Frame};
 use crate::share::delivery::{Latest, Life};
@@ -191,7 +190,9 @@ impl Arrival {
     /// Takes the newest picture of the pool. The pool was made with `CreateFreeThreaded`, so
     /// its methods may be called on the thread of the handler.
     fn take(&mut self, pool: &Direct3D11CaptureFramePool) -> Result<(), CaptureError> {
-        let frame = pool.TryGetNextFrame().map_err(failed)?;
+        let Some(frame) = waiting(pool.TryGetNextFrame())? else {
+            return Ok(());
+        };
         let content = frame.ContentSize().map_err(failed)?;
         let surface = frame.Surface().map_err(failed)?;
         let access: IDirect3DDxgiInterfaceAccess = surface.cast().map_err(failed)?;
@@ -225,6 +226,17 @@ impl Arrival {
     }
 }
 
+/// The picture that waits in the pool, or nothing. The system answers a request for the next
+/// picture with no picture when none waits, for example for an event of the buffers that a
+/// change of size replaced; the bindings give that answer as an error without a code.
+fn waiting<T>(next: windows::core::Result<T>) -> Result<Option<T>, CaptureError> {
+    match next {
+        Ok(frame) => Ok(Some(frame)),
+        Err(error) if error.code().is_ok() => Ok(None),
+        Err(error) => Err(failed(error)),
+    }
+}
+
 /// The objects of a running capture.
 pub(super) struct Session {
     pub gpu: Arc<Gpu>,
@@ -244,7 +256,6 @@ impl Session {
         target: Target,
         life: Arc<Life>,
         pictures: Arc<Latest<()>>,
-        owner: Thread,
     ) -> Result<Self, CaptureError> {
         let mut device = None;
         let mut context = None;
@@ -310,14 +321,13 @@ impl Session {
                 Target::Window(_) => Format::Bgra,
             },
         })));
+        // The stop of the life wakes the threads that wait.
         let closed = item
             .Closed(&TypedEventHandler::new({
-                let (life, pictures) = (life.clone(), pictures.clone());
+                let life = life.clone();
                 move |_, _| {
                     // The window was closed, or the screen was removed.
                     life.fail(CaptureError::SourceGone);
-                    pictures.wake();
-                    owner.wake();
                     Ok(())
                 }
             }))
@@ -346,8 +356,6 @@ impl Session {
                         .and_then(|pool| arrival.take(pool))
                     {
                         arrival.life.fail(failure);
-                        arrival.pictures.wake();
-                        owner.wake();
                     }
                     Ok(())
                 },
@@ -373,5 +381,53 @@ impl Drop for Session {
         let _ = self.item.RemoveClosed(self.closed);
         let _ = self.session.Close();
         let _ = self.pool.Close();
+    }
+}
+
+/// The graphics memory that this process uses on all graphics adapters, in bytes: the
+/// memory of the adapter and the memory of the system that it uses.
+#[cfg(feature = "test-support")]
+pub(super) fn memory_in_use() -> Result<u64, CaptureError> {
+    use windows::Win32::Graphics::Dxgi::{
+        CreateDXGIFactory1, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL,
+        DXGI_QUERY_VIDEO_MEMORY_INFO, IDXGIAdapter3, IDXGIFactory1,
+    };
+    // SAFETY: the calls make a factory, list its adapters and write the memory information
+    // of each into the value.
+    unsafe {
+        let factory: IDXGIFactory1 = CreateDXGIFactory1().map_err(failed)?;
+        let mut total = 0;
+        let mut index = 0;
+        while let Ok(adapter) = factory.EnumAdapters1(index) {
+            index += 1;
+            let adapter: IDXGIAdapter3 = adapter.cast().map_err(failed)?;
+            for group in [
+                DXGI_MEMORY_SEGMENT_GROUP_LOCAL,
+                DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL,
+            ] {
+                let mut info = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
+                adapter
+                    .QueryVideoMemoryInfo(0, group, &mut info)
+                    .map_err(failed)?;
+                total += info.CurrentUsage;
+            }
+        }
+        Ok(total)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_waiting_picture_is_no_failure() {
+        assert_eq!(waiting::<u32>(Ok(5)), Ok(Some(5)));
+        assert_eq!(waiting::<u32>(Err(windows::core::Error::empty())), Ok(None));
+        let failure = windows::core::Error::from_hresult(windows::Win32::Foundation::E_FAIL);
+        assert!(matches!(
+            waiting::<u32>(Err(failure)),
+            Err(CaptureError::Failed(_))
+        ));
     }
 }
