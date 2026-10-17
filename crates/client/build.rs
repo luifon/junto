@@ -1,7 +1,15 @@
+// The build script writes files of the build; it is not code of the window (ADR 0730).
+#[allow(clippy::disallowed_methods)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The script reads no file of the package other than those it names below; the icon is
     // a build dependency, and a change of it runs the script again.
     println!("cargo:rerun-if-changed=build.rs");
+    // The native target `endurance` bounds the work on the thread of the windows; the bound
+    // holds for an optimized build, so the target reads the level of the build (ADR 0902).
+    println!(
+        "cargo:rustc-env=JUNTO_OPT_LEVEL={}",
+        std::env::var("OPT_LEVEL")?
+    );
     let target = std::env::var("CARGO_CFG_TARGET_OS")?;
     let output = std::path::PathBuf::from(std::env::var("OUT_DIR")?);
     // The program carries the icon (ADR 0756). On Windows it is the icon group 1 of the

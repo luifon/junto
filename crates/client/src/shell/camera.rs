@@ -142,13 +142,12 @@ pub(crate) fn failure(state: &junto_media::camera::CameraState) -> Option<&'stat
 }
 
 impl super::Shell {
-    /// Returns whether the window holds other pictures than before, and is drawn for them.
+    /// Holds the pictures of these cameras: a picture that the window holds is kept, and a
+    /// converted one is taken. Returns whether the window holds other pictures than before,
+    /// and is drawn for them.
     pub(crate) fn show_cameras(
         &mut self,
-        frames: &std::collections::HashMap<
-            junto_media::engine::ShareId,
-            std::sync::Arc<junto_media::camera::CameraFrame>,
-        >,
+        frames: super::prepared::ConvertedCameras,
         cx: &mut gpui::Context<Self>,
     ) -> bool {
         let mut released = Vec::new();
@@ -156,26 +155,19 @@ impl super::Shell {
         self.cameras.retain(|id, (old, picture)| {
             let keep = frames
                 .get(id)
-                .is_some_and(|frame| std::sync::Arc::ptr_eq(frame, old));
+                .is_some_and(|(frame, _)| std::sync::Arc::ptr_eq(frame, old));
             if !keep && let Some(image) = picture.image() {
                 released.push(image.clone());
             }
             changed |= !keep;
             keep
         });
-        for (id, frame) in frames {
-            if !self.cameras.contains_key(id) {
-                #[cfg(target_os = "macos")]
-                let surface = frame.surface().map(crate::ui::tile::CameraPicture::Surface);
-                #[cfg(not(target_os = "macos"))]
-                let surface: Option<crate::ui::tile::CameraPicture> = None;
-                if let Some(picture) = surface.or_else(|| {
-                    super::share::render_image(frame.picture()?)
-                        .map(crate::ui::tile::CameraPicture::Image)
-                }) {
-                    self.cameras.insert(*id, (frame.clone(), picture));
-                    changed = true;
-                }
+        for (id, (frame, converted)) in frames {
+            if !self.cameras.contains_key(&id)
+                && let Some(picture) = converted.and_then(|converted| converted.picture(&frame))
+            {
+                self.cameras.insert(id, (frame, picture));
+                changed = true;
             }
         }
         for image in released {
@@ -208,7 +200,14 @@ impl super::Shell {
         self.drawing_call = true;
         self.camera_focus = focus;
         self.detached = detached;
-        self.show_cameras(&pictures, cx);
+        let converted = pictures
+            .into_iter()
+            .map(|(id, frame)| {
+                let picture = super::prepared::ConvertedCamera::of(&frame);
+                (id, (frame, picture))
+            })
+            .collect();
+        self.show_cameras(converted, cx);
     }
 }
 

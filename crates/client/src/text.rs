@@ -1739,6 +1739,13 @@ pub fn compose_problem(problem: crate::compose::Problem) -> String {
 /// another account.
 pub const FILES_OF_ANOTHER_PLACE: &str = "The files were not attached: the composer shows another place than the one that they were chosen for.";
 
+/// The composer reads the sizes of files that were attached and are not yet shown.
+pub const FILES_BEING_READ: &str = "reading the files…";
+
+/// A new message was not sent while files attached to it were still being read.
+pub const FILES_STILL_ATTACHING: &str =
+    "Not sent: the attached files are still being read. Send the message when they are shown.";
+
 /// Why a file was not attached to a message.
 pub fn attach_refusal(refusal: &crate::state::AttachRefusal) -> String {
     use crate::state::AttachRefusal;

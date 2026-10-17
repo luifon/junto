@@ -14,10 +14,11 @@ A share and a camera give 30 pictures in a second each, and a call has several s
 
 A window has one follower for the pictures of its call. It works in two steps.
 
-- A picture that arrives at a source asks the window for its next frame (`Window::on_next_frame`) and marks the source. Until that frame has run, further pictures of any source ask for nothing and cause no work on the thread of the interface.
-- The frame takes the newest picture of each marked source and asks for one drawing. A picture that a newer one replaced before the frame is never converted and never drawn. A frame that finds the pictures that the window already holds draws nothing.
+- A picture that arrives at a source marks the source. The follower takes the newest picture of each marked source and converts the ones that the window does not hold, on a blocking thread of the runtime of the client (ADR 0730): a share picture is copied into an image of the window, and a camera picture is made into a pixel buffer of Core Video on macOS, or into an image. Then it asks the window for its next frame (`Window::on_next_frame`). Until that frame has run, further pictures of any source ask for nothing and cause no work on the thread of the interface; one conversion runs at a time.
+- The frame puts the converted pictures in place of the ones that the window holds and asks for one drawing. A picture that a newer one replaced before its conversion started is never converted and never drawn. A frame that finds the pictures that the window already holds draws nothing.
+- A window that starts to draw the call (the call moves to or from the separate call window) holds no picture of it. It asks the follower for all pictures, which converts them in the same way; the drawing does not convert them.
 
-The pictures of all sources together cause at most one drawing per frame of the display, whatever the number of pictures and of sources. A window that the system does not draw (hidden, or minimized) gets no frame, takes no picture and does no work for the pictures of the call.
+The pictures of all sources together cause at most one drawing per frame of the display, whatever the number of pictures and of sources. A window that the system does not draw (hidden, or minimized) gets no frame, so it draws no picture and does no work for the pictures on the thread of the interface. Its follower converts at most one set of pictures on the runtime of the client and holds it until the next frame of the window; that frame draws the held set, and the follower then converts the newest pictures for the following frame.
 
 Without a graphics processor the cameras are drawn at a lower rate, as before: after the follower has taken the cameras, it takes them again 200 ms later at the earliest. The pictures of the shares are taken as they arrive in that time, without the cameras.
 

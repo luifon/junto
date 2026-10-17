@@ -3796,6 +3796,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "junto-alloc-count"
+version = "0.1.0"
+
+[[package]]
 name = "junto-authz"
 version = "0.1.0"
 dependencies = [
@@ -3821,6 +3825,7 @@ dependencies = [
  "gpui-pre-wgpu",
  "iana-time-zone",
  "image",
+ "junto-alloc-count",
  "junto-client",
  "junto-client-core",
  "junto-icon",

@@ -243,6 +243,9 @@ struct Part {
     settled: bool,
 }
 
+// The save of an export runs on the runtime of the client, not on the thread of the window
+// (ADR 0730).
+#[allow(clippy::disallowed_methods)]
 impl Part {
     /// Creates the unfinished file. What an earlier save of the same export left under
     /// the name is removed first; a link under the name is removed and not followed.
@@ -298,6 +301,7 @@ impl Part {
     }
 }
 
+#[allow(clippy::disallowed_methods)]
 impl Drop for Part {
     fn drop(&mut self) {
         if !self.settled {
@@ -541,6 +545,18 @@ impl AppState {
         export_id: ExportId,
         cx: &mut Context<Self>,
     ) {
+        self.find_for_save(server_id, None, cx, move |this, found, cx| {
+            this.save_export_into(server_id, export_id, found.directory, cx);
+        });
+    }
+
+    fn save_export_into(
+        &mut self,
+        server_id: ServerId,
+        export_id: ExportId,
+        directory: Option<std::path::PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
         let key = (server_id, export_id);
         if self.admin.exports.running.contains_key(&key) {
             return;
@@ -567,7 +583,7 @@ impl AppState {
             return;
         };
         self.forget_gone_export_files();
-        let Some(directory) = self.download_directory() else {
+        let Some(directory) = directory else {
             self.admin.exports.files.insert(
                 key,
                 ExportSave::Failed(text::NO_DOWNLOAD_DIRECTORY.to_owned()),
@@ -991,6 +1007,7 @@ impl ExportFiles {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::AtomicU32;

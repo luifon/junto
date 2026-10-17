@@ -957,7 +957,8 @@ impl Shell {
             Some(daily) => (clock_text(daily.start_minute), clock_text(daily.end_minute)),
             None => (clock_text(22 * 60), clock_text(7 * 60)),
         };
-        self.quiet_zone = daily.map_or_else(crate::zones::system, |daily| daily.time_zone);
+        let system = self.state.read(cx).system_zone_name();
+        self.quiet_zone = daily.map_or_else(|| system.to_owned(), |daily| daily.time_zone);
         self.quiet_zone_open = false;
         self.type_quiet_times(&from, &until, window, cx);
     }
@@ -1025,7 +1026,7 @@ impl Shell {
                 .child(sentence)
         };
         let zone = self.quiet_zone.clone();
-        let system = crate::zones::system();
+        let system = self.state.read(cx).system_zone_name().to_owned();
         let mut rows = vec![
             div()
                 .flex()

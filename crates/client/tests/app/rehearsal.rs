@@ -638,7 +638,9 @@ impl Rehearsal {
                 }
             });
             assert!(saved.starts_with(downloads));
-            assert_eq!(std::fs::metadata(&saved).unwrap().len(), file.bytes);
+            #[allow(clippy::disallowed_methods)]
+            let saved_length = std::fs::metadata(&saved).unwrap().len();
+            assert_eq!(saved_length, file.bytes);
             self.found
                 .downloads
                 .push((saved, file.bytes, file.kind, file.person.clone()));

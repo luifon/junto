@@ -11,6 +11,9 @@
 //! ```
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+// A test waits for its files by design; the refusals of the file system in `clippy.toml`
+// are for the code of the application (ADR 0730).
+#![allow(clippy::disallowed_methods)]
 
 #[allow(dead_code)]
 #[path = "../../../client-core/tests/e2e/recording_server.rs"]
@@ -24,6 +27,11 @@ mod admin;
 mod admin_pages;
 mod calls;
 mod flows;
+// The rate of growth of the long use of `tests/endurance/`, tested here because that
+// target runs without the test runner.
+#[path = "../rehearsal/growth.rs"]
+mod growth;
+mod growth_tests;
 mod harness;
 mod layout;
 mod layout_forms;

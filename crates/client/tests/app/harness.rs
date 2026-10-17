@@ -155,6 +155,34 @@ pub struct Window {
     /// of the system in its place; this one is then unused.
     pub capture: SyntheticCapture,
     pub camera: junto_media::camera::synthetic::SyntheticCamera,
+    /// How long the application held the thread of the windows in one piece, in each of
+    /// the calls of the harness that run its work.
+    pub held: Held,
+    holding: usize,
+}
+
+/// The pieces of work of the application on the thread of the windows: the work of one
+/// event of the pointer or the keyboard with the work that its handlers started, or a
+/// frame of the display with the work before and after it.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Held {
+    pub count: usize,
+    /// The longest piece.
+    pub longest: Duration,
+    /// The pieces longer than [`Held::SLOW`].
+    pub slow: usize,
+}
+
+impl Held {
+    /// A piece of work after which a display of 60 frames a second has missed at least
+    /// two frames.
+    pub const SLOW: Duration = Duration::from_millis(50);
+
+    fn add(&mut self, time: Duration) {
+        self.count += 1;
+        self.longest = self.longest.max(time);
+        self.slow += usize::from(time > Self::SLOW);
+    }
 }
 
 /// The frequency of the tone that the microphone of a window gives.
@@ -275,6 +303,8 @@ fn open_client(
         state,
         sound,
         capture,
+        held: Held::default(),
+        holding: 0,
     };
     window.cx.run_until_parked();
     window
@@ -285,17 +315,32 @@ struct Initialized;
 impl gpui::Global for Initialized {}
 
 impl Window {
+    /// Runs `work` and counts it as one piece of work of the application in [`Window::held`].
+    /// A piece inside another is a part of the outer one.
+    pub fn holding<T>(&mut self, work: impl FnOnce(&mut Self) -> T) -> T {
+        self.holding += 1;
+        let started = Instant::now();
+        let result = work(self);
+        self.holding -= 1;
+        if self.holding == 0 {
+            self.held.add(started.elapsed());
+        }
+        result
+    }
+
     /// Runs the work of the application until it has none. A wait of a test has a limit:
     /// an application that always has work fails the test here, and does not hold it.
     #[track_caller]
     pub fn park(&mut self) {
         let deadline = Instant::now() + PATIENCE;
-        while self.cx.executor().tick() {
-            assert!(
-                Instant::now() < deadline,
-                "after {PATIENCE:?} the application still has work: it does not come to rest"
-            );
-        }
+        self.holding(|window| {
+            while window.cx.executor().tick() {
+                assert!(
+                    Instant::now() < deadline,
+                    "after {PATIENCE:?} the application still has work: it does not come to rest"
+                );
+            }
+        });
     }
 
     /// Gives every window one frame of the display, as the system does at each refresh.
@@ -303,23 +348,49 @@ impl Window {
     /// here. Returns how many windows had something for the frame.
     pub fn frame(&mut self) -> usize {
         use gpui::AppContext as _;
-        let mut took = 0;
-        for handle in self.cx.windows() {
-            let ran = self
-                .cx
-                .update_window(handle, |_, window, cx| window.simulate_next_frame(cx));
-            took += usize::from(ran.is_ok_and(|ran| ran > 0));
-        }
-        took
+        self.holding(|this| {
+            let mut took = 0;
+            for handle in this.cx.windows() {
+                let ran = this
+                    .cx
+                    .update_window(handle, |_, window, cx| window.simulate_next_frame(cx));
+                took += usize::from(ran.is_ok_and(|ran| ran > 0));
+            }
+            took
+        })
+    }
+
+    /// Waits until every window has taken the pictures of the call that arrived: the
+    /// follower of a window converts them on a thread of the runtime of the client, and the
+    /// next frame of the display takes them (ADR 0793).
+    #[track_caller]
+    pub fn until_pictures_taken(&mut self) {
+        use gpui::AppContext as _;
+        self.until("every window took the pictures of the call", |window| {
+            window.cx.windows().into_iter().all(|handle| {
+                window
+                    .cx
+                    .update_window(handle, |root, _, cx| {
+                        let shell = root
+                            .downcast::<Root>()
+                            .ok()
+                            .and_then(|root| root.read(cx).view().clone().downcast::<Shell>().ok());
+                        shell.is_none_or(|shell| !shell.read(cx).pictures_pending())
+                    })
+                    .unwrap_or(true)
+            })
+        });
     }
 
     /// Runs the application until it has no work, with one frame of the display.
     #[track_caller]
     pub fn settle(&mut self) {
-        self.park();
-        if self.frame() > 0 {
-            self.park();
-        }
+        self.holding(|window| {
+            window.park();
+            if window.frame() > 0 {
+                window.park();
+            }
+        });
     }
 
     /// Presses and releases the pointer on the element with this name as it is drawn now.
@@ -332,9 +403,11 @@ impl Window {
             .debug_bounds(selector)
             .unwrap_or_else(|| panic!("{selector} is not drawn"));
         let (down, up) = pointer_press(bounds.center(), gpui::MouseButton::Left);
-        self.cx.update(|window, cx| {
-            window.dispatch_event(down, cx);
-            window.dispatch_event(up, cx);
+        self.holding(|this| {
+            this.cx.update(|window, cx| {
+                window.dispatch_event(down, cx);
+                window.dispatch_event(up, cx);
+            });
         });
     }
 
@@ -343,20 +416,24 @@ impl Window {
     /// and a native window take events on this one path (ADR 0902).
     pub fn dispatch(&mut self, event: impl gpui::InputEvent) {
         let input = event.to_platform_input();
-        self.cx.update(|window, cx| {
-            window.dispatch_event(input, cx);
+        self.holding(|this| {
+            this.cx.update(|window, cx| {
+                window.dispatch_event(input, cx);
+            });
+            this.cx.run_until_parked();
         });
-        self.cx.run_until_parked();
     }
 
     /// Presses and releases a button of the pointer at a point of the window.
     pub fn press_at(&mut self, position: gpui::Point<gpui::Pixels>, button: gpui::MouseButton) {
         let (down, up) = pointer_press(position, button);
         for input in [down, up] {
-            self.cx.update(|window, cx| {
-                window.dispatch_event(input, cx);
+            self.holding(|this| {
+                this.cx.update(|window, cx| {
+                    window.dispatch_event(input, cx);
+                });
+                this.cx.run_until_parked();
             });
-            self.cx.run_until_parked();
         }
     }
 
@@ -524,7 +601,7 @@ impl Window {
     pub fn press(&mut self, keys: &str) {
         for key in keys.split(' ') {
             let keystroke = gpui::Keystroke::parse(key).unwrap();
-            self.cx.simulate_keystrokes(key);
+            self.holding(|window| window.cx.simulate_keystrokes(key));
             self.dispatch(gpui::KeyUpEvent { keystroke });
             self.settle();
         }

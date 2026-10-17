@@ -15,6 +15,9 @@ pub struct Sample {
     /// The dirty memory of the category "IOAccelerator (graphics)": the GPU textures of
     /// the windows are in it.
     pub graphics: u64,
+    /// The bytes that the Rust allocations of the process hold, as the counting allocator
+    /// of the program states them (`junto-alloc-count`).
+    pub rust: u64,
     /// The processor time of all threads of the process since its start.
     pub processor: Duration,
     /// The open file descriptors: files, sockets, pipes and devices.
@@ -22,12 +25,13 @@ pub struct Sample {
     pub threads: usize,
 }
 
-pub fn sample(start: Instant) -> Sample {
+pub fn sample(start: Instant, rust: usize) -> Sample {
     let (footprint, graphics) = memory();
     Sample {
         at: start.elapsed(),
         footprint,
         graphics,
+        rust: rust as u64,
         processor: processor_time(),
         files: open_files(),
         threads: threads(),
@@ -48,11 +52,15 @@ fn memory() -> (u64, u64) {
     assert!(output.status.success(), "footprint failed: {output:?}");
     let text = String::from_utf8_lossy(&output.stdout);
     let first_number = |line: &str| line.split_whitespace().next()?.parse::<u64>().ok();
+    // A process whose windows were drawn by Metal has this category. Without it the
+    // graphics memory is unknown, and the bounds on it could not fail.
     let graphics = text
         .lines()
         .find(|line| line.trim_end().ends_with("IOAccelerator (graphics)"))
         .and_then(first_number)
-        .unwrap_or_default();
+        .unwrap_or_else(|| {
+            panic!("footprint states no memory of the category IOAccelerator (graphics): {text}")
+        });
     let footprint = text
         .lines()
         .find_map(|line| line.trim().strip_prefix("phys_footprint:"))
@@ -127,9 +135,11 @@ pub fn give_frames(window: &mut crate::harness::Window, time: Duration) -> Frame
     let mut frames = Frames::default();
     while Instant::now() < end {
         let started = Instant::now();
-        window.park();
-        window.frame();
-        window.park();
+        window.holding(|window| {
+            window.park();
+            window.frame();
+            window.park();
+        });
         frames.count += 1;
         frames.longest = frames.longest.max(started.elapsed());
         next += FRAME;
@@ -137,6 +147,6 @@ pub fn give_frames(window: &mut crate::harness::Window, time: Duration) -> Frame
             std::thread::sleep(rest);
         }
     }
-    window.cx.run_until_parked();
+    window.holding(|window| window.cx.run_until_parked());
     frames
 }

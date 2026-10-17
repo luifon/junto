@@ -253,40 +253,62 @@ impl AppState {
         open: bool,
         cx: &mut Context<Self>,
     ) {
+        // A file that was saved is checked on the file system before it is opened.
+        let saved = self
+            .recording_downloads
+            .get(&(server_id, recording_id, file))
+            .map(RecordingDownload::progress)
+            .filter(|_| open)
+            .and_then(|progress| match progress.stage {
+                DownloadStage::Saved(path) => Some((path, progress.bytes)),
+                _ => None,
+            });
+        let stem = stem.to_owned();
+        self.find_for_save(server_id, saved, cx, move |this, found, cx| {
+            this.save_recording_file_found(server_id, recording_id, file, &stem, open, found, cx);
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn save_recording_file_found(
+        &mut self,
+        server_id: ServerId,
+        recording_id: RecordingId,
+        file: RecordedFile,
+        stem: &str,
+        open: bool,
+        found: super::messages::Found,
+        cx: &mut Context<Self>,
+    ) {
         // What the window holds of the downloads of a server belongs to its present owner.
         self.follow_owners();
         if !self.owners.contains_key(&server_id) {
             return;
         }
         let key = (server_id, recording_id, file);
-        if let Some(held) = self.recording_downloads.get(&key) {
-            let progress = held.progress();
-            match (open, progress.stage) {
-                // A file that was saved is opened without a second download, while the
-                // path still names a file of the saved length. A file that the person
-                // deleted or replaced is saved again.
-                (true, DownloadStage::Saved(path)) => {
-                    let kept = std::fs::symlink_metadata(&path)
-                        .is_ok_and(|file| file.is_file() && file.len() == progress.bytes);
-                    if kept {
-                        // The task that follows the download has nothing left to open.
-                        self.opening.remove(&key);
-                        self.open_file(path, cx);
-                        return;
-                    }
-                }
-                (_, DownloadStage::Failed(_) | DownloadStage::Cancelled) => {}
-                (_, DownloadStage::Saved(_)) => return,
-                _ => {
-                    if open {
-                        self.opening.insert(key);
-                    }
-                    return;
-                }
+        let stage = self
+            .recording_downloads
+            .get(&key)
+            .map(|held| held.progress().stage);
+        match after_check(open, stage, found.saved.as_ref()) {
+            AfterCheck::Download => {}
+            AfterCheck::Open(path) => {
+                // The task that follows the download has nothing left to open.
+                self.opening.remove(&key);
+                self.open_file(path, cx);
+                return;
             }
+            AfterCheck::CheckAgain => {
+                self.save_recording_file(server_id, recording_id, file, stem, open, cx);
+                return;
+            }
+            AfterCheck::OpenWhenSaved => {
+                self.opening.insert(key);
+                return;
+            }
+            AfterCheck::Nothing => return,
         }
-        let (Some(server), Some(directory)) =
-            (self.client.server(server_id), self.download_directory())
+        let (Some(server), Some(directory)) = (self.client.server(server_id), found.directory)
         else {
             self.known.recording_refused.insert(
                 (server_id, recording_id),
@@ -587,5 +609,97 @@ impl AppState {
     ) {
         change(&mut self.known);
         self.changed(cx);
+    }
+}
+
+/// What a save of a recording file does after the file system was read for it.
+#[derive(Debug, PartialEq)]
+enum AfterCheck {
+    /// Opens the saved file at this path.
+    Open(PathBuf),
+    /// The download ended between the click and the reading: the saved file was not
+    /// checked, so it is checked before it is opened.
+    CheckAgain,
+    /// The download runs: the file is opened when it is saved.
+    OpenWhenSaved,
+    /// The download runs, or the file was saved and is not to be opened.
+    Nothing,
+    /// A new download.
+    Download,
+}
+
+/// The step after the reading of the file system for a save, from the stage of the held
+/// download now and the saved file that was checked (`checked`: its path, and whether the
+/// path still names a file of the saved length).
+fn after_check(
+    open: bool,
+    stage: Option<DownloadStage>,
+    checked: Option<&(PathBuf, bool)>,
+) -> AfterCheck {
+    let Some(stage) = stage else {
+        return AfterCheck::Download;
+    };
+    match (open, stage) {
+        // A file that was saved is opened without a second download, while the path still
+        // names a file of the saved length. A file that the person deleted or replaced is
+        // saved again.
+        (true, DownloadStage::Saved(path)) => match checked {
+            Some((checked, kept)) if *checked == path => {
+                if *kept {
+                    AfterCheck::Open(path)
+                } else {
+                    AfterCheck::Download
+                }
+            }
+            _ => AfterCheck::CheckAgain,
+        },
+        (_, DownloadStage::Failed(_) | DownloadStage::Cancelled) => AfterCheck::Download,
+        (_, DownloadStage::Saved(_)) => AfterCheck::Nothing,
+        (true, _) => AfterCheck::OpenWhenSaved,
+        (false, _) => AfterCheck::Nothing,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_open_whose_download_ends_during_the_check_checks_the_saved_file_and_does_not_download_again()
+     {
+        let path = PathBuf::from("video.mp4");
+        // The click came while the download ran: nothing was checked.
+        assert_eq!(
+            after_check(true, Some(DownloadStage::Saved(path.clone())), None),
+            AfterCheck::CheckAgain
+        );
+        // A check of another path than the one saved now is not a check of this file.
+        let other = (PathBuf::from("other.mp4"), true);
+        assert_eq!(
+            after_check(true, Some(DownloadStage::Saved(path.clone())), Some(&other)),
+            AfterCheck::CheckAgain
+        );
+        // The checked file is opened while it is kept, and saved again when it is not.
+        assert_eq!(
+            after_check(
+                true,
+                Some(DownloadStage::Saved(path.clone())),
+                Some(&(path.clone(), true))
+            ),
+            AfterCheck::Open(path.clone())
+        );
+        assert_eq!(
+            after_check(
+                true,
+                Some(DownloadStage::Saved(path.clone())),
+                Some(&(path.clone(), false))
+            ),
+            AfterCheck::Download
+        );
+        assert_eq!(
+            after_check(false, Some(DownloadStage::Saved(path)), None),
+            AfterCheck::Nothing
+        );
+        assert_eq!(after_check(true, None, None), AfterCheck::Download);
     }
 }

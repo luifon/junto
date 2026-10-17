@@ -10,6 +10,10 @@
 //! cargo run -p junto-client --features test-support --bin junto-screens -- <directory>
 //! ```
 
+// The program is a tool of the developers that writes the files of the screens that it
+// draws; the refusals of the file system in `clippy.toml` are for the application (ADR 0730).
+#![allow(clippy::disallowed_methods)]
+
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
