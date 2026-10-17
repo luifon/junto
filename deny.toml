@@ -40,11 +40,19 @@ allow-git = []
 version = 2
 yanked = "deny"
 # Packages of the fixed gpui set (ADR 0701) whose authors no longer maintain them. None of
-# the notices names a vulnerability. Each entry goes when the set no longer contains the
-# package.
+# the notices names a vulnerability, and a notice of a vulnerability is never ignored here.
+# Each entry goes when the set no longer contains the package.
 ignore = [
     { id = "RUSTSEC-2024-0384", reason = "instant: unmaintained; a dependency of the component library" },
     { id = "RUSTSEC-2024-0436", reason = "paste: unmaintained; a dependency of gpui and of its Metal binding" },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser: unmaintained; a dependency of the SVG and text layers of gpui" },
     { id = "RUSTSEC-2026-0206", reason = "rustybuzz: unmaintained; a dependency of the SVG layer of gpui" },
+    # Parts of zbus 5 that are no longer maintained as crates of their own: zbus 6 contains
+    # them. The Linux platform of gpui, its desktop portal crate `ashpd` and its
+    # accessibility crate `atspi` require zbus 5, and the client and the media crate use the
+    # same version. Each entry goes when the lock no longer contains its package; review by
+    # 2027-01-17 and at each update of zbus or of the gpui set.
+    { id = "RUSTSEC-2026-0370", reason = "zvariant: unmaintained as a separate crate; a part of zbus" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names: unmaintained as a separate crate; a part of zbus" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: unmaintained as a separate crate; a part of zbus" },
 ]

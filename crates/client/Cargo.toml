@@ -92,8 +92,6 @@ dirs = "5"
 # The table of the standard emoji, in the version of the server: a reaction that the
 # picker offers is one that the server accepts (ADR 0408).
 emojis = "0.8"
-# The address of a link is checked as the server checks it.
-url = "2"
 # The tokens of a code block, for its syntax colours (ADR 0740).
 synoptic = "2.2"
 # The identifiers of notices and of the scopes of notification settings (ADR 0409).
@@ -139,6 +137,8 @@ junto-server = { path = "../server" }
 sqlx = { workspace = true }
 tempfile = "3"
 tokio = { workspace = true, features = ["io-util"] }
+# The address of the test database in the support code of the client core tests.
+url = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-video = { version = "0.5.2", features = ["metal"] }

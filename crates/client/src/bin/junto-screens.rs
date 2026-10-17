@@ -799,6 +799,8 @@ fn capture() -> SyntheticCapture {
     capture.set_sources(ShareSources {
         portal: Vec::new(),
         system_sound: true,
+        started_the_client: Vec::new(),
+        creators_unknown: false,
         displays: vec![DisplaySource {
             id: 1,
             width: 1920,

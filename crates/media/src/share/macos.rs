@@ -38,10 +38,10 @@ use objc2_screen_capture_kit::{
 };
 use tokio::sync::oneshot;
 
+use super::listing::{Own, shareable_applications};
 use super::{
-    ApplicationId, ApplicationSource, CaptureError, CaptureRequest, CaptureSink, CaptureStream,
-    DisplaySource, Pending, PictureSource, ScreenAccess, ScreenCapture, ShareSources, SoundChoice,
-    WindowSource,
+    ApplicationId, CaptureError, CaptureRequest, CaptureSink, CaptureStream, DisplaySource,
+    Pending, PictureSource, ScreenAccess, ScreenCapture, ShareSources, SoundChoice, WindowSource,
 };
 use crate::audio::Format;
 
@@ -66,32 +66,16 @@ const ANSWER_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
 const SETTINGS_URL: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
 
-/// What the client is to the system.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Own {
-    pub process_id: i32,
-    pub bundle_id: String,
-    pub name: String,
-}
-
-impl Own {
-    fn read() -> Self {
-        let bundle_id = NSBundle::mainBundle()
-            .bundleIdentifier()
-            .map(|id| id.to_string())
-            .unwrap_or_default();
-        Self {
-            process_id: std::process::id() as i32,
-            bundle_id,
-            name: NSProcessInfo::processInfo().processName().to_string(),
-        }
-    }
-
-    /// Whether an application is the client: this process, or another start of the same
-    /// program. The exclusion of the own sound has no effect on a capture that selects an
-    /// application of the same program, so none of them is offered (ADR 0502).
-    pub(crate) fn is(&self, process_id: i32, bundle_id: &str, name: &str) -> bool {
-        process_id == self.process_id || (bundle_id == self.bundle_id && name == self.name)
+/// What the client is to the system: its process, its bundle and its name.
+fn read_own() -> Own {
+    let bundle_id = NSBundle::mainBundle()
+        .bundleIdentifier()
+        .map(|id| id.to_string())
+        .unwrap_or_default();
+    Own {
+        process_id: std::process::id() as i32,
+        bundle_id,
+        name: NSProcessInfo::processInfo().processName().to_string(),
     }
 }
 
@@ -135,31 +119,6 @@ pub(crate) fn shareable_windows(listed: Vec<ListedWindow>, own: &Own) -> Vec<Win
             })
         })
         .collect()
-}
-
-/// The applications whose sound can be shared alone: every listed application with a name
-/// except the client, once each.
-pub(crate) fn shareable_applications(
-    listed: Vec<(ApplicationId, String)>,
-    own: &Own,
-) -> Vec<ApplicationSource> {
-    let mut applications: Vec<ApplicationSource> = Vec::new();
-    for (id, name) in listed {
-        if name.is_empty()
-            || own.is(id.process_id, &id.bundle_id, &name)
-            || applications.iter().any(|held| held.id == id)
-        {
-            continue;
-        }
-        applications.push(ApplicationSource { id, name });
-    }
-    applications.sort_by(|one, other| {
-        one.name
-            .to_lowercase()
-            .cmp(&other.name.to_lowercase())
-            .then(one.id.process_id.cmp(&other.id.process_id))
-    });
-    applications
 }
 
 /// The format of the samples of a sound buffer, as its description states it.
@@ -672,6 +631,8 @@ impl Content {
             ShareSources {
                 portal: Vec::new(),
                 system_sound: true,
+                started_the_client: Vec::new(),
+                creators_unknown: false,
                 displays: displays
                     .iter()
                     .map(|display| {
@@ -830,7 +791,7 @@ impl Default for SystemCapture {
 
 impl SystemCapture {
     pub fn new() -> Self {
-        Self { own: Own::read() }
+        Self { own: read_own() }
     }
 }
 
@@ -964,26 +925,6 @@ mod tests {
     }
 
     #[test]
-    fn the_client_is_its_own_process_and_every_other_start_of_the_same_program() {
-        let own = own();
-        assert!(own.is(100, "chat.junto.client", "Junto"));
-        // A second instance of the application.
-        assert!(own.is(200, "chat.junto.client", "Junto"));
-        // Another application, also one that took the process identifier meanwhile.
-        assert!(!own.is(200, "example.player", "Player"));
-        assert!(own.is(100, "example.player", "Player"));
-        // A build without a bundle has no bundle identifier: the name decides.
-        let unbundled = Own {
-            process_id: 100,
-            bundle_id: String::new(),
-            name: "junto".to_owned(),
-        };
-        assert!(unbundled.is(300, "", "junto"));
-        assert!(!unbundled.is(300, "", "ffplay"));
-        assert!(!unbundled.is(300, "example.player", "junto"));
-    }
-
-    #[test]
     fn only_ordinary_windows_of_other_applications_are_listed_in_pixels() {
         let player = application(7, "example.player");
         let mut small = window(3, Some((player.clone(), "Player")));
@@ -1014,23 +955,6 @@ mod tests {
                 height: 1200,
             }
         );
-    }
-
-    #[test]
-    fn the_client_is_not_among_the_applications_whose_sound_is_offered() {
-        let listed = vec![
-            (application(9, "example.zeta"), "zeta".to_owned()),
-            (application(100, "chat.junto.client"), "Junto".to_owned()),
-            (application(7, "example.player"), "Player".to_owned()),
-            (application(200, "chat.junto.client"), "Junto".to_owned()),
-            (application(7, "example.player"), "Player".to_owned()),
-            (application(8, "example.nameless"), String::new()),
-        ];
-        let names: Vec<String> = shareable_applications(listed, &own())
-            .into_iter()
-            .map(|application| application.name)
-            .collect();
-        assert_eq!(names, ["Player", "zeta"]);
     }
 
     fn description(flags: u32, channels: u32, bits: u32) -> SoundDescription {

@@ -10,6 +10,7 @@ pub mod book;
 pub mod events;
 pub mod flow;
 pub mod keys;
+pub mod link;
 pub mod live;
 pub mod manager;
 pub mod model;

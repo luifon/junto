@@ -12,6 +12,20 @@ name = "calls"
 path = "tests/calls/main.rs"
 required-features = ["test-support"]
 
+# The capture of Windows against a window of a separate program (ADR 0706).
+[[test]]
+name = "windows_capture"
+path = "tests/windows_capture/main.rs"
+required-features = ["test-support"]
+
+# That window: a program of the tests, not of the product.
+[[bin]]
+name = "junto-share-fixture"
+path = "tests/share_fixture/program.rs"
+required-features = ["test-support"]
+test = false
+doc = false
+
 [[example]]
 name = "native-devices"
 path = "tests/native/runner.rs"
@@ -32,6 +46,8 @@ junto-client-core = { path = "../client-core" }
 livekit = { version = "=0.9.4", default-features = false, features = ["native", "rustls-tls-native-roots"] }
 # The sound devices (ADR 0733).
 cpal = "0.18.2"
+# The bounded hand-over of captured sound on Linux and Windows (ADR 0751, ADR 0706).
+rtrb = "0.3.5"
 futures-util = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
@@ -45,7 +61,6 @@ cpal = { version = "0.18.2", features = ["pipewire"] }
 # The later feature set requires codec constants absent from 0.3.65 headers.
 pipewire = { version = "0.10.1", features = ["v0_3_64"] }
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
-rtrb = "0.3.5"
 serde = { workspace = true }
 uuid = { workspace = true }
 
@@ -65,6 +80,20 @@ objc2-core-audio-types = { version = "0.3.2", default-features = false, features
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGDirectDisplay", "CGWindow", "CGColorSpace", "CGDisplayStream"] }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+# The capture of a screen, a window and the sound of applications, and the start of the
+# applications that the client opens by the shell (ADR 0706), with the version of the
+# bindings that gpui and cpal link.
+windows = { version = "0.62.2", features = ["Foundation", "Graphics", "Graphics_Capture", "Graphics_DirectX", "Graphics_DirectX_Direct3D11", "Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dwm", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Gdi", "Win32_Media_Audio", "Win32_Media_Multimedia", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Diagnostics_ToolHelp", "Win32_System_LibraryLoader", "Win32_System_Ole", "Win32_System_Threading", "Win32_System_Variant", "Win32_System_WinRT", "Win32_System_WinRT_Direct3D11", "Win32_System_WinRT_Graphics_Capture", "Win32_UI_HiDpi", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_WindowsAndMessaging"] }
+# The completion handler of the activation of the sound capture is a COM object of the
+# crate; the macro that implements it refers to this crate.
+windows-core = "0.62.2"
+
+# The registration of a scheme of the test's own for the account, for the test of the open of
+# a link through the shell (ADR 0706).
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+windows = { version = "0.62.2", features = ["Win32_Security", "Win32_System_Registry"] }
+
 # Initialize the native call library's PipeWire symbols before the sound host uses them.
 [build-dependencies]
 cc = "1"
@@ -72,6 +101,8 @@ cc = "1"
 [dev-dependencies]
 # An executor without a tokio runtime, as the window has (ADR 0733).
 futures-executor = "0.3"
+# A link of a scheme that a test registers for itself.
+junto-client-core = { path = "../client-core", features = ["test-support"] }
 junto-media = { path = ".", features = ["test-support"] }
 # The signal requests that the proxy of the media live tests reads from the connections that
 # it holds, in the versions that the call library uses.
@@ -86,7 +117,8 @@ url = "2"
 uuid = { workspace = true }
 
 # The workspace forbids unsafe code. This crate denies it and allows it only in modules
-# that call the platform APIs: macOS permissions and capture, and Linux audio initialisation.
+# that call the platform APIs: macOS permissions and capture, the Windows capture, and
+# Linux audio initialisation.
 [lints.rust]
 unsafe_code = "deny"
 

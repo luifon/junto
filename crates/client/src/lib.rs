@@ -11,6 +11,7 @@ pub mod highlight;
 pub mod images;
 pub mod moment;
 pub mod notify;
+pub mod opening;
 #[cfg(target_os = "linux")]
 pub mod renderer;
 pub mod shell;

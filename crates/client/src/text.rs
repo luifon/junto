@@ -458,6 +458,10 @@ pub const NO_APPLICATIONS: &str = if cfg!(target_os = "linux") {
 } else {
     "No other application with a window is open."
 };
+/// On Windows, when the processes that started Junto could not be read: the sound of any
+/// application can include the sound of Junto (ADR 0706).
+pub const SOUND_CREATORS_UNKNOWN: &str = "Junto could not read which applications started it, and the sound of an application \
+     that started Junto includes the sound of this call. Share all system sound or no sound.";
 pub const SHARE: &str = "Share";
 pub const SCREEN_ACCESS_TITLE: &str = "Junto may not record the screen yet";
 pub const SCREEN_ACCESS_HELP: &str = if cfg!(target_os = "macos") {
@@ -490,6 +494,15 @@ pub fn sound_of_window(application: &str) -> String {
     )
 }
 
+/// The sound of a shared window whose application started Junto: on Windows its sound
+/// includes the sound of every program that it started, Junto too (ADR 0706).
+pub fn sound_includes_junto(application: &str) -> String {
+    format!(
+        "Junto was started from {application}, so the sound of {application} includes the \
+         sound of this call. Share all system sound or no sound with this window."
+    )
+}
+
 /// Why a share did not start, or ended by itself.
 pub fn capture_error(error: &CaptureError) -> String {
     match error {
@@ -502,6 +515,12 @@ pub fn capture_error(error: &CaptureError) -> String {
              system stopped the capture."
                 .to_owned()
         }
+        CaptureError::StartedTheClient => {
+            "Junto was started from this application, so its sound includes the sound of the \
+             call. Share all system sound or no sound instead."
+                .to_owned()
+        }
+        CaptureError::CreatorsUnknown => SOUND_CREATORS_UNKNOWN.to_owned(),
         CaptureError::Unsupported => SHARE_UNSUPPORTED.to_owned(),
         CaptureError::Interrupted => "The connection to the call was lost.".to_owned(),
         CaptureError::Failed(reason) => {
@@ -2869,6 +2888,8 @@ mod tests {
             CaptureError::Cancelled,
             CaptureError::NotAllowed,
             CaptureError::SourceGone,
+            CaptureError::StartedTheClient,
+            CaptureError::CreatorsUnknown,
             CaptureError::Unsupported,
             CaptureError::Interrupted,
             CaptureError::Failed("the stream stopped".to_owned()),
@@ -2881,6 +2902,9 @@ mod tests {
                 .ends_with("The stream stopped.")
         );
         assert!(sound_of_window("Editor").contains("the sound of Editor,"));
+        assert!(sound_includes_junto("Windows Explorer").starts_with(
+            "Junto was started from Windows Explorer, so the sound of Windows Explorer includes"
+        ));
     }
 
     #[test]

@@ -4,7 +4,7 @@
 
 Accepted, pending step 0
 
-Open: sound capture on Windows was not tested, so the sound choices of Windows are not decided. On macOS every capture ran from a program that used the permission of the terminal application that started it; a capture with the permission of the product's own application bundle was not run (`docs/step-0/README.md`, test 1). The macOS capture of the product is built (ADR 0736) and was not run by an automated test. ADR 0751 records the Linux product implementation and its verification status.
+Open: on Windows the capture starts both choices of sound and gives sound in CI, without a measured tone (ADR 0706). On macOS every capture ran from a program that used the permission of the terminal application that started it; a capture with the permission of the product's own application bundle was not run (`docs/step-0/README.md`, test 1). The macOS capture of the product is built (ADR 0736) and was not run by an automated test. ADR 0751 records the Linux product implementation and its verification status.
 
 ## Context
 
@@ -67,15 +67,18 @@ Linux:
 
 Windows:
 
-- Not tested. The choices of Windows are decided when the capture test has run there.
+- Sound capture uses process loopback of the audio session API (ADR 0706). Picture capture uses Windows Graphics Capture.
+- Choices offered: this application, all system sound, none.
+- "This application" lists the applications that have a window, as on macOS. The sound of an application includes the sound of its child processes. A share of one window carries the sound of the application that owns the window.
+- Own sound is excluded from all system sound by the capture of every process except the tree of the client's process. Junto therefore plays the sound of a call from its own process or from a child process, and the applications that Junto opens for a link or a file are started by the Windows shell, outside that tree.
+- The sound of an application that started Junto, directly or through other processes, includes the sound of Junto. It is not offered alone, and a share of one of its windows offers all system sound or no sound and states why (ADR 0706). When the process list cannot be read, no application's sound is offered alone. An application above a creator of Junto that has ended is offered; whether its sound includes Junto is open (ADR 0706, Consequences).
 
 ## Consequences
 
-- The set of sound choices differs between systems. On macOS "this application" covers applications with a window; on Linux it covers applications that play sound at that moment.
+- The set of sound choices differs between systems. On macOS and Windows "this application" covers applications with a window; on Linux it covers applications that play sound at that moment.
 - A sharer who starts a share makes one explicit choice of sound each time, including the choice "none".
 - The project maintains three implementations of sound capture.
 - A shared-sound track uses more bandwidth than a microphone track, because of its higher bitrate.
 - The recorder writes shared sound as a separate audio file (ADR 0602), and the transcript labels its lines as shared audio (ADR 0603).
 - On macOS the permission is kept across updates only with a stable code identity (ADR 0704).
 - The Linux capture was tested with PipeWire 1.6.8 and one session manager in an X11 session, and with a client that PipeWire classified as a Flatpak sandbox. A Wayland session, a real Flatpak build and an AppImage build were not tested. The capture uses no interface of the display server.
-- A failed capture test on Windows changes this design or removes a choice or the feature on Windows from the first version.

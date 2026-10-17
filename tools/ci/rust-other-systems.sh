@@ -48,6 +48,11 @@ if [ "$system" = macos ]; then
     exit 0
 fi
 
+# The unit tests of the media crate, and the capture of the screen against the window of a
+# fixture program, which appears on the desktop of the account for a few seconds without
+# taking the focus. No test plays sound (ADR 0706).
+step "Media tests and screen capture on Windows"
+cargo test --locked -p junto-media --lib --test windows_capture
 # The ZIP of the client: extracted into a folder of the account, started, updated while its
 # program runs, and rolled back by its recovery program (ADR 0755).
 step "Windows package"

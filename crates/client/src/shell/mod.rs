@@ -64,8 +64,9 @@ pub(crate) enum Layer {
     ConfirmForget(ServerId),
     /// The list of the input or of the output devices, in the sound settings of a call.
     DeviceMenu(DeviceKind),
-    /// The dialog in which the person chooses what to share.
-    SharePicker(share::SharePicker),
+    /// The dialog in which the person chooses what to share. It holds the lists of the
+    /// system, which are larger than every other layer.
+    SharePicker(Box<share::SharePicker>),
     /// The menu of a person in a voice channel, at the row of the person.
     PersonMenu(room::PersonMenuOpen),
     /// The menu of a message, at the message.
