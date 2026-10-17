@@ -14,9 +14,6 @@ use super::registry::Registry;
 use super::{Life, error};
 use crate::share::{ApplicationSource, CaptureError, SoundChoice};
 
-/// The frames that the queue of captured sound holds: 400 ms. The delivery keeps far fewer
-/// in it; the room is for the portions of the sound graph and for a late reader.
-pub(super) const CAPACITY: usize = 48_000 * 2 / 5;
 const POSITIONS: [u32; 9] = [
     spa::sys::SPA_AUDIO_CHANNEL_FL,
     spa::sys::SPA_AUDIO_CHANNEL_FR,

@@ -6,7 +6,7 @@ Accepted
 
 The explicit native macOS tier verifies display and window pixels and application/system audio through ScreenCaptureKit (ADR 0913). Ordinary CI tests capture no screen and cause no permission question.
 
-Open: Packaged-app permission identity and system stop-completion remain separate verification items. ADR 0751 records the Linux implementation and its verification status. The Windows capture is not built; its share button is disabled and says so.
+Open: Packaged-app permission identity and system stop-completion remain separate verification items. ADR 0751 records the Linux implementation and ADR 0706 the Windows implementation, each with its verification status.
 
 ## Context
 
@@ -18,7 +18,7 @@ Interface:
 
 - The media engine takes the capture through one interface: the state of the permission, the request for it, the opening of the settings of the system, the list of screens, windows and applications, and the start of a capture that gives pictures and interleaved sound to a sink until it is dropped or ends by itself.
 - The tests implement the interface with a picture of two known colours and a tone on each channel. The product implements it per system. A system without an implementation answers every request with "not supported".
-- A picture crosses the interface as a video buffer of the call library. The macOS buffer reaches the encoder without a copy; the Linux implementation validates and converts the portal's shared-memory pixels (ADR 0751).
+- A picture crosses the interface as a video buffer of the call library. The macOS buffer reaches the encoder without a copy; the Linux implementation validates and converts the portal's shared-memory pixels (ADR 0751), and the Windows implementation reads the texture of a picture into memory and converts it the same way (ADR 0706).
 
 macOS:
 
@@ -35,7 +35,7 @@ macOS:
 
 The client itself:
 
-- An application is the client when it has the process identifier of the client, or the same bundle identifier and the same name. No such application and none of its windows is listed. The second rule covers a second instance of the client: the exclusion of the own sound has no effect on a capture that selects an application of the same responsible application (ADR 0502).
+- An application is the client when it has the process identifier of the client, or the same bundle identifier and the same name. The rule and the list of applications are shared with the Windows capture (`share/listing.rs`, ADR 0706). No such application and none of its windows is listed. The second rule covers a second instance of the client: the exclusion of the own sound has no effect on a capture that selects an application of the same responsible application (ADR 0502).
 - A window is listed when it is an ordinary window on a screen (layer 0), each side has at least 64 points, and it belongs to an application that is not the client.
 
 Permission:

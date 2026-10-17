@@ -7,7 +7,7 @@
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-pub(super) struct Latest<T> {
+pub(crate) struct Latest<T> {
     waiting: Mutex<Option<T>>,
     changed: Condvar,
 }

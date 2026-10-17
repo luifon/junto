@@ -1,12 +1,14 @@
-//! Validated packed pixels, copied before the PipeWire buffer returns to its owner.
+//! Validated packed pixels, copied before the buffer of the capture returns to its owner.
 
 use livekit::webrtc::native::yuv_helper::{abgr_to_i420, argb_to_i420};
 use livekit::webrtc::video_frame::I420Buffer;
 
 use crate::share::{CaptureError, Resolution};
 
+/// The byte order of a pixel. The portal of Linux gives either order; Windows gives blue first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Format {
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) enum Format {
     Bgra,
     Bgrx,
     Rgba,
@@ -14,7 +16,7 @@ pub(super) enum Format {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(super) struct Crop {
+pub(crate) struct Crop {
     pub x: i32,
     pub y: i32,
     pub width: u32,
@@ -23,7 +25,7 @@ pub(super) struct Crop {
 
 /// The cropped rows of a captured picture without their padding, in the byte order of the
 /// capture.
-pub(super) struct Frame {
+pub(crate) struct Frame {
     pub width: u32,
     pub height: u32,
     format: Format,

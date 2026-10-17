@@ -4,8 +4,12 @@
 //! product implements it with the capture of the operating system; the tests implement it
 //! with a picture and a tone that the program makes. The engine knows no system.
 
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
+pub(crate) mod delivery;
 #[cfg(target_os = "linux")]
 pub mod linux;
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+pub(crate) mod listing;
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 pub mod macos;
@@ -13,6 +17,8 @@ pub mod picture;
 pub mod sound;
 #[cfg(feature = "test-support")]
 pub mod synthetic;
+#[cfg(any(target_os = "windows", test))]
+pub mod windows;
 
 use std::any::Any;
 use std::fmt;
@@ -39,9 +45,10 @@ pub enum ScreenAccess {
 /// An application as the system identifies it for a capture.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ApplicationId {
-    /// The owning process on macOS; zero for a Linux graph identity.
+    /// The owning process on macOS and Windows; zero for a Linux graph identity.
     pub process_id: i32,
-    /// A macOS bundle identifier, or the stable application identity of the Linux graph.
+    /// A macOS bundle identifier, the path of the program file in lower case on Windows, or
+    /// the stable application identity of the Linux graph.
     pub bundle_id: String,
 }
 
@@ -324,7 +331,11 @@ pub fn system() -> Arc<dyn ScreenCapture> {
     {
         Arc::new(linux::SystemCapture)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "windows")]
+    {
+        Arc::new(windows::SystemCapture::new())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         Arc::new(NoCapture)
     }
