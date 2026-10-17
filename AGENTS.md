@@ -39,7 +39,7 @@ Outside the workspace:
   - An ADR states engineering decisions and their technical reasons only.
   - Every feature adds or changes an ADR, so that `docs/adr/` describes the current design.
   - The order for each feature: tests and a check in the running application, an independent review, fixes, the ADR, a local commit, and a push after a review by a maintainer.
-- ADR 0902 is the testing strategy. ADR 0904 covers the server tests, ADR 0905 continuous integration, ADR 0906 the bound on the stack of one function, ADR 0912 the window tests on Windows, ADR 0913 the native media tests.
+- ADR 0902 is the testing strategy. ADR 0904 covers the server tests, ADR 0905 continuous integration, ADR 0906 the bound on the stack of one function, ADR 0912 the window tests on Windows, ADR 0913 the native media tests, ADR 0914 the measurement of the client per mode.
 - `docs/step-0/README.md` lists the technical tests of step 0 (ADR 0903).
 
 ## Documents for people who install Junto
@@ -77,6 +77,7 @@ The release tooling of the client: the macOS bundle and its signing, the Linux t
 - `tools/linux-container.sh <command>`: runs a command in the Linux build image (`tools/linux/Dockerfile`, ADR 0750), with its own PostgreSQL, LiveKit and PipeWire. It takes the lock of `tools/serial.sh` itself; do not wrap it in `tools/serial.sh`.
 - `tools/dev-server.sh`: a development server with a temporary database; it prints the address and the one-time owner code. `--media` also starts LiveKit.
 - `tools/check-pins.sh`: fails when a version that two files state differs between them, or when an image, a CI action, a Debian package of an image or a package that a workflow installs is not pinned (ADR 0014, ADR 0905).
+- `tools/process_usage.py <path>`: reads the memory, the processor time and the threads of every process whose executable is under a path, by the method of the `modes` target, to compare another application with the client (ADR 0914).
 - `tools/check-condition-wait.sh` (ADR 0786), `tools/check-client-start.sh` (a native start of the client with an empty data directory), `tools/native-devices.sh` (ADR 0913).
 - `tools/linux/`: the Linux build image and its runner. `tools/windows/`: the setup and the lock of the Windows CI machine, and PostgreSQL for the window tests on Windows (ADR 0912).
 
@@ -143,10 +144,11 @@ Run each heavy command through `tools/serial.sh` when other work shares the mach
 - **Native targets on macOS** (ADR 0902). They run without the test runner, on the main thread, and do nothing without their variable:
   - `frames` (ADR 0774): `JUNTO_TEST_FRAMES=1 tools/with-test-postgres.sh tools/with-test-livekit.sh tools/serial.sh cargo test -p junto-client --test frames`
   - `endurance`: `JUNTO_TEST_ENDURANCE=1` with the same wrappers and `--test endurance`. `JUNTO_TEST_ENDURANCE_MINUTES` sets the measured time (default 10).
+  - `modes` (ADR 0914): `JUNTO_TEST_MODES=1` with the same wrappers, `--release` and `--test modes`, after `cargo build --release -p junto-server` and the release build of `spikes/test-participant`. It measures one window per process in six modes and prints the table; `JUNTO_TEST_MODES_PROFILE` names a directory for the profiles of each mode. `docs/client-performance.md` has the measured figures.
   - `rehearsal`: against a deployment installed with `docs/install.md` ("Trial on one machine"), with `JUNTO_REHEARSAL_ADDRESS`, `JUNTO_REHEARSAL_OWNER_CODE_FILE`, `JUNTO_REHEARSAL_SPEECH` and `JUNTO_REHEARSAL_WORK`. See `crates/client/tests/rehearsal/main.rs`.
   - Native device stages (ADR 0913): `JUNTO_TEST_NATIVE_DEVICES=1 tools/native-devices.sh <stage>`. They open real devices and need a person at the machine and the BlackHole virtual sound device; a permission request also needs `JUNTO_TEST_PERMISSION_REQUEST`. The stages that start services need the six variables above. See `crates/media/tests/native/README.md`.
 
-- **Other tests.** The Python unit tests of `packaging/`, `tools/ci/`, `tools/linux/` and `tools/windows/` (`python3 -m unittest discover -s <directory> -p "test_*.py"`) and `python3 tools/test_test_services.py`; the deployment tests in `deploy/README.md`; the transcription worker and the layout page through their CI scripts in `tools/ci/`.
+- **Other tests.** The Python unit tests of `packaging/`, `tools/ci/`, `tools/linux/` and `tools/windows/` (`python3 -m unittest discover -s <directory> -p "test_*.py"`), `python3 tools/test_test_services.py` and `python3 tools/test_process_usage.py`; the deployment tests in `deploy/README.md`; the transcription worker and the layout page through their CI scripts in `tools/ci/`.
 
 ## Before a commit
 
