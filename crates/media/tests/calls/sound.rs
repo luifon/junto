@@ -3,6 +3,7 @@
 use junto_client_core::protocol::call::{BlockReason, LeaveReason};
 use junto_media::calls::{EndReason, Outcome, Phase};
 use junto_media::engine::MicrophoneState;
+use livekit_protocol::{MuteTrackRequest, signal_request};
 
 use crate::scene::{
     ABSENT_DBFS, MEDIA_SERVER, PATIENCE, Person, Room, account, model_when, plain_voice, until,
@@ -439,9 +440,10 @@ async fn a_mute_and_an_open_during_a_restored_connection_reach_the_media_server_
 /// A network that drops the signal connection keeps the last bytes that a client wrote to it
 /// and can deliver them after the client has restored its connection on a new one. The call
 /// library counts a mute request as sent when it is written, and the media server discards a
-/// request that arrives on the replaced connection; it also ignores the mute state that the
-/// resume sends. After each resume the call library sends the mute state of each local track
-/// again, so the media server holds the last one.
+/// request that arrives on the replaced connection. The resume carries the mute state of each
+/// track at the time of publishing, and the media server does not take it. After each resume
+/// the call library sends the mute state of each local track again, so the media server
+/// holds the last one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
 async fn an_open_written_to_a_lost_signal_connection_reaches_the_media_server_after_the_resume() {
@@ -473,8 +475,25 @@ async fn an_open_written_to_a_lost_signal_connection_reaches_the_media_server_af
             .is_some_and(|call| call.phase == Phase::Connected)
     })
     .await;
-    let late = proxy.release().await;
-    eprintln!("{late} bytes of the lost connections reached the media server late");
+    let released = proxy.release().await;
+    // The open was written to the held connection. A client that had found the loss first
+    // would hold the request and send it on the new connection, and the media server would
+    // hold the track as open without the request after the resume.
+    assert!(
+        released.requests.iter().any(|request| matches!(
+            &request.message,
+            Some(signal_request::Message::Mute(MuteTrackRequest {
+                muted: false,
+                ..
+            }))
+        )),
+        "the open was not written to a held connection; the held requests: {:?}",
+        released.requests
+    );
+    eprintln!(
+        "{} bytes of the lost connections reached the media server late",
+        released.sent
+    );
 
     // The media server holds the track of Ann as open, and Ben hears her.
     until_microphone_muted(&ben, false).await;

@@ -2,11 +2,14 @@
 //! of a client, and a test can hold the connections that are open at one moment: their bytes
 //! no longer pass in either direction, as on a network that drops them, while the clients
 //! open new connections through the proxy. When the test releases them, the bytes that the
-//! clients wrote reach the media server, as segments that a network delivers late.
+//! clients wrote reach the media server, as segments that a network delivers late. The test
+//! receives the signal requests that the clients wrote to the held connections.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
+use livekit_protocol::SignalRequest;
+use prost::Message as _;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
@@ -22,9 +25,26 @@ struct Link {
 
 #[derive(Default)]
 struct LinkState {
-    held: bool,
-    /// The bytes that the client wrote while the connection was held, in their order.
+    /// The number of bytes of `from_client` that had passed when the connection was held.
+    held_from: Option<usize>,
+    /// Every byte that the client wrote, in their order: the bytes from `held_from` on have
+    /// not reached the media server.
     from_client: Vec<u8>,
+}
+
+impl LinkState {
+    fn held(&self) -> bool {
+        self.held_from.is_some()
+    }
+}
+
+/// What the clients wrote to the held connections.
+pub struct Released {
+    /// The number of bytes that reached the media server at the release.
+    pub sent: usize,
+    /// The signal requests that a client wrote while its connection was held, in their order
+    /// on each connection.
+    pub requests: Vec<SignalRequest>,
 }
 
 #[derive(Default)]
@@ -94,35 +114,110 @@ impl SignalProxy {
     /// Holds every connection that is open now. Connections opened later pass.
     pub fn hold_open(&self) {
         for link in &self.shared.lock().unwrap().links {
-            link.state.lock().unwrap().held = true;
+            let mut state = link.state.lock().unwrap();
+            state.held_from = Some(state.from_client.len());
         }
     }
 
     /// Sends what the clients wrote on each held connection to the media server, then ends
-    /// the connection. Returns the number of bytes sent.
-    pub async fn release(&self) -> usize {
+    /// the connection.
+    pub async fn release(&self) -> Released {
         let held: Vec<Arc<Link>> = self
             .shared
             .lock()
             .unwrap()
             .links
             .iter()
-            .filter(|link| link.state.lock().unwrap().held)
+            .filter(|link| link.state.lock().unwrap().held())
             .cloned()
             .collect();
-        let mut sent = 0;
+        let mut released = Released {
+            sent: 0,
+            requests: Vec::new(),
+        };
         for link in held {
-            let bytes = std::mem::take(&mut link.state.lock().unwrap().from_client);
+            let (from_client, held_from) = {
+                let state = link.state.lock().unwrap();
+                (state.from_client.clone(), state.held_from.unwrap())
+            };
+            released
+                .requests
+                .extend(requests_written_from(&from_client, held_from));
+            let bytes = &from_client[held_from..];
             let mut to_server = link.to_server.lock().await;
             // The media server can have ended the connection already: then the bytes are lost.
-            if to_server.write_all(&bytes).await.is_ok() {
-                sent += bytes.len();
+            if to_server.write_all(bytes).await.is_ok() {
+                released.sent += bytes.len();
             }
             let _ = to_server.shutdown().await;
             let _ = link.to_client.lock().await.shutdown().await;
         }
-        sent
+        released
     }
+}
+
+/// The signal requests of the WebSocket connection whose client wrote `stream`, for each
+/// request whose frames end after byte `from`. The stream starts with the HTTP request of the
+/// upgrade. A frame that the client had not written completely is not read.
+fn requests_written_from(stream: &[u8], from: usize) -> Vec<SignalRequest> {
+    let Some(header) = stream.windows(4).position(|end| end == b"\r\n\r\n") else {
+        return Vec::new();
+    };
+    let mut at = header + 4;
+    // The opcode of the first frame of the message and the payload of its frames so far.
+    let mut message = (0, Vec::new());
+    let mut requests = Vec::new();
+    while let Some((fin, opcode, payload, end)) = frame(stream, at) {
+        at = end;
+        // Control frames (close, ping, pong) can come between the frames of a message.
+        if opcode >= 0x8 {
+            continue;
+        }
+        if opcode != 0x0 {
+            message = (opcode, Vec::new());
+        }
+        message.1.extend_from_slice(&payload);
+        // The requests are binary messages.
+        if fin && message.0 == 0x2 && end > from {
+            let request = SignalRequest::decode(message.1.as_slice())
+                .unwrap_or_else(|e| panic!("a client wrote a request that is not read: {e}"));
+            requests.push(request);
+        }
+    }
+    requests
+}
+
+/// The frame of a client at `at`: whether it ends its message, its opcode, its unmasked
+/// payload and the position after it. `None` when the stream ends before the frame does.
+fn frame(stream: &[u8], at: usize) -> Option<(bool, u8, Vec<u8>, usize)> {
+    let first = *stream.get(at)?;
+    let second = *stream.get(at + 1)?;
+    let mut at = at + 2;
+    let length = match second & 0x7f {
+        126 => {
+            let bytes = stream.get(at..at + 2)?;
+            at += 2;
+            u64::from(u16::from_be_bytes([bytes[0], bytes[1]]))
+        }
+        127 => {
+            let bytes = stream.get(at..at + 8)?;
+            at += 8;
+            u64::from_be_bytes(bytes.try_into().unwrap())
+        }
+        short => u64::from(short),
+    };
+    let length = usize::try_from(length).unwrap();
+    // A client masks every frame that it sends.
+    assert!(second & 0x80 != 0, "a client frame is not masked");
+    let mask = stream.get(at..at + 4)?;
+    at += 4;
+    let payload = stream
+        .get(at..at + length)?
+        .iter()
+        .enumerate()
+        .map(|(index, byte)| byte ^ mask[index % 4])
+        .collect();
+    Some((first & 0x80 != 0, first & 0x0f, payload, at + length))
 }
 
 /// Forwards the bytes of the client to the media server, or keeps them while the connection
@@ -136,8 +231,8 @@ async fn upward(mut from_client: OwnedReadHalf, link: Arc<Link>) {
         };
         {
             let mut state = link.state.lock().unwrap();
-            if state.held {
-                state.from_client.extend_from_slice(&buffer[..read]);
+            state.from_client.extend_from_slice(&buffer[..read]);
+            if state.held() {
                 continue;
             }
         }
@@ -153,7 +248,7 @@ async fn upward(mut from_client: OwnedReadHalf, link: Arc<Link>) {
         }
     }
     // The end of a held connection reaches the media server with its bytes, at the release.
-    if !link.state.lock().unwrap().held {
+    if !link.state.lock().unwrap().held() {
         let _ = link.to_server.lock().await.shutdown().await;
     }
 }
@@ -167,7 +262,7 @@ async fn downward(mut from_server: OwnedReadHalf, link: Arc<Link>) {
             Ok(0) | Err(_) => break,
             Ok(read) => read,
         };
-        if link.state.lock().unwrap().held {
+        if link.state.lock().unwrap().held() {
             continue;
         }
         if link
@@ -181,7 +276,7 @@ async fn downward(mut from_server: OwnedReadHalf, link: Arc<Link>) {
             break;
         }
     }
-    if !link.state.lock().unwrap().held {
+    if !link.state.lock().unwrap().held() {
         let _ = link.to_client.lock().await.shutdown().await;
     }
 }

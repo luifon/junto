@@ -528,8 +528,9 @@ pub(super) fn add_publication(
 /// requests that were given before. A request counts as sent when it is written to the signal
 /// connection. One that was written to a lost connection before the loss was found reaches
 /// the media server late or not at all, and the media server discards a request that arrives
-/// on a connection after the session was resumed on another one. The media server does not
-/// take the mute state from the state that the resume sends.
+/// on a connection after the session was resumed on another one. The state that the resume
+/// sends holds the mute state of each publication at the time of publishing, and the media
+/// server does not take the mute state from it.
 pub(super) fn send_mute_states(inner: &Arc<ParticipantInner>) {
     for publication in inner.track_publications.read().values() {
         if publication.is_remote() {
