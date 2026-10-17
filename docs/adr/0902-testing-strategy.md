@@ -65,6 +65,22 @@ Tests on real systems:
   `footprint` while the windows draw the pictures of the call, and after the shares and
   the cameras end (ADR 0774).
 
+- On macOS the test target `endurance` runs a long use in the same way: windows A and B
+  and a third person without a window in a call, A and B sharing, all three with a
+  camera, the call of A in its separate window. The main window of A reads a channel of
+  400 messages, scrolls up its history and back, opens and closes threads and changes
+  channels in a loop for 10 minutes after 90 seconds of warming. Every 5 seconds it reads
+  `phys_footprint` and the graphics memory with `footprint`, the processor time with
+  `ps`, the open file descriptors and the threads. It fails when the median of the last
+  minute is more than 96 MiB (footprint), 48 MiB (graphics), 16 files or 8 threads above
+  the median of the first minute, or when one frame of the display with the work of the
+  application around it held the thread of the windows for more than one second.
+
+- The native targets run only with their own variable (`JUNTO_TEST_FRAMES=1`,
+  `JUNTO_TEST_ENDURANCE=1`, the rehearsal variables): they run without the test runner and
+  read no filter of test names, so the variables of the media server alone do not start
+  them.
+
 - Real capture of screen, sound and microphone is tested on each operating system:
   - a real macOS machine;
   - a real Linux desktop, in an X11 session first and then in a Wayland session;

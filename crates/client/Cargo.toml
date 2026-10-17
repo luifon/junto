@@ -36,10 +36,20 @@ harness = false
 required-features = ["test-support"]
 
 # Native windows in a call with the media server of the tests: the graphics memory of the
-# pictures of a call (ADR 0774). It does nothing without the variables of that server.
+# pictures of a call (ADR 0774). It does nothing unless `JUNTO_TEST_FRAMES` is 1 and the
+# variables of that server are set.
 [[test]]
 name = "frames"
 path = "tests/frames/main.rs"
+harness = false
+required-features = ["test-support"]
+
+# Native windows in a long use with video, text and channel changes: the memory, the open
+# files, the threads and the frames of the process (ADR 0902). It does nothing without its
+# own variable and the variables of the media server of the tests.
+[[test]]
+name = "endurance"
+path = "tests/endurance/main.rs"
 harness = false
 required-features = ["test-support"]
 
