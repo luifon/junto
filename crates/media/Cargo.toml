@@ -73,7 +73,11 @@ cc = "1"
 # An executor without a tokio runtime, as the window has (ADR 0733).
 futures-executor = "0.3"
 junto-media = { path = ".", features = ["test-support"] }
+# The signal requests that the proxy of the media live tests reads from the connections that
+# it holds, in the versions that the call library uses.
+livekit-protocol = "=0.8.0"
 log = { version = "0.4", features = ["std"] }
+prost = "0.14"
 sqlx = { workspace = true }
 tempfile = "3"
 tokio = { workspace = true, features = ["io-util", "test-util"] }

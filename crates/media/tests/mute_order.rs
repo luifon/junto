@@ -178,6 +178,85 @@ fn every_mute_request_of_the_participant_goes_through_its_one_in_order() {
     }
 }
 
+/// The room of the call library, which handles the resume of the session.
+const ROOM: &str = include_str!("../../../vendor/livekit-0.9.4/src/room/mod.rs");
+
+/// The local participant of the call library, which the room asks to send the mute states.
+const LOCAL_PARTICIPANT: &str =
+    include_str!("../../../vendor/livekit-0.9.4/src/room/participant/local_participant.rs");
+
+/// After each resume the participant gives a request with the mute state of each local track
+/// to its one `InOrder`, and each request reads the state when the requests given before it
+/// have ended. A request written to the lost signal connection does not reach the media
+/// server, so without the resend the server holds the state from before it. A state read
+/// when the request is given would be the state before the changes whose requests still
+/// wait, and the last request would send a state that is no longer current.
+#[test]
+fn the_mute_states_are_sent_after_each_resume_and_read_in_their_turn() {
+    let room = without_comments(ROOM);
+    assert!(
+        room.contains("EngineEvent::Resumed(tx) => self.handle_resumed(tx),"),
+        "the room does not handle the resume in handle_resumed"
+    );
+    let resumed = body(
+        &room,
+        "fn handle_resumed(self: &Arc<Self>, tx: oneshot::Sender<()>)",
+    );
+    assert!(
+        room[resumed].contains("self.local_participant.send_mute_states();"),
+        "the room does not send the mute states after a resume"
+    );
+
+    let local = without_comments(LOCAL_PARTICIPANT);
+    let send = body(&local, "pub(crate) fn send_mute_states(&self)");
+    assert_eq!(
+        local[send.start + 1..send.end].trim(),
+        "super::send_mute_states(&self.inner);",
+        "the local participant does not give the mute states to its participant"
+    );
+
+    let code = without_comments(PARTICIPANT);
+    let send = body(
+        &code,
+        "pub(super) fn send_mute_states(inner: &Arc<ParticipantInner>)",
+    );
+    let line = |at: usize| code[..at].matches('\n').count() + 1;
+    let run = code[send.clone()]
+        .find("inner.mute_requests.run(")
+        .map(|at| send.start + at + "inner.mute_requests.run(".len() - 1)
+        .expect("send_mute_states gives no request to the InOrder of the participant");
+    let run = run..closing(&code, run);
+    let reads: Vec<usize> = code[send.clone()]
+        .match_indices("is_muted()")
+        .map(|(at, _)| send.start + at)
+        .collect();
+    assert!(
+        !reads.is_empty(),
+        "send_mute_states does not read the mute state"
+    );
+    for read in reads {
+        assert!(
+            run.contains(&read),
+            "the mute state at line {} is read before the requests given before it have ended",
+            line(read)
+        );
+    }
+    assert!(
+        code[run].contains(".mute_track("),
+        "send_mute_states sends no mute request"
+    );
+}
+
+/// The braces of the body of the function whose signature is `signature`, from the opening
+/// brace to the closing one.
+fn body(code: &str, signature: &str) -> std::ops::Range<usize> {
+    let at = code
+        .find(signature)
+        .unwrap_or_else(|| panic!("no function {signature}"));
+    let open = code[at..].find('{').unwrap() + at;
+    open..closing(code, open)
+}
+
 /// `source` with every `//` comment removed and every line kept, so that a comment that
 /// names code is not read as code.
 fn without_comments(source: &str) -> String {
