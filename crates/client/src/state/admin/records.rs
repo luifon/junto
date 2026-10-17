@@ -243,6 +243,9 @@ struct Part {
     settled: bool,
 }
 
+// The save of an export runs on the runtime of the client, not on the thread of the window
+// (ADR 0730).
+#[allow(clippy::disallowed_methods)]
 impl Part {
     /// Creates the unfinished file. What an earlier save of the same export left under
     /// the name is removed first; a link under the name is removed and not followed.
@@ -298,6 +301,7 @@ impl Part {
     }
 }
 
+#[allow(clippy::disallowed_methods)]
 impl Drop for Part {
     fn drop(&mut self) {
         if !self.settled {
@@ -1003,6 +1007,7 @@ impl ExportFiles {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::AtomicU32;

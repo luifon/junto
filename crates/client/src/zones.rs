@@ -33,18 +33,17 @@ pub fn names() -> impl Iterator<Item = &'static str> {
     chrono_tz::TZ_VARIANTS.iter().map(|zone| zone.name())
 }
 
-/// The time zone of the system: the zone that the variable `TZ` names, as the C library
-/// reads it, otherwise the zone that the system states, when this build holds it, and
-/// [`FALLBACK`] otherwise. It reads files of the system, such as `/etc/localtime`: the
-/// application calls it at the start and on a background thread, not on the thread of the
-/// window (ADR 0730).
+/// The time zone of the system: the zone that the variable `TZ` states
+/// ([`zone_of_variable`]), otherwise the zone that the system states, when this build holds
+/// it, and [`FALLBACK`] otherwise. It reads files of the system, such as `/etc/localtime`:
+/// the application calls it at the start and on a background thread, not on the thread of
+/// the window (ADR 0730).
 #[allow(clippy::disallowed_methods)]
 pub fn system_zone() -> Tz {
     let variable = std::env::var("TZ").ok();
     variable
         .as_deref()
-        .map(|name| name.trim_start_matches(':'))
-        .and_then(zone)
+        .and_then(|value| zone_of_variable(value, |path| std::fs::read_link(path).ok()))
         .or_else(|| {
             iana_time_zone::get_timezone()
                 .ok()
@@ -52,6 +51,33 @@ pub fn system_zone() -> Tz {
                 .and_then(zone)
         })
         .unwrap_or(Tz::UTC)
+}
+
+/// The zone that a value of `TZ` states, in the forms that the C library reads, after an
+/// optional `:`: a name of the database; a path of a file of the database
+/// (`/usr/share/zoneinfo/Europe/Lisbon`), whose name is the part after `zoneinfo/`; or a
+/// path of a link to such a file (`/etc/localtime`), which `read_link` follows once. A
+/// rule in the form of POSIX (`<-03>3`) names no zone of the database and gives none, as
+/// does a path of a file that is not in a directory `zoneinfo`.
+pub fn zone_of_variable(
+    value: &str,
+    read_link: impl Fn(&std::path::Path) -> Option<std::path::PathBuf>,
+) -> Option<Tz> {
+    let value = value.strip_prefix(':').unwrap_or(value);
+    if let Some(named) = zone(value) {
+        return Some(named);
+    }
+    if !value.starts_with('/') {
+        return None;
+    }
+    let in_database = |path: &str| {
+        path.rsplit_once("zoneinfo/")
+            .and_then(|(_, name)| zone(name))
+    };
+    in_database(value).or_else(|| {
+        let target = read_link(std::path::Path::new(value))?;
+        in_database(target.to_str()?)
+    })
 }
 
 /// The name of [`system_zone`]. It reads files of the system, as that function does.
@@ -131,6 +157,40 @@ mod tests {
         let date = Date::from_calendar_date(year, Month::try_from(month).unwrap(), day).unwrap();
         date.with_time(Time::from_hms(hour, minute, 0).unwrap())
             .assume_utc()
+    }
+
+    #[test]
+    fn the_variable_tz_states_a_zone_by_its_name_by_the_path_of_its_file_or_by_a_link() {
+        let no_link = |_: &std::path::Path| None;
+        let lisbon = Some(chrono_tz::Europe::Lisbon);
+        assert_eq!(zone_of_variable("Europe/Lisbon", no_link), lisbon);
+        assert_eq!(zone_of_variable(":Europe/Lisbon", no_link), lisbon);
+        assert_eq!(
+            zone_of_variable("/usr/share/zoneinfo/Europe/Lisbon", no_link),
+            lisbon
+        );
+        assert_eq!(
+            zone_of_variable(
+                ":/usr/share/zoneinfo/America/Argentina/Buenos_Aires",
+                no_link
+            ),
+            Some(chrono_tz::America::Argentina::Buenos_Aires)
+        );
+        // `/etc/localtime` is a link to a file of the database, on macOS in another
+        // directory than on Linux.
+        let localtime = |path: &std::path::Path| {
+            (path == std::path::Path::new("/etc/localtime"))
+                .then(|| "/var/db/timezone/zoneinfo/Asia/Tokyo".into())
+        };
+        assert_eq!(
+            zone_of_variable(":/etc/localtime", localtime),
+            Some(chrono_tz::Asia::Tokyo)
+        );
+        assert_eq!(zone_of_variable("/etc/localtime", no_link), None);
+        // A rule in the form of POSIX names no zone of the database.
+        for value in ["<-03>3", "XYZ3", "", ":", "/usr/share/zoneinfo/Nowhere"] {
+            assert_eq!(zone_of_variable(value, no_link), None, "{value}");
+        }
     }
 
     #[test]

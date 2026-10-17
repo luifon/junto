@@ -750,3 +750,73 @@ fn a_workspace_default_result_keeps_the_dialog_controls_in_place(cx: &mut TestAp
     });
     assert_eq!(window.cx.debug_bounds("notify-level-0"), Some(before));
 }
+
+#[gpui::test]
+fn the_zone_of_the_newest_reading_is_shown_when_readings_end_in_another_order(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    window.settle();
+    // The person comes back to the window 40 times, and the zone of the system is another
+    // one each time. The readings run in parallel on the background threads; in a test
+    // they end in a random order. The zone of the last return is shown.
+    let zones: Vec<chrono_tz::Tz> = chrono_tz::TZ_VARIANTS.iter().copied().take(40).collect();
+    let newest = *zones.last().unwrap();
+    window.state.update(&mut window.cx, |state, cx| {
+        for zone in zones {
+            state.set_zone_reader(move || zone);
+            state.set_window_active(false, cx);
+            state.set_window_active(true, cx);
+        }
+    });
+    window.settle();
+    let shown = window
+        .state
+        .read_with(&window.cx, |state, _| state.system_zone_name());
+    assert_eq!(shown, newest.name());
+}
+
+/// Clippy refuses `chrono::Local` in a type position and in `use`, but not as a value
+/// (`chrono::Local.timestamp_opt(..)`, `with_timezone(&chrono::Local)`), and each of these
+/// reads `/etc/localtime` on the thread that asks (ADR 0730, ADR 0798). No file of the code
+/// of the crate uses the name `Local`.
+#[test]
+fn no_code_of_the_application_names_the_local_zone_of_chrono() {
+    fn files(directory: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                files(&path, found);
+            } else if path.extension().is_some_and(|ending| ending == "rs") {
+                found.push(path);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    files(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut found,
+    );
+    assert!(found.len() > 50, "{found:?}");
+    let named: Vec<String> = found
+        .iter()
+        .flat_map(|path| {
+            let text = std::fs::read_to_string(path).unwrap();
+            text.lines()
+                .enumerate()
+                .filter(|(_, line)| {
+                    line.split(|letter: char| !(letter.is_alphanumeric() || letter == '_'))
+                        .any(|word| word == "Local")
+                })
+                .map(|(number, line)| format!("{}:{}: {line}", path.display(), number + 1))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(
+        named.is_empty(),
+        "the zone of the system is the zone that the state read, not chrono::Local: {named:#?}"
+    );
+}

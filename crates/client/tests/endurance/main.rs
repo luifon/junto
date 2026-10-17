@@ -32,6 +32,9 @@
 //! ```
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+// A test waits for its files by design; the refusals of the file system in `clippy.toml`
+// are for the code of the application (ADR 0730).
+#![allow(clippy::disallowed_methods)]
 
 use std::process::ExitCode;
 

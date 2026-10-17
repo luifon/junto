@@ -9,14 +9,50 @@ disallowed-methods = [
     { path = "gpui::Window::drop_image", reason = "it removes the GPU copy from one window only (ADR 0774); use `images::release`" },
     { path = "time::OffsetDateTime::to_offset", reason = "it ends the program for a moment at the end of the range of dates, which a server can state (ADR 0747); use `checked_to_offset`, or `moment::in_offset` in the window" },
     # The thread of the window does not wait for a file (ADR 0730). These calls ask the file
-    # system; a function that runs them on a background thread allows them by name.
+    # system; a function that runs them on a background thread, at the start or at the quit
+    # allows them by name. Test code waits for files by design and allows them for its
+    # target.
     { path = "std::fs::metadata", reason = "it waits for the file system; the thread of the window does not (ADR 0730): use `state::measure` on a background thread" },
     { path = "std::fs::symlink_metadata", reason = "it waits for the file system; the thread of the window does not (ADR 0730): read it on a background thread" },
     { path = "dirs::download_dir", reason = "it reads a file on Linux and the account database on macOS; the thread of the window does not wait for them (ADR 0730): use `AppState::find_for_save`" },
+    { path = "std::path::Path::metadata", reason = "it waits for the file system; the thread of the window does not (ADR 0730): read it on a background thread" },
+    { path = "std::path::Path::symlink_metadata", reason = "it waits for the file system; the thread of the window does not (ADR 0730): read it on a background thread" },
+    { path = "std::path::Path::exists", reason = "it waits for the file system; the thread of the window does not (ADR 0730): read it on a background thread" },
+    { path = "std::path::Path::try_exists", reason = "it waits for the file system; the thread of the window does not (ADR 0730): read it on a background thread" },
+    { path = "std::path::Path::is_file", reason = "it waits for the file system; the thread of the window does not (ADR 0730): read it on a background thread" },
+    { path = "std::path::Path::is_dir", reason = "it waits for the file system; the thread of the window does not (ADR 0730): read it on a background thread" },
+    { path = "std::path::Path::is_symlink", reason = "it waits for the file system; the thread of the window does not (ADR 0730): read it on a background thread" },
+    { path = "std::path::Path::canonicalize", reason = "it waits for the file system; the thread of the window does not (ADR 0730): read it on a background thread" },
+    { path = "std::path::Path::read_link", reason = "it waits for the file system; the thread of the window does not (ADR 0730): read it on a background thread" },
+    { path = "std::path::Path::read_dir", reason = "it waits for the file system; the thread of the window does not (ADR 0730): read it on a background thread" },
+    { path = "std::fs::exists", reason = "it waits for the file system; the thread of the window does not (ADR 0730): read it on a background thread" },
+    { path = "std::fs::canonicalize", reason = "it waits for the file system; the thread of the window does not (ADR 0730): read it on a background thread" },
+    { path = "std::fs::read_link", reason = "it waits for the file system; the thread of the window does not (ADR 0730): read it on a background thread" },
+    { path = "std::fs::read_dir", reason = "it waits for the file system; the thread of the window does not (ADR 0730): read it on a background thread" },
+    { path = "std::fs::read", reason = "it waits for the file system; the thread of the window does not (ADR 0730): read the file on a background thread" },
+    { path = "std::fs::read_to_string", reason = "it waits for the file system; the thread of the window does not (ADR 0730): read the file on a background thread" },
+    { path = "std::fs::write", reason = "it waits for the file system; the thread of the window does not (ADR 0730): write the file on a background thread" },
+    { path = "std::fs::File::open", reason = "it waits for the file system; the thread of the window does not (ADR 0730): open the file on a background thread" },
+    { path = "std::fs::File::create", reason = "it waits for the file system; the thread of the window does not (ADR 0730): create the file on a background thread" },
+    { path = "std::fs::OpenOptions::open", reason = "it waits for the file system; the thread of the window does not (ADR 0730): open the file on a background thread" },
+    { path = "std::fs::remove_file", reason = "it waits for the file system; the thread of the window does not (ADR 0730): remove the file on a background thread" },
+    { path = "std::fs::rename", reason = "it waits for the file system; the thread of the window does not (ADR 0730): rename the file on a background thread" },
+    { path = "std::fs::copy", reason = "it waits for the file system; the thread of the window does not (ADR 0730): copy the file on a background thread" },
+    { path = "std::fs::create_dir", reason = "it waits for the file system; the thread of the window does not (ADR 0730): create the directory on a background thread" },
+    { path = "std::fs::create_dir_all", reason = "it waits for the file system; the thread of the window does not (ADR 0730): create the directory on a background thread" },
+    # The functions of `time` exist only with its feature `local-offset`, which the crate does
+    # not enable; the refusal applies when a change enables it.
+    { path = "time::UtcOffset::current_local_offset", reason = "it reads the zone files of the system on the thread that asks (ADR 0730, ADR 0798): use the zone that the state read", allow-invalid = true },
+    { path = "time::OffsetDateTime::now_local", reason = "it reads the zone files of the system on the thread that asks (ADR 0730, ADR 0798): use the zone that the state read", allow-invalid = true },
+    { path = "chrono::Local::now", reason = "it reads `/etc/localtime` on the thread that asks (ADR 0730, ADR 0798): use the zone that the state read" },
+    { path = "chrono::Local::today", reason = "it reads `/etc/localtime` on the thread that asks (ADR 0730, ADR 0798): use the zone that the state read" },
     { path = "iana_time_zone::get_timezone", reason = "it reads files of the system; the thread of the window does not (ADR 0730): use `zones::system_zone` at the start or on a background thread" },
     { path = "junto_client::zones::system_zone", reason = "it reads files of the system; after the start the window reads the zone on a background thread (ADR 0730, ADR 0798): use `AppState::system_zone_name`" },
     { path = "junto_client::zones::system", reason = "it reads files of the system; after the start the window reads the zone on a background thread (ADR 0730, ADR 0798): use `AppState::system_zone_name`" },
 ]
+# Clippy refuses the type in a type position and in `use`, not as a value such as
+# `chrono::Local.timestamp_opt(..)`; the test `notices::no_code_of_the_application_names_the_local_zone_of_chrono`
+# refuses every use of the name in the code of the crate.
 disallowed-types = [
     { path = "chrono::Local", reason = "it reads `/etc/localtime` on the thread that asks; the window shows times by the rules of `chrono-tz` for the zone that it read (ADR 0730, ADR 0798)" },
 ]

@@ -306,6 +306,76 @@ fn a_person_writes_answers_changes_and_deletes_messages(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
+fn files_attached_before_a_send_are_in_the_message_in_the_order_of_their_drops(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    window.until("the messages are read", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let files = tempfile::tempdir().unwrap();
+    let names: Vec<String> = (0..6).map(|number| format!("part-{number}.txt")).collect();
+    let paths: Vec<std::path::PathBuf> = names
+        .iter()
+        .map(|name| {
+            let path = files.path().join(name);
+            std::fs::write(&path, name.as_bytes()).unwrap();
+            path
+        })
+        .collect();
+
+    // Six drops, one file each, and Enter before the sizes of the files are read: the
+    // message is not sent without them.
+    let problem = window.in_shell(|shell, window, cx| {
+        shell.type_message(Pane::Main, "The parts", window, cx);
+        for path in &paths {
+            shell.attach_paths(Pane::Main, vec![path.clone()], cx);
+        }
+        shell.submit_message(Pane::Main, window, cx);
+        shell.composer_problem(Pane::Main).map(str::to_owned)
+    });
+    assert_eq!(problem.as_deref(), Some(text::FILES_STILL_ATTACHING));
+
+    // The files are in the draft in the order of the drops, and the message is sent with
+    // them.
+    window.until("the files are in the draft", |window| {
+        window
+            .view()
+            .workspace()
+            .is_some_and(|workspace| workspace.draft.len() == names.len())
+    });
+    let drafted: Vec<String> = window
+        .view()
+        .workspace()
+        .unwrap()
+        .draft
+        .iter()
+        .map(|file| file.name.clone())
+        .collect();
+    assert_eq!(drafted, names);
+    assert_eq!(
+        window.in_shell(|shell, _, _| shell.composer_problem(Pane::Main).map(str::to_owned)),
+        None
+    );
+    window.in_shell(|shell, window, cx| shell.submit_message(Pane::Main, window, cx));
+    let sent = window.until_message("The parts");
+    // The server returns the files of a message in the order of their identifiers, which
+    // it gives as the uploads arrive, not in the order of the send: the test checks the
+    // files and not their order there.
+    let mut attached: Vec<String> = sent
+        .message
+        .attachments
+        .iter()
+        .map(|attachment| attachment.name.clone())
+        .collect();
+    attached.sort();
+    assert_eq!(attached, names);
+}
+
+#[gpui::test]
 fn a_file_is_sent_with_a_message_and_saved_from_one(cx: &mut TestAppContext) {
     let world = World::new();
     let server = world.server("Acme Studio");

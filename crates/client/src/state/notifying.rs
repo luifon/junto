@@ -814,16 +814,24 @@ impl AppState {
     }
 
     /// Reads the time zone of the system on a background thread (ADR 0730), and shows the
-    /// times in it when it changed.
+    /// times in it when it changed. The readings run in parallel and can end in another
+    /// order than they started: the result of a reading is applied only when no newer
+    /// reading was started.
     #[allow(clippy::disallowed_methods)]
     fn read_system_zone(&mut self, cx: &mut Context<Self>) {
-        let reading = cx
-            .background_executor()
-            .spawn(async { crate::zones::system_zone() });
+        self.zone_readings += 1;
+        let number = self.zone_readings;
+        let reader = self.zone_reader.clone();
+        let reading = cx.background_executor().spawn(async move {
+            match reader {
+                Some(reader) => reader(),
+                None => crate::zones::system_zone(),
+            }
+        });
         cx.spawn(async move |this, cx| {
             let zone = reading.await;
             let _ = this.update(cx, |this, cx| {
-                if this.system_zone == zone {
+                if this.zone_readings != number || this.system_zone == zone {
                     return;
                 }
                 this.system_zone = zone;
@@ -835,6 +843,13 @@ impl AppState {
             });
         })
         .detach();
+    }
+
+    /// The readings of the zone of the system that start after this call return what
+    /// `reader` returns. A test uses it.
+    #[cfg(feature = "test-support")]
+    pub fn set_zone_reader(&mut self, reader: impl Fn() -> chrono_tz::Tz + Send + Sync + 'static) {
+        self.zone_reader = Some(std::sync::Arc::new(reader));
     }
 
     /// The name of the time zone of the system as it was read last.

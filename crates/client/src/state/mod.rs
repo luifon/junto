@@ -357,6 +357,11 @@ pub struct AppState {
     known: Known,
     /// The time zone of the system as it was read last.
     system_zone: chrono_tz::Tz,
+    /// How many readings of the zone of the system were started. Only the result of the
+    /// newest one is applied, because they run in parallel.
+    zone_readings: u64,
+    /// What a test reads in place of the zone of the system.
+    zone_reader: Option<std::sync::Arc<dyn Fn() -> chrono_tz::Tz + Send + Sync>>,
     pending: Pending,
     /// What the administration holds: the open page and its requests (ADR 0761).
     admin: admin::AdminState,
@@ -656,6 +661,8 @@ impl AppState {
             selection: Selection::default(),
             known,
             system_zone,
+            zone_readings: 0,
+            zone_reader: None,
             pending: Pending::default(),
             admin: admin::AdminState::default(),
             account: account::AccountState::default(),

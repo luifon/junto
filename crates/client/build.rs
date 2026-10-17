@@ -1,3 +1,5 @@
+// The build script writes files of the build; it is not code of the window (ADR 0730).
+#[allow(clippy::disallowed_methods)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The script reads no file of the package other than those it names below; the icon is
     // a build dependency, and a change of it runs the script again.

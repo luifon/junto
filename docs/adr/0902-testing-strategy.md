@@ -69,7 +69,7 @@ Tests on real systems:
   and a third person without a window in a call, A and B sharing, all three with a
   camera, the call of A in its separate window. The main window of A reads a channel of
   400 messages, scrolls up its history and back, opens and closes threads and changes
-  channels in a loop for 10 minutes after 90 seconds of warming. Every 5 seconds it reads
+  channels in a loop for 10 minutes after 5 minutes of warming. Every 5 seconds it reads
   `phys_footprint` and the graphics memory with `footprint`, the processor time with
   `ps`, the open file descriptors and the threads. A missing graphics category in the
   output of `footprint` fails the run; it does not read as 0. The warming is 5 minutes:

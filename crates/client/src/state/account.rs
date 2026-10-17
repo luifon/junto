@@ -875,6 +875,7 @@ impl AppState {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 pub(crate) mod tests {
     use std::sync::Arc;
 

@@ -2,7 +2,7 @@
 //! [`crate::compose`], the toolbar of the design, mentions as tokens with a picker, the
 //! emoji picker, the files of the next message, and the states of a reply and of an edit.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use gpui::{
@@ -87,6 +87,17 @@ pub(crate) struct Editing {
     original: Arc<(Document, compose::Written)>,
 }
 
+/// Files attached to the next message of a place whose sizes are being read.
+struct Attaching {
+    number: u64,
+    /// The place and the account that the composer wrote to when the files were attached,
+    /// and the owner that the server had then (ADR 0746).
+    asked: Desk,
+    owner: junto_client_core::Owner,
+    /// The sizes, when they have been read.
+    measured: Option<Vec<crate::state::Measured>>,
+}
+
 pub(crate) struct Composer {
     pub(crate) input: Entity<TextareaState>,
     /// The place whose text the input holds, and the account that writes there.
@@ -98,6 +109,11 @@ pub(crate) struct Composer {
     drafts: HashMap<Desk, Draft>,
     /// Why the message was not sent as it is.
     pub(crate) problem: Option<String>,
+    /// Files whose sizes are read on a background thread, in the order in which they were
+    /// attached. They go into the draft in that order, and a new message of their place
+    /// is not sent before they are in it.
+    attaching: VecDeque<Attaching>,
+    next_attaching: u64,
     pub(crate) mention: Option<MentionPicker>,
     pub(crate) emoji_find: Entity<InputState>,
     emoji_group: usize,
@@ -257,6 +273,8 @@ impl Composer {
             editing: None,
             drafts: HashMap::new(),
             problem: None,
+            attaching: VecDeque::new(),
+            next_attaching: 0,
             mention: None,
             emoji_find: Field::state(text::FIND_EMOJI, window, cx),
             emoji_group: 0,
@@ -534,8 +552,8 @@ impl Shell {
 
     /// Attaches files to the next message of the shown place. The sizes of the files are
     /// read on a background thread (ADR 0730); the files are attached when that is done,
-    /// while the composer still writes to the place and the server still has the owner
-    /// that asked (ADR 0746).
+    /// after the files that were attached before them, while the composer still writes to
+    /// the place and the server still has the owner that asked (ADR 0746).
     pub(crate) fn attach(
         &mut self,
         pane: Pane,
@@ -548,27 +566,74 @@ impl Shell {
         let Some(owner) = self.state.read(cx).owner(asked.0) else {
             return;
         };
+        let pen = self.pen_mut(pane);
+        let number = pen.next_attaching;
+        pen.next_attaching += 1;
+        pen.attaching.push_back(Attaching {
+            number,
+            asked,
+            owner,
+            measured: None,
+        });
+        cx.notify();
         let measuring = cx
             .background_executor()
             .spawn(async move { crate::state::measure(sources) });
         cx.spawn(async move |this, cx| {
             let measured = measuring.await;
             let _ = this.update(cx, |this, cx| {
-                let same_owner = this.state.read(cx).owner(asked.0) == Some(owner);
-                if this.pen(pane).place != Some(asked) || !same_owner {
-                    this.pen_mut(pane).problem = Some(text::FILES_OF_ANOTHER_PLACE.to_owned());
-                    cx.notify();
-                    return;
+                if let Some(entry) = this
+                    .pen_mut(pane)
+                    .attaching
+                    .iter_mut()
+                    .find(|entry| entry.number == number)
+                {
+                    entry.measured = Some(measured);
                 }
-                let (server_id, _, place) = asked;
-                let refused = this
-                    .state
-                    .update(cx, |state, cx| state.attach(server_id, place, measured, cx));
-                this.pen_mut(pane).problem = refused.first().map(text::attach_refusal);
-                cx.notify();
+                this.attach_measured(pane, cx);
             });
         })
         .detach();
+    }
+
+    /// Puts the measured files into the draft of their place, in the order in which they
+    /// were attached: it stops at the first files whose sizes are still being read.
+    fn attach_measured(&mut self, pane: Pane, cx: &mut Context<Self>) {
+        while self
+            .pen(pane)
+            .attaching
+            .front()
+            .is_some_and(|entry| entry.measured.is_some())
+        {
+            let Some(Attaching {
+                asked,
+                owner,
+                measured: Some(measured),
+                ..
+            }) = self.pen_mut(pane).attaching.pop_front()
+            else {
+                return;
+            };
+            let same_owner = self.state.read(cx).owner(asked.0) == Some(owner);
+            if self.pen(pane).place != Some(asked) || !same_owner {
+                self.pen_mut(pane).problem = Some(text::FILES_OF_ANOTHER_PLACE.to_owned());
+                continue;
+            }
+            let (server_id, _, place) = asked;
+            let refused = self
+                .state
+                .update(cx, |state, cx| state.attach(server_id, place, measured, cx));
+            self.pen_mut(pane).problem = refused.first().map(text::attach_refusal);
+        }
+        cx.notify();
+    }
+
+    /// Files are being attached to the next message of the place that the composer shows.
+    fn attaching_here(&self, pane: Pane) -> bool {
+        let pen = self.pen(pane);
+        pen.attaching
+            .iter()
+            .any(|entry| Some(entry.asked) == pen.place)
     }
 
     /// Attaches the files at these paths, as the file dialog and a drop do.
@@ -804,6 +869,11 @@ impl Shell {
             None => compose::parse(content.text(), &mentions_of(&content)),
         };
         let editing = editing.map(|editing| editing.message_id);
+        if editing.is_none() && self.attaching_here(pane) {
+            self.pen_mut(pane).problem = Some(text::FILES_STILL_ATTACHING.to_owned());
+            cx.notify();
+            return;
+        }
         let draft = self
             .view
             .as_ref()
@@ -1229,7 +1299,8 @@ impl Shell {
 
         // The files of the next message, each with the state of its upload.
         let place = self.composer_place(pane);
-        let files = (!draft.is_empty()).then(|| {
+        let attaching = self.attaching_here(pane);
+        let files = (!draft.is_empty() || attaching).then(|| {
             div()
                 .flex()
                 .flex_wrap()
@@ -1312,6 +1383,24 @@ impl Shell {
                                     }
                                 })),
                         )
+                }))
+                .children(attaching.then(|| {
+                    div()
+                        .debug_selector(|| "draft-attaching".to_owned())
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(u(7.0))
+                        .h(u(30.0))
+                        .px(u(8.0))
+                        .rounded(u(theme.metrics.radius))
+                        .border_1()
+                        .border_color(Hsla::from(colors.rule))
+                        .bg(Hsla::from(colors.travertine_hi))
+                        .text_size(u(12.5))
+                        .ink(colors.ink_3)
+                        .child(icon(Icon::Clip, 14.0, colors.ink_2))
+                        .child(text::FILES_BEING_READ)
                 }))
         });
 

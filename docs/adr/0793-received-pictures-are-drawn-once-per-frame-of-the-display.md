@@ -18,7 +18,7 @@ A window has one follower for the pictures of its call. It works in two steps.
 - The frame puts the converted pictures in place of the ones that the window holds and asks for one drawing. A picture that a newer one replaced before its conversion started is never converted and never drawn. A frame that finds the pictures that the window already holds draws nothing.
 - A window that starts to draw the call (the call moves to or from the separate call window) holds no picture of it. It asks the follower for all pictures, which converts them in the same way; the drawing does not convert them.
 
-The pictures of all sources together cause at most one drawing per frame of the display, whatever the number of pictures and of sources. A window that the system does not draw (hidden, or minimized) gets no frame, takes no picture and does no work for the pictures of the call.
+The pictures of all sources together cause at most one drawing per frame of the display, whatever the number of pictures and of sources. A window that the system does not draw (hidden, or minimized) gets no frame, so it draws no picture and does no work for the pictures on the thread of the interface. Its follower converts at most one set of pictures on the runtime of the client and holds it until the next frame of the window; that frame draws the held set, and the follower then converts the newest pictures for the following frame.
 
 Without a graphics processor the cameras are drawn at a lower rate, as before: after the follower has taken the cameras, it takes them again 200 ms later at the earliest. The pictures of the shares are taken as they arrive in that time, without the cameras.
 
