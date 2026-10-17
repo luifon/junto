@@ -8,9 +8,11 @@ use gpui::{Div, IntoElement, ParentElement, Pixels, Styled, canvas, div};
 ///
 /// The answer of the server closes a form at a time that the person does not choose, and a
 /// row without its form has less height than the row with it. While a form is open its row
-/// is measured; when the server did the request of the form, the row keeps that height at
-/// least, with its content at the top, until the person opens or puts away a form or
-/// leaves the page. The answer therefore moves no control under the row.
+/// is measured; when the server did the request of the form, or a change of the state puts
+/// the form away, the row keeps that height at least, with its content at the top. The
+/// owner of the space releases it only when the person opens or puts away a form or
+/// question of the page, when the page changes and when the layer closes. The answer
+/// therefore moves no control under the row.
 pub struct FormSpace<M> {
     /// The open form and the height of its row as it was drawn last.
     drawn: Rc<Cell<Option<(M, Pixels)>>>,
@@ -61,7 +63,8 @@ impl<M: Copy + PartialEq + 'static> FormSpace<M> {
         self.kept = self.drawn.get().filter(|(drawn, _)| *drawn == open);
     }
 
-    /// The person opened or put away a form, or left the page: no row keeps a height.
+    /// The person opened or put away a form or question, the page changed or the layer
+    /// closed: no row keeps a height.
     pub fn release(&mut self) {
         self.kept = None;
     }

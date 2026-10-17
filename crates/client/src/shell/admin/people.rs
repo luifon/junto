@@ -29,7 +29,9 @@ use crate::state::admin::{AdminPage, AskKind, AskState};
 use crate::text;
 use crate::text::admin::people as txt;
 use crate::theme::{Theme, theme, u};
-use crate::ui::{Button, ButtonKind, Chip, Field, FieldEvent, Notice, Segmented, StyleExt, Toggle};
+use crate::ui::{
+    Button, ButtonKind, Chip, Field, FieldEvent, FormSpace, Notice, Segmented, StyleExt, Toggle,
+};
 
 /// The width of the control that chooses which accounts are shown, in design pixels.
 const FILTER_WIDTH: f32 = 260.0;
@@ -93,6 +95,8 @@ pub(crate) struct Ui {
     pub(crate) invalid: Option<&'static str>,
     /// The request that the open question or form was sent as.
     pub(crate) sent: Option<AskKind>,
+    /// The space of the rows with a question or the form of a new invite (ADR 0730).
+    pub(crate) space: FormSpace<Open>,
     /// The invite whose new code was copied.
     pub(crate) copied: Option<InviteId>,
 }
@@ -137,6 +141,7 @@ impl Ui {
             approval_workspaces: Vec::new(),
             invalid: None,
             sent: None,
+            space: FormSpace::default(),
             copied: None,
         };
         (ui, subscriptions)
@@ -238,6 +243,7 @@ impl Shell {
         ui.approval_workspaces.clear();
         ui.invalid = None;
         ui.sent = None;
+        ui.space.release();
         ui.copied = None;
         self.reset_invite_form(window, cx);
         self.type_reason("", window, cx);
@@ -344,6 +350,7 @@ impl Shell {
         self.admin.people.open = open;
         self.admin.people.invalid = None;
         self.admin.people.sent = None;
+        self.admin.people.space.release();
         if open == Some(Open::NewInvite) {
             self.reset_invite_form(window, cx);
         }
@@ -366,11 +373,24 @@ impl Shell {
             Some(AskState::Refused(_)) => self.admin.people.sent = None,
             None => {
                 self.admin.people.sent = None;
-                self.admin.people.open = None;
+                // The answer arrives while the person can be pointing at a control under
+                // the row: the row keeps the height of its question or form.
+                if let Some(open) = self.admin.people.open.take() {
+                    self.admin.people.space.keep(open);
+                }
                 self.admin.people.invalid = None;
                 self.reset_invite_form(window, cx);
             }
         }
+    }
+
+    /// A change of the state puts the open question away: its row keeps its height, as
+    /// after an answer.
+    fn put_away_people_open(&mut self) {
+        if let Some(open) = self.admin.people.open.take() {
+            self.admin.people.space.keep(open);
+        }
+        self.admin.people.sent = None;
     }
 
     /// Puts text into the field for the number of uses of a new invite, as choosing
@@ -507,8 +527,9 @@ impl Shell {
             _ => false,
         };
         if stale {
-            self.admin.people.open = None;
-            self.admin.people.sent = None;
+            // A change of the state closes the question: the row keeps its height, as
+            // after an answer.
+            self.put_away_people_open();
         }
         let content: AnyElement = match self.admin.people.open {
             // A question stays only while its action is possible: the order of the roles
@@ -685,11 +706,23 @@ impl Shell {
             under.push(self.render_role_choices(view, account_id, &row.name, choices, theme, cx));
         }
         under.extend(refusal(refused, "account-refused"));
-        framed(
-            format!("account-row-{account_id}"),
-            line(theme).child(content),
-            under,
-        )
+        let modes = [
+            Open::RemoveAccount(account_id),
+            Open::BanAccount(account_id),
+        ];
+        self.admin
+            .people
+            .space
+            .row(
+                self.admin.people.open,
+                &modes,
+                framed(
+                    format!("account-row-{account_id}"),
+                    line(theme).child(content),
+                    under,
+                ),
+            )
+            .into_any_element()
     }
 
     pub(crate) fn render_people_page(
@@ -805,8 +838,7 @@ impl Shell {
         }
         let reading = row.remove == Some(Err(NoRemoval::OrderNotRead));
         if !matches!(row.remove, Some(Ok(()))) && !reading {
-            self.admin.people.open = None;
-            self.admin.people.sent = None;
+            self.put_away_people_open();
             return None;
         }
         let (server_id, workspace_id) = (view.server_id, page.workspace_id);
@@ -880,6 +912,7 @@ impl Shell {
                 }
                 for row in rows {
                     let account_id = row.account_id;
+                    let modes = [Open::RemoveMember(account_id)];
                     if let Some(question) = self.render_member_question(view, page, row, &theme, cx)
                     {
                         let mut under = vec![self.render_reason(&theme, cx)];
@@ -887,11 +920,13 @@ impl Shell {
                             view.refused(AskKind::RemoveMember(account_id)),
                             "member-remove-refused",
                         ));
-                        column = column.child(framed(
+                        let framed = framed(
                             format!("member-row-{account_id}"),
                             line(&theme).child(question),
                             under,
-                        ));
+                        );
+                        let open = self.admin.people.open;
+                        column = column.child(self.admin.people.space.row(open, &modes, framed));
                         continue;
                     }
                     let roles =
@@ -965,8 +1000,9 @@ impl Shell {
                             }),
                         ));
                     }
-                    column =
-                        column.child(framed(format!("member-row-{account_id}"), content, under));
+                    let framed = framed(format!("member-row-{account_id}"), content, under);
+                    let open = self.admin.people.open;
+                    column = column.child(self.admin.people.space.row(open, &modes, framed));
                 }
             }
         }
@@ -1365,16 +1401,20 @@ impl Shell {
             txt::INVITES_HELP,
             &theme,
         ));
-        if let Some(made) = &page.made {
-            column = column.child(self.render_new_code(made, &theme, cx));
-        }
         column = column.child(group_label(txt::NEW_INVITE, &theme));
-        column = match self.admin.people.open {
-            Some(Open::NewInvite) => {
-                column.child(self.render_invite_form(view, &page.grant, &theme, cx))
-            }
-            _ => column.child(
-                div().flex().flex_none().child(
+        // The code that the answer carries is drawn in the row of the form, in the place of
+        // the form, so that the answer moves no control under the row (ADR 0730).
+        let code = page
+            .made
+            .as_ref()
+            .map(|made| self.render_new_code(made, &theme, cx));
+        let open = self.admin.people.open;
+        let new = match open {
+            Some(Open::NewInvite) => self.render_invite_form(view, &page.grant, &theme, cx),
+            _ => div()
+                .flex()
+                .flex_none()
+                .child(
                     Button::new("invite-new")
                         .icon(Icon::Plus)
                         .label(txt::NEW_INVITE)
@@ -1384,9 +1424,14 @@ impl Shell {
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.set_people_open(Some(Open::NewInvite), window, cx);
                         })),
-                ),
-            ),
+                )
+                .into_any_element(),
         };
+        column = column.child(self.admin.people.space.row(
+            open,
+            &[Open::NewInvite],
+            div().flex().flex_col().children(code).child(new),
+        ));
         column = column
             .children(refusal(
                 view.refused(AskKind::CreateInvite),

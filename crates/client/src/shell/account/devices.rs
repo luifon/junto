@@ -363,7 +363,7 @@ impl Shell {
                     .into_any_element()
             }
         };
-        div()
+        let row = div()
             .id(SharedString::from(format!("device-result-{device_id}")))
             .flex()
             .flex_col()
@@ -378,7 +378,14 @@ impl Shell {
             .children(refusal(
                 view.refused(rename).or(view.refused(remove)),
                 "device-refused",
-            ))
+            ));
+        // The answer closes the form at a time that the person does not choose: the row
+        // keeps the height of its form, whatever the text, the width and the scale make
+        // that height (ADR 0730).
+        let modes = [Mode::RenameDevice(device_id), Mode::RemoveDevice(device_id)];
+        self.account
+            .space
+            .row(self.account.mode, &modes, row)
             .into_any_element()
     }
 

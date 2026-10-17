@@ -16,7 +16,7 @@ One layer:
 - The layer follows the rules of ADR 0761 for requests. Each request has the states sending and refused. A refusal is a sentence at the control that asked. Only the answer to the newest request of the open page changes what the page tells; an answer that arrives after the page changed or the layer closed is dropped.
 - A page sends one request at a time. While a request is on its way, the state of the layer starts no other request of that page, and the controls of the page that send one are disabled. Reason: the page holds the state of one request, so a second request would hide the first one and its refusal. What the page tells about a request that is on its way is not put away.
 - Every request of the layer is sent for the account that the layer was opened for (ADR 0714). When the server of the layer leaves the server book, or shows another account or none, the layer closes and keeps nothing.
-- A form and a question are drawn in the row that they belong to. No second layer opens above the first.
+- A form and a question are drawn in the row that they belong to. No second layer opens above the first. When the answer closes a form or a question of a device, its row keeps the height that it had with it, as ADR 0730 states.
 
 Profile:
 
