@@ -58,7 +58,41 @@ class BundleTests(unittest.TestCase):
                     if entries[kind][:8] == icons.PNG_SIGNATURE:
                         self.assertEqual(entries[kind], rendering)
                     else:
-                        self.assertEqual(icons.icns_picture(entries[kind], size), icons.png(rendering))
+                        picture, expected = icons.icns_picture(entries[kind], size), icons.png(rendering)
+                        self.assertLessEqual(picture.difference(expected), 1)
+                        self.assertEqual(picture.rgba[3::4], expected.rgba[3::4])
+
+    @unittest.skipUnless(sys.platform == "darwin" and shutil.which("iconutil"),
+                         "requires macOS and its iconutil program")
+    def test_argb_edges_match_what_macos_writes_from_the_same_pictures(self):
+        with tempfile.TemporaryDirectory(prefix="junto-bundle-") as temporary:
+            root = pathlib.Path(temporary)
+            binary = root / "junto"
+            binary.write_bytes(b"not executable in this test")
+            bundle = load().assemble(binary, root / "Junto.app", "0.2.3", icon_tool=icons.TOOL)
+            entries = icons.icns((bundle / "Contents/Resources/Junto.icns").read_bytes())
+            iconset = root / "reference.iconset"
+            iconset.mkdir()
+            for side in [16, 32, 128, 256, 512]:
+                for suffix, scale in [("", 1), ("@2x", 2)]:
+                    (iconset / f"icon_{side}x{side}{suffix}.png").write_bytes(
+                        icons.rendering(icons.TOOL, side * scale))
+            reference = root / "reference.icns"
+            subprocess.run(["iconutil", "-c", "icns", "-o", str(reference), str(iconset)],
+                           check=True, capture_output=True)
+            expected_entries = icons.icns(reference.read_bytes())
+            for kind, size in [("ic04", 16), ("ic05", 32)]:
+                with self.subTest(kind):
+                    self.assertEqual(entries[kind][:4], b"ARGB")
+                    self.assertEqual(expected_entries[kind][:4], b"ARGB")
+                    actual = icons.icns_picture(entries[kind], size)
+                    expected = icons.icns_picture(expected_entries[kind], size)
+                    rendering = icons.png(icons.rendering(icons.TOOL, size))
+                    edges = [(x, y) for y in range(size) for x in range(size)
+                             if 0 < rendering.pixel(x, y)[3] < 255]
+                    self.assertTrue(edges, "the picture has no partly transparent pixels")
+                    for x, y in edges:
+                        self.assertEqual(actual.pixel(x, y), expected.pixel(x, y), (kind, x, y))
 
     @unittest.skipUnless(sys.platform == "darwin" and shutil.which("iconutil"), "iconutil of macOS")
     def test_macos_reads_every_size_of_the_icon_file(self):

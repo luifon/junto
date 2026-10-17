@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 
 import icons
+import release_tools
 from bundle import assemble
 from create_identity import create, run
 from keychains import cleanup, signals
@@ -21,6 +22,8 @@ def requirement(bundle):
 
 
 def check():
+    release_tools.run("cargo", "build", "--locked", "-p", "junto-icon", "--bin", "junto-icon",
+                      cwd=release_tools.REPOSITORY, timeout=3600)
     before = run("security", "list-keychains", "-d", "user")
     default_before = run("security", "default-keychain", "-d", "user")
     with signals(), tempfile.TemporaryDirectory(prefix="junto signing with spaces-") as temporary:
