@@ -7,7 +7,9 @@ import shutil
 import signal
 import subprocess
 import sys
+import queue
 import tempfile
+import threading
 import unittest
 
 LOCK = pathlib.Path(__file__).resolve().with_name("lock.py")
@@ -38,6 +40,18 @@ else:
         running = False
 print("running" if running else "ended")
 """
+
+
+def debugged(number):
+    """Attaches this thread as the debugger of a process: Windows then does not finish the end
+    of that process until the debugger detaches, which stands for a process that takes long to
+    end. Returns the function that detaches."""
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    if not kernel32.DebugActiveProcess(number):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return lambda: kernel32.DebugActiveProcessStop(number)
 
 
 def locked(lock, command, **options):
@@ -103,6 +117,68 @@ class Lock(unittest.TestCase):
                 first.kill()
                 first.stdin.close()
                 first.stdout.close()
+
+    # The processes of the job end after the holder: the lock must stay held until the last
+    # of them has ended, also when it takes time to end.
+    @unittest.skipIf(os.name != "nt", "the debugger that delays the end of a process is that of Windows")
+    def test_the_lock_is_free_only_when_a_slowly_ending_process_of_an_ended_holder_has_ended(self):
+        with tempfile.TemporaryDirectory(prefix="junto-lock-") as temporary:
+            lock = pathlib.Path(temporary) / "run.lock"
+            first = locked(lock, TREE, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+            try:
+                child = int(first.stdout.readline())
+                detach = debugged(child)
+                try:
+                    first.kill()
+                    first.wait(timeout=60)
+                    second = locked(lock, [sys.executable, "-c", ALIVE, str(child)], stdout=subprocess.PIPE)
+                    try:
+                        with self.assertRaises(subprocess.TimeoutExpired):
+                            second.wait(timeout=5)
+                    finally:
+                        detach()
+                    output, _ = second.communicate(timeout=60)
+                    self.assertEqual(output.strip(), "ended")
+                finally:
+                    detach()
+            finally:
+                first.kill()
+                first.stdin.close()
+                first.stdout.close()
+
+    # A process that does not end keeps the lock, and the holder states it.
+    @unittest.skipIf(os.name != "nt", "the job object is that of Windows")
+    def test_a_process_that_does_not_end_is_reported_while_the_lock_stays_held(self):
+        import importlib.util
+
+        specification = importlib.util.spec_from_file_location("lock", LOCK)
+        module = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(module)
+        job = module.Job()
+        process = job.start([sys.executable, "-c", "import time; time.sleep(600)"])
+        detach = debugged(process.pid)
+        messages = queue.Queue()
+
+        class Output:
+            def write(self, text):
+                messages.put(text)
+
+            def flush(self):
+                pass
+
+        error, sys.stderr = sys.stderr, Output()
+        ending = threading.Thread(target=job.end, kwargs={"report_after": 1})
+        try:
+            ending.start()
+            message = messages.get(timeout=60)
+            self.assertIn(f"1 processes of the job have not ended 1 s after they were ended ({process.pid})", message)
+            self.assertTrue(ending.is_alive())
+        finally:
+            detach()
+            ending.join(timeout=60)
+            sys.stderr = error
+            process.wait(timeout=60)
+        self.assertFalse(ending.is_alive())
 
     # When the command ends and leaves a process behind, the lock is released only after that
     # process has ended (on Windows lock.py ends it).

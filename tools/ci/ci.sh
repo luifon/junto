@@ -160,9 +160,25 @@ start() {
             windows_bash "mkdir -p '$here'" \
                 && windows_ssh scp -q "$files/commit.bundle" "$files/run-jobs.sh" "$files/start-run.ps1" \
                     "$files/start.sh" "$windows_host:$here/" \
-                && windows_ssh ssh "$windows_host" \
-                    "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $here/start-run.ps1 -Directory $windows_dir -Run $run" \
+                || {
+                    status=$?
+                    # start-run.ps1 has not run: the end of the run is recorded here, so that
+                    # status reports it and forget removes it.
+                    windows_bash "if [ -d '$here' ]; then cd '$here' && rm -f commit.bundle && echo $status >finished; fi" || true
+                }
+        fi
+        if [ "$status" -eq 0 ]; then
+            windows_ssh ssh "$windows_host" \
+                "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $here/start-run.ps1 -Directory $windows_dir -Run $run" \
                 || status=$?
+            # start-run.ps1 ends with 1 or 2 only after it has recorded the end of the run. With
+            # another status (the connection ended) the run can have started.
+            case "$status" in
+                0 | 1 | 2) ;;
+                *) rm -rf "$files"
+                   echo "the start of the run $run on the Windows machine ended with status $status; ci.sh status $run shows whether it runs" >&2
+                   exit "$status" ;;
+            esac
         fi
         rm -rf "$files"
         if [ "$status" -ne 0 ]; then echo "the run $run did not start on the Windows machine" >&2; exit "$status"; fi
@@ -200,13 +216,15 @@ show() {
         *-windows) runner=windows ;;
         *) echo "no run $run" >&2; return 2 ;;
     esac
+    # The check of the end comes first: a run writes "finished" and its record before its
+    # processes end, so the files that are read after the check show such a run as finished.
     files=$(on "$runner" "cd 'runs/$run' 2>/dev/null || exit 0
+        $(ended_check "$runner" "$run")
         printf 'commit\t%s\n' \"\$(cat commit 2>/dev/null)\"
         printf 'jobs\t%s\n' \"\$(cat jobs 2>/dev/null)\"
         if [ -f current ]; then printf 'current\t%s\n' \"\$(cat current)\"; fi
         if [ -f finished ]; then printf 'finished\t%s\n' \"\$(cat finished)\"; fi
-        if [ -f record.tsv ]; then sed 's/^/record\t/' record.tsv; fi
-        $(ended_check "$runner" "$run")")
+        if [ -f record.tsv ]; then sed 's/^/record\t/' record.tsv; fi")
     if [ -z "$files" ]; then echo "$run: no such run" >&2; return 2; fi
     commit=$(printf '%s\n' "$files" | sed -n 's/^commit\t//p')
     jobs=$(printf '%s\n' "$files" | sed -n 's/^jobs\t//p')
@@ -257,14 +275,14 @@ show() {
 }
 
 # ended_check <runner> <run>: for a Windows run without "finished", a shell command, run in the
-# folder of the run, that prints "ended<tab>1" when the process that start-run.ps1 recorded for
-# the run no longer runs. A logoff, a restart or a stop of Windows ends the processes of a run
-# before they write "finished". Empty for the other runners, whose runs are started by a
-# process that writes "finished" on every end of its own.
+# folder of the run, that prints "ended<tab>1" when "start-run.ps1 -Ended" states that the run
+# no longer runs. A logoff, a restart or a stop of Windows ends the processes of a run before
+# they write "finished". Empty for the other runners, whose runs are started by a process that
+# writes "finished" on every end of its own. The caller reads "finished" after this command.
 ended_check() {
     if [ "$1" = windows ]; then
         windows_settings
-        printf '%s' "if [ ! -f finished ] && [ -f process ] && powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File start-run.ps1 -Directory '$windows_dir' -Run '$2' -Ended >/dev/null; then printf 'ended\t1\n'; fi"
+        printf '%s' "if [ ! -f finished ] && powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File start-run.ps1 -Directory '$windows_dir' -Run '$2' -Ended >/dev/null; then printf 'ended\t1\n'; fi"
     fi
 }
 
@@ -312,8 +330,8 @@ forget() {
                     git --git-dir=repo.git gc --quiet --prune=now'" ;;
         *-windows)
             on windows "cd 'runs/$run' || exit 1
-                test -f finished || { $(ended_check windows "$run"); } | grep -q . ||
-                    { echo 'the run has not finished' >&2; exit 1; }
+                ended=\$($(ended_check windows "$run"))
+                if [ ! -f finished ] && [ -z \"\$ended\" ]; then echo 'the run has not finished' >&2; exit 1; fi
                 cd ../.. && rm -rf 'runs/$run'" ;;
         *-macos)
             test -f "$local_dir/runs/$run/finished" || { echo 'the run has not finished' >&2; exit 1; }

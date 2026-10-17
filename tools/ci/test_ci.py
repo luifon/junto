@@ -28,9 +28,20 @@ while [ "$#" -gt 1 ]; do
     case "$1" in -o | -i) shift ;; -*) ;; *) cp "$1" "$FAKE_ROOT/machine/${target#*:}" || exit 1 ;; esac
     shift
 done
+exit "${FAKE_SCP_STATUS:-0}"
 '''
+# FAKE_FINISH_DURING_CHECK: the run writes its record and "finished" while -Ended runs, and
+# its process then ends.
 POWERSHELL = r'''#!/bin/sh
-case " $* " in *" -Ended "*) exit "${FAKE_ENDED:-1}" ;; esac
+case " $* " in
+    *" -Ended "*)
+        if [ -n "${FAKE_FINISH_DURING_CHECK:-}" ]; then
+            printf '%s\trust-windows\tstart\tend\t0\tlogs/rust-windows.log\t61\n' "$(cat commit)" >>record.tsv
+            rm -f current
+            echo 0 >finished
+        fi
+        exit "${FAKE_ENDED:-1}" ;;
+esac
 exit 1
 '''
 
@@ -125,6 +136,50 @@ class WindowsRunner(unittest.TestCase):
         forgotten = self.ci("forget", run, FAKE_ENDED="0")
         self.assertEqual(forgotten.returncode, 0, forgotten.stdout + forgotten.stderr)
         self.assertFalse(here.exists())
+
+    # The console host of the run was not found, or the start ended before it wrote "process".
+    def test_a_run_without_a_process_file_is_asked_whether_it_has_ended(self):
+        run = "20261017T044315Z-db9034e4e0e6-windows"
+        here = self.run_folder(run)
+        (here / "process").unlink()
+        self.assertEqual(self.ci("status", run, FAKE_ENDED="1").returncode, 3)
+        ended = self.ci("status", run, FAKE_ENDED="0")
+        self.assertEqual(ended.returncode, 1, ended.stdout + ended.stderr)
+        self.assertIn("ended without its result", ended.stdout)
+        self.assertEqual(self.ci("forget", run, FAKE_ENDED="0").returncode, 0)
+        self.assertFalse(here.exists())
+
+    # The run passes while status asks whether its processes have ended.
+    def test_a_run_that_finishes_during_the_check_of_its_end_is_reported_with_its_result(self):
+        run = "20261017T044315Z-db9034e4e0e6-windows"
+        here = self.run_folder(run)
+        result = self.ci("status", run, FAKE_ENDED="0", FAKE_FINISH_DURING_CHECK="1")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("rust-windows           passed   1m1s", result.stdout)
+        self.assertNotIn("ENDED", result.stdout)
+        self.assertTrue(here.exists())
+
+    # A copy that fails leaves a run that status reports as failed and forget removes.
+    def test_a_failed_copy_records_the_end_of_the_run_and_removes_the_bundle(self):
+        result = self.ci("run", "HEAD", "rust-windows", FAKE_SCP_STATUS="1")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertNotIn("start-run.ps1 -Directory", self.log("ssh"))
+        runs = list((self.root / "machine" / "C:" / "ci" / "runs").iterdir())
+        self.assertEqual(len(runs), 1)
+        self.assertEqual((runs[0] / "finished").read_text(), "1\n")
+        self.assertFalse((runs[0] / "commit.bundle").exists())
+        self.assertEqual(self.ci("status", runs[0].name).returncode, 1)
+        self.assertEqual(self.ci("forget", runs[0].name).returncode, 0)
+        self.assertFalse(runs[0].exists())
+
+    # After a lost connection the run can have started: its end is not recorded.
+    def test_a_start_whose_connection_ends_leaves_the_run_to_status(self):
+        result = self.ci("run", "HEAD", "rust-windows", FAKE_START_STATUS="255")
+        self.assertEqual(result.returncode, 255, result.stdout + result.stderr)
+        self.assertIn("ended with status 255; ci.sh status", result.stderr)
+        runs = list((self.root / "machine" / "C:" / "ci" / "runs").iterdir())
+        self.assertFalse((runs[0] / "finished").exists())
+        self.assertEqual(list((self.root / "tmp").iterdir()), [], "the temporary folder of the bundle stays")
 
     def test_a_run_that_did_not_start_is_failed_and_can_be_forgotten(self):
         run = "20261017T044315Z-db9034e4e0e6-windows"
