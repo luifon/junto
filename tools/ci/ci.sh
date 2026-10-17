@@ -147,8 +147,12 @@ start() {
         git -C "$root" bundle create --quiet "$files/commit.bundle" "refs/ci/$run" || status=$?
         git -C "$root" update-ref -d "refs/ci/$run"
         if [ "$status" -eq 0 ]; then
-            git -C "$root" show "$commit:tools/ci/run-jobs.sh" >"$files/run-jobs.sh"
-            git -C "$root" show "$commit:tools/windows/start-run.ps1" >"$files/start-run.ps1"
+            # A commit from before the Windows runner has neither file.
+            git -C "$root" show "$commit:tools/ci/run-jobs.sh" >"$files/run-jobs.sh" 2>/dev/null \
+                && git -C "$root" show "$commit:tools/windows/start-run.ps1" >"$files/start-run.ps1" 2>/dev/null \
+                || { status=2; echo "the commit $commit has no Windows runner (tools/windows/start-run.ps1)" >&2; }
+        fi
+        if [ "$status" -eq 0 ]; then
             # start-run.ps1 starts start.sh in the desktop session of the account and waits for
             # the file "started".
             printf '%s\n' "cd '$here' && : >started && exec sh run-jobs.sh '$windows_dir' '$run' windows '$here/commit.bundle' $* </dev/null >runner.log 2>&1" \
@@ -201,12 +205,14 @@ show() {
         printf 'jobs\t%s\n' \"\$(cat jobs 2>/dev/null)\"
         if [ -f current ]; then printf 'current\t%s\n' \"\$(cat current)\"; fi
         if [ -f finished ]; then printf 'finished\t%s\n' \"\$(cat finished)\"; fi
-        if [ -f record.tsv ]; then sed 's/^/record\t/' record.tsv; fi")
+        if [ -f record.tsv ]; then sed 's/^/record\t/' record.tsv; fi
+        $(ended_check "$runner" "$run")")
     if [ -z "$files" ]; then echo "$run: no such run" >&2; return 2; fi
     commit=$(printf '%s\n' "$files" | sed -n 's/^commit\t//p')
     jobs=$(printf '%s\n' "$files" | sed -n 's/^jobs\t//p')
     current=$(printf '%s\n' "$files" | sed -n 's/^current\t//p')
     finished=$(printf '%s\n' "$files" | sed -n 's/^finished\t//p')
+    ended=$(printf '%s\n' "$files" | sed -n 's/^ended\t//p')
     echo "run $run  commit $commit"
     result=0
     for job in $jobs; do
@@ -224,10 +230,13 @@ show() {
                 on "$runner" "cat 'runs/$run/logs/$job.log'" >"$logs/$job.log" || true
                 printf '  %-22s FAILED   %s  exit %s  log %s\n' "$job" "$time" "$status" "$logs/$job.log"
             fi
+        elif [ "$(printf '%s' "$current" | cut -f 1)" = "$job" ] && [ -z "$finished" ] && [ -n "$ended" ]; then
+            printf '  %-22s ENDED    without a result, started %s\n' "$job" "$(printf '%s' "$current" | cut -f 2)"
+            result=1
         elif [ "$(printf '%s' "$current" | cut -f 1)" = "$job" ] && [ -z "$finished" ]; then
             printf '  %-22s running  since %s\n' "$job" "$(printf '%s' "$current" | cut -f 2)"
             [ "$result" -ne 0 ] || result=3
-        elif [ -n "$finished" ]; then
+        elif [ -n "$finished" ] || [ -n "$ended" ]; then
             printf '  %-22s not run\n' "$job"
             result=1
         else
@@ -235,13 +244,28 @@ show() {
             [ "$result" -ne 0 ] || result=3
         fi
     done
-    if [ -z "$finished" ]; then
+    if [ -z "$finished" ] && [ -n "$ended" ]; then
+        echo "  the processes of the run ended without its result (a logoff, a restart or a stop of Windows); ci.sh forget $run removes it"
+        result=1
+    elif [ -z "$finished" ]; then
         [ "$result" -ne 0 ] || result=3
     elif [ "$finished" != 0 ] && [ "$result" = 0 ]; then
         echo "  the runner ended with status $finished; see runs/$run/runner.log on the runner"
         result=1
     fi
     return "$result"
+}
+
+# ended_check <runner> <run>: for a Windows run without "finished", a shell command, run in the
+# folder of the run, that prints "ended<tab>1" when the process that start-run.ps1 recorded for
+# the run no longer runs. A logoff, a restart or a stop of Windows ends the processes of a run
+# before they write "finished". Empty for the other runners, whose runs are started by a
+# process that writes "finished" on every end of its own.
+ended_check() {
+    if [ "$1" = windows ]; then
+        windows_settings
+        printf '%s' "if [ ! -f finished ] && [ -f process ] && powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File start-run.ps1 -Directory '$windows_dir' -Run '$2' -Ended >/dev/null; then printf 'ended\t1\n'; fi"
+    fi
 }
 
 # The latest run of a commit on a runner, by the date at the start of the name.
@@ -287,8 +311,10 @@ forget() {
                 flock repo.lock sh -c 'git --git-dir=repo.git reflog expire --expire=now --all &&
                     git --git-dir=repo.git gc --quiet --prune=now'" ;;
         *-windows)
-            on windows "test -f 'runs/$run/finished' || { echo 'the run has not finished' >&2; exit 1; }
-                rm -rf 'runs/$run'" ;;
+            on windows "cd 'runs/$run' || exit 1
+                test -f finished || { $(ended_check windows "$run"); } | grep -q . ||
+                    { echo 'the run has not finished' >&2; exit 1; }
+                cd ../.. && rm -rf 'runs/$run'" ;;
         *-macos)
             test -f "$local_dir/runs/$run/finished" || { echo 'the run has not finished' >&2; exit 1; }
             rm -rf "${local_dir:?}/runs/$run"

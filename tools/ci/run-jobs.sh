@@ -212,7 +212,8 @@ rust_windows() {
     rm -rf "$directory/tmp" && mkdir -p "$directory/tmp" || return 1
     version=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
     status=0
-    rustup toolchain install "$version" --profile minimal --component rustfmt --component clippy \
+    # --no-self-update: rustup stays at the version of the setup (ADR 0905).
+    rustup toolchain install "$version" --no-self-update --profile minimal --component rustfmt --component clippy \
         && tools/ci/rust-other-systems.sh || status=$?
     rm -rf "$directory/tmp"
     return "$status"

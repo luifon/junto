@@ -112,6 +112,15 @@ if [ -z "$tools" ] || [ -n "$unchecked" ] || [ "$(grep -c "Url = '" "$setup")" !
 else
     echo "ok    every download of $setup is checked by its SHA-256:" $tools
 fi
+# rustup replaces itself with its latest release unless its self-update is off: the setup
+# turns it off, and the job installs the Rust version without it.
+if grep -qF "Invoke-Rustup \$rustup @('set', 'auto-self-update', 'disable')" "$setup" \
+    && grep -q 'rustup toolchain install .*--no-self-update' tools/ci/run-jobs.sh \
+    && ! grep 'rustup toolchain install' tools/ci/run-jobs.sh | grep -qv -- '--no-self-update'; then
+    echo "ok    rustup of the Windows CI machine does not update itself"
+else
+    fail "rustup of the Windows CI machine can update itself: $setup must run \"rustup set auto-self-update disable\" and every \"rustup toolchain install\" of tools/ci/run-jobs.sh needs --no-self-update"
+fi
 same "Python version of the Windows CI machine and of the Python image of $pins" \
     "$(sed -n "s/^\\\$PythonVersion = '\([0-9]*\.[0-9]*\)\.[0-9]*'$/\1/p" "$setup")" \
     "$(pin JUNTO_CI_PYTHON_IMAGE | sed -n 's/^python:\([0-9]*\.[0-9]*\)\..*/\1/p')"

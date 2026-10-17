@@ -108,16 +108,35 @@ function Install-Python {
     Set-Installed $folder $PythonVersion
 }
 
+# rustup replaces itself with its latest release when a command installs a toolchain, unless
+# its self-update mode, stored in RUSTUP_HOME, is "disable". The version is read from rustup
+# itself, so a rustup that replaced itself before this mode was set is installed again.
+# Runs rustup and returns its standard output; rustup writes its notes to the error output,
+# which Windows PowerShell would turn into an error under 'Stop'.
+function Invoke-Rustup([string]$Rustup, [string[]]$Arguments) {
+    $ErrorActionPreference = 'Continue'
+    $output = & $Rustup @Arguments 2>$null
+    if ($LASTEXITCODE -ne 0) { throw "rustup $($Arguments -join ' ') ended with exit code $LASTEXITCODE" }
+    return ($output -join ' ')
+}
+
 function Install-Rustup {
     $cargo = Join-Path $Directory 'cargo'
-    if (Test-Installed $cargo $RustupVersion) { return }
-    $installer = Get-Pinned $RustupUrl $RustupSha256
     $env:CARGO_HOME = $cargo
     $env:RUSTUP_HOME = Join-Path $Directory 'rustup'
-    $code = Invoke-Checked $installer @('-y', '--no-modify-path', '--no-update-default-toolchain',
-        '--default-toolchain', 'none', '--profile', 'minimal')
-    if ($code -ne 0) { throw "rustup-init ended with exit code $code" }
-    Set-Installed $cargo $RustupVersion
+    $rustup = Join-Path $cargo 'bin\rustup.exe'
+    $pinned = "^rustup $([regex]::Escape($RustupVersion)) "
+    $found = if (Test-Path $rustup) { Invoke-Rustup $rustup @('--version') } else { '' }
+    if (-not (Test-Installed $cargo $RustupVersion) -or $found -notmatch $pinned) {
+        $installer = Get-Pinned $RustupUrl $RustupSha256
+        $code = Invoke-Checked $installer @('-y', '--no-modify-path', '--no-update-default-toolchain',
+            '--default-toolchain', 'none', '--profile', 'minimal')
+        if ($code -ne 0) { throw "rustup-init ended with exit code $code" }
+        Set-Installed $cargo $RustupVersion
+    }
+    Invoke-Rustup $rustup @('set', 'auto-self-update', 'disable') | Out-Null
+    $found = Invoke-Rustup $rustup @('--version')
+    if ($found -notmatch $pinned) { throw "rustup states '$found', not $RustupVersion" }
 }
 
 function Install-BuildTools {
