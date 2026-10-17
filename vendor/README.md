@@ -10,6 +10,16 @@ The peer-connection destructor in `src/peer_connection.cpp` calls `Close` while 
 
 Remove the destructor correction when the pinned upstream crate closes its native peer connection before releasing these members. Remove the Linux trust correction when a pinned upstream version provides system-root verification for every default TLS adapter. Run the native destruction tests, window live tier and media live tier when replacing this dependency; the Linux media live tier includes the TURN TLS trust regression.
 
+## `webrtc-sys-build` 0.3.19
+
+`webrtc-sys-build-0.3.19` contains the build inputs of the published `webrtc-sys-build` 0.3.19 crate, the build-script helper of `webrtc-sys` that downloads and extracts the WebRTC library. The source archive has SHA-256 `0cd4f418e16f4b7ba028e6b5c70e4f532c7d2b5ca39726d42b699f3e4591ed5c`, the checksum that the lockfile held for the registry version. The archive was made from commit `2d9f01ab1e933a86a8a5c53805ee29ee58b9be1b` of the upstream repository, directory `webrtc-sys/build` (its `.cargo_vcs_info.json`). Cargo uses this copy through the workspace patch and the standalone test participant's patch.
+
+The retained inputs are `Cargo.toml` and `src/`. The archive's changelog, nested lockfile, original unnormalized manifest and `.cargo_vcs_info.json` are not required by this build and are omitted. The archive has no separate licence file; the crate is licensed under Apache-2.0 (its manifest), and the copyright and licence notice at the top of `src/lib.rs` is unchanged.
+
+`src/lib.rs` is unchanged. `Cargo.toml` differs in one dependency, marked with a `Modified:` comment: `zip` 9.0.4 with its deflate decompressor (`deflate-flate2-zlib-rs`) replaces `zip` 0.6 with the feature `deflate`. The `ZipArchive::extract` of `zip` 0.6 keeps the setuid, setgid and sticky bits of an entry (RUSTSEC-2026-0367) and applies permissions through extracted symbolic links (RUSTSEC-2026-0369). ADR 0733 explains the correction and its checks. Every other dependency version is unchanged.
+
+Remove this copy when a pinned upstream version depends on `zip` 9.0.0 or later. Build `junto-media` from an empty build directory on macOS and Linux when replacing it, so that the WebRTC archive is downloaded and extracted again, then run `cargo deny check` and the media live tier.
+
 ## `livekit` 0.9.4
 
 `livekit-0.9.4` contains the build inputs of the published `livekit` 0.9.4 crate. The source archive has SHA-256 `4dc818741891a8179eafd4665156482761d5084fb15238c1de9c211fdb974e3e`, the checksum that the lockfile held for the registry version. The archive was made from commit `a6f93a16fa71fe811d040de175e070e233d9b1fe` of the upstream repository, directory `livekit` (its `.cargo_vcs_info.json`). Cargo uses this copy through the workspace patch and the standalone test participant's patch.
