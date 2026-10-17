@@ -69,3 +69,56 @@ impl<M: Copy + PartialEq + 'static> FormSpace<M> {
         self.kept = None;
     }
 }
+
+/// The row that the request of a form adds to the top of a list whose newest rows are first
+/// (ADR 0730). The state of the server can bring the row before or after the answer, at a
+/// time that the person does not choose, and a row at the top moves every row under it. The
+/// row is therefore not drawn in the list while the request is sent and while the row of
+/// its form keeps its height: the result of the form, such as a new code, is drawn in the
+/// row of the form. The owner releases it where it releases its [`FormSpace`].
+pub struct NewRow<R> {
+    /// While the request is sent: the rows of the list when the person sent it. A row that
+    /// is not one of them can be the new row.
+    listed: Option<Vec<R>>,
+    /// The row that the answer made.
+    made: Option<R>,
+}
+
+impl<R> Default for NewRow<R> {
+    fn default() -> Self {
+        Self {
+            listed: None,
+            made: None,
+        }
+    }
+}
+
+impl<R: Copy + PartialEq> NewRow<R> {
+    /// The person sent the form while the list had the rows `listed`, or none when the
+    /// list was not read.
+    pub fn send(&mut self, listed: Option<Vec<R>>) {
+        self.listed = listed;
+        self.made = None;
+    }
+
+    /// The server did the request and made the row `made`, or refused it.
+    pub fn answer(&mut self, made: Option<R>) {
+        self.listed = None;
+        self.made = made;
+    }
+
+    /// The person opened or put away a form, a question or the result of a form, the page
+    /// changed or the layer closed: every row is drawn in the list.
+    pub fn release(&mut self) {
+        self.listed = None;
+        self.made = None;
+    }
+
+    /// Whether the list draws the row `row`.
+    pub fn shows(&self, row: R) -> bool {
+        match &self.listed {
+            Some(listed) => listed.contains(&row),
+            None => self.made != Some(row),
+        }
+    }
+}

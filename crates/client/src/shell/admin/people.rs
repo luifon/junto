@@ -30,7 +30,8 @@ use crate::text;
 use crate::text::admin::people as txt;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Button, ButtonKind, Chip, Field, FieldEvent, FormSpace, Notice, Segmented, StyleExt, Toggle,
+    Button, ButtonKind, Chip, Field, FieldEvent, FormSpace, NewRow, Notice, Segmented, StyleExt,
+    Toggle,
 };
 
 /// The width of the control that chooses which accounts are shown, in design pixels.
@@ -97,6 +98,9 @@ pub(crate) struct Ui {
     pub(crate) sent: Option<AskKind>,
     /// The space of the rows with a question or the form of a new invite (ADR 0730).
     pub(crate) space: FormSpace<Open>,
+    /// The invite that the form of a new invite makes, which waits for the release of the
+    /// space before it is drawn in the list (ADR 0730).
+    pub(crate) new_invite: NewRow<InviteId>,
     /// The invite whose new code was copied.
     pub(crate) copied: Option<InviteId>,
 }
@@ -142,6 +146,7 @@ impl Ui {
             invalid: None,
             sent: None,
             space: FormSpace::default(),
+            new_invite: NewRow::default(),
             copied: None,
         };
         (ui, subscriptions)
@@ -244,6 +249,7 @@ impl Shell {
         ui.invalid = None;
         ui.sent = None;
         ui.space.release();
+        ui.new_invite.release();
         ui.copied = None;
         self.reset_invite_form(window, cx);
         self.type_reason("", window, cx);
@@ -351,6 +357,7 @@ impl Shell {
         self.admin.people.invalid = None;
         self.admin.people.sent = None;
         self.admin.people.space.release();
+        self.admin.people.new_invite.release();
         if open == Some(Open::NewInvite) {
             self.reset_invite_form(window, cx);
         }
@@ -370,9 +377,24 @@ impl Shell {
         };
         match view.asked(what) {
             Some(AskState::Sending) => {}
-            Some(AskState::Refused(_)) => self.admin.people.sent = None,
+            Some(AskState::Refused(_)) => {
+                self.admin.people.sent = None;
+                if what == AskKind::CreateInvite {
+                    self.admin.people.new_invite.answer(None);
+                }
+            }
             None => {
                 self.admin.people.sent = None;
+                if what == AskKind::CreateInvite {
+                    let made = match &view.scope {
+                        Scope::Server {
+                            page: ServerPage::Invites(page),
+                            ..
+                        } => page.made.as_ref().map(|made| made.invite_id),
+                        _ => None,
+                    };
+                    self.admin.people.new_invite.answer(made);
+                }
                 // The answer arrives while the person can be pointing at a control under
                 // the row: the row keeps the height of its question or form.
                 if let Some(open) = self.admin.people.open.take() {
@@ -446,6 +468,11 @@ impl Shell {
             workspace_ids,
         };
         let server_id = view.server_id;
+        let listed = page
+            .invites
+            .loaded()
+            .map(|rows| rows.iter().map(|row| row.id).collect());
+        self.admin.people.new_invite.send(listed);
         self.admin.people.invalid = None;
         self.admin.people.sent = Some(AskKind::CreateInvite);
         self.state
@@ -1184,7 +1211,11 @@ impl Shell {
                     .h(u(28.0))
                     .px(u(10.0))
                     .on_click(cx.listener(|this, _, _, cx| {
+                        // The person puts the code away: the row of the form gives up its
+                        // height and the new invite takes its place in the list.
                         this.admin.people.copied = None;
+                        this.admin.people.space.release();
+                        this.admin.people.new_invite.release();
                         this.state
                             .update(cx, |state, cx| state.dismiss_admin_made(cx));
                     })),
@@ -1458,6 +1489,8 @@ impl Shell {
                 ));
             }
             Listed::Loaded(rows) => {
+                let held = &self.admin.people.new_invite;
+                let rows: Vec<&InviteLine> = rows.iter().filter(|row| held.shows(row.id)).collect();
                 if rows.is_empty() {
                     column = column.child(
                         sentence(txt::NO_INVITES, &theme)

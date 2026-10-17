@@ -15129,7 +15129,8 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/Attachment"
-            }
+            },
+            "description": "The files in the order of `attachments` in the request that sent the message."
           },
           "author_id": {
             "oneOf": [
@@ -16833,7 +16834,8 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/AttachmentId"
-            }
+            },
+            "description": "The completed uploads that the message holds. The message lists them in this order."
           },
           "document": {
             "$ref": "#/components/schemas/Document"

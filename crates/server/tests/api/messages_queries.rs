@@ -262,7 +262,7 @@ async fn maintenance_does_not_scan_live_attachments() {
     let root = send(&files.server, &files.owner, &files.channel, "content").await;
     let pending = files.start(b"content").await;
     for (first, last) in fixture_batches(20000) {
-        sqlx::query("insert into attachments(id,storage_id,place_id,owner_id,message_id,name,bytes,received,sha256,complete,expires_at,touched_at,attached,staging_cleaned) select gen_random_uuid(),storage_id,place_id,owner_id,$2,name,bytes,bytes,sha256,true,expires_at,touched_at,true,true from attachments cross join generate_series($3::int,$4::int) n where id=$1")
+        sqlx::query("insert into attachments(id,storage_id,place_id,owner_id,message_id,name,bytes,received,sha256,complete,expires_at,touched_at,attached,staging_cleaned,position) select gen_random_uuid(),storage_id,place_id,owner_id,$2,name,bytes,bytes,sha256,true,expires_at,touched_at,true,true,n from attachments cross join generate_series($3::int,$4::int) n where id=$1")
         .bind(pending.id).bind(root.id).bind(first).bind(last).execute(&files.server.db).await.unwrap();
     }
     sqlx::query("analyze attachments")

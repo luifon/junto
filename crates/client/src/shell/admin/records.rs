@@ -21,14 +21,14 @@ use crate::state::admin::view::records::{
     ExportLine, ExportSave, ExportStatus, ExportsPage, NewToken, TOKEN_EXPIRY_DAYS, TokenLine,
     TokensPage, group_of_action, new_token,
 };
-use crate::state::admin::view::{AdminView, Listed};
+use crate::state::admin::view::{AdminView, Listed, Scope, ServerPage};
 use crate::state::admin::{AdminPage, AskKind, AskState, AuditFilter, AuditPeriod, AuditScope};
 use crate::text;
 use crate::text::admin::records as txt;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Button, ButtonKind, Chip, Field, FieldEvent, FormSpace, Notice, Segmented, SelectBox, StyleExt,
-    Toggle,
+    Button, ButtonKind, Chip, Field, FieldEvent, FormSpace, NewRow, Notice, Segmented, SelectBox,
+    StyleExt, Toggle,
 };
 
 /// The width of the label before a control of a form or of a filter, in design pixels.
@@ -87,6 +87,9 @@ pub(crate) struct Ui {
     /// The space of the rows with the form of a new access token or the question before
     /// the removal of an export (ADR 0730).
     pub(crate) space: FormSpace<Open>,
+    /// The token that the form of a new access token makes, which waits for the release of
+    /// the space before it is drawn in the list (ADR 0730).
+    pub(crate) new_token: NewRow<AccessTokenId>,
     /// The log whose first read the page of the audit log asked for.
     pub(crate) audit_asked: Option<(ServerId, AuditScope)>,
     /// The filter of the audit log whose choices the page shows.
@@ -119,6 +122,7 @@ impl Ui {
             removing: None,
             remove_sent: false,
             space: FormSpace::default(),
+            new_token: NewRow::default(),
             audit_asked: None,
             audit_menu: None,
         };
@@ -227,6 +231,7 @@ impl Shell {
         ui.removing = None;
         ui.remove_sent = false;
         ui.space.release();
+        ui.new_token.release();
         ui.audit_asked = None;
         ui.audit_menu = None;
         self.reset_token_form(window, cx);
@@ -246,6 +251,7 @@ impl Shell {
         self.admin.records.token_invalid = None;
         self.admin.records.token_sent = false;
         self.admin.records.space.release();
+        self.admin.records.new_token.release();
         self.reset_token_form(window, cx);
         self.state
             .update(cx, |state, cx| state.dismiss_admin_ask(cx));
@@ -286,6 +292,17 @@ impl Shell {
         );
         match asked {
             Ok(token) => {
+                let listed = match &view.scope {
+                    Scope::Server {
+                        page: ServerPage::Tokens(page),
+                        ..
+                    } => page
+                        .tokens
+                        .loaded()
+                        .map(|rows| rows.iter().map(|row| row.id).collect()),
+                    _ => None,
+                };
+                self.admin.records.new_token.send(listed);
                 self.admin.records.token_invalid = None;
                 self.admin.records.token_sent = true;
                 self.state.update(cx, |state, cx| {
@@ -305,9 +322,20 @@ impl Shell {
         }
         match view.asked(AskKind::CreateToken) {
             Some(AskState::Sending) => {}
-            Some(AskState::Refused(_)) => self.admin.records.token_sent = false,
+            Some(AskState::Refused(_)) => {
+                self.admin.records.token_sent = false;
+                self.admin.records.new_token.answer(None);
+            }
             None => {
                 self.admin.records.token_sent = false;
+                let made = match &view.scope {
+                    Scope::Server {
+                        page: ServerPage::Tokens(page),
+                        ..
+                    } => page.made.as_ref().map(|made| made.access_token_id),
+                    _ => None,
+                };
+                self.admin.records.new_token.answer(made);
                 // The answer arrives while the person can be pointing at a control under
                 // the form: its row keeps the height of the form.
                 self.put_away_token_form();
@@ -333,6 +361,7 @@ impl Shell {
         self.admin.records.removing = export_id;
         self.admin.records.remove_sent = false;
         self.admin.records.space.release();
+        self.admin.records.new_token.release();
         self.state
             .update(cx, |state, cx| state.dismiss_admin_ask(cx));
         cx.notify();
@@ -398,7 +427,11 @@ impl Shell {
                     .h(u(28.0))
                     .px(u(10.0))
                     .on_click(cx.listener(|this, _, _, cx| {
+                        // The person puts the secret away: the row of the form gives up its
+                        // height and the new token takes its place in the list.
                         this.admin.records.copied = None;
+                        this.admin.records.space.release();
+                        this.admin.records.new_token.release();
                         this.state
                             .update(cx, |state, cx| state.dismiss_admin_made(cx));
                     })),
@@ -670,15 +703,17 @@ impl Shell {
                 column =
                     column.child(self.render_reading(server_id, part, Some(*failure), &theme, cx));
             }
-            Listed::Loaded(rows) if rows.is_empty() => {
-                column = column.child(
-                    sentence(txt::no_tokens(page.may_create), &theme)
-                        .py(u(6.0))
-                        .debug_selector(|| "no-tokens".to_owned()),
-                );
-            }
             Listed::Loaded(rows) => {
-                for row in rows {
+                let held = &self.admin.records.new_token;
+                let rows: Vec<&TokenLine> = rows.iter().filter(|row| held.shows(row.id)).collect();
+                if rows.is_empty() {
+                    column = column.child(
+                        sentence(txt::no_tokens(page.may_create), &theme)
+                            .py(u(6.0))
+                            .debug_selector(|| "no-tokens".to_owned()),
+                    );
+                }
+                for row in &rows {
                     column = column.child(self.render_token_row(view, row, &theme, cx));
                 }
                 if page.more {

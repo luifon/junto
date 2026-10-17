@@ -362,16 +362,12 @@ fn files_attached_before_a_send_are_in_the_message_in_the_order_of_their_drops(
     );
     window.in_shell(|shell, window, cx| shell.submit_message(Pane::Main, window, cx));
     let sent = window.until_message("The parts");
-    // The server returns the files of a message in the order of their identifiers, which
-    // it gives as the uploads arrive, not in the order of the send: the test checks the
-    // files and not their order there.
-    let mut attached: Vec<String> = sent
+    let attached: Vec<String> = sent
         .message
         .attachments
         .iter()
         .map(|attachment| attachment.name.clone())
         .collect();
-    attached.sort();
     assert_eq!(attached, names);
 }
 

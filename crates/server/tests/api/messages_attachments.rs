@@ -769,3 +769,118 @@ async fn a_chunk_acceptance_lock_timeout_does_not_claim_that_nothing_changed() {
         .ok(StatusCode::OK);
     assert_eq!(resumed.received, 7);
 }
+
+#[tokio::test]
+async fn the_files_of_a_message_keep_the_order_of_the_send_request() {
+    let files = Files::open().await;
+    let mut uploads = Vec::new();
+    for bytes in [b"zero".as_slice(), b"one", b"two", b"three"] {
+        uploads.push(files.upload(bytes).await);
+    }
+    let order = [2, 0, 3, 1];
+    let ids: Vec<_> = order.iter().map(|index| uploads[*index].id).collect();
+    let hashes = |message: &Message| -> Vec<String> {
+        message
+            .attachments
+            .iter()
+            .map(|file| file.sha256.clone())
+            .collect()
+    };
+    let expected: Vec<String> = ["two".as_bytes(), b"zero", b"three", b"one"]
+        .iter()
+        .map(|bytes| junto_server::messages::uploads::hash(bytes))
+        .collect();
+    let sent = files.attach(&ids).await;
+    assert_eq!(hashes(&sent), expected);
+    let read: Message = files
+        .server
+        .get(&files.owner, &format!("/api/v1/messages/{}", sent.id))
+        .await
+        .ok(StatusCode::OK);
+    assert_eq!(hashes(&read), expected);
+    let page: MessagePage = files
+        .server
+        .get(
+            &files.owner,
+            &format!("/api/v1/channels/{}/messages", files.channel.id),
+        )
+        .await
+        .ok(StatusCode::OK);
+    let listed = page
+        .messages
+        .iter()
+        .find(|message| message.id == sent.id)
+        .expect("the sent message in the history");
+    assert_eq!(hashes(listed), expected);
+    let fork: junto_protocol::structure::Channel = files
+        .server
+        .post(
+            &files.owner,
+            &format!("/api/v1/messages/{}/fork", sent.id),
+            &json!({"name":"fork","kind":"text"}),
+        )
+        .await
+        .ok(StatusCode::CREATED);
+    let copied: MessagePage = files
+        .server
+        .get(
+            &files.owner,
+            &format!("/api/v1/channels/{}/messages", fork.id),
+        )
+        .await
+        .ok(StatusCode::OK);
+    let copy = copied
+        .messages
+        .iter()
+        .find(|message| !message.attachments.is_empty())
+        .expect("the copy of the message with its files");
+    assert_eq!(hashes(copy), expected);
+}
+
+#[tokio::test]
+async fn migration_numbers_the_files_of_earlier_messages_in_the_order_of_their_ids() {
+    let files = Files::open().await;
+    let mut uploads = Vec::new();
+    for bytes in [b"zero".as_slice(), b"one", b"two"] {
+        uploads.push(files.upload(bytes).await);
+    }
+    let sent = files
+        .attach(&[uploads[2].id, uploads[0].id, uploads[1].id])
+        .await;
+    let unattached = files.upload(b"later").await;
+    // The table as it was before migration 0025, then the migration.
+    sqlx::raw_sql(
+        "alter table attachments drop constraint attachments_attached_have_a_position;
+         alter table attachments drop column position",
+    )
+    .execute(&files.server.db)
+    .await
+    .unwrap();
+    sqlx::raw_sql(include_str!(
+        "../../migrations/0025_attachment_positions.sql"
+    ))
+    .execute(&files.server.db)
+    .await
+    .unwrap();
+    let numbered: Vec<(junto_protocol::ids::AttachmentId, Option<i32>)> =
+        sqlx::query_as("select id, position from attachments order by id")
+            .fetch_all(&files.server.db)
+            .await
+            .unwrap();
+    assert_eq!(
+        numbered,
+        [
+            (uploads[0].id, Some(0)),
+            (uploads[1].id, Some(1)),
+            (uploads[2].id, Some(2)),
+            (unattached.id, None),
+        ]
+    );
+    let read: Message = files
+        .server
+        .get(&files.owner, &format!("/api/v1/messages/{}", sent.id))
+        .await
+        .ok(StatusCode::OK);
+    let ids: Vec<_> = read.attachments.iter().map(|file| file.id).collect();
+    assert_eq!(ids, [uploads[0].id, uploads[1].id, uploads[2].id]);
+}

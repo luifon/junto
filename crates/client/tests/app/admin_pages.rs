@@ -890,9 +890,11 @@ fn a_member_with_the_permission_follows_the_invites_and_creates_one_with_the_for
     );
     let (mine, code) = (made.invite_id, made.code.expose().to_owned());
     let my_row = sel("invite-row", mine);
-    let row = awaited(&mut window, "the new invite has its row", |window| {
-        invite_line(window, mine).filter(|_| window.shows(my_row) && !window.shows("invite-form"))
+    // While the code is shown, the list does not draw the new invite (ADR 0730).
+    let row = awaited(&mut window, "the state holds the new invite", |window| {
+        invite_line(window, mine).filter(|_| !window.shows("invite-form"))
     });
+    assert!(!window.shows(my_row));
     assert_eq!(
         (row.created_by, row.uses, row.max_uses, row.state),
         (own, 0, 5, InviteState::Usable)
@@ -906,7 +908,7 @@ fn a_member_with_the_permission_follows_the_invites_and_creates_one_with_the_for
     });
     assert_eq!((row.max_uses, row.state), (5, InviteState::Usable));
 
-    // "Done" puts the code away. The row of the invite stays.
+    // "Done" puts the code away, and the list draws the row of the invite.
     click_in_page(&mut window, "invite-code-done");
     window.until("the code is put away", |window| {
         window.shows(my_row)
@@ -1214,11 +1216,13 @@ fn the_owner_creates_an_access_token_uses_it_and_revokes_it(cx: &mut TestAppCont
     );
     assert!(!window.shows("token-form"));
 
-    // The list holds the token.
+    // The state holds the token. While the secret is shown, the list does not draw it
+    // (ADR 0730).
     let token_row = sel("token-row", token_id);
-    let row = awaited(&mut window, "the list holds the token", |window| {
-        token_line(window, token_id).filter(|_| window.shows(token_row))
+    let row = awaited(&mut window, "the state holds the token", |window| {
+        token_line(window, token_id)
     });
+    assert!(!window.shows(token_row));
     assert_eq!(row.name, "setup");
     assert_eq!(row.actions, [TokenAction::ReadAuditLog]);
     assert_eq!(row.created_by, logged_in(&owner));
@@ -1234,7 +1238,7 @@ fn the_owner_creates_an_access_token_uses_it_and_revokes_it(cx: &mut TestAppCont
     let refused = world.run(with_token.workspaces()).unwrap_err();
     assert_eq!(refused.category(), Some(ErrorCategory::NotAllowed));
 
-    // "Done" puts the secret away. The row of the token stays.
+    // "Done" puts the secret away, and the list draws the row of the token.
     click_in_page(&mut window, "token-secret-done");
     assert!(window.shows(token_row));
     assert!(!window.shows("token-secret") && !window.shows("token-made"));
@@ -1703,7 +1707,9 @@ fn an_answer_to_a_question_about_an_account_moves_no_row_under_it(cx: &mut TestA
 }
 
 /// The answer to the form of a new invite closes the form and shows the code in its place,
-/// and the row of an invite under the form keeps its place (ADR 0730).
+/// and the row of an invite under the form keeps its place (ADR 0730). The row of the new
+/// invite, which the state of the server brings before or after the answer, is drawn at the
+/// top of the list when the person puts the code away.
 #[gpui::test]
 fn an_answer_to_the_form_of_a_new_invite_moves_no_control_under_it(cx: &mut TestAppContext) {
     let world = World::new();
@@ -1721,31 +1727,59 @@ fn an_answer_to_the_form_of_a_new_invite_moves_no_control_under_it(cx: &mut Test
         server_page!(window, Invites).is_some()
     });
     window.until("the invite has its row", |window| window.shows(under));
-    click_in_page(&mut window, "invite-new");
-    window.until("the form of a new invite is open", |window| {
-        window.shows("invite-form")
-    });
+    let invites = |window: &mut Window| {
+        server_page!(window, Invites)
+            .and_then(|page| page.invites.loaded().cloned())
+            .unwrap_or_default()
+    };
+    for round in 0..2 {
+        click_in_page(&mut window, "invite-new");
+        window.until("the form of a new invite is open", |window| {
+            try_reveal(window, "invite-create").is_some()
+        });
+        let before = window.cx.debug_bounds(under).unwrap();
+        let listed = invites(&mut window).len();
+        // In the first round the state of the server brings the new invite while the
+        // answer waits at the proxy. In the second, the answer is not held.
+        if round == 0 {
+            proxy.hold_answer_ending("POST", "/invites");
+        }
+        click_in_page(&mut window, "invite-create");
+        if round == 0 {
+            window.until(
+                "the answer waits and the state has the new invite",
+                |window| proxy.answers_waiting() == 1 && invites(window).len() == listed + 1,
+            );
+            assert_eq!(window.cx.debug_bounds(under).unwrap(), before);
+            proxy.release();
+        }
+        window.until(
+            "the code is shown, the form is closed and the state has the new invite",
+            |window| {
+                idle(window)
+                    && window.shows("invite-code")
+                    && !window.shows("invite-form")
+                    && invites(window).len() == listed + 1
+            },
+        );
+        let made = server_page!(window, Invites)
+            .and_then(|page| page.made.as_ref().map(|made| made.invite_id))
+            .unwrap();
+        assert_eq!(
+            window.cx.debug_bounds(under).unwrap(),
+            before,
+            "round {round}: the new invite moved the row under the form"
+        );
+        assert!(!window.shows(sel("invite-row", made)));
 
-    // The server makes the invite and its row is drawn while the answer waits at the
-    // proxy.
-    proxy.hold_answer_ending("POST", "/invites");
-    click_in_page(&mut window, "invite-create");
-    window.until(
-        "the answer waits and the new invite has its row",
-        |window| {
-            proxy.answers_waiting() == 1
-                && server_page!(window, Invites)
-                    .and_then(|page| page.invites.loaded().map(|rows| rows.len()))
-                    == Some(2)
-                && window.shows(under)
-        },
-    );
-    let before = window.cx.debug_bounds(under).unwrap();
-    proxy.release();
-    window.until("the code is shown and the form is closed", |window| {
-        idle(window) && window.shows("invite-code") && !window.shows("invite-form")
-    });
-    assert_eq!(window.cx.debug_bounds(under).unwrap(), before);
+        // The person puts the code away: the new invite is at the top of the list.
+        click_in_page(&mut window, "invite-code-done");
+        window.until("the new invite has its row", |window| {
+            !window.shows("invite-code") && window.shows(sel("invite-row", made))
+        });
+        let new_row = window.cx.debug_bounds(sel("invite-row", made)).unwrap();
+        assert!(new_row.origin.y < window.cx.debug_bounds(under).unwrap().origin.y);
+    }
 }
 
 /// The answer to the form of a new access token closes the form and shows the secret in
@@ -1772,27 +1806,59 @@ fn an_answer_to_the_form_of_a_new_access_token_moves_no_control_under_it(cx: &mu
         server_page!(window, Tokens).is_some()
     });
     window.until("the token has its row", |window| window.shows(under));
-    click_in_page(&mut window, "token-new");
-    window.until("the form of a new token is open", |window| {
-        window.shows("token-form")
-    });
-    window.in_shell(|shell, window, cx| shell.type_token_name("setup", window, cx));
+    let tokens = |window: &mut Window| {
+        server_page!(window, Tokens)
+            .and_then(|page| page.tokens.loaded().cloned())
+            .unwrap_or_default()
+    };
+    for round in 0..2 {
+        click_in_page(&mut window, "token-new");
+        window.until("the form of a new token is open", |window| {
+            try_reveal(window, "token-create").is_some()
+        });
+        window.in_shell(|shell, window, cx| shell.type_token_name("setup", window, cx));
+        window.settle();
+        let before = window.cx.debug_bounds(under).unwrap();
+        let listed = tokens(&mut window).len();
+        // In the first round the state of the server brings the new token while the
+        // answer waits at the proxy. In the second, the answer is not held.
+        if round == 0 {
+            proxy.hold_answer_ending("POST", "/access-tokens");
+        }
+        click_in_page(&mut window, "token-create");
+        if round == 0 {
+            window.until(
+                "the answer waits and the state has the new token",
+                |window| proxy.answers_waiting() == 1 && tokens(window).len() == listed + 1,
+            );
+            assert_eq!(window.cx.debug_bounds(under).unwrap(), before);
+            proxy.release();
+        }
+        window.until(
+            "the secret is shown, the form is closed and the state has the new token",
+            |window| {
+                idle(window)
+                    && window.shows("token-secret")
+                    && !window.shows("token-form")
+                    && tokens(window).len() == listed + 1
+            },
+        );
+        let made = server_page!(window, Tokens)
+            .and_then(|page| page.made.as_ref().map(|made| made.access_token_id))
+            .unwrap();
+        assert_eq!(
+            window.cx.debug_bounds(under).unwrap(),
+            before,
+            "round {round}: the new token moved the row under the form"
+        );
+        assert!(!window.shows(sel("token-row", made)));
 
-    // The server makes the token and its row is drawn while the answer waits at the
-    // proxy.
-    proxy.hold_answer_ending("POST", "/access-tokens");
-    click_in_page(&mut window, "token-create");
-    window.until("the answer waits and the new token has its row", |window| {
-        proxy.answers_waiting() == 1
-            && server_page!(window, Tokens)
-                .and_then(|page| page.tokens.loaded().map(|rows| rows.len()))
-                == Some(2)
-            && window.shows(under)
-    });
-    let before = window.cx.debug_bounds(under).unwrap();
-    proxy.release();
-    window.until("the secret is shown and the form is closed", |window| {
-        idle(window) && window.shows("token-secret") && !window.shows("token-form")
-    });
-    assert_eq!(window.cx.debug_bounds(under).unwrap(), before);
+        // The person puts the secret away: the new token is at the top of the list.
+        click_in_page(&mut window, "token-secret-done");
+        window.until("the new token has its row", |window| {
+            !window.shows("token-secret") && window.shows(sel("token-row", made))
+        });
+        let new_row = window.cx.debug_bounds(sel("token-row", made)).unwrap();
+        assert!(new_row.origin.y < window.cx.debug_bounds(under).unwrap().origin.y);
+    }
 }
