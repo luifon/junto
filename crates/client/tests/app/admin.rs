@@ -3,7 +3,7 @@
 //! administrator manages workspaces, categories and channels in the window.
 
 use gpui::TestAppContext;
-use junto_client::state::admin::view::{AdminView, Scope, ServerPage};
+use junto_client::state::admin::view::{AdminView, ChannelPageView, Scope, ServerPage};
 use junto_client::state::admin::{AdminOpen, AdminPage, ChannelPage};
 use junto_client::state::view::ServerStatus;
 use junto_client_core::ServerHandle;
@@ -11,7 +11,7 @@ use junto_client_core::model::ServerModel;
 use junto_client_core::protocol::ids::{ChannelId, WorkspaceId};
 use junto_client_core::protocol::structure::{ChannelKind, CreateChannel};
 
-use crate::harness::{Admin, Window, World, member, named};
+use crate::harness::{Admin, Window, World, member, named, selector};
 use crate::support::{Device, FaultProxy, join, logged_in};
 
 impl Admin {
@@ -452,4 +452,88 @@ fn a_form_that_is_sent_twice_makes_one_request(cx: &mut TestAppContext) {
         .count();
     assert_eq!(labs, 1);
     assert_eq!(posts(&proxy), 1);
+}
+
+/// A press that starts on a control while the answer to a form above it is on its way, and
+/// ends after the window has the answer, reaches that control: the answer does not move
+/// the controls under the form (ADR 0730).
+#[gpui::test]
+fn an_answer_to_a_form_during_a_press_keeps_the_pressed_control_in_place(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window) = named(cx, "Ada");
+    window.find_server(&proxy.address());
+    window.join_with_code(&server.owner_code().unwrap());
+    window.until_ready();
+    let owner = window
+        .state
+        .read_with(&window.cx, |state, _| state.client().servers())
+        .remove(0);
+    let default = world
+        .run(owner.api().workspaces())
+        .unwrap()
+        .into_iter()
+        .find(|workspace| workspace.is_default)
+        .unwrap()
+        .id;
+    let channel = CreateChannel {
+        name: "plans".to_owned(),
+        kind: ChannelKind::Text,
+        category_id: None,
+        position: None,
+    };
+    let plans = world
+        .run(owner.api().create_channel(default, &channel))
+        .unwrap()
+        .id;
+    window.open_administration();
+    window.click("admin-nav-channels");
+    let settings = selector(format!("channel-settings-{plans}"));
+    window.until("the channel has its row", |window| window.shows(settings));
+    window.click(settings);
+    window.until("the settings of the channel are open", |window| {
+        window.shows("channel-rename") && window.shows("channel-permanent")
+    });
+
+    // The new name reaches the server, and its answer waits at the proxy.
+    window.click("channel-rename");
+    proxy.hold_answer_ending("PATCH", &format!("/channels/{plans}"));
+    window.send_form("roadmap");
+    window.until("the answer to the rename waits at the proxy", |_| {
+        proxy.answers_waiting() == 1
+    });
+    let before = window.cx.debug_bounds("channel-permanent").unwrap();
+
+    // The press starts while the answer waits and ends after the window has drawn it.
+    let position = before.center();
+    window.dispatch(gpui::MouseDownEvent {
+        position,
+        modifiers: gpui::Modifiers::none(),
+        button: gpui::MouseButton::Left,
+        click_count: 1,
+        first_mouse: false,
+    });
+    proxy.release();
+    window.until("the window has the answer to the rename", |window| {
+        !window.shows("channel-name")
+    });
+    assert_eq!(
+        window.cx.debug_bounds("channel-permanent").unwrap(),
+        before,
+        "the answer moved the switch under the form"
+    );
+    window.dispatch(gpui::MouseUpEvent {
+        position,
+        modifiers: gpui::Modifiers::none(),
+        button: gpui::MouseButton::Left,
+        click_count: 1,
+    });
+    window.until("the switch is on", |window| {
+        matches!(
+            window.admin().map(|view| view.scope),
+            Some(Scope::Channel(settings))
+                if matches!(&settings.page, ChannelPageView::Overview(page) if page.permanent)
+        )
+    });
 }

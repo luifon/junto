@@ -187,12 +187,15 @@ impl Shell {
                     .child(logo),
             )
             .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .mt(u(10.0))
-                    .child(controls),
+                self.mode_row(
+                    &[Mode::RemoveLogo],
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .mt(u(10.0))
+                        .child(controls),
+                ),
             )
             .children(held.map(|reason| sentence(reason, &theme).mt(u(5.0))))
             .children(refusal(refused, "logo-refused"))

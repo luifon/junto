@@ -23,9 +23,9 @@ use crate::admin_pages::{
     account, awaited, click_in_page, default_workspace, idle, invite, joined, open_page, sel,
     try_click, until_model,
 };
-use crate::harness::{Admin, Window, World, member, selector};
+use crate::harness::{Admin, Window, World, member, named, selector};
 use crate::messages::document;
-use crate::support::logged_in;
+use crate::support::{FaultProxy, logged_in};
 
 /// The page of the roles that the administration shows.
 fn roles_page(window: &mut Window) -> Option<RolesPage> {
@@ -718,4 +718,43 @@ fn a_moderator_sees_why_an_account_with_a_higher_role_cannot_be_banned_before_tr
         .run(moderator.api().unban_account(carla))
         .expect_err("the server lifts the ban of an account above the moderator");
     assert_eq!(refused.category(), Some(ErrorCategory::NotAllowed));
+}
+
+/// The answer to the form of a new role closes the form, and the rows of the roles under
+/// it keep their places (ADR 0730).
+#[gpui::test]
+fn an_answer_to_the_form_of_a_new_role_moves_no_row_of_a_role(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window) = named(cx, "Ada");
+    window.find_server(&proxy.address());
+    window.join_with_code(&server.owner_code().unwrap());
+    window.until_ready();
+    window.open_administration();
+    open_page(&mut window, "admin-nav-roles", |window| {
+        role_rows(window).is_some()
+    });
+    let everyone = role_rows(&mut window)
+        .unwrap()
+        .into_iter()
+        .find(|row| row.is_everyone)
+        .unwrap()
+        .role;
+    let row = sel("role-row", everyone.written());
+
+    // The role is made on the server and its row is drawn while the answer waits at the
+    // proxy.
+    click_in_page(&mut window, "role-new");
+    proxy.hold_answer_ending("POST", "/roles");
+    send_role_form(&mut window, "Helpers");
+    window.until("the answer waits and the new role is drawn", |window| {
+        proxy.answers_waiting() == 1 && role_names(window).contains(&"Helpers".to_owned())
+    });
+    let before = window.cx.debug_bounds(row).unwrap();
+    proxy.release();
+    window.until("the form is closed", |window| {
+        idle(window) && !window.shows("role-name")
+    });
+    assert_eq!(window.cx.debug_bounds(row).unwrap(), before);
 }

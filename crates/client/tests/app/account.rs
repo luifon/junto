@@ -13,7 +13,7 @@ use junto_client_core::profile::{InvalidAvatar, avatar_hash};
 use junto_client_core::protocol::account::DeviceOrigin;
 use junto_client_core::protocol::ids::DeviceId;
 
-use crate::harness::{Window, World, member};
+use crate::harness::{Window, World, member, selector};
 use crate::support::{Device, FaultProxy, TestServer, logged_in};
 
 const ACCOUNT: &str = "/api/v1/account";
@@ -512,4 +512,43 @@ fn the_removal_of_this_device_ends_its_session_and_closes_the_layer(cx: &mut Tes
     let left = world.run(second.api().devices()).unwrap();
     assert_eq!(left.len(), 1);
     assert!(left[0].current);
+}
+
+/// The answer to the new name of a device closes the form, and the row of the device
+/// under it keeps its place (ADR 0730).
+#[gpui::test]
+fn an_answer_to_the_name_of_a_device_moves_no_row_under_it(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    let first = window.handle();
+    let (_second_directory, _second) = second_device(&world, &server, &first);
+    window.open_devices();
+    window.until("both devices are listed", |window| {
+        window.devices().len() == 2
+    });
+    let rows = window.devices();
+    let (upper, lower) = (rows[0].id, rows[1].id);
+    let below = selector(named_row(lower, "row"));
+
+    // The name reaches the server, and its answer waits at the proxy.
+    window.click_named(named_row(upper, "rename"));
+    proxy.hold_answer_ending("PATCH", &format!("/account/devices/{upper}"));
+    window.in_shell(|shell, window, cx| shell.type_device_name("Pocket phone", window, cx));
+    window.click("device-form-send");
+    window.until("the answer waits and the new name is listed", |window| {
+        proxy.answers_waiting() == 1
+            && window
+                .devices()
+                .iter()
+                .any(|row| row.id == upper && row.name == "Pocket phone")
+    });
+    let before = window.cx.debug_bounds(below).unwrap();
+    proxy.release();
+    window.until("the form is closed", |window| {
+        !window.shows("device-name-field")
+    });
+    assert_eq!(window.cx.debug_bounds(below).unwrap(), before);
 }

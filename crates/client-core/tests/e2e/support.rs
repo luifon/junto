@@ -110,10 +110,19 @@ impl TestServer {
         let database = format!("junto_client_{}", uuid::Uuid::new_v4().simple());
         let admin = PgConnectOptions::from_str(&admin_url()).unwrap();
         let mut connection = admin.connect().await.unwrap();
-        sqlx::query(sqlx::AssertSqlSafe(format!("create database {database}")))
-            .execute(&mut connection)
-            .await
-            .unwrap();
+        // The statement statistics of the database server hold a fixed number of entries
+        // for all databases together, and the tests of the server that read them run on the
+        // same database server. A database of these tests does not record.
+        for statement in [
+            "set pg_stat_statements.track = 'none'".to_owned(),
+            format!("create database {database}"),
+            format!("alter database {database} set pg_stat_statements.track = 'none'"),
+        ] {
+            sqlx::query(sqlx::AssertSqlSafe(statement))
+                .execute(&mut connection)
+                .await
+                .unwrap();
+        }
         drop(connection);
         let mut database_url = url::Url::parse(&admin_url()).unwrap();
         database_url.set_path(&database);

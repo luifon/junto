@@ -276,7 +276,7 @@ impl Shell {
             .flex()
             .flex_col()
             .flex_none()
-            .child(line(theme).child(content))
+            .child(self.mode_row(&[Mode::Days(what)], line(theme).child(content)))
             .children(refusal(view.refused(what), "days-refused"))
             .into_any_element()
     }
@@ -540,28 +540,29 @@ impl Shell {
                             }),
                         )),
                 ),
-            None => match self.admin.mode {
-                Some(Mode::ArchiveChannel(id)) if id == channel_id => {
-                    column.child(line(&theme).child(self.render_row_question(
-                        Question {
-                            sentence: text::admin::archive_channel_question(&settings.name).into(),
-                            confirm: text::admin::ARCHIVE,
-                            confirm_selector: "channel-archive-confirm",
-                            cancel_selector: "channel-archive-cancel",
-                            sending: view.sending(AskKind::ArchiveChannel(channel_id)),
-                        },
-                        &theme,
-                        cx,
-                        move |this, _, cx| {
-                            this.admin_sent(AskKind::ArchiveChannel(channel_id));
-                            this.state.update(cx, |state, cx| {
-                                state.archive_channel(server_id, channel_id, cx);
-                            });
-                        },
-                    )))
-                }
-                _ => column.child(
-                    line(&theme)
+            None => {
+                let archive_line = match self.admin.mode {
+                    Some(Mode::ArchiveChannel(id)) if id == channel_id => {
+                        line(&theme).child(self.render_row_question(
+                            Question {
+                                sentence:
+                                    text::admin::archive_channel_question(&settings.name).into(),
+                                confirm: text::admin::ARCHIVE,
+                                confirm_selector: "channel-archive-confirm",
+                                cancel_selector: "channel-archive-cancel",
+                                sending: view.sending(AskKind::ArchiveChannel(channel_id)),
+                            },
+                            &theme,
+                            cx,
+                            move |this, _, cx| {
+                                this.admin_sent(AskKind::ArchiveChannel(channel_id));
+                                this.state.update(cx, |state, cx| {
+                                    state.archive_channel(server_id, channel_id, cx);
+                                });
+                            },
+                        ))
+                    }
+                    _ => line(&theme)
                         .child(line_text(
                             text::admin::ARCHIVE,
                             detail_or(manage, text::admin::ARCHIVE_HELP),
@@ -581,8 +582,9 @@ impl Shell {
                                 );
                             }),
                         )),
-                ),
-            },
+                };
+                column.child(self.mode_row(&[Mode::ArchiveChannel(channel_id)], archive_line))
+            }
         };
         column = column.children(refusal(
             view.refused(AskKind::ArchiveChannel(channel_id))
@@ -642,56 +644,48 @@ impl Shell {
         ));
         // The deletion.
         let owner_only = (page.permanent && !page.is_owner).then_some(text::admin::OWNER_DELETES);
-        column = match self.admin.mode {
-            Some(Mode::DeleteChannel(id)) if id == channel_id => column.child(
-                line(&theme).child(
-                    self.render_row_question(
-                        Question {
-                            sentence: text::admin::delete_channel_question(
-                                &settings.name,
-                                page.permanent,
-                            )
-                            .into(),
-                            confirm: text::admin::DELETE,
-                            confirm_selector: "channel-delete-confirm",
-                            cancel_selector: "channel-delete-cancel",
-                            sending: view.sending(AskKind::DeleteChannel(channel_id)),
-                        },
-                        &theme,
-                        cx,
-                        move |this, _, cx| {
-                            this.admin_sent(AskKind::DeleteChannel(channel_id));
-                            this.state.update(cx, |state, cx| {
-                                state.delete_channel(server_id, channel_id, cx);
-                            });
-                        },
-                    ),
+        let delete_line = match self.admin.mode {
+            Some(Mode::DeleteChannel(id)) if id == channel_id => line(&theme).child(
+                self.render_row_question(
+                    Question {
+                        sentence: text::admin::delete_channel_question(
+                            &settings.name,
+                            page.permanent,
+                        )
+                        .into(),
+                        confirm: text::admin::DELETE,
+                        confirm_selector: "channel-delete-confirm",
+                        cancel_selector: "channel-delete-cancel",
+                        sending: view.sending(AskKind::DeleteChannel(channel_id)),
+                    },
+                    &theme,
+                    cx,
+                    move |this, _, cx| {
+                        this.admin_sent(AskKind::DeleteChannel(channel_id));
+                        this.state.update(cx, |state, cx| {
+                            state.delete_channel(server_id, channel_id, cx);
+                        });
+                    },
                 ),
             ),
-            _ => column.child(
-                line(&theme)
-                    .child(line_text(
-                        text::admin::DELETE_CHANNEL,
-                        detail_or(manage.or(owner_only), text::admin::DELETE_CHANNEL_HELP),
-                        &theme,
-                    ))
-                    .child(row_action(
-                        "channel-delete",
-                        text::admin::DELETE,
-                        "channel-delete".to_owned(),
-                        manage.or(owner_only),
-                        cx.listener(move |this, _, window, cx| {
-                            this.set_admin_mode(
-                                Some(Mode::DeleteChannel(channel_id)),
-                                "",
-                                window,
-                                cx,
-                            );
-                        }),
-                    )),
-            ),
+            _ => line(&theme)
+                .child(line_text(
+                    text::admin::DELETE_CHANNEL,
+                    detail_or(manage.or(owner_only), text::admin::DELETE_CHANNEL_HELP),
+                    &theme,
+                ))
+                .child(row_action(
+                    "channel-delete",
+                    text::admin::DELETE,
+                    "channel-delete".to_owned(),
+                    manage.or(owner_only),
+                    cx.listener(move |this, _, window, cx| {
+                        this.set_admin_mode(Some(Mode::DeleteChannel(channel_id)), "", window, cx);
+                    }),
+                )),
         };
         column
+            .child(self.mode_row(&[Mode::DeleteChannel(channel_id)], delete_line))
             .children(refusal(
                 view.refused(AskKind::DeleteChannel(channel_id)),
                 "channel-delete-refused",

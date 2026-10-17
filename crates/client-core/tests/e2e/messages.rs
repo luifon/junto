@@ -94,6 +94,31 @@ pub async fn message_when(handle: &ServerHandle, place: PlaceId, text: &str) -> 
     found(&model, place, text).unwrap()
 }
 
+/// Waits until the timeline of `place` holds a message with each of `texts`, the messages
+/// that this client sent.
+///
+/// The client sends the messages of one place one at a time: each request starts after the
+/// answer to the request before it, so that the messages keep their order. The time that
+/// many messages take therefore grows with their number and with the time of one request.
+/// A wait of [`PATIENCE`] for the last of them bounds the sum of all the requests, and it
+/// fails on a slow machine while every message arrives. Each step of this wait is bounded
+/// instead: a step holds when the timeline holds one more of the texts than before, and a
+/// step that sees none arrive within [`PATIENCE`] fails the test.
+pub async fn messages_when(handle: &ServerHandle, place: PlaceId, texts: &[String]) {
+    let held = |model: &ServerModel| {
+        texts
+            .iter()
+            .filter(|text| found(model, place, text).is_some())
+            .count()
+    };
+    let mut count = handle.live().view().model.as_deref().map_or(0, held);
+    while count < texts.len() {
+        let what = format!("{} of the {} messages", count + 1, texts.len());
+        let model = model_when(handle, &what, |model| held(model) > count).await;
+        count = held(&model);
+    }
+}
+
 /// Every message of a place as the server gives it to this account.
 async fn history(handle: &ServerHandle, place: PlaceId) -> Vec<Message> {
     let mut all = Vec::new();
@@ -750,23 +775,21 @@ async fn a_message_whose_answer_was_lost_is_not_sent_a_second_time() {
         view.status == StreamStatus::Live
     })
     .await;
-    for number in 0..12 {
+    let expected: Vec<String> = (0..12).map(|number| format!("ordered {number}")).collect();
+    for text in &expected {
         member
             .live()
-            .send_message(place, document(&format!("ordered {number}")), None)
+            .send_message(place, document(text), None)
             .unwrap();
     }
-    model_when(member, "all are sent", |model| {
-        model.outbox.is_empty() && found(model, place, "ordered 11").is_some()
-    })
-    .await;
+    messages_when(member, place, &expected).await;
+    model_when(member, "all are sent", |model| model.outbox.is_empty()).await;
     let ordered: Vec<String> = history(owner, place)
         .await
         .iter()
         .filter_map(text_of)
         .filter(|text| text.starts_with("ordered"))
         .collect();
-    let expected: Vec<String> = (0..12).map(|number| format!("ordered {number}")).collect();
     assert_eq!(ordered, expected);
 }
 

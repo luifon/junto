@@ -183,11 +183,17 @@ impl Shell {
             .flex_col()
             .flex_none()
             .child(
-                named(
-                    format!("workspace-row-{workspace_id}"),
-                    line(theme).child(content),
-                )
-                .flex_1(),
+                self.mode_row(
+                    &[
+                        Mode::RenameWorkspace(workspace_id),
+                        Mode::DeleteWorkspace(workspace_id),
+                    ],
+                    named(
+                        format!("workspace-row-{workspace_id}"),
+                        line(theme).child(content),
+                    )
+                    .flex_1(),
+                ),
             )
             .children(refusal(refused, "workspace-refused"))
             .into_any_element()
@@ -222,8 +228,8 @@ impl Shell {
         );
         // A new workspace.
         column = column.child(group_label(text::admin::NEW_WORKSPACE, &theme));
-        column = match self.admin.mode {
-            Some(Mode::CreateWorkspace) => column.child(self.render_form(
+        let new_workspace = match self.admin.mode {
+            Some(Mode::CreateWorkspace) => self.render_form(
                 Form {
                     field: FormField::Name,
                     label: text::admin::WORKSPACE_NAME,
@@ -235,7 +241,7 @@ impl Shell {
                 },
                 &theme,
                 cx,
-            )),
+            ),
             _ => {
                 let held = (!page.may_create).then_some(text::admin::CREATE_WORKSPACE_NEEDS);
                 let button = Button::new("workspace-new")
@@ -248,19 +254,22 @@ impl Shell {
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.set_admin_mode(Some(Mode::CreateWorkspace), "", window, cx);
                     }));
-                column
+                div()
+                    .flex()
+                    .flex_col()
                     .child(div().flex().flex_none().child(button))
                     .children(held.map(|reason| sentence(reason, &theme).mt(u(5.0))))
             }
         };
+        column = column.child(self.mode_row(&[Mode::CreateWorkspace], new_workspace));
         column = column.children(refusal(
             view.refused(AskKind::CreateWorkspace),
             "workspace-create-refused",
         ));
         // A further workspace with an invite code.
         column = column.child(group_label(text::admin::ENTER_CODE, &theme));
-        column = match self.admin.mode {
-            Some(Mode::EnterCode) => column.child(self.render_form(
+        let enter_code = match self.admin.mode {
+            Some(Mode::EnterCode) => self.render_form(
                 Form {
                     field: FormField::Value,
                     label: text::admin::INVITE_CODE,
@@ -272,8 +281,10 @@ impl Shell {
                 },
                 &theme,
                 cx,
-            )),
-            _ => column
+            ),
+            _ => div()
+                .flex()
+                .flex_col()
                 .child(
                     div().flex().flex_none().child(
                         Button::new("redeem-open")
@@ -289,6 +300,7 @@ impl Shell {
                 )
                 .child(sentence(text::admin::ENTER_CODE_HELP, &theme).mt(u(5.0))),
         };
+        column = column.child(self.mode_row(&[Mode::EnterCode], enter_code));
         column = column.children(refusal(
             view.refused(AskKind::RedeemInvite),
             "redeem-refused",

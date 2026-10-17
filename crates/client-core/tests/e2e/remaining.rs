@@ -20,7 +20,7 @@ use junto_client_core::protocol::message::{Block, Document, Inline};
 use junto_client_core::protocol::structure::{ChannelOverride, OverrideState, SetChannelOverride};
 use time::OffsetDateTime;
 
-use crate::messages::{both_open, document, message_when};
+use crate::messages::{both_open, document, message_when, messages_when};
 use crate::stream::{Pair, events, live, model_when, pair, text_channel, told_until, when};
 use crate::support::{TestServer, logged_in};
 
@@ -598,14 +598,16 @@ async fn a_search_result_states_its_position_and_the_messages_around_it_are_read
         .send_message(place, document("the obsidian plan"), None)
         .unwrap();
     let wanted = message_when(member, place, "the obsidian plan").await;
-    // More messages than one page holds follow the wanted one.
-    for number in 1..=70 {
+    // More messages than one page holds follow the wanted one. The client sends them one
+    // after the other, so the wait bounds each of them and not their sum.
+    let later: Vec<String> = (1..=70).map(|number| format!("later {number}")).collect();
+    for text in &later {
         owner
             .live()
-            .send_message(place, document(&format!("later {number}")), None)
+            .send_message(place, document(text), None)
             .unwrap();
     }
-    message_when(owner, place, "later 70").await;
+    messages_when(owner, place, &later).await;
 
     // A client that opens the channel now holds its end, without the wanted message.
     member.live().release_messages(place);

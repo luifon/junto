@@ -31,8 +31,8 @@ use crate::state::admin::{AdminOpen, AdminPage, AskKind, ChannelPage};
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Button, ButtonKind, ChannelRow, Field, FieldEvent, Notice, ScrollArea, SideHeader, StyleExt,
-    float_shadow,
+    Button, ButtonKind, ChannelRow, Field, FieldEvent, FormSpace, Notice, ScrollArea, SideHeader,
+    StyleExt, float_shadow,
 };
 
 /// The width and the height of the layer in design pixels.
@@ -52,7 +52,8 @@ pub enum Mode {
     CreateCategory,
     RenameCategory(CategoryId),
     DeleteCategory(CategoryId),
-    CreateChannel,
+    /// A new channel in a category, or among the channels without a category.
+    CreateChannel(Option<CategoryId>),
     DeleteChannel(ChannelId),
     ArchiveChannel(ChannelId),
     /// The category that a channel moves into is chosen.
@@ -73,13 +74,14 @@ pub(crate) struct AdminUi {
     /// A number or a code: days, a user limit, an invite code.
     pub(crate) value: Entity<InputState>,
     pub(crate) mode: Option<Mode>,
-    /// The kind and the category of the channel that is created.
+    /// The kind of the channel that is created.
     pub(crate) new_kind: ChannelKind,
-    pub(crate) new_category: Option<CategoryId>,
     /// Why the text of a field was not sent.
     pub(crate) invalid: Option<&'static str>,
     /// The request that the open form or question was sent as.
     pub(crate) sent: Option<AskKind>,
+    /// The space of the rows with a form or a question (ADR 0730).
+    pub(crate) space: FormSpace<Mode>,
     pub(crate) nav_scroll: ScrollHandle,
     pub(crate) page_scroll: ScrollHandle,
     pub(crate) overrides: overrides::Ui,
@@ -126,9 +128,9 @@ impl AdminUi {
             value,
             mode: None,
             new_kind: ChannelKind::Text,
-            new_category: None,
             invalid: None,
             sent: None,
+            space: FormSpace::default(),
             nav_scroll: ScrollHandle::new(),
             page_scroll: ScrollHandle::new(),
             overrides,
@@ -368,6 +370,7 @@ impl Shell {
         self.admin.mode = None;
         self.admin.invalid = None;
         self.admin.sent = None;
+        self.admin.space.release();
         for field in [self.admin.name.clone(), self.admin.value.clone()] {
             field.update(cx, |field, cx| field.set_value("", window, cx));
         }
@@ -389,6 +392,7 @@ impl Shell {
         self.admin.mode = mode;
         self.admin.invalid = None;
         self.admin.sent = None;
+        self.admin.space.release();
         let name = name.to_owned();
         self.admin
             .name
@@ -404,7 +408,7 @@ impl Shell {
                 | Mode::RenameWorkspace(_)
                 | Mode::CreateCategory
                 | Mode::RenameCategory(_)
-                | Mode::CreateChannel
+                | Mode::CreateChannel(_)
                 | Mode::RenameChannel,
             ) => self.focus_field(&self.admin.name.clone(), window, cx),
             Some(Mode::EnterCode | Mode::Days(_)) => {
@@ -461,7 +465,7 @@ impl Shell {
             Some(
                 Mode::CreateCategory
                 | Mode::RenameCategory(_)
-                | Mode::CreateChannel
+                | Mode::CreateChannel(_)
                 | Mode::RenameChannel,
             ) => self.submit_channel_form(&view, window, cx),
             Some(Mode::Days(_)) => self.submit_days(&view, window, cx),
@@ -485,7 +489,11 @@ impl Shell {
             Some(crate::state::admin::AskState::Refused(_)) => self.admin.sent = None,
             None => {
                 self.admin.sent = None;
-                self.admin.mode = None;
+                // The answer arrives while the person can be pointing at a control under
+                // the row: the row keeps the height of its form.
+                if let Some(mode) = self.admin.mode.take() {
+                    self.admin.space.keep(mode);
+                }
                 self.admin.invalid = None;
                 for field in [self.admin.name.clone(), self.admin.value.clone()] {
                     field.update(cx, |field, cx| field.set_value("", window, cx));
@@ -583,6 +591,11 @@ impl Shell {
                         confirmed(this, window, cx);
                     })),
             )
+    }
+
+    /// A row that shows the form or the question of one of `modes` while it is open.
+    pub(crate) fn mode_row(&self, modes: &[Mode], row: impl IntoElement) -> gpui::Div {
+        self.admin.space.row(self.admin.mode, modes, row)
     }
 
     /// A form in a row: one field and the two buttons that send it or put it away.
