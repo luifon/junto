@@ -414,7 +414,7 @@ impl AppState {
     /// no texture of a window any more.
     fn show_logos(&mut self, cx: &mut Context<Self>) {
         for image in self.logos.take_dropped() {
-            cx.drop_image(image, None);
+            crate::images::release(image, cx);
         }
         let shown = self.logos.shown();
         if self.known.logos != shown {

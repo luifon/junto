@@ -479,6 +479,57 @@ impl Rehearsal {
         stop_share(b, a);
     }
 
+    /// Both windows share the synthetic screen and turn on the synthetic camera, and each
+    /// watches the share of the other. The windows then draw every kind of picture of a
+    /// call: the watched share, the small pictures of both shares, and both cameras. The
+    /// frame test of the windows uses this call (ADR 0774).
+    pub fn video(&mut self) {
+        let (a, b) = (&mut self.a, self.b.as_mut().unwrap());
+        start_share(a, false);
+        start_share(b, false);
+        let people = [&mut self.a, self.b.as_mut().unwrap()].map(|window| {
+            window
+                .view()
+                .person
+                .account_id
+                .expect("the window knows its account")
+        });
+        for (window, other) in [
+            (&mut self.a, people[1]),
+            (self.b.as_mut().unwrap(), people[0]),
+        ] {
+            window.click("call-camera");
+            window.state.update(&mut window.cx, |state, _| {
+                state.watch_share(junto_media::engine::ShareId::Of(other));
+            });
+        }
+        for (window, other) in [
+            (&mut self.a, people[1]),
+            (self.b.as_mut().unwrap(), people[0]),
+        ] {
+            window.until(
+                "the window watches the other share and both cameras run",
+                |window| {
+                    let cameras = window.state.read_with(&window.cx, |state, _| {
+                        let calls = state.calls();
+                        let running = calls.view().call.is_some_and(|call| {
+                            call.camera == junto_media::camera::CameraState::Running
+                        });
+                        running && calls.camera_pictures().borrow().len() == 2
+                    });
+                    cameras
+                        && window.shows("share-picture")
+                        && stage(window).is_some_and(|stage| {
+                            stage.shares.len() == 2
+                                && stage.watched().is_some_and(|share| {
+                                    share.account_id == other && share.size.is_some()
+                                })
+                        })
+                },
+            );
+        }
+    }
+
     /// Step 7: A records the call. Both share a screen; A and then B speak known
     /// sentences, with silence between them; A stops the recording and both leave.
     pub fn recording(&mut self, a_speech: &Speech, b_speech: &Speech) {

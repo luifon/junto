@@ -59,6 +59,12 @@ Tests on real systems:
     window live tier, on gpui's test platform, so that a change of the window that breaks
     a step fails there.
 
+- On macOS the test target `frames` opens two real windows of the system in the same way,
+  in a call with the server and the media server of the tests, with the synthetic shares
+  and cameras of both people. It reads the graphics memory of the process with
+  `footprint` while the windows draw the pictures of the call, and after the shares and
+  the cameras end (ADR 0774).
+
 - Real capture of screen, sound and microphone is tested on each operating system:
   - a real macOS machine;
   - a real Linux desktop, in an X11 session first and then in a Wayland session;

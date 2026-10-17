@@ -1367,7 +1367,7 @@ impl Shell {
 
     fn release_dropped_pictures(&mut self, cx: &mut Context<Self>) {
         for image in self.message_pictures.held.take_dropped() {
-            cx.drop_image(image, None);
+            crate::images::release(image, cx);
         }
     }
 

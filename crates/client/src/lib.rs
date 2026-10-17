@@ -8,6 +8,7 @@ pub mod app;
 pub mod assets;
 pub mod compose;
 pub mod highlight;
+pub mod images;
 pub mod moment;
 pub mod notify;
 #[cfg(target_os = "linux")]

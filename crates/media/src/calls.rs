@@ -728,6 +728,23 @@ impl Calls {
         self.inner.main_picture.send_replace(picture);
     }
 
+    /// Gives small pictures of the shares to the readers, as the session of a call does,
+    /// for a test of a reader.
+    #[cfg(feature = "test-support")]
+    pub fn show_small_pictures_for_test(&self, pictures: HashMap<ShareId, Arc<PictureFrame>>) {
+        self.inner.small_pictures.send_replace(pictures);
+    }
+
+    /// Gives pictures of the cameras to the readers, as the session of a call does, for a
+    /// test of a reader.
+    #[cfg(feature = "test-support")]
+    pub fn show_camera_pictures_for_test(
+        &self,
+        pictures: HashMap<ShareId, Arc<crate::camera::CameraFrame>>,
+    ) {
+        self.inner.camera_pictures.send_replace(pictures);
+    }
+
     #[cfg(feature = "test-support")]
     pub fn simulate_full_reconnect(&self) {
         self.inner.tell(SessionCommand::SimulateFullReconnect);

@@ -179,7 +179,7 @@ impl super::Shell {
             }
         }
         for image in released {
-            cx.drop_image(image, None);
+            crate::images::release(image, cx);
         }
         if changed {
             cx.notify();
