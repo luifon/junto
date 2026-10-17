@@ -11,6 +11,9 @@ use uuid::Uuid;
 
 use crate::error::{ApiError, ApiResult};
 
+#[cfg(windows)]
+mod windows_space;
+
 /// The disk that the files are written to.
 pub trait Disk: Send + Sync + 'static {
     /// The bytes that a program without special rights can still write.
@@ -35,12 +38,17 @@ impl Disk for Directory {
         Ok(stats.f_bavail.saturating_mul(stats.f_frsize))
     }
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    fn free_bytes(&self) -> std::io::Result<u64> {
+        windows_space::free_bytes(&self.path)
+    }
+
+    #[cfg(not(any(unix, windows)))]
     fn free_bytes(&self) -> std::io::Result<u64> {
         let _ = &self.path;
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
-            "the free space of a directory is read on Unix systems only",
+            "the free space of a directory is read on Unix systems and Windows only",
         ))
     }
 }
@@ -282,12 +290,11 @@ mod tests {
         assert!(!at_reserve(11, 10));
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_directory_reports_the_free_space_of_its_file_system() {
         let directory = Directory::new(std::env::temp_dir());
         assert!(directory.free_bytes().unwrap() > 0);
-        let absent = Directory::new(PathBuf::from("/nonexistent/junto/recordings"));
+        let absent = Directory::new(std::env::temp_dir().join("junto-absent").join("recordings"));
         assert!(absent.free_bytes().is_err());
     }
 

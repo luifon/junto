@@ -32,9 +32,11 @@ Limit:
 
 Reading the free space:
 
-- The free space is the space that a process without special rights can write, read with `statvfs` for the directory of the recordings (`JUNTO_RECORDINGS_DIR`).
-- The server uses the crate `rustix` for this call. The standard library has no function for it, and the workspace forbids `unsafe`, which the call through `libc` needs.
-- On a system that is not Unix the free space cannot be read, and no recording starts.
+- The free space is the space that a process without special rights can write, read for the directory of the recordings (`JUNTO_RECORDINGS_DIR`). On Unix systems it is read with `statvfs` (`f_bavail` times `f_frsize`); on Windows with `GetDiskFreeSpaceExW` (the bytes available to the caller, after the disk quotas of its user).
+- The server uses the crate `rustix` for `statvfs`. The standard library has no function for it, and the workspace forbids `unsafe`, which the call through `libc` needs.
+- On Windows no safe crate of the dependency tree reads the free space of a directory. The server calls `GetDiskFreeSpaceExW` through `windows-sys`, the crate and version that the client already uses for its calls of the Windows API (ADR 0711). The server crate denies `unsafe` instead of forbidding it and allows it in this one module, which exists on Windows only; on every other system the crate forbids `unsafe`.
+- On a system that is neither Unix nor Windows the free space cannot be read, and no recording starts.
+- The first version read the free space on Unix systems only. On Windows every upload of an attachment then answered `storage_low` (503) before it wrote a byte, the health route stated `null`, and a test of the client window that uploads a file failed on Windows with that answer instead of the refusal of the file operations (ADR 0912).
 
 Warning:
 

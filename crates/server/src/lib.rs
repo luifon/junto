@@ -1,5 +1,7 @@
 //! The Junto server: accounts, permissions and the public application API.
 
+#![cfg_attr(not(windows), forbid(unsafe_code))]
+
 pub mod access;
 pub mod archive;
 pub mod audit;

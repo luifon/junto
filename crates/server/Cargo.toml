@@ -55,9 +55,19 @@ uuid = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 junto-setup = { workspace = true }
 tokio-tungstenite = { workspace = true, features = ["connect"] }
 
-[lints]
-workspace = true
+# The workspace forbids unsafe code. This crate denies it and allows it in one module that
+# exists on Windows only: it reads the free space of a directory (ADR 0605).
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+large_stack_frames = "deny"

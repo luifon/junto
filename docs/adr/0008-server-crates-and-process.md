@@ -17,7 +17,7 @@ Crates:
 - `junto-protocol` holds the request, response and event types, the API version and the error codes. It depends on `junto-authz` for the permission names.
 - `junto-server` holds the server binary. It depends on both.
 - `junto-setup` holds the setup tool (ADR 0212). It depends on `junto-protocol` and not on the server.
-- The workspace forbids `unsafe` code and denies `unwrap` and `expect` outside tests.
+- The workspace forbids `unsafe` code and denies `unwrap` and `expect` outside tests. The exceptions are named modules of the client crates (ADR 0711, ADR 0733) and the module of the server that reads the free space of a directory on Windows (ADR 0605).
 
 Configuration:
 
