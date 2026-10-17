@@ -164,7 +164,7 @@ impl super::Shell {
         });
         for (id, (frame, converted)) in frames {
             if !self.cameras.contains_key(&id)
-                && let Some(picture) = converted.and_then(|converted| converted.picture(&frame))
+                && let Some(picture) = converted.and_then(super::prepared::ConvertedCamera::picture)
             {
                 self.cameras.insert(id, (frame, picture));
                 changed = true;

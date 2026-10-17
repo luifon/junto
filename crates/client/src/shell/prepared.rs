@@ -55,29 +55,29 @@ pub(crate) struct Converted {
 /// A camera picture in the form that the window draws.
 pub(crate) enum ConvertedCamera {
     Image(Arc<RenderImage>),
-    /// The pixel buffer of Core Video that the frame holds was made. The window takes it
-    /// from the frame, which keeps it.
+    /// The pixel buffer of Core Video of this frame was made. The frame keeps it; the
+    /// window takes it from the frame.
     #[cfg(target_os = "macos")]
-    Surface,
+    Surface(Arc<CameraFrame>),
 }
 
 impl ConvertedCamera {
     /// Converts a camera picture: on macOS into a pixel buffer of Core Video when the
     /// system gives one, otherwise into an image.
-    pub(crate) fn of(frame: &CameraFrame) -> Option<Self> {
+    pub(crate) fn of(frame: &Arc<CameraFrame>) -> Option<Self> {
         #[cfg(target_os = "macos")]
         if frame.surface().is_some() {
-            return Some(Self::Surface);
+            return Some(Self::Surface(frame.clone()));
         }
         render_image(frame.picture()?).map(Self::Image)
     }
 
     /// The picture that the window draws. Takes no time: the conversion is done.
-    pub(crate) fn picture(self, frame: &CameraFrame) -> Option<CameraPicture> {
+    pub(crate) fn picture(self) -> Option<CameraPicture> {
         match self {
             Self::Image(image) => Some(CameraPicture::Image(image)),
             #[cfg(target_os = "macos")]
-            Self::Surface => frame.surface().map(CameraPicture::Surface),
+            Self::Surface(frame) => frame.surface().map(CameraPicture::Surface),
         }
     }
 }
