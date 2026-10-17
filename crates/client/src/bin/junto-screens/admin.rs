@@ -927,7 +927,7 @@ fn draw_channels(studio: &mut Studio) -> Result<(), String> {
         Screen::new("admin-channel-create", with_structure()),
         |shell, window, cx| {
             open_page(shell, AdminPage::Channels, window, cx);
-            shell.set_admin_mode(Some(Mode::CreateChannel), "", window, cx);
+            shell.set_admin_mode(Some(Mode::CreateChannel(None)), "", window, cx);
             shell.type_admin_name("release-notes", window, cx);
         },
     )?;
@@ -962,7 +962,7 @@ fn draw_channels(studio: &mut Studio) -> Result<(), String> {
         Screen::new("admin-channel-refused", with_structure()),
         |shell, window, cx| {
             open_page(shell, AdminPage::Channels, window, cx);
-            shell.set_admin_mode(Some(Mode::CreateChannel), "", window, cx);
+            shell.set_admin_mode(Some(Mode::CreateChannel(None)), "", window, cx);
             shell.type_admin_name(
                 "release-notes-for-every-client-of-the-studio-in-the-first-half-of-2027",
                 window,

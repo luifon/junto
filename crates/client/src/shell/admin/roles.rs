@@ -25,7 +25,9 @@ use crate::state::admin::{AdminPage, AskKind, AskState, RoleRef};
 use crate::text;
 use crate::text::admin::roles as txt;
 use crate::theme::{Theme, theme, u};
-use crate::ui::{Button, ButtonKind, Chip, Field, FieldEvent, Notice, StyleExt, Toggle, icon};
+use crate::ui::{
+    Button, ButtonKind, Chip, Field, FieldEvent, FormSpace, Notice, StyleExt, Toggle, icon,
+};
 
 /// What the page of the roles shows in place of the actions of a row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +53,8 @@ pub(crate) struct Ui {
     pub(crate) invalid: Option<&'static str>,
     /// The request that the open form or question was sent as.
     pub(crate) sent: Option<AskKind>,
+    /// The space of the rows with a form or a question (ADR 0730).
+    pub(crate) space: FormSpace<Open>,
 }
 
 impl Ui {
@@ -75,6 +79,7 @@ impl Ui {
             account: None,
             invalid: None,
             sent: None,
+            space: FormSpace::default(),
         };
         (ui, subscriptions)
     }
@@ -125,6 +130,7 @@ impl Shell {
         ui.account = None;
         ui.invalid = None;
         ui.sent = None;
+        ui.space.release();
         let field = ui.name.clone();
         field.update(cx, |field, cx| field.set_value("", window, cx));
     }
@@ -141,6 +147,7 @@ impl Shell {
         self.admin.roles.open = open;
         self.admin.roles.invalid = None;
         self.admin.roles.sent = None;
+        self.admin.roles.space.release();
         let name = name.to_owned();
         let field = self.admin.roles.name.clone();
         field.update(cx, |field, cx| field.set_value(name, window, cx));
@@ -236,7 +243,11 @@ impl Shell {
             Some(AskState::Refused(_)) => self.admin.roles.sent = None,
             None => {
                 self.admin.roles.sent = None;
-                self.admin.roles.open = None;
+                // The answer arrives while the person can be pointing at a control under
+                // the row: the row keeps the height of its form.
+                if let Some(open) = self.admin.roles.open.take() {
+                    self.admin.roles.space.keep(open);
+                }
                 self.admin.roles.invalid = None;
                 let field = self.admin.roles.name.clone();
                 field.update(cx, |field, cx| field.set_value("", window, cx));
@@ -517,7 +528,11 @@ impl Shell {
             _ => false,
         };
         if stale {
-            self.admin.roles.open = None;
+            // A change of the state closes the form: the row keeps its height, as after
+            // an answer.
+            if let Some(open) = self.admin.roles.open.take() {
+                self.admin.roles.space.keep(open);
+            }
             self.admin.roles.sent = None;
         }
         let content: AnyElement = match self.admin.roles.open {
@@ -660,7 +675,11 @@ impl Shell {
             .on_drop(cx.listener(move |this, drag: &RoleDrag, _, cx| {
                 this.drop_role(*drag, index, cx);
             }))
-            .child(named(format!("role-row-{written}"), line(theme).child(content)).flex_1());
+            .child(self.admin.roles.space.row(
+                self.admin.roles.open,
+                &[Open::Rename(role), Open::Delete(role)],
+                named(format!("role-row-{written}"), line(theme).child(content)).flex_1(),
+            ));
         if let Some(reason) = row.locked {
             let selector = format!("role-locked-{written}");
             block = block.child(
@@ -773,6 +792,11 @@ impl Shell {
             }
             row.into_any_element()
         };
+        let create = self
+            .admin
+            .roles
+            .space
+            .row(self.admin.roles.open, &[Open::Create], create);
         column = column.child(create).children(refusal(
             view.refused(AskKind::CreateRole(level)),
             "role-create-refused",

@@ -1,0 +1,68 @@
+use std::cell::Cell;
+use std::rc::Rc;
+
+use gpui::{Div, IntoElement, ParentElement, Pixels, Styled, canvas, div};
+
+/// The space of the rows that show a form or a question in place of their content (ADR
+/// 0730). `M` names the form or question of one row.
+///
+/// The answer of the server closes a form at a time that the person does not choose, and a
+/// row without its form has less height than the row with it. While a form is open its row
+/// is measured; when the server did the request of the form, the row keeps that height at
+/// least, with its content at the top, until the person opens or puts away a form or
+/// leaves the page. The answer therefore moves no control under the row.
+pub struct FormSpace<M> {
+    /// The open form and the height of its row as it was drawn last.
+    drawn: Rc<Cell<Option<(M, Pixels)>>>,
+    /// The form whose request the server did, and the height that its row had then.
+    kept: Option<(M, Pixels)>,
+}
+
+impl<M> Default for FormSpace<M> {
+    fn default() -> Self {
+        Self {
+            drawn: Rc::default(),
+            kept: None,
+        }
+    }
+}
+
+impl<M: Copy + PartialEq + 'static> FormSpace<M> {
+    /// The row that shows the form or the question of one of `modes` while it is open.
+    /// `open` is the form or question that the page shows now.
+    pub fn row(&self, open: Option<M>, modes: &[M], row: impl IntoElement) -> Div {
+        // The row is in a part that does not grow, so that a row that grows in its parent
+        // keeps its own height and the kept height is free space under it.
+        let space = div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .child(div().flex().flex_col().flex_none().child(row));
+        if let Some(open) = open.filter(|open| modes.contains(open)) {
+            let drawn = self.drawn.clone();
+            return space.relative().child(
+                canvas(
+                    move |bounds, _, _| drawn.set(Some((open, bounds.size.height))),
+                    |_, (), _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            );
+        }
+        match self.kept {
+            Some((kept, height)) if modes.contains(&kept) => space.min_h(height),
+            _ => space,
+        }
+    }
+
+    /// The server did the request of the open form `open`, which closes now: its row keeps
+    /// the height that it was drawn with.
+    pub fn keep(&mut self, open: M) {
+        self.kept = self.drawn.get().filter(|(drawn, _)| *drawn == open);
+    }
+
+    /// The person opened or put away a form, or left the page: no row keeps a height.
+    pub fn release(&mut self) {
+        self.kept = None;
+    }
+}

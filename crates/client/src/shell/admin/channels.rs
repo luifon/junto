@@ -171,8 +171,8 @@ impl Shell {
                             state.rename_category(server_id, workspace_id, category_id, name, cx);
                         });
                     }
-                    Mode::CreateChannel => {
-                        let (kind, category_id) = (self.admin.new_kind, self.admin.new_category);
+                    Mode::CreateChannel(category_id) => {
+                        let kind = self.admin.new_kind;
                         self.admin_sent(AskKind::CreateChannel);
                         self.state.update(cx, |state, cx| {
                             state.create_channel(
@@ -380,9 +380,15 @@ impl Shell {
             .flex_col()
             .flex_none()
             .mt(u(14.0))
-            .child(named(
-                format!("category-row-{category_id}"),
-                line(theme).child(content),
+            .child(self.mode_row(
+                &[
+                    Mode::RenameCategory(category_id),
+                    Mode::DeleteCategory(category_id),
+                ],
+                named(
+                    format!("category-row-{category_id}"),
+                    line(theme).child(content),
+                ),
             ))
             .children(refusal(refused, "category-refused"))
             .into_any_element()
@@ -481,9 +487,12 @@ impl Shell {
             .flex()
             .flex_col()
             .flex_none()
-            .child(named(
-                format!("channel-line-{channel_id}"),
-                line(theme).child(content),
+            .child(self.mode_row(
+                &[Mode::MoveChannel(channel_id)],
+                named(
+                    format!("channel-line-{channel_id}"),
+                    line(theme).child(content),
+                ),
             ))
             .children(refusal(
                 view.refused(AskKind::UpdateChannel(channel_id)),
@@ -501,31 +510,26 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let category_id = group.category.as_ref().map(|category| category.id);
-        let open =
-            self.admin.mode == Some(Mode::CreateChannel) && self.admin.new_category == category_id;
+        let mode = Mode::CreateChannel(category_id);
+        let open = self.admin.mode == Some(mode);
         if !open {
             let selector = match category_id {
                 Some(category_id) => format!("channel-new-{category_id}"),
                 None => "channel-new".to_owned(),
             };
-            return div()
-                .flex()
-                .flex_none()
-                .mt(u(6.0))
-                .child(named(
-                    selector,
-                    Button::new(("channel-new", index))
-                        .icon(Icon::Plus)
-                        .label(text::admin::NEW_CHANNEL)
-                        .h(u(28.0))
-                        .px(u(10.0))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.admin.new_category = category_id;
-                            this.admin.new_kind = ChannelKind::Text;
-                            this.set_admin_mode(Some(Mode::CreateChannel), "", window, cx);
-                        })),
-                ))
-                .into_any_element();
+            let button = div().flex().flex_none().mt(u(6.0)).child(named(
+                selector,
+                Button::new(("channel-new", index))
+                    .icon(Icon::Plus)
+                    .label(text::admin::NEW_CHANNEL)
+                    .h(u(28.0))
+                    .px(u(10.0))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.admin.new_kind = ChannelKind::Text;
+                        this.set_admin_mode(Some(mode), "", window, cx);
+                    })),
+            ));
+            return self.mode_row(&[mode], button).into_any_element();
         }
         let kind = Segmented::new(
             "channel-kind",
@@ -543,7 +547,7 @@ impl Shell {
             });
             move |index, window, cx| select(&index, window, cx)
         });
-        div()
+        let form = div()
             .flex()
             .flex_col()
             .flex_none()
@@ -564,8 +568,8 @@ impl Shell {
             .children(refusal(
                 view.refused(AskKind::CreateChannel),
                 "channel-create-refused",
-            ))
-            .into_any_element()
+            ));
+        self.mode_row(&[mode], form).into_any_element()
     }
 
     pub(crate) fn render_channels_page(
@@ -604,8 +608,8 @@ impl Shell {
         }
         // A new category.
         column = column.child(group_label(text::admin::NEW_CATEGORY, &theme));
-        column = match self.admin.mode {
-            Some(Mode::CreateCategory) => column.child(self.render_form(
+        let new_category = match self.admin.mode {
+            Some(Mode::CreateCategory) => self.render_form(
                 Form {
                     field: FormField::Name,
                     label: text::admin::CATEGORY_NAME,
@@ -617,21 +621,20 @@ impl Shell {
                 },
                 &theme,
                 cx,
-            )),
-            _ => column.child(
-                div().flex().flex_none().child(
-                    Button::new("category-new")
-                        .icon(Icon::Plus)
-                        .label(text::admin::NEW_CATEGORY)
-                        .selector("category-new")
-                        .h(u(30.0))
-                        .px(u(12.0))
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.set_admin_mode(Some(Mode::CreateCategory), "", window, cx);
-                        })),
-                ),
+            ),
+            _ => div().flex().flex_none().child(
+                Button::new("category-new")
+                    .icon(Icon::Plus)
+                    .label(text::admin::NEW_CATEGORY)
+                    .selector("category-new")
+                    .h(u(30.0))
+                    .px(u(12.0))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.set_admin_mode(Some(Mode::CreateCategory), "", window, cx);
+                    })),
             ),
         };
+        column = column.child(self.mode_row(&[Mode::CreateCategory], new_category));
         column
             .children(refusal(
                 view.refused(AskKind::CreateCategory),
@@ -668,7 +671,7 @@ impl Shell {
         }
         // The name.
         let name = page.name.clone();
-        column = column.child(match self.admin.mode {
+        let name_line = match self.admin.mode {
             Some(Mode::RenameChannel) => line(&theme).child(self.render_form(
                 Form {
                     field: FormField::Name,
@@ -697,7 +700,8 @@ impl Shell {
                         this.set_admin_mode(Some(Mode::RenameChannel), &name, window, cx);
                     }),
                 )),
-        });
+        };
+        column = column.child(self.mode_row(&[Mode::RenameChannel], name_line));
         // The category.
         let category_name = page
             .category_id
@@ -705,7 +709,7 @@ impl Shell {
             .map_or(text::admin::NO_CATEGORY.to_owned(), |(_, name)| {
                 name.clone()
             });
-        column = column.child(match self.admin.mode {
+        let category_line = match self.admin.mode {
             Some(Mode::MoveChannel(id)) if id == channel_id => {
                 line(&theme).child(self.render_category_choice(
                     server_id,
@@ -731,7 +735,8 @@ impl Shell {
                         this.set_admin_mode(Some(Mode::MoveChannel(channel_id)), "", window, cx);
                     }),
                 )),
-        });
+        };
+        column = column.child(self.mode_row(&[Mode::MoveChannel(channel_id)], category_line));
         // The rules of the channel.
         let permanent = page.permanent;
         column = column.child(
