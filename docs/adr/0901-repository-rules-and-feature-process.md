@@ -30,3 +30,4 @@ Process per feature, in this order:
 - Examples, test data and documentation use invented values.
 - Every feature adds or changes an ADR, so `docs/adr/` describes the current design.
 - A feature is not pushed before it has passed tests, a check in the running application, an adversarial review and a maintainer review.
+- `AGENTS.md` at the root of the repository names where each part of the repository is, how to build and test it, and the rules of this record, each with its path. A change of a path, a command or a rule that it names also changes `AGENTS.md`.
