@@ -69,12 +69,22 @@ Tests on real systems:
   and a third person without a window in a call, A and B sharing, all three with a
   camera, the call of A in its separate window. The main window of A reads a channel of
   400 messages, scrolls up its history and back, opens and closes threads and changes
-  channels in a loop for 10 minutes after 5 minutes of warming. Every 5 seconds it reads
-  `phys_footprint` and the graphics memory with `footprint`, the processor time with
-  `ps`, the open file descriptors and the threads. A missing graphics category in the
-  output of `footprint` fails the run; it does not read as 0. The warming is 5 minutes:
-  in a run with 90 seconds the footprint still grew by about 9 MiB in the next 4 minutes
-  and stayed level after that.
+  channels in a loop for 10 minutes after 5 minutes of warming. Once in each cycle of
+  the use (8 actions, about 20 seconds), after its last action, when the main window shows
+  the end of the same channel with no thread open, it reads `phys_footprint` and the
+  graphics memory with `footprint`, the bytes that the Rust allocations of the process
+  hold, the processor time with `ps`, the open file descriptors and the threads. A missing
+  graphics category in the output of `footprint` fails the run; it does not read as 0.
+  The warming is 5 minutes: in a run with 90 seconds the footprint still grew by about
+  9 MiB in the next 4 minutes and stayed level after that.
+  - The bytes of the Rust allocations come from the global allocator of the test program,
+    the crate `junto-alloc-count`: it passes every call to the allocator of the system and
+    counts the bytes of the blocks that are held. The crate is a dependency of the tests
+    only, and its implementation of `GlobalAlloc` is the one place of the crate where
+    `unsafe` code is allowed. The footprint is not precise enough for a slow leak: it also
+    changes with the free pages that the allocator of the system keeps and with the
+    compressed pages, and the dirty memory of the regions of the allocator varied between
+    349 and 428 MiB in one run, also when read at the same action of the cycle.
   - It measures an optimized build: the release profile with debug assertions
     (`CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true`), because the harness finds elements
     by the names that gpui keeps only with debug assertions. The build script states the
@@ -83,11 +93,16 @@ Tests on real systems:
     the product.
   - Growth is a rate: the slope of all readings after the warming, as the median of the
     slopes between every two readings (Theil–Sen). One collection of an allocator or a
-    few readings far from the others do not move it. The run fails above 1.5 MiB a minute
-    (footprint), 0.5 MiB a minute (graphics), 2 files or 2 threads a minute. Runs measured
-    -0.16 to 0.63 MiB a minute of footprint and up to 0.46 files a minute. A leak
-    of 2 MiB a minute, or of one file or one thread at each channel change, is above
-    these bounds; the function is tested with such series in the `app` target.
+    few readings far from the others do not move it. The run fails above 0.5 MiB a minute
+    (Rust allocations), 3 MiB a minute (footprint), 0.5 MiB a minute (graphics), 2 files
+    or 2 threads a minute. A run that held 1 MiB a minute more in Rust allocations
+    measured 1.02 MiB a minute and failed. The run of the committed code, inside the machine lock with no other test container (load average 3.4 at the start and 4.3 at the end), passed: Rust allocations 0.01 MiB a minute, footprint 0.51 MiB a minute, graphics 0.00, 0.30 files and 0.12 threads a minute. The footprint of runs
+    without a leak measured -2.93, -0.16, 0.34, 0.42, 0.57 and 1.25 MiB a minute, so its
+    bound fails only a leak of native memory (Metal, the media engine) of several MiB a
+    minute; a leak of the Rust code of 1 MiB a minute fails the bound of the Rust
+    allocations. A leak of one file or one thread at each channel change is above the
+    bounds of files and threads. The function is tested with such series in the `app`
+    target.
   - The harness times every piece of work of the application on the thread of the
     windows: the work of one event of the pointer or the keyboard with the work that its
     handlers start (a click, a scroll), and one frame of the display with the work before

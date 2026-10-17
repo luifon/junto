@@ -1,0 +1,17 @@
+[package]
+name = "junto-alloc-count"
+description = "A global allocator for test programs that counts the bytes that the Rust allocations of the process hold"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints.rust]
+# The allocator is the one `unsafe impl` of the crate (ADR 0902).
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+large_stack_frames = "deny"

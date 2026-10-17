@@ -15,6 +15,9 @@ pub struct Sample {
     /// The dirty memory of the category "IOAccelerator (graphics)": the GPU textures of
     /// the windows are in it.
     pub graphics: u64,
+    /// The bytes that the Rust allocations of the process hold, as the counting allocator
+    /// of the program states them (`junto-alloc-count`).
+    pub rust: u64,
     /// The processor time of all threads of the process since its start.
     pub processor: Duration,
     /// The open file descriptors: files, sockets, pipes and devices.
@@ -22,12 +25,13 @@ pub struct Sample {
     pub threads: usize,
 }
 
-pub fn sample(start: Instant) -> Sample {
+pub fn sample(start: Instant, rust: usize) -> Sample {
     let (footprint, graphics) = memory();
     Sample {
         at: start.elapsed(),
         footprint,
         graphics,
+        rust: rust as u64,
         processor: processor_time(),
         files: open_files(),
         threads: threads(),

@@ -130,6 +130,8 @@ workspace = true
 
 [dev-dependencies]
 junto-client = { path = ".", features = ["test-support"] }
+# The count of the bytes that the Rust allocations of the endurance test hold (ADR 0902).
+junto-alloc-count = { path = "../alloc-count" }
 # The description of the generated speech that the rehearsal says.
 serde_json = { workspace = true }
 # The server inside the test process, for the tests that need its recorder in memory.

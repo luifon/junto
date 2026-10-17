@@ -6,8 +6,8 @@
 //! its separate window; in the main window A reads a long text channel, scrolls it, opens
 //! and closes threads and changes the channel, again and again.
 //!
-//! The program reads the process every few seconds: its memory as `footprint` states it,
-//! graphics included, its processor time, its open files and its threads. After a time of
+//! The program reads the process once in each cycle of the use: its memory as `footprint`
+//! states it, graphics included, the bytes that its Rust allocations hold, its processor time, its open files and its threads. After a time of
 //! warming, it fails when one of them grows at a rate per minute that a fixed set of
 //! windows, pictures and messages does not reach, or when one piece of work of the
 //! application holds the thread of the windows for longer than the bound of ADR 0730: the
@@ -73,6 +73,13 @@ mod rehearsal;
 
 #[cfg(target_os = "macos")]
 use harness::Window;
+
+/// The allocator of the program counts the bytes that its Rust allocations hold: the
+/// footprint varies by tens of MiB with the free pages that the allocator of the system
+/// keeps, the count only with what the program holds.
+#[cfg(target_os = "macos")]
+#[global_allocator]
+static ALLOCATOR: junto_alloc_count::Counting = junto_alloc_count::Counting::new();
 #[cfg(target_os = "macos")]
 use junto_client_core::ServerHandle;
 #[cfg(target_os = "macos")]
@@ -87,21 +94,34 @@ use rehearsal::{Deployment, Rehearsal};
 /// grew by about 9 MiB in the first 5 minutes of the use and stayed level after that.
 #[cfg(target_os = "macos")]
 const WARMING: Duration = Duration::from_secs(5 * 60);
-/// The time between two readings of the process.
+/// The steps of one cycle of the use ([`Use::act`]). The process is read once a cycle,
+/// after its last step: the main window then always shows the end of the same channel
+/// with no thread open, so two readings compare the same state of the windows. A reading
+/// at a fixed interval falls on different steps, where the windows hold other messages.
 #[cfg(target_os = "macos")]
-const EVERY: Duration = Duration::from_secs(5);
+const CYCLE: usize = 8;
 /// The medians of the first and of the last minute of the measured use are shown.
 #[cfg(target_os = "macos")]
 const WINDOW: Duration = Duration::from_secs(60);
 /// How fast each reading may grow over the measured use, per minute, as the slope of all
 /// its readings ([`growth::slope`]). The windows hold a fixed number of pictures (ADR
 /// 0774) and a bounded part of a channel (ADR 0747), so a use that repeats the same
-/// actions keeps its memory; the bounds allow the variation of the allocators and of the
-/// GPU driver: runs measured -0.16 to 0.63 MiB a minute of footprint and up to 0.46 files a
-/// minute. A leak of 2 MiB a minute, or of one file or thread at each thread that is
-/// opened (about 4 a minute) or at each channel change (about 13 a minute), is above them.
+/// actions keeps its memory.
+///
+/// The memory of the Rust allocations is the count of the allocator of the program: it
+/// changes only when the program allocates or frees. A run that held 1 MiB a minute more
+/// measured 1.02 MiB a minute and failed; the run of the committed code measured 0.01.
+///
+/// The footprint also holds the memory of the native libraries (Metal, the media engine)
+/// and changes with the free pages that the allocator of the system keeps: runs without a
+/// leak measured -2.93 to 1.25 MiB a minute. Its bound only fails a leak of native memory of
+/// several MiB a minute. A leak of one file or thread at each thread that is opened (about
+/// 4 a minute) or at each channel change (about 13 a minute) is above the bounds of files
+/// and threads.
 #[cfg(target_os = "macos")]
-const MOST_FOOTPRINT_PER_MINUTE: f64 = 1.5 * MIB;
+const MOST_FOOTPRINT_PER_MINUTE: f64 = 3.0 * MIB;
+#[cfg(target_os = "macos")]
+const MOST_RUST_PER_MINUTE: f64 = 0.5 * MIB;
 #[cfg(target_os = "macos")]
 const MOST_GRAPHICS_PER_MINUTE: f64 = 0.5 * MIB;
 #[cfg(target_os = "macos")]
@@ -237,16 +257,13 @@ fn main() -> ExitCode {
             warming_frames.add(given);
         }
         step += 1;
-        if warm
-            && samples
-                .last()
-                .is_none_or(|last| start.elapsed() >= last.at + EVERY)
-        {
-            let reading = process::sample(start);
+        if warm && step.is_multiple_of(CYCLE) {
+            let reading = process::sample(start, ALLOCATOR.held());
             println!(
-                "endurance: reading {:>4}s footprint {} KiB, graphics {} KiB, processor {:.1}s, {} files, {} threads",
+                "endurance: reading {:>4}s footprint {} KiB, Rust allocations {} KiB, graphics {} KiB, processor {:.1}s, {} files, {} threads",
                 reading.at.as_secs(),
                 reading.footprint >> 10,
+                reading.rust >> 10,
                 reading.graphics >> 10,
                 reading.processor.as_secs_f64(),
                 reading.files,
@@ -479,7 +496,7 @@ impl Use {
     /// One action, then two seconds of frames. Returns the frames that were given.
     fn act(&mut self, window: &mut Window, step: usize) -> Frames {
         let mut frames = Frames::default();
-        match step % 8 {
+        match step % CYCLE {
             // Up the history of the channel and back to its end.
             0..=2 => {
                 for _ in 0..6 {
@@ -603,6 +620,12 @@ fn judge(
             name: "footprint",
             of: |sample| sample.footprint,
             most_per_minute: MOST_FOOTPRINT_PER_MINUTE,
+            bytes: true,
+        },
+        Reading {
+            name: "memory of the Rust allocations",
+            of: |sample| sample.rust,
+            most_per_minute: MOST_RUST_PER_MINUTE,
             bytes: true,
         },
         Reading {
