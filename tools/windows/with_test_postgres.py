@@ -28,8 +28,8 @@ import time
 import urllib.request
 import zipfile
 
-# The version is that of JUNTO_TEST_POSTGRES_IMAGE in .github/workflows/ci.yml;
-# tools/check-pins.sh compares them.
+# The version is that of JUNTO_TEST_POSTGRES_IMAGE in tools/ci/pins.sh; tools/check-pins.sh
+# and a unit test compare them.
 VERSION = "17.11-1"
 URL = f"https://get.enterprisedb.com/postgresql/postgresql-{VERSION}-windows-x64-binaries.zip"
 SHA256 = "6eabdf00d2893713b75db4336a23c3fdf505f056e217ec6e2e95d901750cfea3"

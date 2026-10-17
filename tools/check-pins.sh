@@ -97,6 +97,24 @@ fi
 same "PostgreSQL version of the tests in CI on Linux and on Windows" \
     "$(pin JUNTO_TEST_POSTGRES_IMAGE | sed -n 's/^postgres:\([0-9.]*\)-.*/\1/p')" \
     "$(sed -n 's/^VERSION = "\([0-9.]*\)-[0-9]*"$/\1/p' tools/windows/with_test_postgres.py)"
+# The tools of the Windows CI machine (ADR 0905): each download of the setup has a SHA-256 of
+# its own and is fetched through the function that checks it; its Python has the minor
+# version of the Python image.
+setup=tools/windows/ci-setup.ps1
+tools=$(sed -n "s/^\\\$\([A-Za-z]*\)Url = 'https:\/\/[^']*'$/\1/p" "$setup")
+unchecked=""
+for tool in $tools; do
+    grep -q "^\\\$${tool}Sha256 = '[0-9a-f]\{64\}'$" "$setup" \
+        && grep -q "Get-Pinned \\\$${tool}Url \\\$${tool}Sha256" "$setup" || unchecked="$unchecked $tool"
+done
+if [ -z "$tools" ] || [ -n "$unchecked" ] || [ "$(grep -c "Url = '" "$setup")" != "$(printf '%s\n' "$tools" | wc -l | tr -d ' ')" ]; then
+    fail "$setup downloads a tool without checking a SHA-256 of its own:${unchecked:- a download in a form that this check does not read}"
+else
+    echo "ok    every download of $setup is checked by its SHA-256:" $tools
+fi
+same "Python version of the Windows CI machine and of the Python image of $pins" \
+    "$(sed -n "s/^\\\$PythonVersion = '\([0-9]*\.[0-9]*\)\.[0-9]*'$/\1/p" "$setup")" \
+    "$(pin JUNTO_CI_PYTHON_IMAGE | sed -n 's/^python:\([0-9]*\.[0-9]*\)\..*/\1/p')"
 
 if [ -d .github/workflows ]; then
     same "Node version of the workflow and of $pins" \

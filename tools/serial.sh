@@ -5,7 +5,8 @@
 # for its own temporary files would otherwise take a lock of its own and run beside the
 # others. On macOS the file is in the temporary directory of the user as the system states
 # it; on other systems it is in /tmp. JUNTO_HEAVY_LOCK names another file, for the test of
-# a script that calls this one.
+# a script that calls this one, and for the run lock of a CI runner. Without lockf and flock
+# the lock is taken by tools/windows/lock.py.
 if [ -n "${JUNTO_HEAVY_LOCK:-}" ]; then
     lock="$JUNTO_HEAVY_LOCK"
 else
@@ -16,4 +17,8 @@ fi
 if command -v lockf >/dev/null 2>&1; then
     exec lockf -k "$lock" nice -n 10 "$@"
 fi
-exec flock "$lock" nice -n 10 "$@"
+if command -v flock >/dev/null 2>&1; then
+    exec flock "$lock" nice -n 10 "$@"
+fi
+# The Bash of Git for Windows has neither program.
+exec python3 "$(dirname -- "$0")/windows/lock.py" "$lock" nice -n 10 "$@"

@@ -4,8 +4,10 @@ PostgreSQL: the CI job on Windows starts the real one."""
 import contextlib
 import hashlib
 import io
+import os
 import pathlib
 import re
+import signal
 import sys
 import tempfile
 import time
@@ -27,11 +29,41 @@ def archive_bytes(members):
     return buffer.getvalue()
 
 
+def end_process(number):
+    """Ends the process `number`; on Windows also waits until it has ended and its files are
+    closed."""
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        synchronize, terminate, infinite = 0x00100000, 0x0001, 0xFFFFFFFF
+        handle = kernel.OpenProcess(synchronize | terminate, False, number)
+        if not handle:
+            return  # The process has ended.
+        try:
+            kernel.TerminateProcess(handle, 1)
+            kernel.WaitForSingleObject(handle, infinite)
+        finally:
+            kernel.CloseHandle(handle)
+    else:
+        try:
+            os.kill(number, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
 class Pin(unittest.TestCase):
     def test_the_version_is_the_version_of_the_ci_image(self):
-        workflow = (REPOSITORY / ".github/workflows/ci.yml").read_text()
-        image = re.search(r"JUNTO_TEST_POSTGRES_IMAGE: postgres:([0-9.]+)-", workflow).group(1)
-        self.assertEqual(postgres.VERSION.split("-")[0], image)
+        pins = (REPOSITORY / "tools/ci/pins.sh").read_text()
+        image = re.search(r"JUNTO_TEST_POSTGRES_IMAGE:=postgres:([0-9.]+)-", pins)
+        self.assertIsNotNone(image, "tools/ci/pins.sh names no PostgreSQL image")
+        self.assertEqual(postgres.VERSION.split("-")[0], image.group(1))
 
     def test_the_download_is_named_by_its_version_and_has_a_sha256(self):
         self.assertIn(postgres.VERSION, postgres.URL)
@@ -112,16 +144,23 @@ class Commands(unittest.TestCase):
             self.assertIn(f"-c {setting}", options)
 
     def test_a_program_whose_child_keeps_its_output_open_does_not_hold_the_start(self):
-        # pg_ctl start leaves the server running with the output handles of pg_ctl.
+        # pg_ctl start leaves the server running with the output handles of pg_ctl. The child
+        # states its process number, so that the test ends it before the folder is removed:
+        # Windows removes no file that a process holds open.
         child = "import time; time.sleep(30)"
-        parent = (f"import subprocess, sys; subprocess.Popen([sys.executable, '-c', {child!r}]); "
-                  "print('started')")
+        parent = (f"import subprocess, sys; child = subprocess.Popen([sys.executable, '-c', {child!r}]); "
+                  "print('started', child.pid)")
         with tempfile.TemporaryDirectory() as temporary:
             output = pathlib.Path(temporary) / "output"
             began = time.monotonic()
             postgres.checked([sys.executable, "-c", parent], "the start", output)
-            self.assertLess(time.monotonic() - began, 20)
-            self.assertEqual(output.read_text().strip(), "started")
+            elapsed = time.monotonic() - began
+            words = output.read_text().split()
+            try:
+                self.assertLess(elapsed, 20)
+                self.assertEqual(words[0], "started")
+            finally:
+                end_process(int(words[1]))
 
     def test_a_failed_program_prints_its_output_and_the_log_of_the_server(self):
         with tempfile.TemporaryDirectory() as temporary:
