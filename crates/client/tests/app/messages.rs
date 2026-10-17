@@ -1086,3 +1086,97 @@ fn the_picture_of_a_message_is_read_again_for_the_next_account_of_the_server(
     assert_eq!(proxy.seen(&file).len(), 3);
     assert!(window.view().downloads.is_empty());
 }
+
+/// The shell states the place where it drew the message list, and the wheel of the pointer
+/// over that place scrolls the list. The measurement of the modes (ADR 0914) scrolls a
+/// build without debug assertions, where gpui keeps no names of elements, at this place.
+#[gpui::test]
+fn the_wheel_over_the_stated_place_of_the_message_list_scrolls_it(cx: &mut TestAppContext) {
+    use gpui::{ScrollDelta, ScrollWheelEvent, point, px};
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let general = window.selected_channel();
+    for number in 0..40 {
+        admin.send(&world, general, document(&format!("Line {number}")));
+    }
+    window.until_message("Line 39");
+    window.settle();
+    let stated = window
+        .in_shell(|shell, _, _| shell.feed_bounds(Pane::Main))
+        .expect("the list was drawn");
+    assert_eq!(Some(stated), window.cx.debug_bounds("message-list"));
+    assert!(window.in_shell(|shell, _, _| shell.feed_is_at_end(Pane::Main)));
+    window.dispatch(ScrollWheelEvent {
+        position: stated.center(),
+        delta: ScrollDelta::Pixels(point(px(0.0), px(2000.0))),
+        ..Default::default()
+    });
+    window.settle();
+    assert!(!window.in_shell(|shell, _, _| shell.feed_is_at_end(Pane::Main)));
+}
+
+/// Only the message under the pointer carries the bar of its actions: the other rows build
+/// and lay out no hidden buttons at each frame (ADR 0914). A scroll of the list takes the
+/// bar away until the pointer moves again.
+#[gpui::test]
+fn only_the_message_under_the_pointer_has_the_bar_of_actions(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, MouseButton, ScrollDelta, ScrollWheelEvent, point, px};
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let general = window.selected_channel();
+    let sent: Vec<MessageId> = (0..30)
+        .map(|number| {
+            admin
+                .send(&world, general, document(&format!("Line {number}")))
+                .id
+        })
+        .collect();
+    window.until_message("Line 29");
+    window.settle();
+    // The pointer leaves the list for the column of the channels, wherever the steps
+    // before left it.
+    let list = window
+        .in_shell(|shell, _, _| shell.feed_bounds(Pane::Main))
+        .expect("the list was drawn");
+    window.cx.simulate_mouse_move(
+        point(list.left() - px(20.0), list.top() + px(20.0)),
+        None::<MouseButton>,
+        Modifiers::none(),
+    );
+    window.settle();
+    let bars = |window: &mut Window| {
+        sent.iter()
+            .filter(|id| {
+                window
+                    .cx
+                    .debug_bounds(crate::harness::selector(format!("message-actions:{id}")))
+                    .is_some()
+            })
+            .copied()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(bars(&mut window), Vec::<MessageId>::new());
+
+    let last = *sent.last().unwrap();
+    let row = window
+        .cx
+        .debug_bounds(crate::harness::selector(format!("message:{last}")))
+        .expect("the newest message is drawn");
+    window
+        .cx
+        .simulate_mouse_move(row.center(), None::<MouseButton>, Modifiers::none());
+    window.settle();
+    assert_eq!(bars(&mut window), vec![last]);
+
+    window.dispatch(ScrollWheelEvent {
+        position: row.center(),
+        delta: ScrollDelta::Pixels(point(px(0.0), px(300.0))),
+        ..Default::default()
+    });
+    window.settle();
+    assert_eq!(bars(&mut window), Vec::<MessageId>::new());
+}

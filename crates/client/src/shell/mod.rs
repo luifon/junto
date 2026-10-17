@@ -179,6 +179,9 @@ pub struct Shell {
     /// The focus of the layer that is open.
     layer_focus: FocusHandle,
     pub(crate) layer: Layer,
+    /// The message under the pointer. Only its row carries the bar of actions, so the
+    /// other rows build, lay out and hit-test no hidden buttons at each frame (ADR 0914).
+    pub(crate) hovered_message: Option<(Pane, junto_client_core::protocol::ids::MessageId)>,
     /// Where the keyboard focus was before the layer opened.
     return_focus: Option<WeakFocusHandle>,
 
@@ -566,6 +569,7 @@ impl Shell {
                 .gpu_specs()
                 .is_some_and(|gpu| gpu.is_software_emulated),
             camera_focus: false,
+            hovered_message: None,
             focused_camera: std::cell::Cell::new(None),
             pictures: share::ShownPictures::default(),
             cameras: HashMap::new(),

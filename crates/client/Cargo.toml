@@ -54,6 +54,16 @@ path = "tests/endurance/main.rs"
 harness = false
 required-features = ["test-support"]
 
+# One native window in each mode of the use, one process per mode, against the budgets of
+# memory, processor and threads of ADR 0914. It does nothing without its own variable and
+# the variables of the media server of the tests, and it measures the release profile
+# without debug assertions only.
+[[test]]
+name = "modes"
+path = "tests/modes/main.rs"
+harness = false
+required-features = ["test-support"]
+
 [features]
 # The headless renderer and the test platform of gpui, for the tests and for `junto-screens`.
 test-support = [

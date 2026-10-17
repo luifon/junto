@@ -615,6 +615,14 @@ impl Shell {
             }
         });
         self.feed_seen(pane, Some(&feed), window, cx);
+        // The rows moved under a pointer that did not move; gpui tells a row that the
+        // pointer is over it at the next move of the pointer.
+        if self
+            .hovered_message
+            .is_some_and(|(hovered, _)| hovered == pane)
+        {
+            self.hovered_message = None;
+        }
         cx.notify();
     }
 
@@ -1729,6 +1737,7 @@ impl Shell {
                 .child(icon(shown, 15.0, colors.ink_2))
         };
         div()
+            .debug_selector(move || format!("message-actions:{message_id}"))
             .absolute()
             .top(u(-10.0))
             .right(u(18.0))
@@ -1742,8 +1751,6 @@ impl Shell {
             .border_color(Hsla::from(colors.rule))
             .bg(Hsla::from(colors.travertine_hi))
             .shadow(ledge(colors.rule))
-            .invisible()
-            .group_hover("message", |style| style.visible())
             .child(
                 action("react", Icon::Smile, text::REACT).on_click(cx.listener(
                     move |this, _, window, cx| {
@@ -2073,7 +2080,9 @@ impl Shell {
                 if open.message_id == message_id && open.pane == pane);
         let menu = open_menu.then(|| self.render_message_menu(row, feed, window, cx));
         let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
-        let actions = (!message.deleted && !bare).then(|| self.action_bar(feed, row, &theme, cx));
+        let actions =
+            (!message.deleted && !bare && self.hovered_message == Some((pane, message_id)))
+                .then(|| self.action_bar(feed, row, &theme, cx));
         let label: SharedString = format!(
             "{}, {}: {}",
             row.author,
@@ -2087,7 +2096,6 @@ impl Shell {
         .into();
         div()
             .id(("message", index))
-            .group("message")
             .role(Role::ListItem)
             .aria_label(label)
             .debug_selector(move || {
@@ -2133,6 +2141,9 @@ impl Shell {
                     .focusable()
                     .tab_stop(true)
                     .focus_visible(move |style| style.shadow(ring))
+                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                        this.message_hovered(pane, message_id, *hovered, cx);
+                    }))
                     .on_mouse_down(MouseButton::Right, by_click)
                     .on_key_down(by_key)
             })
@@ -2380,9 +2391,40 @@ impl Shell {
         self.open_layer(Layer::ConfirmDelete(message_id), window, cx);
     }
 
+    /// The pointer entered or left the row of a message: the bar of actions moves to the
+    /// row under the pointer.
+    fn message_hovered(
+        &mut self,
+        pane: Pane,
+        message_id: MessageId,
+        hovered: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let shown = if hovered {
+            Some((pane, message_id))
+        } else if self.hovered_message == Some((pane, message_id)) {
+            None
+        } else {
+            return;
+        };
+        if self.hovered_message != shown {
+            self.hovered_message = shown;
+            cx.notify();
+        }
+    }
+
     /// True while the list shows the end of its rows.
     pub fn feed_is_at_end(&self, pane: Pane) -> bool {
         self.list(pane).at_end()
+    }
+
+    /// The bounds in which the last frame drew the list of a pane. A test that measures a
+    /// build without debug assertions, where gpui keeps no names of elements, turns the
+    /// wheel of the pointer over this place (ADR 0914).
+    #[cfg(feature = "test-support")]
+    pub fn feed_bounds(&self, pane: Pane) -> Option<gpui::Bounds<gpui::Pixels>> {
+        let list = self.list(pane);
+        list.drawn.then(|| list.list.viewport_bounds())
     }
 
     /// The menu of a message: the actions of its bar for the keyboard.
