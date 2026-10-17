@@ -58,3 +58,45 @@ pub(crate) fn require_runtime(future: &str) {
         );
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use super::*;
+
+    /// How long a step of these tests waits, on channels of the standard library.
+    const LIMIT: Duration = Duration::from_secs(10);
+
+    /// Sends on its channel when it is dropped.
+    struct Dropped(mpsc::Sender<()>);
+
+    impl Drop for Dropped {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+
+    #[test]
+    fn dropping_the_future_ends_the_task() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+        let (started, has_started) = mpsc::channel();
+        let (dropped, was_dropped) = mpsc::channel();
+        let task = on_runtime(runtime.handle(), async move {
+            let _held = Dropped(dropped);
+            let _ = started.send(());
+            std::future::pending::<()>().await;
+        });
+        has_started.recv_timeout(LIMIT).expect("the task started");
+        assert!(was_dropped.try_recv().is_err());
+        drop(task);
+        was_dropped
+            .recv_timeout(LIMIT)
+            .expect("the task ended when its future was dropped");
+    }
+}
