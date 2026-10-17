@@ -675,6 +675,48 @@ pub(crate) fn selector(name: String) -> &'static str {
     Box::leak(name.into_boxed_str())
 }
 
+/// The lock of a data directory, held as another program that uses the directory holds it
+/// (ADR 0710). The thread of the window must not wait for it (ADR 0730).
+pub struct HeldDirectory {
+    release: std::sync::mpsc::Sender<()>,
+    holder: std::thread::JoinHandle<bool>,
+}
+
+/// Takes the lock of the data directory of the window and holds it until
+/// [`HeldDirectory::release`], or for at most [`PATIENCE`]: a window that waits for the
+/// lock is then let go, and the release fails the test.
+pub fn hold_data_directory(window: &Window) -> HeldDirectory {
+    let data_dir = window.state.read_with(&window.cx, |state, _| {
+        state.client().data_dir().root().to_owned()
+    });
+    let file = std::fs::File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(data_dir.join("lock"))
+        .unwrap();
+    file.lock().unwrap();
+    let (release, released) = std::sync::mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        let waited = released.recv_timeout(PATIENCE).is_err();
+        drop(file);
+        waited
+    });
+    HeldDirectory { release, holder }
+}
+
+impl HeldDirectory {
+    pub fn release(self) {
+        let _ = self.release.send(());
+        let waited = self.holder.join().unwrap();
+        assert!(
+            !waited,
+            "the thread of the window waited for the lock of its data directory"
+        );
+    }
+}
+
 /// A new data directory with a profile name, as after a first start.
 pub fn named(cx: &mut TestAppContext, name: &str) -> (tempfile::TempDir, Window) {
     let directory = tempfile::tempdir().unwrap();
