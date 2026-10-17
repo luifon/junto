@@ -14,7 +14,8 @@
 //
 // Modified: this file differs from the published livekit 0.9.4. The mute requests of the
 // local tracks are sent in their order through `in_order.rs` (`ParticipantInner`,
-// `new_inner`, `add_publication`).
+// `new_inner`, `add_publication`), and the mute state of each local track is sent again
+// after a resume (`send_mute_states`).
 
 use std::{collections::HashMap, fmt::Debug, sync::Arc};
 
@@ -24,6 +25,7 @@ use parking_lot::{Mutex, RwLock};
 
 use crate::{prelude::*, rtc_engine::RtcEngine};
 
+// Modified: the order of the mute requests.
 mod in_order;
 mod local_participant;
 mod remote_participant;
@@ -236,6 +238,7 @@ pub(super) fn new_inner(
         events: Default::default(),
         is_encrypted: RwLock::new(false),
         is_data_encrypted: RwLock::new(None),
+        // Modified: added.
         mute_requests: Default::default(),
     })
 }
@@ -461,6 +464,7 @@ pub(super) fn add_publication(
         let events = inner.events.clone();
         let participant = participant.clone();
         let rtc_engine = inner.rtc_engine.clone();
+        // Modified: added.
         let mute_requests = inner.mute_requests.clone();
         move |publication| {
             if let Some(cb) = events.track_muted.lock().as_ref() {
@@ -489,6 +493,7 @@ pub(super) fn add_publication(
         let events = inner.events.clone();
         let participant = participant.clone();
         let rtc_engine = inner.rtc_engine.clone();
+        // Modified: added.
         let mute_requests = inner.mute_requests.clone();
         move |publication| {
             if let Some(cb) = events.track_unmuted.lock().as_ref() {
@@ -516,4 +521,32 @@ pub(super) fn add_publication(
 
     // Update encryption status after adding publication
     update_encryption_status(inner, participant);
+}
+
+// Modified: added.
+/// Sends the mute state of each local track to the media server again, after the mute
+/// requests that were given before. A request counts as sent when it is written to the signal
+/// connection. One that was written to a lost connection before the loss was found reaches
+/// the media server late or not at all, and the media server discards a request that arrives
+/// on a connection after the session was resumed on another one. The media server does not
+/// take the mute state from the state that the resume sends.
+pub(super) fn send_mute_states(inner: &Arc<ParticipantInner>) {
+    for publication in inner.track_publications.read().values() {
+        if publication.is_remote() {
+            continue;
+        }
+        let rtc_engine = inner.rtc_engine.clone();
+        let publication = publication.clone();
+        inner.mute_requests.run(async move {
+            // The state after every change whose request was given before this one. A later
+            // change gives a request of its own after this one.
+            let muted = publication.is_muted();
+            let engine_request = rtc_engine
+                .mute_track(proto::MuteTrackRequest { sid: publication.sid().to_string(), muted })
+                .await;
+            if let Err(e) = engine_request {
+                log::error!("could not send the mute state of a track: {e:?}");
+            }
+        });
+    }
 }

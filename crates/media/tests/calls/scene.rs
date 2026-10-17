@@ -270,7 +270,26 @@ pub struct Room {
 impl Room {
     /// Starts a server, lets `owner` claim it and creates the voice channel.
     pub async fn new(name: &str, owner: &Person, owner_name: &str) -> (Self, ServerHandle) {
-        let server = TestServer::start_with_media(name).await;
+        Self::with_server(TestServer::start_with_media(name).await, owner, owner_name).await
+    }
+
+    /// As [`Room::new`], with a server whose clients reach the media server at `address`:
+    /// the address of a proxy.
+    pub async fn with_media_at(
+        name: &str,
+        owner: &Person,
+        owner_name: &str,
+        address: &str,
+    ) -> (Self, ServerHandle) {
+        let server = TestServer::start_with_media_at(name, address).await;
+        Self::with_server(server, owner, owner_name).await
+    }
+
+    async fn with_server(
+        server: TestServer,
+        owner: &Person,
+        owner_name: &str,
+    ) -> (Self, ServerHandle) {
         let handle = owner.claim(&server, owner_name).await;
         let workspace_id = handle.live().view().model.unwrap().workspaces[0]
             .workspace

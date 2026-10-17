@@ -11,6 +11,9 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified: this file differs from the published livekit 0.9.4 by
+// `LocalParticipant::send_mute_states`.
 
 use std::{
     collections::HashMap,
@@ -224,6 +227,13 @@ impl LocalParticipant {
 
     pub(crate) fn add_publication(&self, publication: TrackPublication) {
         super::add_publication(&self.inner, &Participant::Local(self.clone()), publication);
+    }
+
+    // Modified: added.
+    /// Sends the mute state of each local track to the media server again, after the mute
+    /// requests that were given before.
+    pub(crate) fn send_mute_states(&self) {
+        super::send_mute_states(&self.inner);
     }
 
     pub(crate) fn remove_publication(&self, sid: &TrackSid) -> Option<TrackPublication> {
