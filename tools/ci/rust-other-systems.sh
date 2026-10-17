@@ -32,6 +32,9 @@ fi
 # The tests that need PostgreSQL run on Linux only, except the window tests on Windows.
 step "Tests that need no database"
 cargo test --locked -p junto-authz -p junto-protocol
+# The reading of the free space of a directory, which differs between Unix and Windows
+# (ADR 0605).
+cargo test --locked -p junto-server --lib storage::
 cargo test --locked -p junto-client-core --lib --bins --test releases --test release_format --test release_roles --test release_downloads --test update_archives --test release_tool
 step "Packaging unit tests"
 python3 -m unittest discover -s packaging -p "test_*.py"
@@ -65,7 +68,7 @@ cargo test --locked --workspace --test app -- updates::
 step "PostgreSQL for Windows"
 python3 tools/windows/with_test_postgres.py --fetch
 # The other window tests, against the PostgreSQL build for Windows of the version of the CI
-# image. Not here: the tests of live:: need LiveKit; the tests of recordings::, the file of
+# image. Not here: the tests of live:: need LiveKit; the tests of recordings::, the files of
 # a message and the export of a channel need the server to store files, which it does on
 # Unix systems only (crates/server/src/recordings/files.rs).
 step "Window tests with PostgreSQL"
@@ -73,6 +76,7 @@ python3 -m unittest discover -s tools/windows -p "test_*.py"
 python3 tools/windows/with_test_postgres.py cargo test --locked --workspace --test app -- \
     --skip updates:: --skip live:: --skip recordings:: \
     --skip messages::a_file_is_sent_with_a_message_and_saved_from_one \
+    --skip messages::files_attached_before_a_send_are_in_the_message_in_the_order_of_their_drops \
     --skip messages::a_pending_file_picker_cannot_retarget_an_upload \
     --skip messages::the_picture_of_a_message_is_read_again_for_the_next_account_of_the_server \
     --skip admin_pages::the_owner_exports_a_channel_saves_the_file_and_removes_the_export
