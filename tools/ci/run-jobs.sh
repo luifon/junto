@@ -1,12 +1,14 @@
 #!/bin/sh
 # Runs CI jobs on one commit on this machine and records each job (ADR 0905). tools/ci/ci.sh
-# starts it from the commit under test, on the Linux host or on the macOS machine:
+# starts it from the commit under test, on the Linux host, on the macOS machine or on the
+# Windows machine:
 #
 #   run-jobs.sh <directory> <run> <runner> <repository> <job>...
 #
 # <directory> is the CI directory of this machine, <run> the name of the run, <runner>
-# "linux" or "macos", <repository> a Git repository with the ref refs/ci/<run>. The run
-# lives in <directory>/runs/<run>:
+# "linux", "macos" or "windows", <repository> a Git repository or a Git bundle file with the
+# ref refs/ci/<run>. On Windows <directory> is a path such as C:/junto-ci, and the script runs
+# in the Bash of Git for Windows. The run lives in <directory>/runs/<run>:
 #
 #   commit, jobs      the commit and the jobs of the run, written first
 #   current           the job that runs and its start, while it runs
@@ -15,12 +17,12 @@
 #   logs/<job>.log    the output of the job
 #   finished          the exit status of the run (0: every job passed), written last
 #
-# One run at a time: a run waits for the lock of tools/serial.sh, which on the Linux host is
-# <directory>/run.lock. Jobs run one after the other, so that the limits of one job are the
+# One run at a time: a run waits for the lock of tools/serial.sh, which on the Linux host and
+# on the Windows machine is <directory>/run.lock. Jobs run one after the other, so that the limits of one job are the
 # limits of the run. Before the first job and after each job, every container, network and
-# volume whose name starts with junto-ci- or junto-ci_ is removed, except the cache volumes;
-# at the end the clone is removed, also after a failure, and a cache above its size cap is
-# emptied.
+# volume whose name starts with junto-ci- or junto-ci_ is removed, except the cache volumes
+# (Windows has no Docker); at the end the clone and a bundle are removed, also after a
+# failure, and a cache above its size cap is emptied.
 set -eu
 if [ "$#" -lt 5 ]; then
     echo "usage: $0 <directory> <run> <runner> <repository> <job>..." >&2
@@ -45,6 +47,7 @@ if [ -z "${JUNTO_CI_LOCKED:-}" ]; then
             wait "$locked" 2>/dev/null || true
         fi
         rm -rf "$checkout"
+        if [ -f "$repository" ]; then rm -f "$repository"; fi
         echo "$status" >"$here/finished"
     }
     trap outer_end EXIT
@@ -54,15 +57,29 @@ if [ -z "${JUNTO_CI_LOCKED:-}" ]; then
     # The clone gives this script the tools/serial.sh of the commit under test.
     rm -rf "$checkout"
     git init --quiet "$checkout"
-    objects=$(git -C "$repository" rev-parse --path-format=absolute --git-common-dir)/objects
-    echo "$objects" >"$checkout/.git/objects/info/alternates"
-    git -C "$checkout" fetch --quiet "$repository" "refs/ci/$run"
+    # The files as the commit holds them: Git for Windows sets core.autocrlf in its system
+    # settings, which would give the scripts and the compared files CR LF line ends.
+    git -C "$checkout" config core.autocrlf false
+    git -C "$checkout" config core.longpaths true
+    if [ -f "$repository" ]; then
+        # A bundle: the fetch copies every object into the checkout.
+        git -C "$checkout" fetch --quiet "$repository" "refs/ci/$run"
+    else
+        objects=$(git -C "$repository" rev-parse --path-format=absolute --git-common-dir)/objects
+        echo "$objects" >"$checkout/.git/objects/info/alternates"
+        git -C "$checkout" fetch --quiet "$repository" "refs/ci/$run"
+    fi
     git -C "$checkout" checkout --quiet --detach FETCH_HEAD
-    # Container commands cannot reach the host's object directory.
-    git -C "$checkout" -c pack.threads=1 repack -a -d --quiet
-    rm "$checkout/.git/objects/info/alternates"
+    if [ -f "$checkout/.git/objects/info/alternates" ]; then
+        # Container commands cannot reach the host's object directory.
+        git -C "$checkout" -c pack.threads=1 repack -a -d --quiet
+        rm "$checkout/.git/objects/info/alternates"
+    fi
     git -C "$checkout" rev-parse HEAD >"$here/commit"
-    if [ "$runner" = linux ]; then export JUNTO_HEAVY_LOCK="$directory/run.lock"; fi
+    if [ "$runner" != macos ]; then export JUNTO_HEAVY_LOCK="$directory/run.lock"; fi
+    # tools/serial.sh takes the lock with Python on Windows (tools/windows/lock.py): the
+    # Python of the setup, not a program of the same name in the PATH of the account.
+    if [ "$runner" = windows ]; then PATH="$(cygpath -u "$directory")/tools/python:$PATH"; fi
     # The locked part writes "finished" itself; this part keeps its trap for the time the
     # run waits for the lock.
     # It runs in the background, so that a signal to this part ends it as well.
@@ -74,6 +91,7 @@ if [ -z "${JUNTO_CI_LOCKED:-}" ]; then
     locked=""
     trap - EXIT
     rm -rf "$checkout"
+    if [ -f "$repository" ]; then rm -f "$repository"; fi
     if [ ! -f "$here/finished" ]; then echo "$status" >"$here/finished"; fi
     exit "$status"
 fi
@@ -81,6 +99,7 @@ fi
 pid=""
 caches="junto-ci-cargo junto-ci-target junto-ci-uv junto-ci-npm"
 sweep() {
+    if [ "$runner" = windows ]; then return 0; fi
     for container in $(docker ps -aq --filter name=^junto-ci[-_]); do
         docker rm -f -v "$container" >/dev/null 2>&1 || true
     done
@@ -116,9 +135,9 @@ cd "$checkout"
 
 # The caches of the Linux host are Docker volumes; each has a size cap in GiB. Above its cap
 # a volume is emptied after the run, and the next run fills it again from nothing. On macOS
-# the Cargo target directory of the runner has the same rule.
+# and on Windows the Cargo target directory of the runner has the same rule.
 cap_caches() {
-    if [ "$runner" = macos ]; then
+    if [ "$runner" != linux ]; then
         if [ -d "$directory/cargo-target" ]; then
             size=$(du -sk "$directory/cargo-target" | cut -f 1)
             if [ "$size" -gt $((60 * 1024 * 1024)) ]; then
@@ -178,6 +197,27 @@ linux_container() {
     JUNTO_LINUX_PREFIX=junto-ci JUNTO_LINUX_BUILDER=limited JUNTO_LINUX_CPUS=$rust_cpus \
         JUNTO_LINUX_POSTGRES_CPUS=$postgres_cpus JUNTO_LINUX_MEMORY=8g tools/linux-container.sh "$@"
 }
+# The Windows job: the tools that tools/windows/ci-setup.ps1 installed below the CI directory,
+# the programs of Git for Windows and of Windows, and no other program of the machine. The
+# PostgreSQL download, the Cargo registry and the target directory stay in the CI directory
+# from one run to the next; the temporary directory is emptied before and after the job.
+rust_windows() {
+    tools=$(cygpath -u "$directory")
+    windows=$(cygpath -u -W)
+    git=$(dirname -- "$(command -v git)")
+    export CARGO_HOME="$directory/cargo" RUSTUP_HOME="$directory/rustup"
+    export CARGO_TARGET_DIR="$directory/cargo-target" JUNTO_TEST_POSTGRES_DOWNLOADS="$directory/postgres"
+    export TMP="$directory/tmp" TEMP="$directory/tmp" TMPDIR="$directory/tmp"
+    export PATH="$tools/tools/python:$tools/cargo/bin:$git:/usr/bin:$windows/System32:$windows:$windows/System32/Wbem:$windows/System32/WindowsPowerShell/v1.0"
+    rm -rf "$directory/tmp" && mkdir -p "$directory/tmp" || return 1
+    version=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+    status=0
+    # --no-self-update: rustup stays at the version of the setup (ADR 0905).
+    rustup toolchain install "$version" --no-self-update --profile minimal --component rustfmt --component clippy \
+        && tools/ci/rust-other-systems.sh || status=$?
+    rm -rf "$directory/tmp"
+    return "$status"
+}
 job() {
     case "$runner:$1" in
         linux:rust-linux)
@@ -219,6 +259,8 @@ job() {
             CARGO_TARGET_DIR="$directory/cargo-target" tools/ci/rust-other-systems.sh ;;
         macos:deployment)
             tools/ci/deployment.sh ;;
+        windows:rust-windows)
+            rust_windows ;;
         *)
             echo "no job $1 on the $runner runner" >&2
             return 2 ;;

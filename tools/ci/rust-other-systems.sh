@@ -7,7 +7,8 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 . tools/ci/pins.sh
 
-step() { printf '\n=== %s\n' "$1"; }
+# Each step states its start in UTC, so that the log gives the time of each step.
+step() { printf '\n=== %s  %s\n' "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; }
 case "$(uname -s)" in
     Darwin) system=macos ;;
     MINGW* | MSYS* | CYGWIN*) system=windows ;;
