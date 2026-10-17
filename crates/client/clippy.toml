@@ -5,5 +5,7 @@ allow-expect-in-tests = true
 # reads only the nearest clippy.toml, so this crate states the bound of the workspace file.
 stack-size-threshold = 262144
 disallowed-methods = [
+    { path = "gpui::App::drop_image", reason = "it skips the window whose work runs at the time of the call, which then keeps the GPU copy of the image (ADR 0774); use `images::release`" },
+    { path = "gpui::Window::drop_image", reason = "it removes the GPU copy from one window only (ADR 0774); use `images::release`" },
     { path = "time::OffsetDateTime::to_offset", reason = "it ends the program for a moment at the end of the range of dates, which a server can state (ADR 0747); use `checked_to_offset`, or `moment::in_offset` in the window" },
 ]

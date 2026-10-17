@@ -11,8 +11,10 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
-cargo build --locked --release -p junto-client --bin junto -p junto-client-core --bin junto-release --bin junto-recover
-python3 packaging/bundle.py target/release/junto "$release_output/.bundle/Junto.app" target/release/junto-recover
+cargo build --locked --release -p junto-client --bin junto -p junto-client-core --bin junto-release --bin junto-recover \
+    -p junto-icon --bin junto-icon
+python3 packaging/bundle.py target/release/junto "$release_output/.bundle/Junto.app" target/release/junto-recover \
+    target/release/junto-icon
 packaging/sign.sh "$release_output/.bundle/Junto.app"
 architecture=$(uname -m)
 if [ "$architecture" = arm64 ]; then architecture=aarch64; fi

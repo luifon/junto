@@ -35,6 +35,14 @@ path = "tests/rehearsal/main.rs"
 harness = false
 required-features = ["test-support"]
 
+# Native windows in a call with the media server of the tests: the graphics memory of the
+# pictures of a call (ADR 0774). It does nothing without the variables of that server.
+[[test]]
+name = "frames"
+path = "tests/frames/main.rs"
+harness = false
+required-features = ["test-support"]
+
 [features]
 # The headless renderer and the test platform of gpui, for the tests and for `junto-screens`.
 test-support = [
@@ -98,6 +106,10 @@ gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.8" }
 # above other windows (ADR 0507). gpui uses the same crates.
 raw-window-handle = "0.6"
 x11rb = "0.13"
+
+[build-dependencies]
+# The icon of the program on Windows and of its windows on X11 (ADR 0756).
+junto-icon = { path = "../icon" }
 
 [lints]
 workspace = true

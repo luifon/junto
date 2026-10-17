@@ -24,6 +24,8 @@ fi
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
 exec tools/linux-container.sh sh -c '
     set -eu
-    cargo build --locked --release -p junto-client --bin junto -p junto-client-core --bin junto-recover
-    python3 packaging/linux.py /target/release/junto /target/release/junto-recover "$1" "$2"
+    cargo build --locked --release -p junto-client --bin junto -p junto-client-core --bin junto-recover \
+        -p junto-icon --bin junto-icon
+    python3 packaging/linux.py /target/release/junto /target/release/junto-recover "$1" "$2" \
+        --icon-tool /target/release/junto-icon
 ' sh "$version" "$1"

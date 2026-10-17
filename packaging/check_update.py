@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Real signing, update and documented archive recovery of macOS test bundles; no GUI is started.
 
-Builds junto-release and junto-recover with test keys and a test certificate pin in the target
+Builds junto-icon, junto-release and junto-recover with test keys and a test certificate pin in the target
 directory of the repository; a local caller holds tools/serial.sh."""
 import os
 import pathlib
@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 
+import icons
 from bundle import assemble
 from check_signing import requirement
 from configuration import architecture
@@ -29,6 +30,7 @@ def check():
         keychain = root / "identity/signing.keychain-db"
         try:
             release_tools.run("cargo", "build", "--locked", "-p", "junto-client-core", "--bin", "junto-release",
+                              "-p", "junto-icon", "--bin", "junto-icon",
                               cwd=release_tools.REPOSITORY, timeout=3600)
             files = release_tools.keys(pathlib.Path(os.environ.get("CARGO_TARGET_DIR", release_tools.REPOSITORY / "target")) / "debug/junto-release", root)
             identity = create(root / "identity")
@@ -39,9 +41,9 @@ def check():
             environment.update(JUNTO_CODESIGN_IDENTITY=identity, JUNTO_CODESIGN_KEYCHAIN=str(keychain),
                                JUNTO_TEST_CERTIFICATE_FILE=str(pin))
             succeeding, failing = program(root / "exit-0", 0), program(root / "exit-1", 1)
-            installed = assemble(succeeding, root / "installed/Junto.app", "1.0.0", recover)
-            candidate = assemble(failing, root / "source-2/Junto.app", "2.0.0", recover)
-            first = assemble(succeeding, root / "source-1/Junto.app", "1.0.0", recover)
+            installed = assemble(succeeding, root / "installed/Junto.app", "1.0.0", recover, icon_tool=icons.TOOL)
+            candidate = assemble(failing, root / "source-2/Junto.app", "2.0.0", recover, icon_tool=icons.TOOL)
+            first = assemble(succeeding, root / "source-1/Junto.app", "1.0.0", recover, icon_tool=icons.TOOL)
 
             def ran(arguments):
                 return subprocess.run([str(argument) for argument in arguments], capture_output=True, text=True,
@@ -110,7 +112,7 @@ def check():
                 result = ran([record / "installed/recover", "rollback", installed])
                 assert result.returncode != 0 and version(installed) == "1.0.0", outcome(result)
                 for identity_kind in ["adhoc", "other"]:
-                    bad = assemble(succeeding, root / identity_kind / "Junto.app", "3.0.0", recover)
+                    bad = assemble(succeeding, root / identity_kind / "Junto.app", "3.0.0", recover, icon_tool=icons.TOOL)
                     if identity_kind == "adhoc":
                         run("/usr/bin/codesign", "--force", "--sign", "-", str(bad))
                     else:

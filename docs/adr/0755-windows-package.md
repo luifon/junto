@@ -29,12 +29,12 @@ The options:
 
 Checks (`packaging/check_windows.py`, in the Windows job of CI):
 
-- The ZIP of the client build: its entries and no library; extraction into a folder; `junto.exe --version`; the first frame with `--check-startup`.
+- The ZIP of the client build: its entries and no library; the icon group 1 of `junto.exe` with the rendering of the icon at each size (ADR 0756); extraction into a folder; `junto.exe --version`; the first frame with `--check-startup`.
 - With test programs: an update from a local source while the installed program runs, the requests of the update, the new program in place, the mark of the staging directory; then the rollback with the recovery program, a changed archive and a second rollback refused, and no staging directory left.
 
 ## Consequences
 
-- The person creates a Start menu or taskbar entry; the package does not. The program file has no icon resource; Windows shows its default program icon.
+- The person creates a Start menu or taskbar entry; the package does not. The program holds the application icon as its icon group 1 (ADR 0756): Explorer, an entry that the person creates and the windows of the program show it.
 - An uninstallation is the removal of the folder and of `.Junto.junto-update` beside it; the data directory stays until the person removes it.
 - The replacement of the entries is not one step. Both lists of entries are read before the first move, and every return move is tried after a failure. When a return move also fails, the folder holds entries of both versions and the staging directory, which is kept, holds the rest; the error names it. The recovery program then can refuse, because the folder may have no description or one that differs from the record: the entries are moved back from the staging directory by hand. A crash between two moves leaves the same state.
 - The SmartScreen warning appears at the first start of each new download, not after an update by the client.

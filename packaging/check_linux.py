@@ -14,6 +14,7 @@ import sys
 import tarfile
 import tempfile
 
+import icons
 import linux
 import release_tools
 from configuration import architecture as machine_architecture
@@ -63,7 +64,9 @@ class Check:
     @step("build the client and the release tools")
     def build(self):
         release_tools.run("cargo", "build", "--locked", "-p", "junto-client", "--bin", "junto", "-p",
-                          "junto-client-core", "--bin", "junto-release", cwd=release_tools.REPOSITORY, timeout=7200)
+                          "junto-client-core", "--bin", "junto-release", "-p", "junto-icon", "--bin", "junto-icon",
+                          cwd=release_tools.REPOSITORY, timeout=7200)
+        self.icon_tool = TARGET / "junto-icon"
         self.client = self.root / "junto"
         shutil.copyfile(TARGET / "junto", self.client)
         self.client.chmod(0o755)
@@ -72,7 +75,8 @@ class Check:
 
     @step("assemble the tarball and the AppImage")
     def assemble(self):
-        self.packages = linux.assemble(self.client, self.recover, "1.0.0", self.root / "packages")
+        self.packages = linux.assemble(self.client, self.recover, "1.0.0", self.root / "packages",
+                                       icon_tool=self.icon_tool)
         self.tarball = self.packages / f"junto-1.0.0-linux-{self.architecture}.tar.gz"
         self.appimage = self.packages / f"Junto-1.0.0-{self.architecture}.AppImage"
         expect(self.tarball.is_file() and self.appimage.is_file(), "a package file is missing")
@@ -101,6 +105,19 @@ class Check:
         expect(description == {"format": 1, "version": "1.0.0", "system": "linux", "package": "directory",
                                "architecture": self.architecture}, f"description: {description}")
         self.installed = installed / "junto"
+        self.icon_theme(self.installed)
+
+    def icon_theme(self, directory):
+        """The icon theme of a package: the SVG source and its rendering at each size."""
+        theme = directory / "share/icons/hicolor"
+        expected = {f"{size}x{size}" for size in linux.ICON_SIZES} | {"scalable"}
+        found = {path.name for path in theme.iterdir()}
+        expect(found == expected, f"the icon theme has the sizes {sorted(found)}")
+        expect((theme / f"scalable/apps/{linux.APPLICATION_ID}.svg").read_bytes() == icons.SOURCE.read_bytes(),
+               "the scalable icon is not the SVG source")
+        for size in linux.ICON_SIZES:
+            picture = (theme / f"{size}x{size}/apps/{linux.APPLICATION_ID}.png").read_bytes()
+            expect(picture == icons.rendering(self.icon_tool, size), f"the icon of {size} pixels is not the rendering")
 
     @step("the program loads the bundled libraries from the package and the others from the host")
     def tarball_libraries(self):
@@ -120,13 +137,14 @@ class Check:
         for backend in ["x11", "wayland"]:
             started(self.installed / "junto", backend, self.root / f"data-tarball-{backend}")
 
-    @step("the menu entry names this copy")
+    @step("the menu entry names this copy, and its icons are installed")
     def menu_entry(self):
         home = self.root / "home"
         result = ran([self.installed / "install-menu-entry"], env=dict(os.environ, HOME=str(home), XDG_DATA_HOME=""))
         expect(result.returncode == 0, "the menu entry was not written", result)
         entry = (home / f".local/share/applications/{linux.APPLICATION_ID}.desktop").read_text()
         expect(f'Exec="{self.installed}/junto"' in entry and f"Icon={linux.APPLICATION_ID}" in entry, entry)
+        self.icon_theme(home / ".local")
 
     @step("the AppImage holds the same program and libraries, the menu entry and the icon")
     def appimage_contents(self):
@@ -142,6 +160,11 @@ class Check:
                      "licences/AppImage-runtime.txt"]:
             expect((squashfs / name).is_file(), f"the AppImage has no {name}")
         expect({path.name for path in (squashfs / "lib").iterdir()} == linux.BUNDLED, "bundled libraries differ")
+        self.icon_theme(squashfs)
+        expect((squashfs / ".DirIcon").read_bytes() == icons.rendering(self.icon_tool, 256),
+               "the icon of the AppImage is not the rendering of 256 pixels")
+        expect((squashfs / f"{linux.APPLICATION_ID}.svg").read_bytes() == icons.SOURCE.read_bytes(),
+               "the SVG icon of the AppImage is not the source")
         expect((squashfs / "junto").read_bytes() == self.client.read_bytes(), "the program differs from the build")
         update = self.packages / "package-appimage"
         expect(sorted(path.name for path in update.iterdir()) == ["Junto.AppImage", "junto-package.json",

@@ -14,21 +14,21 @@ ADR 0705 names two Linux packages, a tarball and an AppImage, and the rule of wh
 
 The directory package:
 
-- One directory `junto` with the client `junto`, the recovery program `junto-recover` (ADR 0726), the description `junto-package.json` (format 1, version, system `linux`, package `directory`, architecture), `lib/` with the bundled libraries, the menu entry `share/applications/chat.junto.Junto.desktop`, the icons `share/icons/hicolor/scalable/apps/chat.junto.Junto.svg` and `256x256/apps/chat.junto.Junto.png`, the script `install-menu-entry`, and `licences/` with the licence of Junto, the licences of the fonts and the copyright files of the Debian packages of the bundled libraries.
+- One directory `junto` with the client `junto`, the recovery program `junto-recover` (ADR 0726), the description `junto-package.json` (format 1, version, system `linux`, package `directory`, architecture), `lib/` with the bundled libraries, the menu entry `share/applications/chat.junto.Junto.desktop`, the icon theme `share/icons/hicolor` with the SVG source of the icon in `scalable/apps/chat.junto.Junto.svg` and its renderings of 16, 22, 24, 32, 48, 64, 128, 256 and 512 pixels in `<size>x<size>/apps/chat.junto.Junto.png` (ADR 0756), the script `install-menu-entry`, and `licences/` with the licence of Junto, the licences of the fonts and the copyright files of the Debian packages of the bundled libraries.
 - The tarball `junto-<version>-linux-<architecture>.tar.gz` holds that directory. Every entry is owned by root, has the time of `SOURCE_DATE_EPOCH` (0 when it is not set), and no entry is a link.
 - The client has the search path `$ORIGIN/lib` as `DT_RPATH`, which also applies to the libraries that the bundled libraries load: `libxcb-xkb` finds the host's `libxcb` through the system paths. A build outside a package has no such directory, and the loader takes the libraries of the system.
-- `install-menu-entry` writes the menu entry and the icon into `$XDG_DATA_HOME` (or `~/.local/share`) with the absolute path of this copy. It is run by the person and again after the directory is moved. The identifier `chat.junto.Junto` is the application identifier of the window (Wayland `app_id`, X11 class), so the desktop matches the window to the entry.
+- `install-menu-entry` writes the menu entry and every size of the icon into `$XDG_DATA_HOME` (or `~/.local/share`) with the absolute path of this copy. It is run by the person and again after the directory is moved. The identifier `chat.junto.Junto` is the application identifier of the window (Wayland `app_id`, X11 class), so the desktop matches the window to the entry.
 
 The AppImage:
 
-- `Junto-<version>-<architecture>.AppImage` is an AppImage of type 2: the runtime of the AppImage project followed by a SquashFS image (zstd) of the same files as the directory, with `AppRun` as a link to `junto`, the menu entry and the icon at the top and `.DirIcon`.
+- `Junto-<version>-<architecture>.AppImage` is an AppImage of type 2: the runtime of the AppImage project followed by a SquashFS image (zstd) of the same files as the directory, with `AppRun` as a link to `junto`, the menu entry and the SVG icon at the top, and the rendering of 256 pixels as `.DirIcon`.
 - The runtime is the file `runtime-<architecture>` of the release `20251108` of `AppImage/type2-runtime`, downloaded by the Linux build image and checked by its SHA-256; the SquashFS tools are the Debian package of the snapshot of ADR 0750. `tools/check-pins.sh` fails for a download of the image without a SHA-256 check. The runtime is linked statically and needs `fusermount` (FUSE 2 or 3) from the host, not `libfuse.so.2`.
 
 Libraries (the rule of ADR 0705, as names):
 
 - Bundled: `libxkbcommon.so.0`, `libxkbcommon-x11.so.0` and `libxcb-xkb.so.1`. A host without an X11 keyboard library often lacks them.
 - From the host: the C library and its loader, `libm`, `libgcc_s`; `libxcb.so.1` with `libXau`, `libXdmcp`, `libbsd` and `libmd`; `libpipewire-0.3` and `libasound`. The Mesa and Vulkan drivers of the host load `libxcb-dri3`, `libxcb-present` and other extensions that are linked against the host's `libxcb`; an older bundled `libxcb` loaded first through the search path could lack symbols that they need. The list of excluded libraries of the AppImage project names `libxcb.so.1` for this reason. Both sound libraries load their plugins and configuration from the host, so a bundled copy would not match them.
-- `packaging/linux.py` reads the libraries of the client with `ldd` and stops when one is in neither list, so that a new dependency gets a decision.
+- `packaging/linux.py` takes the program `junto-icon` of the same build with `--icon-tool` and renders the icon theme with it. It reads the libraries of the client with `ldd` and stops when one is in neither list, so that a new dependency gets a decision.
 
 Updates:
 
@@ -41,7 +41,7 @@ Checks (`packaging/check_linux.py`, in the build image):
 
 - The tarball: its entries, the owner, no links, the bundled libraries exactly, no library of the host, the description, the licences; the search path; with an empty `LD_LIBRARY_PATH` every bundled library loads from the package and every other one from the host.
 - The first frame of the tarball's client under X11 and Wayland, and of the AppImage under X11, with `--check-startup` on the virtual displays of ADR 0750. The container has no FUSE: the AppImage runs with `APPIMAGE_EXTRACT_AND_RUN=1`.
-- The menu entry script, and the files of the AppImage after `--appimage-extract`.
+- The menu entry script, and the files of the AppImage after `--appimage-extract`. The icon theme of the tarball, of the AppImage and of the installed menu entry, and `.DirIcon`, equal the renderings of the icon program.
 - An update of a running directory package from a local source and its rollback with the recovery program, with test programs; a read-only location, a changed archive and a second rollback are refused.
 - The Rust tests `tests/linux_packages.rs` replace an AppImage that is open and a directory with the Linux system tools, and roll both back.
 

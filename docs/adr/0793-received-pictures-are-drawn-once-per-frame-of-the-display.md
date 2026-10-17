@@ -30,5 +30,6 @@ The test harness of the window:
 
 - The work of the interface for pictures has the rate of the display as its bound, on every machine.
 - A picture is shown at the next frame after its arrival: up to one frame later than before.
+- The image of a picture that a newer one replaced is released from the GPU of every window (ADR 0774).
 - A test that needs a picture of a call to be drawn must deliver a frame; the steps of the harness do.
 - Test: `calls::received_pictures_cause_one_drawing_per_frame_of_the_display` in the window tests: fifty pictures arrive with the work of the application run after each one, no picture asks for a drawing, the application comes to rest each time, one frame draws once with the last picture, and a frame without a newer picture draws nothing. The window counts the drawings that pictures ask for apart from its other drawings, because an event of the server can draw the window at any time; the test also bounds all drawings of the window in that time.

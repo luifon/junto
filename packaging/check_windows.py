@@ -15,6 +15,7 @@ import sys
 import tempfile
 import zipfile
 
+import icons
 import release_tools
 import windows
 from programs import outcome
@@ -57,7 +58,8 @@ class Check:
     @step("build the client and the release tools")
     def build(self):
         release_tools.run("cargo", "build", "--locked", "-p", "junto-client", "--bin", "junto", "-p",
-                          "junto-client-core", "--bin", "junto-release", cwd=release_tools.REPOSITORY, timeout=7200)
+                          "junto-client-core", "--bin", "junto-release", "-p", "junto-icon", "--bin", "junto-icon",
+                          cwd=release_tools.REPOSITORY, timeout=7200)
         self.files = release_tools.keys(TARGET / "junto-release.exe", self.root)
         self.tool, self.recover = release_tools.build(self.files)
         for name, status in [("exit-0", 0), ("exit-1", 1)]:
@@ -79,6 +81,15 @@ class Check:
         expect({"Junto/junto.exe", "Junto/junto-recover.exe", "Junto/junto-package.json",
                 "Junto/licences/Junto-LICENSE.txt"} <= set(names), f"ZIP entries: {names}")
         expect(not any(name.lower().endswith(".dll") for name in names), f"the ZIP holds a library: {names}")
+
+    @step("the program holds the icon group 1 with the rendering of the source at each size")
+    def program_icon(self):
+        with zipfile.ZipFile(self.zip) as archive:
+            pictures = icons.program_icon(archive.read("Junto/junto.exe"))
+        expect(sorted(pictures) == [16, 24, 32, 48, 64, 256], f"the icon has the sizes {sorted(pictures)}")
+        for size, picture in pictures.items():
+            expect(picture == icons.png(icons.rendering(TARGET / "junto-icon.exe", size)),
+                   f"the icon of {size} pixels is not the rendering of the source")
 
     @step("install: extract the ZIP into a folder of the account")
     def install(self):

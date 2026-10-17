@@ -217,8 +217,8 @@ impl Shell {
     /// frame of the display, and that frame takes the newest picture of each source that
     /// has a new one. The pictures of all sources together cause at most one drawing per
     /// frame, and a picture that a newer one replaced before the frame is not drawn
-    /// (ADR 0793). An image that is replaced is released: the window keeps each image
-    /// that it drew until it is told otherwise.
+    /// (ADR 0793). An image that is replaced is released from the GPU of every window
+    /// (ADR 0774): a window keeps each image that it drew until it is told otherwise.
     pub(crate) fn follow_pictures(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let calls = self.state.read(cx).calls().clone();
         let (mut main, mut small, mut cameras) = (
@@ -354,7 +354,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         if let Some((_, before)) = std::mem::replace(&mut self.pictures.main, shown) {
-            cx.drop_image(before, None);
+            crate::images::release(before, cx);
         }
         cx.notify();
     }
@@ -385,7 +385,7 @@ impl Shell {
             }
         }
         for image in released {
-            cx.drop_image(image, None);
+            crate::images::release(image, cx);
         }
         if changed {
             cx.notify();
@@ -517,6 +517,19 @@ impl Shell {
             .map(|(share, frame)| (share, Arc::new(frame)))
             .collect();
         self.show_small(&small, cx);
+    }
+
+    /// The images of the pictures of the call that the window holds now: the watched
+    /// share, the small pictures of the shares and the cameras that are drawn as images.
+    #[cfg(feature = "test-support")]
+    pub fn picture_images(&self) -> Vec<Arc<RenderImage>> {
+        let main = self.pictures.main.iter().map(|(_, image)| image);
+        let small = self.pictures.small.values().map(|(_, image)| image);
+        let cameras = self
+            .cameras
+            .values()
+            .filter_map(|(_, picture)| picture.image());
+        main.chain(small).chain(cameras).cloned().collect()
     }
 
     fn picker(&mut self) -> Option<&mut SharePicker> {

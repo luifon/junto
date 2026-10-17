@@ -8,6 +8,7 @@ pub mod app;
 pub mod assets;
 pub mod compose;
 pub mod highlight;
+pub mod images;
 pub mod moment;
 pub mod notify;
 #[cfg(target_os = "linux")]
@@ -17,5 +18,6 @@ pub mod state;
 pub mod text;
 pub mod theme;
 pub mod ui;
+pub mod window_icon;
 pub mod window_level;
 pub mod zones;

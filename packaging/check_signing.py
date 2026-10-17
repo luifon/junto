@@ -6,6 +6,8 @@ import shlex
 import subprocess
 import tempfile
 
+import icons
+import release_tools
 from bundle import assemble
 from create_identity import create, run
 from keychains import cleanup, signals
@@ -20,6 +22,8 @@ def requirement(bundle):
 
 
 def check():
+    release_tools.run("cargo", "build", "--locked", "-p", "junto-icon", "--bin", "junto-icon",
+                      cwd=release_tools.REPOSITORY, timeout=3600)
     before = run("security", "list-keychains", "-d", "user")
     default_before = run("security", "default-keychain", "-d", "user")
     with signals(), tempfile.TemporaryDirectory(prefix="junto signing with spaces-") as temporary:
@@ -34,11 +38,12 @@ def check():
             pin.write_text(environment["JUNTO_CODESIGN_IDENTITY"])
             environment["JUNTO_TEST_CERTIFICATE_FILE"] = str(pin)
             succeeding = program(root / "exit-0", 0)
-            bundles = [assemble(succeeding, root / f"v{n}/Junto.app", f"{n}.0.0") for n in [1, 2]]
+            bundles = [assemble(succeeding, root / f"v{n}/Junto.app", f"{n}.0.0", icon_tool=icons.TOOL)
+                       for n in [1, 2]]
             for bundle in bundles:
                 subprocess.run([str(pathlib.Path(__file__).with_name("sign.sh")), str(bundle)], env=environment, check=True, timeout=30)
             assert requirement(bundles[0]) == requirement(bundles[1]), "certificate identity changed"
-            adhoc = assemble(succeeding, root / "adhoc/Junto.app", "3.0.0")
+            adhoc = assemble(succeeding, root / "adhoc/Junto.app", "3.0.0", icon_tool=icons.TOOL)
             run("/usr/bin/codesign", "--force", "--sign", "-", str(adhoc))
             assert requirement(adhoc) != requirement(bundles[0]), "ad-hoc identity was accepted"
             print("2 signature comparisons passed")

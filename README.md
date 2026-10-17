@@ -31,4 +31,4 @@ Design reviewed. The technical tests of step 0 are in progress. The server exist
 
 ## Licence
 
-Apache-2.0. See [`LICENSE`](LICENSE).
+Apache-2.0. See [`LICENSE`](LICENSE). The application icon in [`packaging/icon/`](packaging/icon/README.md) is the project's own work under the same licence. The fonts of the client are under the SIL Open Font License; their licence texts are beside them in `crates/client/assets/fonts/`.
