@@ -177,6 +177,7 @@ class Lock(unittest.TestCase):
             detach()
             ending.join(timeout=60)
             sys.stderr = error
+            process.wait(timeout=60)
         self.assertFalse(ending.is_alive())
 
     # When the command ends and leaves a process behind, the lock is released only after that
