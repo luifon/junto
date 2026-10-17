@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Real signing, update and documented archive recovery of macOS test bundles; no GUI is started.
 
-Builds junto-release and junto-recover with test keys and a test certificate pin in the target
+Builds junto-icon, junto-release and junto-recover with test keys and a test certificate pin in the target
 directory of the repository; a local caller holds tools/serial.sh."""
 import os
 import pathlib
@@ -30,6 +30,7 @@ def check():
         keychain = root / "identity/signing.keychain-db"
         try:
             release_tools.run("cargo", "build", "--locked", "-p", "junto-client-core", "--bin", "junto-release",
+                              "-p", "junto-icon", "--bin", "junto-icon",
                               cwd=release_tools.REPOSITORY, timeout=3600)
             files = release_tools.keys(pathlib.Path(os.environ.get("CARGO_TARGET_DIR", release_tools.REPOSITORY / "target")) / "debug/junto-release", root)
             identity = create(root / "identity")

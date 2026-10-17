@@ -117,7 +117,7 @@ pub fn icns() -> Result<Vec<u8>, Error> {
     for (kind, size, encoding) in ICNS {
         let picture = match encoding {
             Encoding::Png => png(size)?,
-            Encoding::Argb => argb(&render(size)?),
+            Encoding::Argb => argb(&pixmap(size)?),
         };
         entries.extend_from_slice(kind);
         entries.extend_from_slice(&length(8 + picture.len()).to_be_bytes());
@@ -129,15 +129,25 @@ pub fn icns() -> Result<Vec<u8>, Error> {
     Ok(file)
 }
 
-fn argb(picture: &Picture) -> Vec<u8> {
+fn argb(picture: &Pixmap) -> Vec<u8> {
     let mut data = b"ARGB".to_vec();
     for channel in [3, 0, 1, 2] {
         let values: Vec<u8> = picture
-            .rgba
+            .data()
+            .as_chunks::<4>()
+            .0
             .iter()
-            .skip(channel)
-            .step_by(4)
-            .copied()
+            .map(|pixel| {
+                let alpha = u32::from(pixel[3]);
+                if channel == 3 {
+                    pixel[3]
+                } else {
+                    // Integer rounding of straight channels matches the ARGB entries of iconutil.
+                    (u32::from(pixel[channel]) * 255 + alpha / 2)
+                        .checked_div(alpha)
+                        .unwrap_or(0) as u8
+                }
+            })
             .collect();
         data.extend_from_slice(&run_length(&values));
     }

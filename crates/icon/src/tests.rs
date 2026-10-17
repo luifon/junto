@@ -169,6 +169,15 @@ fn the_run_length_code_repeats_runs_and_copies_the_other_values() {
 }
 
 #[test]
+fn argb_rounds_half_channel_values_up() {
+    let mut picture = Pixmap::new(1, 1).unwrap();
+    picture.data_mut().copy_from_slice(&[57, 54, 49, 98]);
+    let data = argb(&picture);
+    assert_eq!(&data[..4], b"ARGB");
+    assert_eq!(&data[4..], &[0, 98, 0, 148, 0, 141, 0, 128]);
+}
+
+#[test]
 fn the_macos_icon_file_holds_a_rendering_for_each_entry() {
     let file = icns().unwrap();
     assert_eq!(&file[..4], b"icns");
@@ -191,10 +200,20 @@ fn the_macos_icon_file_holds_a_rendering_for_each_entry() {
                     read += used;
                 }
                 assert_eq!(read, data.len());
-                let rgba = (0..count)
+                let rgba: Vec<u8> = (0..count)
                     .flat_map(|pixel| [1, 2, 3, 0].map(|channel| channels[channel][pixel]))
                     .collect();
-                assert_eq!(Picture { size, rgba }, render(size).unwrap());
+                for (actual, expected) in rgba
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(render(size).unwrap().rgba.as_chunks::<4>().0)
+                {
+                    assert_eq!(actual[3], expected[3]);
+                    for channel in 0..3 {
+                        assert!(actual[channel].abs_diff(expected[channel]) <= 1);
+                    }
+                }
             }
         }
         position = end;
