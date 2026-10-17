@@ -756,6 +756,76 @@ mod registry {
         // SAFETY: the string outlives the call.
         let _ = unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, &HSTRING::from(key)) };
     }
+
+    /// The program that the system starts for the verb "open" of a scheme, as the shell finds
+    /// it, or nothing when the shell finds none.
+    pub fn program_of(scheme: &str) -> Option<String> {
+        use windows::Win32::UI::Shell::{ASSOCF_NONE, ASSOCSTR_EXECUTABLE, AssocQueryStringW};
+        use windows::core::{PWSTR, w};
+        let mut buffer = vec![0u16; 32_768];
+        let mut size = buffer.len() as u32;
+        // SAFETY: the strings and the buffer outlive the call, and `size` states the length
+        // of the buffer.
+        unsafe {
+            AssocQueryStringW(
+                ASSOCF_NONE,
+                ASSOCSTR_EXECUTABLE,
+                &HSTRING::from(scheme),
+                w!("open"),
+                Some(PWSTR(buffer.as_mut_ptr())),
+                &mut size,
+            )
+            .ok()
+            .ok()?;
+        }
+        let length = buffer.iter().position(|unit| *unit == 0)?;
+        Some(String::from_utf16_lossy(&buffer[..length]))
+    }
+
+    /// Closes the message windows of the desktop whose title starts with `title`, and
+    /// returns their number.
+    pub fn close_messages(title: &str) -> usize {
+        use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            EnumWindows, GetClassNameW, GetWindowTextW, PostMessageW, WM_CLOSE,
+        };
+        use windows::core::BOOL;
+        struct Search {
+            title: String,
+            found: Vec<HWND>,
+        }
+        unsafe extern "system" fn visit(window: HWND, search: LPARAM) -> BOOL {
+            // SAFETY: `search` is the value that `close_messages` passed, and the
+            // enumeration calls this function on its thread during that call.
+            let search = unsafe { &mut *(search.0 as *mut Search) };
+            let (mut class, mut text) = ([0u16; 64], [0u16; 512]);
+            // SAFETY: each call writes at most the length of its buffer.
+            let (class_length, text_length) = unsafe {
+                (
+                    GetClassNameW(window, &mut class),
+                    GetWindowTextW(window, &mut text),
+                )
+            };
+            let class = String::from_utf16_lossy(&class[..class_length.max(0) as usize]);
+            let text = String::from_utf16_lossy(&text[..text_length.max(0) as usize]);
+            if class == "#32770" && text.starts_with(&search.title) {
+                search.found.push(window);
+            }
+            true.into()
+        }
+        let mut search = Search {
+            title: title.to_owned(),
+            found: Vec::new(),
+        };
+        // SAFETY: `search` outlives the enumeration, which calls `visit` during the call.
+        unsafe {
+            let _ = EnumWindows(Some(visit), LPARAM(&mut search as *mut Search as isize));
+            for window in &search.found {
+                let _ = PostMessageW(Some(*window), WM_CLOSE, WPARAM(0), LPARAM(0));
+            }
+        }
+        search.found.len()
+    }
 }
 
 /// The lines that a program wrote into a file, once the file exists.
@@ -796,20 +866,24 @@ fn a_link_with_quotes_and_spaces_reaches_its_application_as_one_argument() {
     // An address that a server could send: with `%1` replaced as it is, the fixture would
     // receive `--report` and `C:\a b` as arguments of their own.
     let link = Link::of_any_scheme(&format!(r#"{name}:x" --report "C:\a b" y"#)).unwrap();
-    // The shell answers when it has started the program, or when a person has closed its
-    // message that it cannot.
+    // When the shell finds no program for the scheme, it shows a message on the desktop and
+    // waits for a person to close it: the link is opened only when the shell finds the
+    // fixture.
+    let program = registry::program_of(&name).map(std::path::PathBuf::from);
+    assert_eq!(program.as_deref(), Some(fixture.as_path()));
+    // The shell answers when it has started the program. A message that it shows all the
+    // same is closed here, so that nothing of the test stays on the desktop.
     let (answer, answered) = std::sync::mpsc::channel();
     std::thread::spawn({
         let target = Target::Link(link.clone());
         move || answer.send(open(&target))
     });
-    assert_eq!(
-        answered.recv_timeout(PATIENCE).expect(
-            "the shell did not answer: it shows a message on the desktop that it could not \
-             open the link"
-        ),
-        Ok(Opened::ByTheShell)
-    );
+    let opened = answered.recv_timeout(PATIENCE);
+    if opened.is_err() {
+        let closed = registry::close_messages(&name);
+        panic!("the shell did not answer; {closed} message windows of the shell were closed");
+    }
+    assert_eq!(opened.ok(), Some(Ok(Opened::ByTheShell)));
     assert_eq!(arguments_in(&file), [link.as_str()]);
     assert!(!link.as_str().contains(['"', ' ']), "{link}");
 }
