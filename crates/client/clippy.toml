@@ -8,4 +8,15 @@ disallowed-methods = [
     { path = "gpui::App::drop_image", reason = "it skips the window whose work runs at the time of the call, which then keeps the GPU copy of the image (ADR 0774); use `images::release`" },
     { path = "gpui::Window::drop_image", reason = "it removes the GPU copy from one window only (ADR 0774); use `images::release`" },
     { path = "time::OffsetDateTime::to_offset", reason = "it ends the program for a moment at the end of the range of dates, which a server can state (ADR 0747); use `checked_to_offset`, or `moment::in_offset` in the window" },
+    # The thread of the window does not wait for a file (ADR 0730). These calls ask the file
+    # system; a function that runs them on a background thread allows them by name.
+    { path = "std::fs::metadata", reason = "it waits for the file system; the thread of the window does not (ADR 0730): use `state::measure` on a background thread" },
+    { path = "std::fs::symlink_metadata", reason = "it waits for the file system; the thread of the window does not (ADR 0730): read it on a background thread" },
+    { path = "dirs::download_dir", reason = "it reads a file on Linux and the account database on macOS; the thread of the window does not wait for them (ADR 0730): use `AppState::find_for_save`" },
+    { path = "iana_time_zone::get_timezone", reason = "it reads files of the system; the thread of the window does not (ADR 0730): use `zones::system_zone` at the start or on a background thread" },
+    { path = "junto_client::zones::system_zone", reason = "it reads files of the system; after the start the window reads the zone on a background thread (ADR 0730, ADR 0798): use `AppState::system_zone_name`" },
+    { path = "junto_client::zones::system", reason = "it reads files of the system; after the start the window reads the zone on a background thread (ADR 0730, ADR 0798): use `AppState::system_zone_name`" },
+]
+disallowed-types = [
+    { path = "chrono::Local", reason = "it reads `/etc/localtime` on the thread that asks; the window shows times by the rules of `chrono-tz` for the zone that it read (ADR 0730, ADR 0798)" },
 ]

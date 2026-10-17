@@ -345,8 +345,11 @@ fn show_call(window: &mut Window, call: junto_media::calls::ActiveCall) {
     window.settle();
 }
 
-/// ADR 0793: received pictures are drawn once per frame of the display, whatever their
-/// number, and the picture that is drawn is the newest one.
+/// ADR 0793: received pictures cause at most one drawing per frame of the display, whatever
+/// their number. The follower converts the newest picture on a thread of the runtime before
+/// it asks for a frame. After a burst of pictures a frame draws the picture whose
+/// conversion started first, which can already be the newest one, and the next frame the
+/// newest one: one or two drawings.
 #[gpui::test]
 fn received_pictures_cause_one_drawing_per_frame_of_the_display(cx: &mut TestAppContext) {
     use junto_media::engine::{MainPicture, ShareId};
@@ -403,26 +406,37 @@ fn received_pictures_cause_one_drawing_per_frame_of_the_display(cx: &mut TestApp
         "the window was drawn {} times for fifty pictures without a frame",
         all_after - all
     );
-    // One frame: one drawing, with the newest picture.
-    assert_eq!(window.frame(), 1);
-    window.park();
-    let (_, asked, width) = draws(&window);
-    assert_eq!((asked, width), (before + 1, Some(50)));
+    // The picture whose conversion started first, and then the newest one.
+    window.until_pictures_taken();
+    let (_, after_burst, width) = draws(&window);
+    assert!(
+        (before + 1..=before + 2).contains(&after_burst),
+        "{} drawings for a burst of fifty pictures",
+        after_burst - before
+    );
+    assert_eq!(width, Some(50));
     // Without a newer picture a frame draws nothing more.
     window.frame();
     window.park();
-    assert_eq!(draws(&window).1, before + 1);
-    // Pictures between two frames: the frame takes the last one only.
+    assert_eq!(draws(&window).1, after_burst);
+    // Five pictures between two waits for frames: at most two drawings each time, and the
+    // last picture is drawn.
     for width in 51..=60 {
         calls.show_main_picture_for_test(Some(picture(width)));
         window.park();
         if width % 5 == 0 {
-            window.frame();
-            window.park();
+            let drawn = draws(&window).1;
+            window.until_pictures_taken();
+            let (_, now, shown) = draws(&window);
+            assert!(
+                now - drawn <= 2,
+                "{} drawings for five pictures",
+                now - drawn
+            );
+            assert_eq!(shown, Some(width));
         }
     }
-    let (all_end, asked, width) = draws(&window);
-    assert_eq!((asked, width), (before + 3, Some(60)));
+    let (all_end, _, _) = draws(&window);
     eprintln!(
         "drawings of the window for any cause: {} for fifty pictures without a frame, {} in the whole test",
         all_after - all,
@@ -509,7 +523,7 @@ fn a_window_holds_gpu_images_only_for_the_pictures_that_it_draws_now(cx: &mut Te
             (ShareId::Own, camera(true)),
             (ShareId::Of(other), camera(false)),
         ]));
-        window.settle();
+        window.until_pictures_taken();
         for shell in shells {
             for image in shell.read_with(&window.cx, |shell, _| shell.picture_images()) {
                 if !seen.iter().any(|known| Arc::ptr_eq(known, &image)) {
@@ -604,7 +618,7 @@ fn a_window_holds_gpu_images_only_for_the_pictures_that_it_draws_now(cx: &mut Te
     calls.show_main_picture_for_test(None);
     calls.show_small_pictures_for_test(HashMap::new());
     calls.show_camera_pictures_for_test(HashMap::new());
-    window.settle();
+    window.until_pictures_taken();
     assert_eq!(
         (
             in_gpu(&mut window.cx, &images),

@@ -1383,6 +1383,52 @@ impl ShellView {
             Content::NoWorkspace | Content::State => None,
         }
     }
+
+    /// Puts these levels into a view that [`derive`] made with other levels. The result is
+    /// the view that `derive` makes with these levels: only the meters and the speaking
+    /// marks of the call of this device and the input meter of its panel read them. A
+    /// change of the levels alone, at most every 50 ms, therefore does not derive the view
+    /// again (ADR 0730).
+    pub fn show_levels(&mut self, levels: &ShownLevels) {
+        let Some(SelectedServer {
+            content: Content::Workspace(workspace),
+            ..
+        }) = &mut self.selected
+        else {
+            return;
+        };
+        // The rows of the channel list, and the shown channel, which holds a copy of its row.
+        let occupants = workspace
+            .sections
+            .iter_mut()
+            .flat_map(|section| &mut section.rows)
+            .chain(workspace.channel.as_mut())
+            .filter_map(|row| row.voice.as_mut())
+            .flat_map(|voice| &mut voice.occupants);
+        for occupant in occupants {
+            // Only an occupant of the call of this device has a measured level. The others
+            // show the marks of the server.
+            if occupant.level.is_none() {
+                continue;
+            }
+            let (level, speaking) = if occupant.is_self {
+                levels.own
+            } else {
+                levels
+                    .people
+                    .get(&occupant.account_id)
+                    .copied()
+                    .unwrap_or_default()
+            };
+            occupant.level = Some(level);
+            if let Microphone::Open { speaking: shown } = &mut occupant.microphone {
+                *shown = speaking;
+            }
+        }
+        if let Some(call) = &mut workspace.call {
+            call.audio.input_level = levels.input;
+        }
+    }
 }
 
 /// The selection as the view resolved it: what is shown now.

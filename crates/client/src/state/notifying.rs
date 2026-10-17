@@ -806,6 +806,40 @@ impl AppState {
             self.window_active = active;
             self.changed(cx);
         }
+        // A person who changed the zone of the system did it in another application, and
+        // comes back to this window.
+        if active {
+            self.read_system_zone(cx);
+        }
+    }
+
+    /// Reads the time zone of the system on a background thread (ADR 0730), and shows the
+    /// times in it when it changed.
+    #[allow(clippy::disallowed_methods)]
+    fn read_system_zone(&mut self, cx: &mut Context<Self>) {
+        let reading = cx
+            .background_executor()
+            .spawn(async { crate::zones::system_zone() });
+        cx.spawn(async move |this, cx| {
+            let zone = reading.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.system_zone == zone {
+                    return;
+                }
+                this.system_zone = zone;
+                // A test that set a fixed offset keeps it.
+                if matches!(this.known.zone, super::feed::Zone::Named(_)) {
+                    this.known.zone = super::feed::Zone::Named(zone);
+                }
+                this.changed(cx);
+            });
+        })
+        .detach();
+    }
+
+    /// The name of the time zone of the system as it was read last.
+    pub fn system_zone_name(&self) -> &'static str {
+        self.system_zone.name()
     }
 
     /// Applies the rules of a system notification to every server after a change.

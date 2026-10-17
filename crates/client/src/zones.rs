@@ -33,10 +33,31 @@ pub fn names() -> impl Iterator<Item = &'static str> {
     chrono_tz::TZ_VARIANTS.iter().map(|zone| zone.name())
 }
 
-/// The name of the time zone of the system, when the system states one that this build
-/// holds, and [`FALLBACK`] otherwise.
+/// The time zone of the system: the zone that the variable `TZ` names, as the C library
+/// reads it, otherwise the zone that the system states, when this build holds it, and
+/// [`FALLBACK`] otherwise. It reads files of the system, such as `/etc/localtime`: the
+/// application calls it at the start and on a background thread, not on the thread of the
+/// window (ADR 0730).
+#[allow(clippy::disallowed_methods)]
+pub fn system_zone() -> Tz {
+    let variable = std::env::var("TZ").ok();
+    variable
+        .as_deref()
+        .map(|name| name.trim_start_matches(':'))
+        .and_then(zone)
+        .or_else(|| {
+            iana_time_zone::get_timezone()
+                .ok()
+                .as_deref()
+                .and_then(zone)
+        })
+        .unwrap_or(Tz::UTC)
+}
+
+/// The name of [`system_zone`]. It reads files of the system, as that function does.
+#[allow(clippy::disallowed_methods)]
 pub fn system() -> String {
-    known_or_fallback(iana_time_zone::get_timezone().ok().as_deref())
+    system_zone().name().to_owned()
 }
 
 /// The name itself when this build holds its zone, and [`FALLBACK`] otherwise.
@@ -181,7 +202,9 @@ mod tests {
 
     #[test]
     fn the_zone_of_the_system_is_a_name_of_the_list() {
-        assert!(is_known(&system()));
+        #[allow(clippy::disallowed_methods)]
+        let system = system();
+        assert!(is_known(&system));
         assert_eq!(known_or_fallback(Some("Europe/Lisbon")), "Europe/Lisbon");
         // A system that states nothing, or a name that this build does not hold.
         assert_eq!(known_or_fallback(None), FALLBACK);

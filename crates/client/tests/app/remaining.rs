@@ -502,6 +502,7 @@ fn a_quiet_time_in_a_named_zone_holds_a_notice_back_by_the_clock_that_the_client
         model.channel(general).is_some()
     });
 
+    #[allow(clippy::disallowed_methods)]
     let system = zones::system();
     let mut told = bruno.live().notices();
     for zone in [

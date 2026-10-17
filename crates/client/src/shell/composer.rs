@@ -532,21 +532,43 @@ impl Shell {
         true
     }
 
-    /// Attaches files to the next message of the shown place.
+    /// Attaches files to the next message of the shown place. The sizes of the files are
+    /// read on a background thread (ADR 0730); the files are attached when that is done,
+    /// while the composer still writes to the place and the server still has the owner
+    /// that asked (ADR 0746).
     pub(crate) fn attach(
         &mut self,
         pane: Pane,
         sources: Vec<UploadSource>,
         cx: &mut Context<Self>,
     ) {
-        let Some((server_id, place)) = self.composer_place(pane) else {
+        let Some(asked) = self.pen(pane).place else {
             return;
         };
-        let refused = self
-            .state
-            .update(cx, |state, cx| state.attach(server_id, place, sources, cx));
-        self.pen_mut(pane).problem = refused.first().map(text::attach_refusal);
-        cx.notify();
+        let Some(owner) = self.state.read(cx).owner(asked.0) else {
+            return;
+        };
+        let measuring = cx
+            .background_executor()
+            .spawn(async move { crate::state::measure(sources) });
+        cx.spawn(async move |this, cx| {
+            let measured = measuring.await;
+            let _ = this.update(cx, |this, cx| {
+                let same_owner = this.state.read(cx).owner(asked.0) == Some(owner);
+                if this.pen(pane).place != Some(asked) || !same_owner {
+                    this.pen_mut(pane).problem = Some(text::FILES_OF_ANOTHER_PLACE.to_owned());
+                    cx.notify();
+                    return;
+                }
+                let (server_id, _, place) = asked;
+                let refused = this
+                    .state
+                    .update(cx, |state, cx| state.attach(server_id, place, measured, cx));
+                this.pen_mut(pane).problem = refused.first().map(text::attach_refusal);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Attaches the files at these paths, as the file dialog and a drop do.

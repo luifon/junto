@@ -24,6 +24,11 @@ mod admin;
 mod admin_pages;
 mod calls;
 mod flows;
+// The rate of growth of the long use of `tests/endurance/`, tested here because that
+// target runs without the test runner.
+#[path = "../rehearsal/growth.rs"]
+mod growth;
+mod growth_tests;
 mod harness;
 mod layout;
 mod layout_forms;

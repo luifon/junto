@@ -21,7 +21,7 @@ use junto_media::share::{
 
 use super::call::{occupants, tile_marks};
 use super::channels::occupant_name;
-use super::{Layer, Shell};
+use super::{Layer, Shell, prepared};
 use crate::assets::Icon;
 use crate::state::view::{CallPanel, ChannelRow, Microphone, ShareCard, ShareStage};
 use crate::text;
@@ -170,18 +170,21 @@ pub(crate) struct ShownPictures {
     pub small: HashMap<ShareId, (Arc<PictureFrame>, Arc<RenderImage>)>,
 }
 
-/// Waits until one of the three sources of pictures has a newer one, and returns which
-/// have. Absent when a source has ended: the calls are gone.
+/// Waits until one of the three sources of pictures has a newer one, or the window asks
+/// for all pictures again, and returns which sources have a newer picture and whether the
+/// window asked. Absent when a source has ended: the calls are gone.
 async fn newer_pictures<E>(
     main: impl Future<Output = Result<(), E>>,
     small: impl Future<Output = Result<(), E>>,
     cameras: impl Future<Output = Result<(), E>>,
-) -> Option<[bool; 3]> {
+    again: impl Future<Output = ()>,
+) -> Option<([bool; 3], bool)> {
     use std::task::Poll;
-    let (mut main, mut small, mut cameras) = (
+    let (mut main, mut small, mut cameras, mut again) = (
         std::pin::pin!(main),
         std::pin::pin!(small),
         std::pin::pin!(cameras),
+        std::pin::pin!(again),
     );
     std::future::poll_fn(|cx| {
         let polled = [
@@ -195,9 +198,10 @@ async fn newer_pictures<E>(
         {
             return Poll::Ready(None);
         }
+        let asked = again.as_mut().poll(cx).is_ready();
         let newer = polled.map(|source| source.is_ready());
-        if newer.contains(&true) {
-            Poll::Ready(Some(newer))
+        if asked || newer.contains(&true) {
+            Poll::Ready(Some((newer, asked)))
         } else {
             Poll::Pending
         }
@@ -205,7 +209,8 @@ async fn newer_pictures<E>(
     .await
 }
 
-/// A picture of the media engine as an image of the window.
+/// A picture of the media engine as an image of the window. It copies the picture: call it
+/// on a blocking thread of the runtime, not on the thread of the window (ADR 0730).
 pub(crate) fn render_image(frame: &PictureFrame) -> Option<Arc<RenderImage>> {
     let buffer = image::RgbaImage::from_raw(frame.width, frame.height, frame.bgra.to_vec())?;
     Some(Arc::new(RenderImage::new(vec![image::Frame::new(buffer)])))
@@ -213,19 +218,26 @@ pub(crate) fn render_image(frame: &PictureFrame) -> Option<Arc<RenderImage>> {
 
 impl Shell {
     /// Follows the pictures of the call of this device: the watched share, the small
-    /// pictures of the shares and the cameras. A picture that arrives asks for the next
-    /// frame of the display, and that frame takes the newest picture of each source that
-    /// has a new one. The pictures of all sources together cause at most one drawing per
-    /// frame, and a picture that a newer one replaced before the frame is not drawn
-    /// (ADR 0793). An image that is replaced is released from the GPU of every window
-    /// (ADR 0774): a window keeps each image that it drew until it is told otherwise.
+    /// pictures of the shares and the cameras. A picture that arrives is converted, with
+    /// the newest picture of each other source that has a new one, on a blocking thread of
+    /// the runtime of the client; then the follower asks for the next frame of the display,
+    /// and that frame puts the converted pictures in place of the ones that the window
+    /// holds. One conversion and one drawing run at a time, so the pictures of all sources
+    /// together cause at most one drawing per frame, and a picture that a newer one
+    /// replaced before its conversion started is not converted (ADR 0793). An image that
+    /// is replaced is released from the GPU of every window (ADR 0774): a window keeps
+    /// each image that it drew until it is told otherwise.
     pub(crate) fn follow_pictures(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let calls = self.state.read(cx).calls().clone();
+        let state = self.state.read(cx);
+        let calls = state.calls().clone();
+        let runtime = state.client().runtime().handle().clone();
         let (mut main, mut small, mut cameras) = (
             calls.main_picture(),
             calls.small_pictures(),
             calls.camera_pictures(),
         );
+        let again = Arc::new(tokio::sync::Notify::new());
+        self.pictures_again = again.clone();
         let software_video = self.software_video;
         let follow = cx.spawn_in(window, async move |this, cx| {
             // Without a graphics processor the cameras are taken at most once in 200 ms,
@@ -242,8 +254,13 @@ impl Shell {
                         None => cameras.changed().await,
                     }
                 };
-                let Some(mut sources) =
-                    newer_pictures(main.changed(), small.changed(), cameras_newer).await
+                let Some((mut sources, asked)) = newer_pictures(
+                    main.changed(),
+                    small.changed(),
+                    cameras_newer,
+                    again.notified(),
+                )
+                .await
                 else {
                     break;
                 };
@@ -259,14 +276,39 @@ impl Shell {
                         );
                     }
                 }
+                // The window draws the call again: it holds no picture, and takes all.
+                if asked {
+                    sources = [true; 3];
+                }
                 if sources == [false; 3] {
                     continue;
                 }
+                let wanted = prepared::Wanted {
+                    main: sources[0].then(|| main.borrow_and_update().clone()),
+                    small: sources[1].then(|| small.borrow_and_update().clone()),
+                    cameras: sources[2].then(|| cameras.borrow_and_update().clone()),
+                };
+                // A window that does not draw the call converts nothing and asks for no
+                // frame. When it starts to draw the call it asks for all pictures again.
+                let Ok(held) = this.update(cx, |this, cx| {
+                    let held = this.draws_call(cx).then(|| this.held_pictures());
+                    this.pictures_converting = held.is_some();
+                    held
+                }) else {
+                    break;
+                };
+                let Some(held) = held else {
+                    continue;
+                };
+                let Ok(converted) = runtime.spawn_blocking(move || wanted.prepare(&held)).await
+                else {
+                    let _ = this.update(cx, |this, _| this.pictures_converting = false);
+                    break;
+                };
                 let (taken, frame) = futures_channel::oneshot::channel::<()>();
                 let asked = this.update_in(cx, |this, window, cx| {
-                    for (pending, newer) in this.pictures_pending.iter_mut().zip(sources) {
-                        *pending |= newer;
-                    }
+                    this.pictures_converting = false;
+                    this.pictures_prepared = Some(converted);
                     let shell = cx.entity().downgrade();
                     window.on_next_frame(move |_, cx| {
                         let _ = shell.update(cx, |this, cx| this.take_pictures(cx));
@@ -282,39 +324,52 @@ impl Shell {
         self.picture_tasks = vec![follow];
     }
 
-    /// Takes the newest picture of each source that has a new one, in the frame of the
-    /// display that was asked for.
+    /// The pictures that the window holds, so that a conversion leaves them as they are.
+    fn held_pictures(&self) -> prepared::Held {
+        prepared::Held {
+            main: self.main_taken.clone(),
+            small: self
+                .pictures
+                .small
+                .iter()
+                .map(|(share, (frame, _))| (*share, frame.clone()))
+                .collect(),
+            cameras: self
+                .cameras
+                .iter()
+                .map(|(id, (frame, _))| (*id, frame.clone()))
+                .collect(),
+        }
+    }
+
+    /// Puts the pictures that the follower converted in place of the ones that the window
+    /// holds, in the frame of the display that was asked for.
     fn take_pictures(&mut self, cx: &mut Context<Self>) {
-        let [main, small, cameras] = std::mem::take(&mut self.pictures_pending);
+        let Some(converted) = self.pictures_prepared.take() else {
+            return;
+        };
         if !self.draws_call(cx) {
             return;
         }
-        let calls = self.state.read(cx).calls().clone();
         let mut drawn = false;
-        if main {
-            let picture = calls.main_picture().borrow().clone();
-            let frame = picture.as_ref().map(|picture| picture.frame.clone());
+        if let Some(main) = converted.main {
             // A frame that was asked for a picture that an earlier frame took draws nothing.
-            let same = match (&frame, &self.main_taken) {
+            let same = match (&main.frame, &self.main_taken) {
                 (Some(now), Some(taken)) => Arc::ptr_eq(now, taken),
                 (None, None) => true,
                 _ => false,
             };
             if !same {
-                self.main_taken = frame;
-                let shown = picture
-                    .and_then(|picture| Some((picture.share, render_image(&picture.frame)?)));
-                self.show_main(shown, cx);
+                self.main_taken = main.frame;
+                self.show_main(main.shown, cx);
                 drawn = true;
             }
         }
-        if small {
-            let pictures = calls.small_pictures().borrow().clone();
-            drawn |= self.show_small(&pictures, cx);
+        if let Some(small) = converted.small {
+            drawn |= self.show_small(small, cx);
         }
-        if cameras {
-            let pictures = calls.camera_pictures().borrow().clone();
-            drawn |= self.show_cameras(&pictures, cx);
+        if let Some(cameras) = converted.cameras {
+            drawn |= self.show_cameras(cameras, cx);
         }
         #[cfg(feature = "test-support")]
         {
@@ -324,28 +379,24 @@ impl Shell {
         let _ = drawn;
     }
 
+    /// Follows whether this window draws the call. A window that stops drawing it releases
+    /// its pictures; a window that starts asks the follower for all pictures, which it
+    /// converts off the thread of the window.
     pub(crate) fn refresh_picture_owner(&mut self, cx: &mut Context<Self>) {
         let drawing = self.draws_call(cx);
         if self.drawing_call == drawing {
             return;
         }
         self.drawing_call = drawing;
-        let calls = self.state.read(cx).calls().clone();
-        let (main, small, cameras) = if drawing {
-            let main = calls.main_picture().borrow().clone();
-            let small = calls.small_pictures().borrow().clone();
-            let cameras = calls.camera_pictures().borrow().clone();
-            (
-                main.and_then(|picture| Some((picture.share, render_image(&picture.frame)?))),
-                small,
-                cameras,
-            )
+        if drawing {
+            self.pictures_again.notify_one();
         } else {
-            (None, HashMap::new(), HashMap::new())
-        };
-        self.show_main(main, cx);
-        self.show_small(&small, cx);
-        self.show_cameras(&cameras, cx);
+            self.pictures_prepared = None;
+            self.main_taken = None;
+            self.show_main(None, cx);
+            self.show_small(HashMap::new(), cx);
+            self.show_cameras(HashMap::new(), cx);
+        }
     }
 
     pub(crate) fn show_main(
@@ -359,28 +410,30 @@ impl Shell {
         cx.notify();
     }
 
-    /// Returns whether the window holds other pictures than before, and is drawn for them.
+    /// Holds the small pictures of these shares: a picture that the window holds is kept,
+    /// and a converted one is taken. Returns whether the window holds other pictures than
+    /// before, and is drawn for them.
     pub(crate) fn show_small(
         &mut self,
-        pictures: &HashMap<ShareId, Arc<PictureFrame>>,
+        pictures: prepared::ConvertedSmall,
         cx: &mut Context<Self>,
     ) -> bool {
         let mut released = Vec::new();
         self.pictures.small.retain(|share, (frame, image)| {
             let kept = pictures
                 .get(share)
-                .is_some_and(|now| Arc::ptr_eq(now, frame));
+                .is_some_and(|(now, _)| Arc::ptr_eq(now, frame));
             if !kept {
                 released.push(image.clone());
             }
             kept
         });
         let mut changed = !released.is_empty();
-        for (share, frame) in pictures {
-            if !self.pictures.small.contains_key(share)
-                && let Some(image) = render_image(frame)
+        for (share, (frame, image)) in pictures {
+            if !self.pictures.small.contains_key(&share)
+                && let Some(image) = image
             {
-                self.pictures.small.insert(*share, (frame.clone(), image));
+                self.pictures.small.insert(share, (frame, image));
                 changed = true;
             }
         }
@@ -514,9 +567,20 @@ impl Shell {
         self.show_main(main, cx);
         let small = small
             .into_iter()
-            .map(|(share, frame)| (share, Arc::new(frame)))
+            .map(|(share, frame)| {
+                let image = render_image(&frame);
+                (share, (Arc::new(frame), image))
+            })
             .collect();
-        self.show_small(&small, cx);
+        self.show_small(small, cx);
+    }
+
+    /// True while the follower converts pictures, or converted pictures wait for the next
+    /// frame of the display. A test waits for both to end: the conversion runs on a thread
+    /// of the runtime (ADR 0793).
+    #[cfg(feature = "test-support")]
+    pub fn pictures_pending(&self) -> bool {
+        self.pictures_converting || self.pictures_prepared.is_some()
     }
 
     /// The images of the pictures of the call that the window holds now: the watched

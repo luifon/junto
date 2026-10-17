@@ -30,7 +30,7 @@ mod threads;
 mod update_install;
 pub mod view;
 
-pub use messages::AttachRefusal;
+pub use messages::{AttachRefusal, Measured, measure};
 pub use notifying::MentionSwitch;
 pub use recorded_work::RecordedFile;
 
@@ -320,6 +320,13 @@ mod pending_tests {
     }
 }
 
+/// The levels of the call of this device changed, and nothing else. A window puts them
+/// into the view that it holds ([`view::ShellView::show_levels`]) and does not derive the
+/// view again (ADR 0730).
+pub struct LevelsChanged;
+
+impl gpui::EventEmitter<LevelsChanged> for AppState {}
+
 pub struct AppState {
     talking_windows: HashSet<gpui::EntityId>,
     call_window: Option<gpui::WindowHandle<gpui_base::Root>>,
@@ -348,6 +355,8 @@ pub struct AppState {
     settings_failed: HashMap<Setting, String>,
     selection: Selection,
     known: Known,
+    /// The time zone of the system as it was read last.
+    system_zone: chrono_tz::Tz,
     pending: Pending,
     /// What the administration holds: the open page and its requests (ADR 0761).
     admin: admin::AdminState,
@@ -545,7 +554,7 @@ impl AppState {
                 let told = this.update(cx, |this, cx| {
                     if this.known.media.levels != shown {
                         this.known.media.levels = shown;
-                        cx.notify();
+                        cx.emit(LevelsChanged);
                     }
                 });
                 if told.is_err() {
@@ -601,7 +610,12 @@ impl AppState {
                 }
             }
         });
+        // The one read of the zone of the system on the thread of the window, at the start.
+        // Later reads run on a background thread (ADR 0730).
+        #[allow(clippy::disallowed_methods)]
+        let system_zone = crate::zones::system_zone();
         let known = Known {
+            zone: feed::Zone::Named(system_zone),
             preset_name: client
                 .profile()
                 .load()
@@ -641,6 +655,7 @@ impl AppState {
             settings_failed: HashMap::new(),
             selection: Selection::default(),
             known,
+            system_zone,
             pending: Pending::default(),
             admin: admin::AdminState::default(),
             account: account::AccountState::default(),
@@ -724,6 +739,15 @@ impl AppState {
 
     pub fn calls(&self) -> &Calls {
         &self.calls
+    }
+
+    /// The levels of the call of this device as the meters show them.
+    pub fn shown_levels(&self) -> &ShownLevels {
+        #[cfg(feature = "test-support")]
+        if let Some(media) = &self.media_fixture {
+            return &media.levels;
+        }
+        &self.known.media.levels
     }
 
     /// The sound settings as the window uses them.

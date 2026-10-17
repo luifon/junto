@@ -253,6 +253,33 @@ impl AppState {
         open: bool,
         cx: &mut Context<Self>,
     ) {
+        // A file that was saved is checked on the file system before it is opened.
+        let saved = self
+            .recording_downloads
+            .get(&(server_id, recording_id, file))
+            .map(RecordingDownload::progress)
+            .filter(|_| open)
+            .and_then(|progress| match progress.stage {
+                DownloadStage::Saved(path) => Some((path, progress.bytes)),
+                _ => None,
+            });
+        let stem = stem.to_owned();
+        self.find_for_save(server_id, saved, cx, move |this, found, cx| {
+            this.save_recording_file_found(server_id, recording_id, file, &stem, open, found, cx);
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn save_recording_file_found(
+        &mut self,
+        server_id: ServerId,
+        recording_id: RecordingId,
+        file: RecordedFile,
+        stem: &str,
+        open: bool,
+        found: super::messages::Found,
+        cx: &mut Context<Self>,
+    ) {
         // What the window holds of the downloads of a server belongs to its present owner.
         self.follow_owners();
         if !self.owners.contains_key(&server_id) {
@@ -266,8 +293,10 @@ impl AppState {
                 // path still names a file of the saved length. A file that the person
                 // deleted or replaced is saved again.
                 (true, DownloadStage::Saved(path)) => {
-                    let kept = std::fs::symlink_metadata(&path)
-                        .is_ok_and(|file| file.is_file() && file.len() == progress.bytes);
+                    let kept = found
+                        .saved
+                        .as_ref()
+                        .is_some_and(|(checked, kept)| *kept && *checked == path);
                     if kept {
                         // The task that follows the download has nothing left to open.
                         self.opening.remove(&key);
@@ -285,8 +314,7 @@ impl AppState {
                 }
             }
         }
-        let (Some(server), Some(directory)) =
-            (self.client.server(server_id), self.download_directory())
+        let (Some(server), Some(directory)) = (self.client.server(server_id), found.directory)
         else {
             self.known.recording_refused.insert(
                 (server_id, recording_id),

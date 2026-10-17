@@ -1427,6 +1427,69 @@ mod calls {
     }
 
     #[test]
+    fn levels_put_into_a_derived_view_give_the_view_that_a_derivation_with_them_gives() {
+        let mut scene = scene();
+        let (ana, ben, cyd) = (
+            AccountId::generate(),
+            AccountId::generate(),
+            AccountId::generate(),
+        );
+        let (own, daily, general) = (scene.own, scene.daily, scene.general);
+        let mut held = participant(cyd);
+        held.microphone_block = Some(MicrophoneBlock {
+            reason: BlockReason::Moderator,
+            by: ana,
+        });
+        let mut closed = participant(ben);
+        closed.muted = true;
+        scene.call(
+            daily,
+            vec![participant(ana), closed, held, participant(own)],
+        );
+        let model = scene.model();
+        let server = server("Acme Studio", Some(model), logged_in(own, Vec::new()));
+        let servers = std::slice::from_ref(&server);
+        let levels = [
+            ShownLevels::default(),
+            ShownLevels {
+                input: 7,
+                own: (2, true),
+                people: [(ana, (4, true)), (ben, (1, false)), (cyd, (3, true))]
+                    .into_iter()
+                    .collect(),
+            },
+            ShownLevels {
+                input: 20,
+                own: (5, false),
+                people: [(ana, (0, false))].into_iter().collect(),
+            },
+        ];
+        let calls = [
+            Known::default(),
+            in_call(active(target(&server, &scene, daily))),
+        ];
+        for (known, channel) in calls
+            .iter()
+            .flat_map(|known| [daily, general].map(|channel| (known, channel)))
+        {
+            let selection = selected(&server, &scene, channel);
+            for (before, after) in levels
+                .iter()
+                .flat_map(|before| levels.iter().map(move |after| (before, after)))
+            {
+                let with = |levels: &ShownLevels| {
+                    let mut known = known.clone();
+                    known.media.levels = levels.clone();
+                    derive(servers, &selection, &known)
+                };
+                let mut shown = with(before);
+                shown.show_levels(after);
+                assert_eq!(shown, with(after));
+            }
+        }
+    }
+
+    #[test]
     fn the_chat_of_the_call_of_this_device_has_no_thread_and_its_threads_cannot_be_opened() {
         use junto_client_core::model::Named;
         use junto_client_core::protocol::message::{MessagePlace, ThreadState};

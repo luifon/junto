@@ -16,7 +16,7 @@ Each picture of a call is a new image with a new identifier: the frame of the di
 
 How a picture of a call reaches the GPU:
 
-- The media engine gives the newest picture of each source (ADR 0793). The frame of the display converts the newest picture of each source that has a new one into one image. A window holds one image per source that it draws: one for the watched share, one small picture for each share, one for each camera.
+- The media engine gives the newest picture of each source (ADR 0793). The follower of the pictures of the window converts the newest picture of each source that has a new one into one image, on a blocking thread of the runtime of the client, and the next frame of the display takes it. A window holds one image per source that it draws: one for the watched share, one small picture for each share, one for each camera.
 - The window draws the image with `img`. gpui copies the image into the atlas of the window at the first drawing, and draws the copy until the image is released.
 - On macOS a camera picture is a pixel buffer of Core Video, drawn as a surface of gpui (ADR 0701). It does not enter the atlas. At each drawing the renderer makes a Metal texture over the memory of the buffer. The buffer is freed when no picture holds it, so the window keeps no more buffers than it holds pictures.
 

@@ -24,13 +24,20 @@ use junto_client_core::protocol::message::{
 use time::{Date, OffsetDateTime, UtcOffset};
 
 /// The time zone in which times of messages are shown.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Zone {
-    /// The time zone of the system, with its rule for each date.
-    #[default]
-    System,
+    /// A zone of the database of this build, with its rule for each date: the zone of the
+    /// system as the state read it last (ADR 0798). The rules are in the binary, so a time
+    /// is shown without a file of the system.
+    Named(chrono_tz::Tz),
     /// One offset for every date. The tests and the screen tool use it.
     Fixed(UtcOffset),
+}
+
+impl Default for Zone {
+    fn default() -> Self {
+        Self::Named(chrono_tz::Tz::UTC)
+    }
 }
 
 impl Zone {
@@ -39,9 +46,9 @@ impl Zone {
     pub fn local(self, at: OffsetDateTime) -> OffsetDateTime {
         let offset = match self {
             Self::Fixed(offset) => offset,
-            Self::System => {
+            Self::Named(zone) => {
                 use chrono::{Offset as _, TimeZone as _};
-                let seconds = chrono::Local
+                let seconds = zone
                     .timestamp_opt(at.unix_timestamp(), 0)
                     .single()
                     .map_or(0, |local| local.offset().fix().local_minus_utc());

@@ -48,11 +48,15 @@ fn memory() -> (u64, u64) {
     assert!(output.status.success(), "footprint failed: {output:?}");
     let text = String::from_utf8_lossy(&output.stdout);
     let first_number = |line: &str| line.split_whitespace().next()?.parse::<u64>().ok();
+    // A process whose windows were drawn by Metal has this category. Without it the
+    // graphics memory is unknown, and the bounds on it could not fail.
     let graphics = text
         .lines()
         .find(|line| line.trim_end().ends_with("IOAccelerator (graphics)"))
         .and_then(first_number)
-        .unwrap_or_default();
+        .unwrap_or_else(|| {
+            panic!("footprint states no memory of the category IOAccelerator (graphics): {text}")
+        });
     let footprint = text
         .lines()
         .find_map(|line| line.trim().strip_prefix("phys_footprint:"))
@@ -127,9 +131,11 @@ pub fn give_frames(window: &mut crate::harness::Window, time: Duration) -> Frame
     let mut frames = Frames::default();
     while Instant::now() < end {
         let started = Instant::now();
-        window.park();
-        window.frame();
-        window.park();
+        window.holding(|window| {
+            window.park();
+            window.frame();
+            window.park();
+        });
         frames.count += 1;
         frames.longest = frames.longest.max(started.elapsed());
         next += FRAME;
@@ -137,6 +143,6 @@ pub fn give_frames(window: &mut crate::harness::Window, time: Duration) -> Frame
             std::thread::sleep(rest);
         }
     }
-    window.cx.run_until_parked();
+    window.holding(|window| window.cx.run_until_parked());
     frames
 }

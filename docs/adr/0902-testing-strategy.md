@@ -71,10 +71,30 @@ Tests on real systems:
   400 messages, scrolls up its history and back, opens and closes threads and changes
   channels in a loop for 10 minutes after 90 seconds of warming. Every 5 seconds it reads
   `phys_footprint` and the graphics memory with `footprint`, the processor time with
-  `ps`, the open file descriptors and the threads. It fails when the median of the last
-  minute is more than 96 MiB (footprint), 48 MiB (graphics), 16 files or 8 threads above
-  the median of the first minute, or when one frame of the display with the work of the
-  application around it held the thread of the windows for more than one second.
+  `ps`, the open file descriptors and the threads. A missing graphics category in the
+  output of `footprint` fails the run; it does not read as 0. The warming is 5 minutes:
+  in a run with 90 seconds the footprint still grew by about 9 MiB in the next 4 minutes
+  and stayed level after that.
+  - It measures an optimized build: the release profile with debug assertions
+    (`CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true`), because the harness finds elements
+    by the names that gpui keeps only with debug assertions. The build script states the
+    optimization level, and the target refuses an unoptimized build: there the layout of
+    gpui alone held the thread for up to 568 ms at a scroll, which is not a property of
+    the product.
+  - Growth is a rate: the slope of all readings after the warming, as the median of the
+    slopes between every two readings (Theil–Sen). One collection of an allocator or a
+    few readings far from the others do not move it. The run fails above 1.5 MiB a minute
+    (footprint), 0.5 MiB a minute (graphics), 2 files or 2 threads a minute. Runs measured
+    -0.16 to 0.63 MiB a minute of footprint and up to 0.46 files a minute. A leak
+    of 2 MiB a minute, or of one file or one thread at each channel change, is above
+    these bounds; the function is tested with such series in the `app` target.
+  - The harness times every piece of work of the application on the thread of the
+    windows: the work of one event of the pointer or the keyboard with the work that its
+    handlers start (a click, a scroll), and one frame of the display with the work before
+    and after it. The run fails when one piece after the warming took longer than the
+    bound of ADR 0730. On gpui's test platform the background tasks of gpui run on the
+    thread of the test, so a piece includes them; work on the runtime of the client and
+    on the threads of the media engine is not included, as in the product.
 
 - The native targets run only with their own variable (`JUNTO_TEST_FRAMES=1`,
   `JUNTO_TEST_ENDURANCE=1`, the rehearsal variables): they run without the test runner and

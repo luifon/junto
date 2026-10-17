@@ -20,6 +20,7 @@ mod notices;
 mod people;
 mod person_drag;
 mod pictures;
+mod prepared;
 mod rail;
 mod recorded;
 pub mod room;
@@ -45,8 +46,8 @@ use junto_client_core::voice::{InputMode, TalkKey};
 use call::{CallTab, DeviceKind, VolumeControl};
 pub use search::FilterKind;
 
-use crate::state::AppState;
 use crate::state::view::ShellView;
+use crate::state::{AppState, LevelsChanged};
 use crate::text;
 use crate::theme::{self, theme};
 use crate::ui::{Field, FieldEvent, StyleExt, tabular_numerals};
@@ -214,9 +215,12 @@ pub struct Shell {
     pub(crate) cameras: camera::ShownCameras,
     drawing_call: bool,
     pub(crate) picture_tasks: Vec<Task<()>>,
-    /// The sources of pictures that have a newer picture than the window took: the
-    /// watched share, the small pictures, the cameras. The next frame takes them.
-    pub(crate) pictures_pending: [bool; 3],
+    /// The pictures that the follower converted for the next frame of the display.
+    pub(crate) pictures_prepared: Option<prepared::Converted>,
+    /// Asks the follower of the pictures for all of them: the window draws the call again.
+    pub(crate) pictures_again: std::sync::Arc<tokio::sync::Notify>,
+    /// The follower converts pictures on a thread of the runtime now.
+    pub(crate) pictures_converting: bool,
     /// The picture of the watched share that the window took last.
     pub(crate) main_taken: Option<std::sync::Arc<junto_media::share::picture::PictureFrame>>,
     /// How often the window was drawn.
@@ -487,6 +491,12 @@ impl Shell {
                 this.feed_changed(&view, window, cx);
                 cx.notify();
             }),
+            cx.subscribe(&state, |this, state, _: &LevelsChanged, cx| {
+                if let Some(view) = &mut this.view {
+                    view.show_levels(state.read(cx).shown_levels());
+                    cx.notify();
+                }
+            }),
             Field::observe(
                 &address,
                 window,
@@ -529,6 +539,7 @@ impl Shell {
         subscriptions.extend(admin_subscriptions);
         subscriptions.extend(account_subscriptions);
         subscriptions.extend(linking_subscriptions);
+        let quiet_zone = state.read(cx).system_zone_name().to_owned();
         let mut shell = Self {
             state,
             focus: cx.focus_handle(),
@@ -559,7 +570,9 @@ impl Shell {
             cameras: HashMap::new(),
             drawing_call: false,
             picture_tasks: Vec::new(),
-            pictures_pending: [false; 3],
+            pictures_prepared: None,
+            pictures_again: std::sync::Arc::default(),
+            pictures_converting: false,
             main_taken: None,
             #[cfg(feature = "test-support")]
             draws: 0,
@@ -601,7 +614,7 @@ impl Shell {
             quiet_from,
             quiet_until,
             quiet_refused: false,
-            quiet_zone: crate::zones::system(),
+            quiet_zone,
             quiet_zone_search,
             quiet_zone_open: false,
             admin,

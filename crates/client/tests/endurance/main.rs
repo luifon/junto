@@ -8,19 +8,27 @@
 //!
 //! The program reads the process every few seconds: its memory as `footprint` states it,
 //! graphics included, its processor time, its open files and its threads. After a time of
-//! warming, it fails when one of them grows beyond a bound that a fixed set of windows,
-//! pictures and messages does not reach, or when one frame with the work around it holds
-//! the thread of the windows for longer than a second.
+//! warming, it fails when one of them grows at a rate per minute that a fixed set of
+//! windows, pictures and messages does not reach, or when one piece of work of the
+//! application holds the thread of the windows for longer than the bound of ADR 0730: the
+//! work of one event with the work that its handlers start, or one frame of the display
+//! with the work around it.
 //!
 //! It runs on the main thread, which the windows of the system need, so it is a test
 //! without the test runner. It does nothing on other systems than macOS, and nothing
 //! unless `JUNTO_TEST_ENDURANCE` is `1` and the variables of the media server of the tests
-//! are set. `JUNTO_TEST_ENDURANCE_MINUTES` sets the time of the measured use (default 10):
+//! are set. `JUNTO_TEST_ENDURANCE_MINUTES` sets the time of the measured use (default 10).
+//!
+//! It measures an optimized build: without optimization the layout of gpui alone holds
+//! the thread for hundreds of milliseconds. The harness finds the elements of a window by
+//! the names that gpui keeps only with debug assertions, so the build is the release
+//! profile with debug assertions:
 //!
 //! ```sh
-//! cargo build --workspace
+//! export CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true
+//! cargo build --workspace --release
 //! JUNTO_TEST_ENDURANCE=1 tools/with-test-postgres.sh tools/with-test-livekit.sh \
-//!     tools/serial.sh cargo test -p junto-client --test endurance
+//!     tools/serial.sh cargo test --release -p junto-client --test endurance
 //! ```
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -41,6 +49,9 @@ mod recording_server;
 #[path = "../../../client-core/tests/e2e/support.rs"]
 mod support;
 
+#[cfg(target_os = "macos")]
+#[path = "../rehearsal/growth.rs"]
+mod growth;
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
 #[path = "../app/harness.rs"]
@@ -69,31 +80,40 @@ use process::{Frames, Sample};
 use rehearsal::{Deployment, Rehearsal};
 
 /// The time after the start of the video in which the caches of the windows, the GPU and
-/// the call library fill. It is not measured.
+/// the call library fill. It is not measured. In a run of the debug build the footprint
+/// grew by about 9 MiB in the first 5 minutes of the use and stayed level after that.
 #[cfg(target_os = "macos")]
-const WARMING: Duration = Duration::from_secs(90);
+const WARMING: Duration = Duration::from_secs(5 * 60);
 /// The time between two readings of the process.
 #[cfg(target_os = "macos")]
 const EVERY: Duration = Duration::from_secs(5);
-/// The readings of the first and of the last minute of the measured use are compared.
+/// The medians of the first and of the last minute of the measured use are shown.
 #[cfg(target_os = "macos")]
 const WINDOW: Duration = Duration::from_secs(60);
-/// How much each reading may grow from the first to the last minute. The windows hold a
-/// fixed number of pictures (ADR 0774) and a bounded part of a channel (ADR 0747), so a
-/// use that repeats the same actions keeps its memory; the bounds allow the variation of
-/// the allocators and of the GPU driver.
+/// How fast each reading may grow over the measured use, per minute, as the slope of all
+/// its readings ([`growth::slope`]). The windows hold a fixed number of pictures (ADR
+/// 0774) and a bounded part of a channel (ADR 0747), so a use that repeats the same
+/// actions keeps its memory; the bounds allow the variation of the allocators and of the
+/// GPU driver: runs measured -0.16 to 0.63 MiB a minute of footprint and up to 0.46 files a
+/// minute. A leak of 2 MiB a minute, or of one file or thread at each thread that is
+/// opened (about 4 a minute) or at each channel change (about 13 a minute), is above them.
 #[cfg(target_os = "macos")]
-const MOST_FOOTPRINT_GROWTH: u64 = 96 << 20;
+const MOST_FOOTPRINT_PER_MINUTE: f64 = 1.5 * MIB;
 #[cfg(target_os = "macos")]
-const MOST_GRAPHICS_GROWTH: u64 = 48 << 20;
+const MOST_GRAPHICS_PER_MINUTE: f64 = 0.5 * MIB;
 #[cfg(target_os = "macos")]
-const MOST_FILES_GROWTH: usize = 16;
+const MOST_FILES_PER_MINUTE: f64 = 2.0;
 #[cfg(target_os = "macos")]
-const MOST_THREADS_GROWTH: usize = 8;
-/// The longest time that one frame with the work around it may hold the thread of the
-/// windows. A window that does not draw for this time does not answer the person.
+const MOST_THREADS_PER_MINUTE: f64 = 2.0;
 #[cfg(target_os = "macos")]
-const LONGEST_FRAME: Duration = Duration::from_secs(1);
+const MIB: f64 = 1024.0 * 1024.0;
+/// The longest time that one piece of work of the application may hold the thread of the
+/// windows after the warming, and the share of the pieces that may take longer than
+/// [`harness::Held::SLOW`] (ADR 0730).
+#[cfg(target_os = "macos")]
+const LONGEST_HOLD: Duration = Duration::from_millis(150);
+#[cfg(target_os = "macos")]
+const PIECES_PER_SLOW_PIECE: usize = 4000;
 /// The messages of the long channel, how many of the newest are roots of a thread, and the
 /// answers in each thread.
 #[cfg(target_os = "macos")]
@@ -118,6 +138,12 @@ fn main() -> ExitCode {
     if std::env::var("JUNTO_TEST_LIVEKIT_URL").is_err() {
         println!("endurance: not run, JUNTO_TEST_LIVEKIT_URL is not set");
         return ExitCode::SUCCESS;
+    }
+    if env!("JUNTO_OPT_LEVEL") == "0" || !cfg!(debug_assertions) {
+        println!(
+            "endurance: not run: it measures the release profile with debug assertions; build it with --release and CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true"
+        );
+        return ExitCode::FAILURE;
     }
     let minutes = std::env::var("JUNTO_TEST_ENDURANCE_MINUTES")
         .ok()
@@ -193,9 +219,14 @@ fn main() -> ExitCode {
     let mut samples: Vec<Sample> = Vec::new();
     let mut frames = Frames::default();
     let mut warming_frames = Frames::default();
+    let mut warming_held = None;
     let mut step = 0usize;
+    run.a.held = harness::Held::default();
     while start.elapsed() < WARMING + measured {
         let warm = start.elapsed() >= WARMING;
+        if warm && warming_held.is_none() {
+            warming_held = Some(std::mem::take(&mut run.a.held));
+        }
         let given = use_of.act(&mut run.a, step);
         if warm {
             frames.add(given);
@@ -209,28 +240,33 @@ fn main() -> ExitCode {
                 .is_none_or(|last| start.elapsed() >= last.at + EVERY)
         {
             let reading = process::sample(start);
-            if samples.len().is_multiple_of(12) {
-                println!(
-                    "endurance: {:>4}s footprint {} MiB, graphics {} MiB, processor {:.0}s, {} files, {} threads",
-                    reading.at.as_secs(),
-                    reading.footprint >> 20,
-                    reading.graphics >> 20,
-                    reading.processor.as_secs_f64(),
-                    reading.files,
-                    reading.threads
-                );
-            }
+            println!(
+                "endurance: reading {:>4}s footprint {} KiB, graphics {} KiB, processor {:.1}s, {} files, {} threads",
+                reading.at.as_secs(),
+                reading.footprint >> 10,
+                reading.graphics >> 10,
+                reading.processor.as_secs_f64(),
+                reading.files,
+                reading.threads
+            );
             samples.push(reading);
         }
     }
+    let held = run.a.held;
     let still_drawn = run.a.state.read_with(&run.a.cx, |state, _| {
         state.calls().camera_pictures().borrow().len()
     });
 
-    let failures = judge(&samples, frames, &use_of, still_drawn);
+    let failures = judge(&samples, frames, held, &use_of, still_drawn);
+    let warming_held = warming_held.unwrap_or_default();
     println!(
-        "endurance: {} frames while warming, the longest {:?}",
-        warming_frames.count, warming_frames.longest
+        "endurance: while warming {} frames, the longest {:?}; {} pieces of work, the longest {:?}, {} longer than {:?}",
+        warming_frames.count,
+        warming_frames.longest,
+        warming_held.count,
+        warming_held.longest,
+        warming_held.slow,
+        harness::Held::SLOW
     );
     drop(third);
     drop(run);
@@ -506,19 +542,25 @@ fn scroll(window: &mut Window, distance: f32) {
     });
 }
 
-/// One reading of the process and the most that it may grow.
+/// One reading of the process and the most that it may grow in a minute.
 #[cfg(target_os = "macos")]
 struct Reading {
     name: &'static str,
     of: fn(&Sample) -> u64,
-    most: u64,
+    most_per_minute: f64,
     bytes: bool,
 }
 
-/// The failures of the use: the growth from the first to the last minute of the readings,
-/// the longest frame, and actions that did not happen.
+/// The failures of the use: the growth of the readings per minute, the longest piece of
+/// work on the thread of the windows, and actions that did not happen.
 #[cfg(target_os = "macos")]
-fn judge(samples: &[Sample], frames: Frames, use_of: &Use, still_drawn: usize) -> Vec<String> {
+fn judge(
+    samples: &[Sample],
+    frames: Frames,
+    held: harness::Held,
+    use_of: &Use,
+    still_drawn: usize,
+) -> Vec<String> {
     let mut failures = Vec::new();
     let Some(last) = samples.last() else {
         return vec!["no reading of the process".to_owned()];
@@ -540,11 +582,15 @@ fn judge(samples: &[Sample], frames: Frames, use_of: &Use, still_drawn: usize) -
     let minutes = (last.at - first_at).as_secs_f64() / 60.0;
     let processor = last.processor.saturating_sub(samples[0].processor);
     println!(
-        "endurance: {} readings over {minutes:.1} minutes; processor {:.0}% of one core; {} frames, the longest {:?}; {} scrolls, {} threads opened, {} channel changes",
+        "endurance: {} readings over {minutes:.1} minutes; processor {:.0}% of one core; {} frames, the longest {:?}; {} pieces of work, the longest {:?}, {} longer than {:?}; {} scrolls, {} threads opened, {} channel changes",
         samples.len(),
         100.0 * processor.as_secs_f64() / (last.at - first_at).as_secs_f64().max(1.0),
         frames.count,
         frames.longest,
+        held.count,
+        held.longest,
+        held.slow,
+        harness::Held::SLOW,
         use_of.scrolls,
         use_of.threads_opened,
         use_of.changes,
@@ -553,56 +599,77 @@ fn judge(samples: &[Sample], frames: Frames, use_of: &Use, still_drawn: usize) -
         Reading {
             name: "footprint",
             of: |sample| sample.footprint,
-            most: MOST_FOOTPRINT_GROWTH,
+            most_per_minute: MOST_FOOTPRINT_PER_MINUTE,
             bytes: true,
         },
         Reading {
             name: "graphics memory",
             of: |sample| sample.graphics,
-            most: MOST_GRAPHICS_GROWTH,
+            most_per_minute: MOST_GRAPHICS_PER_MINUTE,
             bytes: true,
         },
         Reading {
             name: "open files",
             of: |sample| sample.files as u64,
-            most: MOST_FILES_GROWTH as u64,
+            most_per_minute: MOST_FILES_PER_MINUTE,
             bytes: false,
         },
         Reading {
             name: "threads",
             of: |sample| sample.threads as u64,
-            most: MOST_THREADS_GROWTH as u64,
+            most_per_minute: MOST_THREADS_PER_MINUTE,
             bytes: false,
         },
     ];
     for reading in readings {
         let (before, after) = (median(&early, reading.of), median(&late, reading.of));
-        let shown = |value: u64| {
+        let points: Vec<(f64, f64)> = samples
+            .iter()
+            .map(|sample| {
+                (
+                    (sample.at - first_at).as_secs_f64() / 60.0,
+                    (reading.of)(sample) as f64,
+                )
+            })
+            .collect();
+        let per_minute = growth::slope(&points).unwrap_or_default();
+        let shown = |value: f64| {
             if reading.bytes {
-                format!("{} MiB", value >> 20)
+                format!("{:.2} MiB", value / MIB)
             } else {
-                value.to_string()
+                format!("{value:.2}")
             }
         };
         println!(
-            "endurance: {}: {} in the first minute, {} in the last",
+            "endurance: {}: {} in the first minute, {} in the last; {} a minute (at most {})",
             reading.name,
-            shown(before),
-            shown(after)
+            shown(before as f64),
+            shown(after as f64),
+            shown(per_minute),
+            shown(reading.most_per_minute)
         );
-        if after.saturating_sub(before) > reading.most {
+        if per_minute > reading.most_per_minute {
             failures.push(format!(
-                "the {} grew from {} to {} in {minutes:.1} minutes",
+                "the {} grew by {} a minute over {minutes:.1} minutes, from {} to {}",
                 reading.name,
-                shown(before),
-                shown(after)
+                shown(per_minute),
+                shown(before as f64),
+                shown(after as f64)
             ));
         }
     }
-    if frames.longest > LONGEST_FRAME {
+    if held.longest > LONGEST_HOLD {
         failures.push(format!(
-            "one frame held the thread of the windows for {:?}",
-            frames.longest
+            "the application held the thread of the windows for {:?} in one piece of work",
+            held.longest
+        ));
+    }
+    if held.slow * PIECES_PER_SLOW_PIECE > held.count {
+        failures.push(format!(
+            "{} of {} pieces of work took longer than {:?}",
+            held.slow,
+            held.count,
+            harness::Held::SLOW
         ));
     }
     if use_of.threads_opened == 0 || use_of.changes == 0 || use_of.scrolls == 0 {

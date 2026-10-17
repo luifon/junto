@@ -40,6 +40,61 @@ pub enum AttachRefusal {
     },
 }
 
+/// What a save of a file reads from the file system ([`AppState::find_for_save`]).
+pub(super) struct Found {
+    /// The directory into which files are saved: the one that a test set, or the download
+    /// directory of the system.
+    pub directory: Option<PathBuf>,
+    /// A file that was saved before, and whether its path still names a file of the saved
+    /// length.
+    pub saved: Option<(PathBuf, bool)>,
+}
+
+impl Found {
+    /// Asks the file system, which can wait for a slow or a network volume: `dirs` reads
+    /// the download directory from a file on Linux and from the account database on macOS.
+    /// Call it on a background thread, not on the thread of the window (ADR 0730).
+    #[allow(clippy::disallowed_methods)]
+    fn read(fixed: Option<PathBuf>, saved: Option<(PathBuf, u64)>) -> Self {
+        Self {
+            directory: fixed.or_else(dirs::download_dir),
+            saved: saved.map(|(path, bytes)| {
+                let kept = std::fs::symlink_metadata(&path)
+                    .is_ok_and(|file| file.is_file() && file.len() == bytes);
+                (path, kept)
+            }),
+        }
+    }
+}
+
+/// A file or a picture to attach, with its size: absent for a path that names no file
+/// that could be read. Only [`measure`] makes one, so the state does not ask the file
+/// system itself.
+pub struct Measured {
+    source: UploadSource,
+    bytes: Option<u64>,
+}
+
+/// Reads the size of each file. It asks the file system, which can wait for a slow or a
+/// network volume: call it on a background thread, not on the thread of the window
+/// (ADR 0730).
+#[allow(clippy::disallowed_methods)]
+pub fn measure(sources: Vec<UploadSource>) -> Vec<Measured> {
+    sources
+        .into_iter()
+        .map(|source| {
+            let bytes = match &source {
+                UploadSource::File(path) => std::fs::metadata(path)
+                    .ok()
+                    .filter(std::fs::Metadata::is_file)
+                    .map(|metadata| metadata.len()),
+                UploadSource::Bytes { bytes, .. } => Some(bytes.len() as u64),
+            };
+            Measured { source, bytes }
+        })
+        .collect()
+}
+
 impl AppState {
     /// The places whose messages the window shows are held open in the client core: the
     /// place of the main area and the thread of the side panel. Every other place is
@@ -590,12 +645,13 @@ impl AppState {
     }
 
     /// Attaches files to the next message of a place and starts their uploads. Returns
-    /// why a file was not attached.
+    /// why a file was not attached. The sizes were read before, off the thread of the
+    /// window ([`measure`]).
     pub fn attach(
         &mut self,
         server_id: ServerId,
         place: PlaceId,
-        sources: Vec<UploadSource>,
+        sources: Vec<Measured>,
         cx: &mut Context<Self>,
     ) -> Vec<AttachRefusal> {
         let Some(server) = self.client.server(server_id) else {
@@ -609,7 +665,7 @@ impl AppState {
         let transfers = server.transfers();
         let key = (server_id, place);
         let mut refused = Vec::new();
-        for source in sources {
+        for Measured { source, bytes } in sources {
             let name = source.name();
             let held = self.uploads.get(&key).map_or(0, Vec::len);
             if let Some(limits) = &limits
@@ -620,15 +676,9 @@ impl AppState {
                 });
                 break;
             }
-            let bytes = match &source {
-                UploadSource::File(path) => match std::fs::metadata(path) {
-                    Ok(metadata) if metadata.is_file() => metadata.len(),
-                    _ => {
-                        refused.push(AttachRefusal::Unreadable { name });
-                        continue;
-                    }
-                },
-                UploadSource::Bytes { bytes, .. } => bytes.len() as u64,
+            let Some(bytes) = bytes else {
+                refused.push(AttachRefusal::Unreadable { name });
+                continue;
             };
             if let Some(limits) = &limits
                 && bytes > limits.bytes_per_file
@@ -742,9 +792,30 @@ impl AppState {
         }
     }
 
-    /// Where the files of messages are saved.
-    pub fn download_directory(&self) -> Option<PathBuf> {
-        self.download_directory.clone().or_else(dirs::download_dir)
+    /// Reads on a background thread what a save of a file needs from the file system, and
+    /// then runs `then` on the thread of the window, while the server has the owner that
+    /// asked (ADR 0746). `saved` is a file that was saved before, with its length.
+    pub(super) fn find_for_save(
+        &mut self,
+        server_id: ServerId,
+        saved: Option<(PathBuf, u64)>,
+        cx: &mut Context<Self>,
+        then: impl FnOnce(&mut Self, Found, &mut Context<Self>) + 'static,
+    ) {
+        let owner = self.owner(server_id);
+        let fixed = self.download_directory.clone();
+        let finding = cx
+            .background_executor()
+            .spawn(async move { Found::read(fixed, saved) });
+        cx.spawn(async move |this, cx| {
+            let found = finding.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.owner(server_id) == owner {
+                    then(this, found, cx);
+                }
+            });
+        })
+        .detach();
     }
 
     /// Saves a file of a message to the download directory, under a name that no file has.
@@ -752,6 +823,19 @@ impl AppState {
         &mut self,
         server_id: ServerId,
         attachment: &Attachment,
+        cx: &mut Context<Self>,
+    ) {
+        let attachment = attachment.clone();
+        self.find_for_save(server_id, None, cx, move |this, found, cx| {
+            this.download_into(server_id, &attachment, found.directory, cx);
+        });
+    }
+
+    fn download_into(
+        &mut self,
+        server_id: ServerId,
+        attachment: &Attachment,
+        directory: Option<PathBuf>,
         cx: &mut Context<Self>,
     ) {
         // What the window holds of the downloads of a server belongs to its present owner.
@@ -765,9 +849,7 @@ impl AppState {
         if self.downloads.contains_key(&key) {
             return;
         }
-        let (Some(server), Some(directory)) =
-            (self.client.server(server_id), self.download_directory())
-        else {
+        let (Some(server), Some(directory)) = (self.client.server(server_id), directory) else {
             self.refuse(text::NO_DOWNLOAD_DIRECTORY.to_owned());
             cx.notify();
             return;

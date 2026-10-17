@@ -46,7 +46,8 @@ required-features = ["test-support"]
 
 # Native windows in a long use with video, text and channel changes: the memory, the open
 # files, the threads and the frames of the process (ADR 0902). It does nothing without its
-# own variable and the variables of the media server of the tests.
+# own variable and the variables of the media server of the tests, and it measures the
+# release profile with debug assertions only.
 [[test]]
 name = "endurance"
 path = "tests/endurance/main.rs"
@@ -103,11 +104,14 @@ thiserror = { workspace = true }
 time = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+# The blocking threads of the runtime of the client, on which the pictures of a call are
+# converted (ADR 0730), and the signal that asks the follower of the pictures for all of
+# them.
+tokio = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The desktop notification service, driven on its own worker (ADR 0752).
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
-tokio = { workspace = true }
 futures-util = { workspace = true }
 # The Vulkan adapters of the machine, read before the first window with the graphics
 # library of gpui in its version (ADR 0705).
