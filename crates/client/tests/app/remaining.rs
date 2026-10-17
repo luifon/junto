@@ -27,7 +27,7 @@ use crate::admin_pages::{
     awaited, click_in_page, default_workspace, idle, invite, joined, open_page, owner_window, sel,
     text_channel, try_click, until_model,
 };
-use crate::harness::{PATIENCE, Window, World, member, named};
+use crate::harness::{PATIENCE, Window, World, hold_data_directory, member, named};
 use crate::support::logged_in;
 
 /// The client of the server of a window.
@@ -214,7 +214,12 @@ fn an_administrator_removes_a_member_from_one_workspace_and_the_member_keeps_the
     assert!(notice.dismissable);
     let text = junto_client::text::moderation_notice(&notice);
     assert!(text.contains(message) && !text.contains(reason), "{text}");
-    other.click("moderation-seen");
+    // Another program holds the lock of the data directory: the click returns without
+    // waiting for it, and the book is written when the lock is free.
+    other.settle();
+    let held = hold_data_directory(&other);
+    other.press_as_drawn("moderation-seen");
+    held.release();
     other.until("the notice is put away", |window| {
         window
             .view()

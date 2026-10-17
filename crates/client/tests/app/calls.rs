@@ -530,6 +530,17 @@ fn a_window_holds_gpu_images_only_for_the_pictures_that_it_draws_now(cx: &mut Te
     let held = |window: &Window, shell: &gpui::Entity<Shell>| {
         shell.read_with(&window.cx, |shell, _| shell.picture_images())
     };
+    // The images of earlier pictures that still have a GPU image in the window: every
+    // image with an atlas entry must be one that the window holds now (ADR 0774).
+    let kept =
+        |cx: &mut VisualTestContext, images: &[Arc<RenderImage>], now: &[Arc<RenderImage>]| {
+            cx.update(|window, _| {
+                (images.iter())
+                    .filter(|image| window.has_image_atlas_entry(image))
+                    .filter(|image| !now.iter().any(|held| Arc::ptr_eq(held, image)))
+                    .count()
+            })
+        };
 
     let main_shell = window.shell.clone();
     let mut images = Vec::new();
@@ -546,12 +557,11 @@ fn a_window_holds_gpu_images_only_for_the_pictures_that_it_draws_now(cx: &mut Te
         in_gpu(&mut window.cx, &shown) >= 2,
         "the window did not draw the watched share and the small pictures"
     );
-    assert!(
-        in_gpu(&mut window.cx, &images) <= shown.len(),
-        "the window holds {} GPU images of {} pictures, and draws {}",
-        in_gpu(&mut window.cx, &images),
-        images.len(),
-        shown.len()
+    assert_eq!(
+        kept(&mut window.cx, &images, &shown),
+        0,
+        "the window holds GPU images of {} pictures that it no longer draws",
+        images.len()
     );
 
     // The call moves to its own window, which draws the pictures from then on.
@@ -576,20 +586,18 @@ fn a_window_holds_gpu_images_only_for_the_pictures_that_it_draws_now(cx: &mut Te
         in_gpu(&mut detached, &shown) >= 2,
         "the call window did not draw the watched share and the small pictures"
     );
-    assert!(
-        in_gpu(&mut detached, &images) <= shown.len(),
-        "the call window holds {} GPU images of {} pictures, and draws {}",
-        in_gpu(&mut detached, &images),
-        images.len(),
-        shown.len()
+    assert_eq!(
+        kept(&mut detached, &images, &shown),
+        0,
+        "the call window holds GPU images of {} pictures that it no longer draws",
+        images.len()
     );
     let main_shown = held(&window, &main_shell);
-    assert!(
-        in_gpu(&mut window.cx, &images) <= main_shown.len(),
-        "the main window holds {} GPU images of {} pictures, and draws {}",
-        in_gpu(&mut window.cx, &images),
-        images.len(),
-        main_shown.len()
+    assert_eq!(
+        kept(&mut window.cx, &images, &main_shown),
+        0,
+        "the main window holds GPU images of {} pictures that it no longer draws",
+        images.len()
     );
 
     // The shares and the cameras end: no window holds a GPU image of their pictures.

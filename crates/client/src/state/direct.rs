@@ -460,8 +460,6 @@ impl super::AppState {
             .output_device
             .clone()
             .map(junto_media::audio::DeviceId);
-        if let Err(error) = self.ringer.set_ringing(ringing, device.as_ref()) {
-            tracing::debug!(%error, "incoming call sound could not start");
-        }
+        self.ringer.set_ringing(ringing, device.as_ref());
     }
 }

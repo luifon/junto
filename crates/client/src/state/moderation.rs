@@ -172,18 +172,28 @@ impl AppState {
         let Some(server) = self.client.server(server_id) else {
             return;
         };
-        match server.put_moderation_notice_away(notice_id) {
-            Ok(()) => {
-                self.known.moderation_away_failed = None;
-                self.known
-                    .moderation_shown
-                    .insert(server_id, server.moderation_notices_shown());
-            }
-            Err(error) => {
-                self.known.moderation_away_failed =
-                    Some((server_id, text::flow_error(&FlowError::from(error))));
-            }
-        }
-        self.changed(cx);
+        // The book is a file of the data directory: it is written in the queue of the
+        // writes, and the notice goes when the write is done (ADR 0730).
+        Self::queue_write(
+            cx,
+            move || {
+                server
+                    .put_moderation_notice_away(notice_id)
+                    .map(|()| server.moderation_notices_shown())
+            },
+            move |this, written, cx| {
+                match written {
+                    Ok(shown) => {
+                        this.known.moderation_away_failed = None;
+                        this.known.moderation_shown.insert(server_id, shown);
+                    }
+                    Err(error) => {
+                        this.known.moderation_away_failed =
+                            Some((server_id, text::flow_error(&FlowError::from(error))));
+                    }
+                }
+                this.changed(cx);
+            },
+        );
     }
 }

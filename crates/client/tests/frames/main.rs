@@ -12,13 +12,14 @@
 //! memory of the pictures stays after the shares and the cameras have ended.
 //!
 //! It runs on the main thread, which the windows of the system need, so it is a test
-//! without the test runner. It does nothing on other systems than macOS, and nothing
-//! without the variables of the media server of the tests:
+//! without the test runner, and it reads no filter of test names. It does nothing on other
+//! systems than macOS, and nothing unless `JUNTO_TEST_FRAMES` is `1` and the variables of
+//! the media server of the tests are set:
 //!
 //! ```sh
 //! cargo build --workspace
-//! tools/with-test-postgres.sh tools/with-test-livekit.sh tools/serial.sh \
-//!     cargo test -p junto-client --test frames
+//! JUNTO_TEST_FRAMES=1 tools/with-test-postgres.sh tools/with-test-livekit.sh \
+//!     tools/serial.sh cargo test -p junto-client --test frames
 //! ```
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -28,7 +29,7 @@ use std::process::ExitCode;
 // The visual test context of gpui exists only on macOS, so everything below except the
 // `main` of other systems is compiled there only (ADR 0902).
 #[cfg(target_os = "macos")]
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
@@ -48,6 +49,10 @@ mod harness;
 mod native;
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
+#[path = "../rehearsal/process.rs"]
+mod process;
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
 #[path = "../app/rehearsal.rs"]
 mod rehearsal;
 
@@ -57,9 +62,6 @@ use rehearsal::{Deployment, Rehearsal};
 /// How long the windows draw the pictures of the call in each place of the call.
 #[cfg(target_os = "macos")]
 const DRAWING: Duration = Duration::from_secs(20);
-/// The time between two frames of the display that the program gives the windows.
-#[cfg(target_os = "macos")]
-const FRAME: Duration = Duration::from_millis(16);
 /// The most graphics memory that the pictures of the call may add while the windows draw
 /// them for `DRAWING`, after the first frames. A window holds a constant number of
 /// pictures; the memory that one picture of the watched share takes is 3.5 MiB.
@@ -74,6 +76,10 @@ fn main() -> ExitCode {
 
 #[cfg(target_os = "macos")]
 fn main() -> ExitCode {
+    if std::env::var("JUNTO_TEST_FRAMES").as_deref() != Ok("1") {
+        println!("frames: not run, JUNTO_TEST_FRAMES is not 1");
+        return ExitCode::SUCCESS;
+    }
     if std::env::var("JUNTO_TEST_LIVEKIT_URL").is_err() {
         println!("frames: not run, JUNTO_TEST_LIVEKIT_URL is not set");
         return ExitCode::SUCCESS;
@@ -196,21 +202,10 @@ fn measure(cx: &mut gpui::TestAppContext, run: &mut Rehearsal) -> Measured {
     }
 }
 
-/// Gives every window a frame of the display at the rate of a display, for this time,
-/// and runs the work of the application between two frames.
+/// Gives the windows frames of the display for this time (`process::give_frames`).
 #[cfg(target_os = "macos")]
 fn give_frames(cx: &mut gpui::TestAppContext, run: &mut Rehearsal, time: Duration) {
-    let end = Instant::now() + time;
-    let mut next = Instant::now();
-    while Instant::now() < end {
-        run.a.park();
-        run.a.frame();
-        run.a.park();
-        next += FRAME;
-        if let Some(rest) = next.checked_duration_since(Instant::now()) {
-            std::thread::sleep(rest);
-        }
-    }
+    process::give_frames(&mut run.a, time);
     cx.run_until_parked();
 }
 
@@ -243,14 +238,5 @@ fn picture_draws(cx: &mut gpui::TestAppContext) -> usize {
 /// in it.
 #[cfg(target_os = "macos")]
 fn graphics_memory() -> u64 {
-    let output = std::process::Command::new("/usr/bin/footprint")
-        .args(["-f", "bytes", &std::process::id().to_string()])
-        .output()
-        .expect("footprint runs");
-    assert!(output.status.success(), "footprint failed: {output:?}");
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .find(|line| line.trim_end().ends_with("IOAccelerator (graphics)"))
-        .and_then(|line| line.split_whitespace().next()?.parse().ok())
-        .unwrap_or_default()
+    process::graphics_memory()
 }
