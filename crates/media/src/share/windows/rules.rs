@@ -166,22 +166,43 @@ pub(crate) struct ListedProcess {
     pub parent: u32,
 }
 
+/// The processes that started the client, as far as the process list of the system shows
+/// them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Creators {
+    /// These processes, the nearest first.
+    Known(Vec<u32>),
+    /// The process list could not be read or does not hold the client, so any process can
+    /// have started it.
+    Unknown,
+}
+
 /// The processes that started the client: the process that created it, the process that
-/// created that one, and so on. `created` gives the creation time of a process.
+/// created that one, and so on. `processes` is the process list, nothing when it could not
+/// be read, and `created` gives the creation time of a process.
 ///
-/// A process that is younger than the process that it seems to have created took the
-/// identifier of an ended creator: the chain ends there, as it ends at a creator that is not
-/// in the list. A process whose creation time cannot be read is counted as a creator: an
-/// application that is withheld by mistake costs one choice of sound, an application that is
-/// offered by mistake would carry the sound of the call.
+/// A creator is older than every process below it. A process that is younger than a process
+/// below it whose creation time is known, the client at least, took the identifier of an
+/// ended creator: the chain ends there, as it ends at a creator that is not in the list. A
+/// process whose creation time cannot be read is counted as a creator, and so is any process
+/// when the list is unknown: an application that is withheld by mistake costs one choice of
+/// sound, an application that is offered by mistake would carry the sound of the call.
 pub(crate) fn ancestors(
     own: u32,
-    processes: &[ListedProcess],
+    processes: Option<&[ListedProcess]>,
     created: impl Fn(u32) -> Option<u64>,
-) -> Vec<u32> {
+) -> Creators {
+    let Some(processes) = processes else {
+        return Creators::Unknown;
+    };
     let mut found: Vec<u32> = Vec::new();
-    let (mut child, mut child_created) = (own, created(own));
+    let mut child = own;
+    // The creation time of the nearest process below the next creator whose time is known:
+    // each accepted creator is older, so it is also the oldest known time of the chain.
+    let mut limit = created(own);
+    let mut listed = false;
     while let Some(entry) = processes.iter().find(|process| process.id == child) {
+        listed = true;
         let parent = entry.parent;
         if parent == 0
             || parent == own
@@ -191,27 +212,38 @@ pub(crate) fn ancestors(
             break;
         }
         let parent_created = created(parent);
-        if let (Some(parent_time), Some(child_time)) = (parent_created, child_created)
-            && parent_time > child_time
+        if let (Some(parent_time), Some(limit_time)) = (parent_created, limit)
+            && parent_time > limit_time
         {
             break;
         }
         found.push(parent);
-        (child, child_created) = (parent, parent_created);
+        child = parent;
+        if parent_created.is_some() {
+            limit = parent_created;
+        }
     }
-    found
+    if listed {
+        Creators::Known(found)
+    } else {
+        Creators::Unknown
+    }
 }
 
 /// The choices of the sound of one application: the applications whose sound can be shared
 /// alone, and the applications of listed windows whose process started the client. Process
 /// loopback captures the sound of an application with the sound of every process that it
 /// started, so the sound of such an application includes the sound of the call that the
-/// client plays (ADR 0706).
+/// client plays (ADR 0706). With unknown creators no application is offered and none is
+/// named: the lists state that the creators are unknown.
 pub(crate) fn sound_choices(
     windows: &[WindowSource],
     own: &Own,
-    ancestors: &[u32],
+    creators: &Creators,
 ) -> (Vec<ApplicationSource>, Vec<ApplicationId>) {
+    let Creators::Known(ancestors) = creators else {
+        return (Vec::new(), Vec::new());
+    };
     let started = |id: &ApplicationId| {
         u32::try_from(id.process_id).is_ok_and(|process| ancestors.contains(&process))
     };
@@ -230,6 +262,45 @@ pub(crate) fn sound_choices(
         }
     }
     (applications, started_the_client)
+}
+
+/// The command line of the arguments of a program, so that `CommandLineToArgvW` and the start
+/// code of the C runtime give each argument back as it is. An empty argument and an argument
+/// with a space, a tab, a line end or a quote are put in quotes. Inside quotes a quote is
+/// written as `\"`, and the backslashes before a quote or before the closing quote are
+/// doubled; other backslashes stay as they are.
+#[cfg_attr(not(feature = "test-support"), allow(dead_code))]
+pub(crate) fn command_line(arguments: &[Vec<u16>]) -> Vec<u16> {
+    const SPACE: u16 = b' ' as u16;
+    const QUOTE: u16 = b'"' as u16;
+    const BACKSLASH: u16 = b'\\' as u16;
+    const SEPARATORS: [u16; 4] = [SPACE, b'\t' as u16, b'\n' as u16, QUOTE];
+    let mut line = Vec::new();
+    for (index, argument) in arguments.iter().enumerate() {
+        if index > 0 {
+            line.push(SPACE);
+        }
+        if !argument.is_empty() && !argument.iter().any(|unit| SEPARATORS.contains(unit)) {
+            line.extend_from_slice(argument);
+            continue;
+        }
+        line.push(QUOTE);
+        let mut backslashes = 0;
+        for &unit in argument {
+            if unit == BACKSLASH {
+                backslashes += 1;
+            } else {
+                if unit == QUOTE {
+                    line.extend(std::iter::repeat_n(BACKSLASH, backslashes + 1));
+                }
+                backslashes = 0;
+            }
+            line.push(unit);
+        }
+        line.extend(std::iter::repeat_n(BACKSLASH, backslashes));
+        line.push(QUOTE);
+    }
+    line
 }
 
 /// The channels and the rate of the sound capture: the capture asks the system for 32-bit
@@ -447,24 +518,55 @@ mod tests {
             100 => Some(30),
             _ => Some(40),
         };
-        assert_eq!(ancestors(100, &processes, times), [20, 4]);
+        let known = |found: &[u32]| Creators::Known(found.to_vec());
+        let chain = |list: &[ListedProcess], created: &dyn Fn(u32) -> Option<u64>| {
+            ancestors(100, Some(list), created)
+        };
+        assert_eq!(chain(&processes, &times), known(&[20, 4]));
         // The terminal ended and a newer process took its identifier: it did not start the
         // client, and the chain ends there.
         let younger = |id: u32| if id == 20 { Some(50) } else { times(id) };
-        assert_eq!(ancestors(100, &processes, younger), Vec::<u32>::new());
+        assert_eq!(chain(&processes, &younger), known(&[]));
         // A creation time that cannot be read counts as a creator.
         let unread = |id: u32| if id == 20 { None } else { times(id) };
-        assert_eq!(ancestors(100, &processes, unread), [20, 4]);
+        assert_eq!(chain(&processes, &unread), known(&[20, 4]));
+        // Above a creator whose time cannot be read, a process that is younger than the
+        // client took the identifier of an ended creator: the chain ends there.
+        let unread_then_younger = |id: u32| match id {
+            20 => None,
+            4 => Some(35),
+            _ => times(id),
+        };
+        assert_eq!(chain(&processes, &unread_then_younger), known(&[20]));
+        // Above two such creators, a process that is younger than the nearest known time
+        // below it, and older than the client.
+        let deeper = [
+            process(100, 20),
+            process(20, 30),
+            process(30, 40),
+            process(40, 50),
+            process(50, 1),
+        ];
+        let deeper_times = |id: u32| match id {
+            100 => Some(100),
+            20 => Some(60),
+            30 | 40 => None,
+            50 => Some(80),
+            _ => None,
+        };
+        assert_eq!(chain(&deeper, &deeper_times), known(&[20, 30, 40]));
         // The creator ended: nothing older is known.
         assert_eq!(
-            ancestors(100, &[process(100, 20), process(4, 2)], times),
-            Vec::<u32>::new()
+            chain(&[process(100, 20), process(4, 2)], &times),
+            known(&[])
         );
         // A loop of identifiers in a damaged list ends.
         let looped = [process(100, 20), process(20, 4), process(4, 20)];
-        assert_eq!(ancestors(100, &looped, |_| None), [20, 4]);
-        // The client is not in the list.
-        assert!(ancestors(100, &[process(20, 4)], times).is_empty());
+        assert_eq!(chain(&looped, &|_| None), known(&[20, 4]));
+        // A list without the client, or no list, does not show the creators.
+        assert_eq!(chain(&[process(20, 4)], &times), Creators::Unknown);
+        assert_eq!(chain(&[], &times), Creators::Unknown);
+        assert_eq!(ancestors(100, None, times), Creators::Unknown);
     }
 
     fn listed(process_id: i32, path: &str, name: &str) -> WindowSource {
@@ -492,7 +594,8 @@ mod tests {
             terminal.clone(),
             explorer.clone(),
         ];
-        let (applications, started) = sound_choices(&windows, &own(), &[20, 4]);
+        let (applications, started) =
+            sound_choices(&windows, &own(), &Creators::Known(vec![20, 4]));
         assert_eq!(
             applications,
             [ApplicationSource {
@@ -502,9 +605,38 @@ mod tests {
         );
         assert_eq!(started, [explorer.application, terminal.application]);
         // Without creators every application is offered.
-        let (applications, started) = sound_choices(&windows, &own(), &[]);
+        let (applications, started) = sound_choices(&windows, &own(), &Creators::Known(vec![]));
         assert_eq!(applications.len(), 3);
         assert!(started.is_empty());
+        // When the creators are unknown, none is offered.
+        let (applications, started) = sound_choices(&windows, &own(), &Creators::Unknown);
+        assert!(applications.is_empty());
+        assert!(started.is_empty());
+    }
+
+    fn line(arguments: &[&str]) -> String {
+        let arguments: Vec<Vec<u16>> = arguments
+            .iter()
+            .map(|argument| argument.encode_utf16().collect())
+            .collect();
+        String::from_utf16(&command_line(&arguments)).unwrap_or_default()
+    }
+
+    #[test]
+    fn each_argument_of_a_command_line_is_given_back_as_it_is() {
+        assert_eq!(line(&[]), "");
+        assert_eq!(
+            line(&["--report", r"C:\Temp\report"]),
+            r"--report C:\Temp\report"
+        );
+        assert_eq!(line(&[r"C:\a b\c"]), r#""C:\a b\c""#);
+        assert_eq!(line(&["", "x"]), r#""" x"#);
+        assert_eq!(line(&[r#"a"b"#]), r#""a\"b""#);
+        assert_eq!(line(&[r#"a\"b"#]), r#""a\\\"b""#);
+        assert_eq!(line(&[r"a b\"]), r#""a b\\""#);
+        assert_eq!(line(&[r"a\b\"]), r"a\b\");
+        assert_eq!(line(&["a\tb"]), "\"a\tb\"");
+        assert_eq!(line(&[r#"x" --attach "C:\a"#]), r#""x\" --attach \"C:\a""#);
     }
 
     fn bytes(frames: &[[f32; 2]]) -> Vec<u8> {

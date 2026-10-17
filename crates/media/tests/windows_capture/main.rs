@@ -662,7 +662,7 @@ fn a_program_that_the_client_opens_is_started_by_the_shell_outside_its_tree() {
     // What the client opens: the shell starts it, hidden here, and is its creator.
     junto_media::share::windows::open_through_the_shell(
         fixture.as_ref(),
-        format!("--report \"{}\"", report.display()).as_ref(),
+        &["--report".as_ref(), report.as_os_str()],
         false,
     )
     .unwrap();
@@ -681,6 +681,137 @@ fn a_program_that_the_client_opens_is_started_by_the_shell_outside_its_tree() {
         .unwrap();
     assert!(status.success());
     assert_eq!(creator_of(&report).0, std::process::id());
+}
+
+/// A scheme of links that only this test program uses, registered for the account with a
+/// command that starts the fixture. The registration is removed when the value is dropped.
+struct Scheme {
+    key: String,
+}
+
+impl Scheme {
+    fn register(name: &str, command: &str) -> Self {
+        let key = format!(r"Software\Classes\{name}");
+        registry::set(&key, None, "URL:Junto test");
+        registry::set(&key, Some("URL Protocol"), "");
+        registry::set(&format!(r"{key}\shell\open\command"), None, command);
+        Self { key }
+    }
+}
+
+impl Drop for Scheme {
+    fn drop(&mut self) {
+        registry::remove(&self.key);
+    }
+}
+
+#[allow(unsafe_code)]
+mod registry {
+    use windows::Win32::System::Registry::{
+        HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey,
+        RegCreateKeyExW, RegDeleteTreeW, RegSetValueExW,
+    };
+    use windows::core::{HSTRING, PCWSTR};
+
+    /// Sets a text value of a key of the account, the default value without a name.
+    pub fn set(key: &str, name: Option<&str>, value: &str) {
+        let mut opened = HKEY::default();
+        let data: Vec<u8> = value
+            .encode_utf16()
+            .chain([0])
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        let name = name.map(HSTRING::from);
+        // SAFETY: the strings and the buffer outlive the calls; the key opened here is
+        // closed before the return.
+        unsafe {
+            RegCreateKeyExW(
+                HKEY_CURRENT_USER,
+                &HSTRING::from(key),
+                None,
+                PCWSTR::null(),
+                REG_OPTION_NON_VOLATILE,
+                KEY_SET_VALUE,
+                None,
+                &mut opened,
+                None,
+            )
+            .ok()
+            .unwrap();
+            let written = RegSetValueExW(
+                opened,
+                name.as_ref()
+                    .map_or(PCWSTR::null(), |name| PCWSTR(name.as_ptr())),
+                None,
+                REG_SZ,
+                Some(&data),
+            );
+            let _ = RegCloseKey(opened);
+            written.ok().unwrap();
+        }
+    }
+
+    /// Removes a key of the account with its keys and values.
+    pub fn remove(key: &str) {
+        // SAFETY: the string outlives the call.
+        let _ = unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, &HSTRING::from(key)) };
+    }
+}
+
+/// The lines that a program wrote into a file, once the file exists.
+fn arguments_in(file: &std::path::Path) -> Vec<String> {
+    let started = Instant::now();
+    loop {
+        if let Ok(text) = std::fs::read_to_string(file) {
+            let _ = std::fs::remove_file(file);
+            return text.split('\n').map(str::to_owned).collect();
+        }
+        assert!(started.elapsed() < PATIENCE, "no arguments in {file:?}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_link_with_quotes_and_spaces_reaches_its_application_as_one_argument() {
+    use junto_client_core::link::Link;
+    use junto_media::share::windows::{Opened, Target, open};
+    // The shell finds the program of a registered command only by a path with backslashes;
+    // the target directory of the build can be named with slashes.
+    let fixture = std::path::absolute(env!("CARGO_BIN_EXE_junto-share-fixture")).unwrap();
+    let process = std::process::id();
+    let name = format!("junto-test-open-{process}");
+    let file =
+        std::path::absolute(std::env::temp_dir().join(format!("junto-share-arguments-{process}")))
+            .unwrap();
+    let _ = std::fs::remove_file(&file);
+    // The usual form of the command of an application for a scheme.
+    let _scheme = Scheme::register(
+        &name,
+        &format!(
+            r#""{}" --arguments "{}" "%1""#,
+            fixture.display(),
+            file.display()
+        ),
+    );
+    // An address that a server could send: with `%1` replaced as it is, the fixture would
+    // receive `--report` and `C:\a b` as arguments of their own.
+    let link = Link::of_any_scheme(&format!(r#"{name}:x" --report "C:\a b" y"#)).unwrap();
+    // The shell answers when it has started the program, or when a person has closed its
+    // message that it cannot.
+    let (answer, answered) = std::sync::mpsc::channel();
+    std::thread::spawn({
+        let target = Target::Link(link.clone());
+        move || answer.send(open(&target))
+    });
+    assert_eq!(
+        answered.recv_timeout(PATIENCE).expect(
+            "the shell did not answer: it shows a message on the desktop that it could not \
+             open the link"
+        ),
+        Ok(Opened::ByTheShell)
+    );
+    assert_eq!(arguments_in(&file), [link.as_str()]);
+    assert!(!link.as_str().contains(['"', ' ']), "{link}");
 }
 
 #[test]

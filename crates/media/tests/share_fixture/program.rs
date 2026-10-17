@@ -13,6 +13,9 @@
 //! `junto-share-fixture --report <file>` writes the identifier of the process that created
 //! it and the path of that process's program into the file, as `<identifier> <path>`, and
 //! ends.
+//!
+//! `junto-share-fixture --arguments <file> <argument>...` writes the arguments after the file,
+//! one on each line, into the file, and ends.
 
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
@@ -34,6 +37,15 @@ fn main() {
             Ok(()) => 0,
             Err(_) => 1,
         });
+    }
+    if let [flag, file, rest @ ..] = arguments.as_slice()
+        && flag == "--arguments"
+    {
+        // The file appears complete: the test reads it as soon as it exists.
+        let part = format!("{file}.part");
+        let written =
+            std::fs::write(&part, rest.join("\n")).and_then(|()| std::fs::rename(&part, file));
+        std::process::exit(if written.is_ok() { 0 } else { 1 });
     }
     let title = arguments
         .first()

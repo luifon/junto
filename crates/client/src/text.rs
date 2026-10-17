@@ -458,6 +458,10 @@ pub const NO_APPLICATIONS: &str = if cfg!(target_os = "linux") {
 } else {
     "No other application with a window is open."
 };
+/// On Windows, when the processes that started Junto could not be read: the sound of any
+/// application can include the sound of Junto (ADR 0706).
+pub const SOUND_CREATORS_UNKNOWN: &str = "Junto could not read which applications started it, and the sound of an application \
+     that started Junto includes the sound of this call. Share all system sound or no sound.";
 pub const SHARE: &str = "Share";
 pub const SCREEN_ACCESS_TITLE: &str = "Junto may not record the screen yet";
 pub const SCREEN_ACCESS_HELP: &str = if cfg!(target_os = "macos") {
@@ -516,6 +520,7 @@ pub fn capture_error(error: &CaptureError) -> String {
              call. Share all system sound or no sound instead."
                 .to_owned()
         }
+        CaptureError::CreatorsUnknown => SOUND_CREATORS_UNKNOWN.to_owned(),
         CaptureError::Unsupported => SHARE_UNSUPPORTED.to_owned(),
         CaptureError::Interrupted => "The connection to the call was lost.".to_owned(),
         CaptureError::Failed(reason) => {
@@ -2877,6 +2882,7 @@ mod tests {
             CaptureError::NotAllowed,
             CaptureError::SourceGone,
             CaptureError::StartedTheClient,
+            CaptureError::CreatorsUnknown,
             CaptureError::Unsupported,
             CaptureError::Interrupted,
             CaptureError::Failed("the stream stopped".to_owned()),

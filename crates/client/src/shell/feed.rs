@@ -14,6 +14,7 @@ use gpui::{
     UnderlineStyle, Window, div, img, list, prelude::FluentBuilder, px,
 };
 use gpui_base::{Scrollbar, ScrollbarMode};
+use junto_client_core::link::Link;
 use junto_client_core::model::{PlaceId, ReadFailure, SendState};
 #[cfg(feature = "test-support")]
 use junto_client_core::protocol::ids::AttachmentId;
@@ -26,7 +27,6 @@ use junto_client_core::transfers::{DownloadStage, UploadStage};
 use super::pictures::{MOST_PICTURES, Outcome, Picture, PictureKey, Pictures};
 use super::{EmojiTarget, Layer, Pane, Shell};
 use crate::assets::Icon;
-use crate::compose;
 use crate::highlight::{self, Token};
 use crate::state::feed::{
     Feed, FeedRow, MessageRow, Names, Quote, QuoteText, SystemKind, SystemRow, WaitingRow,
@@ -269,7 +269,7 @@ struct Rich {
     highlights: Vec<(Range<usize>, HighlightStyle)>,
     families: Vec<(Range<usize>, SharedString)>,
     /// The parts that open an address, with the address.
-    links: Vec<(Range<usize>, String)>,
+    links: Vec<(Range<usize>, Link)>,
 }
 
 impl Rich {
@@ -322,11 +322,12 @@ impl Rich {
                 }
                 // The document came from a server, and a server is not trusted with what
                 // this device opens (ADR 0714): an address that the composer would not
-                // take as a link is drawn as text.
-                Inline::Link { text, url } if !compose::link_is_accepted(url) => {
-                    rich.text.push_str(text);
-                }
+                // take as a link is drawn as text, and a link opens in the form of ADR 0740.
                 Inline::Link { text, url } => {
+                    let Some(link) = Link::parse(url) else {
+                        rich.text.push_str(text);
+                        continue;
+                    };
                     rich.text.push_str(text);
                     let range = start..rich.text.len();
                     rich.highlights.push((
@@ -341,7 +342,7 @@ impl Rich {
                             ..HighlightStyle::default()
                         },
                     ));
-                    rich.links.push((range, url.clone()));
+                    rich.links.push((range, link));
                 }
                 Inline::Account { .. } | Inline::Role { .. } | Inline::Everyone => {
                     rich.text.push('\u{2009}');
@@ -398,15 +399,15 @@ impl Rich {
             .on_click(ranges, move |index, _, cx| {
                 // The address is HTTP, HTTPS or mailto: the application of the system
                 // for it opens it.
-                if let Some((_, address)) = links.get(index) {
-                    crate::opening::open_url(address, cx);
+                if let Some((_, link)) = links.get(index) {
+                    crate::opening::open_link(link, cx);
                 }
             })
             .tooltip(move |index, window, cx| {
                 hover
                     .iter()
                     .find(|(range, _)| range.contains(&index))
-                    .map(|(_, address)| tooltip(address.clone())(window, cx))
+                    .map(|(_, link)| tooltip(link.to_string())(window, cx))
             })
             .into_any_element()
     }
@@ -2631,5 +2632,34 @@ mod tests {
             .map(|(_, address)| address.as_str())
             .collect();
         assert_eq!(opened, ["https://example.com/a", "mailto:a@example.com"]);
+    }
+
+    #[test]
+    fn a_link_opens_as_one_address_without_quotes_or_spaces() {
+        let theme = Theme::stone();
+        let names = Names::default();
+        let link = |url: &str| Inline::Link {
+            text: "here".to_owned(),
+            url: url.to_owned(),
+        };
+        // A handler whose command is `"program.exe" "%1"` would take each quote and space
+        // of these addresses as the end of one argument and the start of another.
+        let content = [
+            link(r#"mailto:a@example.com?body=x" --attach "C:\Users\a b\secret.txt"#),
+            link(r#"https://example.com/a b"c?q="x y"#),
+        ];
+        let rich = Rich::of(&content, &names, &theme);
+        let opened: Vec<&str> = rich
+            .links
+            .iter()
+            .map(|(_, address)| address.as_str())
+            .collect();
+        assert_eq!(
+            opened,
+            [
+                "mailto:a@example.com?body=x%22%20--attach%20%22C:%5CUsers%5Ca%20b%5Csecret.txt",
+                "https://example.com/a%20b%22c?q=%22x%20y"
+            ]
+        );
     }
 }

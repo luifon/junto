@@ -113,6 +113,7 @@ impl SyntheticCapture {
                     portal: Vec::new(),
                     system_sound: true,
                     started_the_client: Vec::new(),
+                    creators_unknown: false,
                     displays: vec![DisplaySource {
                         id: 1,
                         width: 1280,

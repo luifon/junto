@@ -27,8 +27,12 @@ mod sources;
 
 #[cfg(target_os = "windows")]
 pub use capture::SystemCapture;
+/// The start of a program with arguments through the shell, for the tests of the start of
+/// applications outside the client's tree.
+#[cfg(all(target_os = "windows", feature = "test-support"))]
+pub use shell::open_through_the_shell;
 #[cfg(target_os = "windows")]
-pub use shell::{Opened, open, open_through_the_shell};
+pub use shell::{Opened, Target, open};
 
 /// The frames that the system gave to the sound captures of this process, silent ones
 /// included.

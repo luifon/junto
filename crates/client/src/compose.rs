@@ -12,6 +12,7 @@
 
 use std::ops::Range;
 
+use junto_client_core::link::Link;
 use junto_client_core::protocol::ids::{AccountId, WorkspaceRoleId};
 use junto_client_core::protocol::message::{Block, CheckItem, Document, Inline, Mark};
 
@@ -39,7 +40,7 @@ pub const MOST_MENTIONS: usize = 100;
 /// plain text, and [`check`] refuses it for its length: without white space at its line
 /// ends it cannot become a document that the server accepts.
 pub const MOST_TEXT: usize = 4 * MOST_BYTES;
-const LONGEST_LINK: usize = 2048;
+const LONGEST_LINK: usize = junto_client_core::link::LONGEST;
 const LONGEST_LANGUAGE: usize = 32;
 
 /// Why the server would refuse a document.
@@ -124,15 +125,7 @@ fn with_tokens(text: &str, mentions: &[Mention]) -> (String, Vec<MentionTarget>)
 /// True when the server accepts the address of a link: HTTP, HTTPS or mailto, without a
 /// user name and a password, without a control character, at most 2,048 bytes.
 pub fn link_is_accepted(address: &str) -> bool {
-    if address.len() > LONGEST_LINK || address.chars().any(char::is_control) {
-        return false;
-    }
-    let Ok(parsed) = url::Url::parse(address) else {
-        return false;
-    };
-    matches!(parsed.scheme(), "https" | "http" | "mailto")
-        && parsed.username().is_empty()
-        && parsed.password().is_none()
+    Link::parse(address).is_some()
 }
 
 fn language_is_accepted(language: &str) -> bool {

@@ -28,7 +28,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{BOOL, PCWSTR, PWSTR};
 
-use super::rules::{self, FRAME_HOST, ListedProcess, ListedWindow};
+use super::rules::{self, Creators, FRAME_HOST, ListedProcess, ListedWindow};
 use crate::share::listing::Own;
 use crate::share::{ApplicationId, DisplaySource, ShareSources, WindowSource};
 
@@ -122,20 +122,20 @@ pub(super) fn own() -> Own {
     rules::own(process_id, &path, file_description(&path).as_deref())
 }
 
-/// The processes of the system with the identifier of the process that created each.
-fn processes() -> Vec<ListedProcess> {
+/// The processes of the system with the identifier of the process that created each, or
+/// nothing when the list cannot be read.
+fn processes() -> Option<Vec<ListedProcess>> {
     let mut processes = Vec::new();
     // SAFETY: the snapshot handle is closed before the function returns; each entry has the
     // size that its first field states.
     unsafe {
-        let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
-            return processes;
-        };
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
         let mut entry = PROCESSENTRY32W {
             dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
             ..Default::default()
         };
-        let mut more = Process32FirstW(snapshot, &mut entry).is_ok();
+        let first = Process32FirstW(snapshot, &mut entry).is_ok();
+        let mut more = first;
         while more {
             processes.push(ListedProcess {
                 id: entry.th32ProcessID,
@@ -144,8 +144,9 @@ fn processes() -> Vec<ListedProcess> {
             more = Process32NextW(snapshot, &mut entry).is_ok();
         }
         let _ = CloseHandle(snapshot);
+        // A list always holds this process, so a list without a first entry was not read.
+        first.then_some(processes)
     }
-    processes
 }
 
 /// The creation time of a process in units of 100 nanoseconds, or nothing for a process
@@ -169,8 +170,8 @@ fn creation_time(process_id: u32) -> Option<u64> {
 }
 
 /// The processes that started the client (ADR 0706).
-pub(super) fn ancestors(own: &Own) -> Vec<u32> {
-    rules::ancestors(own.process_id as u32, &processes(), creation_time)
+pub(super) fn ancestors(own: &Own) -> Creators {
+    rules::ancestors(own.process_id as u32, processes().as_deref(), creation_time)
 }
 
 /// The application of a process with its path and name.
@@ -379,7 +380,8 @@ pub(super) fn displays() -> Vec<Display> {
 /// exists on every version of Windows 11 (ADR 0705, ADR 0706).
 pub(super) fn sources(own: &Own) -> ShareSources {
     let windows = windows(own);
-    let (applications, started_the_client) = rules::sound_choices(&windows, own, &ancestors(own));
+    let creators = ancestors(own);
+    let (applications, started_the_client) = rules::sound_choices(&windows, own, &creators);
     ShareSources {
         displays: displays()
             .into_iter()
@@ -390,5 +392,6 @@ pub(super) fn sources(own: &Own) -> ShareSources {
         portal: Vec::new(),
         system_sound: true,
         started_the_client,
+        creators_unknown: creators == Creators::Unknown,
     }
 }

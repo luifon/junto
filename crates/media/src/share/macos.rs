@@ -632,6 +632,7 @@ impl Content {
                 portal: Vec::new(),
                 system_sound: true,
                 started_the_client: Vec::new(),
+                creators_unknown: false,
                 displays: displays
                     .iter()
                     .map(|display| {

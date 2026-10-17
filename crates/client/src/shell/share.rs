@@ -149,8 +149,9 @@ impl SharePicker {
                     .iter()
                     .find(|window| window.id == id)?
                     .application;
-                // Its sound includes the sound of the call (ADR 0706); the dialog states why.
-                if sources.started_the_client.contains(application) {
+                // Its sound includes the sound of the call, or can include it (ADR 0706); the
+                // dialog states why.
+                if sources.creators_unknown || sources.started_the_client.contains(application) {
                     return None;
                 }
                 SoundChoice::Application(application.clone())
@@ -915,6 +916,9 @@ impl Shell {
             (None, _) => text::SOUND_CHOICE_HELP.into(),
             (Some(SoundKind::None), _) => text::SOUND_NONE_HELP.into(),
             (Some(SoundKind::System), _) => text::SOUND_SYSTEM_HELP.into(),
+            (Some(SoundKind::Application), _) if sources.creators_unknown => {
+                text::SOUND_CREATORS_UNKNOWN.into()
+            }
             (Some(SoundKind::Application), Some(name)) if started_the_client => {
                 text::sound_includes_junto(name).into()
             }
@@ -955,7 +959,12 @@ impl Shell {
                     })
                     .collect();
                 if listed.is_empty() {
-                    listed.push(note(text::NO_APPLICATIONS.into()).into_any_element());
+                    let empty = if sources.creators_unknown {
+                        text::SOUND_CREATORS_UNKNOWN
+                    } else {
+                        text::NO_APPLICATIONS
+                    };
+                    listed.push(note(empty.into()).into_any_element());
                 }
                 listed
             } else {
@@ -1541,6 +1550,7 @@ mod tests {
             portal: Vec::new(),
             system_sound: true,
             started_the_client: Vec::new(),
+            creators_unknown: false,
             displays: vec![DisplaySource {
                 id: 1,
                 width: 1920,
@@ -1690,6 +1700,22 @@ mod tests {
         picker.sound = Some(SoundKind::Application);
         assert_eq!(picker.chosen(), None);
         // The other choices of sound stay.
+        picker.sound = Some(SoundKind::System);
+        assert_eq!(
+            picker.chosen(),
+            Some((PictureSource::Window(11), SoundChoice::System))
+        );
+    }
+
+    #[test]
+    fn without_the_applications_that_started_junto_no_sound_of_one_application_is_shared() {
+        let mut picker = picker();
+        if let Listed::Sources(sources) = &mut picker.listed {
+            sources.creators_unknown = true;
+        }
+        picker.picture = Some(PictureSource::Window(11));
+        picker.sound = Some(SoundKind::Application);
+        assert_eq!(picker.chosen(), None);
         picker.sound = Some(SoundKind::System);
         assert_eq!(
             picker.chosen(),

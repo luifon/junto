@@ -13,8 +13,9 @@ use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::CoIncrementMTAUsage;
 
 use super::graphics::{Gpu, Session, Target};
+use super::rules::{self, Creators};
 use super::sound::{Capture, Event, Loopback};
-use super::{rules, sources};
+use super::sources;
 use crate::share::delivery::{CAPACITY, Latest, Life, deliver};
 use crate::share::listing::Own;
 use crate::share::{
@@ -157,8 +158,12 @@ fn resolve(
                 return Err(CaptureError::SourceGone);
             }
             // The tree of an application that started the client holds the client.
-            if sources::ancestors(own).contains(&(id.process_id as u32)) {
-                return Err(CaptureError::StartedTheClient);
+            match sources::ancestors(own) {
+                Creators::Unknown => return Err(CaptureError::CreatorsUnknown),
+                Creators::Known(creators) if creators.contains(&(id.process_id as u32)) => {
+                    return Err(CaptureError::StartedTheClient);
+                }
+                Creators::Known(_) => {}
             }
             Some(Loopback::Include(id.process_id as u32))
         }
@@ -286,7 +291,8 @@ fn picture(
     let result = (|| {
         apartment()?;
         let owner = Thread::current();
-        life.on_stop(move || owner.wake());
+        let waker = owner.waker()?;
+        life.on_stop(move || waker.wake());
         let session = Session::start(target, life.clone(), pictures)?;
         if let Some(ready) = ready.take() {
             let _ = ready.send(Ok((session.gpu.clone(), session.size)));
@@ -328,8 +334,40 @@ fn sound(
 
 /// The picture thread of a capture, which runs a message loop, and which the stop of the
 /// capture wakes.
-#[derive(Clone, Copy)]
 pub(super) struct Thread(u32);
+
+/// Wakes the picture thread from another thread. It holds the thread open: the system gives
+/// the identifier of a thread to another thread only after the thread object is destroyed,
+/// and an open handle keeps that object, so the identifier names this thread while the
+/// waker exists, also after the thread has ended.
+pub(super) struct ThreadWaker {
+    id: u32,
+    handle: windows::Win32::Foundation::HANDLE,
+}
+
+// SAFETY: a thread handle can be used and closed from any thread; the waker only posts to the
+// thread and closes the handle once, when it is dropped.
+unsafe impl Send for ThreadWaker {}
+// SAFETY: as above; `wake` does not change the waker.
+unsafe impl Sync for ThreadWaker {}
+
+impl ThreadWaker {
+    /// Makes `pump` of the thread return.
+    pub(super) fn wake(&self) {
+        use windows::Win32::Foundation::{LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_NULL};
+        // SAFETY: the identifier names the thread of the waker (see the type); posting to it
+        // after it has ended fails and changes nothing.
+        let _ = unsafe { PostThreadMessageW(self.id, WM_NULL, WPARAM(0), LPARAM(0)) };
+    }
+}
+
+impl Drop for ThreadWaker {
+    fn drop(&mut self) {
+        // SAFETY: the handle was opened by `Thread::waker` and is closed only here.
+        let _ = unsafe { windows::Win32::Foundation::CloseHandle(self.handle) };
+    }
+}
 
 impl Thread {
     /// The calling thread, with the message queue that `wake` posts to.
@@ -343,12 +381,13 @@ impl Thread {
         }
     }
 
-    /// Makes `pump` of the thread return.
-    pub(super) fn wake(&self) {
-        use windows::Win32::Foundation::{LPARAM, WPARAM};
-        use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_NULL};
-        // SAFETY: posting to a thread that has ended fails and changes nothing.
-        let _ = unsafe { PostThreadMessageW(self.0, WM_NULL, WPARAM(0), LPARAM(0)) };
+    /// A waker of this thread, which holds the thread open.
+    pub(super) fn waker(&self) -> Result<ThreadWaker, CaptureError> {
+        use windows::Win32::System::Threading::{OpenThread, THREAD_SYNCHRONIZE};
+        // SAFETY: the call opens the thread of this identifier, which is the running caller.
+        let handle = unsafe { OpenThread(THREAD_SYNCHRONIZE, false, self.0) }
+            .map_err(|error| CaptureError::Failed(error.message()))?;
+        Ok(ThreadWaker { id: self.0, handle })
     }
 
     /// Waits for messages of the calling thread and handles them. A message that waits

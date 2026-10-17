@@ -71,7 +71,7 @@ Windows:
 - Choices offered: this application, all system sound, none.
 - "This application" lists the applications that have a window, as on macOS. The sound of an application includes the sound of its child processes. A share of one window carries the sound of the application that owns the window.
 - Own sound is excluded from all system sound by the capture of every process except the tree of the client's process. Junto therefore plays the sound of a call from its own process or from a child process, and the applications that Junto opens for a link or a file are started by the Windows shell, outside that tree.
-- The sound of an application that started Junto, directly or through other processes, includes the sound of Junto. It is not offered alone, and a share of one of its windows offers all system sound or no sound and states why (ADR 0706).
+- The sound of an application that started Junto, directly or through other processes, includes the sound of Junto. It is not offered alone, and a share of one of its windows offers all system sound or no sound and states why (ADR 0706). When the process list cannot be read, no application's sound is offered alone. An application above a creator of Junto that has ended is offered; whether its sound includes Junto is open (ADR 0706, Consequences).
 
 ## Consequences
 

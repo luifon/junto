@@ -37,10 +37,12 @@ impl Life {
     pub fn stopped(&self) -> bool {
         self.stopped.load(Ordering::Acquire)
     }
+    /// Stops the capture. The first stop runs each waker once and drops it; a later stop
+    /// runs none, so that no waker acts on a thread that has ended since.
     pub fn stop(&self) {
-        let wakers = self.wakers.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut held = self.wakers.lock().unwrap_or_else(PoisonError::into_inner);
         self.stopped.store(true, Ordering::Release);
-        for wake in wakers.iter() {
+        for wake in std::mem::take(&mut *held) {
             wake();
         }
     }
@@ -309,6 +311,9 @@ mod tests {
         }
         assert_eq!(woken.load(Ordering::SeqCst), 0);
         life.fail(CaptureError::SourceGone);
+        assert_eq!(woken.load(Ordering::SeqCst), 2);
+        // A second stop, such as the drop of a stream whose capture failed, wakes nobody.
+        life.stop();
         assert_eq!(woken.load(Ordering::SeqCst), 2);
         // A thread that comes after the stop does not wait.
         let late = woken.clone();

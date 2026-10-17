@@ -93,6 +93,10 @@ pub struct ShareSources {
     /// process started the client, directly or through other processes (ADR 0706); the
     /// other systems list none.
     pub started_the_client: Vec<ApplicationId>,
+    /// On Windows, the processes that started the client could not be read, so that any
+    /// application can have started it: no application is offered for its sound alone
+    /// (ADR 0706). The other systems state false.
+    pub creators_unknown: bool,
 }
 
 /// The picture of a share.
@@ -214,6 +218,9 @@ pub enum CaptureError {
     /// Windows, the application started the client (ADR 0706).
     #[error("the sound of this application includes the sound of Junto")]
     StartedTheClient,
+    /// Windows, the processes that started the client could not be read (ADR 0706).
+    #[error("the applications that started Junto could not be read")]
+    CreatorsUnknown,
     /// This build has no capture for the system that it runs on.
     #[error("screen share is not available on this system")]
     Unsupported,
