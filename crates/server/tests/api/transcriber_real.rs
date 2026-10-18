@@ -23,12 +23,12 @@ use serde_json::{Value, json};
 use time::Duration;
 
 use crate::recordings_support::Studio;
-use crate::support::TestServer;
+use crate::support::{TestServer, package_directory};
 
 #[tokio::test]
 #[ignore = "needs the virtual environment and the models of workers/transcription"]
 async fn the_real_worker_transcribes_the_microphone_and_the_shared_sound_of_a_recording() {
-    let worker = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../workers/transcription");
+    let worker = package_directory().join("../../workers/transcription");
     let program = worker.join(".venv/bin/junto-transcribe");
     let models = worker.join(".models");
     let speech = worker.join(".audio/en_quick.ogg");

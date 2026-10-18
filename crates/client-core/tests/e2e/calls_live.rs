@@ -28,10 +28,19 @@ use crate::support::{Device, TestServer, claim, join, logged_in};
 
 const REASON: &str = "needs a LiveKit server: run through tools/with-test-livekit.sh";
 
+/// The directory of this package in the checkout that runs the test: `cargo test` sets it at
+/// run time, while a path compiled into the binary can name another checkout whose build the
+/// shared target directory reused.
+fn package_directory() -> PathBuf {
+    std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("CARGO_MANIFEST_DIR is not set: run the test through cargo test"))
+}
+
 fn participant_tool() -> PathBuf {
     let path = std::env::var_os("JUNTO_TEST_PARTICIPANT_BIN").map_or_else(
         || {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            package_directory()
                 .join("../../spikes/test-participant/target/release/test-participant")
         },
         PathBuf::from,

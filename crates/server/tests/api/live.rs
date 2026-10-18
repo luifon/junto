@@ -23,12 +23,8 @@ use serde_json::Value;
 use time::Duration;
 
 use crate::calls_support::{Scene, names};
-use crate::support::TestServer;
+use crate::support::{TestServer, package_directory};
 
-const TOOL: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../spikes/test-participant/target/release/test-participant"
-);
 const PATIENCE: Wait = Wait::from_secs(30);
 const REASON: &str = "needs a LiveKit server: run through tools/with-test-livekit.sh";
 
@@ -76,7 +72,12 @@ struct Client {
 
 impl Client {
     fn start(command: &str, url: &str, token: &CallToken, arguments: &[&str]) -> Self {
-        let tool = std::env::var("JUNTO_TEST_PARTICIPANT").unwrap_or_else(|_| TOOL.to_owned());
+        let tool = std::env::var("JUNTO_TEST_PARTICIPANT").unwrap_or_else(|_| {
+            package_directory()
+                .join("../../spikes/test-participant/target/release/test-participant")
+                .display()
+                .to_string()
+        });
         assert!(
             std::path::Path::new(&tool).exists(),
             "{tool} is missing. Build it once: (cd spikes/test-participant && \
