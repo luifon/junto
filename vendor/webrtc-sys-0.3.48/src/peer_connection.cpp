@@ -12,6 +12,9 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ *
+ * Modified: this file differs from the published webrtc-sys 0.3.48. The destructor of
+ * PeerConnection closes the native peer connection before it releases its members.
  */
 
 #include "livekit/peer_connection.h"

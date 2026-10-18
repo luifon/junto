@@ -247,7 +247,7 @@ Status values:
 
 | Number | Title | Status | Summary |
 |---|---|---|---|
-| [0801](0801-licence-and-reference-code.md) | Licence and the reference-code process | Accepted | Apache-2.0 with a CI licence check; GPL code is a reference only through three separate sessions and a similarity check. |
+| [0801](0801-licence-and-reference-code.md) | Licence and the reference-code process | Accepted | Apache-2.0 with a CI licence check; each changed file of a vendored copy carries a notice of the change; GPL code is a reference only through three separate sessions and a similarity check. |
 
 ## 0901–0999 Process and testing
 

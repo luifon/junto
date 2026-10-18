@@ -11,6 +11,9 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified: this file differs from the published webrtc-sys 0.3.48 by the module
+// `system_certificate_verifier` on Linux.
 
 #[cfg(target_os = "android")]
 pub mod android;
@@ -37,6 +40,7 @@ pub mod rtp_parameters;
 pub mod rtp_receiver;
 pub mod rtp_sender;
 pub mod rtp_transceiver;
+// Modified: added.
 #[cfg(target_os = "linux")]
 mod system_certificate_verifier;
 pub mod video_frame;

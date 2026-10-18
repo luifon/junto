@@ -60,6 +60,9 @@ version = "0.3.19"
 [target.'cfg(target_os = "linux")'.build-dependencies.pkg-config]
 version = "0.3.22"
 
+# Modified: this manifest differs from the published webrtc-sys 0.3.48 in the two
+# dependencies below only. They are added for the system-root TLS verifier of Linux
+# (`src/system_certificate_verifier.rs`).
 [target.'cfg(target_os = "linux")'.dependencies.rustls-native-certs]
 version = "0.8.4"
 

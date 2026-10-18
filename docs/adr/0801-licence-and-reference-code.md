@@ -14,6 +14,7 @@ Licence:
 
 - The project is public under Apache-2.0, the licence of gpui and of LiveKit.
 - CI checks the licence of every dependency.
+- A copy of a dependency in `vendor/` keeps the copyright and licence notices of its files. Each changed source file states in its header that it differs from the published version, each change carries a `Modified:` comment (in a manifest, at the changed dependency), and a new file states that it is not in the published crate. Apache-2.0 section 4(b) requires a prominent notice of change in each changed file of a redistributed work.
 
 Reference code:
 
@@ -31,6 +32,7 @@ Similarity check:
 ## Consequences
 
 - A dependency with a licence that is not compatible fails CI.
+- A correction of a vendored file adds its notice in the same change; `vendor/README.md` names each changed and new file.
 - A function that only the GPL crates show how to build costs three sessions and at least one comparison round.
 - The writer never has the reference source, and the checker's feedback cannot carry the reference code to the writer.
 - Client files for text editing, lists and windows are compared against the GPL crates even when no reference was read for them.

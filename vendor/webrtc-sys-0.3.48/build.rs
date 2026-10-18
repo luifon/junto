@@ -11,6 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified: this file differs from the published webrtc-sys 0.3.48. On Linux it also builds
+// the system-root TLS verifier (`src/system_certificate_verifier.rs` and
+// `src/system_certificate_verifier.cpp`).
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -61,6 +65,7 @@ fn main() {
     if is_desktop {
         rust_files.push("src/desktop_capturer.rs");
     }
+    // Modified: added.
     if target_os == "linux" {
         rust_files.push("src/system_certificate_verifier.rs");
     }
@@ -174,6 +179,7 @@ fn main() {
                 .flag("/EHsc");
         }
         "linux" => {
+            // Modified: added.
             builder.file("src/system_certificate_verifier.cpp");
             println!("cargo:rustc-link-lib=dylib=rt");
             println!("cargo:rustc-link-lib=dylib=dl");

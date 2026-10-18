@@ -653,9 +653,9 @@ async fn a_presenter_who_left_the_call_does_not_lower_a_hand() {
     );
 }
 
-/// The operator's decision for ADR 0514 and ADR 0604: a call keeps the setting that it
-/// started with. A person outside who turns the setting off during a call reads nothing of
-/// that call: no participant, no event, no recording. The next call shows who is inside.
+/// ADR 0514 and ADR 0604: a call keeps the setting that it started with. A person outside
+/// who turns the setting off during a call reads nothing of that call: no participant, no
+/// event, no recording. The next call shows who is inside.
 #[tokio::test]
 async fn turning_the_setting_off_during_a_call_shows_nothing_of_that_call() {
     let studio = Studio::hidden().await;
