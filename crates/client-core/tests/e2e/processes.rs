@@ -2,7 +2,7 @@
 //! process is killed (ADR 0915).
 
 use std::io::{BufRead, BufReader};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 
@@ -15,8 +15,9 @@ use crate::support::{TestServer, admin_url};
 const HOLDER: &str = "JUNTO_TEST_SERVER_HOLDER";
 const SERVER_LINE: &str = "the server ";
 
-/// The process that the test below kills: it starts a server, prints the number of its
-/// process and the name of its database, and waits. Without the variable it does nothing.
+/// The process that the test below kills: it starts a server and the processes of
+/// [`bystanders`], prints the number of the server process, the name of its database and the
+/// numbers of the bystanders, and waits. Without the variable it does nothing.
 #[tokio::test]
 #[ignore = "a part of a_server_that_a_test_started_stops_when_the_process_of_the_test_is_killed"]
 async fn holds_a_server_until_its_process_is_killed() {
@@ -25,12 +26,67 @@ async fn holds_a_server_until_its_process_is_killed() {
     }
     let server = TestServer::start("held").await;
     let database = url::Url::parse(&server.database_url).unwrap();
+    let bystanders = bystanders();
+    let numbers: Vec<String> = bystanders
+        .iter()
+        .map(|bystander| bystander.id().to_string())
+        .collect();
     println!(
-        "{SERVER_LINE}{} {}",
+        "{SERVER_LINE}{} {} {}",
         server.process_id().unwrap(),
-        database.path().trim_start_matches('/')
+        database.path().trim_start_matches('/'),
+        numbers.join(",")
     );
     std::future::pending::<()>().await;
+}
+
+/// Processes that keep running after this one ends, each with a copy of one pipe that this
+/// process holds. On macOS the standard library creates a pipe and makes it private to the
+/// process in a second call, so a process that another thread starts between the two calls
+/// inherits it; these processes hold every such pipe at once.
+#[cfg(unix)]
+fn bystanders() -> Vec<Child> {
+    use std::os::unix::fs::FileTypeExt;
+    let mut started = Vec::new();
+    for entry in std::fs::read_dir("/dev/fd").unwrap().map_while(Result::ok) {
+        let path = entry.path();
+        let number = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok());
+        if number.is_none_or(|number| number < 3)
+            || !std::fs::metadata(&path).is_ok_and(|metadata| metadata.file_type().is_fifo())
+        {
+            continue;
+        }
+        let Ok(copy) = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .or_else(|_| std::fs::File::open(&path))
+        else {
+            continue;
+        };
+        let bystander = Command::new("sleep")
+            .arg("600")
+            .stdin(copy)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        started.push(bystander);
+    }
+    assert!(
+        !started.is_empty(),
+        "this process holds pipes of its server"
+    );
+    started
+}
+
+/// On Windows the standard library creates the end of a pipe that a child inherits while no
+/// other child is started, so no other process holds it.
+#[cfg(windows)]
+fn bystanders() -> Vec<Child> {
+    Vec::new()
 }
 
 /// The sessions of the server on its own database end only when the server has stopped.
@@ -63,7 +119,14 @@ async fn a_server_that_a_test_started_stops_when_the_process_of_the_test_is_kill
         .map_while(Result::ok)
         .find_map(|line| line.strip_prefix(SERVER_LINE).map(str::to_owned))
         .expect("the holder names the process and the database of its server");
-    let (process, database) = line.split_once(' ').unwrap();
+    let mut parts = line.splitn(3, ' ');
+    let (server, database) = (parts.next().unwrap(), parts.next().unwrap());
+    let bystanders: Vec<&str> = parts
+        .next()
+        .unwrap_or_default()
+        .split(',')
+        .filter(|number| !number.is_empty())
+        .collect();
     assert!(sessions_on(database).await > 0);
 
     // The process ends without running any code of its own: SIGKILL on Unix,
@@ -71,16 +134,27 @@ async fn a_server_that_a_test_started_stops_when_the_process_of_the_test_is_kill
     holder.kill().unwrap();
     holder.wait().unwrap();
     let killed = Instant::now();
-    while sessions_on(database).await > 0 {
-        if killed.elapsed() > Duration::from_secs(30) {
-            end(process);
-            panic!("the server still ran 30 s after the process of its test was killed");
+    let mut stopped = false;
+    while killed.elapsed() < Duration::from_secs(30) {
+        if sessions_on(database).await == 0 {
+            stopped = true;
+            break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    for process in bystanders
+        .iter()
+        .chain(if stopped { None } else { Some(&server) })
+    {
+        end(process);
+    }
+    assert!(
+        stopped,
+        "the server still ran 30 s after the process of its test was killed"
+    );
 }
 
-/// Ends the server that the test above leaves running when it fails.
+/// Ends a process that the test above leaves running.
 #[cfg(unix)]
 fn end(process: &str) {
     if let Some(process) = rustix::process::Pid::from_raw(process.parse().unwrap()) {
@@ -88,7 +162,7 @@ fn end(process: &str) {
     }
 }
 
-/// Ends the server that the test above leaves running when it fails.
+/// Ends a process that the test above leaves running.
 #[cfg(windows)]
 fn end(process: &str) {
     let _ = Command::new("taskkill")

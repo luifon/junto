@@ -343,7 +343,7 @@ pub fn test_config() -> Config {
         exports_directory: None,
         migration_copy: junto_server::bootstrap::MigrationCopy::None,
         recorder_layout_directory: None,
-        stop_at_input_end: false,
+        stop_with_process: None,
         database_url: String::new(),
         listen_address: SocketAddr::from(([127, 0, 0, 1], 0)),
         public_origins: PublicOrigins::of(vec![origin()]),
