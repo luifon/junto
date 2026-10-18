@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Tests of tools/ci/caches.sh and of its use by tools/ci/run-jobs.sh. Programs named du, df
-and docker in the PATH stand for one disk of FAKE_DISK KiB: a cache is a directory whose file
-.size holds its size in KiB, and the free space is the disk less the sizes of the caches that
-exist."""
+"""Tests of tools/ci/caches.sh, tools/ci/cache_size.py and of their use by tools/ci/run-jobs.sh.
+A cache is a directory with a sparse file named data, of the size of the cache. Programs named
+df and docker in the PATH stand for one disk of FAKE_DISK KiB, whose free space is the disk less
+the sizes of the files named data below FAKE_ROOT; docker runs du in place of the container."""
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -17,13 +18,12 @@ FAKES = {
 import sys
 from pathlib import Path
 path = Path(sys.argv[-1])
-size = path / ".size"
-print(f"{size.read_text().strip() if size.exists() else 0}\t{path}")
+print(f"{sum(file.stat().st_size for file in path.rglob('*') if file.is_file()) // 1024}\t{path}")
 ''',
     "df": r'''#!/usr/bin/env python3
 import os
 from pathlib import Path
-used = sum(int(size.read_text()) for size in Path(os.environ["FAKE_ROOT"]).rglob(".size"))
+used = sum(data.stat().st_size for data in Path(os.environ["FAKE_ROOT"]).rglob("data")) // 1024
 print("Filesystem 1024-blocks Used Available Capacity Mounted on")
 print(f"disk {os.environ['FAKE_DISK']} {used} {int(os.environ['FAKE_DISK']) - used} 1% /")
 ''',
@@ -46,7 +46,8 @@ volume = root / "volumes" / arguments[arguments.index("-v") + 1].split(":")[0]
 volume.mkdir(parents=True, exist_ok=True)
 command = arguments[arguments.index("-v") + 3:]
 if command[0] == "find":
-    (volume / ".size").unlink(missing_ok=True)
+    for file in volume.rglob("*"):
+        file.unlink()
 else:
     sys.exit(subprocess.run([command[0], command[1], str(volume)]).returncode)
 ''',
@@ -73,7 +74,8 @@ class Fixture(unittest.TestCase):
     def cache(self, name, gib, volume=False):
         path = (self.root / "volumes" if volume else self.directory) / name
         path.mkdir(parents=True)
-        (path / ".size").write_text(str(gib * GIB))
+        with open(path / "data", "wb") as data:
+            data.truncate(gib * GIB * 1024)
         return path
 
     def caches(self, runner, phase, disk_gib=200):
@@ -116,8 +118,7 @@ class Caches(Fixture):
 
     def test_a_run_does_not_start_while_the_free_space_stays_below_the_level(self):
         self.cache("cargo-target", 10)
-        (self.root / "other").mkdir()
-        (self.root / "other" / ".size").write_text(str(150 * GIB))
+        self.cache("../other", 150)
         before = self.caches("macos", "before", disk_gib=200)
         self.assertEqual(before.returncode, 1, before.stdout + before.stderr)
         self.assertIn(f"the run starts no job: the disk of the caches has {50 * GIB} KiB free", before.stderr)
@@ -141,11 +142,32 @@ class Caches(Fixture):
         uv = self.cache("junto-ci-uv", 3, volume=True)
         result = self.caches("linux", "before")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse((target / ".size").exists())
-        self.assertTrue((uv / ".size").exists())
+        self.assertFalse((target / "data").exists())
+        self.assertTrue((uv / "data").exists())
         self.assertIn("volume inspect junto-ci-cargo", (self.root / "docker.log").read_text())
         self.assertNotIn("cache junto-ci-cargo:", result.stdout, "a volume that does not exist")
         self.assertIn(f"cache junto-ci-uv: {3 * GIB} KiB of {4 * GIB} KiB", result.stdout)
+
+
+class CacheSize(unittest.TestCase):
+    def size(self, path):
+        result = subprocess.run([sys.executable, str(CI / "cache_size.py"), str(path)],
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return int(result.stdout)
+
+    def test_the_files_below_a_directory_are_summed_once_each_without_following_links(self):
+        with tempfile.TemporaryDirectory(prefix="junto-ci-size-") as temporary:
+            root = Path(temporary)
+            (root / "outside").write_bytes(b"x" * 1024 * 1024)
+            deep = root / "cache" / "debug" / "deps"
+            deep.mkdir(parents=True)
+            (deep / "first").write_bytes(b"x" * 3 * 1024)
+            (root / "cache" / "debug" / "second").write_bytes(b"x" * 5 * 1024)
+            os.link(deep / "first", root / "cache" / "debug" / "first")
+            os.symlink(root / "outside", root / "cache" / "link")
+            os.symlink(root, root / "cache" / "debug" / "loop")
+            self.assertEqual(self.size(root / "cache"), 8)
 
 
 class Runner(Fixture):

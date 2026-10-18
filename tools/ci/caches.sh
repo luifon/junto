@@ -76,7 +76,7 @@ size() {
         docker volume inspect "$1" >/dev/null 2>&1 || return 0
         in_volume size "$1" du -sk /cache | cut -f 1
     elif [ -d "$directory/$1" ]; then
-        du -sk "$directory/$1" | cut -f 1
+        python3 "$(dirname -- "$0")/cache_size.py" "$directory/$1"
     fi
 }
 # free: the free space in KiB of the disk that holds the caches.
