@@ -231,6 +231,7 @@ async fn serve(config: Config) -> Result<(), Failure> {
     }
     let database = connect(&config, DATABASE_CONNECTIONS).await?;
     let listen_address = config.listen_address;
+    let stop_with_process = config.stop_with_process;
     let prepared = junto_server::prepare(database, config, Arc::new(SystemClock)).await?;
 
     if let Some(code) = &prepared.owner_code {
@@ -254,7 +255,8 @@ async fn serve(config: Config) -> Result<(), Failure> {
         tokio::spawn(junto_server::purge::run(state.clone())),
         tokio::spawn(junto_server::exports::run(state.clone())),
     ];
-    let served = junto_server::serve(listener, state.clone(), shutdown_signal()).await;
+    let shutdown = shutdown_signal(stop_with_process);
+    let served = junto_server::serve(listener, state.clone(), shutdown).await;
     for task in background {
         task.abort();
     }
@@ -456,7 +458,7 @@ fn init_logging(format: LogFormat, level: tracing::Level) {
     }
 }
 
-async fn shutdown_signal() {
+async fn shutdown_signal(stop_with_process: Option<u32>) {
     let interrupt = async {
         if signal::ctrl_c().await.is_err() {
             std::future::pending::<()>().await;
@@ -474,9 +476,24 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
 
+    // The process that started the server (ADR 0915).
+    let starter_ended = async {
+        match stop_with_process {
+            Some(starter) => {
+                junto_server::starter::ended(starter).await;
+                tracing::info!(
+                    process = starter,
+                    "the process that started the server has ended"
+                );
+            }
+            None => std::future::pending::<()>().await,
+        }
+    };
+
     tokio::select! {
         () = interrupt => {}
         () = terminate => {}
+        () = starter_ended => {}
     }
     tracing::info!("shutdown signal received");
 }

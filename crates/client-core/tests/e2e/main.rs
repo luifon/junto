@@ -6,6 +6,7 @@
 mod admin;
 mod calls_live;
 mod messages;
+mod processes;
 mod recording_server;
 mod recordings;
 mod remaining;
