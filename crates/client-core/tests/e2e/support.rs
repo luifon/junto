@@ -479,6 +479,8 @@ struct ProxyState {
     held_answers: Vec<(String, String)>,
     /// How many answers wait at the proxy now.
     answers_waiting: usize,
+    /// What the server sends on the event stream waits at the proxy.
+    events_held: bool,
 }
 
 /// An HTTP proxy in front of one server. It passes every request on unless a fault is
@@ -584,13 +586,23 @@ impl FaultProxy {
         self.state.lock().unwrap().answers_waiting
     }
 
-    /// Passes on every request and every answer that waits, and holds no further one.
+    /// From now on what the server sends on every connection of the event stream waits at
+    /// the proxy, in its order, until [`FaultProxy::release`]. A test of the window uses it
+    /// to bring a change of the state after the answer to the request that made it.
+    #[allow(dead_code)]
+    pub fn hold_events(&self) {
+        self.state.lock().unwrap().events_held = true;
+    }
+
+    /// Passes on every request, every answer and the events that wait, and holds no further
+    /// one.
     pub fn release(&self) {
         {
             let mut state = self.state.lock().unwrap();
             state.held.clear();
             state.held_ending.clear();
             state.held_answers.clear();
+            state.events_held = false;
         }
         self.released.send_modify(|releases| *releases += 1);
     }
@@ -700,12 +712,35 @@ async fn serve(
             return Ok(());
         }
         // The upgraded connection is carried as bytes in both directions until one side
-        // ends it or the test cuts it.
+        // ends it or the test cuts it. What the server sends waits while the test holds
+        // the events.
         let mut upstream = TcpStream::connect(("127.0.0.1", upstream_port)).await?;
         upstream.write_all(&request).await?;
         cut.borrow_and_update();
+        released.borrow_and_update();
+        let (mut from_client, mut to_client) = client.split();
+        let (mut from_server, mut to_server) = upstream.split();
+        let up = async {
+            tokio::io::copy(&mut from_client, &mut to_server).await?;
+            to_server.shutdown().await
+        };
+        let down = async {
+            let mut buffer = vec![0u8; 16 * 1024];
+            loop {
+                let count = from_server.read(&mut buffer).await?;
+                if count == 0 {
+                    return to_client.shutdown().await;
+                }
+                while state.lock().unwrap().events_held {
+                    if released.changed().await.is_err() {
+                        return Ok(());
+                    }
+                }
+                to_client.write_all(&buffer[..count]).await?;
+            }
+        };
         tokio::select! {
-            carried = tokio::io::copy_bidirectional(&mut client, &mut upstream) => {
+            carried = async { tokio::try_join!(up, down) } => {
                 carried?;
             }
             _ = cut.changed() => {}

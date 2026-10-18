@@ -249,7 +249,7 @@ impl Shell {
         ui.invalid = None;
         ui.sent = None;
         ui.space.release();
-        ui.new_invite.release();
+        ui.new_invite.reset();
         ui.copied = None;
         self.reset_invite_form(window, cx);
         self.type_reason("", window, cx);
@@ -1352,6 +1352,7 @@ impl Shell {
                         Button::new("invite-cancel")
                             .label(text::CANCEL)
                             .selector("invite-cancel")
+                            .disabled(view.sending(AskKind::CreateInvite))
                             .h(u(30.0))
                             .px(u(10.0))
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -1403,7 +1404,12 @@ impl Shell {
                 ("invite-revoke", invite_id.as_uuid().as_u128() as u64),
                 txt::REVOKE,
                 format!("invite-revoke-{invite_id}"),
-                view.sending(what).then_some(text::admin::SENDING),
+                if view.sending(what) {
+                    Some(text::admin::SENDING)
+                } else {
+                    view.sending(AskKind::CreateInvite)
+                        .then_some(txt::INVITE_BEING_MADE)
+                },
                 cx.listener(move |this, _, _, cx| {
                     this.state.update(cx, |state, cx| {
                         state.revoke_invite(server_id, invite_id, cx);
@@ -1488,14 +1494,17 @@ impl Shell {
                     cx,
                 ));
             }
-            Listed::Loaded(rows) => {
-                let held = &self.admin.people.new_invite;
-                let rows: Vec<&InviteLine> = rows.iter().filter(|row| held.shows(row.id)).collect();
-                if rows.is_empty() {
+            Listed::Loaded(listed) => {
+                let rows = self.admin.people.new_invite.drawn(listed, |row| row.id);
+                let none = sentence(txt::NO_INVITES, &theme).py(u(10.0));
+                if listed.is_empty() {
+                    column = column.child(none.debug_selector(|| "invites-none".to_owned()));
+                } else if rows.is_empty() {
+                    // The list holds only the new invite, which waits for the release of
+                    // the space of its form: the place of the sentence stays, without it.
                     column = column.child(
-                        sentence(txt::NO_INVITES, &theme)
-                            .py(u(10.0))
-                            .debug_selector(|| "invites-none".to_owned()),
+                        none.invisible()
+                            .debug_selector(|| "invites-none-space".to_owned()),
                     );
                 }
                 let new = page.made.as_ref().map(|made| made.invite_id);
