@@ -1564,12 +1564,26 @@ fn the_audit_log_names_what_was_done_filters_by_group_and_loads_older_entries(
     }
 }
 
-/// Whether the messages of a channel are permanent and whether the person is the owner, as
-/// the open page "Archive and deletion" of the channel states them.
-fn archive_page_of(window: &mut Window, channel_id: ChannelId) -> Option<(bool, bool)> {
+/// What the open page "Archive and deletion" of a channel states.
+#[derive(Debug, PartialEq)]
+struct ArchivePage {
+    /// The messages of the channel are permanent.
+    permanent: bool,
+    /// The person is the server owner.
+    is_owner: bool,
+    /// The person manages the channel: no action of the page is disabled for a missing
+    /// permission.
+    manages: bool,
+}
+
+fn archive_page_of(window: &mut Window, channel_id: ChannelId) -> Option<ArchivePage> {
     match window.admin()?.scope {
         Scope::Channel(settings) if settings.channel_id == channel_id => match settings.page {
-            ChannelPageView::Archive(page) => Some((page.permanent, page.is_owner)),
+            ChannelPageView::Archive(page) => Some(ArchivePage {
+                permanent: page.permanent,
+                is_owner: page.is_owner,
+                manages: settings.may_manage,
+            }),
             _ => None,
         },
         _ => None,
@@ -1601,10 +1615,17 @@ fn a_member_who_manages_channels_deletes_none_with_permanent_messages(cx: &mut T
         .run(admin.handle.api().update_channel(plans, &permanent))
         .unwrap();
 
-    // The member may delete a channel without permanent messages: the question opens.
+    // The member may delete a channel without permanent messages: the question opens. The
+    // role reaches the window through the event stream, at a time that the test does not
+    // know, and the action is disabled until then (ADR 0730).
     open_channel_settings(&mut window, "notes", notes);
     open_page(&mut window, "channel-nav-archive", |window| {
-        archive_page_of(window, notes) == Some((false, false))
+        let managed = ArchivePage {
+            permanent: false,
+            is_owner: false,
+            manages: true,
+        };
+        archive_page_of(window, notes) == Some(managed)
     });
     click_in_page(&mut window, "channel-delete");
     window.until("the question of the deletion", |window| {
@@ -1621,7 +1642,12 @@ fn a_member_who_manages_channels_deletes_none_with_permanent_messages(cx: &mut T
     // drawn, and a click opens no question.
     open_channel_settings(&mut window, "plans", plans);
     open_page(&mut window, "channel-nav-archive", |window| {
-        archive_page_of(window, plans) == Some((true, false))
+        let permanent = ArchivePage {
+            permanent: true,
+            is_owner: false,
+            manages: true,
+        };
+        archive_page_of(window, plans) == Some(permanent)
     });
     click_in_page(&mut window, "channel-delete");
     window.settle();
