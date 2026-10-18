@@ -54,6 +54,7 @@ if [ -z "${JUNTO_CI_LOCKED:-}" ]; then
     locked=""
     outer_end() {
         status=$?
+        trap '' INT TERM HUP
         # The lock program sends the signal on to the locked part and ends after it, so the
         # repository of the run stays until that part has ended its job and checked the caches;
         # a run that waits for the lock ends at once. On Windows the signal ends the lock program, and its keeper
@@ -92,7 +93,18 @@ if [ -z "${JUNTO_CI_LOCKED:-}" ]; then
         mkdir -p "$here/lock/$(dirname -- "$file")"
         git -C "$objects" show "refs/ci/$run:$file" >"$here/lock/$file"
     done
-    if [ "$runner" != macos ]; then export JUNTO_HEAVY_LOCK="$directory/run.lock"; fi
+    # The run lock: on the Linux host and on the Windows machine a lock file of the CI directory;
+    # on the macOS machine the lock of the heavy commands of that machine, which tools/serial.sh
+    # names when JUNTO_HEAVY_LOCK is not set, or JUNTO_CI_RUN_LOCK (for the tests of this
+    # script). A JUNTO_HEAVY_LOCK of the caller is not used: two runs with two locks would write
+    # the one checkout at the same time.
+    if [ "$runner" != macos ]; then
+        export JUNTO_HEAVY_LOCK="$directory/run.lock"
+    elif [ -n "${JUNTO_CI_RUN_LOCK:-}" ]; then
+        export JUNTO_HEAVY_LOCK="$JUNTO_CI_RUN_LOCK"
+    else
+        unset JUNTO_HEAVY_LOCK
+    fi
     # tools/serial.sh --inherited takes the lock with Python (tools/windows/lock.py); on
     # Windows the Python of the setup, not a program of the same name in the PATH of the
     # account.
@@ -154,19 +166,22 @@ caches_check() {
 }
 finish() {
     status=$?
+    # A second signal, such as the INT of a terminal that the lock program also sends on, must
+    # not end the cleanup.
+    trap '' INT TERM HUP
     if [ -n "$pid" ]; then end_job; fi
     sweep
     caches_check after || true
     rm -f "$here/current"
     echo "$status" >"$here/finished"
 }
-if [ -z "${JUNTO_CI_JOB:-}" ]; then
-    trap finish EXIT
-    trap 'exit 143' INT TERM HUP
-    # Containers of an earlier run that ended without its cleanup can still write into a cache
-    # volume; they are removed before the files of the checkout are written.
-    sweep
-    if [ ! -d "$checkout/.git" ]; then
+# prepare_checkout: the checkout at the commit of this run, in a subshell that ends at the first
+# failure.
+prepare_checkout() (
+    set -e
+    if [ -d "$checkout/.git" ]; then
+        find "$checkout/.git" -name '*.lock' -type f -exec rm -f {} +
+    else
         rm -rf "$checkout"
         git init --quiet "$checkout"
     fi
@@ -182,6 +197,21 @@ if [ -z "${JUNTO_CI_JOB:-}" ]; then
     git -C "$checkout" clean -ffdxq
     git -C "$checkout" update-ref -d "refs/ci/$run"
     git -C "$checkout" gc --auto --quiet
+)
+if [ -z "${JUNTO_CI_JOB:-}" ]; then
+    trap finish EXIT
+    trap 'exit 143' INT TERM HUP
+    # Containers of an earlier run that ended without its cleanup can still write into a cache
+    # volume; they are removed before the files of the checkout are written.
+    sweep
+    # A run that was ended while Git wrote the checkout (a stop of Windows, a KILL) leaves the
+    # lock files of Git. No other Git process uses the checkout while this run holds the run
+    # lock, so they are removed; when Git still fails, the checkout is created again.
+    if ! prepare_checkout; then
+        echo "the checkout could not be updated; it is created again" >&2
+        rm -rf "$checkout"
+        prepare_checkout
+    fi
     # Commands inside the jobs that take tools/serial.sh take a lock of this run.
     export JUNTO_HEAVY_LOCK="$here/heavy.lock"
 fi

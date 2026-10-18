@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests of tools/ci/group.py on Unix: it returns only after every process of the group of its
 command has ended."""
+import fcntl
 import os
 from pathlib import Path
 import signal
@@ -11,6 +12,7 @@ import time
 import unittest
 
 GROUP = Path(__file__).with_name("group.py")
+LOCK = Path(__file__).resolve().parents[1] / "windows" / "lock.py"
 # Starts group.py with a time before KILL of `seconds`.
 WITH_KILL_SECONDS = """
 import importlib.util, sys
@@ -81,6 +83,26 @@ class Group(unittest.TestCase):
         self.assertEqual(process.returncode, 128 + signal.SIGTERM)
         self.assertIn("remain 1.0 s after TERM; KILL", error)
         self.assertFalse(running(int(pid.read_text())))
+
+    # The OOM killer or "pkill -9 -f run-jobs.sh" ends lock.py, the locked shell and group.py,
+    # but not the processes of the job, which must keep the run lock while they write.
+    def test_the_processes_of_the_command_hold_the_lock_of_lock_py(self):
+        lock, started = self.root / "run.lock", self.root / "started"
+        holder = subprocess.Popen([sys.executable, str(LOCK), str(lock), sys.executable, str(GROUP), "sample",
+                                   "sh", "-c", f"echo $$ > {self.root / 'pid'}; echo > {started}; exec sleep 60"])
+        appeared(started)
+        job = int((self.root / "pid").read_text())
+        self.addCleanup(lambda: running(job) and os.kill(job, signal.SIGKILL))
+        group = [int(number) for number in subprocess.run(["pgrep", "-P", str(holder.pid)], capture_output=True,
+                                                          text=True).stdout.split()]
+        for number in [holder.pid, *group]:
+            os.kill(number, signal.SIGKILL)
+        holder.wait(timeout=60)
+        self.assertTrue(running(job))
+        with open(lock, "a") as file:
+            with self.assertRaises(BlockingIOError):
+                fcntl.flock(file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.kill(job, signal.SIGKILL)
 
 
 if __name__ == "__main__":

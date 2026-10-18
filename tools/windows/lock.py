@@ -15,7 +15,8 @@ starts, also when this process is ended from outside:
   limit "end the processes when the job is closed" ends them; the lock is then free while
   Windows ends them.
 - On other systems the command inherits the locked file: the lock lasts until the last process
-  that holds the file has ended. BSD `lockf`, which tools/serial.sh prefers on macOS, does not
+  that holds the file has ended. JUNTO_LOCK_FD names its descriptor for the command, so that a
+  program that closes the descriptors of its children can pass it on (tools/ci/group.py). BSD `lockf`, which tools/serial.sh prefers on macOS, does not
   pass its file on, so its lock ends with its direct child. TERM, INT and HUP to this process
   end it while it waits for the lock, and are sent on to the command after the command has
   started.
@@ -295,7 +296,8 @@ class Forward:
 
     def start(self, command, file):
         self.starting = True
-        self.process = subprocess.Popen(command, pass_fds=[file.fileno()])
+        self.process = subprocess.Popen(command, pass_fds=[file.fileno()],
+                                        env=dict(os.environ, JUNTO_LOCK_FD=str(file.fileno())))
         for number in self.pending:
             self.process.send_signal(number)
         return self.process

@@ -21,6 +21,7 @@ IDENTITY = {"GIT_AUTHOR_NAME": "Example", "GIT_COMMITTER_NAME": "Example",
 # it runs the locked part, and runs `check` after that part.
 SERIAL = """#!/bin/sh
 [ "$1" != --inherited ] || shift
+[ -z "${{SERIAL_RECORD:-}}" ] || echo "$0" >"$SERIAL_RECORD"
 if [ -e "$RUN_CHECKOUT/tracked.txt" ]; then
     echo "the files of the checkout exist before the lock" >&2
     exit 9
@@ -133,13 +134,14 @@ class Checkout(unittest.TestCase):
                 repository = checked(root, 'grep -qx "first line" "$RUN_CHECKOUT/tracked.txt"')
                 directory = root / "runner"
                 checkout = directory / "checkout"
-                result = run(directory, repository, dict(os.environ, RUN_CHECKOUT=str(checkout)), runner)
+                result = run(directory, repository, dict(os.environ, RUN_CHECKOUT=str(checkout),
+                                                         SERIAL_RECORD=str(root / "serial")), runner)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assert_ran(directory)
                 self.assertFalse((directory / "runs/sample-run/commit.git").exists())
-                # The lock programs of the commit were read before the lock was taken.
-                self.assertIn(f"{directory}/runs/sample-run/lock/tools/windows/lock.py", result.stderr + (
-                    (directory / "runs/sample-run/logs/sample-job.log").read_text()), "") if False else None
+                # The lock program of the commit was read from the repository of the run.
+                self.assertEqual((root / "serial").read_text().strip(),
+                                 f"{directory}/runs/sample-run/lock/tools/serial.sh")
 
     def test_the_checkout_does_not_need_the_hosts_object_directory(self):
         with tempfile.TemporaryDirectory(prefix="junto-ci-checkout-") as temporary:
@@ -197,65 +199,89 @@ exit "$status"
 
 # The job of the fixture commit, in place of the scripts of the Rust jobs: it starts a child and
 # ends at TERM. The child ends one second after TERM; at its end it states whether the run lock
-# is still held and writes 2 MiB into the target cache.
-JOB = '''#!/usr/bin/env python3
-import signal
-import subprocess
-import sys
-CHILD = """
+# and another lock file are held, and writes 2 MiB into the target cache. Both write their
+# process numbers to JOB_PIDS, and both end by themselves after 120 seconds.
+JOB = """#!/usr/bin/env python3
+import os, subprocess, sys, time
+CHILD = '''
 import fcntl, os, signal, sys, time
 from pathlib import Path
-def ending(*_):
-    time.sleep(1)
-    with open(os.environ["RUN_LOCK"], "a") as lock:
+def held(path):
+    with open(path, "a") as lock:
         try:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            held = "free"
+            return "free"
         except BlockingIOError:
-            held = "held"
+            return "held"
+def ending(*_):
+    time.sleep(1)
+    state = held(os.environ["RUN_LOCK"]) + " " + held(os.environ["OTHER_LOCK"])
     target = Path(os.environ["JOB_TARGET"])
     target.mkdir(parents=True, exist_ok=True)
     with open(target / "data", "wb") as data:
         data.truncate(2 * 1024 * 1024)
-    Path(os.environ["JOB_ENDED"]).write_text(held)
+    Path(os.environ["JOB_ENDED"]).write_text(state)
     sys.exit(0)
 signal.signal(signal.SIGTERM, ending)
+with open(os.environ["JOB_PIDS"], "a") as pids:
+    print(os.getpid(), file=pids)
 Path(os.environ["JOB_STARTED"]).write_text("")
-while True:
+for _ in range(1200):
     time.sleep(0.1)
-"""
-subprocess.Popen([sys.executable, "-c", CHILD])
-signal.pause()
 '''
+with open(os.environ["JOB_PIDS"], "a") as pids:
+    print(os.getpid(), file=pids)
+subprocess.Popen([sys.executable, "-c", CHILD])
+time.sleep(120)
+"""
+
+
+def end_left_processes(path):
+    """Ends the processes that the fixture job recorded, when the runner left them running."""
+    if path.exists():
+        for number in path.read_text().split():
+            try:
+                os.kill(int(number), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
 
 class Ended(unittest.TestCase):
-    """A run ended by TERM to run-jobs.sh, with tools/serial.sh and tools/windows/lock.py of this
-    working tree as its lock programs."""
+    """A run ended by a signal, with tools/serial.sh and tools/windows/lock.py of this working tree
+    as its lock programs. A JUNTO_HEAVY_LOCK of the caller names another lock file, which the run
+    must not take."""
 
-    def end_a_run(self, runner, job, target):
+    def end_a_run(self, runner, job, target, whole_group=False):
         with tempfile.TemporaryDirectory(prefix="junto-ci-ended-") as temporary:
             root = Path(temporary)
+            self.addCleanup(end_left_processes, root / "pids")
             directory = root / "runner"
             files = {"tools/ci/rust-linux.sh": JOB, "tools/ci/rust-other-systems.sh": JOB}
             repository = repository_with(root, (TOOLS / "serial.sh").read_text(), files)
             lock = directory / "run.lock" if runner == "linux" else root / "machine.lock"
             environment = prepared(directory, dict(
-                os.environ, JUNTO_HEAVY_LOCK=str(lock), RUN_LOCK=str(lock),
+                os.environ, JUNTO_HEAVY_LOCK=str(root / "other.lock"), OTHER_LOCK=str(root / "other.lock"),
+                JUNTO_CI_RUN_LOCK=str(lock), RUN_LOCK=str(lock), JOB_PIDS=str(root / "pids"),
                 JOB_TARGET=str(target(root, directory)), JOB_STARTED=str(root / "started"),
                 JOB_ENDED=str(root / "ended")),
                 "JUNTO_CI_FREE_GIB=0\nJUNTO_CI_RUN_GIB=0\nJUNTO_CI_TARGET_CAP_GIB=0\n")
             process = subprocess.Popen(["sh", RUNNER, directory, "sample-run", runner, repository, job],
-                                       env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                                       env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                       start_new_session=whole_group)
             try:
                 appeared(root / "started")
-                process.send_signal(signal.SIGTERM)
+                if whole_group:
+                    # Ctrl-C in a terminal: INT to every process of the foreground group.
+                    os.killpg(process.pid, signal.SIGINT)
+                else:
+                    process.send_signal(signal.SIGTERM)
                 output, _ = process.communicate(timeout=120)
             finally:
                 process.kill()
             here = directory / "runs" / "sample-run"
             self.assertEqual(process.returncode, 143, output)
-            self.assertEqual((root / "ended").read_text(), "held", "the lock was free while the job ran")
+            self.assertEqual((root / "ended").read_text(), "held free",
+                             "the run lock was free, or the lock of JUNTO_HEAVY_LOCK was taken, while the job ran")
             # The check after the run saw the file that the child wrote at its end.
             self.assertRegex((here / "caches.log").read_text(),
                              r"after: cache [a-z-]+: 2048 KiB, above its cap of 0 KiB")
@@ -272,6 +298,10 @@ class Ended(unittest.TestCase):
     # BSD lockf frees its lock when its direct child ends; the run takes the lock with lock.py.
     def test_a_macos_run_ended_by_a_signal_ends_its_job_before_the_caches_and_the_lock(self):
         self.end_a_run("macos", "rust-macos", lambda _, directory: directory / "cargo-target")
+
+    # Each process of the runner receives the INT, the locked part twice (also from lock.py).
+    def test_a_ctrl_c_ends_the_job_and_still_checks_the_caches(self):
+        self.end_a_run("macos", "rust-macos", lambda _, directory: directory / "cargo-target", whole_group=True)
 
 
 # The job of the fixture commit for the macOS runner: it records its directory, the times and
@@ -301,7 +331,7 @@ class FixedCheckout(unittest.TestCase):
             (repository / "changed.txt").write_text("second\n")
             subprocess.run([*git, "commit", "--quiet", "-am", "Second"], env=dict(os.environ, **IDENTITY), check=True)
             subprocess.run([*git, "update-ref", "refs/ci/second-run", "HEAD"], check=True)
-            environment = prepared(directory, dict(os.environ, JUNTO_HEAVY_LOCK=str(root / "machine.lock"),
+            environment = prepared(directory, dict(os.environ, JUNTO_CI_RUN_LOCK=str(root / "machine.lock"),
                                                    RUN_RECORD=str(root / "record")))
             for run in ("sample-run", "second-run"):
                 result = subprocess.run(["sh", RUNNER, directory, run, "macos", repository, "rust-macos"],
@@ -314,6 +344,36 @@ class FixedCheckout(unittest.TestCase):
             self.assertGreater(second["changed"], first["changed"])
             self.assertEqual((first["text"], second["text"]), ("first\n", "second\n"))
             self.assertEqual((first["left"], second["left"]), (False, False), "a file of the earlier run stayed")
+
+
+class Recovery(unittest.TestCase):
+    # A run that is ended while Git writes the checkout (a stop of Windows, a KILL) leaves a lock
+    # file of Git; with one checkout every later run failed at the checkout.
+    def test_a_lock_file_or_a_damaged_repository_of_an_interrupted_run_does_not_stop_later_runs(self):
+        with tempfile.TemporaryDirectory(prefix="junto-ci-recover-") as temporary:
+            root = Path(temporary)
+            directory = root / "runner"
+            repository = repository_with(root, (TOOLS / "serial.sh").read_text(),
+                                         {"tools/ci/rust-other-systems.sh": RECORDING, "changed.txt": "first\n"})
+            git = ["git", "-C", str(repository)]
+            for run in ("second-run", "third-run"):
+                subprocess.run([*git, "update-ref", f"refs/ci/{run}", "HEAD"], check=True)
+            environment = prepared(directory, dict(os.environ, JUNTO_CI_RUN_LOCK=str(root / "machine.lock"),
+                                                   RUN_RECORD=str(root / "record")))
+            checkout = directory / "checkout"
+            for run, damage in (("sample-run", None), ("second-run", "index.lock"), ("third-run", "HEAD")):
+                if damage == "index.lock":
+                    (checkout / ".git" / "index.lock").write_text("")
+                elif damage == "HEAD":
+                    (checkout / ".git" / "HEAD").write_text("not a reference\n")
+                result = subprocess.run(["sh", RUNNER, directory, run, "macos", repository, "rust-macos"],
+                                        env=environment, capture_output=True, text=True, timeout=120)
+                self.assertEqual(result.returncode, 0, (run, result.stdout + result.stderr))
+                runner_log = (directory / "runs" / run / "runner.log")
+                if damage == "HEAD":
+                    self.assertIn("the checkout could not be updated; it is created again",
+                                  result.stderr + (runner_log.read_text() if runner_log.exists() else ""))
+            self.assertEqual(len((root / "record").read_text().splitlines()), 3)
 
 
 if __name__ == "__main__":
