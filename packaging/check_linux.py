@@ -15,6 +15,7 @@ import tarfile
 import tempfile
 
 import icons
+import licences
 import linux
 import release_tools
 from configuration import architecture as machine_architecture
@@ -76,7 +77,7 @@ class Check:
     @step("assemble the tarball and the AppImage")
     def assemble(self):
         self.packages = linux.assemble(self.client, self.recover, "1.0.0", self.root / "packages",
-                                       icon_tool=self.icon_tool)
+                                       icon_tool=self.icon_tool, build=TARGET)
         self.tarball = self.packages / f"junto-1.0.0-linux-{self.architecture}.tar.gz"
         self.appimage = self.packages / f"Junto-1.0.0-{self.architecture}.AppImage"
         expect(self.tarball.is_file() and self.appimage.is_file(), "a package file is missing")
@@ -97,15 +98,28 @@ class Check:
         libraries = {name.split("/")[-1] for name in names if name.startswith("junto/lib/")}
         expect(libraries == linux.BUNDLED, f"bundled libraries: {sorted(libraries)}")
         expect(not libraries & linux.HOST, "a library of the host is bundled")
-        licences = {name.split("/")[-1] for name in names if name.startswith("junto/licences/")}
-        expect({"Junto-LICENSE.txt", "Marcellus-OFL.txt"} <= licences
-               and {f"{package}-copyright.txt" for package in linux.LIBRARY_PACKAGES} <= licences,
-               f"licences: {sorted(licences)}")
+        found = {name.split("/")[-1] for name in names if name.startswith("junto/licences/")}
+        expect(found == {"Junto-LICENSE.txt", licences.NAME}, f"licences: {sorted(found)}")
+        self.licence_file(installed / "junto", appimage=False)
         description = json.loads((installed / "junto/junto-package.json").read_text())
         expect(description == {"format": 1, "version": "1.0.0", "system": "linux", "package": "directory",
                                "architecture": self.architecture}, f"description: {description}")
         self.installed = installed / "junto"
         self.icon_theme(self.installed)
+
+    def licence_file(self, directory, appimage):
+        """The licence file of a package lists every crate of the programs and holds the copyright
+        files of the bundled libraries; the AppImage's also states the licence of its runtime."""
+        triple = licences.target("linux", self.architecture)
+        text = (directory / "licences" / licences.NAME).read_text(encoding="utf-8")
+        expect(text.startswith(f"Junto 1.0.0 for {triple}: third-party licences\n"), text[:200])
+        missing = licences.graph(release_tools.REPOSITORY, triple) - licences.listed(text)
+        expect(not missing, f"crates that the licence file does not list: {sorted(missing)}")
+        expect("Copyright (c) 2011, The WebRTC project authors" in text, "the licence file has no WebRTC licence")
+        for package in linux.LIBRARY_PACKAGES:
+            statement = licences.normal(pathlib.Path(f"/usr/share/doc/{package}/copyright").read_bytes())
+            expect(statement in text, f"the licence file has no copyright file of {package}")
+        expect(("The AppImage runtime" in text) == appimage, "the statement of the AppImage runtime")
 
     def icon_theme(self, directory):
         """The icon theme of a package: the SVG source and its rendering at each size."""
@@ -157,8 +171,9 @@ class Check:
         squashfs = extracted / "squashfs-root"
         expect(os.readlink(squashfs / "AppRun") == "junto", "AppRun does not start the program")
         for name in [f"{linux.APPLICATION_ID}.desktop", f"{linux.APPLICATION_ID}.svg", ".DirIcon", "junto-recover",
-                     "licences/AppImage-runtime.txt"]:
+                     "licences/Junto-LICENSE.txt"]:
             expect((squashfs / name).is_file(), f"the AppImage has no {name}")
+        self.licence_file(squashfs, appimage=True)
         expect({path.name for path in (squashfs / "lib").iterdir()} == linux.BUNDLED, "bundled libraries differ")
         self.icon_theme(squashfs)
         expect((squashfs / ".DirIcon").read_bytes() == icons.rendering(self.icon_tool, 256),

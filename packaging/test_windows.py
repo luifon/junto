@@ -7,11 +7,14 @@ import tempfile
 import unittest
 import zipfile
 
+import fixtures
 import icons
+import licences
 import windows
 
 # The pictures of the Windows icon (ADR 0755).
 SIZES = [16, 24, 32, 48, 64, 256]
+TRIPLE = "x86_64-pc-windows-msvc"
 
 
 def resource_linker():
@@ -29,7 +32,8 @@ class WindowsPackageTests(unittest.TestCase):
             client, recover = root / "junto.exe", root / "junto-recover.exe"
             client.write_bytes(b"MZ client")
             recover.write_bytes(b"MZ recover")
-            output = windows.assemble(client, recover, "1.2.3", root / "out", epoch=1_700_000_000)
+            output = windows.assemble(client, recover, "1.2.3", root / "out", epoch=1_700_000_000,
+                                      build=fixtures.build_directory(root / "build", TRIPLE))
             with zipfile.ZipFile(output / "Junto-1.2.3-windows-x86_64.zip") as archive:
                 names = archive.namelist()
                 self.assertTrue(all(name.startswith("Junto/") for name in names), names)
@@ -37,7 +41,15 @@ class WindowsPackageTests(unittest.TestCase):
                 self.assertEqual(json.loads(archive.read("Junto/junto-package.json")),
                                  {"format": 1, "version": "1.2.3", "system": "windows", "package": "directory",
                                   "architecture": "x86_64"})
-                self.assertIn("Junto/licences/Junto-LICENSE.txt", names)
+                self.assertEqual(sorted(name for name in names if name.startswith("Junto/licences/")),
+                                 ["Junto/licences/", "Junto/licences/Junto-LICENSE.txt",
+                                  f"Junto/licences/{licences.NAME}"])
+                self.assertEqual(archive.read("Junto/licences/Junto-LICENSE.txt"),
+                                 (licences.ROOT / "LICENSE").read_bytes())
+                text = archive.read(f"Junto/licences/{licences.NAME}").decode()
+                self.assertTrue(text.startswith(f"Junto 1.2.3 for {TRIPLE}: third-party licences\n"))
+                self.assertEqual(licences.listed(text), fixtures.client_graph(TRIPLE))
+                self.assertIn(fixtures.WEBRTC_LICENCE.decode(), text)
                 self.assertEqual({entry.date_time for entry in archive.infolist()}, {(2023, 11, 14, 22, 13, 20)})
             self.assertEqual(sorted(path.name for path in (output / "package-directory").iterdir()), ["Junto"])
 
@@ -47,7 +59,7 @@ class WindowsPackageTests(unittest.TestCase):
             client = root / "junto.exe"
             client.write_bytes(b"\x7fELF")
             with self.assertRaisesRegex(ValueError, "not a Windows program"):
-                windows.assemble(client, client, "1.2.3", root / "out")
+                windows.assemble(client, client, "1.2.3", root / "out", build=root)
             self.assertFalse((root / "out").exists())
 
 

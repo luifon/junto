@@ -16,6 +16,7 @@ import tempfile
 import zipfile
 
 import icons
+import licences
 import release_tools
 import windows
 from programs import outcome
@@ -74,12 +75,21 @@ class Check:
 
     @step("assemble the ZIP of the client build")
     def assemble(self):
-        self.packages = windows.assemble(TARGET / "junto.exe", self.recover, "1.0.0", self.root / "packages")
+        self.packages = windows.assemble(TARGET / "junto.exe", self.recover, "1.0.0", self.root / "packages",
+                                         build=TARGET)
         self.zip = self.packages / "Junto-1.0.0-windows-x86_64.zip"
         with zipfile.ZipFile(self.zip) as archive:
             names = sorted(archive.namelist())
         expect({"Junto/junto.exe", "Junto/junto-recover.exe", "Junto/junto-package.json",
-                "Junto/licences/Junto-LICENSE.txt"} <= set(names), f"ZIP entries: {names}")
+                "Junto/licences/Junto-LICENSE.txt", f"Junto/licences/{licences.NAME}"} <= set(names),
+               f"ZIP entries: {names}")
+        with zipfile.ZipFile(self.zip) as archive:
+            text = archive.read(f"Junto/licences/{licences.NAME}").decode()
+        triple = licences.target("windows", "x86_64")
+        expect(text.startswith(f"Junto 1.0.0 for {triple}: third-party licences\n"), text[:200])
+        missing = licences.graph(release_tools.REPOSITORY, triple) - licences.listed(text)
+        expect(not missing, f"crates that the licence file does not list: {sorted(missing)}")
+        expect("Copyright (c) 2011, The WebRTC project authors" in text, "the licence file has no WebRTC licence")
         expect(not any(name.lower().endswith(".dll") for name in names), f"the ZIP holds a library: {names}")
 
     @step("the program holds the icon group 1 with the rendering of the source at each size")
