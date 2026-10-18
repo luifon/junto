@@ -59,7 +59,7 @@ System notifications:
 
 ## Consequences
 
-- The notices and the notification settings have no screen in the approved design. They are built from its components and are shown to the operator as pictures.
+- The notices and the notification settings have no screen in the approved design. They are built from its components.
 - "Mark all as read" costs one request.
 - A thread has no notification setting, because the server has none.
 - The settings show the time zone of the daily quiet time, and the person chooses another one from the list of ADR 0798.
