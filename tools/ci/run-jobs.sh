@@ -17,14 +17,17 @@
 #   logs/<job>.log    the output of the job
 #   finished          the exit status of the run (0: every job passed), written last
 #
-# One run at a time: a run waits for the lock of tools/serial.sh, which on the Linux host and
-# on the Windows machine is <directory>/run.lock. Jobs run one after the other, so that the limits of one job are the
-# limits of the run. Before the first job and after each job, every container, network and
-# volume whose name starts with junto-ci- or junto-ci_ is removed, except the cache volumes
-# (Windows has no Docker); at the end the clone and a bundle are removed, also after a
-# failure. Before the first job and after the last, tools/ci/caches.sh keeps the caches within
-# their size caps and the free space of their disk above its level; when it cannot, the run
-# starts no job.
+# One run at a time: a run waits for the lock of tools/serial.sh --inherited, which on the
+# Linux host and on the Windows machine is <directory>/run.lock; the processes of the run hold
+# the lock until the last of them has ended. Jobs run one after the other, so that the limits
+# of one job are the limits of the run. Each job runs in a group of processes of its own
+# (tools/ci/group.py), and the next step begins only after every process of the group has
+# ended, also when the run is ended by a signal. Before the checkout is written, before the
+# first job and after each job, every container, network and volume whose name starts with
+# junto-ci- or junto-ci_ is removed, except the cache volumes (Windows has no Docker); at the
+# end the clone and a bundle are removed, also after a failure. Before the first job and after
+# the last, tools/ci/caches.py keeps the caches within their limits; when the free space is too
+# low for the run, the run starts no job.
 set -eu
 if [ "$#" -lt 5 ]; then
     echo "usage: $0 <directory> <run> <runner> <repository> <job>..." >&2
@@ -41,16 +44,17 @@ if [ -z "${JUNTO_CI_LOCKED:-}" ]; then
     locked=""
     outer_end() {
         status=$?
-        # The lock program runs the locked part as its child; that part ends its job and
-        # cleans up on its own signal.
+        # The lock program sends the signal on to the locked part and ends after it, so the
+        # clone stays until that part has ended its job and checked the caches; a run that waits
+        # for the lock ends at once. On Windows the signal ends the lock program, and its keeper
+        # ends every process of the run before it releases the lock (tools/windows/lock.py).
         if [ -n "$locked" ]; then
-            pkill -TERM -P "$locked" 2>/dev/null || true
-            kill "$locked" 2>/dev/null || true
+            kill -TERM "$locked" 2>/dev/null || true
             wait "$locked" 2>/dev/null || true
         fi
         rm -rf "$checkout" "$here/lock"
         if [ -f "$repository" ]; then rm -f "$repository"; fi
-        echo "$status" >"$here/finished"
+        if [ ! -f "$here/finished" ]; then echo "$status" >"$here/finished"; fi
     }
     trap outer_end EXIT
     trap 'exit 143' INT TERM HUP
@@ -79,22 +83,21 @@ if [ -z "${JUNTO_CI_LOCKED:-}" ]; then
         rm "$checkout/.git/objects/info/alternates"
     fi
     git -C "$checkout" rev-parse "refs/ci/$run" >"$here/commit"
-    # The lock program and this script of the commit under test, which take the lock and run
+    # The lock programs and this script of the commit under test, which take the lock and run
     # the locked part.
-    lock_files="tools/serial.sh tools/ci/run-jobs.sh"
-    if [ "$runner" = windows ]; then lock_files="$lock_files tools/windows/lock.py"; fi
-    for file in $lock_files; do
+    for file in tools/serial.sh tools/windows/lock.py tools/ci/run-jobs.sh; do
         mkdir -p "$here/lock/$(dirname -- "$file")"
         git -C "$checkout" show "refs/ci/$run:$file" >"$here/lock/$file"
     done
     if [ "$runner" != macos ]; then export JUNTO_HEAVY_LOCK="$directory/run.lock"; fi
-    # tools/serial.sh takes the lock with Python on Windows (tools/windows/lock.py): the
-    # Python of the setup, not a program of the same name in the PATH of the account.
+    # tools/serial.sh --inherited takes the lock with Python (tools/windows/lock.py); on
+    # Windows the Python of the setup, not a program of the same name in the PATH of the
+    # account.
     if [ "$runner" = windows ]; then PATH="$(cygpath -u "$directory")/tools/python:$PATH"; fi
     # The locked part writes "finished" itself; this part keeps its trap for the time the
     # run waits for the lock.
     # It runs in the background, so that a signal to this part ends it as well.
-    JUNTO_CI_LOCKED=1 sh "$here/lock/tools/serial.sh" \
+    JUNTO_CI_LOCKED=1 sh "$here/lock/tools/serial.sh" --inherited \
         sh "$here/lock/tools/ci/run-jobs.sh" "$directory" "$run" "$runner" "$repository" "$@" &
     locked=$!
     status=0
@@ -107,7 +110,9 @@ if [ -z "${JUNTO_CI_LOCKED:-}" ]; then
     exit "$status"
 fi
 
-pid=""
+# The locked part. With JUNTO_CI_JOB set, the script runs that one job in the group of
+# tools/ci/group.py: the same settings, without the traps and the checkout.
+pid="" group=""
 caches="junto-ci-cargo junto-ci-target junto-ci-uv junto-ci-npm"
 sweep() {
     if [ "$runner" = windows ]; then return 0; fi
@@ -128,20 +133,41 @@ sweep() {
         done
     fi
 }
+# end_job: ends every process of the running job and waits until each has ended. A signal from
+# the Bash of Git for Windows ends a native program at once, so on Windows the job object is
+# ended by its name.
+end_job() {
+    if [ "$runner" = windows ]; then
+        python3 "$checkout/tools/ci/group.py" --end "$group" || true
+    else
+        kill -TERM "$pid" 2>/dev/null || true
+    fi
+    wait "$pid" 2>/dev/null || true
+    pid=""
+}
+caches_check() {
+    JUNTO_CI_PYTHON_IMAGE=${JUNTO_CI_PYTHON_IMAGE:-} \
+        python3 "$checkout/tools/ci/caches.py" "$directory" "$runner" "$1" "$run" >>"$here/caches.log"
+}
 finish() {
     status=$?
-    if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; fi
+    if [ -n "$pid" ]; then end_job; fi
     sweep
-    sh "$checkout/tools/ci/caches.sh" "$directory" "$runner" after >>"$here/caches.log" || true
+    caches_check after || true
     rm -f "$here/current"
     echo "$status" >"$here/finished"
 }
-trap finish EXIT
-trap 'exit 143' INT TERM HUP
-# Commands inside the jobs that take tools/serial.sh take a lock of this run.
-export JUNTO_HEAVY_LOCK="$here/heavy.lock"
+if [ -z "${JUNTO_CI_JOB:-}" ]; then
+    trap finish EXIT
+    trap 'exit 143' INT TERM HUP
+    # Containers of an earlier run that ended without its cleanup can still write into a cache
+    # volume; they are removed before the files of the checkout are written.
+    sweep
+    git -C "$checkout" checkout --quiet --detach "refs/ci/$run"
+    # Commands inside the jobs that take tools/serial.sh take a lock of this run.
+    export JUNTO_HEAVY_LOCK="$here/heavy.lock"
+fi
 commit=$(cat "$here/commit")
-git -C "$checkout" checkout --quiet --detach "refs/ci/$run"
 cd "$checkout"
 . tools/ci/pins.sh
 
@@ -250,18 +276,26 @@ job() {
     esac
 }
 
+if [ -n "${JUNTO_CI_JOB:-}" ]; then
+    job "$JUNTO_CI_JOB"
+    exit
+fi
+
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
-# Containers and networks of an earlier run that ended without its cleanup.
-sweep
-sh "$checkout/tools/ci/caches.sh" "$directory" "$runner" before >>"$here/caches.log"
+caches_check before
+# The shell of the job part, for group.py, which is a native program on Windows.
+shell=$(command -v sh)
+if [ "$runner" = windows ]; then shell=$(cygpath -w "$shell"); fi
 failed=0
 for name in "$@"; do
     start=$(now)
     began=$(date +%s)
     printf '%s\t%s\n' "$name" "$start" >"$here/current"
-    # The job runs in the background, so that a signal to this script ends it at once. It
-    # does not see the terminal of the runner.
-    job "$name" </dev/null >"$here/logs/$name.log" 2>&1 &
+    # The job runs in the background in a group of its own, so that a signal to this script
+    # ends it and every process that it started. It does not see the terminal of the runner.
+    group=junto-ci-$run-$name
+    JUNTO_CI_JOB=$name python3 "$checkout/tools/ci/group.py" "$group" \
+        "$shell" "$0" "$directory" "$run" "$runner" "$repository" "$name" </dev/null >"$here/logs/$name.log" 2>&1 &
     pid=$!
     status=0
     wait "$pid" || status=$?

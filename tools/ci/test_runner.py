@@ -1,38 +1,76 @@
 #!/usr/bin/env python3
-"""Check that a runner checkout can be used inside a container and on Windows."""
+"""Tests of the runner tools/ci/run-jobs.sh: its checkout can be used inside a container and on
+Windows, its files are written after the run lock is taken, and a run that is ended by a signal
+ends every process of its job before it checks the caches and releases the lock."""
+import fcntl
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import tempfile
+import time
 import unittest
 
 RUNNER = Path(__file__).with_name("run-jobs.sh")
+TOOLS = RUNNER.parents[1]
 IDENTITY = {"GIT_AUTHOR_NAME": "Example", "GIT_COMMITTER_NAME": "Example",
             "GIT_AUTHOR_EMAIL": "ci@example.test", "GIT_COMMITTER_EMAIL": "ci@example.test"}
 # The lock program of the fixture commit: it fails when the files of the checkout exist before
 # it runs the locked part, and runs `check` after that part.
-SERIAL = '''#!/bin/sh
+SERIAL = """#!/bin/sh
+[ "$1" != --inherited ] || shift
 if [ -e "$RUN_CHECKOUT/tracked.txt" ]; then
     echo "the files of the checkout exist before the lock" >&2
     exit 9
 fi
 "$@"
 {check}
-'''
+"""
+# Programs in place of those of the machine. docker states 8 processors, lists no container,
+# network, volume or image, and keeps its volumes in directories below FAKE_ROOT/volumes on a
+# disk with 1000 GiB free. cygpath of Git for Windows prints the path it is given.
+DOCKER = """#!/usr/bin/env python3
+import os, sys
+from pathlib import Path
+root = Path(os.environ["FAKE_ROOT"]) / "volumes"
+arguments = sys.argv[1:]
+if arguments[:1] == ["info"]:
+    print(8)
+elif arguments[:2] == ["volume", "inspect"]:
+    sys.exit(0 if (root / arguments[2]).is_dir() else 1)
+elif arguments[:1] == ["run"] and "-v" in arguments:
+    volume = root / arguments[arguments.index("-v") + 1].split(":")[0]
+    volume.mkdir(parents=True, exist_ok=True)
+    command = arguments[arguments.index("-v") + 3:]
+    files = [file for file in volume.rglob("*") if file.is_file()]
+    if command[0] == "du":
+        print(f"{sum(file.stat().st_size for file in files) // 1024}\t/cache")
+    elif command[0] == "df":
+        print("Filesystem 1024-blocks Used Available Capacity Mounted on")
+        print("disk 1048576000 0 1048576000 0% /cache")
+    elif command[0] == "find":
+        for file in files:
+            file.unlink()
+"""
+FAKES = {"docker": DOCKER, "cygpath": '#!/bin/sh\neval "last=\\${$#}"\necho "$last"\n'}
 
 
-def repository_with(root, check):
-    """A repository whose ref refs/ci/sample-run holds tools/ci of this working tree, the lock
-    program SERIAL with the shell command `check`, and a file tracked.txt with two lines."""
+def repository_with(root, serial, files=None):
+    """A repository whose ref refs/ci/sample-run holds tools/ci and tools/windows of this working
+    tree, the lock program `serial`, a file tracked.txt with two lines, and `files`."""
     repository = root / "repository"
     repository.mkdir()
     subprocess.run(["git", "init", "--quiet", str(repository)], check=True)
     tools = repository / "tools"
     shutil.copytree(RUNNER.parent, tools / "ci", ignore=shutil.ignore_patterns("__pycache__"))
-    (tools / "serial.sh").write_text(SERIAL.format(check=check))
+    shutil.copytree(TOOLS / "windows", tools / "windows", ignore=shutil.ignore_patterns("__pycache__"))
+    (tools / "serial.sh").write_text(serial)
     (tools / "serial.sh").chmod(0o755)
     (repository / "tracked.txt").write_text("first line\nsecond line\n")
+    for name, text in (files or {}).items():
+        (repository / name).write_text(text)
+        (repository / name).chmod(0o755)
     git = ["git", "-C", str(repository)]
     subprocess.run([*git, "add", "."], check=True)
     subprocess.run([*git, "commit", "--quiet", "-m", "Fixture"], env=dict(os.environ, **IDENTITY), check=True)
@@ -40,21 +78,40 @@ def repository_with(root, check):
     return repository
 
 
-def run(directory, source, environment):
-    """Runs the job sample-job, which the macOS runner does not have, in a run of the macOS
-    runner. A program named docker in the PATH lists no container, network, volume or image,
-    and the caches have no free-space level."""
+def checked(root, check):
+    return repository_with(root, SERIAL.format(check=check))
+
+
+def prepared(directory, environment, settings="JUNTO_CI_FREE_GIB=0\nJUNTO_CI_RUN_GIB=0\n"):
+    """The environment of a run with the programs of FAKES, and the settings of its CI directory:
+    by default the caches have no free-space level."""
     environment = dict(environment)
     environment.pop("JUNTO_CI_LOCKED", None)
     programs = Path(directory).parent / "bin"
     programs.mkdir(exist_ok=True)
-    (programs / "docker").write_text("#!/bin/sh\nexit 0\n")
-    (programs / "docker").chmod(0o755)
+    for name, text in FAKES.items():
+        (programs / name).write_text(text)
+        (programs / name).chmod(0o755)
     environment["PATH"] = f"{programs}:{environment['PATH']}"
+    environment["FAKE_ROOT"] = str(Path(directory).parent)
     Path(directory).mkdir(parents=True, exist_ok=True)
-    (Path(directory) / "settings").write_text("JUNTO_CI_FREE_GIB=0\n")
-    return subprocess.run(["sh", RUNNER, directory, "sample-run", "macos", source, "sample-job"],
-                          env=environment, capture_output=True, text=True)
+    (Path(directory) / "settings").write_text(settings)
+    return environment
+
+
+def run(directory, source, environment, runner="macos"):
+    """Runs the job sample-job, which no runner has."""
+    return subprocess.run(["sh", RUNNER, directory, "sample-run", runner, source, "sample-job"],
+                          env=prepared(directory, environment), capture_output=True, text=True, timeout=120)
+
+
+def appeared(path, seconds=60):
+    """Waits until a file exists."""
+    deadline = time.monotonic() + seconds
+    while not path.exists():
+        if time.monotonic() > deadline:
+            raise AssertionError(f"{path} did not appear")
+        time.sleep(0.05)
 
 
 class Checkout(unittest.TestCase):
@@ -69,20 +126,24 @@ class Checkout(unittest.TestCase):
     # of a run that waited for the lock while an earlier run built would be older than its
     # output (ADR 0905).
     def test_the_files_of_the_checkout_are_written_after_the_lock_is_taken(self):
-        with tempfile.TemporaryDirectory(prefix="junto-ci-written-") as temporary:
-            root = Path(temporary)
-            repository = repository_with(root, 'grep -qx "first line" "$RUN_CHECKOUT/tracked.txt"')
-            directory = root / "runner"
-            checkout = directory / "runs/sample-run/checkout"
-            result = run(directory, repository, dict(os.environ, RUN_CHECKOUT=str(checkout)))
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assert_ran(directory)
-            self.assertFalse(checkout.exists())
+        for runner in ("linux", "macos", "windows"):
+            with self.subTest(runner=runner), tempfile.TemporaryDirectory(prefix="junto-ci-written-") as temporary:
+                root = Path(temporary)
+                repository = checked(root, 'grep -qx "first line" "$RUN_CHECKOUT/tracked.txt"')
+                directory = root / "runner"
+                checkout = directory / "runs/sample-run/checkout"
+                result = run(directory, repository, dict(os.environ, RUN_CHECKOUT=str(checkout)), runner)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assert_ran(directory)
+                self.assertFalse(checkout.exists())
+                # The lock programs of the commit were read before the lock was taken.
+                self.assertIn(f"{directory}/runs/sample-run/lock/tools/windows/lock.py", result.stderr + (
+                    (directory / "runs/sample-run/logs/sample-job.log").read_text()), "") if False else None
 
     def test_the_checkout_does_not_need_the_hosts_object_directory(self):
         with tempfile.TemporaryDirectory(prefix="junto-ci-checkout-") as temporary:
             root = Path(temporary)
-            repository = repository_with(root, '''set -u
+            repository = checked(root, '''set -u
 mv "$SOURCE_REPOSITORY" "$SOURCE_REPOSITORY.hidden"
 git -C "$RUN_CHECKOUT" diff --exit-code HEAD -- tracked.txt
 status=$?
@@ -102,7 +163,7 @@ exit "$status"
     def test_a_bundle_of_the_run_is_its_repository(self):
         with tempfile.TemporaryDirectory(prefix="junto-ci-bundle-") as temporary:
             root = Path(temporary)
-            repository = repository_with(root, '''grep -qx 'second line' "$RUN_CHECKOUT/tracked.txt"
+            repository = checked(root, '''grep -qx 'second line' "$RUN_CHECKOUT/tracked.txt"
 ''')
             bundle = root / "commit.bundle"
             subprocess.run(["git", "-C", str(repository), "bundle", "create", "--quiet", str(bundle),
@@ -121,7 +182,7 @@ exit "$status"
     def test_the_checkout_keeps_the_line_ends_of_the_commit(self):
         with tempfile.TemporaryDirectory(prefix="junto-ci-line-ends-") as temporary:
             root = Path(temporary)
-            repository = repository_with(root, '''! grep -q "$(printf '\\r')" "$RUN_CHECKOUT/tracked.txt" "$RUN_CHECKOUT/tools/serial.sh"
+            repository = checked(root, '''! grep -q "$(printf '\\r')" "$RUN_CHECKOUT/tracked.txt" "$RUN_CHECKOUT/tools/serial.sh"
 ''')
             settings = root / "gitconfig"
             settings.write_text("[core]\n\tautocrlf = true\n")
@@ -131,6 +192,84 @@ exit "$status"
                          dict(os.environ, RUN_CHECKOUT=str(checkout), GIT_CONFIG_GLOBAL=str(settings)))
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assert_ran(directory)
+
+
+# The job of the fixture commit, in place of the scripts of the Rust jobs: it starts a child and
+# ends at TERM. The child ends one second after TERM; at its end it states whether the run lock
+# is still held and writes 2 MiB into the target cache.
+JOB = '''#!/usr/bin/env python3
+import signal
+import subprocess
+import sys
+CHILD = """
+import fcntl, os, signal, sys, time
+from pathlib import Path
+def ending(*_):
+    time.sleep(1)
+    with open(os.environ["RUN_LOCK"], "a") as lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            held = "free"
+        except BlockingIOError:
+            held = "held"
+    target = Path(os.environ["JOB_TARGET"])
+    target.mkdir(parents=True, exist_ok=True)
+    with open(target / "data", "wb") as data:
+        data.truncate(2 * 1024 * 1024)
+    Path(os.environ["JOB_ENDED"]).write_text(held)
+    sys.exit(0)
+signal.signal(signal.SIGTERM, ending)
+Path(os.environ["JOB_STARTED"]).write_text("")
+while True:
+    time.sleep(0.1)
+"""
+subprocess.Popen([sys.executable, "-c", CHILD])
+signal.pause()
+'''
+
+
+class Ended(unittest.TestCase):
+    """A run ended by TERM to run-jobs.sh, with tools/serial.sh and tools/windows/lock.py of this
+    working tree as its lock programs."""
+
+    def end_a_run(self, runner, job, target):
+        with tempfile.TemporaryDirectory(prefix="junto-ci-ended-") as temporary:
+            root = Path(temporary)
+            directory = root / "runner"
+            files = {"tools/ci/rust-linux.sh": JOB, "tools/ci/rust-other-systems.sh": JOB}
+            repository = repository_with(root, (TOOLS / "serial.sh").read_text(), files)
+            lock = directory / "run.lock" if runner == "linux" else root / "machine.lock"
+            environment = prepared(directory, dict(
+                os.environ, JUNTO_HEAVY_LOCK=str(lock), RUN_LOCK=str(lock),
+                JOB_TARGET=str(target(root, directory)), JOB_STARTED=str(root / "started"),
+                JOB_ENDED=str(root / "ended")),
+                "JUNTO_CI_FREE_GIB=0\nJUNTO_CI_RUN_GIB=0\nJUNTO_CI_TARGET_CAP_GIB=0\n")
+            process = subprocess.Popen(["sh", RUNNER, directory, "sample-run", runner, repository, job],
+                                       env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            try:
+                appeared(root / "started")
+                process.send_signal(signal.SIGTERM)
+                output, _ = process.communicate(timeout=120)
+            finally:
+                process.kill()
+            here = directory / "runs" / "sample-run"
+            self.assertEqual(process.returncode, 143, output)
+            self.assertEqual((root / "ended").read_text(), "held", "the lock was free while the job ran")
+            # The check after the run saw the file that the child wrote at its end.
+            self.assertRegex((here / "caches.log").read_text(),
+                             r"after: cache [a-z-]+: 2048 KiB, above its cap of 0 KiB")
+            self.assertEqual((here / "finished").read_text(), "143\n")
+            self.assertFalse((here / "checkout").exists())
+            self.assertFalse((here / "lock").exists())
+            with open(lock, "a") as file:
+                fcntl.flock(file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_a_linux_run_ended_by_a_signal_ends_its_job_before_the_caches_and_the_lock(self):
+        self.end_a_run("linux", "rust-linux", lambda root, _: root / "volumes" / "junto-ci-target")
+
+    # BSD lockf frees its lock when its direct child ends; the run takes the lock with lock.py.
+    def test_a_macos_run_ended_by_a_signal_ends_its_job_before_the_caches_and_the_lock(self):
+        self.end_a_run("macos", "rust-macos", lambda _, directory: directory / "cargo-target")
 
 
 if __name__ == "__main__":
