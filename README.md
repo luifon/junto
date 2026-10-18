@@ -35,4 +35,4 @@ There is no release yet. The project publishes no client package and no server i
 
 ## Licence
 
-Apache-2.0. See [`LICENSE`](LICENSE). The application icon in [`packaging/icon/`](packaging/icon/README.md) is the project's own work under the same licence. The fonts of the client are under the SIL Open Font License; their licence texts are beside them in `crates/client/assets/fonts/`. Each client package holds the licence texts of the third-party code in its programs in `licences/third-party-licences.txt` (ADR 0801).
+Apache-2.0. See [`LICENSE`](LICENSE). The application icon in [`packaging/icon/`](packaging/icon/README.md) is the project's own work under the same licence. The fonts of the client are under the SIL Open Font License; their licence texts are beside them in `crates/client/assets/fonts/`. Each client package holds the licence texts of the third-party code in its programs in `licences/third-party-licences.txt`, and the server image in `/usr/share/licenses/junto-server/third-party-licences.txt`; the AppImage also holds the source of its runtime in `licences/appimage-runtime` (ADR 0801).

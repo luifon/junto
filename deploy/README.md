@@ -32,6 +32,7 @@ tools/check-pins.sh                                   # pinned versions agree
 deploy/tests/compose-config.sh                        # every form renders and follows the rules
 python3 -B -m unittest discover -s deploy/tests -p 'test_restore_images.py' # restore image checks before container changes
 docker build -f deploy/images/server/Dockerfile -t junto-server .
+python3 deploy/tests/check_licences.py junto-server   # the licence files of the image list every crate of the server
 deploy/tests/transcribe-handover.sh junto-server      # the hand-over scripts, with two users
 deploy/tests/recorder-start.sh junto-server           # the start script of the recorder
 deploy/tests/entry.sh                                 # the entry selects by server name

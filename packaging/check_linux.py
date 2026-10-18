@@ -120,6 +120,15 @@ class Check:
             statement = licences.normal(pathlib.Path(f"/usr/share/doc/{package}/copyright").read_bytes())
             expect(statement in text, f"the licence file has no copyright file of {package}")
         expect(("The AppImage runtime" in text) == appimage, "the statement of the AppImage runtime")
+        if appimage:
+            for component, archive, names in linux.RUNTIME_COMPONENTS:
+                for name in names:
+                    licence = licences.normal(linux.archive_member(linux.RUNTIME_SOURCE / "sources" / archive, name))
+                    expect(licence in text, f"the licence file has no {name} of {component}")
+            lgpl = linux.archive_member(linux.RUNTIME_SOURCE / "sources/fuse-3.15.0.tar.xz", "LGPL2.txt")
+            expect(licences.licences_in(lgpl) == {"LGPL-2.1-only"}, "LGPL2.txt of libfuse is not the LGPL 2.1")
+            expect(licences.normal(linux.RUNTIME_C_LIBRARY[1].read_bytes()) in text,
+                   "the licence file has no copyright file of musl")
 
     def icon_theme(self, directory):
         """The icon theme of a package: the SVG source and its rendering at each size."""
@@ -174,6 +183,15 @@ class Check:
                      "licences/Junto-LICENSE.txt"]:
             expect((squashfs / name).is_file(), f"the AppImage has no {name}")
         self.licence_file(squashfs, appimage=True)
+        carried = squashfs / "licences/appimage-runtime"
+        expected = sorted(path.relative_to(linux.RUNTIME_SOURCE) for path in linux.RUNTIME_SOURCE.rglob("*"))
+        expect(sorted(path.relative_to(carried) for path in carried.rglob("*")) == expected,
+               f"the source of the runtime in the AppImage: {sorted(carried.rglob('*'))}")
+        for name in expected:
+            path = carried / name
+            expect(path.is_dir() or path.read_bytes() == (linux.RUNTIME_SOURCE / name).read_bytes(),
+                   f"licences/appimage-runtime/{name} differs from the source of the runtime")
+        self.runtime_source = carried
         expect({path.name for path in (squashfs / "lib").iterdir()} == linux.BUNDLED, "bundled libraries differ")
         self.icon_theme(squashfs)
         expect((squashfs / ".DirIcon").read_bytes() == icons.rendering(self.icon_tool, 256),
@@ -184,6 +202,16 @@ class Check:
         update = self.packages / "package-appimage"
         expect(sorted(path.name for path in update.iterdir()) == ["Junto.AppImage", "junto-package.json",
                                                                     "junto-recover"], "update source of the AppImage")
+
+    @step("the source that the AppImage carries builds its runtime again, byte for byte")
+    def runtime_from_source(self):
+        runtime = linux.RUNTIME.read_bytes()
+        expect(self.appimage.read_bytes()[:len(runtime)] == runtime, "the AppImage does not start with the runtime")
+        rebuilt = self.root / "runtime-rebuilt"
+        result = ran(["sh", self.runtime_source / "build.sh", rebuilt], cwd=self.root, timeout=1800)
+        expect(result.returncode == 0, "the build script of the runtime failed", result)
+        expect(rebuilt.read_bytes() == runtime, "the runtime built from the source of the AppImage differs from the "
+                                                "runtime of the AppImage")
 
     @step("the AppImage's program draws its first frame under X11")
     def appimage_start(self):

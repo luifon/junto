@@ -3,7 +3,7 @@
 AppImage (ADR 0754). Each also gets the source directory of its update archive.
 
 Runs in the Linux build image (tools/linux/Dockerfile), which holds the programs used here:
-ldd, mksquashfs and the pinned AppImage runtime."""
+ldd, mksquashfs, and the AppImage runtime with its source."""
 import argparse
 import gzip
 import io
@@ -22,6 +22,9 @@ from configuration import architecture as machine_architecture
 
 APPLICATION_ID = "chat.junto.Junto"
 RUNTIME = pathlib.Path("/opt/junto-linux/appimage-runtime")
+# The source of the runtime and its build script (tools/linux/appimage-runtime), which the
+# AppImage carries in licences/appimage-runtime (ADR 0801).
+RUNTIME_SOURCE = pathlib.Path("/opt/junto-linux/appimage-runtime-source")
 
 # The libraries that a package carries: the X11 keyboard libraries and the XKB extension of
 # the X11 connection library, which hosts without an X11 keyboard library often lack.
@@ -37,11 +40,19 @@ HOST = {
 }
 # The Debian packages of the bundled libraries, whose copyright files the licence file holds.
 LIBRARY_PACKAGES = ["libxkbcommon0", "libxkbcommon-x11-0", "libxcb-xkb1"]
-APPIMAGE_RUNTIME = licences.Section("The AppImage runtime", [
-    "The AppImage runtime of this file is the type 2 runtime of the AppImage project, release 20251108, under "
-    "the MIT licence; it contains libfuse, squashfuse, zstd and zlib under their own licences: "
-    "https://github.com/AppImage/type2-runtime"])
-
+# The components of the AppImage runtime: the source archive of each in the directory sources
+# of RUNTIME_SOURCE, and the files of the archive that hold its licence.
+RUNTIME_COMPONENTS = [
+    ("the type 2 runtime of the AppImage project, commit dd6cebedcbddde9c82f89b011e8e1d40b6e43868 (release 20251108)",
+     "type2-runtime-dd6cebedcbddde9c82f89b011e8e1d40b6e43868.tar.gz", ["LICENSE"]),
+    ("libfuse 3.15.0, with the change of the AppImage project", "fuse-3.15.0.tar.xz", ["LICENSE", "LGPL2.txt"]),
+    ("squashfuse 0.5.2", "squashfuse-0.5.2.tar.gz", ["LICENSE"]),
+    ("zstd 1.5.6, under its BSD licence", "zstd-1.5.6.tar.gz", ["LICENSE"]),
+    ("zlib 1.3.1", "zlib-1.3.1.tar.gz", ["LICENSE"]),
+    ("mimalloc 2.1.7", "mimalloc-2.1.7.tar.gz", ["LICENSE"]),
+]
+# The C library that the runtime is linked with: the Debian package of the Linux build image.
+RUNTIME_C_LIBRARY = ("musl 1.2.3, from the Debian package musl 1.2.3-1", pathlib.Path("/usr/share/doc/musl/copyright"))
 DESKTOP = f"""[Desktop Entry]
 Type=Application
 Name=Junto
@@ -152,16 +163,41 @@ def tree(directory, client, recover, version, architecture, licence_texts, icon_
         write(directory / "licences" / name, text)
 
 
-def licence_texts(version, architecture, build, appimage=False):
+def archive_member(archive, name):
+    """The content of the file `name` in the top directory of a source archive."""
+    with tarfile.open(archive) as source:
+        [member] = [member for member in source.getmembers()
+                    if member.isfile() and pathlib.PurePosixPath(member.name).parts[1:] == (name,)]
+        return source.extractfile(member).read()
+
+
+def runtime_section(runtime_source):
+    """The section of the licence file on the AppImage runtime, with the licence texts of each of
+    its components, from their source archives in `runtime_source`."""
+    components = [(f"{component}: {name}", archive_member(runtime_source / "sources" / archive, name))
+                  for component, archive, names in RUNTIME_COMPONENTS for name in names]
+    label, copyright_file = RUNTIME_C_LIBRARY
+    components.append((f"{label}: {copyright_file}", copyright_file.read_bytes()))
+    return licences.Section("The AppImage runtime", [
+        "The AppImage file starts with its runtime, the program that mounts the SquashFS image that follows it and "
+        "starts junto. The runtime is the type 2 runtime of the AppImage project under the MIT licence, linked "
+        "statically with libfuse under the GNU Lesser General Public License 2.1, squashfuse, zstd, zlib, "
+        "mimalloc and the musl C library. The directory licences/appimage-runtime of the AppImage holds the "
+        "complete source of the runtime and of these libraries, the script that built the runtime from it, and in "
+        "README.md the steps to build the runtime with a changed libfuse and to put it into the AppImage. The "
+        "runtime also contains code of libgcc of GCC 12, under the GCC Runtime Library Exception."], components)
+
+
+def licence_texts(version, architecture, build, appimage=False, runtime_source=RUNTIME_SOURCE):
     """The files of the directory `licences`: the licence of Junto and the licence file, which
-    also holds the copyright files of the bundled libraries and, in the AppImage, the statement
-    of its runtime."""
+    also holds the copyright files of the bundled libraries; in the AppImage also the licences of
+    its runtime, whose source `runtime_source` holds."""
     copyrights = {package: pathlib.Path(f"/usr/share/doc/{package}/copyright") for package in LIBRARY_PACKAGES}
     libraries = licences.Section("Libraries in lib", [
         "The libraries in the directory lib, from the Debian packages of the Linux build image, with the "
         "copyright file of each package."],
         [(f"{package}: {path}", path.read_bytes()) for package, path in copyrights.items()])
-    extra = [libraries, APPIMAGE_RUNTIME] if appimage else [libraries]
+    extra = [libraries, runtime_section(pathlib.Path(runtime_source))] if appimage else [libraries]
     return licences.package_files(version, licences.target("linux", architecture), build, extra)
 
 
@@ -204,10 +240,12 @@ def appimage(directory, output, runtime, epoch):
         shutil.rmtree(appdir)
 
 
-def assemble(client, recover, version, output, runtime=RUNTIME, epoch=None, *, icon_tool, build):
+def assemble(client, recover, version, output, runtime=RUNTIME, epoch=None, *, icon_tool, build,
+             runtime_source=RUNTIME_SOURCE):
     """Writes the packages into the new directory `output`; `icon_tool` is the program
-    `junto-icon` that renders the icons, and `build` the directory of the programs of the build,
-    whose licences the packages carry."""
+    `junto-icon` that renders the icons, `build` the directory of the programs of the build,
+    whose licences the packages carry, and `runtime_source` the source of `runtime`, which the
+    AppImage carries."""
     client, recover, output = pathlib.Path(client), pathlib.Path(recover), pathlib.Path(output)
     if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version):
         raise ValueError("a release version has three decimal numbers")
@@ -224,7 +262,8 @@ def assemble(client, recover, version, output, runtime=RUNTIME, epoch=None, *, i
         image.mkdir()
         appimage_tree = output / ".appimage-tree"
         tree(appimage_tree, client, recover, version, architecture,
-             licence_texts(version, architecture, build, appimage=True), icon_tool)
+             licence_texts(version, architecture, build, appimage=True, runtime_source=runtime_source), icon_tool)
+        shutil.copytree(runtime_source, appimage_tree / "licences/appimage-runtime")
         appimage(appimage_tree, image / "Junto.AppImage", pathlib.Path(runtime), epoch)
         shutil.rmtree(appimage_tree)
         copy(recover, image / "junto-recover", 0o755)
@@ -244,10 +283,12 @@ if __name__ == "__main__":
     parser.add_argument("version")
     parser.add_argument("output", help="a new directory")
     parser.add_argument("--runtime", default=str(RUNTIME))
+    parser.add_argument("--runtime-source", default=str(RUNTIME_SOURCE), help="the source of the runtime")
     parser.add_argument("--icon-tool", required=True, help="the program junto-icon of the same build")
     arguments = parser.parse_args()
     try:
         assemble(arguments.client, arguments.recover, arguments.version, arguments.output, arguments.runtime,
-                 icon_tool=arguments.icon_tool, build=pathlib.Path(arguments.client).parent)
+                 icon_tool=arguments.icon_tool, build=pathlib.Path(arguments.client).parent,
+                 runtime_source=pathlib.Path(arguments.runtime_source))
     except (ValueError, subprocess.CalledProcessError, OSError) as error:
         sys.exit(str(error))

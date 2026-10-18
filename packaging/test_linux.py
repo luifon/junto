@@ -1,10 +1,13 @@
 """The parts of the Linux packaging that need no Linux build image."""
+import io
 import os
 import pathlib
 import subprocess
 import tarfile
 import tempfile
 import unittest
+
+from unittest import mock
 
 import icons
 import linux
@@ -92,6 +95,52 @@ class LinuxPackageTests(unittest.TestCase):
                     picture = (theme / f"{size}x{size}/apps/{linux.APPLICATION_ID}.png").read_bytes()
                     self.assertEqual(picture, icons.rendering(icons.TOOL, size))
                     self.assertEqual(icons.png(picture).size, size)
+
+
+class RuntimeTests(unittest.TestCase):
+    """The AppImage runtime and the source that the AppImage carries (ADR 0754, ADR 0801)."""
+
+    def test_the_runtime_section_holds_the_licence_texts_of_each_component_from_its_source_archive(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = pathlib.Path(temporary) / "runtime-source"
+            (source / "sources").mkdir(parents=True)
+            for _, archive, names in linux.RUNTIME_COMPONENTS:
+                top = archive.removesuffix(".tar.gz").removesuffix(".tar.xz")
+                mode = "w:xz" if archive.endswith(".xz") else "w:gz"
+                with tarfile.open(source / "sources" / archive, mode) as output:
+                    for name in [*names, "README"]:
+                        content = f"{name} of {top}\n".encode()
+                        info = tarfile.TarInfo(f"{top}/{name}")
+                        info.size = len(content)
+                        output.addfile(info, io.BytesIO(content))
+            musl = pathlib.Path(temporary) / "musl-copyright"
+            musl.write_text("musl copyright\n")
+            with mock.patch.object(linux, "RUNTIME_C_LIBRARY", ("musl 1.2.3", musl)):
+                section = linux.runtime_section(source)
+        found = dict((text.decode().strip(), label) for label, text in section.components)
+        self.assertEqual(found["LGPL2.txt of fuse-3.15.0"],
+                         "libfuse 3.15.0, with the change of the AppImage project: LGPL2.txt")
+        self.assertEqual(len(found), sum(len(names) for _, _, names in linux.RUNTIME_COMPONENTS) + 1)
+        self.assertEqual(found["musl copyright"], f"musl 1.2.3: {musl}")
+        self.assertNotIn("README of zlib-1.3.1", found)
+        description = " ".join(section.description)
+        self.assertIn("GNU Lesser General Public License 2.1", description)
+        self.assertIn("licences/appimage-runtime", description)
+
+    def test_the_build_image_downloads_and_the_build_script_extracts_the_archive_of_each_component(self):
+        tools = pathlib.Path(linux.__file__).resolve().parent.parent / "tools/linux"
+        dockerfile = (tools / "Dockerfile").read_text()
+        script = (tools / "appimage-runtime/build.sh").read_text()
+        readme = (tools / "appimage-runtime/README.md").read_text()
+        for _, archive, _ in linux.RUNTIME_COMPONENTS:
+            with self.subTest(archive):
+                top = archive.removesuffix(".tar.gz").removesuffix(".tar.xz")
+                self.assertRegex(dockerfile, f"-o {archive} ")
+                self.assertRegex(dockerfile, f"[0-9a-f]{{64}} {archive} ")
+                self.assertIn(top.removeprefix("type2-runtime-"), script)
+                self.assertIn(archive, readme)
+        self.assertIn(f"COPY appimage-runtime/README.md appimage-runtime/build.sh {linux.RUNTIME_SOURCE}/", dockerfile)
+        self.assertIn(f"build.sh {linux.RUNTIME}", dockerfile)
 
 
 if __name__ == "__main__":
