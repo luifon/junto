@@ -103,6 +103,10 @@ The named version is mandatory. The tool verifies release signatures, version, a
 
 For release-key rotation, build clients with both public keys and pass additional release-secret paths after the freshness secret of `publish` or `release.sh`; both keys then sign the release and archive. The lower-level `package SOURCE OUTPUT RELEASE-SECRET FRESHNESS-SECRET VERSION SYSTEM PACKAGE ARCH [RELEASE-SECRET...]` supports the same overlap. For freshness-key rotation, include both freshness public keys and pass both freshness secrets to `refresh` before publishing. Keep signatures for every supported old trust set; an overlap client alone does not reach users who skipped that version.
 
+## Licences
+
+Each package holds `licences/Junto-LICENSE.txt` and `licences/third-party-licences.txt` (in the macOS bundle under `Contents/Resources`). `licences.py` writes the second file during the assembly of the package: every crate of the programs `junto` and `junto-recover` for the target of the package, with its licence and notice texts, the WebRTC library, the Rust standard library, the fonts, and on Linux the bundled libraries (ADR 0801). It runs `cargo tree` and `cargo metadata` in the checkout and reads the licence file of the WebRTC library from the build directory of the programs, so assemble a package from the checkout and the build that made its programs. `python3 packaging/licences.py <system> <architecture> <build directory> <new file>` writes the file alone. A crate without a licence file whose licence has no text in `licence-texts/` stops the assembly; add the text there (`licence-texts/README.md`).
+
 ## Test configurations and checks
 
 External test-only public-key, freshness-key, certificate and version variables mark the build as "test configuration" in Version and `--version`. `publish` of such a build requires `--test-configuration`; a product build refuses that flag for every command. The public release wrappers refuse overrides. Tests never rewrite tracked trust or version files. `JUNTO_TEST_KEYCHAIN_LOCK` selects an isolated lock for controlled tests; every unit test sets it.

@@ -17,9 +17,9 @@ import sys
 import tarfile
 
 import icons
+import licences
 from configuration import architecture as machine_architecture
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
 APPLICATION_ID = "chat.junto.Junto"
 RUNTIME = pathlib.Path("/opt/junto-linux/appimage-runtime")
 
@@ -35,8 +35,12 @@ HOST = {
     "ld-linux-aarch64.so.1", "libxcb.so.1", "libXau.so.6", "libXdmcp.so.6", "libbsd.so.0", "libmd.so.0",
     "libpipewire-0.3.so.0", "libasound.so.2",
 }
-# The licence texts of the Debian packages of the bundled libraries.
+# The Debian packages of the bundled libraries, whose copyright files the licence file holds.
 LIBRARY_PACKAGES = ["libxkbcommon0", "libxkbcommon-x11-0", "libxcb-xkb1"]
+APPIMAGE_RUNTIME = licences.Section("The AppImage runtime", [
+    "The AppImage runtime of this file is the type 2 runtime of the AppImage project, release 20251108, under "
+    "the MIT licence; it contains libfuse, squashfuse, zstd and zlib under their own licences: "
+    "https://github.com/AppImage/type2-runtime"])
 
 DESKTOP = f"""[Desktop Entry]
 Type=Application
@@ -148,13 +152,17 @@ def tree(directory, client, recover, version, architecture, licence_texts, icon_
         write(directory / "licences" / name, text)
 
 
-def licence_texts():
-    texts = {"Junto-LICENSE.txt": (ROOT / "LICENSE").read_bytes()}
-    for path in sorted((ROOT / "crates/client/assets/fonts").glob("*-OFL.txt")):
-        texts[path.name] = path.read_bytes()
-    for package in LIBRARY_PACKAGES:
-        texts[f"{package}-copyright.txt"] = pathlib.Path(f"/usr/share/doc/{package}/copyright").read_bytes()
-    return texts
+def licence_texts(version, architecture, build, appimage=False):
+    """The files of the directory `licences`: the licence of Junto and the licence file, which
+    also holds the copyright files of the bundled libraries and, in the AppImage, the statement
+    of its runtime."""
+    copyrights = {package: pathlib.Path(f"/usr/share/doc/{package}/copyright") for package in LIBRARY_PACKAGES}
+    libraries = licences.Section("Libraries in lib", [
+        "The libraries in the directory lib, from the Debian packages of the Linux build image, with the "
+        "copyright file of each package."],
+        [(f"{package}: {path}", path.read_bytes()) for package, path in copyrights.items()])
+    extra = [libraries, APPIMAGE_RUNTIME] if appimage else [libraries]
+    return licences.package_files(version, licences.target("linux", architecture), build, extra)
 
 
 def tarball(directory, output, epoch):
@@ -196,9 +204,10 @@ def appimage(directory, output, runtime, epoch):
         shutil.rmtree(appdir)
 
 
-def assemble(client, recover, version, output, runtime=RUNTIME, epoch=None, *, icon_tool):
+def assemble(client, recover, version, output, runtime=RUNTIME, epoch=None, *, icon_tool, build):
     """Writes the packages into the new directory `output`; `icon_tool` is the program
-    `junto-icon` that renders the icons."""
+    `junto-icon` that renders the icons, and `build` the directory of the programs of the build,
+    whose licences the packages carry."""
     client, recover, output = pathlib.Path(client), pathlib.Path(recover), pathlib.Path(output)
     if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version):
         raise ValueError("a release version has three decimal numbers")
@@ -207,18 +216,15 @@ def assemble(client, recover, version, output, runtime=RUNTIME, epoch=None, *, i
     output.mkdir(parents=False, exist_ok=False)
     try:
         directory = output / "package-directory/junto"
-        tree(directory, client, recover, version, architecture, licence_texts(), icon_tool)
+        tree(directory, client, recover, version, architecture, licence_texts(version, architecture, build), icon_tool)
         write(directory / "junto-package.json", description(version, "directory", architecture))
         write(directory / "install-menu-entry", INSTALL_ENTRY, 0o755)
         tarball(directory, output / f"junto-{version}-linux-{architecture}.tar.gz", epoch)
         image = output / "package-appimage"
         image.mkdir()
         appimage_tree = output / ".appimage-tree"
-        tree(appimage_tree, client, recover, version, architecture, licence_texts(), icon_tool)
-        write(appimage_tree / "licences/AppImage-runtime.txt",
-              "The AppImage runtime of this file is the type 2 runtime of the AppImage project, "
-              "release 20251108, under the MIT licence; it contains libfuse, squashfuse, zstd and "
-              "zlib under their own licences: https://github.com/AppImage/type2-runtime\n")
+        tree(appimage_tree, client, recover, version, architecture,
+             licence_texts(version, architecture, build, appimage=True), icon_tool)
         appimage(appimage_tree, image / "Junto.AppImage", pathlib.Path(runtime), epoch)
         shutil.rmtree(appimage_tree)
         copy(recover, image / "junto-recover", 0o755)
@@ -242,6 +248,6 @@ if __name__ == "__main__":
     arguments = parser.parse_args()
     try:
         assemble(arguments.client, arguments.recover, arguments.version, arguments.output, arguments.runtime,
-                 icon_tool=arguments.icon_tool)
+                 icon_tool=arguments.icon_tool, build=pathlib.Path(arguments.client).parent)
     except (ValueError, subprocess.CalledProcessError, OSError) as error:
         sys.exit(str(error))

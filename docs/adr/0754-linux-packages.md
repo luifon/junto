@@ -14,7 +14,7 @@ ADR 0705 names two Linux packages, a tarball and an AppImage, and the rule of wh
 
 The directory package:
 
-- One directory `junto` with the client `junto`, the recovery program `junto-recover` (ADR 0726), the description `junto-package.json` (format 1, version, system `linux`, package `directory`, architecture), `lib/` with the bundled libraries, the menu entry `share/applications/chat.junto.Junto.desktop`, the icon theme `share/icons/hicolor` with the SVG source of the icon in `scalable/apps/chat.junto.Junto.svg` and its renderings of 16, 22, 24, 32, 48, 64, 128, 256 and 512 pixels in `<size>x<size>/apps/chat.junto.Junto.png` (ADR 0756), the script `install-menu-entry`, and `licences/` with the licence of Junto, the licences of the fonts and the copyright files of the Debian packages of the bundled libraries.
+- One directory `junto` with the client `junto`, the recovery program `junto-recover` (ADR 0726), the description `junto-package.json` (format 1, version, system `linux`, package `directory`, architecture), `lib/` with the bundled libraries, the menu entry `share/applications/chat.junto.Junto.desktop`, the icon theme `share/icons/hicolor` with the SVG source of the icon in `scalable/apps/chat.junto.Junto.svg` and its renderings of 16, 22, 24, 32, 48, 64, 128, 256 and 512 pixels in `<size>x<size>/apps/chat.junto.Junto.png` (ADR 0756), the script `install-menu-entry`, and `licences/` with the licence of Junto and the licence file of the package (ADR 0801), which also holds the copyright files of the Debian packages of the bundled libraries and, in the AppImage, the statement of its runtime.
 - The tarball `junto-<version>-linux-<architecture>.tar.gz` holds that directory. Every entry is owned by root, has the time of `SOURCE_DATE_EPOCH` (0 when it is not set), and no entry is a link.
 - The client has the search path `$ORIGIN/lib` as `DT_RPATH`, which also applies to the libraries that the bundled libraries load: `libxcb-xkb` finds the host's `libxcb` through the system paths. A build outside a package has no such directory, and the loader takes the libraries of the system.
 - `install-menu-entry` writes the menu entry and every size of the icon into `$XDG_DATA_HOME` (or `~/.local/share`) with the absolute path of this copy. It is run by the person and again after the directory is moved. The identifier `chat.junto.Junto` is the application identifier of the window (Wayland `app_id`, X11 class), so the desktop matches the window to the entry.
@@ -39,9 +39,9 @@ Updates:
 
 Checks (`packaging/check_linux.py`, in the build image):
 
-- The tarball: its entries, the owner, no links, the bundled libraries exactly, no library of the host, the description, the licences; the search path; with an empty `LD_LIBRARY_PATH` every bundled library loads from the package and every other one from the host.
+- The tarball: its entries, the owner, no links, the bundled libraries exactly, no library of the host, the description, the licences, a licence file that lists every crate of the programs and holds the WebRTC licence and the copyright files of the bundled libraries; the search path; with an empty `LD_LIBRARY_PATH` every bundled library loads from the package and every other one from the host.
 - The first frame of the tarball's client under X11 and Wayland, and of the AppImage under X11, with `--check-startup` on the virtual displays of ADR 0750. The container has no FUSE: the AppImage runs with `APPIMAGE_EXTRACT_AND_RUN=1`.
-- The menu entry script, and the files of the AppImage after `--appimage-extract`. The icon theme of the tarball, of the AppImage and of the installed menu entry, and `.DirIcon`, equal the renderings of the icon program.
+- The menu entry script, and the files of the AppImage after `--appimage-extract`, with its licence file, which also states the licence of its runtime. The icon theme of the tarball, of the AppImage and of the installed menu entry, and `.DirIcon`, equal the renderings of the icon program.
 - An update of a running directory package from a local source and its rollback with the recovery program, with test programs; a read-only location, a changed archive and a second rollback are refused.
 - The Rust tests `tests/linux_packages.rs` replace an AppImage that is open and a directory with the Linux system tools, and roll both back.
 
@@ -50,5 +50,4 @@ Checks (`packaging/check_linux.py`, in the build image):
 - A person extracts the tarball into a directory of their account, or makes the AppImage executable, and keeps the directory writable for updates.
 - A new shared library of the client stops the package build until it is added to one of the two lists and to this record.
 - The AppImage runs only where `fusermount` exists, or with `--appimage-extract-and-run`. A desktop with Mesa older than 25 under X11 gets the start rule of ADR 0705; the bundled libraries do not change it.
-- The licences of the Rust crates compiled into the client are not in the packages yet; this is also true of the macOS bundle.
 - An RPM or Debian package is not made (`docs/scope.md`).
