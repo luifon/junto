@@ -32,7 +32,7 @@ docker run --rm --network none -v "$PWD:/repository:ro" -w /repository "$JUNTO_C
     --severity=warning --external-sources \
     tools/serial.sh tools/check-pins.sh tools/with-test-postgres.sh tools/with-test-livekit.sh \
     tools/linux-container.sh tools/linux/run.sh tools/linux/session.sh tools/linux/run-as-user.sh tools/linux/display.sh \
-    tools/ci/pins.sh tools/ci/ci.sh tools/ci/run-jobs.sh tools/ci/rust-linux.sh \
+    tools/ci/pins.sh tools/ci/ci.sh tools/ci/run-jobs.sh tools/ci/caches.sh tools/ci/rust-linux.sh \
     tools/ci/rust-other-systems.sh tools/ci/licences.sh tools/ci/layout-page.sh \
     tools/ci/transcription-worker.sh tools/ci/deployment.sh \
     packaging/release.sh packaging/release_locked.sh packaging/release_linux.sh packaging/sign.sh \

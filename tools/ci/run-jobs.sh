@@ -22,7 +22,9 @@
 # limits of the run. Before the first job and after each job, every container, network and
 # volume whose name starts with junto-ci- or junto-ci_ is removed, except the cache volumes
 # (Windows has no Docker); at the end the clone and a bundle are removed, also after a
-# failure, and a cache above its size cap is emptied.
+# failure. Before the first job and after the last, tools/ci/caches.sh keeps the caches within
+# their size caps and the free space of their disk above its level; when it cannot, the run
+# starts no job.
 set -eu
 if [ "$#" -lt 5 ]; then
     echo "usage: $0 <directory> <run> <runner> <repository> <job>..." >&2
@@ -121,7 +123,7 @@ finish() {
     status=$?
     if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; fi
     sweep
-    cap_caches || true
+    sh "$checkout/tools/ci/caches.sh" "$directory" "$runner" after >>"$here/caches.log" || true
     rm -f "$here/current"
     echo "$status" >"$here/finished"
 }
@@ -132,35 +134,6 @@ export JUNTO_HEAVY_LOCK="$here/heavy.lock"
 commit=$(cat "$here/commit")
 cd "$checkout"
 . tools/ci/pins.sh
-
-# The caches of the Linux host are Docker volumes; each has a size cap in GiB. Above its cap
-# a volume is emptied after the run, and the next run fills it again from nothing. On macOS
-# and on Windows the Cargo target directory of the runner has the same rule.
-cap_caches() {
-    if [ "$runner" != linux ]; then
-        if [ -d "$directory/cargo-target" ]; then
-            size=$(du -sk "$directory/cargo-target" | cut -f 1)
-            if [ "$size" -gt $((60 * 1024 * 1024)) ]; then
-                echo "cache $directory/cargo-target: ${size} KiB, above its cap; emptied" >>"$here/caches.log"
-                rm -rf "$directory/cargo-target"
-            fi
-        fi
-        return
-    fi
-    for entry in junto-ci-cargo:8 junto-ci-target:60 junto-ci-uv:4 junto-ci-npm:4; do
-        volume=${entry%%:*} cap=${entry#*:}
-        docker volume inspect "$volume" >/dev/null 2>&1 || continue
-        size=$(docker run --rm --name junto-ci-cache-size --network none --cpus 1 --memory 256m \
-            --memory-swap 256m -v "$volume:/cache" "$JUNTO_CI_PYTHON_IMAGE" du -sk /cache | cut -f 1)
-        echo "cache $volume: $size KiB of $cap GiB" >>"$here/caches.log"
-        if [ "$size" -gt $((cap * 1024 * 1024)) ]; then
-            docker run --rm --name junto-ci-cache-empty --network none --cpus 1 --memory 256m \
-                --memory-swap 256m -v "$volume:/cache" "$JUNTO_CI_PYTHON_IMAGE" \
-                find /cache -mindepth 1 -delete
-            echo "cache $volume emptied" >>"$here/caches.log"
-        fi
-    done
-}
 
 # The programs that the Linux host lacks come from images: the uv program and the Docker
 # command-line program, kept in <directory>/tools/bin for the image names of pins.sh. The
@@ -270,6 +243,7 @@ job() {
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # Containers and networks of an earlier run that ended without its cleanup.
 sweep
+sh "$checkout/tools/ci/caches.sh" "$directory" "$runner" before >>"$here/caches.log"
 failed=0
 for name in "$@"; do
     start=$(now)
