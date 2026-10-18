@@ -1,10 +1,16 @@
-//! The pictures of a share as an interface draws them: BGRA bytes at the size at which the
-//! picture is drawn (ADR 0737).
-
-use std::sync::Arc;
+//! The pictures of a call as an interface draws them, at the size at which they are drawn
+//! (ADR 0737): BGRA bytes, or planes of brightness and colour from which a window makes
+//! the form that it draws (ADR 0774).
 
 use livekit::webrtc::video_frame::native::VideoFrameBufferExt;
 use livekit::webrtc::video_frame::{I420Buffer, VideoBuffer, VideoFormatType};
+
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod surface;
+mod video;
+
+pub use video::VideoPicture;
 
 /// The largest size with the proportions of `source` that fits into `bound`. A source that
 /// fits is not made larger. A side is at least one pixel.
@@ -35,7 +41,7 @@ pub struct PictureFrame {
     pub height: u32,
     /// The pixels in rows from the top, four bytes each: blue, green, red, and an alpha
     /// byte of 255.
-    pub bgra: Arc<[u8]>,
+    pub bgra: Vec<u8>,
     /// The size of the picture as the share sends it.
     pub source: (u32, u32),
 }
@@ -96,10 +102,27 @@ pub fn convert(buffer: &dyn VideoBuffer, bound: (u32, u32)) -> Option<PictureFra
         return None;
     }
     let (width, height) = fit(source, bound);
-    let mut planes = planes(buffer)?;
-    if (width, height) != source {
-        planes = planes.scale(width as i32, height as i32);
-    }
+    let bgra = match buffer.as_i420() {
+        // Planes at the size of the drawing are read where they are.
+        Some(planes) if (width, height) == source => argb(planes, width, height),
+        _ => {
+            let mut planes = planes(buffer)?;
+            if (width, height) != source {
+                planes = planes.scale(width as i32, height as i32);
+            }
+            argb(&planes, width, height)
+        }
+    };
+    Some(PictureFrame {
+        width,
+        height,
+        bgra,
+        source,
+    })
+}
+
+/// The BGRA pixels of planes of `width` × `height`.
+fn argb(planes: &I420Buffer, width: u32, height: u32) -> Vec<u8> {
     let mut bgra = vec![0u8; (width * height * 4) as usize];
     // The call library names a format by its bytes from the highest to the lowest of a
     // 32-bit word: its "ARGB" is blue, green, red, alpha in memory.
@@ -110,12 +133,24 @@ pub fn convert(buffer: &dyn VideoBuffer, bound: (u32, u32)) -> Option<PictureFra
         width as i32,
         height as i32,
     );
-    Some(PictureFrame {
-        width,
-        height,
-        bgra: bgra.into(),
-        source,
-    })
+    bgra
+}
+
+/// The picture with its columns in the opposite order: the preview of the own camera.
+/// Transmitted pictures keep the orientation of the camera.
+pub fn mirror(mut frame: PictureFrame) -> PictureFrame {
+    let width = frame.width as usize;
+    if width > 0 {
+        for row in frame.bgra.chunks_exact_mut(width * 4) {
+            for x in 0..width / 2 {
+                let other = width - 1 - x;
+                for channel in 0..4 {
+                    row.swap(x * 4 + channel, other * 4 + channel);
+                }
+            }
+        }
+    }
+    frame
 }
 
 #[cfg(test)]

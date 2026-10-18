@@ -20,7 +20,7 @@ Measured on 2026-10-17 on a Mac with Apple silicon, macOS 26, inside the machine
 | The same call, the own screen shared and the share of the other person watched (1920 × 1080, 30 pictures a second) | 158.6 MiB | 6.2 MiB | 33.6 MiB | 34.6% | 37.7% | 24 |
 | A call with three other people, each with a camera (1280 × 720, 30 pictures a second), and the own camera | 90.9 MiB | 1.0 MiB | 16.1 MiB | 25.2% | 26.2% | 22 |
 
-These figures are for the code before the change below. The readings did not grow over the 2 minutes of any mode. After the change, the idle mode measured 27.2 MiB (Rust 8.5 MiB) and the text mode 30.8 MiB (Rust 10.3 MiB); see "What was changed".
+These figures are for the code before the changes below. The readings did not grow over the 2 minutes of any mode. After the change of the bar of actions, the idle mode measured 27.2 MiB (Rust 8.5 MiB) and the text mode 30.8 MiB (Rust 10.3 MiB). After the change of the watched share, the share mode measured 125.0 to 138.5 MiB (Rust 15.8 MiB, graphics 1.3 MiB). See "What was changed".
 
 What the figures include and leave out:
 
@@ -66,6 +66,21 @@ Each row of a message carried a bar of five buttons (react, reply, thread, edit,
 
 The processor share of the text mode was 26.0% before and 27.2% after, but the window drew 9,827 times in the 2 minutes before and 12,151 times after: the frame loop of the test is paced by time and a native window waits for the display, so the number of drawings differs between runs. The processor time per drawing is the figure that compares them. Each figure is from one run.
 
+### The watched share is drawn as a camera picture
+
+The engine converted each picture of the watched share to BGRA at the size of the view and copied the pixels from the buffer of the conversion into a shared slice (`Arc<[u8]>`); the window then copied them again into its image, and gpui copied the image into a texture of its atlas. The engine now keeps the picture as planes of brightness and colour at the size of the view, in the type that camera pictures have (`VideoPicture`, ADR 0774). On macOS the window draws it from a pixel buffer of Core Video, as it draws a camera, without the conversion to BGRA, without the image and without the atlas. On Windows and Linux gpui has no such path: the planes are converted to BGRA once, into the buffer that the image of the window holds, without a copy. A small picture of a share keeps its BGRA pixels in a `Vec`, which the conversion writes, without the copy into a shared slice.
+
+Measured on 2026-10-18 on the same Mac by the same method, the share mode only, two runs of the code before and two runs after:
+
+| Share mode | Footprint | Graphics | Rust | Processor (average) | Processor (busiest 5 s) | Drawings | Processor per drawing |
+|---|---|---|---|---|---|---|---|
+| Before, run 1 | 150.0 MiB | 6.2 MiB | 33.6 MiB | 31.1% | 34.3% | 3,495 | 10.82 ms |
+| Before, run 2 | 157.0 MiB | 6.2 MiB | 33.6 MiB | 31.9% | 36.3% | 3,498 | 11.07 ms |
+| After, run 1 | 138.5 MiB | 1.3 MiB | 15.7 MiB | 30.4% | 33.1% | 3,534 | 10.46 ms |
+| After, run 2 | 125.0 MiB | 1.3 MiB | 15.8 MiB | 32.3% | 33.9% | 3,557 | 11.04 ms |
+
+The Rust allocations fell by about 18 MiB: the BGRA pictures of the view and their images are gone. The graphics memory fell by about 5 MiB: the atlas holds no texture of the watched share. The processor share did not change beyond the difference between two runs: the encoder of the own share takes most of it (see below), and the write into the pixel buffer replaces the conversion to BGRA.
+
 ## What uses the memory and the processor
 
 From the profiles of each mode (`JUNTO_TEST_MODES_PROFILE`, with `MallocStackLogging=1`), as allocated bytes of the live blocks:
@@ -73,13 +88,11 @@ From the profiles of each mode (`JUNTO_TEST_MODES_PROFILE`, with `MallocStackLog
 - Idle and text: most of the footprint is the heap of the process (about 24 MiB of small blocks in the text mode), of which the Rust allocations are 9 to 12 MiB. While the list scrolls, all of the processor time is on the thread of the window, in the frame work of gpui: the layout of the elements (about a quarter of the busy samples), copies of element data, the insertion of the bounds of each element into the tree of bounds, and the building of the rows of the messages.
 - Voice: the echo canceller and the other parts of the processing of the voice (WebRTC) on the capture thread, the mixer of the client and a resampler inside the processing on the playout thread, and the Opus encoder and decoder. The processing of the voice converts the 48 kHz stream to its internal rate and back. A block of 7.5 MiB in every call mode is the synthetic sound output of the tests, which keeps 12 seconds of played sound; the product has no such block.
 - Camera: the VP8 encoders of the own camera in three simulcast layers (about 16 MiB), the VP8 decoder of the other camera, and the conversion of each received camera picture into a pixel buffer of Core Video on a thread of the runtime of the client.
-- Share: the VP8 encoder of the own share holds about 38 MiB and takes about half of the busy samples on three threads, although the share is published as screen content. The decoder of the watched share holds about 17 MiB of frame buffers. The client holds the watched picture converted to BGRA at the size of the view (about 13.5 MiB over 5 pictures), a copy of it as an image of the window (about 9 MiB), and the textures on the GPU (about 11 MiB).
+- Share: the VP8 encoder of the own share holds about 38 MiB and takes about half of the busy samples on three threads, although the share is published as screen content. The decoder of the watched share holds about 17 MiB of frame buffers. Before the change of the watched share, the client held the watched picture converted to BGRA at the size of the view (about 13.5 MiB over 5 pictures), a copy of it as an image of the window (about 9 MiB), and the textures on the GPU (about 11 MiB).
 
 ## Open points
 
 - The own share is encoded by the software VP8 encoder of WebRTC. A hardware encoder of the system (H.264 with VideoToolbox on macOS) would take a large part of the processor time and of the memory of the share mode. It changes the codec of every share, so it needs its own decision and tests on every system and with the recorder.
-- `share::picture::convert` writes the BGRA pixels of each share picture into a `Vec` and turns it into an `Arc<[u8]>`, which copies the pixels again; a field of type `Arc<Vec<u8>>` would keep the first buffer. The window then copies the pixels a third time into its image (`render_image`).
-- A received share is converted to BGRA and then copied into an image of the window. A camera picture is drawn from a pixel buffer of Core Video without either step. Drawing the watched share in the same way would remove the copy and the conversion to four bytes a pixel.
 - The processing of the voice resamples both streams between 48 kHz and its internal rate. Its internal rate is a setting of the WebRTC code in `vendor/`; a change needs a measurement of the processing at 48 kHz.
 - Slack was measured only idle. The other modes of Slack and the other clients need a person to start calls and shares in them.
 

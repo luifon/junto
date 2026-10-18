@@ -1,8 +1,9 @@
 use super::*;
-use junto_media::camera::{CameraAccess, CameraError, CameraFrame, CameraState};
+use junto_media::camera::{CameraAccess, CameraError, CameraState};
+use junto_media::share::picture::VideoPicture;
 use std::collections::HashMap;
 
-fn pictures() -> HashMap<ShareId, Arc<CameraFrame>> {
+fn pictures() -> HashMap<ShareId, Arc<VideoPicture>> {
     [
         (ShareId::Own, (35, 90, 130), (180, 90, 35)),
         (ShareId::Of(person("Ana")), (110, 160, 90), (65, 60, 120)),
@@ -15,7 +16,8 @@ fn pictures() -> HashMap<ShareId, Arc<CameraFrame>> {
     .into_iter()
     .filter_map(|(id, left, right)| {
         let pixels = junto_media::share::synthetic::two_colours(640, 360, left, right);
-        CameraFrame::new(&pixels, id == ShareId::Own, (640, 360)).map(|frame| (id, Arc::new(frame)))
+        VideoPicture::new(&pixels, id == ShareId::Own, (640, 360))
+            .map(|frame| (id, Arc::new(frame)))
     })
     .collect()
 }

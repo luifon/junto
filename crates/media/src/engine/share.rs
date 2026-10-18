@@ -32,7 +32,7 @@ use super::order::in_order;
 use super::{Actor, Internal, PUBLISH_LIMIT, PUBLISH_RETRY, Publication, Stops, account_of};
 use crate::audio::playout::{MAX_GAIN, SourceHandle};
 use crate::audio::{Format, PLAYOUT_CHANNELS, SAMPLE_RATE};
-use crate::share::picture::{self, PictureFrame};
+use crate::share::picture::{self, PictureFrame, VideoPicture};
 use crate::share::sound::{SHARE_CHANNELS, SHARE_FRAME_SAMPLES, SoundChain, WAITING_FRAMES};
 use crate::share::{
     CaptureError, CaptureRequest, CaptureSink, CaptureStream, ShareKind, read_track_name,
@@ -165,12 +165,22 @@ pub struct SeenShare {
     pub size: Option<(u32, u32)>,
 }
 
-/// The picture of the share that the person watches.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The picture of the share that the person watches, in the form of a camera picture: the
+/// window draws it in the same way (ADR 0774).
+#[derive(Debug, Clone)]
 pub struct MainPicture {
     pub share: ShareId,
-    pub frame: Arc<PictureFrame>,
+    pub frame: Arc<VideoPicture>,
 }
+
+/// Two pictures are the same when they are one picture of one share.
+impl PartialEq for MainPicture {
+    fn eq(&self, other: &Self) -> bool {
+        self.share == other.share && Arc::ptr_eq(&self.frame, &other.frame)
+    }
+}
+
+impl Eq for MainPicture {}
 
 /// What the tasks that make pictures read: the watched share and the size of its drawing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,7 +221,7 @@ impl Pictures {
         small_at: &mut Option<Instant>,
     ) {
         if view.watched == Some(share)
-            && let Some(frame) = picture::convert(buffer, view.size)
+            && let Some(frame) = VideoPicture::new(buffer, false, view.size)
         {
             self.main.send_replace(Some(MainPicture {
                 share,

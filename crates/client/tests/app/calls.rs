@@ -353,7 +353,8 @@ fn show_call(window: &mut Window, call: junto_media::calls::ActiveCall) {
 #[gpui::test]
 fn received_pictures_cause_one_drawing_per_frame_of_the_display(cx: &mut TestAppContext) {
     use junto_media::engine::{MainPicture, ShareId};
-    use junto_media::share::picture::PictureFrame;
+    use junto_media::share::picture::VideoPicture;
+    use junto_media::share::synthetic::two_colours;
 
     let world = World::new();
     let server = world.server("Acme Studio");
@@ -367,14 +368,12 @@ fn received_pictures_cause_one_drawing_per_frame_of_the_display(cx: &mut TestApp
         .state
         .read_with(&window.cx, |state, _| state.calls().clone());
     // A picture of a share, `width` pixels wide.
-    let picture = |width: u32| MainPicture {
-        share: ShareId::Own,
-        frame: std::sync::Arc::new(PictureFrame {
-            width,
-            height: 2,
-            bgra: vec![255; (width * 2 * 4) as usize].into(),
-            source: (width, 2),
-        }),
+    let picture = |width: u32| {
+        let pixels = two_colours(width, 2, (255, 255, 255), (255, 255, 255));
+        MainPicture {
+            share: ShareId::Own,
+            frame: std::sync::Arc::new(VideoPicture::new(&pixels, false, (width, 2)).unwrap()),
+        }
     };
     // (every drawing of the window, the drawings that pictures asked for, the width held)
     let draws = |window: &Window| window.shell.read_with(&window.cx, |shell, _| shell.draws());
@@ -458,10 +457,10 @@ fn a_window_holds_gpu_images_only_for_the_pictures_that_it_draws_now(cx: &mut Te
     use junto_client::shell::Shell;
     use junto_client_core::protocol::call::ShareAudio;
     use junto_client_core::protocol::ids::AccountId;
-    use junto_media::camera::{CameraFrame, CameraState};
+    use junto_media::camera::CameraState;
     use junto_media::engine::{MainPicture, SeenShare, ShareId, ShareInfo, ShareState};
     use junto_media::share::ShareKind;
-    use junto_media::share::picture::PictureFrame;
+    use junto_media::share::picture::{PictureFrame, VideoPicture};
     use junto_media::share::synthetic::two_colours;
 
     const PICTURES: u8 = 40;
@@ -503,17 +502,18 @@ fn a_window_holds_gpu_images_only_for_the_pictures_that_it_draws_now(cx: &mut Te
             Arc::new(PictureFrame {
                 width: 64,
                 height: 36,
-                bgra: vec![shade; 64 * 36 * 4].into(),
+                bgra: vec![shade; 64 * 36 * 4],
                 source: (64, 36),
             })
         };
         let camera = |own: bool| {
             let pixels = two_colours(64, 36, (shade, 0, 0), (0, 0, shade));
-            Arc::new(CameraFrame::new(&pixels, own, (64, 36)).unwrap())
+            Arc::new(VideoPicture::new(&pixels, own, (64, 36)).unwrap())
         };
+        let watched = two_colours(64, 36, (0, shade, 0), (0, 0, shade));
         calls.show_main_picture_for_test(Some(MainPicture {
             share: ShareId::Of(other),
-            frame: share(),
+            frame: Arc::new(VideoPicture::new(&watched, false, (64, 36)).unwrap()),
         }));
         calls.show_small_pictures_for_test(HashMap::from([
             (ShareId::Own, share()),
@@ -568,8 +568,8 @@ fn a_window_holds_gpu_images_only_for_the_pictures_that_it_draws_now(cx: &mut Te
         images.len()
     );
     assert!(
-        in_gpu(&mut window.cx, &shown) >= 2,
-        "the window did not draw the watched share and the small pictures"
+        shown.len() >= 2 && in_gpu(&mut window.cx, &shown) == shown.len(),
+        "the window did not draw the images that it holds"
     );
     assert_eq!(
         kept(&mut window.cx, &images, &shown),
@@ -597,8 +597,8 @@ fn a_window_holds_gpu_images_only_for_the_pictures_that_it_draws_now(cx: &mut Te
     }
     let shown = held(&window, &detached_shell);
     assert!(
-        in_gpu(&mut detached, &shown) >= 2,
-        "the call window did not draw the watched share and the small pictures"
+        shown.len() >= 2 && in_gpu(&mut detached, &shown) == shown.len(),
+        "the call window did not draw the images that it holds"
     );
     assert_eq!(
         kept(&mut detached, &images, &shown),
@@ -627,6 +627,62 @@ fn a_window_holds_gpu_images_only_for_the_pictures_that_it_draws_now(cx: &mut Te
         (0, 0),
         "GPU images of the main window and of the call window after the end of the shares"
     );
+}
+
+/// ADR 0774: the watched share is drawn as a camera picture is. On macOS the window draws it
+/// from a pixel buffer of Core Video and holds no image of gpui for it, so the renderer
+/// copies nothing into its atlas; on the other systems it holds one image, which the
+/// renderer draws from its atlas.
+#[gpui::test]
+fn the_watched_share_is_drawn_in_the_form_of_a_camera_picture(cx: &mut TestAppContext) {
+    use std::sync::Arc;
+
+    use junto_media::engine::{MainPicture, ShareId};
+    use junto_media::share::picture::VideoPicture;
+    use junto_media::share::synthetic::two_colours;
+
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    voice_channel(&world, &admin, &mut window, "Daily");
+    window.click_channel("Daily");
+    let call = connected_call(&mut window, "Daily");
+    show_call(&mut window, call);
+    let calls = window
+        .state
+        .read_with(&window.cx, |state, _| state.calls().clone());
+    let pixels = two_colours(64, 36, (200, 30, 30), (30, 30, 200));
+    calls.show_main_picture_for_test(Some(MainPicture {
+        share: ShareId::Own,
+        frame: Arc::new(VideoPicture::new(&pixels, false, (64, 36)).unwrap()),
+    }));
+    window.until_pictures_taken();
+    let (drawn, images) = window.shell.read_with(&window.cx, |shell, _| {
+        (shell.draws().2, shell.picture_images())
+    });
+    assert_eq!(
+        drawn,
+        Some(64),
+        "the window does not hold the watched share"
+    );
+    #[cfg(target_os = "macos")]
+    assert!(
+        images.is_empty(),
+        "the window holds {} images of gpui for the watched share",
+        images.len()
+    );
+    #[cfg(not(target_os = "macos"))]
+    {
+        assert_eq!(images.len(), 1);
+        let in_gpu = window
+            .cx
+            .update(|window, _| window.has_image_atlas_entry(&images[0]));
+        assert!(
+            in_gpu,
+            "the window did not draw the image of the watched share"
+        );
+    }
 }
 
 /// Sound settings that cannot be read are not replaced by an open microphone without a
