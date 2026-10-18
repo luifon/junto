@@ -412,6 +412,11 @@ fn a_read_position_moves_forward_and_asks_for_the_counts_when_they_are_not_known
     assert_eq!(model.apply(&read(9)), Follow::default());
     let held = model.message_state(place).unwrap();
     assert_eq!((held.last_read, held.unread, held.mentions), (9, 0, 0));
+    // A read position cannot pass the latest message: a position above the latest one of
+    // the summary names a message that the summary does not hold yet.
+    assert_eq!(model.apply(&read(11)), Follow::default());
+    let held = model.message_state(place).unwrap();
+    assert_eq!((held.last_read, held.latest, held.unread), (11, 11, 0));
 
     // A place without a summary gets one.
     let voice = MessagePlace::Channel {
@@ -430,9 +435,8 @@ fn a_read_position_moves_forward_and_asks_for_the_counts_when_they_are_not_known
     assert_eq!(
         model
             .message_state(PlaceId::Channel(scene.daily))
-            .unwrap()
-            .last_read,
-        2
+            .map(|held| (held.last_read, held.latest)),
+        Some((2, 2))
     );
 
     let mention = Event::MessageMentioned {

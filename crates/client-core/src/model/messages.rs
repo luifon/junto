@@ -552,6 +552,10 @@ impl ServerModel {
 
     /// Moves the read position of a place forward. True when the unread counts are known
     /// after the move: everything is read. Otherwise the caller reads the summary.
+    ///
+    /// The server takes a read position only at or below the latest message (ADR 0408).
+    /// A position above the latest one of the summary names a message whose summary is
+    /// not read yet, and it is the latest position until that summary arrives.
     pub(crate) fn move_read_position(&mut self, place: MessagePlace, position: u64) -> bool {
         let id = PlaceId::of(&place);
         let index = match self
@@ -567,6 +571,7 @@ impl ServerModel {
         };
         let held = &mut self.message_states[index];
         held.last_read = held.last_read.max(position);
+        held.latest = held.latest.max(position);
         if held.last_read < held.latest {
             return false;
         }

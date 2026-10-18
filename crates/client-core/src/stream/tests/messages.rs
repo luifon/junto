@@ -1103,3 +1103,57 @@ async fn the_answer_to_a_read_position_does_not_replace_what_an_event_told_meanw
     let state = rig.model().message_state(place).cloned().unwrap();
     assert_eq!((state.last_read, state.unread), (3, 0));
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_read_position_of_a_new_message_moves_the_latest_position_before_the_summary_answers() {
+    let room = room().await;
+    let (rig, place) = (&room.rig, room.place);
+    let third = room.held(3, "text");
+    room.changed(41, &third, false).await;
+    rig.model_when("the summary", |model| {
+        model
+            .message_state(place)
+            .is_some_and(|state| state.latest == 3 && state.unread == 3)
+    })
+    .await;
+    // Another device of the account sends a fourth message. The server moves the read
+    // position of the account to it in the same transaction, and tells the change of the
+    // message before the read position. The summary that the change asks for is late.
+    let gate = rig.http.hold("/messages/read");
+    let before = rig.http.count("/messages/read");
+    let mine = message(rig.scene.text_place(), 4, rig.scene.account_id, "mine");
+    room.chat(|chat| {
+        chat.messages.push(mine.clone());
+        chat.last_read = 4;
+    });
+    room.changed(42, &mine, false).await;
+    soon("the read of the summary", async {
+        while rig.http.count("/messages/read") == before {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    room.peer
+        .event(
+            43,
+            Event::MessageRead {
+                place: mine.place,
+                position: 4,
+            },
+        )
+        .await;
+    let model = rig
+        .model_when("the read position", |model| {
+            model
+                .message_state(place)
+                .is_some_and(|state| state.last_read == 4)
+        })
+        .await;
+    let expected = room.chat(|chat| chat.state()).unwrap();
+    assert_eq!(model.message_state(place), Some(&expected));
+    gate.add_permits(64);
+    rig.model_when("the summary of the server", |model| {
+        model.message_state(place) == Some(&expected)
+    })
+    .await;
+}

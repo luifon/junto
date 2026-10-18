@@ -1070,7 +1070,8 @@ async fn second_device(server_address: &str, first: &ServerHandle) -> (Device, S
 #[tokio::test(flavor = "multi_thread")]
 async fn the_unread_counts_are_the_same_on_two_devices_of_one_account() {
     let server = TestServer::start("Acme").await;
-    let address = server.address();
+    let proxy = FaultProxy::start(&server).await;
+    let address = proxy.address();
     let scene = live_pair(server, &address).await;
     let (owner, member) = (&scene.owner, &scene.member);
     let (other_device, member_too) = second_device(&address, member).await;
@@ -1130,7 +1131,10 @@ async fn the_unread_counts_are_the_same_on_two_devices_of_one_account() {
     member_too.live().mark_read(place, mentioned.position);
     counts_when(0, 0, Some(mentioned.position)).await;
 
-    // A message of the account itself is not unread, on either device.
+    // A message of the account itself is not unread, on either device. The server moves
+    // the read position of the account to the message: the devices show the message as
+    // the latest one before the summary that its change asks for arrives.
+    proxy.hold_answer_ending("GET", "/messages/read");
     let reply = member_too
         .live()
         .send_message(place, document("mine"), None);
@@ -1147,6 +1151,15 @@ async fn the_unread_counts_are_the_same_on_two_devices_of_one_account() {
     };
     let own = owner.api().message(message_id).await.unwrap();
     counts_when(0, 0, Some(own.position)).await;
+    for handle in devices {
+        let model = handle.live().view().model.unwrap();
+        let state = model.message_state(place).unwrap();
+        assert_eq!(
+            (state.last_read, state.latest),
+            (own.position, own.position)
+        );
+    }
+    proxy.release();
     for handle in [member, &member_too] {
         let state = handle.api().message_state(place).await.unwrap();
         assert_eq!(
