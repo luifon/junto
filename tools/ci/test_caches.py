@@ -76,7 +76,7 @@ class Plan(unittest.TestCase):
     limits = {name: value * GIB for name, value in caches.LIMITS.items()}
 
     def test_a_cache_stays_when_the_run_leaves_enough_free_space(self):
-        self.assertEqual(caches.plan(61 * GIB, [22 * GIB], self.limits, []), ("keep", 40 * GIB))
+        self.assertEqual(caches.plan(30 * GIB, [22 * GIB], self.limits, []), ("keep", 10 * GIB))
 
     def test_the_use_of_a_run_is_the_largest_recorded_drop_of_runs_in_the_same_state(self):
         drops = [(True, 5 * GIB), (True, 9 * GIB), (False, 30 * GIB)]
@@ -117,7 +117,7 @@ class Settings(unittest.TestCase):
         limits = self.read("JUNTO_CI_TARGET_CAP_GIB=120\r\nJUNTO_CI_FREE_GIB=08\r\n")
         self.assertEqual(limits["JUNTO_CI_TARGET_CAP_GIB"], 120 * GIB)
         self.assertEqual(limits["JUNTO_CI_FREE_GIB"], 8 * GIB)
-        self.assertEqual(limits["JUNTO_CI_RUN_GIB"], 40 * GIB)
+        self.assertEqual(limits["JUNTO_CI_RUN_GIB"], 10 * GIB)
 
     def test_a_value_that_is_not_a_number_names_its_line(self):
         with self.assertRaisesRegex(caches.Failed, r"settings:2: JUNTO_CI_FREE_GIB is not a whole number of GiB: 60G"):
@@ -277,7 +277,8 @@ class Runner(Fixture):
 
     def test_a_run_whose_disk_is_too_full_starts_no_job(self):
         sparse(self.root / "volumes" / "junto-ci-target", 30 * GIB)
-        result = self.run_jobs("linux", FAKE_DISK=str(80 * GIB))
+        # 25 GiB free beside a cache of 30 GiB: a run with it would leave 15, one without it as well.
+        result = self.run_jobs("linux", FAKE_DISK=str(55 * GIB))
         here = self.directory / "runs" / "sample-run"
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertEqual((here / "finished").read_text().strip(), "1")

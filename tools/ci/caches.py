@@ -33,7 +33,9 @@ next run fills again releases no space for that run.
 The limits are in GiB. Each is read from a line NAME=VALUE of <directory>/settings, and has its
 default when the file has no such line: JUNTO_CI_TARGET_CAP_GIB=60, JUNTO_CI_CARGO_CAP_GIB=8,
 JUNTO_CI_UV_CAP_GIB=4, JUNTO_CI_NPM_CAP_GIB=4, JUNTO_CI_BUILDER_CAP_GIB=40, JUNTO_CI_FREE_GIB=20
-(the free space that must remain at the end of a run), JUNTO_CI_RUN_GIB=40.
+(the free space that must remain at the end of a run), JUNTO_CI_RUN_GIB=10 (the use of a run
+with the target cache while the machine has no record of one: such runs used 0.7 GiB on the
+Linux host and grew the target directory of the Windows machine by 4.1 GB).
 
 Each measurement and removal is written to the standard output. Exit status 1: the run starts no
 job for lack of free space. Exit status 2: a setting, a size or the free space could not be read;
@@ -58,7 +60,7 @@ LIMITS = {
     "JUNTO_CI_NPM_CAP_GIB": 4,
     "JUNTO_CI_BUILDER_CAP_GIB": 40,
     "JUNTO_CI_FREE_GIB": 20,
-    "JUNTO_CI_RUN_GIB": 40,
+    "JUNTO_CI_RUN_GIB": 10,
 }
 
 
