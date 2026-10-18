@@ -68,7 +68,10 @@ if [ -z "${JUNTO_CI_LOCKED:-}" ]; then
         if [ ! -f "$here/finished" ]; then echo "$status" >"$here/finished"; fi
     }
     trap outer_end EXIT
-    trap 'exit 143' INT TERM HUP
+    # The first signal ignores the next ones before it ends the script: a Ctrl-C reaches this
+    # part and the locked part, and the lock program sends it on once more; a second signal
+    # during the end would run "exit" again inside the cleanup and end it.
+    trap 'trap "" INT TERM HUP; exit 143' INT TERM HUP
     mkdir -p "$here/logs"
     echo "$*" >"$here/jobs"
     # The objects of the commit under test, in the ref refs/ci/<run> of a bare repository of the
@@ -200,7 +203,7 @@ prepare_checkout() (
 )
 if [ -z "${JUNTO_CI_JOB:-}" ]; then
     trap finish EXIT
-    trap 'exit 143' INT TERM HUP
+    trap 'trap "" INT TERM HUP; exit 143' INT TERM HUP
     # Containers of an earlier run that ended without its cleanup can still write into a cache
     # volume; they are removed before the files of the checkout are written.
     sweep
