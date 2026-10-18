@@ -204,6 +204,7 @@ Run `new-event-epoch` after the restore of a backup, before the server accepts c
 | `JUNTO_MIGRATION_COPY` | `database` | `database`: copy the database before a migration; `none`: do not (ADR 0018) |
 | `JUNTO_LOG_FORMAT` | `json` | `json` or `text`; log records go to standard error |
 | `JUNTO_LOG_LEVEL` | `info` | `error`, `warn`, `info`, `debug` or `trace` |
+| `JUNTO_STOP_AT_INPUT_END` | `false` | `true`: the server stops, as on SIGTERM, when its standard input ends or cannot be read. For a program that starts the server with a pipe on its standard input, such as the test harness: the server stops when that program ends, also when it is killed (ADR 0915). A server under Docker has an empty standard input and would stop at once |
 | `JUNTO_LIVEKIT_API_URL` | none | Address of the LiveKit API on the private network, with `http://` (ADR 0508) |
 | `JUNTO_LIVEKIT_URL` | none | Address of LiveKit for clients, with `wss://` or `ws://` |
 | `JUNTO_LIVEKIT_API_KEY` | none | API key of LiveKit |

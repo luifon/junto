@@ -195,6 +195,7 @@ impl RecordingServer {
                 exports_directory: None,
                 migration_copy: junto_server::bootstrap::MigrationCopy::None,
                 recorder_layout_directory: None,
+                stop_at_input_end: false,
                 attachments_directory: Some(attachments_directory),
                 database_url: String::new(),
                 listen_address: address,

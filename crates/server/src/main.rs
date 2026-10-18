@@ -231,6 +231,7 @@ async fn serve(config: Config) -> Result<(), Failure> {
     }
     let database = connect(&config, DATABASE_CONNECTIONS).await?;
     let listen_address = config.listen_address;
+    let stop_at_input_end = config.stop_at_input_end;
     let prepared = junto_server::prepare(database, config, Arc::new(SystemClock)).await?;
 
     if let Some(code) = &prepared.owner_code {
@@ -254,7 +255,8 @@ async fn serve(config: Config) -> Result<(), Failure> {
         tokio::spawn(junto_server::purge::run(state.clone())),
         tokio::spawn(junto_server::exports::run(state.clone())),
     ];
-    let served = junto_server::serve(listener, state.clone(), shutdown_signal()).await;
+    let shutdown = shutdown_signal(stop_at_input_end);
+    let served = junto_server::serve(listener, state.clone(), shutdown).await;
     for task in background {
         task.abort();
     }
@@ -456,7 +458,30 @@ fn init_logging(format: LogFormat, level: tracing::Level) {
     }
 }
 
-async fn shutdown_signal() {
+/// Resolves when the standard input of the process ends or cannot be read. The program that
+/// started the server holds the other end of a pipe; the system closes that end when the
+/// program ends, also when it is killed (ADR 0008).
+async fn input_end() {
+    use std::io::Read;
+    let (ended, end) = tokio::sync::oneshot::channel::<()>();
+    std::thread::spawn(move || {
+        let mut input = std::io::stdin().lock();
+        let mut buffer = [0_u8; 512];
+        loop {
+            match input.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+        let _ = ended.send(());
+    });
+    let _ = end.await;
+    tracing::info!("the standard input has ended");
+}
+
+async fn shutdown_signal(stop_at_input_end: bool) {
     let interrupt = async {
         if signal::ctrl_c().await.is_err() {
             std::future::pending::<()>().await;
@@ -477,6 +502,7 @@ async fn shutdown_signal() {
     tokio::select! {
         () = interrupt => {}
         () = terminate => {}
+        () = input_end(), if stop_at_input_end => {}
     }
     tracing::info!("shutdown signal received");
 }

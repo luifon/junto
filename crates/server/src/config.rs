@@ -313,6 +313,8 @@ pub struct Config {
     /// The built layout page of the recorder (ADR 0615). Absent: the server does not serve
     /// the page.
     pub recorder_layout_directory: Option<PathBuf>,
+    /// Whether the server stops when its standard input ends (ADR 0008).
+    pub stop_at_input_end: bool,
     pub limits: Limits,
 }
 
@@ -683,6 +685,7 @@ impl Config {
     pub const RECORDER_LAYOUT_DIR: &'static str = "JUNTO_RECORDER_LAYOUT_DIR";
     pub const EXPORTS_DIR: &'static str = "JUNTO_EXPORTS_DIR";
     pub const MIGRATION_COPY: &'static str = "JUNTO_MIGRATION_COPY";
+    pub const STOP_AT_INPUT_END: &'static str = "JUNTO_STOP_AT_INPUT_END";
     pub const FFMPEG: &'static str = "JUNTO_FFMPEG";
     pub const FFPROBE: &'static str = "JUNTO_FFPROBE";
     pub const TRANSCRIBE_COMMAND: &'static str = "JUNTO_TRANSCRIBE_COMMAND";
@@ -971,6 +974,16 @@ impl Config {
                 ));
             }
         };
+        let stop_at_input_end = match value(Self::STOP_AT_INPUT_END).as_deref().map(str::trim) {
+            None | Some("false") => false,
+            Some("true") => true,
+            Some(other) => {
+                return Err(invalid(
+                    Self::STOP_AT_INPUT_END,
+                    format!("{other:?}: expected true or false"),
+                ));
+            }
+        };
         let recorder_layout_directory = value(Self::RECORDER_LAYOUT_DIR).map(PathBuf::from);
         if recorder_layout_directory
             .as_ref()
@@ -1013,6 +1026,7 @@ impl Config {
             exports_directory,
             migration_copy,
             recorder_layout_directory,
+            stop_at_input_end,
             database_url,
             listen_address,
             public_origins,
@@ -1040,6 +1054,7 @@ impl std::fmt::Debug for Config {
             .field("log_level", &self.log_level)
             .field("media", &self.media)
             .field("recorder", &self.recorder)
+            .field("stop_at_input_end", &self.stop_at_input_end)
             .field("limits", &self.limits)
             .finish()
     }
@@ -1096,6 +1111,7 @@ mod tests {
         assert!(config.trusted_proxies.is_empty());
         assert_eq!(config.log_format, LogFormat::Json);
         assert_eq!(config.log_level, tracing::Level::INFO);
+        assert!(!config.stop_at_input_end);
     }
 
     #[test]
@@ -1114,6 +1130,7 @@ mod tests {
             ),
             ("JUNTO_LOG_FORMAT", "text"),
             ("JUNTO_LOG_LEVEL", "debug"),
+            ("JUNTO_STOP_AT_INPUT_END", "true"),
         ]))
         .unwrap();
         assert_eq!(
@@ -1139,6 +1156,7 @@ mod tests {
         );
         assert_eq!(config.log_format, LogFormat::Text);
         assert_eq!(config.log_level, tracing::Level::DEBUG);
+        assert!(config.stop_at_input_end);
     }
 
     #[test]
@@ -1161,6 +1179,7 @@ mod tests {
             ("JUNTO_TRUSTED_PROXIES", "2001:db8::/129"),
             ("JUNTO_LOG_FORMAT", "xml"),
             ("JUNTO_LOG_LEVEL", "loud"),
+            ("JUNTO_STOP_AT_INPUT_END", "yes"),
         ] {
             let result = Config::from_lookup(move |key| {
                 if key == "JUNTO_DATABASE_URL" {

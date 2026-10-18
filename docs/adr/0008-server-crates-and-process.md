@@ -21,7 +21,7 @@ Crates:
 
 Configuration:
 
-- The server reads its settings from environment variables with the prefix `JUNTO_`: `DATABASE_URL` (required), `LISTEN_ADDRESS` (default `127.0.0.1:8080`), `SERVER_NAME` (default `Junto`), `TRUSTED_PROXIES` (a comma-separated list of IP addresses, default empty), `LOG_FORMAT` (`json` or `text`, default `json`) and `LOG_LEVEL` (default `info`).
+- The server reads its settings from environment variables with the prefix `JUNTO_`: `DATABASE_URL` (required), `LISTEN_ADDRESS` (default `127.0.0.1:8080`), `SERVER_NAME` (default `Junto`), `TRUSTED_PROXIES` (a comma-separated list of IP addresses, default empty), `LOG_FORMAT` (`json` or `text`, default `json`), `LOG_LEVEL` (default `info`) and `STOP_AT_INPUT_END` (`true` or `false`, default `false`).
 - `SERVER_NAME` is used at the first start only. The name is stored in the database afterwards.
 - An invalid value stops the start with a message that names the variable.
 
@@ -35,6 +35,7 @@ Process:
 - Log records are structured and go to standard error. Each request produces one record with the method, the path, the status and the duration. Request bodies and headers are not logged.
 - The owner code goes to standard output as plain text and is never a log record.
 - SIGINT and SIGTERM stop the listener. Open requests are finished before the process exits.
+- With `STOP_AT_INPUT_END=true`, the end of the standard input, or an error when it is read, stops the listener as SIGTERM does. A program that starts the server and holds a pipe to its standard input thereby stops the server when that program ends, also when it is killed (ADR 0915). A container starts the server with an empty standard input, so the deployments leave the setting off.
 - Every request has a time limit of 30 seconds. A request that reaches it gets the error `timeout` (ADR 0205) and its transaction is rolled back.
 - The binary serves the API when it is started without arguments. With the argument `assign-owner` or `issue-owner-code` it runs a host command and exits (ADR 0114).
 - Every rule that depends on the time reads it from one clock object. Time values are passed to SQL as parameters; SQL statements do not call `now()`.

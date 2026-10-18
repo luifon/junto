@@ -5,7 +5,7 @@
 use std::io::Read;
 use std::net::{SocketAddr, TcpListener as StdListener};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -28,7 +28,7 @@ use tokio::sync::watch;
 const DATABASE_URL: &str = "JUNTO_TEST_DATABASE_URL";
 const SERVER_BINARY: &str = "JUNTO_SERVER_BIN";
 
-fn admin_url() -> String {
+pub fn admin_url() -> String {
     std::env::var(DATABASE_URL).unwrap_or_else(|_| {
         panic!("{DATABASE_URL} is not set. Run the tests through tools/with-test-postgres.sh.")
     })
@@ -62,6 +62,10 @@ fn free_port() -> u16 {
 /// [`FaultProxy::start`] takes it (ADR 0117).
 pub struct TestServer {
     child: Option<Child>,
+    /// The write end of the standard input of the running process. The system closes it when
+    /// the process of the tests ends, also when that process is killed, and the server then
+    /// stops (`JUNTO_STOP_AT_INPUT_END`, ADR 0008, ADR 0915).
+    input: Option<ChildStdin>,
     output: Arc<Mutex<String>>,
     /// The log of every process of this server, in order. A test that fails prints it
     /// (`Drop`), so the cause of an `internal` error that the server logged is in the output
@@ -130,6 +134,7 @@ impl TestServer {
         let proxy_port = proxy.local_addr().unwrap().port();
         let mut server = Self {
             child: None,
+            input: None,
             output: Arc::default(),
             log: Arc::default(),
             copiers: Vec::new(),
@@ -237,11 +242,13 @@ impl TestServer {
             )
             .env("JUNTO_LOG_FORMAT", "text")
             .env("JUNTO_LOG_LEVEL", "warn")
-            .stdin(Stdio::null())
+            .env("JUNTO_STOP_AT_INPUT_END", "true")
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
+        self.input = child.stdin.take();
         self.output = Arc::default();
         let echo = std::env::var_os("JUNTO_TEST_SERVER_LOG").is_some();
         self.copiers = vec![
@@ -264,6 +271,11 @@ impl TestServer {
 
     pub fn address(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
+    }
+
+    /// The number of the running process.
+    pub fn process_id(&self) -> Option<u32> {
+        self.child.as_ref().map(Child::id)
     }
 
     /// The owner code that the running process printed. A server with an owner prints none.
@@ -291,6 +303,7 @@ impl TestServer {
             let _ = child.kill();
             let _ = child.wait();
         }
+        self.input = None;
         // A process that another test started can hold the write end of a pipe of this
         // server, so the end of the copy is awaited for a bounded time only.
         for copier in self.copiers.drain(..) {

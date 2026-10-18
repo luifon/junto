@@ -39,7 +39,7 @@ Outside the workspace:
   - An ADR states engineering decisions and their technical reasons only.
   - Every feature adds or changes an ADR, so that `docs/adr/` describes the current design.
   - The order for each feature: tests and a check in the running application, an independent review, fixes, the ADR, a local commit, and a push after a review by a maintainer.
-- ADR 0902 is the testing strategy. ADR 0904 covers the server tests, ADR 0905 continuous integration, ADR 0906 the bound on the stack of one function, ADR 0912 the window tests on Windows, ADR 0913 the native media tests, ADR 0914 the measurement of the client per mode.
+- ADR 0902 is the testing strategy. ADR 0904 covers the server tests, ADR 0905 continuous integration, ADR 0906 the bound on the stack of one function, ADR 0912 the window tests on Windows, ADR 0913 the native media tests, ADR 0914 the measurement of the client per mode, ADR 0915 the processes and scheduled tasks that a test must not leave behind.
 - `docs/step-0/README.md` lists the technical tests of step 0 (ADR 0903).
 
 ## Documents for people who install Junto
