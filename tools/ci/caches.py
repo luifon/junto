@@ -23,9 +23,10 @@ Before a run:
    the run-jobs.sh of an older commit with a checkout of its own, wrote such output: Cargo would
    keep it, compiled from other files and naming another checkout.
 2. A cache above its size cap is emptied: Cargo and BuildKit keep the output of earlier builds.
-3. The free space that the run will use is estimated from the drops of the free space during
-   the last RECORDS runs of the machine that started in the same state (with the target cache,
-   or without it), recorded in <directory>/cache-history.tsv: the median of those drops, with
+3. The free space that the run will use is estimated from the use of the last RECORDS runs of
+   the machine that started in the same state (with the target cache, or without it), recorded
+   in <directory>/cache-history.tsv: the drop of the free space during the run, and at least the
+   growth of its target cache. The estimate is the median of those values, with
    the default added until there are MINIMUM values, so that one run during which other work
    used much of the disk does not decide. The default of a run with the target cache is
    JUNTO_CI_RUN_GIB; that of a run without it is JUNTO_CI_COLD_RUN_GIB, and when the caches
@@ -275,8 +276,10 @@ class Local:
 
 
 def history(directory):
-    """The drop of the free space during each earlier run with both records, oldest first:
-    (whether the run started with the target cache, the drop in KiB)."""
+    """The use of each earlier run with both records, oldest first: (whether the run started with
+    the target cache, the use in KiB). The use is the drop of the free space during the run, and
+    at least the growth of the target cache: when other work released disk during the run, the
+    free space can rise while the run builds."""
     path = Path(directory) / "cache-history.tsv"
     if not path.exists():
         return []
@@ -288,10 +291,10 @@ def history(directory):
             continue
         run, phase, free, target = fields[0], fields[1], int(fields[2]), int(fields[3])
         if phase == "before":
-            started[run] = (target > 0, free)
+            started[run] = (target, free)
         elif phase == "after" and run in started:
-            warm, before = started.pop(run)
-            drops.append((warm, max(0, before - free)))
+            target_before, before = started.pop(run)
+            drops.append((target_before > 0, max(0, before - free, target - target_before)))
     return drops
 
 

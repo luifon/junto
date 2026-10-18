@@ -143,7 +143,17 @@ class Plan(unittest.TestCase):
             caches.record(temporary, "b", "after", 10, 9)  # a run that started no job
             caches.record(temporary, "c", "before", 50, 0)
             caches.record(temporary, "c", "after", 60, 9)
-            self.assertEqual(caches.history(temporary), [(True, 30), (False, 0)])
+            self.assertEqual(caches.history(temporary), [(True, 30), (False, 9)])
+
+    # On the macOS machine the free space rose during two runs that built the target from
+    # nothing, because other work released disk; their drop of 0 made the median 0.
+    def test_the_use_of_a_run_is_at_least_the_growth_of_its_target(self):
+        with tempfile.TemporaryDirectory(prefix="junto-ci-history-") as temporary:
+            (Path(temporary) / "cache-history.tsv").write_text(MACOS_HISTORY + (
+                "ec7b7e7\tbefore\t69573268\t0\nec7b7e7\tafter\t73586896\t22532995\n"))
+            drops = caches.history(temporary)
+            self.assertEqual([round(use / GIB, 1) for warm, use in drops if not warm], [29.3, 21.5, 21.5])
+            self.assertEqual(caches.plan(50 * GIB, [0, 5 * GIB], self.limits, drops), ("keep", 22535134))
 
     def test_a_history_that_is_not_text_loses_only_its_bad_lines(self):
         with tempfile.TemporaryDirectory(prefix="junto-ci-history-") as temporary:
