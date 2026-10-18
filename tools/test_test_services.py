@@ -11,7 +11,7 @@ TOOLS = Path(__file__).resolve().parent
 
 @unittest.skipIf(os.name == "nt", "POSIX container wrappers")
 class TestServiceLogs(unittest.TestCase):
-    def run_wrapped(self, scripts, status, start_fails=False, logs_fail=False):
+    def run_wrapped(self, scripts, status, start_fails=False, logs_fail=False, settings=None):
         with tempfile.TemporaryDirectory(prefix="junto-service-logs-") as directory:
             root = Path(directory)
             docker = root / "docker"
@@ -46,6 +46,7 @@ exit 0
                 JUNTO_TEST_LIVEKIT_UDP_PORT="47882",
                 JUNTO_TEST_LIVEKIT_API_KEY="test-key",
                 JUNTO_TEST_LIVEKIT_API_SECRET="test-secret",
+                **(settings or {}),
             )
             command = ["sh", "-c", f"exit {status}"]
             for script in reversed(scripts):
@@ -86,6 +87,14 @@ exit 0
                 self.assertIn("container stdout", result.stderr)
                 self.assertEqual(sum(command.startswith("rm -f -v ")
                                      for command in commands), 2)
+
+    def test_only_the_named_setting_gives_the_camera_layers_the_deployment_setting(self):
+        for value, given in [("", False), ("1", True)]:
+            with self.subTest(value=value):
+                result, commands = self.run_wrapped(
+                    ["livekit"], 0, settings={"JUNTO_TEST_LIVEKIT_DEPLOYMENT_LAYERS": value})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual("packet_tracker:" in "\n".join(commands), given)
 
 
 if __name__ == "__main__":
