@@ -64,6 +64,14 @@ import time
 GIB = 1024 * 1024  # KiB
 RECORDS = 5
 MINIMUM = 3
+# A run counts as a run with the target cache when its target at the start is at least this share
+# of the target at the end of the last recorded run (for a recorded run: of its own target at its
+# end). A run that starts with a small rest of the target builds nearly all of it, as a run
+# without it does.
+WARM_SHARE = 0.5
+# The file in the CI directory that names the run whose check before the run examined the target
+# cache; only the check after that run writes the stamp.
+EXAMINED = "cache-examined"
 # The version of the way the runner writes its checkout and builds: 2 is one checkout per
 # machine (tools/ci/run-jobs.sh). A change of it empties the target caches once.
 RUNNER = 2
@@ -192,6 +200,10 @@ class Linux:
     def mark(self, stamp):
         self.container("stamp", self.target, ["sh", "-c", f"printf '%s\\n' \"$1\" >/cache/{STAMP}", "sh", stamp])
 
+    def writers(self):
+        """The Linux runners of every version take the same run lock: no other run writes."""
+        return []
+
 
 class Local:
     """The caches of the macOS machine and of the Windows machine: directories of the CI
@@ -274,6 +286,17 @@ class Local:
     def mark(self, stamp):
         (self.directory / self.target / STAMP).write_text(stamp + "\n", encoding="utf-8")
 
+    def writers(self):
+        """The processes whose command line names the target directory, on macOS: the rustc of a
+        build of an older runner, which takes the lock of JUNTO_HEAVY_LOCK of its caller, or of
+        an older run that was ended without its build. On Linux and on Windows every runner takes
+        the same run lock, and the runner ends the processes of a run before the lock is free."""
+        if self.runner != "macos":
+            return []
+        target = str(self.directory / self.target)
+        listing = program(["ps", "-axo", "pid=,command="], "the list of processes")
+        return [line.strip()[:200] for line in listing.splitlines() if target in line]
+
 
 def history(directory):
     """The use of each earlier run with both records, oldest first: (whether the run started with
@@ -294,7 +317,8 @@ def history(directory):
             started[run] = (target, free)
         elif phase == "after" and run in started:
             target_before, before = started.pop(run)
-            drops.append((target_before > 0, max(0, before - free, target - target_before)))
+            warm = target_before > 0 and target_before >= WARM_SHARE * max(target, target_before)
+            drops.append((warm, max(0, before - free, target - target_before)))
     return drops
 
 
@@ -309,6 +333,15 @@ def lines_of(path):
         raise Failed(f"{path}: {error}") from error
     return [line for line in text.splitlines()
             if len(line.split("\t")) == 4 and all(field.isdigit() for field in line.split("\t")[2:])]
+
+
+def last_target(directory):
+    """The size of the target cache at the end of the last recorded run, or 0."""
+    for line in reversed(lines_of(Path(directory) / "cache-history.tsv")):
+        fields = line.split("\t")
+        if fields[1] == "after":
+            return int(fields[3])
+    return 0
 
 
 def record(directory, run, phase, free, target):
@@ -336,7 +369,7 @@ def foreign_reason(written, stamp, newer):
     return None
 
 
-def plan(free, sizes, limits, drops):
+def plan(free, sizes, limits, drops, reference=0):
     """The decision before a run, from the free space and the sizes in KiB that remain after the
     caps, the target cache first: ("keep" | "empty" | "refuse", the use of a run in KiB)."""
     level = limits["JUNTO_CI_FREE_GIB"]
@@ -344,7 +377,7 @@ def plan(free, sizes, limits, drops):
     cold_drops = [drop for warm, drop in drops if not warm]
     warm_use = estimate(warm_drops, limits["JUNTO_CI_RUN_GIB"])
     total = sum(sizes)
-    if not sizes or not sizes[0]:
+    if not sizes or not sizes[0] or sizes[0] < WARM_SHARE * reference:
         cold_use = estimate(cold_drops, limits["JUNTO_CI_COLD_RUN_GIB"])
         return ("keep" if free - cold_use >= level else "refuse"), cold_use
     if free - warm_use >= level:
@@ -362,6 +395,14 @@ def log(phase, message):
 def check(directory, runner, phase, run):
     limits = settings(directory)
     machine = Linux(limits) if runner == "linux" else Local(directory, runner, limits)
+    examined = Path(directory) / EXAMINED
+    writers = machine.writers()
+    if phase == "before":
+        examined.unlink(missing_ok=True)
+        if writers:
+            print("the run starts no job: a process outside the run lock writes the target cache:\n  "
+                  + "\n  ".join(writers), file=sys.stderr)
+            return 1
     # The path at which the jobs build: the containers of the Linux host mount the checkout at /src.
     stamp = f"runner {RUNNER} checkout {'/src' if runner == 'linux' else Path(directory) / 'checkout'}"
     remaining = []
@@ -387,14 +428,20 @@ def check(directory, runner, phase, run):
     free = machine.free()
     target = dict(remaining).get(machine.target, 0)
     if phase == "after":
-        if target:
+        mine = examined.exists() and examined.read_text(encoding="utf-8", errors="replace").strip() == run
+        examined.unlink(missing_ok=True)
+        if target and mine and not writers:
             machine.mark(stamp)
+        elif target:
+            why = "a process outside the run lock writes it" if writers else \
+                "the check before this run did not examine it"
+            log(phase, f"the stamp is not written: {why}; the next run empties the target")
         log(phase, f"free space: {free} KiB")
         record(directory, run, phase, free, target)
         return 0
     level = limits["JUNTO_CI_FREE_GIB"]
     sizes = [target] + [size for name, size in remaining if name != machine.target]
-    decision, use = plan(free, sizes, limits, history(directory))
+    decision, use = plan(free, sizes, limits, history(directory), last_target(directory))
     log(phase, f"free space: {free} KiB; a run uses up to {use} KiB; at least {level} KiB must remain")
     if decision == "empty":
         for name, size in sorted(remaining, key=lambda cache: -cache[1]):
@@ -409,6 +456,7 @@ def check(directory, runner, phase, run):
               file=sys.stderr)
         return 1
     record(directory, run, phase, free, target)
+    examined.write_text(run + "\n", encoding="utf-8")
     return 0
 
 

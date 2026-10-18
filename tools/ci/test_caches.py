@@ -121,6 +121,19 @@ class Plan(unittest.TestCase):
                 caches.record(temporary, f"run-{number}", "before", 50 * GIB, 34 * GIB)
                 caches.record(temporary, f"run-{number}", "after", 47 * GIB, 34 * GIB)
 
+    # A run that started with 2.6 GiB of a 21 GiB target built nearly all of it.
+    def test_a_run_with_a_small_rest_of_the_target_counts_as_a_run_without_it(self):
+        with tempfile.TemporaryDirectory(prefix="junto-ci-history-") as temporary:
+            caches.record(temporary, "partial", "before", 63 * GIB, 2726298)
+            caches.record(temporary, "partial", "after", 46 * GIB, 21 * GIB)
+            caches.record(temporary, "full", "before", 50 * GIB, 21 * GIB)
+            caches.record(temporary, "full", "after", 47 * GIB, 22 * GIB)
+            self.assertEqual(caches.history(temporary), [(False, 21 * GIB - 2726298), (True, 3 * GIB)])
+            self.assertEqual(caches.last_target(temporary), 22 * GIB)
+        drops = [(False, 20 * GIB)] * 3 + [(True, 3 * GIB)] * 3
+        self.assertEqual(caches.plan(45 * GIB, [2 * GIB], self.limits, drops, reference=22 * GIB), ("keep", 20 * GIB))
+        self.assertEqual(caches.plan(45 * GIB, [20 * GIB], self.limits, drops, reference=22 * GIB), ("keep", 3 * GIB))
+
     def test_a_first_run_without_records_and_caches_is_estimated_as_a_build_from_nothing(self):
         self.assertEqual(caches.plan(32 * GIB, [0, 0], self.limits, []), ("refuse", 40 * GIB))
         self.assertEqual(caches.plan(60 * GIB, [0, 0], self.limits, []), ("keep", 40 * GIB))
@@ -321,13 +334,43 @@ class Stamp(Fixture):
         self.assertIn("emptied, because its stamp is", self.before())
 
     def test_the_check_after_a_run_writes_the_stamp(self):
-        target = self.target()
-        self.settings("JUNTO_CI_RUN_GIB=0\nJUNTO_CI_FREE_GIB=0\n")
+        self.before()  # no target yet: the check examines it
+        target = self.target()  # the run builds it
         self.assertEqual(self.caches("macos", "after").returncode, 0)
         self.assertEqual((target / caches.STAMP).read_text(),
                          f"runner {caches.RUNNER} checkout {self.directory / 'checkout'}\n")
         self.before()
         self.assertTrue((target / "data").exists())
+
+    # The check before the run stopped before it examined the target: the check after the run
+    # must not mark the foreign output as this runner's.
+    def test_no_stamp_is_written_after_a_run_whose_check_before_did_not_examine_the_target(self):
+        target = self.target()
+        (self.directory / "settings").write_text("JUNTO_CI_FREE_GIB=nothing\n")
+        self.assertEqual(self.caches("macos", "before").returncode, 2)
+        self.settings("JUNTO_CI_RUN_GIB=0\nJUNTO_CI_FREE_GIB=0\n")
+        after = self.caches("macos", "after")
+        self.assertEqual(after.returncode, 0, after.stderr)
+        self.assertIn("the stamp is not written: the check before this run did not examine it", after.stdout)
+        self.assertFalse((target / caches.STAMP).exists())
+        self.assertIn("emptied, because it has no stamp of this runner", self.before())
+
+    # On macOS an older runner can build beside this one (it takes JUNTO_HEAVY_LOCK of its
+    # caller); its rustc names the target directory.
+    def test_a_process_that_writes_the_target_outside_the_run_stops_the_run_and_the_stamp(self):
+        target = self.target()
+        stamped(target, self.directory / "checkout")
+        writer = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", f"--out-dir={target}/debug/deps"])
+        self.addCleanup(writer.kill)
+        self.settings("JUNTO_CI_RUN_GIB=0\nJUNTO_CI_FREE_GIB=0\n")
+        before = self.caches("macos", "before")
+        self.assertEqual(before.returncode, 1, before.stdout + before.stderr)
+        self.assertIn("a process outside the run lock writes the target cache", before.stderr)
+        (self.directory / caches.EXAMINED).write_text("sample-run\n")
+        (target / caches.STAMP).unlink()
+        after = self.caches("macos", "after")
+        self.assertIn("the stamp is not written: a process outside the run lock writes it", after.stdout)
+        self.assertFalse((target / caches.STAMP).exists())
 
     def test_the_target_volume_of_the_linux_host_is_stamped_and_checked_in_containers(self):
         volume = self.root / "volumes" / "junto-ci-target"

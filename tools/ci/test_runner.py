@@ -376,5 +376,77 @@ class Recovery(unittest.TestCase):
             self.assertEqual(len((root / "record").read_text().splitlines()), 3)
 
 
+class CheckoutFailure(unittest.TestCase):
+    """A failed Git step of the checkout stops the run or makes it create the checkout again; the
+    jobs never test the files of another commit under the name of this one."""
+
+    def two_commits(self, root, second_files):
+        repository = repository_with(root, (TOOLS / "serial.sh").read_text(),
+                                     {"tools/ci/rust-other-systems.sh": RECORDING, "changed.txt": "first\n"})
+        git = ["git", "-C", str(repository)]
+        (repository / "changed.txt").write_text("second\n")
+        for name, data in second_files.items():
+            (repository / name).write_bytes(data)
+        subprocess.run([*git, "add", "-A"], check=True)
+        subprocess.run([*git, "commit", "--quiet", "-m", "Second"], env=dict(os.environ, **IDENTITY), check=True)
+        subprocess.run([*git, "update-ref", "refs/ci/second-run", "HEAD"], check=True)
+        return repository
+
+    def run_both(self, root, repository, between):
+        directory = root / "runner"
+        environment = prepared(directory, dict(os.environ, JUNTO_CI_RUN_LOCK=str(root / "machine.lock"),
+                                               RUN_RECORD=str(root / "record")))
+        results = []
+        for run in ("sample-run", "second-run"):
+            if run == "second-run":
+                between(directory / "checkout")
+            results.append(subprocess.run(["sh", RUNNER, directory, run, "macos", repository, "rust-macos"],
+                                          env=environment, capture_output=True, text=True, timeout=120))
+        return directory, results
+
+    # A power loss can leave an index that Git cannot read: "git checkout" and "git clean" then
+    # fail, while "git gc --auto", the last step, succeeds.
+    def test_a_checkout_that_fails_before_the_last_step_is_created_again(self):
+        with tempfile.TemporaryDirectory(prefix="junto-ci-failed-") as temporary:
+            root = Path(temporary)
+            repository = self.two_commits(root, {})
+
+            def cut_index(checkout):
+                with open(checkout / ".git" / "index", "r+b") as index:
+                    index.truncate(20)
+
+            directory, results = self.run_both(root, repository, cut_index)
+            for result in results:
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("the checkout could not be updated; it is created again", results[1].stderr)
+            second = json.loads((root / "record").read_text().splitlines()[1])
+            self.assertEqual(second["text"], "second\n", "the job tested the files of the first commit")
+            head = subprocess.run(["git", "-C", str(directory / "checkout"), "rev-parse", "HEAD"],
+                                  capture_output=True, text=True).stdout.strip()
+            self.assertEqual(head, (directory / "runs" / "second-run" / "commit").read_text().strip())
+
+    # A file that Git reports as changed right after the checkout: the jobs would not test the
+    # files of the commit.
+    def test_a_checkout_that_differs_from_the_commit_starts_no_job(self):
+        with tempfile.TemporaryDirectory(prefix="junto-ci-differs-") as temporary:
+            root = Path(temporary)
+            repository = self.two_commits(root, {})
+            git = ["git", "-C", str(repository)]
+            # Committed with CR LF line ends, then declared as text: Git sees the file as changed.
+            (repository / "lines.txt").write_bytes(b"one\r\ntwo\r\n")
+            subprocess.run([*git, "add", "lines.txt"], check=True)
+            subprocess.run([*git, "commit", "--quiet", "-m", "Lines"], env=dict(os.environ, **IDENTITY), check=True)
+            (repository / ".gitattributes").write_text("lines.txt text\n")
+            subprocess.run([*git, "add", ".gitattributes"], check=True)
+            subprocess.run([*git, "commit", "--quiet", "-m", "Text"], env=dict(os.environ, **IDENTITY), check=True)
+            subprocess.run([*git, "update-ref", "refs/ci/second-run", "HEAD"], check=True)
+            directory, results = self.run_both(root, repository, lambda _: None)
+            self.assertEqual(results[0].returncode, 0, results[0].stdout + results[0].stderr)
+            self.assertEqual(results[1].returncode, 1, results[1].stdout + results[1].stderr)
+            self.assertIn("the checkout differs from the commit of the run", results[1].stderr)
+            self.assertIn("lines.txt", results[1].stderr)
+            self.assertFalse((directory / "runs" / "second-run" / "record.tsv").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

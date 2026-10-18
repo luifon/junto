@@ -178,29 +178,42 @@ finish() {
     rm -f "$here/current"
     echo "$status" >"$here/finished"
 }
-# prepare_checkout: the checkout at the commit of this run, in a subshell that ends at the first
-# failure.
-prepare_checkout() (
-    set -e
+# prepare_checkout: the checkout at the commit of this run. Its status is that of the first step
+# that fails: the steps are joined with &&, because a function in the condition of "if" runs
+# without set -e.
+prepare_checkout() {
     if [ -d "$checkout/.git" ]; then
-        find "$checkout/.git" -name '*.lock' -type f -exec rm -f {} +
+        find "$checkout/.git" -name '*.lock' -type f -exec rm -f {} + || return
     else
-        rm -rf "$checkout"
-        git init --quiet "$checkout"
+        { rm -rf "$checkout" && git init --quiet "$checkout"; } || return
     fi
     # The files as the commit holds them: Git for Windows sets core.autocrlf in its system
     # settings, which would give the scripts and the compared files CR LF line ends.
-    git -C "$checkout" config core.autocrlf false
-    git -C "$checkout" config core.longpaths true
-    # The commit, with its history for the upgrade test of the deployment job. The checkout
+    # The commit comes with its history, for the upgrade test of the deployment job. The checkout
     # rewrites the files that differ; clean removes every file that the commit does not hold,
     # also those that an earlier run wrote. Container commands read only this repository.
-    git -C "$checkout" fetch --quiet --no-tags "$objects" "+refs/ci/$run:refs/ci/$run"
-    git -C "$checkout" checkout --quiet --force --detach "refs/ci/$run"
-    git -C "$checkout" clean -ffdxq
-    git -C "$checkout" update-ref -d "refs/ci/$run"
-    git -C "$checkout" gc --auto --quiet
-)
+    git -C "$checkout" config core.autocrlf false \
+        && git -C "$checkout" config core.longpaths true \
+        && git -C "$checkout" fetch --quiet --no-tags "$objects" "+refs/ci/$run:refs/ci/$run" \
+        && git -C "$checkout" checkout --quiet --force --detach "refs/ci/$run" \
+        && git -C "$checkout" clean -ffdxq \
+        && git -C "$checkout" update-ref -d "refs/ci/$run" \
+        && git -C "$checkout" gc --auto --quiet
+}
+# checked_checkout: the checkout holds exactly the commit of the run: its HEAD is that commit, and
+# Git sees no changed, added, removed or ignored file.
+checked_checkout() {
+    head=$(git -C "$checkout" rev-parse HEAD 2>/dev/null) || head=""
+    changes=$(git -C "$checkout" status --porcelain --ignored 2>&1) || changes="git status failed: $changes"
+    if [ "$head" != "$(cat "$here/commit")" ]; then
+        echo "the checkout holds ${head:-no commit}, not the commit $(cat "$here/commit") of the run" >&2
+        return 1
+    fi
+    if [ -n "$changes" ]; then
+        printf 'the checkout differs from the commit of the run:\n%s\n' "$changes" | head -n 20 >&2
+        return 1
+    fi
+}
 if [ -z "${JUNTO_CI_JOB:-}" ]; then
     trap finish EXIT
     trap 'trap "" INT TERM HUP; exit 143' INT TERM HUP
@@ -213,7 +226,14 @@ if [ -z "${JUNTO_CI_JOB:-}" ]; then
     if ! prepare_checkout; then
         echo "the checkout could not be updated; it is created again" >&2
         rm -rf "$checkout"
-        prepare_checkout
+        if ! prepare_checkout; then
+            echo "the checkout could not be created" >&2
+            exit 1
+        fi
+    fi
+    # The jobs test these files, and the run records their result for this commit.
+    if ! checked_checkout; then
+        exit 1
     fi
     # Commands inside the jobs that take tools/serial.sh take a lock of this run.
     export JUNTO_HEAVY_LOCK="$here/heavy.lock"
