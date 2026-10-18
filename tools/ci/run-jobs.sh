@@ -10,6 +10,7 @@
 # ref refs/ci/<run>. On Windows <directory> is a path such as C:/junto-ci, and the script runs
 # in the Bash of Git for Windows. The run lives in <directory>/runs/<run>:
 #
+#   commit.git        a bare repository with the objects of the commit, while the run runs
 #   commit, jobs      the commit and the jobs of the run, written first
 #   current           the job that runs and its start, while it runs
 #   record.tsv        one line per finished job: commit, job, start, end (UTC), exit
@@ -25,7 +26,8 @@
 # ended, also when the run is ended by a signal. Before the checkout is written, before the
 # first job and after each job, every container, network and volume whose name starts with
 # junto-ci- or junto-ci_ is removed, except the cache volumes (Windows has no Docker); at the
-# end the clone and a bundle are removed, also after a failure. Before the first job and after
+# end the repository of the run and a bundle are removed, also after a failure. Every run of
+# the machine uses the one checkout <directory>/checkout. Before the first job and after
 # the last, tools/ci/caches.py keeps the caches within their limits; when the free space is too
 # low for the run, the run starts no job.
 set -eu
@@ -36,23 +38,31 @@ fi
 directory=$1 run=$2 runner=$3 repository=$4
 shift 4
 here=$directory/runs/$run
-checkout=$here/checkout
+# One checkout at one path for every run of the machine. Cargo keeps the output of a unit whose
+# source files are not newer than that output, and the compile-time paths of that output
+# (CARGO_MANIFEST_DIR, file!) name the checkout that built it. With a checkout per run, kept
+# output named the checkout of an earlier run, which no longer existed; with one path, Git
+# rewrites only the files that differ from the earlier commit, those are newer than every
+# earlier output, and the paths of kept output stay valid.
+checkout=$directory/checkout
+objects=$here/commit.git
 
 if [ -z "${JUNTO_CI_LOCKED:-}" ]; then
-    # Until the locked part runs, a failure or a signal ends the run here: the clone is
-    # removed and "finished" names the status.
+    # Until the locked part runs, a failure or a signal ends the run here: the repository of the
+    # run is removed and "finished" names the status. This part never changes the checkout,
+    # which another run can be using.
     locked=""
     outer_end() {
         status=$?
         # The lock program sends the signal on to the locked part and ends after it, so the
-        # clone stays until that part has ended its job and checked the caches; a run that waits
-        # for the lock ends at once. On Windows the signal ends the lock program, and its keeper
+        # repository of the run stays until that part has ended its job and checked the caches;
+        # a run that waits for the lock ends at once. On Windows the signal ends the lock program, and its keeper
         # ends every process of the run before it releases the lock (tools/windows/lock.py).
         if [ -n "$locked" ]; then
             kill -TERM "$locked" 2>/dev/null || true
             wait "$locked" 2>/dev/null || true
         fi
-        rm -rf "$checkout" "$here/lock"
+        rm -rf "$objects" "$here/lock"
         if [ -f "$repository" ]; then rm -f "$repository"; fi
         if [ ! -f "$here/finished" ]; then echo "$status" >"$here/finished"; fi
     }
@@ -60,34 +70,27 @@ if [ -z "${JUNTO_CI_LOCKED:-}" ]; then
     trap 'exit 143' INT TERM HUP
     mkdir -p "$here/logs"
     echo "$*" >"$here/jobs"
-    # The clone holds the objects of the commit under test, in the ref refs/ci/<run>. Its files
-    # are written by the locked part: Cargo decides from modification times whether a unit of
-    # the shared target directory is up to date, and files written before an earlier run builds
-    # there would be older than that run's output, which Cargo would then keep, although it was
-    # compiled from the files of another commit.
-    rm -rf "$checkout" "$here/lock"
-    git init --quiet "$checkout"
-    # The files as the commit holds them: Git for Windows sets core.autocrlf in its system
-    # settings, which would give the scripts and the compared files CR LF line ends.
-    git -C "$checkout" config core.autocrlf false
-    git -C "$checkout" config core.longpaths true
+    # The objects of the commit under test, in the ref refs/ci/<run> of a bare repository of the
+    # run. The locked part fetches them into the checkout and writes the files there.
+    rm -rf "$objects" "$here/lock"
+    git init --quiet --bare "$objects"
     if [ -f "$repository" ]; then
-        # A bundle: the fetch copies every object into the checkout.
-        git -C "$checkout" fetch --quiet "$repository" "refs/ci/$run:refs/ci/$run"
+        # A bundle: the fetch copies every object.
+        git -C "$objects" fetch --quiet "$repository" "refs/ci/$run:refs/ci/$run"
     else
-        objects=$(git -C "$repository" rev-parse --path-format=absolute --git-common-dir)/objects
-        echo "$objects" >"$checkout/.git/objects/info/alternates"
-        git -C "$checkout" fetch --quiet "$repository" "refs/ci/$run:refs/ci/$run"
-        # Container commands cannot reach the host's object directory.
-        git -C "$checkout" -c pack.threads=1 repack -a -d --quiet
-        rm "$checkout/.git/objects/info/alternates"
+        alternate=$(git -C "$repository" rev-parse --path-format=absolute --git-common-dir)/objects
+        echo "$alternate" >"$objects/objects/info/alternates"
+        git -C "$objects" fetch --quiet "$repository" "refs/ci/$run:refs/ci/$run"
+        # The run does not depend on the source repository after this point.
+        git -C "$objects" -c pack.threads=1 repack -a -d --quiet
+        rm "$objects/objects/info/alternates"
     fi
-    git -C "$checkout" rev-parse "refs/ci/$run" >"$here/commit"
+    git -C "$objects" rev-parse "refs/ci/$run" >"$here/commit"
     # The lock programs and this script of the commit under test, which take the lock and run
     # the locked part.
     for file in tools/serial.sh tools/windows/lock.py tools/ci/run-jobs.sh; do
         mkdir -p "$here/lock/$(dirname -- "$file")"
-        git -C "$checkout" show "refs/ci/$run:$file" >"$here/lock/$file"
+        git -C "$objects" show "refs/ci/$run:$file" >"$here/lock/$file"
     done
     if [ "$runner" != macos ]; then export JUNTO_HEAVY_LOCK="$directory/run.lock"; fi
     # tools/serial.sh --inherited takes the lock with Python (tools/windows/lock.py); on
@@ -104,7 +107,7 @@ if [ -z "${JUNTO_CI_LOCKED:-}" ]; then
     wait "$locked" || status=$?
     locked=""
     trap - EXIT
-    rm -rf "$checkout" "$here/lock"
+    rm -rf "$objects" "$here/lock"
     if [ -f "$repository" ]; then rm -f "$repository"; fi
     if [ ! -f "$here/finished" ]; then echo "$status" >"$here/finished"; fi
     exit "$status"
@@ -163,7 +166,22 @@ if [ -z "${JUNTO_CI_JOB:-}" ]; then
     # Containers of an earlier run that ended without its cleanup can still write into a cache
     # volume; they are removed before the files of the checkout are written.
     sweep
-    git -C "$checkout" checkout --quiet --detach "refs/ci/$run"
+    if [ ! -d "$checkout/.git" ]; then
+        rm -rf "$checkout"
+        git init --quiet "$checkout"
+    fi
+    # The files as the commit holds them: Git for Windows sets core.autocrlf in its system
+    # settings, which would give the scripts and the compared files CR LF line ends.
+    git -C "$checkout" config core.autocrlf false
+    git -C "$checkout" config core.longpaths true
+    # The commit, with its history for the upgrade test of the deployment job. The checkout
+    # rewrites the files that differ; clean removes every file that the commit does not hold,
+    # also those that an earlier run wrote. Container commands read only this repository.
+    git -C "$checkout" fetch --quiet --no-tags "$objects" "+refs/ci/$run:refs/ci/$run"
+    git -C "$checkout" checkout --quiet --force --detach "refs/ci/$run"
+    git -C "$checkout" clean -ffdxq
+    git -C "$checkout" update-ref -d "refs/ci/$run"
+    git -C "$checkout" gc --auto --quiet
     # Commands inside the jobs that take tools/serial.sh take a lock of this run.
     export JUNTO_HEAVY_LOCK="$here/heavy.lock"
 fi

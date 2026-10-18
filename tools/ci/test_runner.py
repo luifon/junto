@@ -3,6 +3,7 @@
 Windows, its files are written after the run lock is taken, and a run that is ended by a signal
 ends every process of its job before it checks the caches and releases the lock."""
 import fcntl
+import json
 import os
 from pathlib import Path
 import shutil
@@ -131,11 +132,11 @@ class Checkout(unittest.TestCase):
                 root = Path(temporary)
                 repository = checked(root, 'grep -qx "first line" "$RUN_CHECKOUT/tracked.txt"')
                 directory = root / "runner"
-                checkout = directory / "runs/sample-run/checkout"
+                checkout = directory / "checkout"
                 result = run(directory, repository, dict(os.environ, RUN_CHECKOUT=str(checkout)), runner)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assert_ran(directory)
-                self.assertFalse(checkout.exists())
+                self.assertFalse((directory / "runs/sample-run/commit.git").exists())
                 # The lock programs of the commit were read before the lock was taken.
                 self.assertIn(f"{directory}/runs/sample-run/lock/tools/windows/lock.py", result.stderr + (
                     (directory / "runs/sample-run/logs/sample-job.log").read_text()), "") if False else None
@@ -151,12 +152,12 @@ mv "$SOURCE_REPOSITORY.hidden" "$SOURCE_REPOSITORY"
 exit "$status"
 ''')
             directory = root / "runner"
-            checkout = directory / "runs/sample-run/checkout"
+            checkout = directory / "checkout"
             result = run(directory, repository,
                          dict(os.environ, SOURCE_REPOSITORY=str(repository), RUN_CHECKOUT=str(checkout)))
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assert_ran(directory)
-            self.assertFalse(checkout.exists())
+            self.assertTrue(checkout.exists(), "the checkout stays for the next run")
 
     # The Windows runner receives the commit as a bundle file, which is all the checkout
     # reads; the bundle is removed with the checkout.
@@ -170,11 +171,11 @@ exit "$status"
                             "refs/ci/sample-run"], check=True)
             subprocess.run(["rm", "-rf", str(repository)], check=True)
             directory = root / "runner"
-            checkout = directory / "runs/sample-run/checkout"
+            checkout = directory / "checkout"
             result = run(directory, bundle, dict(os.environ, RUN_CHECKOUT=str(checkout)))
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assert_ran(directory)
-            self.assertFalse(checkout.exists())
+            self.assertTrue(checkout.exists(), "the checkout stays for the next run")
             self.assertFalse(bundle.exists())
 
     # Git for Windows converts line ends to CR LF on checkout by its system settings; the
@@ -187,7 +188,7 @@ exit "$status"
             settings = root / "gitconfig"
             settings.write_text("[core]\n\tautocrlf = true\n")
             directory = root / "runner"
-            checkout = directory / "runs/sample-run/checkout"
+            checkout = directory / "checkout"
             result = run(directory, repository,
                          dict(os.environ, RUN_CHECKOUT=str(checkout), GIT_CONFIG_GLOBAL=str(settings)))
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -259,7 +260,8 @@ class Ended(unittest.TestCase):
             self.assertRegex((here / "caches.log").read_text(),
                              r"after: cache [a-z-]+: 2048 KiB, above its cap of 0 KiB")
             self.assertEqual((here / "finished").read_text(), "143\n")
-            self.assertFalse((here / "checkout").exists())
+            self.assertTrue((directory / "checkout" / "tracked.txt").exists())
+            self.assertFalse((here / "commit.git").exists())
             self.assertFalse((here / "lock").exists())
             with open(lock, "a") as file:
                 fcntl.flock(file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -270,6 +272,48 @@ class Ended(unittest.TestCase):
     # BSD lockf frees its lock when its direct child ends; the run takes the lock with lock.py.
     def test_a_macos_run_ended_by_a_signal_ends_its_job_before_the_caches_and_the_lock(self):
         self.end_a_run("macos", "rust-macos", lambda _, directory: directory / "cargo-target")
+
+
+# The job of the fixture commit for the macOS runner: it records its directory, the times and
+# text of two files, and whether a file of an earlier run is there, and then leaves a file.
+RECORDING = '''#!/usr/bin/env python3
+import json, os
+from pathlib import Path
+record = {"path": str(Path.cwd().resolve()), "tracked": os.stat("tracked.txt").st_mtime_ns,
+          "changed": os.stat("changed.txt").st_mtime_ns, "text": Path("changed.txt").read_text(),
+          "left": Path("left.txt").exists()}
+with open(os.environ["RUN_RECORD"], "a") as file:
+    file.write(json.dumps(record) + "\\n")
+Path("left.txt").write_text("written by a run")
+'''
+
+
+class FixedCheckout(unittest.TestCase):
+    # Kept Cargo output names the checkout that built it (CARGO_MANIFEST_DIR); with a checkout
+    # per run that path no longer existed in the next run (ADR 0905).
+    def test_every_run_uses_one_checkout_and_rewrites_only_the_files_that_differ(self):
+        with tempfile.TemporaryDirectory(prefix="junto-ci-fixed-") as temporary:
+            root = Path(temporary)
+            directory = root / "runner"
+            repository = repository_with(root, (TOOLS / "serial.sh").read_text(),
+                                         {"tools/ci/rust-other-systems.sh": RECORDING, "changed.txt": "first\n"})
+            git = ["git", "-C", str(repository)]
+            (repository / "changed.txt").write_text("second\n")
+            subprocess.run([*git, "commit", "--quiet", "-am", "Second"], env=dict(os.environ, **IDENTITY), check=True)
+            subprocess.run([*git, "update-ref", "refs/ci/second-run", "HEAD"], check=True)
+            environment = prepared(directory, dict(os.environ, JUNTO_HEAVY_LOCK=str(root / "machine.lock"),
+                                                   RUN_RECORD=str(root / "record")))
+            for run in ("sample-run", "second-run"):
+                result = subprocess.run(["sh", RUNNER, directory, run, "macos", repository, "rust-macos"],
+                                        env=environment, capture_output=True, text=True, timeout=120)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            first, second = [json.loads(line) for line in (root / "record").read_text().splitlines()]
+            self.assertEqual(first["path"], second["path"])
+            self.assertEqual(Path(first["path"]), (directory / "checkout").resolve())
+            self.assertEqual(first["tracked"], second["tracked"], "an unchanged file was written again")
+            self.assertGreater(second["changed"], first["changed"])
+            self.assertEqual((first["text"], second["text"]), ("first\n", "second\n"))
+            self.assertEqual((first["left"], second["left"]), (False, False), "a file of the earlier run stayed")
 
 
 if __name__ == "__main__":
