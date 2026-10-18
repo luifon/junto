@@ -94,6 +94,22 @@ services:
           api_key: ${JUNTO_LIVEKIT_API_KEY:?set JUNTO_LIVEKIT_API_KEY in deploy/.env}
           urls:
             - http://server:8080/internal/media/notifications
+        # LiveKit counts a camera layer above the lowest as stopped after half a second with
+        # fewer than 5 packets, and as live again only after 10 seconds with 5 or more in each
+        # half second. A camera that sends one packet per frame at 10 frames per second is held
+        # on its lowest layer. These layers use the setting of the lowest layer (ADR 0609).
+        video:
+          stream_tracker_manager:
+            video:
+              packet_tracker:
+                1:
+                  samples_required: 1
+                  cycles_required: 4
+                  cycle_duration: 500ms
+                2:
+                  samples_required: 1
+                  cycles_required: 4
+                  cycle_duration: 500ms
         logging:
           level: info
     ports:

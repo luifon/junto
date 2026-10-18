@@ -4,7 +4,13 @@ usage: check_rendered.py <form> <file with the output of `docker compose config 
 """
 
 import json
+import pathlib
+import re
 import sys
+
+# The setting of the camera layers of the media server, as the tests of the recording layout
+# give it to their test server (ADR 0609). Every form that runs the media server has it.
+TEST_SERVER = pathlib.Path(__file__).resolve().parents[2] / "tools" / "with-test-livekit.sh"
 
 # Every published port of each form: (service, container port, protocol, host address).
 # None means every address of the host. A form publishes exactly these, each once.
@@ -129,6 +135,12 @@ def check(form: str, project: dict) -> list[str]:
         for volume in service.get("volumes", []):
             if volume.get("source") == "/var/run/docker.sock" or volume.get("target") == "/var/run/docker.sock":
                 problem("mounts the Docker socket")
+
+    if "livekit" in services:
+        found = re.search(r'^deployment_layers="(.*?)^"$', TEST_SERVER.read_text(encoding="utf-8"), re.S | re.M)
+        configuration = services["livekit"].get("environment", {}).get("LIVEKIT_CONFIG", "")
+        if not found or found.group(1) not in configuration:
+            problems.append("livekit: the setting of the camera layers differs from the one of the test server")
 
     if "server" in services:
         server = services["server"]
