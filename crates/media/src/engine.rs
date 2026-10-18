@@ -1795,7 +1795,28 @@ mod tests {
             username: String::new(),
             password: String::new(),
         });
-        assert!(factory.create_peer_connection(config).is_err());
+        let error = factory
+            .create_peer_connection(config)
+            .err()
+            .unwrap_or_else(|| panic!("a peer with an invalid ICE URL was created"));
+        assert_eq!(error.message, "failed to initialize pc");
+    }
+
+    #[test]
+    fn the_error_of_a_native_call_keeps_its_message_after_the_call_has_ended() {
+        use livekit::webrtc::session_description::{SdpType, SessionDescription};
+
+        // The heap of Windows gives a block of several MiB its own pages and returns them to
+        // the system when the block is freed, so a message read after its free is a fault.
+        let line = "x".repeat(8 << 20);
+        let error = SessionDescription::parse(&format!("{line}\n"), SdpType::Offer)
+            .err()
+            .unwrap_or_else(|| panic!("a description without a version line was parsed"));
+        assert!(
+            error.line == line,
+            "the line of the error differs from the line given"
+        );
+        assert!(error.description.contains("v="), "{}", error.description);
     }
 
     #[test]

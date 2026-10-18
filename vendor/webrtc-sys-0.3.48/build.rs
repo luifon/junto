@@ -14,7 +14,8 @@
 //
 // Modified: this file differs from the published webrtc-sys 0.3.48. On Linux it also builds
 // the system-root TLS verifier (`src/system_certificate_verifier.rs` and
-// `src/system_certificate_verifier.cpp`).
+// `src/system_certificate_verifier.cpp`). The C++ of this crate is compiled without the
+// `_HAS_EXCEPTIONS` value of the WebRTC library.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -136,6 +137,14 @@ fn main() {
     println!("cargo:rustc-link-search=native={}", webrtc_lib.to_str().unwrap());
 
     for (key, value) in webrtc_sys_build::webrtc_defines() {
+        // Modified: the WebRTC library is built for Windows with `_HAS_EXCEPTIONS=0`. This crate
+        // and its bridge throw and catch C++ exceptions, so they keep the default of the C++
+        // library: with 0, `std::runtime_error` keeps only a pointer to its message, and
+        // `std::exception` in a catch clause names another class than the one that the C++
+        // library throws.
+        if key == "_HAS_EXCEPTIONS" {
+            continue;
+        }
         let value = value.as_deref();
         builder.define(key.as_str(), value);
     }
