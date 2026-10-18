@@ -2558,10 +2558,10 @@ async fn a_stored_avatar_that_cannot_be_sent_ends_the_waiting_and_another_fault_
     let handle = missing.add("acme").await;
     handle.dispatch(join("CODE")).await.unwrap();
     assert_eq!(handle.profile_sync(), ProfileSync::Pending { attempts: 1 });
-    let sent = server.count("/account/avatar");
     #[cfg(unix)]
     {
         // A link in place of the file is not read (ADR 0711).
+        let sent = server.count("/account/avatar");
         let file = missing.client.data_dir().root().join("avatar.png");
         let elsewhere = missing.directory.path().join("elsewhere.png");
         std::fs::write(&elsewhere, AVATAR).unwrap();
