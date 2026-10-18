@@ -12,6 +12,9 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ *
+ * Modified: this file differs from the published webrtc-sys 0.3.48. On Linux the
+ * runtime registers the system-root TLS verifier after it initializes SSL.
  */
 
 #include "livekit/webrtc.h"
@@ -30,6 +33,7 @@
 #include "rtc_base/crypto_random.h"
 #include "rtc_base/synchronization/mutex.h"
 
+// Modified: added.
 #if defined(WEBRTC_LINUX) && !defined(WEBRTC_ANDROID)
 #include "livekit/system_certificate_verifier.h"
 #endif
@@ -54,6 +58,7 @@ RtcRuntime::RtcRuntime() {
     if (g_release_counter == 0) {
       RTC_CHECK(webrtc::InitializeSSL()) << "Failed to InitializeSSL()";
 
+// Modified: added.
 #if defined(WEBRTC_LINUX) && !defined(WEBRTC_ANDROID)
       initialize_system_certificate_verifier();
 #endif

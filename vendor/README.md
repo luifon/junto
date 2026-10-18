@@ -8,6 +8,8 @@ The retained inputs are `Cargo.toml`, `build.rs`, `src/`, `include/`, `README.md
 
 The peer-connection destructor in `src/peer_connection.cpp` calls `Close` while both its native interface and observer still exist. Linux runtime initialization also registers a system-root TLS verifier from `src/system_certificate_verifier.{rs,cpp}` through the pinned binary's platform-verifier API. It uses `rustls-native-certs` to load roots and Rustls to verify chains with SSL server purpose. The build adds that bridge and its Rust dependencies only on Linux. ADR 0733 explains both corrections, their regression checks and the combined compiled-in/system trust policy. The WebRTC binary revision and every other dependency version are unchanged.
 
+Each changed source file states in its header that it differs from the published version, and each change carries a `Modified:` comment; a new file states that it is not in the published crate. `Cargo.toml` carries its `Modified:` comment above the added dependencies.
+
 Remove the destructor correction when the pinned upstream crate closes its native peer connection before releasing these members. Remove the Linux trust correction when a pinned upstream version provides system-root verification for every default TLS adapter. Run the native destruction tests, window live tier and media live tier when replacing this dependency; the Linux media live tier includes the TURN TLS trust regression.
 
 ## `webrtc-sys-build` 0.3.19
