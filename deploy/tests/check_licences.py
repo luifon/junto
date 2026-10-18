@@ -59,4 +59,8 @@ def main(image):
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         sys.exit(__doc__.strip())
-    sys.exit(main(sys.argv[1]))
+    try:
+        sys.exit(main(sys.argv[1]))
+    except AssertionError as error:
+        print(f"FAIL  {error}")
+        sys.exit(1)
