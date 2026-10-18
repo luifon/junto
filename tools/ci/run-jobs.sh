@@ -48,7 +48,7 @@ if [ -z "${JUNTO_CI_LOCKED:-}" ]; then
             kill "$locked" 2>/dev/null || true
             wait "$locked" 2>/dev/null || true
         fi
-        rm -rf "$checkout"
+        rm -rf "$checkout" "$here/lock"
         if [ -f "$repository" ]; then rm -f "$repository"; fi
         echo "$status" >"$here/finished"
     }
@@ -56,8 +56,12 @@ if [ -z "${JUNTO_CI_LOCKED:-}" ]; then
     trap 'exit 143' INT TERM HUP
     mkdir -p "$here/logs"
     echo "$*" >"$here/jobs"
-    # The clone gives this script the tools/serial.sh of the commit under test.
-    rm -rf "$checkout"
+    # The clone holds the objects of the commit under test, in the ref refs/ci/<run>. Its files
+    # are written by the locked part: Cargo decides from modification times whether a unit of
+    # the shared target directory is up to date, and files written before an earlier run builds
+    # there would be older than that run's output, which Cargo would then keep, although it was
+    # compiled from the files of another commit.
+    rm -rf "$checkout" "$here/lock"
     git init --quiet "$checkout"
     # The files as the commit holds them: Git for Windows sets core.autocrlf in its system
     # settings, which would give the scripts and the compared files CR LF line ends.
@@ -65,19 +69,24 @@ if [ -z "${JUNTO_CI_LOCKED:-}" ]; then
     git -C "$checkout" config core.longpaths true
     if [ -f "$repository" ]; then
         # A bundle: the fetch copies every object into the checkout.
-        git -C "$checkout" fetch --quiet "$repository" "refs/ci/$run"
+        git -C "$checkout" fetch --quiet "$repository" "refs/ci/$run:refs/ci/$run"
     else
         objects=$(git -C "$repository" rev-parse --path-format=absolute --git-common-dir)/objects
         echo "$objects" >"$checkout/.git/objects/info/alternates"
-        git -C "$checkout" fetch --quiet "$repository" "refs/ci/$run"
-    fi
-    git -C "$checkout" checkout --quiet --detach FETCH_HEAD
-    if [ -f "$checkout/.git/objects/info/alternates" ]; then
+        git -C "$checkout" fetch --quiet "$repository" "refs/ci/$run:refs/ci/$run"
         # Container commands cannot reach the host's object directory.
         git -C "$checkout" -c pack.threads=1 repack -a -d --quiet
         rm "$checkout/.git/objects/info/alternates"
     fi
-    git -C "$checkout" rev-parse HEAD >"$here/commit"
+    git -C "$checkout" rev-parse "refs/ci/$run" >"$here/commit"
+    # The lock program and this script of the commit under test, which take the lock and run
+    # the locked part.
+    lock_files="tools/serial.sh tools/ci/run-jobs.sh"
+    if [ "$runner" = windows ]; then lock_files="$lock_files tools/windows/lock.py"; fi
+    for file in $lock_files; do
+        mkdir -p "$here/lock/$(dirname -- "$file")"
+        git -C "$checkout" show "refs/ci/$run:$file" >"$here/lock/$file"
+    done
     if [ "$runner" != macos ]; then export JUNTO_HEAVY_LOCK="$directory/run.lock"; fi
     # tools/serial.sh takes the lock with Python on Windows (tools/windows/lock.py): the
     # Python of the setup, not a program of the same name in the PATH of the account.
@@ -85,14 +94,14 @@ if [ -z "${JUNTO_CI_LOCKED:-}" ]; then
     # The locked part writes "finished" itself; this part keeps its trap for the time the
     # run waits for the lock.
     # It runs in the background, so that a signal to this part ends it as well.
-    JUNTO_CI_LOCKED=1 "$checkout/tools/serial.sh" \
-        sh "$checkout/tools/ci/run-jobs.sh" "$directory" "$run" "$runner" "$repository" "$@" &
+    JUNTO_CI_LOCKED=1 sh "$here/lock/tools/serial.sh" \
+        sh "$here/lock/tools/ci/run-jobs.sh" "$directory" "$run" "$runner" "$repository" "$@" &
     locked=$!
     status=0
     wait "$locked" || status=$?
     locked=""
     trap - EXIT
-    rm -rf "$checkout"
+    rm -rf "$checkout" "$here/lock"
     if [ -f "$repository" ]; then rm -f "$repository"; fi
     if [ ! -f "$here/finished" ]; then echo "$status" >"$here/finished"; fi
     exit "$status"
@@ -132,6 +141,7 @@ trap 'exit 143' INT TERM HUP
 # Commands inside the jobs that take tools/serial.sh take a lock of this run.
 export JUNTO_HEAVY_LOCK="$here/heavy.lock"
 commit=$(cat "$here/commit")
+git -C "$checkout" checkout --quiet --detach "refs/ci/$run"
 cd "$checkout"
 . tools/ci/pins.sh
 
