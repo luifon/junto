@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from junto_api import Device
+from server_output import newest_owner_code, standard_output
 
 FILES = "/var/lib/junto"
 # The server deletes the directory of a removed attachment at the first maintenance pass
@@ -109,11 +110,10 @@ class Deployment:
         return [line for line in out.splitlines() if line]
 
     def owner_code(self) -> str:
-        log = self.run("logs", "--no-log-prefix", "server")
-        found = re.search(r"A restart replaces the code\.\s*\n\s*\n\s+(\S+)", log)
-        if not found:
-            raise Failed("the log of the server has no owner code")
-        return found.group(1)
+        code = newest_owner_code(standard_output(self.command, self.directory, "server"))
+        if code is None:
+            raise Failed("the standard output of the server has no owner code")
+        return code
 
     def present(self, directories: list[str]) -> list[str]:
         """The directories of the list, relative to the files of the server, that exist."""

@@ -34,6 +34,7 @@ Process:
 - A task of the server process removes expired rows once per minute (ADR 0009).
 - Log records are structured and go to standard error. Each request produces one record with the method, the path, the status and the duration. Request bodies and headers are not logged.
 - The owner code goes to standard output as plain text and is never a log record.
+- A notice with a one-time code, at the start and from `issue-owner-code`, is one write to standard output. Docker reads the standard output and the standard error of a container separately and stores each line as its own entry, and `docker compose logs` writes the entries of both into one stream. A notice in two writes, as `println!` makes of a text with several lines, could get a log record of standard error between its sentences and its code. Test: `first_start::the_binary_writes_the_notice_of_the_owner_code_in_one_write` and `the_host_command_writes_the_notice_of_the_owner_code_in_one_write` make the standard output of the binary a datagram socket, which receives each write as one datagram.
 - SIGINT and SIGTERM stop the listener. Open requests are finished before the process exits.
 - Every request has a time limit of 30 seconds. A request that reaches it gets the error `timeout` (ADR 0205) and its transaction is rolled back.
 - The binary serves the API when it is started without arguments. With the argument `assign-owner` or `issue-owner-code` it runs a host command and exits (ADR 0114).
@@ -44,6 +45,6 @@ Process:
 - The client can depend on `junto-authz` and `junto-protocol` without the server's dependencies.
 - An error in a SQL statement is found by a test that runs it, not by the compiler. The integration tests run every statement against PostgreSQL (ADR 0904).
 - A deployment that puts PostgreSQL on another network needs a TLS feature added to the build.
-- An operator reads the owner code from the standard output of the container.
+- An operator reads the owner code from the standard output of the container. A program that reads the code reads the standard output of the container alone, with `docker logs`, which writes the two streams of the container to its own two streams. The one write is not enough for such a program: Docker stores each line of a write as a separate entry, and the upgrade test of the deployment runs an earlier release, which writes the notice in two writes.
 - A test replaces the clock and moves the time forward without waiting.
 - The server process keeps the limits on attempts in memory (ADR 0111), so a deployment runs one server process. A host command can run next to it.

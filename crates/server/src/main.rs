@@ -234,11 +234,11 @@ async fn serve(config: Config) -> Result<(), Failure> {
     let prepared = junto_server::prepare(database, config, Arc::new(SystemClock)).await?;
 
     if let Some(code) = &prepared.owner_code {
-        println!(
+        print_code_notice(&format!(
             "This server has no owner. The first client that presents this one-time code \
-             becomes the server owner. A restart replaces the code.\n\n    {}\n",
+             becomes the server owner. A restart replaces the code.\n\n    {}\n\n",
             code.expose()
-        );
+        ))?;
     }
 
     let state = prepared.state;
@@ -430,20 +430,31 @@ async fn issue_owner_code(config: Config) -> Result<(), Failure> {
     let database = connect(&config, HOST_COMMAND_CONNECTIONS).await?;
     let lifetime = config.limits.owner_code_lifetime;
     let issued = owner::issue_code(&database, lifetime, SystemClock.now()).await?;
-    match issued.expires_at {
-        Some(_) => println!(
+    let notice = match issued.expires_at {
+        Some(_) => format!(
             "The client that presents this one-time code within {} minutes gets access to the \
-             account of the server owner. Every session of that account ends.\n\n    {}\n",
+             account of the server owner. Every session of that account ends.\n\n    {}\n\n",
             lifetime.whole_minutes(),
             issued.code.expose()
         ),
-        None => println!(
+        None => format!(
             "This server has no owner. The first client that presents this one-time code \
-             becomes the server owner.\n\n    {}\n",
+             becomes the server owner.\n\n    {}\n\n",
             issued.code.expose()
         ),
-    }
-    Ok(())
+    };
+    Ok(print_code_notice(&notice)?)
+}
+
+/// Writes a notice with a one-time code to standard output in one write. `println!` writes
+/// a text with several lines in parts, and the log of a container, which reads standard
+/// output and standard error separately, can place a log record between two parts.
+fn print_code_notice(notice: &str) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let mut output = std::io::stdout().lock();
+    output.write_all(notice.as_bytes())?;
+    output.flush()
 }
 
 fn init_logging(format: LogFormat, level: tracing::Level) {

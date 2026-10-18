@@ -15,7 +15,7 @@ ADR 0902 decides that a restore from a backup is tested. ADR 0021 decides a back
 Both tests:
 
 - They start the database and the server of the local form only, with new secrets, and remove the containers, the volumes and the network at the end.
-- `deploy/tests/content_driver.py` creates the content through the API as a client does, with `deploy/tests/junto_api.py`: an owner, channels, messages with one attachment each.
+- `deploy/tests/content_driver.py` creates the content through the API as a client does, with `deploy/tests/junto_api.py`: an owner with the owner code from the standard output of the server container (`deploy/tests/server_output.py`, ADR 0008), channels, messages with one attachment each.
 - A recording of these tests is a row of the state `ready` that the driver writes into the database, and a directory with two files. The removal of such a recording goes through the API. A backup copies the directory of a recording whatever wrote it; the recorder is covered by ADR 0910.
 - The scripts under test have no option for a test. Where a test needs a step between two calls of a script, it puts a program named `docker` first in the `PATH` of that script. The program runs the step before or after the one call whose arguments hold a stated text, and passes every call on to Docker.
 - A wait for a deletion by the server is 150 seconds: the 120 seconds that the deletion of an attachment directory takes at most, and 30 more.

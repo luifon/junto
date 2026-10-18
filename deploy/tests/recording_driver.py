@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from junto_api import Device, Unexpected, request
+from server_output import newest_owner_code, standard_output
 
 RECORDINGS = "/var/lib/junto/recordings"
 RECORDER_WORK = "/home/egress/tmp"
@@ -132,11 +133,10 @@ class Deployment:
         return self.run("exec", "-T", service, "/bin/sh", "-c", script, check=check, seconds=seconds)
 
     def owner_code(self) -> str:
-        log = self.run("logs", "--no-log-prefix", "server")
-        found = re.search(r"A restart replaces the code\.\s*\n\s*\n\s+(\S+)", log)
-        if not found:
-            raise Failed("the log of the server has no owner code")
-        return found.group(1)
+        code = newest_owner_code(standard_output(self.command, self.directory, "server"))
+        if code is None:
+            raise Failed("the standard output of the server has no owner code")
+        return code
 
     def sql(self, query: str) -> str:
         return self.run("exec", "-T", "postgres", "psql", "-U", "junto", "-d", "junto", "-At", "-c", query).strip()

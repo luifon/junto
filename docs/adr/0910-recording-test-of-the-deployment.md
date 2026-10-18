@@ -17,7 +17,7 @@ The local form runs every component on one machine (ADR 0015). A login needs a s
 The test:
 
 - `deploy/tests/recording.sh` starts the local form with new secrets and small memory limits, runs `deploy/tests/recording_driver.py`, and removes the containers, the volumes and the network. The sum of the memory limits is under 4 GB.
-- The driver creates the accounts through the API as a client does: the owner with the owner code of the log, three members with invites. `deploy/tests/junto_api.py` holds the device keys of the run and computes the Ed25519 signature with the Python standard library, so that the test needs no package and no build of a client.
+- The driver creates the accounts through the API as a client does: the owner with the owner code of the last start, read from the standard output of the server container alone (`deploy/tests/server_output.py`, ADR 0008), three members with invites. `deploy/tests/junto_api.py` holds the device keys of the run and computes the Ed25519 signature with the Python standard library, so that the test needs no package and no build of a client.
 - The participants are processes of `spikes/test-participant` on the machine of the test. Each enters the voice channel through the API and connects with the join token and the address of the answer. Two publish a microphone tone and a camera picture, the third a screen picture with its sound, and that person reports the screen share through the API, so that the server names the main share (ADR 0602).
 - The recording counts as running when every segment records and the composite has written its first piece. The first piece is written after the layout page has signalled its start.
 
