@@ -145,10 +145,10 @@ The first command refuses to overwrite an existing file. If the file exists, ins
 
    The first build compiles the server, FFmpeg and the worker's FFmpeg and PyAV, and takes several minutes. The entry requests the three certificates at its first start; this needs the ports 80 and 443 and the DNS names.
 
-6. Read the one-time owner code. The server prints it at each start while it has no owner:
+6. Read the one-time owner code. The server prints it to standard output at each start while it has no owner, and a restart replaces it. This command reads the standard output of the server container alone and shows the code of the last start:
 
    ```sh
-   docker compose -f one-host.yaml logs --no-log-prefix server | grep -A 3 "no owner"
+   docker logs "$(docker compose -f one-host.yaml ps -q server)" 2>/dev/null | grep -A 2 "no owner" | tail -n 3
    ```
 
    If the code is no longer available, issue a new one in the running server container:
@@ -258,7 +258,7 @@ The machine is a Linux host with Docker Engine, or a Mac with Docker Desktop. On
 4. Read the owner code, and become the owner. In the desktop client, type `http://127.0.0.1:8080` into "Add server", with `http://`: an address without a scheme is taken as `https://`, which this form does not answer. Then enter the owner code in the dialog of the server. With the command-line client, `junto-cli add http://127.0.0.1:8080` and `junto-cli claim --name "Your name"`, as in step 7 of "One host". With `JUNTO_LOCAL_PORT` set, use that port in the address.
 
    ```sh
-   docker compose -f local.yaml logs --no-log-prefix server | grep -A 3 "no owner"
+   docker logs "$(docker compose -f local.yaml ps -q server)" 2>/dev/null | grep -A 2 "no owner" | tail -n 3
    ```
 
 5. Check the health route: `curl http://127.0.0.1:8080/api/v1/health` answers 200 with `"media_server":true`.

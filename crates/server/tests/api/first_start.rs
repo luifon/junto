@@ -155,8 +155,8 @@ async fn two_devices_that_present_the_owner_code_at_once_make_one_owner() {
 }
 
 /// A server without an owner writes the notice of its owner code to standard output in one
-/// write, so that a reader of the output, such as the log of a container, gets the code
-/// with the sentences before it and cannot place a line of standard error between them.
+/// write, so that a reader of standard output gets the code with the sentences before it in
+/// one read.
 #[cfg(unix)]
 #[tokio::test]
 async fn the_binary_writes_the_notice_of_the_owner_code_in_one_write() {

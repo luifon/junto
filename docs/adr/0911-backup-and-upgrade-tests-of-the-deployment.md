@@ -61,6 +61,7 @@ Both tests:
 Continuous integration:
 
 - Both tests run in the job of the deployment (ADR 0905). The job fetches the whole history for `git archive`.
+- `deploy/tests/test_server_output.py`, in the job of the deployment, runs the owner code reading of both drivers against a fake `docker` program that writes the two streams of the server container as Docker does: `docker compose logs` with a log record between the lines of the notice, `docker logs` with the streams apart. A driver must read the code of the last start.
 - `deploy/tests/test_restore_images.py` runs the restore with real Compose rendering and
   simulated container commands. Missing server/init, PostgreSQL and recorder images, and
   a missing explicit image setting, must fail before any container command. The check

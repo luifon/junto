@@ -1565,14 +1565,13 @@ fn the_audit_log_names_what_was_done_filters_by_group_and_loads_older_entries(
 }
 
 /// What the open page "Archive and deletion" of a channel states.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct ArchivePage {
     /// The messages of the channel are permanent.
     permanent: bool,
     /// The person is the server owner.
     is_owner: bool,
-    /// The person manages the channel: no action of the page is disabled for a missing
-    /// permission.
+    /// The person holds "manage channel" in the channel.
     manages: bool,
 }
 
@@ -1653,6 +1652,81 @@ fn a_member_who_manages_channels_deletes_none_with_permanent_messages(cx: &mut T
     window.settle();
     assert!(!window.shows("channel-delete-confirm"));
     assert!(window.shows("channel-delete"));
+}
+
+/// The settings of a channel that a member opens without "manage channel" show the page
+/// "Archive and deletion", the only one. When the role arrives, the pages of the channel
+/// are offered, and the page that is shown stays (ADR 0761).
+#[gpui::test]
+fn a_role_that_arrives_keeps_the_shown_page_of_the_channel_settings(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let own = window.view().person.account_id.unwrap();
+    let default = default_workspace(&world, &admin.handle);
+    let notes = text_channel(&world, &admin.handle, default, "notes");
+
+    // The gear asks for the overview, which the member may not use.
+    open_channel_settings(&mut window, "notes", notes);
+    let unmanaged = ArchivePage {
+        permanent: false,
+        is_owner: false,
+        manages: false,
+    };
+    window.until("the page of the archive is shown", |window| {
+        archive_page_of(window, notes) == Some(unmanaged)
+    });
+
+    grant_workspace(
+        &world,
+        &admin.handle,
+        default,
+        own,
+        WorkspacePermission::ManageChannel,
+    );
+    window.until("the overview is offered", |window| {
+        window.shows("channel-nav-overview")
+    });
+    let managed = ArchivePage {
+        permanent: false,
+        is_owner: false,
+        manages: true,
+    };
+    assert_eq!(archive_page_of(&mut window, notes), Some(managed));
+}
+
+/// A page of the administration that the person may not use any more gives way to the page
+/// of the workspaces. When the permission returns, the page of the workspaces stays (ADR 0761).
+#[gpui::test]
+fn a_permission_that_returns_keeps_the_shown_page_of_the_administration(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let own = window.view().person.account_id.unwrap();
+    let api = admin.handle.api();
+    let role = CreateServerRole {
+        name: "Helpers".to_owned(),
+        permissions: vec![ServerPermission::CreateInvites],
+    };
+    let role = world.run(api.create_server_role(&role)).unwrap().id;
+    world.run(api.assign_server_role(own, role)).unwrap();
+
+    window.open_administration();
+    open_page(&mut window, "admin-nav-invites", |window| {
+        server_page!(window, Invites).is_some()
+    });
+    world.run(api.unassign_server_role(own, role)).unwrap();
+    window.until("the page of the workspaces is shown", |window| {
+        server_page!(window, Workspaces).is_some() && !window.shows("admin-nav-invites")
+    });
+
+    world.run(api.assign_server_role(own, role)).unwrap();
+    window.until("the page of the invites is offered again", |window| {
+        window.shows("admin-nav-invites")
+    });
+    assert!(server_page!(window, Workspaces).is_some());
 }
 
 /// The answers to the questions before the ban and before the removal of an account close

@@ -446,9 +446,10 @@ async fn issue_owner_code(config: Config) -> Result<(), Failure> {
     Ok(print_code_notice(&notice)?)
 }
 
-/// Writes a notice with a one-time code to standard output in one write. `println!` writes
-/// a text with several lines in parts, and the log of a container, which reads standard
-/// output and standard error separately, can place a log record between two parts.
+/// Writes a notice with a one-time code to standard output in one write, so that a reader
+/// of standard output gets it in one read. `println!` writes a text with several lines in
+/// parts. A log that holds both streams can still have a record of standard error between
+/// the lines of one write; a program reads the code from standard output alone (ADR 0008).
 fn print_code_notice(notice: &str) -> std::io::Result<()> {
     use std::io::Write;
 
