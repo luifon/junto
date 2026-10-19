@@ -10,6 +10,7 @@ pub mod call;
 mod camera;
 mod channels;
 mod composer;
+mod contacts;
 pub mod detached;
 mod direct;
 mod feed;
@@ -97,6 +98,9 @@ pub(crate) enum Layer {
     Account,
     /// The link of a device on all servers (ADR 0782).
     LinkAll,
+    /// The chooser of a new direct conversation (ADR 0307). The state of the application
+    /// holds the accounts that it lists.
+    NewDirect,
 }
 
 /// What the emoji of the picker is for.
@@ -281,6 +285,9 @@ pub struct Shell {
     pub(crate) pins_scroll: ScrollHandle,
     /// The name of the channel that a thread is forked into.
     pub(crate) fork_name: Entity<InputState>,
+    /// The part of a name that the chooser of a direct conversation searches.
+    pub(crate) contact_part: Entity<InputState>,
+    pub(crate) contacts_scroll: ScrollHandle,
     // Notices, quiet times and the search.
     pub(crate) notices_scroll: ScrollHandle,
     pub(crate) search_scroll: ScrollHandle,
@@ -372,6 +379,7 @@ impl Shell {
         let composer = composer::Composer::new(window, cx);
         let thread_composer = composer::Composer::new(window, cx);
         let fork_name = Field::state(text::FORK_NAME, window, cx);
+        let contact_part = Field::state(text::CONTACT_PART, window, cx);
         let search_field = Field::state(text::SEARCH, window, cx);
         let quiet_from = Field::state(text::QUIET_FROM, window, cx);
         let quiet_until = Field::state(text::QUIET_UNTIL, window, cx);
@@ -399,6 +407,16 @@ impl Shell {
             }),
             Self::observe_composer(Pane::Main, &composer.input, window, cx),
             Self::observe_composer(Pane::Thread, &thread_composer.input, window, cx),
+            Field::observe(
+                &contact_part,
+                window,
+                cx,
+                |this: &mut Self, event, _, cx| {
+                    if event == FieldEvent::Changed {
+                        this.contact_part_changed(cx);
+                    }
+                },
+            ),
             Field::observe(
                 &fork_name,
                 window,
@@ -610,6 +628,8 @@ impl Shell {
             thread_composer,
             pins_scroll: ScrollHandle::new(),
             fork_name,
+            contact_part,
+            contacts_scroll: ScrollHandle::new(),
             notices_scroll: ScrollHandle::new(),
             search_scroll: ScrollHandle::new(),
             transcript_list: recorded::TranscriptList::new(),
@@ -886,6 +906,9 @@ impl Shell {
             // The link code that the layer held is gone with it.
             self.reset_account_ui(window, cx);
             self.state.update(cx, |state, cx| state.close_account(cx));
+        }
+        if matches!(self.layer, Layer::NewDirect) {
+            self.state.update(cx, |state, cx| state.close_contacts(cx));
         }
         if matches!(self.layer, Layer::LinkAll) {
             // The request with its link codes is gone with the layer.
@@ -1242,6 +1265,7 @@ impl Shell {
             Layer::Admin => self.state.read(cx).admin_view().is_none(),
             // The server left the server book, or it shows no account or another one.
             Layer::Account => self.state.read(cx).account_view().is_none(),
+            Layer::NewDirect => self.state.read(cx).contacts_view().is_none(),
             Layer::None | Layer::Welcome | Layer::Settings | Layer::LinkAll => false,
         };
         if stale {
@@ -1287,6 +1311,7 @@ impl Shell {
             Layer::Admin => self.render_admin(window, cx),
             Layer::Account => self.render_account(window, cx),
             Layer::LinkAll => self.render_link_all(window, cx),
+            Layer::NewDirect => self.render_new_direct(cx),
         }
     }
 }

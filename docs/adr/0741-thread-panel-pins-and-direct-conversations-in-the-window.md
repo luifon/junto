@@ -49,6 +49,11 @@ Direct conversations:
 - A conversation whose two accounts may not write to each other any more says so in place of its messages.
 - The name of a person who is no member of the shown workspace is read from the profile route.
 - A message of a direct conversation offers no thread and no pin.
+- The section of the direct conversations is drawn for every server that shows its lists, also without a conversation, and starts with "New direct message", before the conversations, so that a conversation that arrives does not move it. It opens a dialog with a field for a part of a name and the accounts that the server lists for it (ADR 0307), also those that are in no member list that the person can open. Choosing an account opens the conversation with it, as the members panel does, and closes the dialog.
+- The dialog reads one page of 50 accounts at a time and "Show more" reads the next one, at most 500 accounts; a person who has not found an account then types more of its name. One read runs at a time: a part that the person types during a read is read after it, and the answer of a part that the person no longer wants is not shown. A read that failed is stated with "Try again".
+- The list has a fixed height, and the state of a read is drawn in a slot of fixed height above it, so an answer moves neither the field nor the buttons of the dialog (ADR 0730). A row is an element named by its account, so a press that starts on one account and ends on another after an answer chooses nobody.
+- The dialog belongs to the account that it was opened for: it closes when the server shows another account or none.
+- Test: `contacts::a_person_writes_to_an_account_that_is_in_no_member_list_of_the_person` writes from a member to an administrator of a workspace of her own, whose name the window shows, sees that another member of that workspace is not offered, and as an administrator then finds that member. The test failed before the channel column had the control.
 
 Unread signs:
 

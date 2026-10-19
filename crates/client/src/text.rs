@@ -68,6 +68,7 @@ pub const STATUS_TOO_OLD: &str = "server is too old";
 pub const STATUS_INCOMPATIBLE: &str = "not compatible";
 pub const STATUS_OTHER_SERVER: &str = "another server answers";
 pub const STATUS_LOGGED_OUT: &str = "not logged in";
+pub const STATUS_LOGGED_OUT_BY_PERSON: &str = "logged out";
 pub const STATUS_RECOVERY: &str = "recovery notice";
 
 // The channel column.
@@ -984,6 +985,13 @@ pub const STATE_STALE: &str =
 pub const LOGGED_OUT_TITLE: &str = "This device is not logged in";
 pub const LOGGED_OUT: &str =
     "The server answers, and the login with the key of this device did not succeed.";
+pub const LOGGED_OUT_BY_PERSON_TITLE: &str = "You logged out of this server";
+pub const LOGGED_OUT_BY_PERSON: &str = "Your account and the key of this device stay on this \
+     device. Junto logs in again only when you press Log in.";
+pub const LOG_IN: &str = "Log in";
+pub const LOG_OUT: &str = "Log out";
+pub const LOG_OUT_HELP: &str = "Ends the session of this device. The account and its key stay.";
+pub const LOG_OUT_UNAVAILABLE: &str = "This device has no account here that is logged in.";
 pub const LOCKED_STATE: &str = "Locked";
 pub const CONNECTING_TITLE: &str = "Connecting to the server";
 pub const CONNECTING: &str = "Junto logs in with the key of this device.";
@@ -1524,6 +1532,16 @@ pub const NO_EDIT_OR_DELETE: &str = "No edit or delete here";
 pub const PERMANENT_COMPOSER: &str = "Permanent messages: a sent message cannot be edited";
 pub const DIRECT_MESSAGES: &str = "Direct messages";
 pub const MESSAGE_PERSON: &str = "Message";
+pub const NEW_DIRECT: &str = "New direct message";
+pub const NEW_DIRECT_TITLE: &str = "New direct message";
+pub const NEW_DIRECT_ABOUT: &str = "The people you can write to on this server: the members of \
+     your workspaces and the administrators of the server. An administrator can write to \
+     every account.";
+pub const CONTACT_PART: &str = "Name";
+pub const CONTACTS: &str = "People you can write to";
+pub const NO_CONTACTS: &str = "Nobody with this name can receive your messages.";
+pub const CONTACTS_NOT_READ: &str = "The people could not be read.";
+pub const MORE_CONTACTS: &str = "Show more";
 pub const NO_CONTACT: &str =
     "You cannot write to this person: you share no workspace with them on this server.";
 pub const CONVERSATION_CLOSED: &str = "You and this person share no workspace on this server any more. The messages are kept \

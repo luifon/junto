@@ -1,6 +1,7 @@
 //! What the application does for the account layer (ADR 0781): which page is open, the
-//! one request of the person that is on its way or was refused, the devices of the
-//! account as the server listed them last, and the flow that approves a new device.
+//! one request of the person that is on its way or was refused, the devices and the
+//! recoveries of the account as the server listed them last, and the flow that approves a
+//! new device.
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -13,7 +14,7 @@ use junto_client_core::flow::approve_link::{
 use junto_client_core::flow::{FlowError, FlowView};
 use junto_client_core::live::Notice;
 use junto_client_core::profile::{self, NAME_MAX_CHARS};
-use junto_client_core::protocol::account::{Device, DeviceOrigin};
+use junto_client_core::protocol::account::{Device, DeviceOrigin, RecoveryNotice};
 use junto_client_core::protocol::events::Event;
 use junto_client_core::protocol::ids::{AccountId, DeviceId, ServerId};
 use junto_client_core::protocol::secret::LinkCode;
@@ -22,10 +23,15 @@ use time::OffsetDateTime;
 use super::AppState;
 use super::view::{ServerSnapshot, shown_model};
 use crate::text;
+use junto_client_core::flow::access::AccessState;
 
 /// The most devices of an account that the layer holds and lists. A server that lists
 /// more gets the count of the others stated.
 pub const MOST_DEVICES: usize = 200;
+
+/// The most recoveries of an account that the layer holds and lists, the newest ones. A
+/// server that lists more gets the count of the others stated.
+pub const MOST_RECOVERIES: usize = 200;
 
 /// The most characters of a typed link code that are sent. A link code has 8 symbols in
 /// two groups (ADR 0110).
@@ -36,6 +42,16 @@ pub const LONGEST_TYPED_CODE: usize = 32;
 pub enum AccountPage {
     Profile,
     Devices,
+    /// Every recovery of the account, also those that this device acknowledged
+    /// (ADR 0112, ADR 0118).
+    Recoveries,
+}
+
+impl AccountPage {
+    /// True for a page that lists what it reads from the server when it opens.
+    const fn reads_a_list(self) -> bool {
+        matches!(self, Self::Devices | Self::Recoveries)
+    }
 }
 
 /// What the account layer shows.
@@ -94,10 +110,18 @@ pub struct AccountState {
     devices_hidden: usize,
     /// Why the last read of the devices failed.
     devices_failed: Option<String>,
-    /// A read of the devices is on its way. One read runs at a time.
+    /// The recoveries as the server listed them last, the newest first, at most
+    /// [`MOST_RECOVERIES`].
+    recoveries: Option<Vec<RecoveryNotice>>,
+    /// The number of recoveries that the server listed beyond the held ones.
+    recoveries_hidden: usize,
+    /// Why the last read of the recoveries failed.
+    recoveries_failed: Option<String>,
+    /// A read of the list of the open page is on its way. One read runs at a time.
     reading: bool,
-    /// The list is to be read: the page opened, a request changed a device, or the server
-    /// told a change. Changes that arrive while a read runs make one further read.
+    /// The list of the open page is to be read: the page opened, a request changed a
+    /// device, or the server told a change. Changes that arrive while a read runs make one
+    /// further read.
     stale: bool,
     /// The flow that approves a new device. It holds the typed code while it shows the
     /// key, and is dropped with the page.
@@ -126,7 +150,7 @@ impl AccountState {
         }
         self.end_page();
         self.open = Some(open);
-        self.stale = open.page == AccountPage::Devices;
+        self.stale = open.page.reads_a_list();
     }
 
     pub(crate) fn close(&mut self) {
@@ -141,6 +165,9 @@ impl AccountState {
         self.devices = None;
         self.devices_hidden = 0;
         self.devices_failed = None;
+        self.recoveries = None;
+        self.recoveries_hidden = 0;
+        self.recoveries_failed = None;
         // A read that is on its way stays counted: the next page reads when it has ended.
         self.stale = false;
         self.link = None;
@@ -225,20 +252,25 @@ impl AccountState {
     /// The server told a change of the devices of the account of `server_id`, or changes
     /// were missed. Returns true when the open page lists the devices of that server.
     pub(crate) fn devices_changed(&mut self, server_id: ServerId) -> bool {
+        self.list_changed(server_id, AccountPage::Devices)
+    }
+
+    /// The list of `page` of the account of `server_id` is to be read again. Returns true
+    /// when the open page is that page.
+    fn list_changed(&mut self, server_id: ServerId, page: AccountPage) -> bool {
         let listed = self
             .open
-            .is_some_and(|open| open.server_id == server_id && open.page == AccountPage::Devices);
+            .is_some_and(|open| open.server_id == server_id && open.page == page);
         if listed {
             self.stale = true;
         }
         listed
     }
 
-    /// True when a read of the devices is to start now. One read runs at a time.
+    /// True when a read of the list of the open page is to start now. One read runs at a
+    /// time.
     fn takes_read(&mut self) -> bool {
-        let wanted = self
-            .open
-            .is_some_and(|open| open.page == AccountPage::Devices)
+        let wanted = self.open.is_some_and(|open| open.page.reads_a_list())
             && self.account.is_some()
             && self.stale
             && !self.reading;
@@ -264,6 +296,25 @@ impl AccountState {
                 self.devices_failed = None;
             }
             Err(reason) => self.devices_failed = Some(reason),
+        }
+    }
+
+    /// Takes the answer of a read of the recoveries, which the server gives the oldest
+    /// first. An answer for a page that is gone is dropped.
+    fn recoveries_read(&mut self, session: u64, read: Result<Vec<RecoveryNotice>, String>) {
+        self.reading = false;
+        if session != self.session {
+            return;
+        }
+        match read {
+            Ok(mut recoveries) => {
+                recoveries.reverse();
+                self.recoveries_hidden = recoveries.len().saturating_sub(MOST_RECOVERIES);
+                recoveries.truncate(MOST_RECOVERIES);
+                self.recoveries = Some(recoveries);
+                self.recoveries_failed = None;
+            }
+            Err(reason) => self.recoveries_failed = Some(reason),
         }
     }
 }
@@ -361,10 +412,39 @@ pub struct DevicesPage {
     pub link: Option<LinkView>,
 }
 
+/// One recovery of the account (ADR 0112).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryLine {
+    pub id: junto_client_core::protocol::ids::RecoveryId,
+    pub performed_at: OffsetDateTime,
+    /// The host command of the server did it, and not the server owner (ADR 0114).
+    pub by_host: bool,
+    /// The recovery added the device of the session of this window.
+    pub this_device: bool,
+    /// This device has not acknowledged the notice of the recovery yet (ADR 0118).
+    pub unseen: bool,
+}
+
+/// The recoveries as the page lists them, the newest first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecoveryList {
+    Reading,
+    /// The first read failed, for this reason.
+    Failed(String),
+    Listed {
+        rows: Vec<RecoveryLine>,
+        /// The older recoveries that the server listed beyond the shown ones.
+        hidden: usize,
+        /// Why the last read failed. The rows are those of the read before.
+        failed: Option<String>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PageView {
     Profile(ProfilePage),
     Devices(DevicesPage),
+    Recoveries(RecoveryList),
 }
 
 /// The account layer as the window draws it.
@@ -470,6 +550,35 @@ fn device_list(state: &AccountState) -> DeviceList {
     }
 }
 
+fn recovery_list(state: &AccountState, server: &ServerSnapshot) -> RecoveryList {
+    let (device, unseen) = match &server.access {
+        AccessState::LoggedIn {
+            device_id,
+            recoveries,
+            ..
+        } => (Some(*device_id), recoveries.as_slice()),
+        _ => (None, &[][..]),
+    };
+    match (&state.recoveries, &state.recoveries_failed) {
+        (None, Some(reason)) => RecoveryList::Failed(reason.clone()),
+        (None, None) => RecoveryList::Reading,
+        (Some(recoveries), failed) => RecoveryList::Listed {
+            rows: recoveries
+                .iter()
+                .map(|recovery| RecoveryLine {
+                    id: recovery.id,
+                    performed_at: recovery.performed_at,
+                    by_host: recovery.performed_by.is_none(),
+                    this_device: device.is_some() && recovery.device_id == device,
+                    unseen: unseen.iter().any(|notice| notice.id == recovery.id),
+                })
+                .collect(),
+            hidden: state.recoveries_hidden,
+            failed: failed.clone(),
+        },
+    }
+}
+
 /// The account layer, derived without a side effect. Absent while the layer is closed,
 /// when its server is gone, and when the server shows no account or another account
 /// than the one that the layer was opened for.
@@ -501,6 +610,7 @@ pub fn derive(
             list: device_list(state),
             link: link.map(link_view),
         }),
+        AccountPage::Recoveries => PageView::Recoveries(recovery_list(state, server)),
     };
     Some(AccountView {
         server_id: server.id,
@@ -583,13 +693,13 @@ impl AppState {
         if self.account.follow_account(account) || account.is_none() {
             return;
         }
-        if open.page != AccountPage::Devices {
+        if !open.page.reads_a_list() {
             return;
         }
         let Some(server) = self.client.server(open.server_id) else {
             return;
         };
-        if self.account.link.is_none() {
+        if open.page == AccountPage::Devices && self.account.link.is_none() {
             self.account.link = Some(server.approve_link());
         }
         if !self.account.takes_read() {
@@ -600,11 +710,20 @@ impl AppState {
         };
         let session = self.account.session;
         let api = server.api_for(account_id);
+        let failure = |error: ApiError| text::flow_error(&FlowError::from(&error));
+        if open.page == AccountPage::Recoveries {
+            cx.spawn(async move |this, cx| {
+                let read = api.recoveries().await.map_err(failure);
+                let _ = this.update(cx, |this, cx| {
+                    this.account.recoveries_read(session, read);
+                    this.changed(cx);
+                });
+            })
+            .detach();
+            return;
+        }
         cx.spawn(async move |this, cx| {
-            let read = api
-                .devices()
-                .await
-                .map_err(|error| text::flow_error(&FlowError::from(&error)));
+            let read = api.devices().await.map_err(failure);
             let _ = this.update(cx, |this, cx| {
                 this.account.devices_read(session, read);
                 // A change that arrived during the read starts the next one.
@@ -635,6 +754,30 @@ impl AppState {
         if changed && self.account.devices_changed(server_id) {
             self.follow_account(cx);
             cx.notify();
+        }
+        let recovered = match notice {
+            None | Some(Notice::Reloaded { .. }) => true,
+            Some(Notice::Event { event, .. }) => {
+                matches!(event.as_ref(), Event::AccountRecovered { .. })
+            }
+            Some(Notice::Ended { .. }) => false,
+        };
+        if recovered
+            && self
+                .account
+                .list_changed(server_id, AccountPage::Recoveries)
+        {
+            self.follow_account(cx);
+            cx.notify();
+        }
+    }
+
+    /// Reads the recoveries again after a read that failed.
+    pub fn reload_recoveries(&mut self, cx: &mut Context<Self>) {
+        if let Some(open) = self.account.open {
+            self.account
+                .list_changed(open.server_id, AccountPage::Recoveries);
+            self.changed(cx);
         }
     }
 
@@ -1154,7 +1297,7 @@ pub(crate) mod tests {
         state.follow_account(Some(account_id));
         let devices = |state: &AccountState| match derive(&servers, state, None).unwrap().page {
             PageView::Devices(page) => page,
-            PageView::Profile(_) => panic!("the devices page is open"),
+            PageView::Profile(_) | PageView::Recoveries(_) => panic!("the devices page is open"),
         };
         assert_eq!(devices(&state).list, DeviceList::Reading);
         assert_eq!(devices(&state).link, None);
@@ -1247,6 +1390,84 @@ pub(crate) mod tests {
             panic!("the devices are listed");
         };
         assert_eq!((rows.len(), hidden, only), (MOST_DEVICES, 30, false));
+    }
+
+    #[test]
+    fn the_recoveries_are_listed_the_newest_first_with_what_this_device_has_seen() {
+        let (server_id, account_id) = (ServerId::generate(), AccountId::generate());
+        let mut snapshot = server(server_id, account_id, "Ada");
+        let this_device = DeviceId::generate();
+        let recovery = |minutes: i64, device_id: Option<DeviceId>, by_host: bool| RecoveryNotice {
+            id: junto_client_core::protocol::ids::RecoveryId::generate(),
+            device_id,
+            performed_by: (!by_host).then(AccountId::generate),
+            performed_at: at() + time::Duration::minutes(minutes),
+        };
+        let older = recovery(1, None, true);
+        let newer = recovery(2, Some(this_device), false);
+        snapshot.access = AccessState::LoggedIn {
+            account_id,
+            device_id: this_device,
+            session_expires_at: at(),
+            recoveries: vec![newer.clone()],
+            previous_account: None,
+        };
+        let servers = [snapshot];
+        let mut state = AccountState::default();
+        state.show(open(server_id, AccountPage::Recoveries));
+        state.follow_account(Some(account_id));
+        let list = |state: &AccountState| match derive(&servers, state, None).unwrap().page {
+            PageView::Recoveries(list) => list,
+            _ => panic!("the recoveries page is open"),
+        };
+        assert_eq!(list(&state), RecoveryList::Reading);
+
+        // The page reads once; the server lists the oldest first.
+        assert!(state.takes_read());
+        assert!(!state.takes_read());
+        state.recoveries_read(state.session, Ok(vec![older.clone(), newer.clone()]));
+        let RecoveryList::Listed {
+            rows,
+            hidden,
+            failed,
+        } = list(&state)
+        else {
+            panic!("the recoveries are listed");
+        };
+        assert_eq!((hidden, failed), (0, None));
+        assert_eq!(
+            rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+            [newer.id, older.id]
+        );
+        assert!(rows[0].this_device && rows[0].unseen && !rows[0].by_host);
+        assert!(!rows[1].this_device && !rows[1].unseen && rows[1].by_host);
+
+        // A recovery that the server tells reads the list again; the devices page does
+        // not read for it.
+        assert!(state.list_changed(server_id, AccountPage::Recoveries));
+        assert!(!state.devices_changed(server_id));
+        assert!(state.takes_read());
+        state.recoveries_read(state.session, Err("unreachable".to_owned()));
+        let RecoveryList::Listed { rows, failed, .. } = list(&state) else {
+            panic!("the rows of the read before stay");
+        };
+        assert_eq!((rows.len(), failed.as_deref()), (2, Some("unreachable")));
+
+        // A server that lists very many recoveries fills the layer with the newest ones.
+        let many: Vec<RecoveryNotice> = (0..MOST_RECOVERIES as i64 + 3)
+            .map(|minute| recovery(minute, None, false))
+            .collect();
+        let newest = many.last().unwrap().id;
+        assert!(state.list_changed(server_id, AccountPage::Recoveries));
+        assert!(state.takes_read());
+        state.recoveries_read(state.session, Ok(many));
+        let RecoveryList::Listed { rows, hidden, .. } = list(&state) else {
+            panic!("the recoveries are listed");
+        };
+        assert_eq!(
+            (rows.len(), hidden, rows[0].id),
+            (MOST_RECOVERIES, 3, newest)
+        );
     }
 
     #[test]

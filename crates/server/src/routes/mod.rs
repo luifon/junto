@@ -28,6 +28,7 @@ pub mod audit_log;
 pub mod auth;
 pub mod calls;
 pub mod channels;
+pub mod contacts;
 pub mod exports;
 pub mod glossary;
 pub mod health;
@@ -210,6 +211,7 @@ fn documented_routes() -> OpenApiRouter<AppState> {
     add(&mut router, || {
         routes!(messages::open_conversation, messages::list_conversations)
     });
+    add(&mut router, || routes!(contacts::list_contacts));
     add(&mut router, || routes!(auth::create_challenge));
     add(&mut router, || routes!(auth::log_in));
     add(&mut router, || routes!(auth::log_out));

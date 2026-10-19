@@ -12,7 +12,7 @@ An account has a name and an avatar per server (ADR 0119) and one or more device
 
 One layer:
 
-- "Your account" is an item of the menu of the selected server. It opens one layer above the window, in the frame of the administration layer: a list of pages at the left and one page at the right. The pages are "Profile" and "Devices".
+- "Your account" is an item of the menu of the selected server. It opens one layer above the window, in the frame of the administration layer: a list of pages at the left and one page at the right. The pages are "Profile", "Devices" and "Recoveries".
 - The layer follows the rules of ADR 0761 for requests. Each request has the states sending and refused. A refusal is a sentence at the control that asked. Only the answer to the newest request of the open page changes what the page tells; an answer that arrives after the page changed or the layer closed is dropped.
 - A page sends one request at a time. While a request is on its way, the state of the layer starts no other request of that page, and the controls of the page that send one are disabled. Reason: the page holds the state of one request, so a second request would hide the first one and its refusal. What the page tells about a request that is on its way is not put away.
 - Every request of the layer is sent for the account that the layer was opened for (ADR 0714). When the server of the layer leaves the server book, or shows another account or none, the layer closes and keeps nothing.
@@ -38,6 +38,14 @@ Devices:
 - "Rename" shows a field in the row. A device name can be empty (ADR 0112).
 - "Remove" asks first. The question is one of two fixed sentences and holds no name; the name of the device stays on its line above the question. The question for the device of the session states that its session ends and that this installation loses its access. The removal of the only device is not offered: the button is disabled and the reason is a sentence under the list. The server refuses that removal too (ADR 0112), and its refusal is told at the row.
 - When the person removes the device of the session, the server ends the session, the server shows the state "removed", and the layer closes because its account is gone.
+
+Recoveries:
+
+- The page lists every recovery of the account (`GET /api/v1/account/recoveries`, ADR 0112), the newest first, also those that this device has acknowledged (ADR 0118). Reason: the notice of a recovery goes when the person states that it was seen, and the person can still need to know later that the account was recovered and when.
+- A row states the time in UTC and whether the server owner or the host command of the server did it. It states "It added this device" when the recovery added the device of the session, and "Not seen on this device yet" while this device has not acknowledged its notice. The page acknowledges nothing: a notice is acknowledged only by its button (ADR 0730).
+- The list is read when the page opens, again when the server tells `account_recovered`, and when the state of the server was replaced or the reader of its events fell behind. One read runs at a time, as for the devices. A read that failed is stated with "Try again" and keeps the rows of the read before.
+- The layer holds at most 200 recoveries, the newest ones, and states how many older ones it does not show.
+- Test: `recovery::the_owner_recovers_an_account_onto_a_new_device_and_the_account_lists_the_recovery` reads the page on the recovered device: one recovery by the owner that added this device and is not seen, and after "I have seen this" the same recovery as seen. The test failed before the layer had the page.
 
 Approval of a new device:
 

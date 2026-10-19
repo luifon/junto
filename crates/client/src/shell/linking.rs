@@ -178,6 +178,12 @@ pub(crate) fn link_wait_block(wait: &LinkWait, centered: bool, theme: &Theme) ->
                 .mt(u(6.0))
                 .when(centered, |help| help.text_center()),
         )
+        .child(
+            sentence(text::account::LINK_WAIT_RECOVERY, theme)
+                .mt(u(6.0))
+                .when(centered, |help| help.text_center())
+                .debug_selector(|| "link-wait-recovery".to_owned()),
+        )
 }
 
 /// A long text that the person carries to the other device: its start in a frame, and

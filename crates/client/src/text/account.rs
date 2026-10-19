@@ -15,7 +15,8 @@ use crate::state::linking::LinkRole;
 // The layer.
 pub const TITLE: &str = "Your account";
 pub const OPEN_ACCOUNT: &str = "Your account";
-pub const OPEN_ACCOUNT_HELP: &str = "Your name, your picture and your devices on this server";
+pub const OPEN_ACCOUNT_HELP: &str =
+    "Your name, your picture, your devices and the recoveries on this server";
 pub const PAGES: &str = "Pages";
 pub const ON_THIS_SERVER: &str = "On this server";
 pub const READING: &str = "Reading…";
@@ -25,6 +26,7 @@ pub const fn page_name(page: AccountPage) -> &'static str {
     match page {
         AccountPage::Profile => "Profile",
         AccountPage::Devices => "Devices",
+        AccountPage::Recoveries => "Recoveries",
     }
 }
 
@@ -32,6 +34,7 @@ pub const fn page_icon(page: AccountPage) -> Icon {
     match page {
         AccountPage::Profile => Icon::People,
         AccountPage::Devices => Icon::Key,
+        AccountPage::Recoveries => Icon::Clock,
     }
 }
 
@@ -40,6 +43,7 @@ pub const fn page_selector(page: AccountPage) -> &'static str {
     match page {
         AccountPage::Profile => "account-nav-profile",
         AccountPage::Devices => "account-nav-devices",
+        AccountPage::Recoveries => "account-nav-recoveries",
     }
 }
 
@@ -160,6 +164,29 @@ pub fn last_login(at: Option<OffsetDateTime>) -> String {
     }
 }
 
+// The recoveries.
+pub const RECOVERIES_HELP: &str = "A recovery gives a new device access to your account on this \
+     server, and with it to your direct messages. Only the server owner, or the host command of \
+     the server, can do it. Every recovery of the account is listed here, also those that this \
+     device has seen.";
+pub const NO_RECOVERIES: &str = "Your account was never recovered on this server.";
+pub const RECOVERIES_NOT_READ: &str = "The list of recoveries could not be read.";
+pub const BY_OWNER: &str = "By the server owner";
+pub const BY_HOST: &str = "With the host command of the server";
+pub const ADDED_THIS_DEVICE: &str = "It added this device.";
+pub const NOT_SEEN_HERE: &str = "Not seen on this device yet";
+
+pub fn recovery_line(at: OffsetDateTime, by_host: bool) -> String {
+    format!("{} · {}", utc(at), if by_host { BY_HOST } else { BY_OWNER })
+}
+
+pub fn more_recoveries(hidden: usize) -> String {
+    match hidden {
+        1 => "1 older recovery is not shown.".to_owned(),
+        hidden => format!("{hidden} older recoveries are not shown."),
+    }
+}
+
 pub fn more_devices(hidden: usize) -> String {
     match hidden {
         1 => "1 more device is not shown.".to_owned(),
@@ -231,6 +258,9 @@ pub const KEY_OF_THIS_DEVICE: &str = "Key of this device";
 pub const LINK_WAIT_HELP: &str = "On a device that is logged in to your account, open “Your account”, then “Devices”, \
      and type this code under “Link a new device”. That device shows a key: approve only \
      when it is the key shown here. This device logs in by itself after the approval.";
+pub const LINK_WAIT_RECOVERY: &str = "When no device of your account is at hand, give this key to \
+     the server owner. The owner can recover your account onto this device, and this device \
+     logs in by itself after that.";
 pub const LINK_CODE_NOT_SHOWN: &str =
     "The server gave a code in a form that Junto does not show. Ask for a new code.";
 pub const NEW_CODE: &str = "New code";

@@ -50,6 +50,9 @@ pub enum AccessState {
     },
     /// The device belongs to an account and has no session.
     LoggedOut { account_id: AccountId },
+    /// The person logged out of the account on this device. The client logs in again only
+    /// with `log in`, also after a restart: the book keeps the logout.
+    LoggedOutByPerson { account_id: AccountId },
     LoggedIn {
         account_id: AccountId,
         device_id: DeviceId,
@@ -74,6 +77,7 @@ pub enum ActionKind {
     RequestLink,
     LogIn,
     LogOut,
+    LogOutByPerson,
     ForgetAccount,
 }
 
@@ -95,15 +99,19 @@ pub enum AccessAction {
         device_name: String,
     },
     /// Asks for access without a code. The request carries the name only.
-    RequestAccess {
-        name: String,
-    },
+    RequestAccess { name: String },
     /// Asks for a link code that a logged-in device of the account approves.
-    RequestLink {
-        device_name: String,
-    },
+    RequestLink { device_name: String },
+    /// Logs in with the key of this device. After a logout of the person it also ends that
+    /// logout in the book.
     LogIn,
+    /// Ends the session of this program. The next start of a client logs in by itself; a
+    /// program that ends uses this.
     LogOut,
+    /// The logout that the person asks for: it ends the session, and the device stays
+    /// logged out until the person logs in again, also after a restart. The account and the
+    /// key of this device stay.
+    LogOutByPerson,
     /// Deletes the key of this device for the server. The device can then join as a new
     /// account. A banned account stays banned on the server.
     ForgetAccount,
@@ -119,6 +127,7 @@ impl AccessAction {
             Self::RequestLink { .. } => ActionKind::RequestLink,
             Self::LogIn => ActionKind::LogIn,
             Self::LogOut => ActionKind::LogOut,
+            Self::LogOutByPerson => ActionKind::LogOutByPerson,
             Self::ForgetAccount => ActionKind::ForgetAccount,
         }
     }
@@ -177,14 +186,16 @@ pub fn actions(state: &AccessState) -> &'static [ActionKind] {
             K::ClaimOwner,
             K::ForgetAccount,
         ],
-        AccessState::LoggedOut { .. } => &[K::LogIn],
-        AccessState::LoggedIn { .. } => &[K::Check, K::LogOut],
+        AccessState::LoggedOut { .. } => &[K::LogIn, K::LogOutByPerson],
+        AccessState::LoggedOutByPerson { .. } => &[K::LogIn],
+        AccessState::LoggedIn { .. } => &[K::Check, K::LogOut, K::LogOutByPerson],
         AccessState::Banned { .. } => &[K::Check, K::ForgetAccount],
     }
 }
 
-/// The state of a server before the client has contacted it, from the stored membership.
-pub fn initial(membership: &Membership) -> AccessState {
+/// The state of a server before the client has contacted it, from the stored membership
+/// and the logout of the person.
+pub fn initial(membership: &Membership, logged_out: bool) -> AccessState {
     match membership {
         Membership::None => AccessState::NoAccount { notice: None },
         Membership::Removed => AccessState::NoAccount {
@@ -196,6 +207,9 @@ pub fn initial(membership: &Membership) -> AccessState {
         } => AccessState::WaitingForApproval {
             join_request_id: *join_request_id,
             name: name.clone(),
+        },
+        Membership::Member { account_id, .. } if logged_out => AccessState::LoggedOutByPerson {
+            account_id: *account_id,
         },
         Membership::Member { account_id, .. } => AccessState::LoggedOut {
             account_id: *account_id,
@@ -366,6 +380,9 @@ mod tests {
                 previous_account: None,
             },
             AccessState::Banned { account_id: None },
+            AccessState::LoggedOutByPerson {
+                account_id: AccountId::generate(),
+            },
         ]
     }
 
@@ -399,13 +416,17 @@ mod tests {
         assert!(accepts(1, K::Check) && accepts(1, K::Join) && accepts(1, K::ForgetAccount));
         assert!(!accepts(1, K::RequestAccess));
         assert!(accepts(2, K::Check) && accepts(2, K::RequestLink));
-        assert_eq!(actions(&all[3]), [K::LogIn]);
-        assert_eq!(actions(&all[4]), [K::Check, K::LogOut]);
+        assert_eq!(actions(&all[3]), [K::LogIn, K::LogOutByPerson]);
+        assert_eq!(actions(&all[4]), [K::Check, K::LogOut, K::LogOutByPerson]);
         assert_eq!(actions(&all[5]), [K::Check, K::ForgetAccount]);
+        // After the logout of the person only the person logs in again.
+        assert_eq!(actions(&all[6]), [K::LogIn]);
         for state in &all {
             let joined = matches!(
                 state,
-                AccessState::LoggedIn { .. } | AccessState::LoggedOut { .. }
+                AccessState::LoggedIn { .. }
+                    | AccessState::LoggedOut { .. }
+                    | AccessState::LoggedOutByPerson { .. }
             );
             for kind in [K::Join, K::RequestAccess, K::RequestLink, K::ClaimOwner] {
                 assert!(!(joined && actions(state).contains(&kind)), "{state:?}");
@@ -462,8 +483,21 @@ mod tests {
             ),
         ];
         for (membership, expected) in cases {
-            assert_eq!(initial(&membership), expected);
+            assert_eq!(initial(&membership, false), expected);
         }
+        // The logout of the person belongs to a membership of an account only.
+        let member = Membership::Member {
+            account_id,
+            device_id: DeviceId::generate(),
+        };
+        assert_eq!(
+            initial(&member, true),
+            AccessState::LoggedOutByPerson { account_id }
+        );
+        assert_eq!(
+            initial(&Membership::None, true),
+            AccessState::NoAccount { notice: None }
+        );
     }
 
     #[test]
@@ -611,7 +645,7 @@ mod tests {
         ];
         for membership in cases {
             let settled = after_probe(
-                &initial(&membership),
+                &initial(&membership, false),
                 &membership,
                 Probe::UnknownDevice,
                 now(),
@@ -658,7 +692,12 @@ mod tests {
             join_request_id: Some(JoinRequestId::generate()),
             name: "Ada".to_owned(),
         };
-        let gone = after_probe(&initial(&request), &request, Probe::UnknownDevice, now());
+        let gone = after_probe(
+            &initial(&request, false),
+            &request,
+            Probe::UnknownDevice,
+            now(),
+        );
         assert_eq!(gone.state, AccessState::NoAccount { notice: None });
         assert_eq!(gone.membership, Membership::None);
     }

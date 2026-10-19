@@ -636,12 +636,14 @@ impl ServerHandle {
     pub fn connect_when_free(
         &self,
     ) -> impl Future<Output = Result<(), FlowError>> + Send + 'static + use<> {
-        let kind = if matches!(self.access().state, AccessState::LoggedOut { .. }) {
-            AccessAction::LogIn
-        } else {
-            AccessAction::Check
-        };
-        self.dispatch_when_free(kind)
+        let contacting =
+            contact_action(&self.access().state).map(|kind| self.dispatch_when_free(kind));
+        async move {
+            match contacting {
+                Some(contacting) => contacting.await,
+                None => Ok(()),
+            }
+        }
     }
 
     /// Logs out, after an action or a renewal of the session that runs now has ended.
@@ -661,14 +663,16 @@ impl ServerHandle {
     }
 
     /// Contacts the server and brings the flow to its present state. A device that
-    /// belongs to an account logs in; no action of the user is needed (ADR 0109).
+    /// belongs to an account logs in; no action of the user is needed (ADR 0109). After a
+    /// logout of the person nothing is sent: only the action `log in` ends that logout.
     pub fn connect(&self) -> impl Future<Output = Result<(), FlowError>> + Send + 'static + use<> {
-        let kind = if matches!(self.access().state, AccessState::LoggedOut { .. }) {
-            AccessAction::LogIn
-        } else {
-            AccessAction::Check
-        };
-        self.dispatch(kind)
+        let contacting = contact_action(&self.access().state).map(|kind| self.dispatch(kind));
+        async move {
+            match contacting {
+                Some(contacting) => contacting.await,
+                None => Ok(()),
+            }
+        }
     }
 
     /// Asks the server every `interval` until a join request or a device link is decided,
@@ -1045,6 +1049,16 @@ impl From<KeyFault> for FlowError {
     }
 }
 
+/// The action that contacts the server in a state: a login for a device that is logged out,
+/// none after a logout of the person, and a check otherwise.
+fn contact_action(state: &AccessState) -> Option<AccessAction> {
+    match state {
+        AccessState::LoggedOut { .. } => Some(AccessAction::LogIn),
+        AccessState::LoggedOutByPerson { .. } => None,
+        _ => Some(AccessAction::Check),
+    }
+}
+
 impl Server {
     fn new(core: Arc<Core>, entry: ServerEntry) -> Arc<Self> {
         Arc::new_cyclic(|this| Self {
@@ -1055,7 +1069,7 @@ impl Server {
             address: entry.address.clone(),
             core,
             state: Mutex::new(ServerState {
-                access: access::initial(&entry.membership),
+                access: access::initial(&entry.membership, entry.logged_out),
                 entry,
                 reach: Reach::Unknown,
                 in_progress: None,
@@ -1195,10 +1209,14 @@ impl Server {
                 self.reconcile(&api, before).await
             }
             AccessAction::LogIn => {
+                if let AccessState::LoggedOutByPerson { account_id } = *before {
+                    self.end_logout_of_person(account_id)?;
+                }
                 let api = self.contact(false).await?;
                 self.reconcile(&api, before).await
             }
             AccessAction::LogOut => self.log_out().await,
+            AccessAction::LogOutByPerson => self.log_out_by_person().await,
             AccessAction::ForgetAccount => self.forget_account(),
             AccessAction::Join {
                 code,
@@ -1636,11 +1654,14 @@ impl Server {
             if preset_waits || other_account {
                 state.preset_owner += 1;
             }
+            // An answer of the server comes only after the logout of the person has ended.
             if state.entry.membership != settled.membership
                 || state.entry.profile_sync != profile_sync
+                || state.entry.logged_out
             {
                 state.entry.membership = settled.membership;
                 state.entry.profile_sync = profile_sync;
+                state.entry.logged_out = false;
                 state.unsaved = true;
             }
         }
@@ -1670,12 +1691,16 @@ impl Server {
     /// written.
     fn save(&self) -> Result<(), FlowError> {
         let _saving = lock(&self.saving);
-        let (membership, profile_sync) = {
+        let (membership, profile_sync, logged_out) = {
             let state = lock(&self.state);
             if !state.unsaved || state.retired {
                 return Ok(());
             }
-            (state.entry.membership.clone(), state.entry.profile_sync)
+            (
+                state.entry.membership.clone(),
+                state.entry.profile_sync,
+                state.entry.logged_out,
+            )
         };
         let written = membership.clone();
         #[cfg(test)]
@@ -1688,12 +1713,64 @@ impl Server {
         self.core.book.update(self.key, |entry| {
             entry.membership = membership;
             entry.profile_sync = profile_sync;
+            entry.logged_out = logged_out;
         })?;
         let mut state = lock(&self.state);
-        if state.entry.membership == written && state.entry.profile_sync == profile_sync {
+        if state.entry.membership == written
+            && state.entry.profile_sync == profile_sync
+            && state.entry.logged_out == logged_out
+        {
             state.unsaved = false;
         }
         Ok(())
+    }
+
+    /// The logout that the person asked for. The state in memory changes first, then the
+    /// book, then the server is told. The session ends on this device also when the book
+    /// cannot be written or the server does not answer; the first failure is reported.
+    async fn log_out_by_person(&self) -> Result<(), FlowError> {
+        let (api, held, account_id) = {
+            let mut state = lock(&self.state);
+            let account_id = match state.access {
+                AccessState::LoggedIn { account_id, .. }
+                | AccessState::LoggedOut { account_id } => account_id,
+                _ => return Err(FlowError::NotAvailable),
+            };
+            state.access = AccessState::LoggedOutByPerson { account_id };
+            if !state.entry.logged_out {
+                state.entry.logged_out = true;
+                state.unsaved = true;
+            }
+            (state.api.clone(), state.session.take(), account_id)
+        };
+        tracing::debug!(server = %self.id, account = %account_id, "the person logs out");
+        self.core.notify();
+        let saved = self.save();
+        let told = match (api, held) {
+            (Some(api), Some(held)) => match api.log_out(&held.token).await {
+                Ok(()) => Ok(()),
+                Err(error) if error.category() == Some(ErrorCategory::SessionEnded) => Ok(()),
+                Err(error) => Err(self.failed(error)),
+            },
+            _ => Ok(()),
+        };
+        saved.and(told)
+    }
+
+    /// Ends the logout of the person before a login that the person asked for: from then
+    /// on the client logs in by itself again. A failed write leaves the logout as it was.
+    fn end_logout_of_person(&self, account_id: AccountId) -> Result<(), FlowError> {
+        {
+            let mut state = lock(&self.state);
+            state.access = AccessState::LoggedOut { account_id };
+            state.entry.logged_out = false;
+            state.unsaved = true;
+        }
+        self.save().inspect_err(|_| {
+            let mut state = lock(&self.state);
+            state.access = AccessState::LoggedOutByPerson { account_id };
+            state.entry.logged_out = true;
+        })
     }
 
     async fn log_out(&self) -> Result<(), FlowError> {
@@ -1723,6 +1800,7 @@ impl Server {
         self.core.book.transact(self.key, |entry| {
             entry.membership = Membership::None;
             entry.profile_sync = ProfileSync::NotNeeded;
+            entry.logged_out = false;
             keys.remove(entry.server_id).map_err(FlowError::from)
         })?;
         let mut state = lock(&self.state);
@@ -1730,6 +1808,7 @@ impl Server {
         state.session = None;
         state.entry.membership = Membership::None;
         state.entry.profile_sync = ProfileSync::NotNeeded;
+        state.entry.logged_out = false;
         state.preset_owner += 1;
         state.unsaved = false;
         Ok(())

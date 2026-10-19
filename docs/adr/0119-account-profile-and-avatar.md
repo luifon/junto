@@ -19,7 +19,8 @@ Profile:
 
 Who may see a profile:
 
-- An account may see its own profile, the profile of an account that is a member of a workspace that it is a member of, and every profile when it holds `ban_members`, which also lists the accounts.
+- An account may see its own profile, the profile of an account that is a member of a workspace that it is a member of, the profile of an active account that is the server owner or holds the administrator permission, and every profile when it holds `ban_members`, which also lists the accounts.
+- Reason for the administrators: every active account may write to them (ADR 0307), and a person who writes to an account needs its name and its picture. An account may therefore see the profile of every account that it may contact: one that administers the server sees every profile through `ban_members`, which the administrator permission includes (ADR 0301).
 - The permission function decides this, as every other check (ADR 0301).
 - A profile that the caller may not see is answered as an account that does not exist (ADR 0205).
 - The avatar route needs a session. There is no public address of an avatar.
@@ -43,7 +44,7 @@ Storage:
 Events:
 
 - A change of the name or of the avatar records `account_profile_updated` with the whole profile.
-- The event goes to the accounts that may see the profile. The decision is made when the event is delivered (ADR 0011).
+- The event goes to the accounts that may see the profile. The decision is made when the event is delivered (ADR 0011), with how the recipient stands to the account at that moment: a common workspace, the account administers the server, or neither. The routes and the delivery give the same fact to the same request of the permission function.
 - A request that changes nothing records no event. The same holds for the name of a device: `PATCH /api/v1/account/devices/{device_id}` with the name that the device has records no `device_renamed`.
 
 Limit:
@@ -61,7 +62,8 @@ Member and participant descriptions:
 - A backup of the database contains the avatars.
 - The avatars add at most 256 KiB per account to the database.
 - A client must treat an avatar as a file of an unknown sender: the server checked the header, not the image data.
-- A person who leaves every common workspace of another person no longer sees that person's profile and receives no further event about it.
+- A person who leaves every common workspace of another person no longer sees that person's profile and receives no further event about it, unless that person administers the server.
+- The profile of an administrator goes to every account of the server, and a change of it is an event for every connected account. When an account loses the administrator permission, or is banned or removed, the accounts without a common workspace no longer see its profile. Test: `contacts::the_profile_of_an_administrator_is_seen_by_the_accounts_that_may_write_to_it` in `crates/server`.
 - The name of a removed account stays readable for accounts with `ban_members` only, until messages refer to it.
 - An avatar larger than the largest request body (ADR 0013) gets `invalid_request`, not `image_too_large`.
 

@@ -90,6 +90,7 @@ impl Join {
                             | ServerStatus::Connecting
                             | ServerStatus::Reconnecting
                             | ServerStatus::LoggedOut
+                            | ServerStatus::LoggedOutByPerson
                     ),
                 }
             }
@@ -412,7 +413,8 @@ impl Shell {
                     | ServerStatus::Standby
                     | ServerStatus::Connecting
                     | ServerStatus::Reconnecting
-                    | ServerStatus::LoggedOut => return div().into_any_element(),
+                    | ServerStatus::LoggedOut
+                    | ServerStatus::LoggedOutByPerson => return div().into_any_element(),
                 };
                 (
                     Card {

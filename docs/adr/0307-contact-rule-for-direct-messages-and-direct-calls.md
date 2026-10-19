@@ -29,6 +29,13 @@ Where it is decided:
   - the direct-message calls and the invitations in the snapshot (ADR 0207).
 - The text unit uses the same function for direct messages.
 
+Who can be chosen:
+
+- `GET /api/v1/direct-messages/contacts` lists the active accounts other than the caller that the caller may contact now, in the order of their names in lower case and then of their identifiers. For an account that administers the server these are all active accounts; for every other account those that share a workspace with it and those that administer the server. The statement reads only these candidates, and every listed account is decided by the permission function as a direct message is.
+- `q` is a part of the name, at most 64 characters without control characters, compared without regard to case; absent or empty, it matches every name. `limit` is 1 to 100, 50 when absent. `next_after` is an opaque cursor that holds the name in lower case and the identifier of the last account, so a rename of that account does not move the next page; `after` takes it. A page that ends the list has no `next_after`.
+- Reason: an account can be reached by the rule without being in any member list that the person can open: an administrator in no common workspace, or, for an administrator, an account of a workspace that the administrator is not a member of. A member cannot list the accounts of the server (ADR 0119), so without this list the person has no way to choose such an account. The list holds no account that the rule does not allow, so it shows a member nothing beyond the administrators and the accounts of its workspaces.
+- The route needs a session of the account (`own_account`), as the direct messages do.
+
 What it does not decide:
 
 - A direct message that exists stays closed to everyone except its two participants (ADR 0302). This record decides only whether the two may exchange something now.
@@ -41,3 +48,5 @@ What it does not decide:
 - When the last common workspace of two accounts ends, or the administrator permission of one of them is removed, their direct-message call ends at the next admission check, and neither account receives a further event that names the other. Each gets `call_access_ended` (ADR 0510).
 - A delivery of an event of a direct-message call reads the state, the memberships and the server roles of the other account in the transaction of its batch.
 - ADR 0408 makes earlier direct-message history unavailable while this rule fails, and available again when it holds.
+- Every account of the server can learn the names of the administrators from the list of contacts. ADR 0119 lets it see their profiles for the same reason.
+- Test: `contacts::a_member_reaches_the_accounts_of_its_workspaces_and_the_administrators_only` and `contacts::the_contacts_are_found_by_a_part_of_the_name_in_pages_of_names` in `crates/server`: a member in a workspace of its own reaches the administrators only, a banned account and an account that lost the administrator permission leave the lists, each listed account takes a conversation, and the pages follow the names.

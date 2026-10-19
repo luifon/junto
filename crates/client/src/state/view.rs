@@ -499,6 +499,8 @@ pub enum ServerStatus {
     Reconnecting,
     /// The device belongs to an account, the server answers, and the login did not succeed.
     LoggedOut,
+    /// The person logged out of the account on this device (ADR 0712).
+    LoggedOutByPerson,
     WaitingForApproval {
         name: String,
     },
@@ -556,6 +558,13 @@ pub fn status(server: &ServerSnapshot) -> ServerStatus {
                 ServerStatus::Unreachable
             } else {
                 ServerStatus::LoggedOut
+            }
+        }
+        AccessState::LoggedOutByPerson { .. } => {
+            if server.in_progress.is_some() {
+                ServerStatus::Connecting
+            } else {
+                ServerStatus::LoggedOutByPerson
             }
         }
         AccessState::WaitingForApproval { name, .. } => {
@@ -1206,6 +1215,8 @@ pub struct SelectedServer {
     pub keep_connected: bool,
     /// An action of the access flow runs.
     pub busy: bool,
+    /// The person can log out of the account of the server on this device (ADR 0712).
+    pub can_log_out: bool,
     /// Why the last action of the access flow failed.
     pub error: Option<FlowError>,
     /// The recoveries that this device has not acknowledged, oldest first.
@@ -3068,6 +3079,8 @@ pub fn derive(servers: &[ServerSnapshot], selection: &Selection, known: &Known) 
             status,
             keep_connected: server.keep_connected,
             busy: server.in_progress.is_some(),
+            can_log_out: junto_client_core::flow::access::actions(&server.access)
+                .contains(&junto_client_core::flow::access::ActionKind::LogOutByPerson),
             error: server.error.clone(),
             recoveries: match &server.access {
                 AccessState::LoggedIn { recoveries, .. } => recoveries.clone(),

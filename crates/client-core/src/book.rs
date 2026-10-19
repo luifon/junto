@@ -11,20 +11,21 @@ use crate::address::ServerAddress;
 use crate::paths::{BOOK_FILE, DataDir};
 use crate::storage::{StorageError, Versioned};
 
-pub const BOOK_FORMAT_VERSION: u32 = 3;
+pub const BOOK_FORMAT_VERSION: u32 = 4;
 
 const BOOK: Versioned = Versioned {
     name: BOOK_FILE,
     kind: "server book",
     version: BOOK_FORMAT_VERSION,
-    migrations: &[unchanged, unchanged],
+    migrations: &[unchanged, unchanged, unchanged],
     limit: 4 * 1024 * 1024,
 };
 
-/// Version 2 added the state `refused` of the profile preset, and version 3 the moderation
-/// notices that the person put away. Every book of an earlier version is a book of the next
-/// one, with no notice put away; the version tells an older client that it cannot read the
-/// file, so that it does not drop the field when it writes the book.
+/// Version 2 added the state `refused` of the profile preset, version 3 the moderation
+/// notices that the person put away, and version 4 the logout of the person. Every book of
+/// an earlier version is a book of the next one, with no notice put away and no logout; the
+/// version tells an older client that it cannot read the file, so that it does not drop the
+/// field when it writes the book.
 fn unchanged(value: serde_json::Value) -> Result<serde_json::Value, String> {
     Ok(value)
 }
@@ -161,6 +162,10 @@ pub struct ServerEntry {
     /// device, the oldest first (ADR 0120). The server keeps a notice for 30 days.
     #[serde(default)]
     pub moderation_notices_shown: Vec<uuid::Uuid>,
+    /// The person logged out of the account of the membership on this device. The client
+    /// logs in again only when the person asks for it, also after a restart (ADR 0712).
+    #[serde(default)]
+    pub logged_out: bool,
 }
 
 impl ServerEntry {
@@ -185,6 +190,7 @@ impl ServerEntry {
             last_cursor: None,
             profile_sync: ProfileSync::NotNeeded,
             moderation_notices_shown: Vec::new(),
+            logged_out: false,
         };
         entry.refresh(info);
         entry
@@ -555,7 +561,7 @@ mod tests {
 
         let stored: serde_json::Value =
             serde_json::from_slice(&fs::read(data_dir.book_file()).unwrap()).unwrap();
-        assert_eq!(stored["format_version"], 3);
+        assert_eq!(stored["format_version"], BOOK_FORMAT_VERSION);
         assert_eq!(stored["servers"][0]["address"], "https://acme.example.test");
         assert_eq!(stored["servers"][0]["connection_mode"], "when_selected");
         assert_eq!(stored["servers"][0]["membership"]["state"], "member");
@@ -672,7 +678,7 @@ mod tests {
         .unwrap();
         let stored: serde_json::Value =
             serde_json::from_slice(&fs::read(data_dir.book_file()).unwrap()).unwrap();
-        assert_eq!(stored["format_version"], 3);
+        assert_eq!(stored["format_version"], BOOK_FORMAT_VERSION);
         assert_eq!(stored["servers"][0]["profile_sync"]["state"], "refused");
         assert_eq!(stored["servers"][1]["address"], "http://127.0.0.1:8080");
         assert_eq!(book.entries().unwrap().len(), 2);
@@ -696,7 +702,7 @@ mod tests {
         .unwrap();
         let stored: serde_json::Value =
             serde_json::from_slice(&fs::read(data_dir.book_file()).unwrap()).unwrap();
-        assert_eq!(stored["format_version"], 3);
+        assert_eq!(stored["format_version"], BOOK_FORMAT_VERSION);
         assert_eq!(
             stored["servers"][0]["moderation_notices_shown"][0],
             notice.to_string()
@@ -711,6 +717,29 @@ mod tests {
             .map(|_| uuid::Uuid::now_v7())
             .collect();
         assert!(over.check().is_err());
+    }
+
+    #[test]
+    fn a_logout_of_the_person_is_kept_and_a_book_of_version_3_has_none() {
+        let (_directory, data_dir, book) = book();
+        let written = br#"{"format_version":3,"servers":[
+            {"server_id":"0198f1c2-7d3a-7b1e-9c55-000000000001","generation":7,
+             "address":"https://acme.example.test","name":"Acme","logo_path":null,
+             "api_versions":[1],"connection_mode":"always",
+             "membership":{"state":"member",
+                           "account_id":"0198f1c2-7d3a-7b1e-9c55-0000000000aa",
+                           "device_id":"0198f1c2-7d3a-7b1e-9c55-0000000000bb"},
+             "last_cursor":null,"moderation_notices_shown":[]}]}"#;
+        fs::write(data_dir.book_file(), written).unwrap();
+        let entries = book.entries().unwrap();
+        assert!(!entries[0].logged_out);
+        book.update(entries[0].key(), |entry| entry.logged_out = true)
+            .unwrap();
+        let stored: serde_json::Value =
+            serde_json::from_slice(&fs::read(data_dir.book_file()).unwrap()).unwrap();
+        assert_eq!(stored["format_version"], 4);
+        assert_eq!(stored["servers"][0]["logged_out"], true);
+        assert!(book.entries().unwrap()[0].logged_out);
     }
 
     #[test]
@@ -1019,33 +1048,33 @@ mod tests {
         };
         let cases = [
             format!(
-                r#"{{"format_version":3,"servers":[{},{}]}}"#,
+                r#"{{"format_version":4,"servers":[{},{}]}}"#,
                 server("https://a.example.test", ""),
                 server("https://b.example.test", "")
             ),
             format!(
-                r#"{{"format_version":3,"servers":[{}]}}"#,
+                r#"{{"format_version":4,"servers":[{}]}}"#,
                 server("http://a.example.test", "")
             ),
             format!(
-                r#"{{"format_version":3,"servers":[{}]}}"#,
+                r#"{{"format_version":4,"servers":[{}]}}"#,
                 server("https://a.example.test/../../etc", "")
             ),
             format!(
-                r#"{{"format_version":3,"servers":[{}]}}"#,
+                r#"{{"format_version":4,"servers":[{}]}}"#,
                 server("https://a.example.test", "").replace("\"Acme\"", "\"\"")
             ),
             format!(
-                r#"{{"format_version":3,"servers":[{}]}}"#,
+                r#"{{"format_version":4,"servers":[{}]}}"#,
                 server("https://a.example.test", "")
                     .replace("\"logo_path\":null", "\"logo_path\":\"//b.example.test/x\"")
             ),
             format!(
-                r#"{{"format_version":3,"servers":[{}]}}"#,
+                r#"{{"format_version":4,"servers":[{}]}}"#,
                 server("https://a.example.test", "").replace("\"always\"", "\"sometimes\"")
             ),
             format!(
-                r#"{{"format_version":3,"servers":[{}]}}"#,
+                r#"{{"format_version":4,"servers":[{}]}}"#,
                 server("https://a.example.test", "")
                     .replace("\"generation\":7", "\"generation\":0")
             ),
@@ -1061,7 +1090,7 @@ mod tests {
         fs::write(
             data_dir.book_file(),
             format!(
-                r#"{{"format_version":3,"servers":[{}]}}"#,
+                r#"{{"format_version":4,"servers":[{}]}}"#,
                 server("https://a.example.test", "")
             ),
         )

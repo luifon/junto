@@ -17,7 +17,7 @@ Contract of every flow:
 - An action runs to its end and leaves the flow in a state: the next state after a success, the state before after a failure, with the reason. The next action clears the reason.
 - While an action runs, the flow accepts no other action and reports none. A second action gets the error `busy` and changes nothing. An action that the state does not accept gets `not available` and changes nothing.
 - No flow waits for the interface. Waiting for a person is a state, not a running action.
-- A server object offers a second way to run an action of the access flow: it waits for the action or the renewal of the session that runs now and then runs the action. An interface uses it for what a person asked for; `end_session` is that way for a logout.
+- A server object offers a second way to run an action of the access flow: it waits for the action or the renewal of the session that runs now and then runs the action. An interface uses it for what a person asked for; `end_session` is that way for the logout of a program that ends.
 - An action runs as a task of the client (ADR 0715). It runs to its end when the interface drops its future. If the task itself stops, the flow returns to its state with the reason `stopped` and accepts actions again.
 - Text that the user typed is checked before any request: a name has 1 to 64 characters and no control character, as on the server.
 - The reason of a failure holds no secret. It names the error code of the server, or the cause of a failed connection, and holds no text of the server, with one exception.
@@ -35,10 +35,10 @@ Flow "add a server":
 
 Access flow of one saved server:
 
-- States: `no account` (with a notice: removed, request denied, request expired, link expired, key missing), `waiting for approval` (with the request identifier once the server has answered), `waiting for link` (with the link code, the public key of this device and the expiry), `logged out`, `logged in` (with the recoveries that this device has not acknowledged), `banned`.
-- Actions: `check`, `join` with an invite code, `claim owner` with an owner code, `request access`, `request link`, `log in`, `log out`, `forget account`.
-- `no account` accepts `check`, `join`, `request access`, `request link` and `claim owner`. The two waiting states accept `check`, `join`, `claim owner` and `forget account`; `waiting for link` also accepts a new `request link` and `request access`. `logged out` accepts `log in`. `logged in` accepts `check` and `log out`. `banned` accepts `check` and `forget account`.
-- Before any contact the state comes from the membership in the server book (ADR 0710): a member starts as `logged out`.
+- States: `no account` (with a notice: removed, request denied, request expired, link expired, key missing), `waiting for approval` (with the request identifier once the server has answered), `waiting for link` (with the link code, the public key of this device and the expiry), `logged out`, `logged out by the person`, `logged in` (with the recoveries that this device has not acknowledged), `banned`.
+- Actions: `check`, `join` with an invite code, `claim owner` with an owner code, `request access`, `request link`, `log in`, `log out`, `log out by the person`, `forget account`.
+- `no account` accepts `check`, `join`, `request access`, `request link` and `claim owner`. The two waiting states accept `check`, `join`, `claim owner` and `forget account`; `waiting for link` also accepts a new `request link` and `request access`. `logged out` accepts `log in` and `log out by the person`. `logged out by the person` accepts `log in`. `logged in` accepts `check`, `log out` and `log out by the person`. `banned` accepts `check` and `forget account`.
+- Before any contact the state comes from the membership in the server book (ADR 0710): a member starts as `logged out`, or as `logged out by the person` when the book holds the logout of the person.
 
 What the server says decides the state:
 
@@ -56,6 +56,17 @@ What the server says decides the state:
 - A request belongs to the account that the device had when the request started. When the renewed session belongs to another account, the flow moves to `logged in` for that account with the account before, and the request fails with the error "account changed" and is not sent again. What a user confirmed for one account is never done for another.
 - The client does not hold a device to the account identifier that it stored. A login for another account than the stored one is accepted and shown with the account before. A removed device can be linked or recovered into another account (ADR 0112), and the server already decides which account a key belongs to.
 - The state in memory changes first and the membership in the book second. When the book cannot be written, the action reports that and the entry stays marked as unsaved; every later action of the server writes it again until a write succeeds (ADR 0710).
+
+Logout:
+
+- `log out` ends the session of the program that runs. A program that ends uses it (`end_session`), and the next start of a client logs in by itself.
+- `log out by the person` is the logout that a person asks for. The state in memory becomes `logged out by the person`, the book stores the logout with the membership, and then the server is told (`DELETE /api/v1/auth/session`). The session ends on this device also when the book cannot be written or the server does not answer: the token is dropped from memory, and the action reports the first failure. A session that the server was not told of ends at its expiry (ADR 0109).
+- The account, the membership and the key of this device stay. Reason: a person who logs out keeps the way back to the account without a link or a recovery, and a person who wants to give up the account uses `forget account` or removes the server.
+- In `logged out by the person` the client logs in only with `log in`. `connect`, `connect_when_free` and the start of a client send no request for that server, and an interface does not log in by itself (ADR 0730). Reason: a client logs in at each start without an action of the person (ADR 0109), so a logout that lasted only until the next start or the next retry would not be a logout.
+- `log in` from that state first ends the logout in memory and in the book, then logs in. A failed write of the book leaves the logout as it was. After that the state is `logged out` when the login fails, and the client tries again by itself as for every member.
+- Every answer of the server that settles the state also ends the logout in the book, because such an answer comes only after `log in`.
+- `junto-cli logout` is the logout of the person, and `junto-cli login` ends it. Every other command of an account refuses while the person is logged out, and says that `login` logs in. A command ends its own session with `log out` when it ends, which keeps no logout.
+- Each program reads the logout from the book when it starts. A program that runs while another one logs out or logs in on the same data directory keeps its own state until its next start.
 
 Ban and removal:
 
@@ -87,3 +98,4 @@ Waiting:
 - A device that was removed does not learn whether its account or only the device was removed. Both show "removed".
 - A login of a banned or removed account is tried once per ended session, not in a loop.
 - `forget account` cannot be undone on the device. An unban after it restores the account, and this device reaches it only through a link or a recovery.
+- After the logout of the person no request of that server is sent until `log in`: the window shows no lists of that server and gets no event or notice of it.

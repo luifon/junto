@@ -21,7 +21,7 @@ Messages and history:
   delivery for a direct conversation require participation and the current contact rule.
   Earlier history is unavailable while that rule fails; it becomes available again when
   the rule holds. Administrator permission never opens somebody else's conversation.
-- Opening a conversation records `conversation_opened` for its two participants.
+- Opening a conversation records `conversation_opened` for its two participants. The accounts that a conversation can be opened with are listed by `GET /api/v1/direct-messages/contacts` (ADR 0307).
 - Message identifiers are UUID v7. Each channel or conversation has a separate rising
   integer public position. A public writer increments its place's row in the transaction
   that inserts the message. A private system line shares the latest public position and

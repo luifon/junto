@@ -5,7 +5,7 @@ use time::OffsetDateTime;
 
 use super::{date, date_time, days};
 use crate::state::admin::view::people::{
-    Blocked, GrantFault, InviteState, NoRemoval, ReasonFault, RoleNames,
+    Blocked, GrantFault, InviteState, NoRecovery, NoRemoval, ReasonFault, RecoveryFault, RoleNames,
 };
 
 // The accounts of the server.
@@ -22,6 +22,49 @@ pub const YOU: &str = "You";
 pub const REMOVE: &str = "Remove";
 pub const BAN: &str = "Ban";
 pub const UNBAN: &str = "Unban";
+pub const RECOVER: &str = "Recover";
+pub const RECOVER_KEY: &str = "Key of the new device";
+pub const RECOVER_KEY_PLACEHOLDER: &str = "The key that the new device shows";
+pub const RECOVER_DEVICE: &str = "Name of the new device";
+pub const RECOVER_DEVICE_PLACEHOLDER: &str = "Name of the device (optional)";
+pub const RECOVER_KEY_INVALID: &str =
+    "This is not the key of a device. Type or paste the key that the new device shows.";
+pub const RECOVER_DEVICE_INVALID: &str =
+    "A device name has at most 64 characters and no line break.";
+pub const RECOVER_HELP: &str = "The new device gets access to this account and to its direct \
+     messages. Every session of the account ends, and every device of the account is told of \
+     the recovery. The audit log records it.";
+pub const RECOVER_OWN: &str = "Your own account gets a new device by a link on the page \
+     “Devices” of your account.";
+pub const RECOVER_NOT_ACTIVE: &str = "Only an active account is recovered.";
+pub const RECOVERY_HELP: &str = "The server owner recovers an account whose person has lost \
+     every device: the person adds the server on a new device, chooses to link the device, \
+     and gives the owner the key that it shows.";
+
+pub const fn recovery_fault(fault: RecoveryFault) -> &'static str {
+    match fault {
+        RecoveryFault::Key => RECOVER_KEY_INVALID,
+        RecoveryFault::DeviceName => RECOVER_DEVICE_INVALID,
+    }
+}
+
+pub const fn no_recovery(reason: NoRecovery) -> &'static str {
+    match reason {
+        NoRecovery::OwnAccount => RECOVER_OWN,
+        NoRecovery::NotActive => RECOVER_NOT_ACTIVE,
+    }
+}
+
+pub fn recover_question(name: &str) -> String {
+    format!("Recover the account “{name}” onto a new device?")
+}
+
+pub fn recovered(at: OffsetDateTime) -> String {
+    format!(
+        "The account was recovered on {}. The new device logs in with its key.",
+        crate::text::account::utc(at)
+    )
+}
 pub const REMOVAL_HELP: &str = "A removed account loses its devices, its sessions, its memberships and its roles. The \
      person can join again with an invite code and gets a new account.";
 pub const BAN_HELP: &str = "The keys of a banned account cannot log in or join again. An unban restores the \

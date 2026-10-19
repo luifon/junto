@@ -17,6 +17,7 @@ mod calls_rooms;
 mod calls_state;
 mod calls_support;
 mod concurrency;
+mod contacts;
 mod deletions;
 mod devices;
 mod downloads;
