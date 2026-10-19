@@ -63,7 +63,7 @@ impl Shell {
             if let (None, None, Some(transcript), Some(server_id)) =
                 (&shown.thread, &shown.pins, &shown.transcript, server_id)
             {
-                return Some(this.render_transcript_panel(server_id, transcript, cx));
+                return Some(this.render_transcript_panel(server_id, transcript, window, cx));
             }
             match (&shown.thread, &shown.pins, &shown.notices, &shown.search) {
                 (Some(thread), ..) => Some(this.render_thread_panel(thread, window, cx)),
@@ -518,19 +518,37 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let colors = theme.colors;
+        // "Record" opens the languages of the speech; a choice starts the recording
+        // (ADR 0616).
+        let offers_record = control.may_record
+            && matches!(
+                control.state,
+                RecordingShown::None | RecordingShown::Failed(_)
+            );
+        if matches!(self.layer, Layer::RecordLanguage) && (!offers_record || control.busy) {
+            self.layer = Layer::None;
+        }
+        let languages = (matches!(self.layer, Layer::RecordLanguage) && offers_record)
+            .then(|| self.render_record_languages(cx));
         let record = |title: &'static str, cx: &mut Context<Self>| {
-            Button::new("start-recording")
-                .icon(Icon::Record)
-                .icon_colour(colors.cinnabar)
-                .label(text::RECORD)
-                .tooltip(title)
-                .accessible_label(title)
-                .disabled(control.busy)
-                .selector("start-recording")
-                .on_click(self.call_listener(cx, |this, _, _, cx| {
-                    this.recording_details_open = false;
-                    this.state.update(cx, |state, cx| state.start_recording(cx));
-                }))
+            div()
+                .relative()
+                .flex()
+                .flex_none()
+                .child(
+                    Button::new("start-recording")
+                        .icon(Icon::Record)
+                        .icon_colour(colors.cinnabar)
+                        .label(text::RECORD)
+                        .tooltip(title)
+                        .accessible_label(title)
+                        .disabled(control.busy)
+                        .selector("start-recording")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_record_languages(window, cx);
+                        })),
+                )
+                .children(languages)
                 .into_any_element()
         };
         let why = |sentence: &'static str| {
@@ -564,16 +582,37 @@ impl Shell {
         match &control.state {
             RecordingShown::None if control.may_record => vec![record(text::START_RECORDING, cx)],
             RecordingShown::None => forbidden(),
-            RecordingShown::Starting => vec![recording_mark(
-                format!("{} {}", text::RECORDING_MARK, text::RECORDING_STARTS).into(),
-                theme,
-            )],
+            // The mark keeps one width while the recording starts and runs, so the button
+            // after it stays in place when "Cancel" becomes "Stop" (ADR 0730).
+            RecordingShown::Starting => {
+                let mut shown = vec![recording_mark_reserved(
+                    format!("{} {}", text::RECORDING_MARK, text::RECORDING_STARTS).into(),
+                    theme,
+                )];
+                if control.may_record {
+                    shown.push(
+                        Button::new("cancel-recording")
+                            .icon(Icon::Stop)
+                            .icon_colour(colors.cinnabar)
+                            .label(text::transcripts::CANCEL_RECORDING)
+                            .tooltip(text::transcripts::CANCEL_RECORDING_HELP)
+                            .accessible_label(text::transcripts::CANCEL_RECORDING_HELP)
+                            .disabled(control.busy)
+                            .selector("cancel-recording")
+                            .on_click(self.call_listener(cx, |this, _, _, cx| {
+                                this.state.update(cx, |state, cx| state.stop_recording(cx));
+                            }))
+                            .into_any_element(),
+                    );
+                }
+                shown
+            }
             RecordingShown::Running { elapsed, stopping } => {
                 let mark: SharedString = match elapsed {
                     Some(elapsed) => text::recording_time(*elapsed).into(),
                     None => text::RECORDING_MARK.into(),
                 };
-                let mut shown = vec![recording_mark(mark, theme)];
+                let mut shown = vec![recording_mark_reserved(mark, theme)];
                 if control.may_record {
                     shown.push(
                         Button::new("stop-recording")
@@ -1234,7 +1273,29 @@ impl Shell {
 /// The mark of a recording that runs: the mark with its time on cinnabar, and beside it the
 /// statement that every person in the call sees it (ADR 0601).
 fn recording_mark(mark: SharedString, theme: &Theme) -> AnyElement {
+    recording_mark_in(mark, false, theme)
+}
+
+/// The mark of the recording of the call of this device. Its time part is as wide as the
+/// widest text that it shows, "REC starting…" or "REC 00:00:00", in the type of the mark:
+/// both texts are laid out in it without height.
+fn recording_mark_reserved(mark: SharedString, theme: &Theme) -> AnyElement {
+    recording_mark_in(mark, true, theme)
+}
+
+fn recording_mark_in(mark: SharedString, reserved: bool, theme: &Theme) -> AnyElement {
     let colors = theme.colors;
+    let widths = [
+        format!("{} {}", text::RECORDING_MARK, text::RECORDING_STARTS),
+        text::recording_time(std::time::Duration::ZERO),
+    ];
+    let text = div().flex().flex_col().child(mark).when(reserved, |text| {
+        text.children(
+            widths
+                .into_iter()
+                .map(|width| div().h_0().overflow_hidden().child(width)),
+        )
+    });
     div()
         .id("recording-indicator")
         .role(Role::Status)
@@ -1264,7 +1325,7 @@ fn recording_mark(mark: SharedString, theme: &Theme) -> AnyElement {
                         .rounded_full()
                         .bg(Hsla::from(colors.on_terracotta)),
                 )
-                .child(mark),
+                .child(text),
         )
         .child(
             div()
@@ -1329,4 +1390,118 @@ fn voice_room_states(voice: &VoiceState, theme: &Theme) -> Vec<AnyElement> {
         ));
     }
     states
+}
+
+impl Shell {
+    /// The call of this device offers "Record" now: a person who may record sees it while
+    /// no recording starts or runs.
+    pub(crate) fn records_now(&self, view: &ShellView) -> bool {
+        view.workspace()
+            .and_then(|workspace| workspace.call.as_ref())
+            .is_some_and(|panel| {
+                panel.recording.may_record
+                    && !panel.recording.busy
+                    && matches!(
+                        panel.recording.state,
+                        RecordingShown::None | RecordingShown::Failed(_)
+                    )
+            })
+    }
+
+    /// Opens the languages of the speech of a new recording at the button that records.
+    pub fn open_record_languages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A click on the button of open languages closes them: the press closed them, and
+        // the click must not open them again.
+        if std::mem::take(&mut self.record_language_closed_by_press) {
+            return;
+        }
+        self.recording_details_open = false;
+        self.open_layer(Layer::RecordLanguage, window, cx);
+    }
+
+    /// The languages of the speech of a new recording (ADR 0603): the detection of the
+    /// language of each sentence first, then each language that the speech model knows.
+    /// A choice starts the recording with it.
+    fn render_record_languages(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let choice = |id: (&'static str, usize),
+                      title: &'static str,
+                      language: Option<&'static str>,
+                      selector: String,
+                      this: &mut Self,
+                      cx: &mut Context<Self>| {
+            div()
+                .flex_none()
+                .debug_selector(move || selector)
+                .child(
+                    crate::ui::MenuItem::new(id, title).on_click(this.call_listener(
+                        cx,
+                        move |this, _, window, cx| {
+                            this.close_layer(window, cx);
+                            let language = language.map(str::to_owned);
+                            this.state
+                                .update(cx, |state, cx| state.start_recording(language, cx));
+                        },
+                    )),
+                )
+                .into_any_element()
+        };
+        let mut items: Vec<AnyElement> = vec![
+            crate::ui::menu_label(text::transcripts::LANGUAGE_MENU, false, cx).into_any_element(),
+        ];
+        items.push(choice(
+            ("record-language", 0),
+            text::transcripts::DETECT,
+            None,
+            "record-language:auto".to_owned(),
+            self,
+            cx,
+        ));
+        items.push(
+            crate::ui::menu_label(text::transcripts::ONE_LANGUAGE, false, cx).into_any_element(),
+        );
+        let mut languages: Vec<AnyElement> = Vec::new();
+        for (index, (code, name)) in text::transcripts::LANGUAGES.iter().enumerate() {
+            languages.push(choice(
+                ("record-language", index + 1),
+                name,
+                Some(code),
+                format!("record-language:{code}"),
+                self,
+                cx,
+            ));
+        }
+        items.push(
+            div()
+                .id("record-languages")
+                .debug_selector(|| "record-language-list".to_owned())
+                .flex()
+                .flex_col()
+                .max_h(u(300.0))
+                .overflow_y_scroll()
+                .children(languages)
+                .into_any_element(),
+        );
+        div()
+            .absolute()
+            .left_0()
+            .top(u(32.0))
+            .child(deferred(
+                gpui::anchored().snap_to_window().child(
+                    crate::ui::Menu::new(
+                        "record-language-menu",
+                        text::transcripts::LANGUAGE_MENU,
+                        self.layer_focus(),
+                    )
+                    .width(300.0)
+                    .selector("record-language-menu")
+                    .on_close(Self::handler(cx, |this, window, cx| {
+                        this.record_language_closed_by_press = !window.last_input_was_keyboard();
+                        this.close_layer(window, cx);
+                    }))
+                    .children(items)
+                    .child(div().h(u(4.0))),
+                ),
+            ))
+            .into_any_element()
+    }
 }

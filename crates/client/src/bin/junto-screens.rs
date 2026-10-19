@@ -1308,6 +1308,15 @@ fn draw_shares(studio: &mut Studio) -> Result<(), String> {
         recording_screen("recording-none", true, |_| {}),
         with_picture(),
     )?;
+    // "Record" opens the languages of the speech (ADR 0616).
+    let picture = with_picture();
+    studio.draw(
+        recording_screen("recording-languages", true, |_| {}),
+        move |shell, window, cx| {
+            picture(shell, window, cx);
+            shell.open_record_languages(window, cx);
+        },
+    )?;
     studio.draw(
         recording_screen("recording-starting", true, |call| {
             call.recording = Some(recording(|recording| {

@@ -12,7 +12,8 @@ ADR 0604 to ADR 0608 define the routes of a recording, of its transcript and of 
 
 Routes:
 
-- The API object of a server has one function for each route that a member uses: the recordings of a workspace, one recording with its segments, its removal, the transcript, a new request for the transcript, the lines of the transcript, the transcript as text, the correction of a line, the name of a speaker, and the file of a segment from a byte on.
+- The API object of a server has one function for each route that a member uses: the recordings of a workspace, one recording with its segments, its removal, the transcript, a new request for the transcript, the lines of the transcript, the transcript as text, the correction of a line, the name of a speaker, the file of a segment from a byte on, and the glossary of a workspace with its replacement from the list that was read (ADR 0616).
+- The glossary of a workspace is a collection of the administration (ADR 0760): read when a reader opens it, read again after `glossary_replaced` of its workspace, and held up to 200 terms, with the mark that a longer answer was cut (ADR 0616).
 
 State (ADR 0719):
 

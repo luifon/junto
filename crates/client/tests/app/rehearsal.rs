@@ -533,7 +533,10 @@ impl Rehearsal {
     /// Step 7: A records the call. Both share a screen; A and then B speak known
     /// sentences, with silence between them; A stops the recording and both leave.
     pub fn recording(&mut self, a_speech: &Speech, b_speech: &Speech) {
+        // The speech of the rehearsal is in one language, and each sentence is detected
+        // (ADR 0616).
         self.a.click("start-recording");
+        self.a.click("record-language:auto");
         for window in [&mut self.a, self.b.as_mut().unwrap()] {
             window.until("the call shows that it is recorded", |window| {
                 window.shows("recording-indicator")

@@ -29,6 +29,7 @@ mod server_menu;
 mod settings;
 pub mod share;
 mod threads;
+mod transcript_edit;
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -87,6 +88,11 @@ pub(crate) enum Layer {
     SearchFilter(FilterKind),
     /// The list of the files of a recording, at its card.
     RecordingFiles(junto_client_core::protocol::ids::RecordingId),
+    /// The parts of a recording with their time ranges, at its card (ADR 0616).
+    RecordingParts(junto_client_core::protocol::ids::RecordingId),
+    /// The languages of the speech of a new recording, at the button that records
+    /// (ADR 0616).
+    RecordLanguage,
     /// The question before a recording is removed.
     ConfirmRemoveRecording(ServerId, junto_client_core::protocol::ids::RecordingId),
     /// The administration of a server, or the settings of a channel. The state of the
@@ -285,9 +291,16 @@ pub struct Shell {
     pub(crate) notices_scroll: ScrollHandle,
     pub(crate) search_scroll: ScrollHandle,
     pub(crate) transcript_list: recorded::TranscriptList,
+    /// The forms and the shown parts of the transcript of the side panel (ADR 0616).
+    pub(crate) transcript_edit: transcript_edit::TranscriptEdit,
     /// The press of the pointer that closed the list of the files of a recording was on
     /// its button: the click that follows does not open the list again.
     pub(crate) recording_files_closed_by_press: bool,
+    /// The press that closed the parts of a recording, or the languages of a new
+    /// recording, was on the button that opens them: the click that follows does not open
+    /// them again.
+    pub(crate) recording_parts_closed_by_press: bool,
+    pub(crate) record_language_closed_by_press: bool,
     /// The text of the search field of the header.
     pub(crate) search_field: Entity<InputState>,
     /// The press of the pointer that closed the list of a filter was on the box of that
@@ -388,6 +401,8 @@ impl Shell {
                 this.feed_scrolled(Pane::Thread, event, window, cx);
             }));
         let (admin, admin_subscriptions) = admin::AdminUi::new(window, cx);
+        let (transcript_edit, transcript_subscription) =
+            transcript_edit::TranscriptEdit::new(window, cx);
         let own_entity = cx.entity_id();
         let (account, account_subscriptions) = account::AccountUi::new(window, cx);
         let (linking, linking_subscriptions) = linking::LinkingUi::new(window, cx);
@@ -541,6 +556,7 @@ impl Shell {
             }),
         ];
         subscriptions.extend(admin_subscriptions);
+        subscriptions.push(transcript_subscription);
         subscriptions.extend(account_subscriptions);
         subscriptions.extend(linking_subscriptions);
         let quiet_zone = state.read(cx).system_zone_name().to_owned();
@@ -613,7 +629,10 @@ impl Shell {
             notices_scroll: ScrollHandle::new(),
             search_scroll: ScrollHandle::new(),
             transcript_list: recorded::TranscriptList::new(),
+            transcript_edit,
             recording_files_closed_by_press: false,
+            recording_parts_closed_by_press: false,
+            record_language_closed_by_press: false,
             search_field,
             filter_closed_by_press: false,
             quiet_from,
@@ -1126,6 +1145,8 @@ impl Render for Shell {
                     this.invite_closed_by_press = false;
                     this.filter_closed_by_press = false;
                     this.recording_files_closed_by_press = false;
+                    this.recording_parts_closed_by_press = false;
+                    this.record_language_closed_by_press = false;
                 }),
             )
             // Escape closes the details of a recording and the list of the members who
@@ -1228,7 +1249,7 @@ impl Shell {
             Layer::ConfirmRemoveRecording(server_id, recording_id) => {
                 !view.may_remove_recording(*server_id, *recording_id)
             }
-            Layer::RecordingFiles(recording_id) => !view
+            Layer::RecordingFiles(recording_id) | Layer::RecordingParts(recording_id) => !view
                 .workspace()
                 .and_then(|workspace| workspace.feed.as_ref())
                 .is_some_and(|feed| {
@@ -1242,6 +1263,9 @@ impl Shell {
             Layer::Admin => self.state.read(cx).admin_view().is_none(),
             // The server left the server book, or it shows no account or another one.
             Layer::Account => self.state.read(cx).account_view().is_none(),
+            // The languages belong to the button that records, which a call of this
+            // device without a recording shows to a person who may record.
+            Layer::RecordLanguage => !self.records_now(view),
             Layer::None | Layer::Welcome | Layer::Settings | Layer::LinkAll => false,
         };
         if stale {
@@ -1265,7 +1289,9 @@ impl Shell {
             | Layer::ChannelMenu(_)
             | Layer::DirectMenu(_)
             | Layer::SearchFilter(_)
-            | Layer::RecordingFiles(_) => div().into_any_element(),
+            | Layer::RecordingFiles(_)
+            | Layer::RecordingParts(_)
+            | Layer::RecordLanguage => div().into_any_element(),
             Layer::ConfirmRemoveRecording(server_id, recording_id) => {
                 self.render_confirm_remove_recording(*server_id, *recording_id, cx)
             }

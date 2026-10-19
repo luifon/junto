@@ -7,6 +7,8 @@ mod admin;
 mod calls_live;
 mod messages;
 mod processes;
+// The window tests use the same file, and parts of it that these tests do not use.
+#[allow(dead_code)]
 mod recording_server;
 mod recordings;
 mod remaining;

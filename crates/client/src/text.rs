@@ -25,6 +25,7 @@ pub mod admin;
 pub mod book;
 pub mod followed;
 pub mod people;
+pub mod transcripts;
 
 pub const APP_NAME: &str = "Junto";
 pub const QUIT: &str = "Quit Junto";
@@ -2343,16 +2344,7 @@ pub fn lines_shown(shown: usize, total: u32) -> String {
 pub fn transcript_language(code: &str) -> String {
     let name = match code {
         "auto" => "detected for each line",
-        "en" => "English",
-        "pt" => "Portuguese",
-        "es" => "Spanish",
-        "de" => "German",
-        "fr" => "French",
-        "it" => "Italian",
-        "nl" => "Dutch",
-        "ja" => "Japanese",
-        "zh" => "Chinese",
-        other => other,
+        other => transcripts::language_name(other).unwrap_or(other),
     };
     format!("Language: {name}")
 }

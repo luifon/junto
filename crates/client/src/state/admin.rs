@@ -2,6 +2,7 @@
 //! open, which collections of the client core that page needs, and the one request of
 //! the person that is on its way or was refused.
 
+pub(crate) mod glossary;
 mod notifications;
 mod overrides;
 mod people;
@@ -60,6 +61,8 @@ pub enum AdminPage {
     Notifications,
     /// The recordings of the shown workspace that the account can see (ADR 0784).
     Recordings,
+    /// The glossary of the shown workspace (ADR 0616). Every member reads it.
+    Glossary,
     /// The exports of the person.
     Exports,
 }
@@ -144,6 +147,13 @@ pub enum AskKind {
     /// A file is read and sent as the logo of the server (ADR 0101).
     SetLogo,
     RemoveLogo,
+    /// A term is added at the end of the glossary of the shown workspace (ADR 0616).
+    AddTerm,
+    /// The term at this position of the glossary is changed, removed, or moved by one
+    /// place.
+    ChangeTerm(u32),
+    RemoveTerm(u32),
+    MoveTerm(u32),
 }
 
 /// Where a request stands. A request that the server did leaves no state: its effect
@@ -213,6 +223,9 @@ pub struct AdminState {
     /// The roles whose permissions the person changed and whose change the state does
     /// not show yet (ADR 0791).
     pub(crate) role_changes: roles::RoleChanges,
+    /// The glossary that the last change of the person replaced, while the state still
+    /// shows it (ADR 0616).
+    pub(crate) glossary_sent: Option<glossary::Sent>,
 }
 
 /// The request that an answer belongs to.
@@ -244,6 +257,7 @@ impl AdminState {
             // The list of the recordings belongs to its page. A late answer finds no
             // list that waits for it.
             self.recordings = recordings::RecordingList::default();
+            self.glossary_sent = None;
         }
         if self.open.map(|held| held.server_id()) != Some(open.server_id()) {
             self.audit = records::AuditLog::default();
@@ -260,6 +274,7 @@ impl AdminState {
         self.made = None;
         self.audit = records::AuditLog::default();
         self.recordings = recordings::RecordingList::default();
+        self.glossary_sent = None;
     }
 
     /// Binds the open layer to the account that its server shows now. A layer that was
@@ -411,6 +426,7 @@ impl AppState {
         // A save of an export does not outlive its server or its account.
         self.end_stale_export_saves();
         self.settle_role_changes();
+        self.settle_glossary_sent();
         self.keep_shown_admin_page();
         let mut wanted: Vec<(ServerId, AdminPart)> = Vec::new();
         let snapshots = self.snapshots();

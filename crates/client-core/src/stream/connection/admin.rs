@@ -100,6 +100,18 @@ pub(super) async fn read(api: &ServerApi, part: AdminPart) -> Result<AdminPayloa
             .channel_permissions(channel_id)
             .await
             .map(AdminPayload::ChannelPermissions),
+        AdminPart::Glossary(workspace_id) => {
+            let glossary = api.glossary(workspace_id).await?;
+            // A server is not trusted to answer for the workspace that was asked for
+            // (ADR 0714).
+            if glossary.workspace_id != workspace_id {
+                return Err(ApiError::InvalidResponse {
+                    status: 200,
+                    reason: "the glossary of another workspace",
+                });
+            }
+            Ok(AdminPayload::Glossary(glossary.terms))
+        }
     }
 }
 

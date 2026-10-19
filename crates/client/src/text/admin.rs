@@ -1,6 +1,7 @@
 //! The text of the administration of a server and of the settings of a channel
 //! (ADR 0761).
 
+pub mod glossary;
 pub mod notifications;
 pub mod overrides;
 pub mod people;
@@ -68,6 +69,7 @@ pub const fn page_name(page: AdminPage) -> &'static str {
         AdminPage::Members => "Members",
         AdminPage::Notifications => "Notifications",
         AdminPage::Recordings => "Recordings",
+        AdminPage::Glossary => "Glossary",
         AdminPage::Exports => "Exports",
     }
 }
@@ -85,6 +87,7 @@ pub const fn page_icon(page: AdminPage) -> Icon {
         AdminPage::Archive => Icon::Lock,
         AdminPage::Notifications => Icon::Chat,
         AdminPage::Recordings => Icon::Record,
+        AdminPage::Glossary => Icon::List,
         AdminPage::Exports => Icon::Download,
     }
 }
@@ -106,6 +109,7 @@ pub const fn page_selector(page: AdminPage) -> &'static str {
         AdminPage::Members => "admin-nav-members",
         AdminPage::Notifications => "admin-nav-notifications",
         AdminPage::Recordings => "admin-nav-recordings",
+        AdminPage::Glossary => "admin-nav-glossary",
         AdminPage::Exports => "admin-nav-exports",
     }
 }
@@ -351,6 +355,10 @@ fn conflict(what: AskKind) -> &'static str {
         AskKind::RevokeInvite(_) => "The invite is revoked already.",
         AskKind::DeleteRole(_) => "Every member holds the “everyone” role. It is not deleted.",
         AskKind::AssignRole(..) => "The account is banned or removed. It gets no role.",
+        AskKind::AddTerm
+        | AskKind::ChangeTerm(_)
+        | AskKind::RemoveTerm(_)
+        | AskKind::MoveTerm(_) => glossary::CHANGED_MEANWHILE,
         _ => {
             "The server refused, because its state has changed. Close this page and open it again."
         }
@@ -365,6 +373,7 @@ fn limit(what: AskKind) -> &'static str {
         }
         AskKind::CreateRole(_) => "This level has 250 roles, which is the most. Delete one first.",
         AskKind::AssignRole(..) => "The account holds 64 roles, which is the most.",
+        AskKind::AddTerm => glossary::FULL,
         _ => "A limit of the server is reached.",
     }
 }
@@ -390,6 +399,10 @@ fn invalid(what: AskKind) -> &'static str {
         AskKind::MoveRole(_) => {
             "The order of the roles has changed. The role is where the list shows it now."
         }
+        AskKind::AddTerm
+        | AskKind::ChangeTerm(_)
+        | AskKind::RemoveTerm(_)
+        | AskKind::MoveTerm(_) => glossary::INVALID,
         _ => "The server did not accept the values.",
     }
 }

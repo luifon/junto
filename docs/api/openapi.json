@@ -9826,7 +9826,7 @@
         "tags": [
           "recordings"
         ],
-        "summary": "Replaces the glossary of a workspace. The caller holds `manage_glossary`. The speech\nmodel reads the first terms that fit in its limit; a transcript states which terms it\nused (ADR 0613).",
+        "summary": "Replaces the glossary of a workspace. The caller holds `manage_glossary`. The speech\nmodel reads the first terms that fit in its limit; a transcript states which terms it\nused (ADR 0613). With `replaces`, the glossary is replaced only while it holds exactly\nthose terms; otherwise the answer is `conflict` and nothing changes (ADR 0607).",
         "operationId": "set_glossary",
         "parameters": [
           {
@@ -17041,6 +17041,16 @@
           "terms"
         ],
         "properties": {
+          "replaces": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "The terms that the caller read and changed. When given, the server replaces the\nglossary only while it still holds exactly these terms in this order, and answers\n`conflict` otherwise, so that a change made from an older list does not undo a\nchange of another person (ADR 0607)."
+          },
           "terms": {
             "type": "array",
             "items": {

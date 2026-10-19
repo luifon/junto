@@ -878,7 +878,9 @@ fn a_person_shares_a_screen_in_the_window_watches_a_share_and_asks_for_a_recordi
     window.until("the person may record", |window| {
         !window.shows("no-record-permission")
     });
+    // "Record" opens the languages of the speech; a choice sends the request (ADR 0616).
     window.click("start-recording");
+    window.click("record-language:auto");
     window.until("the refusal is told", |window| {
         window.shows("recording-error")
     });

@@ -237,6 +237,12 @@ pub struct Known {
     pub recordings_removing: HashSet<(ServerId, RecordingId)>,
     /// Why the server did not do what the person asked for with a recording.
     pub recording_refused: HashMap<(ServerId, RecordingId), String>,
+    /// The recordings whose transcript the person asked for again, while the request is
+    /// on its way (ADR 0616).
+    pub transcripts_requesting: HashSet<(ServerId, RecordingId)>,
+    /// The correction of a line or the name of a voice that the person sent for the
+    /// transcript of a recording, while it is on its way or after the server refused it.
+    pub transcript_asks: HashMap<(ServerId, RecordingId), super::transcript_work::TranscriptAsk>,
     /// The line that the transcript of the side panel was opened at.
     pub transcript_line: Option<u32>,
     /// The number of the last opening of a transcript at a line.
@@ -1056,12 +1062,15 @@ pub enum TranscriptPanelState {
     /// The server has no such recording for the account.
     Gone,
     Shown {
-        transcript: TranscriptShown,
+        /// In a box: the transcript with its details is larger than the other states.
+        transcript: Box<TranscriptShown>,
         /// The recording with the lines that were read. The panel derives a line when it
         /// draws it.
         open: Arc<OpenRecording>,
         /// The names of the accounts, for the speakers.
         names: Arc<HashMap<AccountId, String>>,
+        /// The zone and the day by which the panel states the time of a change.
+        when: super::recorded::When,
     },
 }
 
@@ -2131,6 +2140,7 @@ fn workspace_view(
             downloads: &known.segment_downloads,
             texts: &known.text_downloads,
             removing: &known.recordings_removing,
+            requesting: &known.transcripts_requesting,
             refused: &known.recording_refused,
         });
     let source = |timeline| feed::Source {
@@ -2286,11 +2296,26 @@ fn workspace_view(
                     TranscriptPanelState::Gone
                 }
                 Some(open) => match (&open.transcript, open.failed) {
-                    (Loadable::Loaded(_), _) => TranscriptPanelState::Shown {
-                        transcript: super::recorded::transcript(open, &accounts),
-                        open: open.clone(),
-                        names: Arc::new(accounts.clone()),
-                    },
+                    (Loadable::Loaded(_), _) => {
+                        let when = super::recorded::When {
+                            zone: known.zone,
+                            today: known.today,
+                        };
+                        let source = super::recorded::TranscriptSource {
+                            names: &accounts,
+                            when,
+                            // A recording of an archived channel takes no change
+                            // (ADR 0410).
+                            may_change: archived.is_none(),
+                            ask: known.transcript_asks.get(&(server_id, recording_id)),
+                        };
+                        TranscriptPanelState::Shown {
+                            transcript: Box::new(super::recorded::transcript(open, source)),
+                            open: open.clone(),
+                            names: Arc::new(accounts.clone()),
+                            when,
+                        }
+                    }
                     (_, Some(_)) => TranscriptPanelState::Failed,
                     _ => TranscriptPanelState::Reading,
                 },

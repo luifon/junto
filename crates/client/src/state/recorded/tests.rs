@@ -3,10 +3,12 @@ use std::sync::Arc;
 use junto_client_core::model::OpenRecording;
 use junto_client_core::protocol::ids::{CallId, ChannelId, WorkspaceId};
 use junto_client_core::protocol::recording::{
-    FileProblem, Recording, RecordingDetail, RecordingSegment, SegmentFile, SegmentState,
+    FileProblem, Recording, RecordingDetail, RecordingSegment, SegmentFailure, SegmentFile,
+    SegmentState,
 };
 use junto_client_core::protocol::transcript::{
-    GlossaryUse, LineSource, Transcript, TranscriptLine, TranscriptSpeaker,
+    GlossaryUse, LineSource, SegmentReason, SegmentTranscription, SpeakerSeparation,
+    SpeakersReason, Transcript, TranscriptLine, TranscriptSegment, TranscriptSpeaker,
 };
 use junto_client_core::transfers::DownloadStage;
 use time::{Duration, UtcOffset};
@@ -211,9 +213,11 @@ impl Scene {
             zone: Zone::Fixed(UtcOffset::UTC),
             today: Some(started().date()),
             may_remove,
+            may_request: may_remove,
             downloads: &self.downloads,
             texts: &self.texts,
             removing: false,
+            requesting: false,
             refused: None,
         })
     }
@@ -366,9 +370,11 @@ fn a_card_tells_a_recording_that_is_read_gone_or_not_readable() {
         zone: Zone::Fixed(UtcOffset::UTC),
         today: None,
         may_remove: true,
+        may_request: true,
         downloads: &scene.downloads,
         texts: &scene.texts,
         removing: true,
+        requesting: false,
         refused: Some("Not allowed."),
     });
     assert!(removing.removing);
@@ -466,7 +472,7 @@ fn a_card_holds_the_first_lines_of_a_long_transcript() {
     assert_eq!(transcript.lines.len(), SHOWN_LINES);
     assert_eq!(transcript.lines[SHOWN_LINES - 1].text, "line 5");
     // One line of the side panel is derived when it is drawn.
-    let row = line_row(&open, &open.lines.lines[321], &scene.names);
+    let row = line_row(&open, &open.lines.lines[321], &scene.names, When::default());
     assert_eq!((row.line, row.time.as_str()), (321, "00:05:21"));
 }
 
@@ -521,4 +527,196 @@ fn a_failed_refresh_keeps_the_transcript_but_reports_the_failure() {
     let shown = scene.detail(&open).transcript;
     assert_eq!(shown.lines, before.lines);
     assert!(shown.failed);
+}
+
+#[test]
+fn a_corrected_line_and_a_named_voice_state_who_changed_them_and_when() {
+    let scene = scene();
+    let mut open = scene.open(RecordingState::Ready, TranscriptState::Ready);
+    let mut corrected = scene.line(0, 6_000, LineSource::Microphone, None);
+    corrected.text = "eleven seconds".to_owned();
+    corrected.original_text = Some("a leaven seconds".to_owned());
+    corrected.corrected_by = Some(scene.carla);
+    corrected.corrected_at = Some(started() + Duration::minutes(5));
+    open.lines.lines[0] = Arc::new(corrected);
+    let when = When {
+        zone: Zone::Fixed(UtcOffset::UTC),
+        today: Some(started().date()),
+    };
+    let row = line_row(&open, &open.lines.lines[0], &scene.names, when);
+    assert_eq!(row.text, "eleven seconds");
+    assert_eq!(row.original.as_deref(), Some("a leaven seconds"));
+    assert_eq!(
+        row.changed,
+        Some(Changed {
+            by: "Carla".to_owned(),
+            at: format!("{} 09:46", text::TODAY),
+        })
+    );
+    // A line that nobody corrected has no original and no author.
+    let plain = line_row(&open, &open.lines.lines[1], &scene.names, when);
+    assert_eq!((plain.original, plain.changed), (None, None));
+
+    // The voices in the order of their numbers, with the person whose sound holds them,
+    // and the author and the time of a name.
+    let shown = transcript(
+        &open,
+        TranscriptSource {
+            names: &scene.names,
+            when,
+            may_change: true,
+            ask: None,
+        },
+    );
+    assert_eq!(shown.voices.len(), 2);
+    assert_eq!(
+        shown.voices[0],
+        VoiceRow {
+            number: 1,
+            label: "Speaker 1".to_owned(),
+            name: Some("Noor".to_owned()),
+            of: "Carla".to_owned(),
+            changed: Some(Changed {
+                by: "Ana".to_owned(),
+                at: format!("{} 09:41", text::TODAY),
+            }),
+        }
+    );
+    assert_eq!(
+        (shown.voices[1].name.as_ref(), &shown.voices[1].changed),
+        (None, &None)
+    );
+    assert!(shown.may_change);
+}
+
+#[test]
+fn the_details_state_the_glossary_terms_and_the_result_of_each_audio_file() {
+    let scene = scene();
+    let mut open = scene.open(RecordingState::PartlyFailed, TranscriptState::Partial);
+    let Loadable::Loaded(held) = &mut open.transcript else {
+        panic!("a transcript");
+    };
+    held.glossary = GlossaryUse {
+        used: vec!["Quorvex".to_owned()],
+        cut: vec!["Lumitrax".to_owned()],
+    };
+    let result =
+        |segment: &RecordingSegment, status, reason, speakers, speakers_reason| TranscriptSegment {
+            segment_id: segment.id,
+            status,
+            reason,
+            audio_ms: Some(2_380_000),
+            processed_ms: Some(65_000),
+            lines: 2,
+            speakers,
+            speakers_reason,
+        };
+    held.segments = vec![
+        result(
+            &scene.segments[1],
+            SegmentTranscription::Ok,
+            None,
+            SpeakerSeparation::NotApplicable,
+            None,
+        ),
+        result(
+            &scene.segments[2],
+            SegmentTranscription::Damaged,
+            Some(SegmentReason::DecodeIncomplete),
+            SpeakerSeparation::NotApplicable,
+            None,
+        ),
+        result(
+            &scene.segments[3],
+            SegmentTranscription::Ok,
+            None,
+            SpeakerSeparation::Unassigned,
+            Some(SpeakersReason::NoVoiceWindow),
+        ),
+    ];
+    let shown = scene.detail(&open).transcript;
+    assert_eq!(
+        (shown.used.as_slice(), shown.cut.as_slice()),
+        (&["Quorvex".to_owned()][..], &["Lumitrax".to_owned()][..])
+    );
+    assert_eq!(shown.segments.len(), 3);
+    assert_eq!(shown.segments[0].title, "Microphone of Ana");
+    assert!(!shown.segments[0].failed);
+    assert_eq!(shown.segments[0].sentence, "transcribed, 2 lines");
+    assert_eq!(shown.segments[1].title, "Microphone of Carla");
+    assert!(shown.segments[1].failed);
+    assert_eq!(
+        shown.segments[1].sentence,
+        "transcribed up to 00:01:05 of the file, 2 lines: the sound could be decoded only in part"
+    );
+    assert_eq!(shown.segments[2].title, "Shared sound of Carla");
+    assert!(shown.segments[2].failed);
+    assert!(
+        shown.segments[2]
+            .sentence
+            .ends_with("some lines have no voice: the speech of a line was too short"),
+        "{}",
+        shown.segments[2].sentence
+    );
+    // The card shows no control that changes the transcript.
+    assert!(!shown.may_change);
+}
+
+#[test]
+fn the_parts_of_a_recording_state_their_time_ranges_and_what_was_not_saved() {
+    let mut scene = scene();
+    scene.segments[3].state = SegmentState::Failed;
+    scene.segments[3].failure = Some(SegmentFailure::RecorderLost);
+    scene.segments[3].ended_at = Some(started() + Duration::seconds(65));
+    scene.segments[3].file = None;
+    scene.segments[2].started_at = None;
+    scene.segments[2].ended_at = None;
+    let open = scene.open(RecordingState::PartlyFailed, TranscriptState::Partial);
+    let parts = scene.detail(&open).parts;
+    assert_eq!(parts.len(), 4);
+    assert_eq!(parts[0].title, text::RECORDING_VIDEO);
+    assert_eq!(parts[0].state, "saved");
+    assert_eq!(parts[0].span.as_deref(), Some("09:41:00 – 10:20:40"));
+    assert!(!parts[0].failed);
+    // A part without a reported time says so.
+    assert_eq!(parts[2].span, None);
+    assert_eq!(
+        (parts[3].title.as_str(), parts[3].state.as_str()),
+        (
+            "Shared sound of Carla",
+            "not saved: the recorder was lost while it ran"
+        )
+    );
+    assert_eq!(parts[3].span.as_deref(), Some("09:41:00 – 09:42:05"));
+    assert!(parts[3].failed);
+}
+
+#[test]
+fn a_card_offers_a_new_transcript_for_a_processed_recording_without_one() {
+    let scene = scene();
+    let request = |recording: RecordingState, transcript: TranscriptState, allowed: bool| {
+        scene
+            .card(Some(&scene.open(recording, transcript)), allowed)
+            .request
+    };
+    assert_eq!(
+        request(RecordingState::Ready, TranscriptState::Failed, true),
+        TranscriptRequest::Allowed { sending: false }
+    );
+    assert_eq!(
+        request(RecordingState::PartlyFailed, TranscriptState::None, false),
+        TranscriptRequest::NotAllowed
+    );
+    for (recording, transcript) in [
+        (RecordingState::Ready, TranscriptState::Ready),
+        (RecordingState::Ready, TranscriptState::Waiting),
+        (RecordingState::Processing, TranscriptState::None),
+        (RecordingState::Failed, TranscriptState::None),
+    ] {
+        assert_eq!(
+            request(recording, transcript, true),
+            TranscriptRequest::NotOffered,
+            "{recording:?} {transcript:?}"
+        );
+    }
 }

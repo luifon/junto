@@ -74,6 +74,7 @@ Routes:
 Glossary:
 
 - `GET /api/v1/workspaces/{workspace_id}/glossary` returns the terms in their order of priority to every member of the workspace. `PUT` on the same path replaces the whole list and needs `manage_glossary`.
+- `PUT` takes `replaces`, the terms that the caller read. With it, the glossary is replaced only while it holds exactly those terms in that order; otherwise the answer is `conflict`, and nothing is stored, recorded or told. A client that changes one term sends it, so that its change does not undo a change of another person that it had not read (ADR 0616).
 - A glossary has at most 200 terms. The server removes the space at the start and at the end of a term. A term then has 1 to 200 characters, no control character, and not the text `<|` or `|>`; no term is listed twice. These are the rules of the job format (ADR 0611).
 - The replacement is an audit entry that states the number of terms, and the event `glossary_replaced` names the workspace.
 - The worker cuts the list at 200 tokens and reports the terms that it used (ADR 0613). The transcript of a recording states them.

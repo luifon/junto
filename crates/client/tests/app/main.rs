@@ -53,5 +53,6 @@ mod search;
 mod servers;
 mod states;
 mod threads;
+mod transcripts;
 
 mod updates;

@@ -721,6 +721,15 @@ impl Calls {
         self.set_camera_views(views);
     }
 
+    /// Gives a view of the calls to the readers, as the calls do, for a test of a reader
+    /// that needs a connected call without a media server, such as the requests of a
+    /// recording against a server whose media server is in memory. No session runs: an
+    /// action on the media of the call does nothing.
+    #[cfg(feature = "test-support")]
+    pub fn show_view_for_test(&self, view: CallsView) {
+        self.inner.view.send_replace(view);
+    }
+
     /// Gives a picture of the watched share to the readers, as the session of a call
     /// does, for a test of a reader.
     #[cfg(feature = "test-support")]

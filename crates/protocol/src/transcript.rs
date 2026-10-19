@@ -287,6 +287,12 @@ pub struct SetGlossary {
     /// At most 200 terms of 1 to 200 characters each, most important first, without
     /// duplicates.
     pub terms: Vec<String>,
+    /// The terms that the caller read and changed. When given, the server replaces the
+    /// glossary only while it still holds exactly these terms in this order, and answers
+    /// `conflict` otherwise, so that a change made from an older list does not undo a
+    /// change of another person (ADR 0607).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaces: Option<Vec<String>>,
 }
 
 #[cfg(test)]
