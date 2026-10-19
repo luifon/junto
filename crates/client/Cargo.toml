@@ -154,3 +154,7 @@ url = "2"
 core-video = { version = "0.5.2", features = ["metal"] }
 # Read the real application bundle before registering system notifications.
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSBundle", "NSString"] }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+# The window tests read the retain count of the pixel buffers of the pictures of a call.
+core-foundation = "0.10"

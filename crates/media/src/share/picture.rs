@@ -204,4 +204,86 @@ mod tests {
         let (r, g, b) = small.pixel(159, 89).unwrap();
         assert!(near((r, g, b), (0, 0, 255)), "{r} {g} {b}");
     }
+
+    #[test]
+    fn a_received_frame_in_planes_at_the_size_of_the_drawing_is_held_without_a_copy() {
+        use livekit::webrtc::video_frame::{BoxVideoFrame, VideoFrame, VideoRotation};
+        use std::sync::Arc;
+        let frame = |width, height| -> Arc<BoxVideoFrame> {
+            let buffer: Box<dyn VideoBuffer> = Box::new(plain(width, height, (81, 90, 240)));
+            Arc::new(VideoFrame::new(VideoRotation::VideoRotation0, buffer))
+        };
+        let fitting = frame(64, 36);
+        let received = fitting
+            .buffer
+            .as_i420()
+            .map(|planes| planes.data().0.as_ptr());
+        let picture = VideoPicture::of_frame(&fitting, false, (64, 36)).unwrap();
+        assert_eq!(picture.brightness(), received);
+        assert_eq!(
+            (picture.width, picture.height, picture.source),
+            (64, 36, (64, 36))
+        );
+        let larger = frame(128, 72);
+        let received = larger
+            .buffer
+            .as_i420()
+            .map(|planes| planes.data().0.as_ptr());
+        let picture = VideoPicture::of_frame(&larger, false, (64, 36)).unwrap();
+        assert_ne!(picture.brightness(), received);
+        assert_eq!(
+            (picture.width, picture.height, picture.source),
+            (64, 36, (128, 72))
+        );
+    }
+
+    /// The pixel buffer that the window draws on macOS gives the colours of the BGRA
+    /// picture, when its values are read with the matrix of the surface shader of gpui
+    /// (full-range BT.601), also at an odd size, where the last column and row of colour
+    /// cover one pixel.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[allow(unsafe_code)]
+    fn the_pixel_buffer_has_the_colours_of_the_bgra_picture_at_an_odd_size() {
+        fn shader(y: u8, cb: u8, cr: u8) -> (u8, u8, u8) {
+            let (y, cb, cr) = (
+                f32::from(y) / 255.0,
+                f32::from(cb) / 255.0,
+                f32::from(cr) / 255.0,
+            );
+            let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+            (
+                channel(y + 1.402 * cr - 0.701),
+                channel(y - 0.3441 * cb - 0.7141 * cr + 0.5291),
+                channel(y + 1.772 * cb - 0.886),
+            )
+        }
+        let pixels = crate::share::synthetic::two_colours(63, 35, (200, 60, 30), (40, 90, 210));
+        for mirrored in [false, true] {
+            let picture = VideoPicture::new(&pixels, mirrored, (63, 35)).unwrap();
+            let buffer = picture.surface().unwrap();
+            assert_eq!((buffer.get_width(), buffer.get_height()), (63, 35));
+            assert_eq!(buffer.lock_base_address(0), 0);
+            let sample = |x: usize, y: usize| unsafe {
+                let luma = buffer.get_base_address_of_plane(0).cast::<u8>();
+                let chroma = buffer.get_base_address_of_plane(1).cast::<u8>();
+                let at = y / 2 * buffer.get_bytes_per_row_of_plane(1) + x / 2 * 2;
+                shader(
+                    *luma.add(y * buffer.get_bytes_per_row_of_plane(0) + x),
+                    *chroma.add(at),
+                    *chroma.add(at + 1),
+                )
+            };
+            for (x, y) in [(2, 2), (20, 17), (44, 9), (62, 34), (62, 0), (0, 34)] {
+                let surface = sample(x as usize, y as usize);
+                let bgra = picture.pixel(x, y).unwrap();
+                let far = |a: u8, b: u8| a.abs_diff(b) > 4;
+                assert!(
+                    !(far(surface.0, bgra.0) || far(surface.1, bgra.1) || far(surface.2, bgra.2)),
+                    "mirrored {mirrored}, ({x}, {y}): pixel buffer {surface:?}, BGRA {bgra:?}"
+                );
+            }
+            assert_eq!(buffer.unlock_base_address(0), 0);
+        }
+    }
 }

@@ -216,12 +216,12 @@ impl Pictures {
     fn show(
         &self,
         share: ShareId,
-        buffer: &dyn VideoBuffer,
+        buffer: &Arc<dyn VideoBuffer>,
         view: View,
         small_at: &mut Option<Instant>,
     ) {
         if view.watched == Some(share)
-            && let Some(frame) = VideoPicture::new(buffer, false, view.size)
+            && let Some(frame) = VideoPicture::of_buffer(buffer, false, view.size)
         {
             self.main.send_replace(Some(MainPicture {
                 share,
@@ -229,7 +229,7 @@ impl Pictures {
             }));
         }
         if small_at.is_none_or(|at| at.elapsed() >= SMALL_INTERVAL)
-            && let Some(frame) = picture::convert(buffer, SMALL_PICTURE)
+            && let Some(frame) = picture::convert(buffer.as_ref(), SMALL_PICTURE)
         {
             *small_at = Some(Instant::now());
             self.small.send_modify(|small| {
@@ -372,7 +372,7 @@ async fn tend(sink: Arc<ShareSink>, pictures: Pictures, mut view: watch::Receive
         if !due {
             continue;
         }
-        pictures.show(ShareId::Own, buffer.as_ref(), now, &mut small_at);
+        pictures.show(ShareId::Own, &buffer, now, &mut small_at);
         drawn = Some((buffer, now, Instant::now()));
     }
 }
@@ -534,7 +534,8 @@ async fn watch_pictures(
 ) {
     let mut small_at = None;
     let mut size = None;
-    let mut last: Option<Box<dyn VideoBuffer>> = None;
+    // Shared, so that a picture at the size of the drawing holds it without a copy.
+    let mut last: Option<Arc<dyn VideoBuffer>> = None;
     let mut pace = Pace::new(PICTURE_INTERVAL);
     // A picture that arrived inside the interval of the one before is drawn at this time.
     let mut waits: Option<Instant> = None;
@@ -549,7 +550,7 @@ async fn watch_pictures(
                     size = Some(now);
                     let _ = internal.send(Internal::SharePictureSize(sid.clone(), now));
                 }
-                last = Some(frame.buffer);
+                last = Some(Arc::from(frame.buffer));
                 waits = pace.wait(Instant::now());
                 if waits.is_some() {
                     continue;
@@ -564,7 +565,7 @@ async fn watch_pictures(
         }
         if let Some(buffer) = &last {
             let now = *view.borrow_and_update();
-            pictures.show(share, buffer.as_ref(), now, &mut small_at);
+            pictures.show(share, buffer, now, &mut small_at);
             pace.drawn(Instant::now());
             waits = None;
         }
@@ -1365,6 +1366,36 @@ mod tests {
                 sent + 1,
             ))
         }))
+    }
+
+    /// A received picture in planes at the size of the drawing is held as it arrived; a
+    /// smaller drawing makes planes of its size.
+    #[test]
+    fn a_picture_at_the_size_of_the_drawing_holds_the_received_planes() {
+        let share = ShareId::Of(AccountId::generate());
+        let pictures = Pictures {
+            main: Arc::new(watch::Sender::new(None)),
+            small: Arc::new(watch::Sender::new(HashMap::new())),
+        };
+        let buffer: Arc<dyn VideoBuffer> = Arc::new(crate::share::synthetic::two_colours(
+            64,
+            36,
+            (200, 30, 30),
+            (30, 30, 200),
+        ));
+        let received = buffer.as_i420().map(|planes| planes.data().0.as_ptr());
+        let mut small_at = None;
+        let view = |size| View {
+            watched: Some(share),
+            size,
+        };
+        pictures.show(share, &buffer, view((64, 36)), &mut small_at);
+        let shown = pictures.main.borrow().clone().unwrap();
+        assert_eq!(shown.frame.brightness(), received);
+        pictures.show(share, &buffer, view((32, 18)), &mut small_at);
+        let shown = pictures.main.borrow().clone().unwrap();
+        assert_eq!((shown.frame.width, shown.frame.height), (32, 18));
+        assert_ne!(shown.frame.brightness(), received);
     }
 
     #[tokio::test(start_paused = true)]

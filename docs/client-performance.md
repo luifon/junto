@@ -68,18 +68,20 @@ The processor share of the text mode was 26.0% before and 27.2% after, but the w
 
 ### The watched share is drawn as a camera picture
 
-The engine converted each picture of the watched share to BGRA at the size of the view and copied the pixels from the buffer of the conversion into a shared slice (`Arc<[u8]>`); the window then copied them again into its image, and gpui copied the image into a texture of its atlas. The engine now keeps the picture as planes of brightness and colour at the size of the view, in the type that camera pictures have (`VideoPicture`, ADR 0774). On macOS the window draws it from a pixel buffer of Core Video, as it draws a camera, without the conversion to BGRA, without the image and without the atlas. On Windows and Linux gpui has no such path: the planes are converted to BGRA once, into the buffer that the image of the window holds, without a copy. A small picture of a share keeps its BGRA pixels in a `Vec`, which the conversion writes, without the copy into a shared slice.
+The engine copied each received picture of the watched share into planes, scaled them to the size of the view, converted them to BGRA and copied the pixels from the buffer of the conversion into a shared slice (`Arc<[u8]>`); the window then copied them again into its image, and gpui copied the image into a texture of its atlas. The engine now keeps the picture as planes of brightness and colour at the size of the view, in the type that camera pictures have (`VideoPicture`, ADR 0774): a received picture at that size is held without a copy, and a larger one is copied and scaled once. On macOS the window draws it from a pixel buffer of Core Video, as it draws a camera, without the conversion to BGRA, without the image and without the atlas. On Windows and Linux gpui has no such path: the planes are converted to BGRA once, into the buffer that the image of the window holds, without a copy. A small picture of a share keeps its BGRA pixels in a `Vec`, which the conversion writes, without the copy into a shared slice.
 
-Measured on 2026-10-18 on the same Mac by the same method, the share mode only, two runs of the code before and two runs after:
+Measured on 2026-10-18 and 2026-10-19 on the same Mac by the same method, the share mode only: two runs of the code before, two runs after, and two runs after the method also read the pixel buffers (the category "IOSurface" of `footprint`) and a received picture at the size of the drawing was held without a copy:
 
-| Share mode | Footprint | Graphics | Rust | Processor (average) | Processor (busiest 5 s) | Drawings | Processor per drawing |
-|---|---|---|---|---|---|---|---|
-| Before, run 1 | 150.0 MiB | 6.2 MiB | 33.6 MiB | 31.1% | 34.3% | 3,495 | 10.82 ms |
-| Before, run 2 | 157.0 MiB | 6.2 MiB | 33.6 MiB | 31.9% | 36.3% | 3,498 | 11.07 ms |
-| After, run 1 | 138.5 MiB | 1.3 MiB | 15.7 MiB | 30.4% | 33.1% | 3,534 | 10.46 ms |
-| After, run 2 | 125.0 MiB | 1.3 MiB | 15.8 MiB | 32.3% | 33.9% | 3,557 | 11.04 ms |
+| Share mode | Footprint | Graphics | Pixel buffers | Rust | Processor (average) | Processor (busiest 5 s) | Drawings | Processor per drawing |
+|---|---|---|---|---|---|---|---|---|
+| Before, run 1 | 150.0 MiB | 6.2 MiB | not read | 33.6 MiB | 31.1% | 34.3% | 3,495 | 10.82 ms |
+| Before, run 2 | 157.0 MiB | 6.2 MiB | not read | 33.6 MiB | 31.9% | 36.3% | 3,498 | 11.07 ms |
+| After, run 1 | 138.5 MiB | 1.3 MiB | not read | 15.7 MiB | 30.4% | 33.1% | 3,534 | 10.46 ms |
+| After, run 2 | 125.0 MiB | 1.3 MiB | not read | 15.8 MiB | 32.3% | 33.9% | 3,557 | 11.04 ms |
+| After, run 3 | 133.7 MiB | 1.3 MiB | 3.4 MiB | 15.9 MiB | 30.7% | 33.3% | 3,550 | 10.51 ms |
+| After, run 4 | 135.5 MiB | 1.3 MiB | 3.4 MiB | 15.9 MiB | 30.6% | 33.1% | 3,544 | 10.49 ms |
 
-The Rust allocations fell by about 18 MiB: the BGRA pictures of the view and their images are gone. The graphics memory fell by about 5 MiB: the atlas holds no texture of the watched share. The processor share did not change beyond the difference between two runs: the encoder of the own share takes most of it (see below), and the write into the pixel buffer replaces the conversion to BGRA.
+The Rust allocations fell by about 18 MiB: the BGRA pictures of the view and their images are gone. The graphics memory fell by about 5 MiB because the atlas holds no texture of the watched share; the pixel buffers that replace those textures are memory of the category "IOSurface", which the graphics column does not include and the footprint does. They held at most 3.4 MiB: two buffers of 1.7 MiB, the one that the window draws and the one converted for its next frame. In this mode the view is smaller than the share of 1920 × 1080, so each picture is scaled and the copy without scaling does not apply; runs 3 and 4 match runs 1 and 2 within the difference between runs. The processor share did not change beyond the difference between two runs: the encoder of the own share takes most of it (see below), and the write into the pixel buffer replaces the conversion to BGRA.
 
 ## What uses the memory and the processor
 

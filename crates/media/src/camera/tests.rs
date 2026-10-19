@@ -1,6 +1,8 @@
 use super::synthetic::SyntheticCamera;
 use super::*;
-use crate::share::picture::{VideoPicture, mirror};
+#[cfg(target_os = "macos")]
+use crate::share::picture::VideoPicture;
+use crate::share::picture::mirror;
 use std::sync::{Mutex, PoisonError};
 
 #[derive(Default)]
