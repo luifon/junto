@@ -24,6 +24,7 @@ impl DrawnPicture {
     }
 
     /// The width of the picture in pixels.
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn width(&self) -> u32 {
         match self {
             Self::Image(image) => u32::try_from(image.size(0).width.0).unwrap_or_default(),
