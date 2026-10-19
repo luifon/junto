@@ -31,6 +31,7 @@ pub mod recorder;
 pub mod recordings;
 pub mod routes;
 pub mod secrets;
+pub mod starter;
 pub mod state;
 pub mod storage;
 pub mod store;

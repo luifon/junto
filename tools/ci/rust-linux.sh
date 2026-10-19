@@ -15,7 +15,7 @@ tools/linux-container.sh true
 step "Format"
 tools/linux-container.sh cargo fmt --all --check
 step "Lint"
-tools/linux-container.sh cargo clippy --workspace --all-targets --locked -- -D warnings
+tools/linux-container.sh cargo clippy --workspace --all-targets --locked --keep-going -- -D warnings
 step "Build the server used by process tests"
 tools/linux-container.sh cargo build --workspace --locked
 step "Tests with PostgreSQL"

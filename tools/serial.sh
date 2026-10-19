@@ -7,6 +7,16 @@
 # it; on other systems it is in /tmp. JUNTO_HEAVY_LOCK names another file, for the test of
 # a script that calls this one, and for the run lock of a CI runner. Without lockf and flock
 # the lock is taken by tools/windows/lock.py.
+#
+# serial.sh --inherited <command> takes the lock with tools/windows/lock.py on every system:
+# the processes of the command inherit the locked file, so the lock lasts until the last of
+# them has ended, and TERM, INT and HUP go to the command (tools/ci/run-jobs.sh). BSD lockf
+# frees the lock when its direct child ends; it and lock.py take the same lock of the file.
+inherited=false
+if [ "${1:-}" = --inherited ]; then
+    inherited=true
+    shift
+fi
 if [ -n "${JUNTO_HEAVY_LOCK:-}" ]; then
     lock="$JUNTO_HEAVY_LOCK"
 else
@@ -14,10 +24,10 @@ else
     [ -n "$directory" ] || directory=/tmp
     lock="${directory%/}/junto-heavy.lock"
 fi
-if command -v lockf >/dev/null 2>&1; then
+if ! "$inherited" && command -v lockf >/dev/null 2>&1; then
     exec lockf -k "$lock" nice -n 10 "$@"
 fi
-if command -v flock >/dev/null 2>&1; then
+if ! "$inherited" && command -v flock >/dev/null 2>&1; then
     exec flock "$lock" nice -n 10 "$@"
 fi
 # The Bash of Git for Windows has neither program.

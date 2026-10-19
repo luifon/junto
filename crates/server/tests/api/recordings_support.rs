@@ -364,6 +364,7 @@ impl FakeWorker {
     }
 
     /// The text of a file that a behaviour wrote into the directory of the worker.
+    #[cfg(unix)]
     pub fn note(&self, name: &str) -> String {
         std::fs::read_to_string(self.path(name)).unwrap()
     }

@@ -210,6 +210,28 @@ class Lock(unittest.TestCase):
                 first.kill()
                 first.communicate()
 
+    # tools/ci/run-jobs.sh ends a run that waits for the lock with TERM to lock.py.
+    @unittest.skipIf(os.name == "nt", "Windows has no signals between processes")
+    def test_a_signal_while_the_lock_is_awaited_ends_the_holder_without_the_command(self):
+        with tempfile.TemporaryDirectory(prefix="junto-lock-") as temporary:
+            lock = pathlib.Path(temporary) / "run.lock"
+            ran = pathlib.Path(temporary) / "ran"
+            first = locked(lock, HOLD, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+            try:
+                self.assertEqual(first.stdout.readline().strip(), "held")
+                second = locked(lock, [sys.executable, "-c", f"open({str(ran)!r}, 'w')"])
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    second.wait(timeout=1)
+                second.send_signal(signal.SIGTERM)
+                self.assertEqual(second.wait(timeout=60), 128 + signal.SIGTERM)
+                first.stdin.write("end\n")
+                first.stdin.flush()
+                self.assertEqual(first.wait(timeout=60), 0)
+                self.assertFalse(ran.exists())
+            finally:
+                first.kill()
+                first.communicate()
+
     def test_a_command_that_cannot_start_is_a_failure(self):
         with tempfile.TemporaryDirectory(prefix="junto-lock-") as temporary:
             lock = pathlib.Path(temporary) / "run.lock"

@@ -313,6 +313,8 @@ pub struct Config {
     /// The built layout page of the recorder (ADR 0615). Absent: the server does not serve
     /// the page.
     pub recorder_layout_directory: Option<PathBuf>,
+    /// The process that started the server: the server stops when it ends (ADR 0008).
+    pub stop_with_process: Option<u32>,
     pub limits: Limits,
 }
 
@@ -683,6 +685,7 @@ impl Config {
     pub const RECORDER_LAYOUT_DIR: &'static str = "JUNTO_RECORDER_LAYOUT_DIR";
     pub const EXPORTS_DIR: &'static str = "JUNTO_EXPORTS_DIR";
     pub const MIGRATION_COPY: &'static str = "JUNTO_MIGRATION_COPY";
+    pub const STOP_WITH_PROCESS: &'static str = "JUNTO_STOP_WITH_PROCESS";
     pub const FFMPEG: &'static str = "JUNTO_FFMPEG";
     pub const FFPROBE: &'static str = "JUNTO_FFPROBE";
     pub const TRANSCRIBE_COMMAND: &'static str = "JUNTO_TRANSCRIBE_COMMAND";
@@ -971,6 +974,20 @@ impl Config {
                 ));
             }
         };
+        let stop_with_process = match value(Self::STOP_WITH_PROCESS) {
+            None => None,
+            Some(text) => match text.trim().parse::<u32>() {
+                Ok(number @ 1..) if text.trim().bytes().all(|byte| byte.is_ascii_digit()) => {
+                    Some(number)
+                }
+                _ => {
+                    return Err(invalid(
+                        Self::STOP_WITH_PROCESS,
+                        format!("{text:?}: expected the number of a process"),
+                    ));
+                }
+            },
+        };
         let recorder_layout_directory = value(Self::RECORDER_LAYOUT_DIR).map(PathBuf::from);
         if recorder_layout_directory
             .as_ref()
@@ -1013,6 +1030,7 @@ impl Config {
             exports_directory,
             migration_copy,
             recorder_layout_directory,
+            stop_with_process,
             database_url,
             listen_address,
             public_origins,
@@ -1040,6 +1058,7 @@ impl std::fmt::Debug for Config {
             .field("log_level", &self.log_level)
             .field("media", &self.media)
             .field("recorder", &self.recorder)
+            .field("stop_with_process", &self.stop_with_process)
             .field("limits", &self.limits)
             .finish()
     }
@@ -1096,6 +1115,7 @@ mod tests {
         assert!(config.trusted_proxies.is_empty());
         assert_eq!(config.log_format, LogFormat::Json);
         assert_eq!(config.log_level, tracing::Level::INFO);
+        assert_eq!(config.stop_with_process, None);
     }
 
     #[test]
@@ -1114,6 +1134,7 @@ mod tests {
             ),
             ("JUNTO_LOG_FORMAT", "text"),
             ("JUNTO_LOG_LEVEL", "debug"),
+            ("JUNTO_STOP_WITH_PROCESS", " 4242 "),
         ]))
         .unwrap();
         assert_eq!(
@@ -1139,6 +1160,7 @@ mod tests {
         );
         assert_eq!(config.log_format, LogFormat::Text);
         assert_eq!(config.log_level, tracing::Level::DEBUG);
+        assert_eq!(config.stop_with_process, Some(4242));
     }
 
     #[test]
@@ -1161,6 +1183,11 @@ mod tests {
             ("JUNTO_TRUSTED_PROXIES", "2001:db8::/129"),
             ("JUNTO_LOG_FORMAT", "xml"),
             ("JUNTO_LOG_LEVEL", "loud"),
+            ("JUNTO_STOP_WITH_PROCESS", "yes"),
+            ("JUNTO_STOP_WITH_PROCESS", "0"),
+            ("JUNTO_STOP_WITH_PROCESS", "-1"),
+            ("JUNTO_STOP_WITH_PROCESS", "+7"),
+            ("JUNTO_STOP_WITH_PROCESS", "4294967296"),
         ] {
             let result = Config::from_lookup(move |key| {
                 if key == "JUNTO_DATABASE_URL" {

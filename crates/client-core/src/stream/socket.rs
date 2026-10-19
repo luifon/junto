@@ -392,32 +392,84 @@ mod tests {
     const SERVER_CERTIFICATE: &[u8] = include_bytes!("../../tests/data/stream-tls/server.der");
     const SERVER_KEY: &[u8] = include_bytes!("../../tests/data/stream-tls/server-key.der");
 
-    fn request_to(address: std::net::SocketAddr, scheme: &str) -> StreamRequest {
+    /// The path of the stream with a value that is new in each call, so that a test server can
+    /// tell the request of its own client from a connection of another program on the machine.
+    fn marked_path() -> String {
+        format!("/api/v1/events?test={}", uuid::Uuid::new_v4().simple())
+    }
+
+    fn request_to(address: std::net::SocketAddr, scheme: &str, path: &str) -> StreamRequest {
         StreamRequest {
-            url: Url::parse(&format!("{scheme}://{address}/api/v1/events")).unwrap(),
+            url: Url::parse(&format!("{scheme}://{address}{path}")).unwrap(),
             bearer: SecretToken::new(TOKEN.to_owned()),
         }
     }
 
-    /// The request line and the headers of one request, with the names in lower case.
-    async fn read_head<S: AsyncRead + Unpin>(
-        connection: &mut S,
-    ) -> (String, Vec<(String, String)>) {
+    /// The headers of one request, with the names in lower case.
+    type Headers = Vec<(String, String)>;
+
+    /// The request line and the headers of one request, or `None` when the connection ends or
+    /// sends something else first.
+    async fn read_head<S: AsyncRead + Unpin>(connection: &mut S) -> Option<(String, Headers)> {
         use tokio::io::AsyncReadExt;
+        const LARGEST: usize = 16 * 1024;
         let mut head = Vec::new();
         while !head.ends_with(b"\r\n\r\n") {
-            head.push(connection.read_u8().await.unwrap());
+            if head.len() == LARGEST {
+                return None;
+            }
+            head.push(connection.read_u8().await.ok()?);
         }
-        let head = String::from_utf8(head).unwrap();
+        let head = String::from_utf8(head).ok()?;
         let mut lines = head.split("\r\n").filter(|line| !line.is_empty());
-        let request_line = lines.next().unwrap().to_owned();
+        let request_line = lines.next()?.to_owned();
         let headers = lines
             .map(|line| {
-                let (name, value) = line.split_once(':').unwrap();
-                (name.trim().to_ascii_lowercase(), value.trim().to_owned())
+                let (name, value) = line.split_once(':')?;
+                Some((name.trim().to_ascii_lowercase(), value.trim().to_owned()))
             })
-            .collect();
-        (request_line, headers)
+            .collect::<Option<_>>()?;
+        Some((request_line, headers))
+    }
+
+    /// Accepts connections on `listener` until one carries the request `GET <path>`, and gives
+    /// that connection, made by `open`, with the headers of its request. Any program on the
+    /// machine can connect to the port of a listener; the other connections are closed. Each
+    /// connection is read in a task of its own, so one that sends nothing holds up no other.
+    async fn accept_request<S, F>(
+        listener: tokio::net::TcpListener,
+        path: &str,
+        open: impl Fn(tokio::net::TcpStream) -> F,
+    ) -> (S, Headers)
+    where
+        S: AsyncRead + Unpin + Send + 'static,
+        F: Future<Output = Option<S>> + Send + 'static,
+    {
+        let expected = format!("GET {path} HTTP/1.1");
+        let (found, mut arrived) = mpsc::channel(1);
+        loop {
+            tokio::select! {
+                Some(request) = arrived.recv() => return request,
+                accepted = listener.accept() => {
+                    let opening = open(accepted.unwrap().0);
+                    let (found, expected) = (found.clone(), expected.clone());
+                    tokio::spawn(async move {
+                        let Some(mut connection) = opening.await else {
+                            return;
+                        };
+                        if let Some((line, headers)) = read_head(&mut connection).await
+                            && line == expected
+                        {
+                            let _ = found.send((connection, headers)).await;
+                        }
+                    });
+                }
+            }
+        }
+    }
+
+    async fn plain(connection: tokio::net::TcpStream) -> Option<tokio::net::TcpStream> {
+        Some(connection)
     }
 
     fn values<'a>(headers: &'a [(String, String)], name: &str) -> Vec<&'a str> {
@@ -435,15 +487,13 @@ mod tests {
         )
     }
 
-    /// Checks the upgrade request, upgrades the connection, sends `hello` and gives the first
-    /// message of the client.
-    async fn serve_upgrade<S>(mut connection: S) -> Message
+    /// Checks the headers of the upgrade request, upgrades the connection, sends `hello` and
+    /// gives the first message of the client.
+    async fn serve_upgrade<S>(mut connection: S, headers: Headers) -> Message
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
         use tokio::io::AsyncWriteExt;
-        let (request_line, headers) = read_head(&mut connection).await;
-        assert_eq!(request_line, "GET /api/v1/events HTTP/1.1");
         let bearer = format!("Bearer {TOKEN}");
         assert_eq!(values(&headers, "authorization"), [bearer.as_str()]);
         assert_eq!(values(&headers, "upgrade"), ["websocket"]);
@@ -472,13 +522,43 @@ mod tests {
     #[tokio::test]
     async fn the_upgrade_request_is_http_1_1_with_the_session_token_and_frames_follow() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let request = request_to(listener.local_addr().unwrap(), "http");
+        let path = marked_path();
+        let request = request_to(listener.local_addr().unwrap(), "http", &path);
         let server = tokio::spawn(async move {
-            let (connection, _) = listener.accept().await.unwrap();
-            serve_upgrade(connection).await
+            let (connection, headers) = accept_request(listener, &path, plain).await;
+            serve_upgrade(connection, headers).await
         });
         let opened = ReqwestStreamTransport::new().unwrap().open(request).await;
         says_hello_and_takes_subscribe(opened, server).await;
+    }
+
+    /// Connections of other programs reach the listener of a test before its client: one that
+    /// sends the start of a PostgreSQL connection and waits, and one with a request for another
+    /// path. The test server closes them and answers its client.
+    #[tokio::test]
+    async fn a_connection_of_another_program_does_not_take_the_place_of_the_client() {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let path = marked_path();
+        let request = request_to(address, "http", &path);
+        let mut waiting = tokio::net::TcpStream::connect(address).await.unwrap();
+        waiting
+            .write_all(b"\x00\x00\x00\x08\x04\xd2\x16\x2f")
+            .await
+            .unwrap();
+        let mut elsewhere = tokio::net::TcpStream::connect(address).await.unwrap();
+        elsewhere
+            .write_all(b"GET /api/v1/events HTTP/1.1\r\nHost: other\r\n\r\n")
+            .await
+            .unwrap();
+        let server = tokio::spawn(async move {
+            let (connection, headers) = accept_request(listener, &path, plain).await;
+            serve_upgrade(connection, headers).await
+        });
+        let opened = ReqwestStreamTransport::new().unwrap().open(request).await;
+        says_hello_and_takes_subscribe(opened, server).await;
+        drop((waiting, elsewhere));
     }
 
     /// Opens a connection to a server that answers the upgrade request with what `answer`
@@ -488,10 +568,10 @@ mod tests {
     ) -> Result<StreamSocket, OpenError> {
         use tokio::io::AsyncWriteExt;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let request = request_to(listener.local_addr().unwrap(), "http");
+        let path = marked_path();
+        let request = request_to(listener.local_addr().unwrap(), "http", &path);
         let server = tokio::spawn(async move {
-            let (mut connection, _) = listener.accept().await.unwrap();
-            let (_, headers) = read_head(&mut connection).await;
+            let (mut connection, headers) = accept_request(listener, &path, plain).await;
             let answer = answer(values(&headers, "sec-websocket-key")[0]);
             connection.write_all(answer.as_bytes()).await.unwrap();
             connection
@@ -577,19 +657,18 @@ mod tests {
     #[tokio::test]
     async fn a_redirect_is_not_followed_so_the_token_goes_to_no_other_server() {
         use tokio::io::AsyncWriteExt;
-        // The other server records each request that reaches it, before its answer.
+        // The other server records the first request of these clients that reaches it, before
+        // its answer.
         let other = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let elsewhere = format!("http://{}/api/v1/events", other.local_addr().unwrap());
+        let path = marked_path();
+        let elsewhere = format!("http://{}{path}", other.local_addr().unwrap());
         let reached = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let recorded = reached.clone();
         let other = tokio::spawn(async move {
-            loop {
-                let (mut connection, _) = other.accept().await.unwrap();
-                let head = read_head(&mut connection).await;
-                recorded.lock().unwrap().push(head);
-                let answer = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
-                connection.write_all(answer.as_bytes()).await.unwrap();
-            }
+            let (mut connection, headers) = accept_request(other, &path, plain).await;
+            recorded.lock().unwrap().push(headers);
+            let answer = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+            connection.write_all(answer.as_bytes()).await.unwrap();
         });
         for status in [
             "301 Moved Permanently",
@@ -637,22 +716,27 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let acceptor = tls_acceptor();
+        let path = marked_path();
+        let request = request_to(address, "https", &path);
+        // The connection of the client that does not trust the certificate ends in the
+        // handshake, so only the trusting client sends its request.
         let server = tokio::spawn(async move {
-            let (connection, _) = listener.accept().await.unwrap();
-            assert!(acceptor.accept(connection).await.is_err());
-            let (connection, _) = listener.accept().await.unwrap();
-            let connection = acceptor.accept(connection).await.unwrap();
+            let open = move |connection| {
+                let acceptor = acceptor.clone();
+                async move { acceptor.accept(connection).await.ok() }
+            };
+            let (connection, headers) = accept_request(listener, &path, open).await;
             assert_eq!(
                 connection.get_ref().1.alpn_protocol(),
                 Some(&b"http/1.1"[..])
             );
-            serve_upgrade(connection).await
+            serve_upgrade(connection, headers).await
         });
 
         // The certificates that the system trusts do not include the test authority.
         let untrusted = ReqwestStreamTransport::new()
             .unwrap()
-            .open(request_to(address, "https"))
+            .open(request.clone())
             .await;
         assert!(matches!(
             untrusted,
@@ -663,7 +747,7 @@ mod tests {
         let trusting = client_builder().add_root_certificate(authority);
         let opened = ReqwestStreamTransport::from_settings(trusting)
             .unwrap()
-            .open(request_to(address, "https"))
+            .open(request)
             .await;
         says_hello_and_takes_subscribe(opened, server).await;
     }
