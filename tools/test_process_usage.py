@@ -13,6 +13,7 @@ Example Helper [201]: 64-bit    Footprint: 3000 B (16384 bytes per page)
       ---        ---         ---        ---    ---
      1000 B       0 B         0 B          2    IOAccelerator
       700 B       0 B         0 B          1    IOAccelerator (graphics)
+      400 B       0 B         0 B          3    IOSurface
      3000 B       0 B         0 B          9    TOTAL
     phys_footprint: 3072 B
     phys_footprint_peak: 9000 B
@@ -23,10 +24,10 @@ Example [100]: 64-bit    Footprint: 5000 B (16384 bytes per page)
 
 
 class TestReadings(unittest.TestCase):
-    def test_each_process_has_its_footprint_and_its_graphics(self):
+    def test_each_process_has_its_footprint_its_graphics_and_its_pixel_buffers(self):
         self.assertEqual(
             process_usage.parse_footprint(FOOTPRINT),
-            {201: (3072, 700), 100: (5120, 0)},
+            {201: (3072, 700, 400), 100: (5120, 0, 0)},
         )
 
     def test_the_processor_time_of_ps_is_read_in_every_form(self):
@@ -37,13 +38,14 @@ class TestReadings(unittest.TestCase):
 
     def test_the_summary_takes_the_highest_readings_and_the_busiest_interval(self):
         samples = [
-            (0.0, 100, 10, 1.0, 20),
-            (5.0, 300, 30, 1.5, 25),
-            (10.0, 200, 20, 3.5, 22),
+            (0.0, 100, 10, 4, 1.0, 20),
+            (5.0, 300, 30, 2, 1.5, 25),
+            (10.0, 200, 20, 6, 3.5, 22),
         ]
         result = process_usage.summary(samples)
         self.assertEqual(result["footprint"], 300)
         self.assertEqual(result["graphics"], 30)
+        self.assertEqual(result["surfaces"], 6)
         self.assertEqual(result["threads"], 25)
         self.assertAlmostEqual(result["processor_average"], 25.0)
         self.assertAlmostEqual(result["processor_peak"], 40.0)

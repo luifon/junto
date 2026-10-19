@@ -11,6 +11,9 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified: this file differs from the published webrtc-sys 0.3.48. Its bridge includes
+// `livekit/exception.h`, whose catch turns every C++ exception into an error.
 
 use std::sync::Arc;
 
@@ -63,6 +66,8 @@ pub mod ffi {
     }
 
     unsafe extern "C++" {
+        // Modified: added.
+        include!("livekit/exception.h");
         include!("livekit/frame_cryptor.h");
 
         pub type KeyProvider;

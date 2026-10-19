@@ -361,7 +361,7 @@ struct Shared {
 type Turn = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
 struct Inner {
-    camera_pictures: watch::Sender<HashMap<ShareId, Arc<crate::camera::CameraFrame>>>,
+    camera_pictures: watch::Sender<HashMap<ShareId, Arc<crate::share::picture::VideoPicture>>>,
     client: Client,
     runtime: tokio::runtime::Handle,
     options: MediaOptions,
@@ -740,7 +740,7 @@ impl Calls {
     #[cfg(feature = "test-support")]
     pub fn show_camera_pictures_for_test(
         &self,
-        pictures: HashMap<ShareId, Arc<crate::camera::CameraFrame>>,
+        pictures: HashMap<ShareId, Arc<crate::share::picture::VideoPicture>>,
     ) {
         self.inner.camera_pictures.send_replace(pictures);
     }
@@ -808,7 +808,7 @@ impl Calls {
 
     pub fn camera_pictures(
         &self,
-    ) -> watch::Receiver<HashMap<ShareId, Arc<crate::camera::CameraFrame>>> {
+    ) -> watch::Receiver<HashMap<ShareId, Arc<crate::share::picture::VideoPicture>>> {
         self.inner.camera_pictures.subscribe()
     }
 

@@ -2,8 +2,9 @@
 """Reads the memory, the processor time and the threads of the processes of one application
 on macOS, from outside, by the method of the test target `modes` of the client (ADR 0914).
 
-Every interval it reads `phys_footprint` and the dirty memory of the category
-"IOAccelerator (graphics)" of each process with `footprint`, the processor time and the
+Every interval it reads `phys_footprint` and the dirty memory of the categories
+"IOAccelerator (graphics)" and "IOSurface" (the pixel buffers that a window draws as
+surfaces) of each process with `footprint`, the processor time and the
 threads of each process with `ps`, and adds them over the processes. At the end it prints
 the highest sum of each memory reading, the processor share over the whole time and over
 the busiest interval in percent of one core, and the highest sum of threads.
@@ -37,21 +38,23 @@ def processes(prefix):
 
 
 def parse_footprint(text):
-    """The `phys_footprint` and the graphics memory of each process in the output of
-    `footprint -f bytes`, by process identifier."""
+    """The `phys_footprint`, the graphics memory and the memory of the pixel buffers of each
+    process in the output of `footprint -f bytes`, by process identifier."""
     readings = {}
     current = None
     for line in text.splitlines():
         header = re.search(r"\[(\d+)\]: \d+-bit\s+Footprint:", line)
         if header:
             current = int(header.group(1))
-            readings[current] = [0, 0]
+            readings[current] = [0, 0, 0]
             continue
         if current is None:
             continue
         stripped = line.strip()
         if stripped.endswith("IOAccelerator (graphics)"):
             readings[current][1] = int(stripped.split()[0])
+        elif stripped.endswith("IOSurface"):
+            readings[current][2] = int(stripped.split()[0])
         elif stripped.startswith("phys_footprint:"):
             readings[current][0] = int(stripped.split()[1])
     return {pid: tuple(values) for pid, values in readings.items()}
@@ -71,9 +74,10 @@ def parse_time(text):
 
 
 def read(pids):
-    """One reading: the sums of footprint, graphics, processor seconds and threads."""
+    """One reading: the sums of footprint, graphics, pixel buffers, processor seconds and
+    threads."""
     if not pids:
-        return (0, 0, 0.0, 0)
+        return (0, 0, 0, 0.0, 0)
     arguments = ["/usr/bin/footprint", "-f", "bytes"]
     for pid in pids:
         arguments += ["-p", str(pid)]
@@ -81,6 +85,7 @@ def read(pids):
     memory = parse_footprint(output)
     footprint = sum(values[0] for values in memory.values())
     graphics = sum(values[1] for values in memory.values())
+    surfaces = sum(values[2] for values in memory.values())
     listed = ",".join(str(pid) for pid in pids)
     times = subprocess.run(
         ["/bin/ps", "-o", "time=", "-p", listed], capture_output=True, text=True
@@ -92,27 +97,28 @@ def read(pids):
     # A line of titles, then one line for each thread; the first line of each process
     # names the process and is also its first thread.
     thread_count = max(0, len(threads.splitlines()) - 1)
-    return (footprint, graphics, processor, thread_count)
+    return (footprint, graphics, surfaces, processor, thread_count)
 
 
 def summary(samples):
-    """The highest footprint, graphics and threads, and the processor share over the whole
-    time and over the busiest interval. A sample is (seconds, footprint, graphics,
-    processor seconds, threads)."""
+    """The highest footprint, graphics, pixel buffers and threads, and the processor share
+    over the whole time and over the busiest interval. A sample is (seconds, footprint,
+    graphics, pixel buffers, processor seconds, threads)."""
     first, last = samples[0], samples[-1]
 
     def share(earlier, later):
-        return 100.0 * max(0.0, later[3] - earlier[3]) / max(0.001, later[0] - earlier[0])
+        return 100.0 * max(0.0, later[4] - earlier[4]) / max(0.001, later[0] - earlier[0])
 
     return {
         "footprint": max(sample[1] for sample in samples),
         "graphics": max(sample[2] for sample in samples),
+        "surfaces": max(sample[3] for sample in samples),
         "processor_average": share(first, last),
         "processor_peak": max(
             (share(earlier, later) for earlier, later in zip(samples, samples[1:])),
             default=0.0,
         ),
-        "threads": max(sample[4] for sample in samples),
+        "threads": max(sample[5] for sample in samples),
     }
 
 
@@ -128,12 +134,13 @@ def main():
     samples = []
     while True:
         pids = processes(options.prefix)
-        footprint, graphics, processor, threads = read(pids)
+        footprint, graphics, surfaces, processor, threads = read(pids)
         at = time.monotonic() - start
-        samples.append((at, footprint, graphics, processor, threads))
+        samples.append((at, footprint, graphics, surfaces, processor, threads))
         print(
             f"{options.label}: reading {at:5.0f}s {len(pids)} processes, footprint "
             f"{footprint / 1048576:.1f} MiB, graphics {graphics / 1048576:.1f} MiB, "
+            f"pixel buffers {surfaces / 1048576:.1f} MiB, "
             f"processor {processor:.2f}s, {threads} threads",
             flush=True,
         )
@@ -146,7 +153,8 @@ def main():
     result = summary(samples)
     print(
         f"{options.label}: footprint {result['footprint'] / 1048576:.1f} MiB, graphics "
-        f"{result['graphics'] / 1048576:.1f} MiB, processor {result['processor_average']:.1f}% "
+        f"{result['graphics'] / 1048576:.1f} MiB, pixel buffers "
+        f"{result['surfaces'] / 1048576:.1f} MiB, processor {result['processor_average']:.1f}% "
         f"on average and {result['processor_peak']:.1f}% over {INTERVAL:.0f} s, "
         f"{result['threads']} threads"
     )

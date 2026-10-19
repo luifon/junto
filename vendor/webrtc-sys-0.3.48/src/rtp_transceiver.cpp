@@ -12,9 +12,14 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ *
+ * Modified: this file differs from the published webrtc-sys 0.3.48. Its errors are thrown
+ * as livekit_ffi::Exception (livekit/exception.h), which owns its message.
  */
 
 #include "livekit/rtp_transceiver.h"
+// Modified: added.
+#include "livekit/exception.h"
 
 #include "api/peer_connection_interface.h"
 #include "api/scoped_refptr.h"
@@ -83,7 +88,8 @@ void RtpTransceiver::set_direction(RtpTransceiverDirection direction) const {
       static_cast<webrtc::RtpTransceiverDirection>(direction));
 
   if (!error.ok()) {
-    throw std::runtime_error(serialize_error(to_error(error)));
+    // Modified: an exception that owns its message (livekit/exception.h).
+    throw Exception(serialize_error(to_error(error)));
   }
 }
 
@@ -100,7 +106,8 @@ RtpTransceiverDirection RtpTransceiver::fired_direction() const {
 void RtpTransceiver::stop_standard() const {
   auto error = transceiver_->StopStandard();
   if (!error.ok())
-    throw std::runtime_error(serialize_error(to_error(error)));
+    // Modified: an exception that owns its message (livekit/exception.h).
+    throw Exception(serialize_error(to_error(error)));
 }
 
 void RtpTransceiver::set_codec_preferences(
@@ -112,7 +119,8 @@ void RtpTransceiver::set_codec_preferences(
 
   auto error = transceiver_->SetCodecPreferences(std_codecs);
   if (!error.ok())
-    throw std::runtime_error(serialize_error(to_error(error)));
+    // Modified: an exception that owns its message (livekit/exception.h).
+    throw Exception(serialize_error(to_error(error)));
 }
 
 rust::Vec<RtpCodecCapability> RtpTransceiver::codec_preferences() const {
@@ -150,7 +158,8 @@ void RtpTransceiver::set_header_extensions_to_negotiate(
 
   auto error = transceiver_->SetHeaderExtensionsToNegotiate(headers);
   if (!error.ok())
-    throw std::runtime_error(serialize_error(to_error(error)));
+    // Modified: an exception that owns its message (livekit/exception.h).
+    throw Exception(serialize_error(to_error(error)));
 }
 
 }  // namespace livekit_ffi

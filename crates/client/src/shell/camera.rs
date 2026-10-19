@@ -112,7 +112,7 @@ impl super::Shell {
     pub(crate) fn camera_image(
         &self,
         person: &crate::state::view::Occupant,
-    ) -> Option<crate::ui::tile::CameraPicture> {
+    ) -> Option<crate::ui::DrawnPicture> {
         let key = if person.is_self {
             junto_media::engine::ShareId::Own
         } else {
@@ -164,7 +164,8 @@ impl super::Shell {
         });
         for (id, (frame, converted)) in frames {
             if !self.cameras.contains_key(&id)
-                && let Some(picture) = converted.and_then(super::prepared::ConvertedCamera::picture)
+                && let Some(picture) =
+                    converted.and_then(super::prepared::ConvertedPicture::picture)
             {
                 self.cameras.insert(id, (frame, picture));
                 changed = true;
@@ -190,7 +191,7 @@ impl super::Shell {
         &mut self,
         pictures: std::collections::HashMap<
             junto_media::engine::ShareId,
-            std::sync::Arc<junto_media::camera::CameraFrame>,
+            std::sync::Arc<junto_media::share::picture::VideoPicture>,
         >,
         focus: bool,
         detached: bool,
@@ -203,7 +204,7 @@ impl super::Shell {
         let converted = pictures
             .into_iter()
             .map(|(id, frame)| {
-                let picture = super::prepared::ConvertedCamera::of(&frame);
+                let picture = super::prepared::ConvertedPicture::of(&frame);
                 (id, (frame, picture))
             })
             .collect();
@@ -214,8 +215,8 @@ impl super::Shell {
 pub(crate) type ShownCameras = std::collections::HashMap<
     junto_media::engine::ShareId,
     (
-        std::sync::Arc<junto_media::camera::CameraFrame>,
-        crate::ui::tile::CameraPicture,
+        std::sync::Arc<junto_media::share::picture::VideoPicture>,
+        crate::ui::DrawnPicture,
     ),
 >;
 

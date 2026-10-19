@@ -12,6 +12,9 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ *
+ * Modified: this file differs from the published webrtc-sys 0.3.48. Its errors are thrown
+ * as livekit_ffi::Exception (livekit/exception.h), which owns its message.
  */
 
 #pragma once
@@ -20,14 +23,17 @@
 #include <stdexcept>
 #include <string>
 
+// Modified: added.
+#include "livekit/exception.h"
 #include "third_party/libyuv/include/libyuv.h"
 #include "webrtc-sys/src/yuv_helper.rs.h"
 
 namespace livekit_ffi {
 
+// Modified: an exception that owns its message (livekit/exception.h).
 #define THROW_ON_ERROR(ret)                                           \
   if (ret != 0) {                                                     \
-    throw std::runtime_error("libyuv error: " + std::to_string(ret)); \
+    throw Exception("libyuv error: " + std::to_string(ret));          \
   }
 
 static void i420_to_argb(const uint8_t* src_y,

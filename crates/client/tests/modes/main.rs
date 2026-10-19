@@ -209,6 +209,10 @@ impl Mode {
 struct Measured {
     footprint: u64,
     graphics: u64,
+    /// The pixel buffers of Core Video (the category "IOSurface"): the cameras and the
+    /// watched share that the window draws as surfaces. They are in the footprint and not
+    /// in the graphics memory.
+    surfaces: u64,
     rust: u64,
     processor_average: f64,
     processor_peak: f64,
@@ -237,6 +241,7 @@ impl Measured {
                 .max()
                 .unwrap_or_default(),
             graphics: samples.iter().map(|s| s.graphics).max().unwrap_or_default(),
+            surfaces: samples.iter().map(|s| s.surfaces).max().unwrap_or_default(),
             rust: samples.iter().map(|s| s.rust).max().unwrap_or_default(),
             processor_average: share(&first, &last),
             processor_peak: samples
@@ -259,10 +264,11 @@ impl Measured {
     /// The line that a started process prints and the first process reads.
     fn line(&self, mode: Mode) -> String {
         format!(
-            "modes: result {} footprint={} graphics={} rust={} processor_average={:.2} processor_peak={:.2} threads={} files={} draws={} seconds={:.1}",
+            "modes: result {} footprint={} graphics={} surfaces={} rust={} processor_average={:.2} processor_peak={:.2} threads={} files={} draws={} seconds={:.1}",
             mode.name(),
             self.footprint,
             self.graphics,
+            self.surfaces,
             self.rust,
             self.processor_average,
             self.processor_peak,
@@ -282,6 +288,7 @@ impl Measured {
             match key {
                 "footprint" => measured.footprint = value.parse().ok()?,
                 "graphics" => measured.graphics = value.parse().ok()?,
+                "surfaces" => measured.surfaces = value.parse().ok()?,
                 "rust" => measured.rust = value.parse().ok()?,
                 "processor_average" => measured.processor_average = value.parse().ok()?,
                 "processor_peak" => measured.processor_peak = value.parse().ok()?,
@@ -353,10 +360,11 @@ fn main() -> ExitCode {
         }
     }
     println!(
-        "modes: {:<8} {:>10} {:>10} {:>10} {:>9} {:>9} {:>8} {:>6} {:>8} {:>8}",
+        "modes: {:<8} {:>10} {:>10} {:>10} {:>10} {:>9} {:>9} {:>8} {:>6} {:>8} {:>8}",
         "mode",
         "footprint",
         "graphics",
+        "surfaces",
         "Rust",
         "processor",
         "peak",
@@ -367,10 +375,11 @@ fn main() -> ExitCode {
     );
     for (mode, measured) in &table {
         println!(
-            "modes: {:<8} {:>6.1} MiB {:>6.1} MiB {:>6.1} MiB {:>8.1}% {:>8.1}% {:>8} {:>6} {:>8} {:>8}",
+            "modes: {:<8} {:>6.1} MiB {:>6.1} MiB {:>6.1} MiB {:>6.1} MiB {:>8.1}% {:>8.1}% {:>8} {:>6} {:>8} {:>8}",
             mode.name(),
             mib(measured.footprint),
             mib(measured.graphics),
+            mib(measured.surfaces),
             mib(measured.rust),
             measured.processor_average,
             measured.processor_peak,
@@ -475,11 +484,12 @@ fn run_mode(mode: Mode) -> ExitCode {
         }
         let reading = process::sample(start, ALLOCATOR.held());
         println!(
-            "modes: {} reading {:>4}s footprint {:.1} MiB, graphics {:.1} MiB, Rust allocations {:.1} MiB, processor {:.2}s, {} threads, {} files",
+            "modes: {} reading {:>4}s footprint {:.1} MiB, graphics {:.1} MiB, pixel buffers {:.1} MiB, Rust allocations {:.1} MiB, processor {:.2}s, {} threads, {} files",
             mode.name(),
             reading.at.as_secs(),
             mib(reading.footprint),
             mib(reading.graphics),
+            mib(reading.surfaces),
             mib(reading.rust),
             reading.processor.as_secs_f64(),
             reading.threads,

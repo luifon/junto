@@ -13,7 +13,7 @@
 // limitations under the License.
 //
 // Modified: this file differs from the published webrtc-sys 0.3.48 by the module
-// `system_certificate_verifier` on Linux.
+// `system_certificate_verifier` on Linux and the module `exception`.
 
 #[cfg(target_os = "android")]
 pub mod android;
@@ -26,6 +26,8 @@ pub mod candidate;
 pub mod data_channel;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub mod desktop_capturer;
+// Modified: added.
+pub mod exception;
 pub mod frame_cryptor;
 pub mod helper;
 pub mod jsep;

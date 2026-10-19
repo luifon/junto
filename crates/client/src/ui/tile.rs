@@ -3,11 +3,10 @@
 
 use gpui::{
     App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce, Role,
-    SharedString, StatefulInteractiveElement, Styled, StyledImage, Window, div,
-    prelude::FluentBuilder,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
 };
 
-use super::{Avatar, Meter, StyleExt, icon};
+use super::{Avatar, DrawnPicture, Meter, StyleExt, icon};
 use crate::assets::Icon;
 use crate::theme::{theme, u};
 
@@ -31,7 +30,7 @@ pub const STRIP_TILE_SIZE: (f32, f32) = (148.0, 84.0);
 
 #[derive(IntoElement)]
 pub struct PersonTile {
-    camera_picture: Option<CameraPicture>,
+    camera_picture: Option<DrawnPicture>,
     camera_view: Option<(junto_media::calls::Calls, junto_media::engine::ShareId)>,
     id: ElementId,
     name: SharedString,
@@ -90,7 +89,7 @@ impl PersonTile {
     }
 
     /// The picture of the camera of the person. It covers the avatar.
-    pub fn camera_picture(mut self, picture: Option<CameraPicture>) -> Self {
+    pub fn camera_picture(mut self, picture: Option<DrawnPicture>) -> Self {
         self.camera_picture = picture;
         self
     }
@@ -192,7 +191,7 @@ impl RenderOnce for PersonTile {
                     .child(Avatar::new(self.seed, avatar).image(self.picture)),
             )
             .when_some(self.camera_picture, |tile, picture| {
-                tile.child(picture.element())
+                tile.child(div().absolute().size_full().child(picture.element()))
             })
             .child(
                 div()
@@ -214,36 +213,5 @@ impl RenderOnce for PersonTile {
                     .children(marks)
                     .child(div().min_w_0().truncate().child(self.name)),
             )
-    }
-}
-
-#[derive(Clone)]
-pub enum CameraPicture {
-    Image(std::sync::Arc<gpui::RenderImage>),
-    #[cfg(target_os = "macos")]
-    Surface(core_video::pixel_buffer::CVPixelBuffer),
-}
-impl CameraPicture {
-    pub(crate) fn image(&self) -> Option<&std::sync::Arc<gpui::RenderImage>> {
-        match self {
-            Self::Image(image) => Some(image),
-            #[cfg(target_os = "macos")]
-            Self::Surface(_) => None,
-        }
-    }
-    fn element(self) -> gpui::AnyElement {
-        match self {
-            Self::Image(image) => gpui::img(image)
-                .absolute()
-                .size_full()
-                .object_fit(gpui::ObjectFit::Contain)
-                .into_any_element(),
-            #[cfg(target_os = "macos")]
-            Self::Surface(buffer) => gpui::surface(buffer)
-                .absolute()
-                .size_full()
-                .object_fit(gpui::ObjectFit::Contain)
-                .into_any_element(),
-        }
     }
 }

@@ -187,6 +187,7 @@ pub const COPIED: &str = "Copied";
 pub const DONE: &str = "Done";
 pub const INVITES: &str = "Invites of the server";
 pub const NO_INVITES: &str = "The server has no invite.";
+pub const INVITE_BEING_MADE: &str = "Wait until the new invite is made.";
 pub const REVOKE: &str = "Revoke";
 pub const NEW_CODE_MARK: &str = "New";
 pub const NEW_CODE_LABEL: &str = "The code of the new invite";
