@@ -1795,7 +1795,87 @@ mod tests {
             username: String::new(),
             password: String::new(),
         });
-        assert!(factory.create_peer_connection(config).is_err());
+        let error = factory
+            .create_peer_connection(config)
+            .err()
+            .unwrap_or_else(|| panic!("a peer with an invalid ICE URL was created"));
+        assert_eq!(error.message, "failed to initialize pc");
+    }
+
+    #[test]
+    fn the_error_of_a_native_call_keeps_its_message_after_the_call_has_ended() {
+        use livekit::webrtc::session_description::{SdpType, SessionDescription};
+
+        // The heap of Windows gives a block of several MiB its own pages and returns them to
+        // the system when the block is freed, so a message read after its free is a fault.
+        let line = "x".repeat(8 << 20);
+        let error = SessionDescription::parse(&format!("{line}\n"), SdpType::Offer)
+            .err()
+            .unwrap_or_else(|| panic!("a description without a version line was parsed"));
+        assert!(
+            error.line == line,
+            "the line of the error differs from the line given"
+        );
+        assert!(error.description.contains("v="), "{}", error.description);
+    }
+
+    /// The variable that makes a run of the test program call one function of the exception
+    /// bridge of the wrapper and nothing else.
+    const NATIVE_THROW: &str = "JUNTO_TEST_NATIVE_THROW";
+
+    #[test]
+    fn a_cpp_exception_that_the_wrapper_did_not_throw_ends_the_process_with_a_line_that_names_it() {
+        use std::process::Command;
+        use webrtc_sys::exception::ffi;
+
+        const NAME: &str = "engine::tests::a_cpp_exception_that_the_wrapper_did_not_throw_ends_the_process_with_a_line_that_names_it";
+        if let Ok(call) = std::env::var(NATIVE_THROW) {
+            let returned = match call.as_str() {
+                "runtime" => ffi::throw_runtime_exception(0).is_err(),
+                _ => ffi::throw_value().is_err(),
+            };
+            panic!("the native call returned (with an error: {returned})");
+        }
+        // On Linux the C++ library is the one inside the WebRTC library, built without
+        // exceptions: it ends the process where another C++ library throws.
+        let cases: &[(&str, &str, &str)] = &[
+            #[cfg(target_os = "macos")]
+            (
+                "runtime",
+                "throw_runtime_exception",
+                "of type std::out_of_range: ",
+            ),
+            #[cfg(windows)]
+            ("runtime", "throw_runtime_exception", "of type not known;"),
+            #[cfg(unix)]
+            ("value", "throw_value", "of type int;"),
+            #[cfg(windows)]
+            ("value", "throw_value", "of type not known;"),
+        ];
+        for (call, function, type_text) in cases {
+            let program = std::env::current_exe().unwrap_or_else(|error| panic!("{error}"));
+            let output = Command::new(program)
+                .args(["--exact", NAME, "--nocapture"])
+                .env(NATIVE_THROW, call)
+                .output()
+                .unwrap_or_else(|error| panic!("{error}"));
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                !output.status.success(),
+                "{call}: the process did not end\n{stderr}"
+            );
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt;
+                assert_eq!(output.status.signal(), Some(6), "{call}: {stderr}");
+            }
+            let line = stderr
+                .lines()
+                .find(|line| line.starts_with("livekit_ffi: the bridge function "))
+                .unwrap_or_else(|| panic!("{call}: no line of the wrapper\n{stderr}"));
+            assert!(line.contains(function), "{call}: {line}");
+            assert!(line.contains(type_text), "{call}: {line}");
+        }
     }
 
     #[test]

@@ -115,6 +115,8 @@ tokio = { workspace = true, features = ["io-util", "test-util"] }
 tracing-subscriber = { workspace = true }
 url = "2"
 uuid = { workspace = true }
+# The exception bridge of the vendored WebRTC wrapper (ADR 0733).
+webrtc-sys = "=0.3.48"
 
 # The workspace forbids unsafe code. This crate denies it and allows it only in modules
 # that call the platform APIs: macOS permissions and capture, the Windows capture, and
