@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use junto_client_core::api::Receipt;
+use junto_client_core::model::Collection;
 
 use junto_client_core::protocol::account::OwnAccount;
 use junto_client_core::protocol::call::{CallInvitation, CallPlace, DirectMute};
@@ -264,6 +265,18 @@ fn a_notice_is_listed_with_the_place_and_the_text_of_its_message() {
         .push((MessageId::from_uuid(failed), Named::Failed));
     // The direct message was read on another device.
     scene.model.notices[5].read_at = Some(morning());
+
+    // A channel that is in no channel list can be an archived one: the list stops at its
+    // notice until the archived list of the workspace answers (ADR 0762).
+    assert_eq!(archived_lists_of_notices(&scene.model), [scene.studio]);
+    let panel = notices_panel(scene.server_id, &scene.model, &scene.known);
+    let ids: Vec<Uuid> = panel.rows.iter().map(|row| row.id).collect();
+    assert_eq!(ids, [failed]);
+    assert!(panel.reading);
+    // The archived list does not hold the channel: its notice is not listed, and the
+    // later ones follow.
+    Arc::make_mut(&mut scene.model.admin).archived =
+        vec![(scene.studio, Collection::Loaded(Vec::new()))];
 
     let panel = notices_panel(scene.server_id, &scene.model, &scene.known);
     let ids: Vec<Uuid> = panel.rows.iter().map(|row| row.id).collect();
