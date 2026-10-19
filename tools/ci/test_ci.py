@@ -194,6 +194,20 @@ class WindowsRunner(unittest.TestCase):
         self.assertEqual(self.ci("forget", run).returncode, 0)
         self.assertFalse(here.exists())
 
+    # tools/ci/caches.sh refused the run before its first job (ADR 0905).
+    def test_a_run_that_ended_before_its_first_job_shows_the_reason(self):
+        run = "20261017T044315Z-db9034e4e0e6-windows"
+        here = self.run_folder(run)
+        for name in ("current", "process"):
+            (here / name).unlink()
+        (here / "runner.log").write_text("the run starts no job: the disk of the caches has 1 KiB free\n")
+        (here / "finished").write_text("1\n")
+        result = self.ci("status", run)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("rust-windows           not run", result.stdout)
+        self.assertIn("the runner ended with status 1 before its first job", result.stdout)
+        self.assertIn("    the run starts no job: the disk of the caches has 1 KiB free", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
