@@ -104,6 +104,9 @@ pub struct NoticesPanel {
     pub more: bool,
     /// The messages of some notices are not read yet.
     pub reading: bool,
+    /// The workspaces whose archived list could not be read: their notices of archived
+    /// channels are not listed until a read succeeds.
+    pub archive_failed: Vec<WorkspaceId>,
     /// "Mark all as read" runs.
     pub marking: bool,
     /// Why the last mark did not reach the server.
@@ -212,22 +215,41 @@ pub fn archived_list_for(place: &MessagePlace, model: &ServerModel) -> Option<Wo
     }
 }
 
-/// True while the archived list of a workspace has not answered: a place that it can
-/// name is not known yet.
-pub fn archived_list_pending(model: &ServerModel, workspace_id: WorkspaceId) -> bool {
-    matches!(
-        model.admin.state(AdminPart::Archived(workspace_id)),
-        CollectionState::NotLoaded | CollectionState::Loading
-    )
+/// Where the archived list of a workspace stands for an entry whose channel is in no
+/// channel list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchivedList {
+    /// The list has not answered: the place of the entry is not known yet.
+    Pending,
+    /// The read of the list failed: the place of the entry is not known, and the panel
+    /// says so with a retry.
+    Failed,
+    /// The list answered, or the state holds no such workspace: the place is what the
+    /// state knows, and an entry of no known place is not listed.
+    Settled,
+}
+
+/// The state of the archived list of a workspace. A workspace that the state does not
+/// hold has no list to wait for: it was deleted, or the account left it.
+pub fn archived_list(model: &ServerModel, workspace_id: WorkspaceId) -> ArchivedList {
+    if model.workspace(workspace_id).is_none() {
+        return ArchivedList::Settled;
+    }
+    match model.admin.state(AdminPart::Archived(workspace_id)) {
+        CollectionState::NotLoaded | CollectionState::Loading => ArchivedList::Pending,
+        CollectionState::Failed(_) => ArchivedList::Failed,
+        CollectionState::Loaded => ArchivedList::Settled,
+    }
 }
 
 /// The workspaces whose archived lists the notices of a server need: those of the notices
-/// whose channel is in no channel list.
+/// whose channel is in no channel list, in a workspace that the state holds.
 pub fn archived_lists_of_notices(model: &ServerModel) -> Vec<WorkspaceId> {
     let mut wanted = Vec::new();
     for notice in &model.notices {
         if let Some(Named::Read(message)) = model.named(notice.message_id)
             && let Some(workspace_id) = archived_list_for(&message.place, model)
+            && model.workspace(workspace_id).is_some()
             && !wanted.contains(&workspace_id)
         {
             wanted.push(workspace_id);
@@ -265,21 +287,34 @@ fn author_of(message: &Message, accounts: &HashMap<AccountId, String>) -> String
 /// message the server no longer has for the account is not listed, and a notice whose
 /// place the state does not hold is not listed either. A notice of a channel that is in no
 /// channel list waits for the archived list of its workspace, and so do the notices after
-/// it: they are added at the end when the list answers, and no listed row moves.
+/// it: they are added at the end when the list answers, and no listed row moves. A list
+/// that failed is named in the panel, and its notices are not listed.
 pub fn notices_panel(server_id: ServerId, model: &ServerModel, known: &Known) -> NoticesPanel {
     let accounts = account_names(server_id, model, known);
     let mut rows = Vec::with_capacity(model.notices.len());
     let mut reading = false;
+    let mut placing = false;
+    let mut archive_failed: Vec<WorkspaceId> = Vec::new();
     // The names for the mentions of a text, once for each workspace of the notices.
     let mut names: HashMap<Option<WorkspaceId>, Names> = HashMap::new();
     for notice in &model.notices {
         let row = match model.named(notice.message_id) {
             Some(Named::Read(message)) => {
-                if archived_list_for(&message.place, model)
-                    .is_some_and(|workspace_id| archived_list_pending(model, workspace_id))
-                {
-                    reading = true;
-                    break;
+                if let Some(workspace_id) = archived_list_for(&message.place, model) {
+                    match archived_list(model, workspace_id) {
+                        ArchivedList::Pending => {
+                            reading = true;
+                            placing = true;
+                            break;
+                        }
+                        ArchivedList::Failed => {
+                            if !archive_failed.contains(&workspace_id) {
+                                archive_failed.push(workspace_id);
+                            }
+                            continue;
+                        }
+                        ArchivedList::Settled => {}
+                    }
                 }
                 let place = whereabouts(&message.place, model, &accounts);
                 if place == Whereabouts::Unknown {
@@ -335,8 +370,10 @@ pub fn notices_panel(server_id: ServerId, model: &ServerModel, known: &Known) ->
         // panel offers "Mark all as read" for them (ADR 0742).
         unread: unread_notices(model),
         rows,
-        more: model.notices_more,
+        // The control after the rows is not drawn while rows wait to be added before it.
+        more: model.notices_more && !placing,
         reading,
+        archive_failed,
         marking: known.marking_all.contains_key(&server_id),
         failed: known.notices_failed.get(&server_id).cloned(),
     }

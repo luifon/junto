@@ -17,7 +17,7 @@ use sqlx::ConnectOptions;
 
 use crate::harness::{Window, World, member};
 use crate::messages::document;
-use crate::support::TestServer;
+use crate::support::{Fault, FaultProxy, TestServer};
 
 /// Stores a finished recording of a voice channel with one transcript line, as the server
 /// holds it after the transcription.
@@ -467,4 +467,179 @@ fn a_result_of_an_archived_channel_is_listed_and_leads_to_its_message(cx: &mut T
                 .any(|row| row.message.id == archived.id && row.target)
     });
     assert!(window.shows("search-panel"));
+}
+
+/// A window of a member behind a proxy, with a text channel "random" that holds one
+/// message with the word "quartz" and a mention of the member, archived while the window
+/// shows another channel.
+fn archived_scene(
+    cx: &mut TestAppContext,
+    world: &World,
+) -> (
+    TestServer,
+    FaultProxy,
+    crate::harness::Admin,
+    tempfile::TempDir,
+    Window,
+    junto_client_core::protocol::message::Message,
+) {
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let admin = world.owner(&server);
+    let (directory, mut window) = member(cx, world, &proxy.address(), &admin, "Luca");
+    window.until("the messages of the text channel are read", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let own = window.own_account();
+    let random = admin.text_channel(world, &mut window, "random");
+    let archived = admin.mention(world, random, "quartz in the old channel, ", own);
+    world
+        .run(admin.handle.api().archive_channel(random))
+        .unwrap();
+    window.until("the archived channel leaves the list", |window| {
+        !window.channel_names().contains(&"random".to_owned())
+    });
+    (server, proxy, admin, directory, window, archived)
+}
+
+/// The requests that read an archived list.
+fn archived_reads(proxy: &FaultProxy) -> usize {
+    proxy
+        .all()
+        .iter()
+        .filter(|seen| seen.method == "GET" && seen.path.ends_with("/archived-channels"))
+        .count()
+}
+
+#[gpui::test]
+fn the_first_page_of_results_is_shown_whole_when_its_archived_list_answers(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let (server, proxy, _admin, _directory, mut window, archived) = archived_scene(cx, &world);
+    let workspace_id = window.view().workspace().unwrap().id;
+    let own = window.own_account();
+    let voice = window
+        .channels()
+        .into_iter()
+        .find(|row| row.kind == ChannelKind::Voice)
+        .unwrap();
+    // A transcript line that ranks above the message of the archived channel: it is the
+    // first result of the page, and the transcripts stand under the messages.
+    world.run(seed_transcript(
+        &server,
+        workspace_id,
+        voice.id,
+        own,
+        "quartz quartz quartz quartz",
+    ));
+
+    // The answer of the archived list waits at the proxy: no result of the page is
+    // shown, so none can move when the message of the archived channel is placed.
+    proxy.hold_answer_ending("GET", "/archived-channels");
+    window.search_for("quartz");
+    window.until("the archived list waits at the proxy", |_| {
+        proxy.answers_waiting() == 1
+    });
+    let line = "search-transcript-0";
+    let message = crate::harness::selector(format!("search-result:{}", archived.id));
+    let drawn: Vec<(&'static str, gpui::Bounds<gpui::Pixels>)> = [line, message]
+        .into_iter()
+        .filter_map(|selector| {
+            window.settle();
+            window
+                .cx
+                .debug_bounds(selector)
+                .map(|bounds| (selector, bounds))
+        })
+        .collect();
+    assert!(
+        drawn.is_empty(),
+        "rows of a waiting page are drawn: {drawn:?}"
+    );
+    assert_eq!(window.search_panel().unwrap().state, SearchShown::Searching);
+
+    // The list answers: the page appears whole, the message above the transcript line.
+    proxy.release();
+    let panel = window.until_searched();
+    assert_eq!((panel.messages.len(), panel.transcripts.len()), (1, 1));
+    assert!(window.shows(line) && window.shows(message));
+    let (line_at, message_at) = (
+        window.cx.debug_bounds(line).unwrap(),
+        window.cx.debug_bounds(message).unwrap(),
+    );
+    assert!(message_at.origin.y < line_at.origin.y);
+}
+
+#[gpui::test]
+fn a_failed_archived_list_is_stated_with_a_retry_in_the_search_and_the_notices(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let (_server, proxy, _admin, _directory, mut window, archived) = archived_scene(cx, &world);
+    let attempts = junto_client_core::api::RetryPolicy::default().attempts as usize;
+    let fail_once = |proxy: &FaultProxy| {
+        proxy.fail_ending(
+            "/archived-channels",
+            std::iter::repeat_n(Fault::Busy, attempts),
+        );
+    };
+    let listed = |window: &mut Window| {
+        window.search_panel().is_some_and(|panel| {
+            panel
+                .messages
+                .iter()
+                .any(|row| row.target == ResultTarget::Message(archived.id))
+        })
+    };
+
+    // The read of the archived list fails: the search says so, beside the results that
+    // it lists, and "Try again" reads the list again.
+    fail_once(&proxy);
+    window.search_for("quartz");
+    window.until("the search states the failed archived list", |window| {
+        window.shows("search-archive-failed")
+    });
+    assert!(!listed(&mut window));
+    assert_eq!(window.search_panel().unwrap().state, SearchShown::Nothing);
+    window.click("search-archive-retry");
+    window.until("the result of the archived channel is listed", listed);
+    assert!(!window.shows("search-archive-failed"));
+
+    // A new search reads a failed archived list again.
+    window.click("close-search");
+    window.until("the archived list is released", |window| {
+        window.search_panel().is_none()
+    });
+    fail_once(&proxy);
+    window.search_for("quartz");
+    window.until(
+        "the search states the failed archived list again",
+        |window| window.shows("search-archive-failed"),
+    );
+    let reads = archived_reads(&proxy);
+    window.search_for("quartz");
+    window.until("the new search lists the result", listed);
+    assert!(archived_reads(&proxy) > reads);
+
+    // The notices state the same failure, with the same retry.
+    window.click("close-search");
+    fail_once(&proxy);
+    window.click("notices-row");
+    window.until("the notices state the failed archived list", |window| {
+        window.shows("notices-archive-failed")
+    });
+    let notices = |window: &mut Window| {
+        window
+            .view()
+            .workspace()
+            .and_then(|workspace| workspace.notices.clone())
+            .map_or(0, |panel| panel.rows.len())
+    };
+    assert_eq!(notices(&mut window), 0);
+    window.click("notices-archive-retry");
+    window.until("the notice of the archived channel is listed", |window| {
+        notices(window) == 1
+    });
+    assert!(!window.shows("notices-archive-failed"));
 }

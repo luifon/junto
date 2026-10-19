@@ -1888,6 +1888,9 @@ pub const NO_NOTICES_TITLE: &str = "No notifications";
 pub const NO_NOTICES: &str =
     "A mention, a direct message, and a reply in a thread that you wrote in are listed here.";
 pub const NOTICES_READING: &str = "Reading the notifications…";
+/// The archived list of a workspace could not be read (ADR 0762).
+pub const ARCHIVED_NOTICES_NOT_READ: &str =
+    "The archived channels could not be read, so their notifications are not listed.";
 pub const NOTICE_NOT_READ: &str = "The message of this notification could not be read.";
 pub const SHOW_OLDER: &str = "Show older";
 pub const TODAY: &str = "Today";
@@ -2082,6 +2085,9 @@ pub const SEARCH_TEXT_REFUSED: &str = "The server does not accept this search te
 pub const SEARCH_TEXT_TOO_LONG: &str = "A search text has at most 1,024 bytes.";
 pub const RESULT_GONE: &str = "The message is gone, or you can no longer read it.";
 pub const SEARCH_AGAIN: &str = "Search again";
+/// The archived list of a workspace could not be read (ADR 0762).
+pub const ARCHIVED_RESULTS_NOT_READ: &str =
+    "The archived channels could not be read, so their results are not listed.";
 pub const SHOW_MORE_RESULTS: &str = "Show more results";
 pub const READING_MORE_RESULTS: &str = "Reading more…";
 pub const SEARCH_MESSAGES: &str = "Messages";

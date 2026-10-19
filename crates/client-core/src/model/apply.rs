@@ -603,6 +603,7 @@ impl ServerModel {
                     self.forget_calls_of(*channel_id);
                     self.lose_recordings_of(*channel_id);
                 }
+                self.forget_named_of_workspace(*workspace_id);
                 // The settings of the snapshot that name the workspace or one of its
                 // channels name nothing any more.
                 self.notification_settings.retain(|held| {

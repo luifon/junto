@@ -547,6 +547,35 @@ impl AppState {
         }
     }
 
+    /// Reads the archived lists of workspaces of a server again after a read that failed:
+    /// the notices and the results that they place follow (ADR 0762).
+    pub fn read_archived_lists_again(
+        &mut self,
+        server_id: ServerId,
+        workspaces: &[WorkspaceId],
+        cx: &mut Context<Self>,
+    ) {
+        for workspace_id in workspaces {
+            self.reload_admin(server_id, AdminPart::Archived(*workspace_id));
+        }
+        self.changed(cx);
+    }
+
+    /// Reads every archived list of a server that the window holds and whose last read
+    /// failed. A new search starts with it.
+    pub(super) fn read_failed_archived_lists_again(&mut self, server_id: ServerId) {
+        let held: Vec<AdminPart> = self
+            .admin
+            .held
+            .keys()
+            .filter(|(of, part)| *of == server_id && matches!(part, AdminPart::Archived(_)))
+            .map(|(_, part)| *part)
+            .collect();
+        for part in held {
+            self.reload_admin(server_id, part);
+        }
+    }
+
     /// Reads a collection of the open page again after a read that failed.
     pub fn reload_admin(&mut self, server_id: ServerId, part: AdminPart) {
         if let Some(server) = self.client.server(server_id) {

@@ -19,7 +19,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::feed::Zone;
-use super::notices::{Jump, Whereabouts, account_names};
+use super::notices::{ArchivedList, Jump, Whereabouts, account_names, archived_list};
 use super::view::Known;
 use crate::text;
 
@@ -96,6 +96,9 @@ pub struct Hit {
     pub thread_root: Option<MessageId>,
     /// For a transcript line: the time from the start of the recording, in milliseconds.
     pub start_ms: Option<u64>,
+    /// The page of the search that the server gave the result in, from 0. The panel shows
+    /// a page when every result of it is placed (ADR 0743).
+    pub page: u32,
 }
 
 impl From<SearchHit> for Hit {
@@ -112,16 +115,27 @@ impl From<SearchHit> for Hit {
             position: hit.position,
             thread_root: hit.thread_root,
             start_ms: hit.start_ms,
+            page: 0,
         }
     }
 }
 
 impl Hit {
+    /// True when both name the same message, or the same line of the same recording.
+    pub fn same_result(&self, other: &Self) -> bool {
+        self.message_id == other.message_id
+            && self.recording_id == other.recording_id
+            && self.line == other.line
+    }
+
     /// The workspace whose archived list can name the channel of the result: a channel
-    /// that is in no channel list and that the result states the workspace of.
+    /// that is in no channel list and that the result states the workspace of, in a
+    /// workspace that the state holds. A result of a workspace that the state does not
+    /// hold has no known place and is not listed.
     pub fn archived_list(&self, model: &ServerModel) -> Option<WorkspaceId> {
         let channel_id = ChannelId::from_uuid(self.place_id);
         self.workspace_id
+            .filter(|workspace_id| model.workspace(*workspace_id).is_some())
             .filter(|_| model.channel(channel_id).is_none())
             .filter(|_| {
                 !model
@@ -260,6 +274,9 @@ pub struct SearchPanel {
     /// The message of a result that is being read for the jump to it.
     pub going: Option<MessageId>,
     pub go_failed: Option<String>,
+    /// The workspaces whose archived list could not be read: their results of archived
+    /// channels are not listed until a read succeeds.
+    pub archive_failed: Vec<WorkspaceId>,
 }
 
 /// The words that a search looks for: the words and the words of the phrases of the
@@ -415,17 +432,32 @@ pub fn search_panel(
             .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned())
     };
     let (mut messages, mut transcripts) = (Vec::new(), Vec::new());
-    // The results are listed in their order. A result whose archived channel the state
-    // does not know yet ends the list until the archived list of its workspace answers:
-    // the further results are then added at the end, and no listed row moves.
-    let mut placing = false;
+    // A page is listed when every result of it is placed: a result whose archived channel
+    // the state does not know yet holds back its page and the later ones until the
+    // archived list of its workspace answers. A page then appears whole, as when it
+    // arrives, so no row of a listed page moves (ADR 0730).
+    let withheld = search
+        .hits
+        .iter()
+        .find(|hit| {
+            hit.archived_list(model).is_some_and(|workspace_id| {
+                archived_list(model, workspace_id) == ArchivedList::Pending
+            })
+        })
+        .map(|hit| hit.page);
+    let mut archive_failed: Vec<WorkspaceId> = Vec::new();
     for hit in &search.hits {
-        if hit
-            .archived_list(model)
-            .is_some_and(|workspace_id| super::notices::archived_list_pending(model, workspace_id))
-        {
-            placing = true;
+        if withheld.is_some_and(|page| hit.page >= page) {
             break;
+        }
+        if let Some(workspace_id) = hit
+            .archived_list(model)
+            .filter(|workspace_id| archived_list(model, *workspace_id) == ArchivedList::Failed)
+        {
+            if !archive_failed.contains(&workspace_id) {
+                archive_failed.push(workspace_id);
+            }
+            continue;
         }
         let (place, channel) = place_of(hit.place_id, model, &accounts);
         if place == Whereabouts::Unknown {
@@ -468,7 +500,8 @@ pub fn search_panel(
     let found = !messages.is_empty() || !transcripts.is_empty();
     let state = match &search.progress {
         Progress::Searching => SearchShown::Searching,
-        Progress::Done if placing => SearchShown::Searching,
+        // The first page waits for its places.
+        Progress::Done if withheld == Some(0) => SearchShown::Searching,
         Progress::Refused(reason) => SearchShown::Refused(reason.clone()),
         Progress::Failed(reason) => SearchShown::Failed(reason.clone()),
         Progress::Done if found => SearchShown::Results,
@@ -508,8 +541,11 @@ pub fn search_panel(
         messages,
         transcripts,
         more: search.more,
-        can_read_more: search.more && search.hits.len() < MOST_HITS,
-        reading_more: search.reading_more,
+        // A later page that waits for its places is shown as a page on its way.
+        can_read_more: (search.more && search.hits.len() < MOST_HITS)
+            || withheld.is_some_and(|page| page > 0),
+        reading_more: search.reading_more || withheld.is_some_and(|page| page > 0),
+        archive_failed,
         channel: search.filters.channel.map(|channel_id| {
             let name = model
                 .channel(channel_id)

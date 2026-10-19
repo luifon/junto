@@ -1534,3 +1534,48 @@ fn a_shown_system_notification_leads_to_its_target_until_it_is_taken_away() {
     assert_eq!(scene.alerts(&mut seen).dismiss, std::slice::from_ref(&tag));
     assert_eq!(seen.target(scene.server_id, &tag), None);
 }
+
+#[test]
+fn a_notice_of_a_gone_workspace_waits_for_nothing_and_a_failed_archived_list_is_named() {
+    let mut scene = scene();
+    let older = scene.message(scene.in_channel(scene.general), 2, "older");
+    let older_id = older.id;
+    scene.notice(NotificationKind::Mention, older, 0);
+    // A channel of a workspace that the state does not hold: it was deleted, or the
+    // account left it. Its notice waits for no archived list and is not listed.
+    let gone = scene.message(
+        MessagePlace::Channel {
+            workspace_id: WorkspaceId::generate(),
+            channel_id: ChannelId::generate(),
+        },
+        3,
+        "gone",
+    );
+    scene.notice(NotificationKind::Mention, gone, 1);
+    assert!(archived_lists_of_notices(&scene.model).is_empty());
+    let panel = notices_panel(scene.server_id, &scene.model, &scene.known);
+    let ids: Vec<Uuid> = panel.rows.iter().map(|row| row.id).collect();
+    assert_eq!(ids, [older_id.as_uuid()]);
+    assert!(!panel.reading && panel.archive_failed.is_empty());
+
+    // A channel of the workspace that is in no list, and an archived list whose read
+    // failed: the notice is not listed, the later ones are, and the panel names the
+    // workspace for a retry.
+    let archived = scene.message(scene.in_channel(ChannelId::generate()), 4, "archived");
+    scene.notice(NotificationKind::Mention, archived, 2);
+    scene.model.notices_more = true;
+    let panel = notices_panel(scene.server_id, &scene.model, &scene.known);
+    assert!(
+        panel.reading && !panel.more,
+        "the list waits for the archived list"
+    );
+    Arc::make_mut(&mut scene.model.admin).archived = vec![(
+        scene.studio,
+        Collection::Failed(junto_client_core::model::LoadFailure::NoAnswer),
+    )];
+    let panel = notices_panel(scene.server_id, &scene.model, &scene.known);
+    let ids: Vec<Uuid> = panel.rows.iter().map(|row| row.id).collect();
+    assert_eq!(ids, [older_id.as_uuid()]);
+    assert_eq!(panel.archive_failed, [scene.studio]);
+    assert!(!panel.reading && panel.more);
+}

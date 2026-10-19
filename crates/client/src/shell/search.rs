@@ -493,6 +493,25 @@ impl Shell {
                 ),
             )
         });
+        // The results of archived channels whose list could not be read (ADR 0762).
+        let server_id = panel.server_id;
+        let archive_failed = (!panel.archive_failed.is_empty()).then(|| {
+            let workspaces = panel.archive_failed.clone();
+            div().flex_none().px(u(14.0)).pt(u(10.0)).child(
+                Notice::error(text::ARCHIVED_RESULTS_NOT_READ)
+                    .selector("search-archive-failed")
+                    .action(
+                        Button::new("search-archive-retry")
+                            .label(text::TRY_AGAIN)
+                            .selector("search-archive-retry")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.state.update(cx, |state, cx| {
+                                    state.read_archived_lists_again(server_id, &workspaces, cx);
+                                });
+                            })),
+                    ),
+            )
+        });
         let body: AnyElement = match &panel.state {
             SearchShown::Searching if found == 0 => div()
                 .id("search-running")
@@ -577,7 +596,11 @@ impl Shell {
         side_panel(&theme, text::SEARCH, "search-panel")
             .child(header)
             .child(filters)
-            .child(crate::ui::notice_slot("search-go-failed-slot").children(go_failed))
+            .child(
+                crate::ui::notice_slot("search-go-failed-slot")
+                    .children(go_failed)
+                    .children(archive_failed),
+            )
             .child(body)
             .into_any_element()
     }

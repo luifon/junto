@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use junto_protocol::discovery::{DailyQuiet, Notification, NotificationPage, NotificationSettings};
-use junto_protocol::ids::{ChannelId, MessageId};
-use junto_protocol::message::{Message, ThreadState, UnreadThreads};
+use junto_protocol::ids::{ChannelId, MessageId, WorkspaceId};
+use junto_protocol::message::{Message, MessagePlace, ThreadState, UnreadThreads};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -361,6 +361,29 @@ impl ServerModel {
     pub(super) fn forget_threads_of(&mut self, place: PlaceId) {
         let inside = self.named_inside(place);
         self.threads.retain(|held| !inside.contains(&held.root_id));
+        self.prune_named();
+    }
+
+    /// A workspace is gone: the entries of the lists whose message lies in one of its
+    /// channels leave, also of a channel that the state did not know, such as an archived
+    /// one whose list was not read.
+    pub(super) fn forget_named_of_workspace(&mut self, workspace_id: WorkspaceId) {
+        let inside: Vec<MessageId> = self
+            .named
+            .iter()
+            .filter_map(|(message_id, named)| match named {
+                Named::Read(message)
+                    if matches!(message.place, MessagePlace::Channel { workspace_id: of, .. }
+                        if of == workspace_id) =>
+                {
+                    Some(*message_id)
+                }
+                _ => None,
+            })
+            .collect();
+        self.threads.retain(|held| !inside.contains(&held.root_id));
+        self.notices
+            .retain(|held| !inside.contains(&held.message_id));
         self.prune_named();
     }
 
