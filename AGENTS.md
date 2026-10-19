@@ -90,7 +90,9 @@ The release tooling of the client: the macOS bundle and its signing, the Linux t
   - `ci.sh local <commit>` runs the macOS jobs on the local machine: `rust-macos` and `deployment`.
   - `ci.sh status <commit>` prints `passed` when the latest run on each of the three machines finished with every job passed.
   - The addresses of the machines come from `.env.local`, which is not tracked.
-- The Linux job runs format, clippy, the workspace build and suite, the Python unit tests, the check of the Linux packages, and the comparison of `docs/api/` with the generated files, in the Linux build image. The macOS and Windows jobs build every target and run the tests that need no database; macOS also runs the media unit tests and the signing and update checks; Windows also runs the check of the Windows package and the window tests with PostgreSQL.
+- `run-jobs.sh` runs the jobs of a run on one machine, each in a group of processes of its own (`group.py`), with the run lock of `tools/serial.sh --inherited`.
+- `caches.py` keeps the caches of each machine under their size caps before and after each run, empties a target cache that another runner version wrote, and before a run decides from the free space and the recorded use of earlier runs whether the run keeps them, empties them or starts no job; a machine sets other limits in the file `settings` of its CI directory.
+- The Linux job runs format, clippy, the workspace build and suite, the Python unit tests, the check of the Linux packages, and the comparison of `docs/api/` with the generated files, in the Linux build image. The macOS and Windows jobs run clippy, build every target and run the tests that need no database; macOS also runs the media unit tests and the signing and update checks; Windows also runs the check of the Windows package and the window tests with PostgreSQL.
 
 ## `vendor/`
 

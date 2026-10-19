@@ -224,7 +224,8 @@ show() {
         printf 'jobs\t%s\n' \"\$(cat jobs 2>/dev/null)\"
         if [ -f current ]; then printf 'current\t%s\n' \"\$(cat current)\"; fi
         if [ -f finished ]; then printf 'finished\t%s\n' \"\$(cat finished)\"; fi
-        if [ -f record.tsv ]; then sed 's/^/record\t/' record.tsv; fi")
+        if [ -f record.tsv ]; then sed 's/^/record\t/' record.tsv
+        elif [ -f finished ] && [ -f runner.log ]; then tail -n 5 runner.log | sed 's/^/runner\t/'; fi")
     if [ -z "$files" ]; then echo "$run: no such run" >&2; return 2; fi
     commit=$(printf '%s\n' "$files" | sed -n 's/^commit\t//p')
     jobs=$(printf '%s\n' "$files" | sed -n 's/^jobs\t//p')
@@ -267,6 +268,11 @@ show() {
         result=1
     elif [ -z "$finished" ]; then
         [ "$result" -ne 0 ] || result=3
+    elif [ "$finished" != 0 ] && ! printf '%s\n' "$files" | grep -q '^record'; then
+        # The run ended before its first job: the reason is at the end of runner.log.
+        echo "  the runner ended with status $finished before its first job; the end of runs/$run/runner.log:"
+        printf '%s\n' "$files" | sed -n 's/^runner\t/    /p'
+        result=1
     elif [ "$finished" != 0 ] && [ "$result" = 0 ]; then
         echo "  the runner ended with status $finished; see runs/$run/runner.log on the runner"
         result=1
