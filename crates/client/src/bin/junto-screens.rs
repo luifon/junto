@@ -871,7 +871,7 @@ impl Canvas {
         PictureFrame {
             width: self.width,
             height: self.height,
-            bgra: self.bgra.into(),
+            bgra: self.bgra,
             source: (self.width, self.height),
         }
     }

@@ -265,7 +265,9 @@ pub async fn capture(audio_only: bool) {
                     remote.wait_for(|picture| {
                         picture.as_ref().is_some_and(|picture| {
                             picture.share == share
-                                && matches(&picture.frame, &fixture.geometry, display, marker)
+                                && (picture.frame.picture()).is_some_and(|frame| {
+                                    matches(frame, &fixture.geometry, display, marker)
+                                })
                         })
                     }),
                 )

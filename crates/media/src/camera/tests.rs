@@ -1,5 +1,8 @@
 use super::synthetic::SyntheticCamera;
 use super::*;
+#[cfg(target_os = "macos")]
+use crate::share::picture::VideoPicture;
+use crate::share::picture::mirror;
 use std::sync::{Mutex, PoisonError};
 
 #[derive(Default)]
@@ -112,11 +115,10 @@ fn only_own_camera_preview_is_mirrored() {
         bgra: vec![
             1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255, 13, 14, 15, 255, 16, 17, 18,
             255,
-        ]
-        .into(),
+        ],
         source: (3, 2),
     };
-    let preview = mirror(&original);
+    let preview = mirror(original.clone());
     assert_eq!(preview.pixel(0, 0), original.pixel(2, 0));
     assert_eq!(preview.pixel(2, 1), original.pixel(0, 1));
     assert_eq!(original.pixel(0, 0), Some((3, 2, 1)));
@@ -127,7 +129,7 @@ fn only_own_camera_preview_is_mirrored() {
 #[test]
 fn camera_surface_uses_the_full_range_nv12_format_of_the_renderer() {
     let pixels = crate::share::synthetic::two_colours(64, 36, (200, 30, 30), (30, 30, 200));
-    let frame = CameraFrame::new(&pixels, true, (64, 36)).unwrap();
+    let frame = VideoPicture::new(&pixels, true, (64, 36)).unwrap();
     let surface = frame.surface().unwrap();
     assert_eq!(
         surface.get_pixel_format(),
@@ -138,10 +140,10 @@ fn camera_surface_uses_the_full_range_nv12_format_of_the_renderer() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn a_camera_frame_reuses_its_native_surface() {
+fn a_camera_picture_reuses_its_native_surface() {
     use core_foundation::base::TCFType;
     let pixels = crate::share::synthetic::two_colours(64, 36, (200, 30, 30), (30, 30, 200));
-    let frame = CameraFrame::new(&pixels, false, (64, 36)).unwrap();
+    let frame = VideoPicture::new(&pixels, false, (64, 36)).unwrap();
     let first = frame.surface().unwrap();
     let second = frame.surface().unwrap();
     assert_eq!(first.as_concrete_TypeRef(), second.as_concrete_TypeRef());
@@ -171,11 +173,11 @@ fn native_camera_surface_mirrors_only_the_preview_pixels() {
         pixel
     }
     let pixels = crate::share::synthetic::two_colours(64, 36, (200, 30, 30), (30, 30, 200));
-    let remote = CameraFrame::new(&pixels, false, (64, 36))
+    let remote = VideoPicture::new(&pixels, false, (64, 36))
         .unwrap()
         .surface()
         .unwrap();
-    let preview = CameraFrame::new(&pixels, true, (64, 36))
+    let preview = VideoPicture::new(&pixels, true, (64, 36))
         .unwrap()
         .surface()
         .unwrap();

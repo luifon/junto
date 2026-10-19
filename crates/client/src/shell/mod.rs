@@ -226,7 +226,7 @@ pub struct Shell {
     /// The follower converts pictures on a thread of the runtime now.
     pub(crate) pictures_converting: bool,
     /// The picture of the watched share that the window took last.
-    pub(crate) main_taken: Option<std::sync::Arc<junto_media::share::picture::PictureFrame>>,
+    pub(crate) main_taken: Option<std::sync::Arc<junto_media::share::picture::VideoPicture>>,
     /// How often the window was drawn.
     #[cfg(feature = "test-support")]
     draws: usize,
@@ -735,10 +735,7 @@ impl Shell {
     /// holds.
     #[cfg(feature = "test-support")]
     pub fn draws(&self) -> (usize, usize, Option<u32>) {
-        let width = self.pictures.main.as_ref().map(|(_, image)| {
-            let size = image.size(0);
-            u32::try_from(size.width.0).unwrap_or_default()
-        });
+        let width = (self.pictures.main.as_ref()).map(|(_, picture)| picture.width());
         (self.draws, self.picture_draws, width)
     }
 

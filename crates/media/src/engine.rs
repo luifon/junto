@@ -323,7 +323,7 @@ pub struct Engine {
     stops: Arc<Stops>,
     #[cfg(test)]
     asked: Arc<Mutex<Vec<Asked>>>,
-    camera_pictures: watch::Receiver<HashMap<ShareId, Arc<crate::camera::CameraFrame>>>,
+    camera_pictures: watch::Receiver<HashMap<ShareId, Arc<crate::share::picture::VideoPicture>>>,
     commands: mpsc::UnboundedSender<Command>,
     state: watch::Receiver<EngineState>,
     levels: watch::Receiver<Levels>,
@@ -366,7 +366,7 @@ impl Engine {
     }
     pub fn camera_pictures(
         &self,
-    ) -> watch::Receiver<HashMap<ShareId, Arc<crate::camera::CameraFrame>>> {
+    ) -> watch::Receiver<HashMap<ShareId, Arc<crate::share::picture::VideoPicture>>> {
         self.camera_pictures.clone()
     }
     /// Starts the connection on `runtime`. The result is in [`Engine::state`].
@@ -674,7 +674,7 @@ struct Actor {
     camera_generation: u64,
     camera_views: Option<HashMap<ShareId, (u32, u32)>>,
     remote_cameras: HashMap<TrackSid, RemoteCamera>,
-    camera_pictures: watch::Sender<HashMap<ShareId, Arc<crate::camera::CameraFrame>>>,
+    camera_pictures: watch::Sender<HashMap<ShareId, Arc<crate::share::picture::VideoPicture>>>,
     runtime: tokio::runtime::Handle,
     options: EngineOptions,
     config: VoiceConfig,

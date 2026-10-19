@@ -5,11 +5,13 @@
 //! the watched share, the small pictures of both shares, the own camera and the camera of
 //! the other person. The program gives the windows frames of the display for a time, first
 //! with the call in the main window of A and then in the separate call window of A, and
-//! reads the graphics memory of the process with `footprint`. Then the shares and the
-//! cameras end, and the program reads the memory again.
+//! reads with `footprint` the memory of the pictures of the process: the graphics memory,
+//! which holds the images of gpui in the atlas, and the memory of the pixel buffers of Core
+//! Video, which hold the watched share and the cameras that the windows draw as surfaces.
+//! Then the shares and the cameras end, and the program reads the memory again.
 //!
-//! It fails when the graphics memory grows with the number of drawn pictures, or when the
-//! memory of the pictures stays after the shares and the cameras have ended.
+//! It fails when the memory of the pictures grows with the number of drawn pictures, or
+//! when it stays after the shares and the cameras have ended.
 //!
 //! It runs on the main thread, which the windows of the system need, so it is a test
 //! without the test runner, and it reads no filter of test names. It does nothing on other
@@ -65,8 +67,8 @@ use rehearsal::{Deployment, Rehearsal};
 /// How long the windows draw the pictures of the call in each place of the call.
 #[cfg(target_os = "macos")]
 const DRAWING: Duration = Duration::from_secs(20);
-/// The most graphics memory that the pictures of the call may add while the windows draw
-/// them for `DRAWING`, after the first frames. A window holds a constant number of
+/// The most memory that the pictures of the call may add while the windows draw them for
+/// `DRAWING`, after the first frames. A window holds a constant number of
 /// pictures; the memory that one picture of the watched share takes is 3.5 MiB.
 #[cfg(target_os = "macos")]
 const MOST_GROWTH: u64 = 48 << 20;
@@ -106,16 +108,18 @@ fn main() -> ExitCode {
     run.first_owner();
     run.invitation();
     run.call();
-    let before = graphics_memory();
+    let before = picture_memory();
     run.video();
 
     let mut failures = Vec::new();
     let mut check = |place: &str, measured: Measured| {
         println!(
-            "frames: {place}: {} pictures drawn in {DRAWING:?}, graphics memory {} MiB to {} MiB",
+            "frames: {place}: {} pictures drawn in {DRAWING:?}, graphics memory {} MiB to {} MiB, pixel buffers {} MiB to {} MiB",
             measured.pictures,
-            measured.start >> 20,
-            measured.end >> 20
+            measured.start.graphics >> 20,
+            measured.end.graphics >> 20,
+            measured.start.surfaces >> 20,
+            measured.end.surfaces >> 20
         );
         if measured.pictures < 100 {
             failures.push(format!(
@@ -123,10 +127,10 @@ fn main() -> ExitCode {
                 measured.pictures
             ));
         }
-        let grown = measured.end.saturating_sub(measured.start);
+        let grown = measured.end.total().saturating_sub(measured.start.total());
         if grown > MOST_GROWTH {
             failures.push(format!(
-                "{place}: the graphics memory grew by {} MiB for {} pictures",
+                "{place}: the memory of the pictures grew by {} MiB for {} pictures",
                 grown >> 20,
                 measured.pictures
             ));
@@ -158,16 +162,18 @@ fn main() -> ExitCode {
         });
     }
     give_frames(&mut native.cx, &mut run, Duration::from_secs(1));
-    let after = graphics_memory();
+    let after = picture_memory();
     println!(
-        "frames: graphics memory {} MiB before the shares and the cameras, {} MiB after them",
-        before >> 20,
-        after >> 20
+        "frames: graphics memory {} MiB before the shares and the cameras, {} MiB after them; pixel buffers {} MiB before, {} MiB after",
+        before.graphics >> 20,
+        after.graphics >> 20,
+        before.surfaces >> 20,
+        after.surfaces >> 20
     );
-    if after.saturating_sub(before) > MOST_GROWTH {
+    if after.total().saturating_sub(before.total()) > MOST_GROWTH {
         failures.push(format!(
-            "the graphics memory is {} MiB higher after the end of the shares and the cameras",
-            after.saturating_sub(before) >> 20
+            "the memory of the pictures is {} MiB higher after the end of the shares and the cameras",
+            after.total().saturating_sub(before.total()) >> 20
         ));
     }
     drop(run);
@@ -187,21 +193,39 @@ fn main() -> ExitCode {
 struct Measured {
     /// The pictures that the windows took and drew in the time.
     pictures: usize,
-    start: u64,
-    end: u64,
+    start: PictureMemory,
+    end: PictureMemory,
 }
 
-/// Gives the windows frames for one second, then for `DRAWING`, and reads the graphics
-/// memory at the start and at the end of `DRAWING`.
+/// The memory of the pictures of the process, in bytes.
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+struct PictureMemory {
+    /// The dirty memory of the category "IOAccelerator (graphics)": the GPU textures of the
+    /// windows, among them the images of gpui in the atlas.
+    graphics: u64,
+    /// The dirty memory of the category "IOSurface": the pixel buffers of Core Video.
+    surfaces: u64,
+}
+
+#[cfg(target_os = "macos")]
+impl PictureMemory {
+    fn total(self) -> u64 {
+        self.graphics + self.surfaces
+    }
+}
+
+/// Gives the windows frames for one second, then for `DRAWING`, and reads the memory of
+/// the pictures at the start and at the end of `DRAWING`.
 #[cfg(target_os = "macos")]
 fn measure(cx: &mut gpui::TestAppContext, run: &mut Rehearsal) -> Measured {
     give_frames(cx, run, Duration::from_secs(1));
-    let (drawn, start) = (picture_draws(cx), graphics_memory());
+    let (drawn, start) = (picture_draws(cx), picture_memory());
     give_frames(cx, run, DRAWING);
     Measured {
         pictures: picture_draws(cx) - drawn,
         start,
-        end: graphics_memory(),
+        end: picture_memory(),
     }
 }
 
@@ -236,10 +260,9 @@ fn picture_draws(cx: &mut gpui::TestAppContext) -> usize {
     draws
 }
 
-/// The graphics memory of this process in bytes: the dirty memory of the category
-/// "IOAccelerator (graphics)" that `footprint` states. The GPU textures of the windows are
-/// in it.
+/// The memory of the pictures of this process, as `footprint` states it.
 #[cfg(target_os = "macos")]
-fn graphics_memory() -> u64 {
-    process::graphics_memory()
+fn picture_memory() -> PictureMemory {
+    let (graphics, surfaces) = process::picture_memory();
+    PictureMemory { graphics, surfaces }
 }

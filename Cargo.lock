@@ -3814,6 +3814,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "chrono-tz",
+ "core-foundation 0.10.1",
  "core-video",
  "dirs",
  "emojis",

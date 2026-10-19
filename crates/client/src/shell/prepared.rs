@@ -6,41 +6,41 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui::RenderImage;
-use junto_media::camera::CameraFrame;
 use junto_media::engine::{MainPicture, ShareId};
-use junto_media::share::picture::PictureFrame;
+use junto_media::share::picture::{PictureFrame, VideoPicture};
 
 use super::share::render_image;
-use crate::ui::tile::CameraPicture;
+use crate::ui::DrawnPicture;
 
 /// The newest pictures of the sources that have a newer one. A source without a newer
 /// picture is absent.
 pub(crate) struct Wanted {
     pub main: Option<Option<MainPicture>>,
     pub small: Option<HashMap<ShareId, Arc<PictureFrame>>>,
-    pub cameras: Option<HashMap<ShareId, Arc<CameraFrame>>>,
+    pub cameras: Option<HashMap<ShareId, Arc<VideoPicture>>>,
 }
 
 /// The pictures that the window holds when a conversion starts.
 #[derive(Default)]
 pub(crate) struct Held {
-    pub main: Option<Arc<PictureFrame>>,
+    pub main: Option<Arc<VideoPicture>>,
     pub small: HashMap<ShareId, Arc<PictureFrame>>,
-    pub cameras: HashMap<ShareId, Arc<CameraFrame>>,
+    pub cameras: HashMap<ShareId, Arc<VideoPicture>>,
 }
 
-/// The watched share after a conversion: its newest picture, and the image of it. The
-/// image is absent when no share is watched or the picture could not be converted.
+/// The watched share after a conversion: its newest picture, and the form that the window
+/// draws. The form is absent when no share is watched or the picture could not be
+/// converted.
 pub(crate) struct ConvertedMain {
-    pub frame: Option<Arc<PictureFrame>>,
-    pub shown: Option<(ShareId, Arc<RenderImage>)>,
+    pub frame: Option<Arc<VideoPicture>>,
+    pub shown: Option<(ShareId, ConvertedPicture)>,
 }
 
 /// The small pictures of the shares after a conversion, each with its image.
 pub(crate) type ConvertedSmall = HashMap<ShareId, (Arc<PictureFrame>, Option<Arc<RenderImage>>)>;
 
 /// The camera pictures after a conversion, each in the form that the window draws.
-pub(crate) type ConvertedCameras = HashMap<ShareId, (Arc<CameraFrame>, Option<ConvertedCamera>)>;
+pub(crate) type ConvertedCameras = HashMap<ShareId, (Arc<VideoPicture>, Option<ConvertedPicture>)>;
 
 /// The pictures of the sources that had a newer one, converted. An entry without an image
 /// is a picture that the window held when the conversion started; it was not converted
@@ -52,32 +52,32 @@ pub(crate) struct Converted {
     pub cameras: Option<ConvertedCameras>,
 }
 
-/// A camera picture in the form that the window draws.
-pub(crate) enum ConvertedCamera {
+/// A picture of a camera or of the watched share in the form that the window draws.
+pub(crate) enum ConvertedPicture {
     Image(Arc<RenderImage>),
-    /// The pixel buffer of Core Video of this frame was made. The frame keeps it; the
-    /// window takes it from the frame.
+    /// The pixel buffer of Core Video of this picture was made. The picture keeps it; the
+    /// window takes it from the picture.
     #[cfg(target_os = "macos")]
-    Surface(Arc<CameraFrame>),
+    Surface(Arc<VideoPicture>),
 }
 
-impl ConvertedCamera {
-    /// Converts a camera picture: on macOS into a pixel buffer of Core Video when the
-    /// system gives one, otherwise into an image.
-    pub(crate) fn of(frame: &Arc<CameraFrame>) -> Option<Self> {
+impl ConvertedPicture {
+    /// Converts a picture: on macOS into a pixel buffer of Core Video when the system gives
+    /// one, otherwise into an image that takes the converted pixels without a copy.
+    pub(crate) fn of(frame: &Arc<VideoPicture>) -> Option<Self> {
         #[cfg(target_os = "macos")]
         if frame.surface().is_some() {
             return Some(Self::Surface(frame.clone()));
         }
-        render_image(frame.picture()?).map(Self::Image)
+        render_image(frame.bgra()?).map(Self::Image)
     }
 
     /// The picture that the window draws. Takes no time: the conversion is done.
-    pub(crate) fn picture(self) -> Option<CameraPicture> {
+    pub(crate) fn picture(self) -> Option<DrawnPicture> {
         match self {
-            Self::Image(image) => Some(CameraPicture::Image(image)),
+            Self::Image(image) => Some(DrawnPicture::Image(image)),
             #[cfg(target_os = "macos")]
-            Self::Surface(frame) => frame.surface().map(CameraPicture::Surface),
+            Self::Surface(frame) => frame.surface().map(DrawnPicture::Surface),
         }
     }
 }
@@ -95,8 +95,9 @@ impl Wanted {
             };
             (!same).then(|| ConvertedMain {
                 frame,
-                shown: picture
-                    .and_then(|picture| Some((picture.share, render_image(&picture.frame)?))),
+                shown: picture.and_then(|picture| {
+                    Some((picture.share, ConvertedPicture::of(&picture.frame)?))
+                }),
             })
         });
         let small = self.small.map(|pictures| {
@@ -107,7 +108,11 @@ impl Wanted {
                         .small
                         .get(&share)
                         .is_some_and(|taken| Arc::ptr_eq(taken, &frame));
-                    let image = if kept { None } else { render_image(&frame) };
+                    let image = if kept {
+                        None
+                    } else {
+                        render_image(PictureFrame::clone(&frame))
+                    };
                     (share, (frame, image))
                 })
                 .collect()
@@ -123,7 +128,7 @@ impl Wanted {
                     let picture = if kept {
                         None
                     } else {
-                        ConvertedCamera::of(&frame)
+                        ConvertedPicture::of(&frame)
                     };
                     (id, (frame, picture))
                 })
@@ -141,14 +146,20 @@ impl Wanted {
 mod tests {
     use super::*;
     use junto_client_core::protocol::ids::AccountId;
+    use junto_media::share::synthetic::two_colours;
 
     fn picture(width: u32) -> Arc<PictureFrame> {
         Arc::new(PictureFrame {
             width,
             height: 2,
-            bgra: vec![255; (width * 2 * 4) as usize].into(),
+            bgra: vec![255; (width * 2 * 4) as usize],
             source: (width, 2),
         })
+    }
+
+    fn video(width: u32) -> Arc<VideoPicture> {
+        let pixels = two_colours(width, 2, (255, 255, 255), (255, 255, 255));
+        Arc::new(VideoPicture::new(&pixels, false, (width, 2)).unwrap())
     }
 
     #[test]
@@ -157,7 +168,7 @@ mod tests {
             ShareId::Of(AccountId::generate()),
             ShareId::Of(AccountId::generate()),
         );
-        let (held_small, new_small, watched) = (picture(2), picture(3), picture(4));
+        let (held_small, new_small, watched) = (picture(2), picture(3), video(4));
         let held = Held {
             main: Some(watched.clone()),
             small: [(one, held_small.clone())].into_iter().collect(),
@@ -190,7 +201,7 @@ mod tests {
         assert!(converted.cameras.is_none());
 
         // A newer watched picture is converted; a share that ends leaves no image.
-        let newer = picture(5);
+        let newer = video(6);
         let converted = Wanted {
             main: Some(Some(MainPicture {
                 share: two,
@@ -212,5 +223,29 @@ mod tests {
         .main
         .unwrap();
         assert!(ended.frame.is_none() && ended.shown.is_none());
+    }
+
+    /// The watched share is converted as a camera picture is: on macOS into the pixel
+    /// buffer of Core Video that the renderer draws without a copy, and on the other
+    /// systems into an image that holds the converted pixels.
+    #[test]
+    fn the_watched_share_is_converted_in_the_form_of_a_camera_picture() {
+        let share = ShareId::Of(AccountId::generate());
+        let converted = Wanted {
+            main: Some(Some(MainPicture {
+                share,
+                frame: video(64),
+            })),
+            small: None,
+            cameras: None,
+        }
+        .prepare(&Held::default());
+        let (shown, picture) = converted.main.unwrap().shown.unwrap();
+        assert_eq!(shown, share);
+        #[cfg(target_os = "macos")]
+        assert!(matches!(picture, ConvertedPicture::Surface(_)));
+        #[cfg(not(target_os = "macos"))]
+        assert!(matches!(picture, ConvertedPicture::Image(_)));
+        assert_eq!(picture.picture().unwrap().width(), 64);
     }
 }

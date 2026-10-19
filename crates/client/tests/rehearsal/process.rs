@@ -15,6 +15,9 @@ pub struct Sample {
     /// The dirty memory of the category "IOAccelerator (graphics)": the GPU textures of
     /// the windows are in it.
     pub graphics: u64,
+    /// The dirty memory of the category "IOSurface": the pixel buffers of Core Video that
+    /// the windows draw as surfaces (the cameras and the watched share) are in it.
+    pub surfaces: u64,
     /// The bytes that the Rust allocations of the process hold, as the counting allocator
     /// of the program states them (`junto-alloc-count`).
     pub rust: u64,
@@ -26,11 +29,12 @@ pub struct Sample {
 }
 
 pub fn sample(start: Instant, rust: usize) -> Sample {
-    let (footprint, graphics) = memory();
+    let (footprint, graphics, surfaces) = memory();
     Sample {
         at: start.elapsed(),
         footprint,
         graphics,
+        surfaces,
         rust: rust as u64,
         processor: processor_time(),
         files: open_files(),
@@ -38,13 +42,16 @@ pub fn sample(start: Instant, rust: usize) -> Sample {
     }
 }
 
-/// The graphics memory of this process in bytes.
-pub fn graphics_memory() -> u64 {
-    memory().1
+/// The memory of the pictures that the windows of this process draw, in bytes: the graphics
+/// memory and the memory of the pixel buffers.
+pub fn picture_memory() -> (u64, u64) {
+    let (_, graphics, surfaces) = memory();
+    (graphics, surfaces)
 }
 
-/// `phys_footprint` and the graphics memory of this process, in bytes.
-fn memory() -> (u64, u64) {
+/// `phys_footprint`, the graphics memory and the memory of the pixel buffers of this
+/// process, in bytes.
+fn memory() -> (u64, u64, u64) {
     let output = std::process::Command::new("/usr/bin/footprint")
         .args(["-f", "bytes", &std::process::id().to_string()])
         .output()
@@ -61,12 +68,18 @@ fn memory() -> (u64, u64) {
         .unwrap_or_else(|| {
             panic!("footprint states no memory of the category IOAccelerator (graphics): {text}")
         });
+    // The category exists only while the process holds a pixel buffer.
+    let surfaces = text
+        .lines()
+        .find(|line| line.trim_end().ends_with("IOSurface"))
+        .and_then(first_number)
+        .unwrap_or_default();
     let footprint = text
         .lines()
         .find_map(|line| line.trim().strip_prefix("phys_footprint:"))
         .and_then(first_number)
         .expect("footprint states phys_footprint");
-    (footprint, graphics)
+    (footprint, graphics, surfaces)
 }
 
 /// The processor time of this process, as `ps` states it: `[[days-]hours:]minutes:seconds`.
