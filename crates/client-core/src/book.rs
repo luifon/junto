@@ -1101,13 +1101,13 @@ mod tests {
     #[test]
     fn a_book_of_a_newer_client_is_refused_and_not_overwritten() {
         let (_directory, data_dir, book) = book();
-        let newer = br#"{"format_version":4,"servers":[],"folders":[]}"#;
+        let newer = br#"{"format_version":5,"servers":[],"folders":[]}"#;
         fs::write(data_dir.book_file(), newer).unwrap();
         assert!(matches!(
             book.entries(),
             Err(StorageError::NewerFormat {
-                found: 4,
-                supported: 3,
+                found: 5,
+                supported: 4,
                 ..
             })
         ));

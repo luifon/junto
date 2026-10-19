@@ -1232,7 +1232,14 @@ async fn a_flow_runs_one_action_at_a_time_and_only_actions_of_its_state() {
     running.await.unwrap();
     let after = handle.access();
     assert_eq!(after.in_progress, None);
-    assert_eq!(after.actions, [ActionKind::Check, ActionKind::LogOut]);
+    assert_eq!(
+        after.actions,
+        [
+            ActionKind::Check,
+            ActionKind::LogOut,
+            ActionKind::LogOutByPerson
+        ]
+    );
     assert_eq!(server.account_count(), 1);
 }
 

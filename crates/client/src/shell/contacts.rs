@@ -39,6 +39,8 @@ impl Shell {
         let part = part.to_owned();
         self.contact_part
             .update(cx, |field, cx| field.set_value(part, window, cx));
+        // A value that is set is not told as a change of the field.
+        self.contact_part_changed(cx);
     }
 
     pub(crate) fn contact_part_changed(&mut self, cx: &mut Context<Self>) {
