@@ -22,7 +22,7 @@ The directory package:
 The AppImage:
 
 - `Junto-<version>-<architecture>.AppImage` is an AppImage of type 2: the runtime of the AppImage project followed by a SquashFS image (zstd) of the same files as the directory, with `AppRun` as a link to `junto`, the menu entry and the SVG icon at the top, and the rendering of 256 pixels as `.DirIcon`.
-- The runtime is the type 2 runtime of `AppImage/type2-runtime` at the commit of its release `20251108`, built by the Linux build image from the source archives of the runtime and of the libraries that it links statically, each checked by its SHA-256, with `tools/linux/appimage-runtime/build.sh` (ADR 0801); the SquashFS tools and the musl C library are Debian packages of the snapshot of ADR 0750. `tools/check-pins.sh` fails for a download of the image without a SHA-256 check of each file. The runtime is linked statically and needs `fusermount` (FUSE 2 or 3) from the host, not `libfuse.so.2`.
+- The runtime is the type 2 runtime of `AppImage/type2-runtime` at the commit of its release `20251108`, built by the Linux build image from the source archives of the runtime and of the libraries that it links statically, each checked by its SHA-256, with `tools/linux/appimage-runtime/build.sh` (ADR 0801); the SquashFS tools, the musl C library and the compiler-rt of LLVM are Debian packages of the snapshot of ADR 0750. The AppImage also carries every file of the link of the runtime and the script that links them. `tools/check-pins.sh` fails for a download of the image without a SHA-256 check of each file. The runtime is linked statically and needs `fusermount` (FUSE 2 or 3) from the host, not `libfuse.so.2`.
 
 Libraries (the rule of ADR 0705, as names):
 

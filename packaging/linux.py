@@ -22,7 +22,8 @@ from configuration import architecture as machine_architecture
 
 APPLICATION_ID = "chat.junto.Junto"
 RUNTIME = pathlib.Path("/opt/junto-linux/appimage-runtime")
-# The source of the runtime and its build script (tools/linux/appimage-runtime), which the
+# The source of the runtime, its build script, and the directory relink with every file of the
+# link of the runtime and the script that links it (tools/linux/appimage-runtime), which the
 # AppImage carries in licences/appimage-runtime (ADR 0801).
 RUNTIME_SOURCE = pathlib.Path("/opt/junto-linux/appimage-runtime-source")
 
@@ -51,8 +52,14 @@ RUNTIME_COMPONENTS = [
     ("zlib 1.3.1", "zlib-1.3.1.tar.gz", ["LICENSE"]),
     ("mimalloc 2.1.7", "mimalloc-2.1.7.tar.gz", ["LICENSE"]),
 ]
-# The C library that the runtime is linked with: the Debian package of the Linux build image.
-RUNTIME_C_LIBRARY = ("musl 1.2.3, from the Debian package musl 1.2.3-1", pathlib.Path("/usr/share/doc/musl/copyright"))
+# The parts of the runtime that come from Debian packages of the Linux build image, with the
+# copyright file of each package.
+RUNTIME_PACKAGES = [
+    ("musl 1.2.3, the C library, from the Debian package musl-dev 1.2.3-1",
+     pathlib.Path("/usr/share/doc/musl/copyright")),
+    ("the builtins and start files of compiler-rt of LLVM 22.1.8, from the Debian package libclang-rt-22-dev "
+     "1:22.1.8-1~deb12u1", pathlib.Path("/usr/share/doc/libclang-rt-22-dev/copyright")),
+]
 DESKTOP = f"""[Desktop Entry]
 Type=Application
 Name=Junto
@@ -171,21 +178,31 @@ def archive_member(archive, name):
         return source.extractfile(member).read()
 
 
+def link_inputs(script):
+    """The files that the ld command of a link script of the runtime (link.sh) links, in order."""
+    command = re.search(r"^ld (.*?[^\\])$", script.replace("\\\n", " "), re.MULTILINE)
+    if not command:
+        raise ValueError("the link script has no ld command")
+    words = command.group(1).split()
+    return [word for word in words if re.fullmatch(r"[\w.+-]+\.(o|a|ld)", word)]
+
+
 def runtime_section(runtime_source):
     """The section of the licence file on the AppImage runtime, with the licence texts of each of
     its components, from their source archives in `runtime_source`."""
     components = [(f"{component}: {name}", archive_member(runtime_source / "sources" / archive, name))
                   for component, archive, names in RUNTIME_COMPONENTS for name in names]
-    label, copyright_file = RUNTIME_C_LIBRARY
-    components.append((f"{label}: {copyright_file}", copyright_file.read_bytes()))
+    components.extend((f"{label}: {path}", path.read_bytes()) for label, path in RUNTIME_PACKAGES)
     return licences.Section("The AppImage runtime", [
         "The AppImage file starts with its runtime, the program that mounts the SquashFS image that follows it and "
         "starts junto. The runtime is the type 2 runtime of the AppImage project under the MIT licence, linked "
         "statically with libfuse under the GNU Lesser General Public License 2.1, squashfuse, zstd, zlib, "
-        "mimalloc and the musl C library. The directory licences/appimage-runtime of the AppImage holds the "
-        "complete source of the runtime and of these libraries, the script that built the runtime from it, and in "
-        "README.md the steps to build the runtime with a changed libfuse and to put it into the AppImage. The "
-        "runtime also contains code of libgcc of GCC 12, under the GCC Runtime Library Exception."], components)
+        "mimalloc, the musl C library, and the builtins and start files of compiler-rt of LLVM. The directory "
+        "licences/appimage-runtime of the AppImage holds the complete source of the runtime and of libfuse, "
+        "squashfuse, zstd, zlib and mimalloc, the script that built the runtime from it, and the directory relink "
+        "with every file of the link of the runtime (among them musl's libc.a and the builtins of compiler-rt) and "
+        "the script link.sh that links them. Its README.md gives the steps to link the runtime with a changed "
+        "libfuse and to put it into the AppImage."], components)
 
 
 def licence_texts(version, architecture, build, appimage=False, runtime_source=RUNTIME_SOURCE):

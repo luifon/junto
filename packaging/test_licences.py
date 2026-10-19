@@ -131,6 +131,9 @@ the following conditions are met:
 2. Redistributions in binary form must reproduce the above copyright notice.
 3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote
 products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES
+ARE DISCLAIMED.
 """
 
 
@@ -186,8 +189,8 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(same, [["alpha 1.0.0, LICENSE-MIT", "gamma 1.0.0, COPYING"]])
         mit, apache = (licences.normal(licences.standard_text(name)) for name in ["MIT", "Apache-2.0"])
         self.assertIn("beta 1.0.0, standard text of MIT", found[mit])
-        self.assertIn("beta 1.0.0, standard text of Apache-2.0", found[apache])
-        self.assertTrue(found[apache][0].startswith("beta"), "a text is numbered by its first use")
+        self.assertNotIn("beta 1.0.0, standard text of Apache-2.0", found[apache])
+        self.assertTrue(found[apache][0].startswith("theta"), "a text is numbered by its first use")
         self.assertIn(APACHE, apache)
         self.assertEqual(found["Beta notice"], ["beta 1.0.0, NOTICE"])
         self.assertEqual(found["Epsilon is under the zlib licence."], ["epsilon 1.0.0, license.txt"])
@@ -197,12 +200,11 @@ class WorkspaceTests(unittest.TestCase):
     def test_a_crate_without_a_licence_file_names_the_standard_texts_and_the_declared_authors(self):
         with tempfile.TemporaryDirectory() as temporary:
             document = self.generate(self.workspace(temporary))
-        mit, apache = (numbers(document, licences.standard_text(name)) for name in ["MIT", "Apache-2.0"])
+        mit = numbers(document, licences.standard_text("MIT"))
         self.assertEqual(crate_line(document, "beta").split(" | ", 3)[3],
-                         f"texts {mit}, {apache}, {numbers(document, b'Beta notice')}; the package holds no licence "
-                         f"file: texts {mit} and {apache} are the standard texts of MIT and Apache-2.0, the licences "
-                         "that its manifest declares, and the copyright holders are the authors that its manifest "
-                         "declares: Ada Example <ada@example.test>")
+                         f"texts {mit}, {numbers(document, b'Beta notice')}; the package holds no licence file: text "
+                         f"{mit} is the standard text of MIT, a licence that its manifest declares, and the copyright "
+                         "holders are the authors that its manifest declares: Ada Example <ada@example.test>")
 
     def test_licence_files_without_the_text_of_a_required_licence_are_reported_and_completed(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -210,27 +212,54 @@ class WorkspaceTests(unittest.TestCase):
         zlib = numbers(document, licences.standard_text("Zlib"))
         self.assertEqual(crate_line(document, "epsilon").split(" | ", 3)[3],
                          f"texts {numbers(document, b'Epsilon is under the zlib licence.')}, {zlib}; the licence files "
-                         f"of the package hold no text of Zlib: text {zlib} is the standard text of Zlib, the licence "
-                         "that its manifest declares, and the copyright holders are the authors that its manifest "
-                         "declares: Ada Example <ada@example.test>")
+                         "of the package do not hold the texts that its licence expression requires: text "
+                         f"{zlib} is the standard text of Zlib, a licence that its manifest declares, and the "
+                         "copyright holders are the authors that its manifest declares: Ada Example <ada@example.test>")
         mit = numbers(document, licences.standard_text("MIT"))
         apache = numbers(document, (licences.ROOT / "LICENSE").read_bytes())
         self.assertEqual(crate_line(document, "theta").split(" | ", 3)[3],
-                         f"texts {apache}, {mit}; the licence files of the package hold no text of MIT: text {mit} is "
-                         "the standard text of MIT, the licence that its manifest declares, and its manifest "
+                         f"texts {apache}, {mit}; the licence files of the package do not hold the texts that its "
+                         f"licence expression requires: text {mit} is the standard text of MIT, a licence that its "
+                         "manifest declares, and its manifest "
                          "declares no authors, and the copyright holders are the authors of the crate in its "
                          "repository https://example.test/theta")
 
     def test_licence_files_that_hold_only_a_path_get_the_standard_texts_of_each_alternative(self):
         with tempfile.TemporaryDirectory() as temporary:
             document = self.generate(self.workspace(temporary))
-        mit, apache = (numbers(document, licences.standard_text(name)) for name in ["MIT", "Apache-2.0"])
+        mit = numbers(document, licences.standard_text("MIT"))
         paths = [numbers(document, f"../LICENSE-{name}".encode()) for name in ["APACHE", "MIT"]]
         self.assertEqual(crate_line(document, "iota").split(" | ", 3)[3],
-                         f"texts {paths[0]}, {paths[1]}, {mit}, {apache}; the licence files of the package hold none "
-                         f"of the texts of MIT and Apache-2.0: texts {mit} and {apache} are the standard texts of MIT "
-                         "and Apache-2.0, the licences that its manifest declares, and the copyright holders are the "
-                         "authors that its manifest declares: Ada Example <ada@example.test>")
+                         f"texts {paths[0]}, {paths[1]}, {mit}; the licence files of the package do not hold the texts "
+                         f"that its licence expression requires: text {mit} is the standard text of MIT, a licence "
+                         "that its manifest declares, and the copyright holders are the authors that its manifest "
+                         "declares: Ada Example <ada@example.test>")
+
+    def test_a_licence_file_with_only_the_heading_of_a_licence_is_completed_with_a_standard_text(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.workspace(temporary, gamma_licence="MPL-2.0 OR MIT")
+            (root / "vendor/gamma/COPYING").write_text("Mozilla Public License Version 2.0\n")
+            document = self.generate(root)
+        mit = numbers(document, licences.standard_text("MIT"))
+        line = crate_line(document, "gamma")
+        self.assertIn(f"text {mit} is the standard text of MIT, a licence that its manifest declares", line)
+        self.assertEqual(licences.uncovered(document), [])
+
+    def test_the_completion_adds_one_sufficient_alternative_of_each_or(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.workspace(temporary, gamma_licence="(MIT OR ISC) AND Zlib")
+            document = self.generate(root)
+        zlib = numbers(document, licences.standard_text("Zlib"))
+        line = crate_line(document, "gamma")
+        self.assertIn(f"| texts 1, {zlib}; ", line)
+        self.assertIn(f"text {zlib} is the standard text of Zlib, a licence that its manifest declares", line)
+        self.assertEqual(licences.uncovered(document), [])
+        tree = licences.expression("(MIT OR ISC) AND (Zlib OR Apache-2.0)")
+        self.assertEqual(licences.completion(tree, set(), {"MIT", "ISC", "Zlib", "Apache-2.0"}), ["MIT", "Zlib"])
+        self.assertEqual(licences.completion(tree, {"ISC"}, {"Apache-2.0"}), ["Apache-2.0"])
+        self.assertIsNone(licences.completion(tree, set(), {"MIT"}))
+        self.assertEqual(licences.completion(licences.expression("Apache-2.0 WITH LLVM-exception OR MIT"),
+                                             {"Apache-2.0"}, {"MIT", "LLVM-exception"}), ["LLVM-exception"])
 
     def test_licence_files_with_the_text_of_an_undeclared_licence_are_reported(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -247,8 +276,9 @@ class WorkspaceTests(unittest.TestCase):
             (root / "vendor/gamma/Cargo.toml").write_text(
                 (root / "vendor/gamma/Cargo.toml").read_text().replace('license = "MIT"',
                                                                        'license = "MIT AND Example-1.0"'))
-            with self.assertRaisesRegex(ValueError, "the licence files of gamma 1.0.0 hold no text of Example-1.0, "
-                                                    "and there is no standard text of Example-1.0"):
+            with self.assertRaisesRegex(ValueError, "the licence files of gamma 1.0.0 do not hold the texts that MIT "
+                                                    "AND Example-1.0 requires, and there is no standard text of "
+                                                    "Example-1.0"):
                 self.generate(root)
 
     def test_a_path_crate_outside_the_workspace_and_vendor_is_refused(self):
@@ -304,14 +334,28 @@ class LicenceTextTests(unittest.TestCase):
         for licence in sorted((licences.ROOT / "crates/client/assets/fonts").glob("*-OFL.txt")):
             self.assertEqual(licences.licences_in(licence.read_bytes()), {"OFL-1.1"})
 
+    def test_the_heading_of_a_licence_alone_is_no_licence_text(self):
+        headings = ["Mozilla Public License Version 2.0", "Apache License\nVersion 2.0, January 2004",
+                    "UNICODE LICENSE V3", "Creative Commons Legal Code\n\nCC0 1.0 Universal",
+                    "SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007",
+                    "Boost Software License - Version 1.0 - August 17th, 2003",
+                    "GNU LESSER GENERAL PUBLIC LICENSE\nVersion 2.1, February 1999",
+                    "This is free and unencumbered software released into the public domain.",
+                    "---- LLVM Exceptions to the Apache 2.0 License ----", "MIT License", "BSD 3-Clause License"]
+        for heading in headings:
+            with self.subTest(heading):
+                self.assertEqual(licences.licences_in(heading.encode()), set())
+
     def test_variants_and_neighbours_of_a_licence_are_told_apart(self):
         mit = standard("MIT")
         variant = mit.replace("permission notice shall", "permission notice (including the next\nparagraph) shall")
         self.assertEqual(licences.licences_in(variant.encode()), {"MIT"})
-        without_condition = mit.split("The above copyright")[0] + "THE SOFTWARE IS"
+        without_condition = mit.split("The above copyright")[0] + "THE SOFTWARE IS" + mit.split("THE SOFTWARE IS")[1]
         self.assertEqual(licences.licences_in(without_condition.encode()), {"MIT-0"})
         self.assertEqual(licences.licences_in(BSD_3.encode()), {"BSD-3-Clause"})
-        self.assertEqual(licences.licences_in(BSD_3.split("3. Neither")[0].encode()), {"BSD-2-Clause"})
+        self.assertEqual(licences.licences_in((BSD_3.split("3. Neither")[0] + "THIS SOFTWARE IS PROVIDED " +
+                                               BSD_3.split("THIS SOFTWARE IS PROVIDED ")[1]).encode()),
+                         {"BSD-2-Clause"})
         self.assertEqual(licences.licences_in((mit + "\n" + BSD_3).encode()), {"MIT", "BSD-3-Clause"})
         self.assertEqual(licences.licences_in(b"Licensed under the Apache License, Version 2.0 or the MIT license, at "
                                               b"your option."), set())

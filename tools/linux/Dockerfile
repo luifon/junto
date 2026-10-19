@@ -72,13 +72,16 @@ COPY install-portal.sh /opt/junto-linux/
 RUN sh /opt/junto-linux/install-portal.sh
 # The AppImage of the Linux packages (ADR 0754): the SquashFS tools of the snapshot, and the
 # type 2 runtime of the AppImage project, built here from its source and the sources of the
-# libraries that it links statically, each checked by its SHA-256. The AppImage carries this
-# source and the build script (ADR 0801).
+# libraries that it links statically, each checked by its SHA-256, with musl and the builtins
+# of compiler-rt. The AppImage carries this source, the build script, and every file of the
+# link of the runtime with the script that links it (ADR 0801).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     squashfs-tools=1:4.5.1-1 make=4.3-4.1 patch=2.7.6-7 xz-utils=5.4.1-1+deb12u2 autoconf=2.71-3 \
     automake=1:1.16.5-1.3 libtool=2.4.7-7~deb12u1 musl=1.2.3-1 musl-dev=1.2.3-1 musl-tools=1.2.3-1 \
+    libclang-rt-22-dev=1:22.1.8-1~deb12u1 \
     && rm -rf /var/lib/apt/lists
-COPY appimage-runtime/README.md appimage-runtime/build.sh /opt/junto-linux/appimage-runtime-source/
+COPY appimage-runtime/README.md appimage-runtime/build.sh appimage-runtime/link.sh \
+    /opt/junto-linux/appimage-runtime-source/
 RUN mkdir /opt/junto-linux/appimage-runtime-source/sources \
     && cd /opt/junto-linux/appimage-runtime-source/sources \
     && curl -fsSL --retry 5 -o type2-runtime-dd6cebedcbddde9c82f89b011e8e1d40b6e43868.tar.gz \
@@ -101,7 +104,9 @@ RUN mkdir /opt/junto-linux/appimage-runtime-source/sources \
     && sha256sum --strict -c ../SHA256SUMS \
     && chmod -R a+rX /opt/junto-linux/appimage-runtime-source
 RUN sh /opt/junto-linux/appimage-runtime-source/build.sh /opt/junto-linux/appimage-runtime \
-    && chmod 644 /opt/junto-linux/appimage-runtime
+        /opt/junto-linux/appimage-runtime-source/relink \
+    && chmod 644 /opt/junto-linux/appimage-runtime \
+    && chmod -R a+rX /opt/junto-linux/appimage-runtime-source
 ENV CC=clang-22 CXX=clang++-22 LIBCLANG_PATH=/usr/lib/llvm-22/lib
 ENV CARGO_BUILD_JOBS=4 CARGO_TARGET_DIR=/target
 ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=clang-22

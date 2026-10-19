@@ -201,39 +201,92 @@ def satisfied(node, present):
     return any(parts) if node[0] == "OR" else all(parts)
 
 
+def completion(node, present, available):
+    """The identifiers whose standard texts make the texts of `present` satisfy the expression
+    `node`, choosing for each OR the alternative that needs the fewest added texts (the first of
+    them in the expression); only identifiers in `available` can be added. None when no choice
+    satisfies it."""
+    if isinstance(node, str):
+        return [] if node in present else [node] if node in available else None
+    if node[0] == "WITH":
+        parts = [completion(identifier, present, available) for identifier in node[1:]]
+        return None if None in parts else [identifier for part in parts for identifier in part]
+    parts = [completion(part, present, available) for part in node[1]]
+    if node[0] == "OR":
+        possible = [part for part in parts if part is not None]
+        return min(possible, key=len) if possible else None
+    if None in parts:
+        return None
+    return list(dict.fromkeys(identifier for part in parts for identifier in part))
+
+
 _MIT_GRANT = r"permission is hereby granted free of charge to any person obtaining a copy"
 _MIT_CONDITION = (r"the above copyright notice and this permission notice (including the next paragraph )?shall be "
                   r"included in all copies or substantial portions of the software")
+_AS_IS = r"the software is provided as is without warranty of any kind express or implied"
 _ISC_GRANT = r"permission to use copy modify and or distribute this software for any purpose with or without fee is " \
              r"hereby granted"
+_ISC_DISCLAIMER = (r"the software is provided as is and the authors? disclaims? all warranties with regard to this "
+                   r"software")
 _BSD = r"redistribution and use in source and binary forms with or without modification are permitted"
+_BSD_SOURCE = r"redistributions of source code must retain the above copyright notice"
+_BSD_BINARY = r"redistributions in binary form must reproduce the above copyright notice"
+_BSD_DISCLAIMER = r"as is and any express or implied warranties"
+_ZLIB = [r"this software is provided as is without any express or implied warranty",
+         r"the origin of this software must not be misrepresented",
+         r"altered source versions must be plainly marked as such",
+         r"this notice may not be removed or altered from any source distribution"]
 # The licences whose text this file identifies in a licence file: for each SPDX identifier,
 # the phrases that its text holds and the phrases that it does not hold, on the text in lower
-# case with each run of other characters than letters and digits as one space. The phrases are
-# those of the SPDX License List 3.27.0; the texts in licence-texts/ and LICENSE are identified
-# by them (test_licences.py).
+# case with each run of other characters than letters and digits as one space. The phrases
+# come from the terms of each licence in the SPDX License List 3.27.0, not only from its
+# heading, so that a file with a heading or a reference only is no licence text. The texts in
+# licence-texts/ and LICENSE are identified by them (test_licences.py).
 LICENCE_PHRASES = {
     "Apache-2.0": ([r"apache license version 2 0 january 2004",
-                    r"terms and conditions for use reproduction and distribution"], []),
-    "MIT": ([_MIT_GRANT, _MIT_CONDITION], []),
-    "MIT-0": ([_MIT_GRANT, r"to deal in the software without restriction"], [_MIT_CONDITION, r"unicode"]),
+                    r"2 grant of copyright license subject to the terms and conditions of this license each "
+                    r"contributor hereby grants",
+                    r"4 redistribution you may reproduce and distribute copies of the work",
+                    r"7 disclaimer of warranty", r"8 limitation of liability"], []),
+    "MIT": ([_MIT_GRANT, _MIT_CONDITION, _AS_IS], []),
+    "MIT-0": ([_MIT_GRANT, r"to deal in the software without restriction", _AS_IS], [_MIT_CONDITION, r"unicode"]),
     "ISC": ([_ISC_GRANT + r" provided that the above copyright notice and this permission notice appear in all "
-                          r"copies"], []),
-    "0BSD": ([_ISC_GRANT], [_ISC_GRANT + r" provided that"]),
-    "BSD-2-Clause": ([_BSD], [r"neither the name", r"bzip2"]),
-    "BSD-3-Clause": ([_BSD, r"neither the name"], []),
-    "Zlib": ([r"this software is provided as is without any express or implied warranty",
-              r"altered source versions must be plainly marked as such"], [r"bzip2"]),
-    "bzip2-1.0.6": ([r"bzip2", _BSD, r"altered source versions must be plainly marked as such"], []),
-    "Unicode-3.0": ([r"unicode license v3"], []),
-    "Unlicense": ([r"this is free and unencumbered software released into the public domain"], []),
-    "MPL-2.0": ([r"mozilla public license version 2 0"], []),
-    "CC0-1.0": ([r"cc0 1 0 universal"], []),
-    "BSL-1.0": ([r"boost software license version 1 0 august 17th 2003"], []),
-    "LLVM-exception": ([r"llvm exceptions to the apache 2 0 license"], []),
-    "OFL-1.1": ([r"sil open font license version 1 1"], []),
-    "LGPL-2.1-only": ([r"gnu lesser general public license version 2 1 february 1999"], []),
-    "GPL-2.0-only": ([r"gnu general public license version 2 june 1991"], []),
+                          r"copies", _ISC_DISCLAIMER], []),
+    "0BSD": ([_ISC_GRANT, _ISC_DISCLAIMER], [_ISC_GRANT + r" provided that"]),
+    "BSD-2-Clause": ([_BSD, _BSD_SOURCE, _BSD_BINARY, _BSD_DISCLAIMER], [r"neither the name", r"bzip2"]),
+    "BSD-3-Clause": ([_BSD, _BSD_SOURCE, _BSD_BINARY, r"neither the name", _BSD_DISCLAIMER], []),
+    "Zlib": (_ZLIB, [r"bzip2"]),
+    "bzip2-1.0.6": ([r"bzip2", _BSD, _BSD_SOURCE, r"altered source versions must be plainly marked as such",
+                     r"the name of the author may not be used to endorse or promote products"], []),
+    "Unicode-3.0": ([r"unicode license v3",
+                     r"permission is hereby granted free of charge to any person obtaining a copy of data files",
+                     r"this copyright and permission notice appear with all copies of the data files or software",
+                     r"the data files and software are provided as is without warranty of any kind"], []),
+    "Unlicense": ([r"this is free and unencumbered software released into the public domain",
+                   r"anyone is free to copy modify publish use compile sell or distribute this software",
+                   r"the software is provided as is without warranty of any kind"], []),
+    "MPL-2.0": ([r"mozilla public license version 2 0", r"2 license grants and conditions",
+                 r"3 responsibilities", r"6 disclaimer of warranty", r"10 versions of the license"], []),
+    "CC0-1.0": ([r"cc0 1 0 universal", r"statement of purpose", r"2 waiver",
+                 r"4 limitations and disclaimers"], []),
+    "BSL-1.0": ([r"boost software license version 1 0 august 17th 2003",
+                 r"permission is hereby granted free of charge to any person or organization obtaining a copy of the "
+                 r"software and accompanying documentation covered by this license",
+                 r"the software is provided as is without warranty of any kind"], []),
+    "LLVM-exception": ([r"llvm exceptions to the apache 2 0 license",
+                        r"as an exception if as a result of your compiling your source code portions of this software "
+                        r"are embedded into an object form of such source code"], []),
+    "OFL-1.1": ([r"sil open font license version 1 1",
+                 r"permission is hereby granted free of charge to any person obtaining a copy of the font software",
+                 r"termination", r"disclaimer"], []),
+    "LGPL-2.1-only": ([r"gnu lesser general public license version 2 1 february 1999",
+                       r"terms and conditions for copying distribution and modification",
+                       r"0 this license agreement applies to any software library",
+                       r"6 as an exception to the sections above you may also combine or link a work that uses the "
+                       r"library"], []),
+    "GPL-2.0-only": ([r"gnu general public license version 2 june 1991",
+                      r"terms and conditions for copying distribution and modification",
+                      r"0 this license applies to any program or other work"], []),
 }
 
 
@@ -305,16 +358,17 @@ def crate_texts(crate):
     if crate.licence:
         declared = identifiers(crate.licence)
         result.undeclared = sorted(present - set(declared))
-        if not satisfied(expression(crate.licence), present):
-            for identifier in declared:
-                if identifier in present:
-                    continue
-                text = standard_text(identifier)
-                if text is None:
-                    raise ValueError(f"the licence files of {crate.name} {crate.version} hold no text of "
-                                     f"{identifier}, and there is no standard text of {identifier} in "
-                                     f"{STANDARD_TEXTS.relative_to(ROOT).as_posix()}")
-                entries.append((f"standard text of {identifier}", text))
+        tree = expression(crate.licence)
+        if not satisfied(tree, present):
+            available = {identifier for identifier in declared if standard_text(identifier) is not None}
+            added = completion(tree, present, available)
+            if added is None:
+                missing = [identifier for identifier in declared if identifier not in present | available]
+                raise ValueError(f"the licence files of {crate.name} {crate.version} do not hold the texts that "
+                                 f"{crate.licence} requires, and there is no standard text of {', '.join(missing)} in "
+                                 f"{STANDARD_TEXTS.relative_to(ROOT).as_posix()}")
+            for identifier in added:
+                entries.append((f"standard text of {identifier}", standard_text(identifier)))
                 result.standard.append(identifier)
     entries.extend((path.relative_to(crate.directory).as_posix(), path.read_bytes())
                    for path in files(crate.directory, NOTICE_FILE) if path not in licence_files)
@@ -329,13 +383,12 @@ def standard_statement(crate, texts, numbers):
     """The sentence of a crate line that names its standard texts and their copyright holders."""
     names = texts.standard
     if texts.licence_files:
-        reason = (f"the licence files of the package hold no text of {names[0]}" if len(names) == 1 else
-                  f"the licence files of the package hold none of the texts of {listing(names)}")
+        reason = "the licence files of the package do not hold the texts that its licence expression requires"
     else:
         reason = "the package holds no licence file"
-    which = (f"text {numbers[0]} is the standard text of {names[0]}, the licence" if len(names) == 1 else
+    which = (f"text {numbers[0]} is the standard text of {names[0]}, a licence" if len(names) == 1 else
              f"texts {listing([str(number) for number in numbers])} are the standard texts of {listing(names)}, "
-             "the licences")
+             "licences")
     if crate.authors:
         holders = f"the copyright holders are the authors that its manifest declares: {', '.join(crate.authors)}"
     elif crate.repository:
@@ -455,11 +508,12 @@ def document(version, triple, build, extra=(), workspace=ROOT, product=CLIENT):
              f"The crates that {product.programs} {'is' if len(product.packages) == 1 else 'are'} built from for "
              f"{triple}, with the crates that their build scripts and procedural macros use. Each line names the "
              "crate, its version, the licence that its manifest declares, where it comes from, and its licence "
-             "texts: the licence files of its package, and its notice files. When the licence files hold no text "
-             "of a licence that the expression of the manifest requires, or when the package holds no licence "
-             "file, the line says so, and the texts of the declared licences are the standard texts of these "
-             "licences, from the SPDX License List and the Apache Software Foundation; the copyright holders are "
-             "then the authors that the manifest declares. When the licence files hold the text of a licence that "
+             "texts: the licence files of its package, and its notice files. When the licence files do not hold "
+             "the texts that the expression of the manifest requires, or when the package holds no licence file, "
+             "the line says so, and the file adds the standard texts of declared licences that complete the "
+             "expression, for each OR the alternative that needs the fewest texts, from the SPDX License List and "
+             "the Apache Software Foundation; the copyright holders are then the authors that the manifest "
+             "declares. When the licence files hold the text of a licence that "
              "the manifest does not declare, the line says so too.", ""]
     for crate in found:
         where = source(crate, workspace)

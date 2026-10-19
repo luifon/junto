@@ -113,19 +113,47 @@ class RuntimeTests(unittest.TestCase):
                         info = tarfile.TarInfo(f"{top}/{name}")
                         info.size = len(content)
                         output.addfile(info, io.BytesIO(content))
-            musl = pathlib.Path(temporary) / "musl-copyright"
-            musl.write_text("musl copyright\n")
-            with mock.patch.object(linux, "RUNTIME_C_LIBRARY", ("musl 1.2.3", musl)):
+            packages = []
+            for name in ["musl", "compiler-rt"]:
+                path = pathlib.Path(temporary) / f"{name}-copyright"
+                path.write_text(f"{name} copyright\n")
+                packages.append((name, path))
+            with mock.patch.object(linux, "RUNTIME_PACKAGES", packages):
                 section = linux.runtime_section(source)
         found = dict((text.decode().strip(), label) for label, text in section.components)
         self.assertEqual(found["LGPL2.txt of fuse-3.15.0"],
                          "libfuse 3.15.0, with the change of the AppImage project: LGPL2.txt")
-        self.assertEqual(len(found), sum(len(names) for _, _, names in linux.RUNTIME_COMPONENTS) + 1)
-        self.assertEqual(found["musl copyright"], f"musl 1.2.3: {musl}")
+        self.assertEqual(len(found), sum(len(names) for _, _, names in linux.RUNTIME_COMPONENTS) + 2)
+        self.assertEqual(found["musl copyright"], f"musl: {packages[0][1]}")
+        self.assertEqual(found["compiler-rt copyright"], f"compiler-rt: {packages[1][1]}")
         self.assertNotIn("README of zlib-1.3.1", found)
         description = " ".join(section.description)
         self.assertIn("GNU Lesser General Public License 2.1", description)
         self.assertIn("licences/appimage-runtime", description)
+        self.assertIn("relink", description)
+
+    def test_the_link_script_links_only_files_of_its_directory_and_the_instructions_name_each(self):
+        tools = pathlib.Path(linux.__file__).resolve().parent.parent / "tools/linux/appimage-runtime"
+        named = linux.link_inputs((tools / "link.sh").read_text())
+        self.assertEqual(named, ["Scrt1.o", "crti.o", "clang_rt.crtbegin.o", "runtime.o", "libsquashfuse.a",
+                                 "libsquashfuse_ll.a", "libzstd.a", "libz.a", "libfuse3.a", "libmimalloc.a",
+                                 "libclang_rt.builtins.a", "libc.a", "clang_rt.crtend.o", "crtn.o",
+                                 "data_sections.ld"])
+        self.assertNotIn("/", " ".join(named))
+        self.assertNotRegex((tools / "link.sh").read_text(), r"\s-[lL]\S")
+        readme = (tools / "README.md").read_text()
+        for name in [*named, "link.sh"]:
+            with self.subTest(name):
+                self.assertIn(f"`{name}`", readme)
+        build = (tools / "build.sh").read_text()
+        self.assertIn('sh "$relink/link.sh" "$output"', build)
+        self.assertNotRegex(build, r"\$CC [^\n]*-o runtime\b")
+
+    def test_the_link_inputs_are_read_from_the_ld_command(self):
+        script = "set -eu\nld -static -o \"$output\" \\\n    a.o libb.a \\\n    -T c.ld\nstrip x.o\n"
+        self.assertEqual(linux.link_inputs(script), ["a.o", "libb.a", "c.ld"])
+        with self.assertRaisesRegex(ValueError, "no ld command"):
+            linux.link_inputs("strip a.o\n")
 
     def test_the_build_image_downloads_and_the_build_script_extracts_the_archive_of_each_component(self):
         tools = pathlib.Path(linux.__file__).resolve().parent.parent / "tools/linux"
@@ -139,8 +167,9 @@ class RuntimeTests(unittest.TestCase):
                 self.assertRegex(dockerfile, f"[0-9a-f]{{64}} {archive} ")
                 self.assertIn(top.removeprefix("type2-runtime-"), script)
                 self.assertIn(archive, readme)
-        self.assertIn(f"COPY appimage-runtime/README.md appimage-runtime/build.sh {linux.RUNTIME_SOURCE}/", dockerfile)
-        self.assertIn(f"build.sh {linux.RUNTIME}", dockerfile)
+        self.assertIn("COPY appimage-runtime/README.md appimage-runtime/build.sh appimage-runtime/link.sh \\\n"
+                      f"    {linux.RUNTIME_SOURCE}/", dockerfile)
+        self.assertIn(f"build.sh {linux.RUNTIME} \\\n        {linux.RUNTIME_SOURCE}/relink", dockerfile)
 
 
 if __name__ == "__main__":
