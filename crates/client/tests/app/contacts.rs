@@ -22,6 +22,28 @@ impl Window {
         self.in_shell(|shell, window, cx| shell.type_contact_part(part, window, cx));
     }
 
+    /// Waits until the chooser has the answer to the typed part and offers the account.
+    /// A row of an earlier answer can be replaced while it is pressed, and such a press
+    /// chooses nobody (ADR 0741).
+    #[track_caller]
+    fn until_offered(&mut self, account_id: AccountId) {
+        let row = format!("contact-{account_id}");
+        self.until(&format!("{row} is offered for the typed part"), |window| {
+            let settled = window.state.read_with(&window.cx, |state, _| {
+                state.contacts_view().is_some_and(|view| !view.reading)
+            });
+            settled && window.shows_named(row.clone())
+        });
+    }
+
+    /// Chooses an offered account in the chooser, which closes then.
+    #[track_caller]
+    fn choose_contact(&mut self, account_id: AccountId) {
+        self.until_offered(account_id);
+        self.click_named(format!("contact-{account_id}"));
+        assert!(!self.shows("new-direct-dialog"));
+    }
+
     /// The account of the direct conversation that the main area shows.
     fn conversation_with(&mut self) -> Option<(AccountId, Option<String>)> {
         let conversation = self.view().workspace()?.conversation.clone()?;
@@ -66,9 +88,7 @@ fn a_person_writes_to_an_account_that_is_in_no_member_list_of_the_person(cx: &mu
     let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
     let luca_id = window.view().person.account_id.unwrap();
     window.search_contacts("E");
-    window.until("Eve is offered", |window| {
-        window.shows_named(format!("contact-{eve_id}"))
-    });
+    window.until_offered(eve_id);
     window.in_shell(|shell, window, cx| shell.type_contact_part("Carl", window, cx));
     window.until("nobody is offered for Carl", |window| {
         window.shows("contacts-none")
@@ -77,11 +97,7 @@ fn a_person_writes_to_an_account_that_is_in_no_member_list_of_the_person(cx: &mu
 
     // Choosing Eve opens the conversation, with her name.
     window.in_shell(|shell, window, cx| shell.type_contact_part("Eve", window, cx));
-    window.until("Eve is offered again", |window| {
-        window.shows_named(format!("contact-{eve_id}"))
-    });
-    window.click_named(format!("contact-{eve_id}"));
-    assert!(!window.shows("new-direct-dialog"));
+    window.choose_contact(eve_id);
     window.until("the conversation with Eve is shown by her name", |window| {
         window.conversation_with() == Some((eve_id, Some("Eve".to_owned())))
     });
@@ -118,10 +134,7 @@ fn a_person_writes_to_an_account_that_is_in_no_member_list_of_the_person(cx: &mu
         })
     });
     window.search_contacts("Carl");
-    window.until("Carl is offered", |window| {
-        window.shows_named(format!("contact-{carl_id}"))
-    });
-    window.click_named(format!("contact-{carl_id}"));
+    window.choose_contact(carl_id);
     window.until(
         "the conversation with Carl is shown by his name",
         |window| window.conversation_with() == Some((carl_id, Some("Carl".to_owned()))),
