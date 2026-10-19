@@ -28,7 +28,7 @@ use tokio::sync::watch;
 const DATABASE_URL: &str = "JUNTO_TEST_DATABASE_URL";
 const SERVER_BINARY: &str = "JUNTO_SERVER_BIN";
 
-fn admin_url() -> String {
+pub fn admin_url() -> String {
     std::env::var(DATABASE_URL).unwrap_or_else(|_| {
         panic!("{DATABASE_URL} is not set. Run the tests through tools/with-test-postgres.sh.")
     })
@@ -237,6 +237,9 @@ impl TestServer {
             )
             .env("JUNTO_LOG_FORMAT", "text")
             .env("JUNTO_LOG_LEVEL", "warn")
+            // The server stops when the process of the tests ends, also when that process is
+            // killed (ADR 0915).
+            .env("JUNTO_STOP_WITH_PROCESS", std::process::id().to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -264,6 +267,11 @@ impl TestServer {
 
     pub fn address(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
+    }
+
+    /// The number of the running process.
+    pub fn process_id(&self) -> Option<u32> {
+        self.child.as_ref().map(Child::id)
     }
 
     /// The owner code that the running process printed. A server with an owner prints none.

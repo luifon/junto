@@ -7,8 +7,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 
 SCRIPT = pathlib.Path(__file__).resolve().with_name("start-run.ps1")
+# The run of these tests. Its name is new in each process of the tests, so that a scheduled task
+# \junto-ci\<run> that another copy or an earlier version of these tests left cannot change a
+# result, and these tests change no task of another run.
+RUN = f"sample-run-{uuid.uuid4().hex[:12]}"
 
 
 def powershell(*arguments):
@@ -17,13 +22,25 @@ def powershell(*arguments):
 
 
 def script(directory, *arguments):
-    return powershell("-File", str(SCRIPT), "-Directory", str(directory), "-Run", "sample-run", *arguments)
+    return powershell("-File", str(SCRIPT), "-Directory", str(directory), "-Run", RUN, *arguments)
 
 
 def functions(directory, commands):
-    """Runs PowerShell commands after the functions of start-run.ps1 for the run sample-run of
-    `directory`. A function defined in `commands` replaces a command of the same name."""
-    return powershell("-Command", f". '{SCRIPT}' -Directory '{directory}' -Run sample-run -FunctionsOnly; {commands}")
+    """Runs PowerShell commands after the functions of start-run.ps1 for the run RUN of
+    `directory`. A function defined in `commands` replaces a command of the same name. The
+    module of the scheduled-task commands is loaded first: PowerShell loads a module at the
+    first use of one of its commands, and that load replaces the functions of the same names."""
+    return powershell("-Command", f"Import-Module ScheduledTasks; "
+                      f". '{SCRIPT}' -Directory '{directory}' -Run {RUN} -FunctionsOnly; {commands}")
+
+
+def removed_task():
+    """Removes the scheduled task of the run RUN, and states whether it existed."""
+    result = powershell("-Command", f"$task = Get-ScheduledTask -TaskPath '\\junto-ci\\' -TaskName '{RUN}' "
+                        "-ErrorAction SilentlyContinue; "
+                        "if ($task) { $task | Stop-ScheduledTask; $task | Unregister-ScheduledTask -Confirm:$false; "
+                        "'removed' }")
+    return result.stdout.strip() == "removed"
 
 
 def creation_time(number):
@@ -42,7 +59,7 @@ def creation_time(number):
 
 
 def run_folder(temporary):
-    here = pathlib.Path(temporary) / "runs" / "sample-run"
+    here = pathlib.Path(temporary) / "runs" / RUN
     here.mkdir(parents=True)
     return here
 
@@ -69,8 +86,7 @@ class Session(unittest.TestCase):
         }
         for given, expected in sessions.items():
             with self.subTest(sessions=given):
-                result = powershell("-Command", f". '{SCRIPT}' -Directory x -Run sample-run -FunctionsOnly; "
-                                    f"Get-DesktopRefusal 'MACHINE\\account' {given}")
+                result = functions("x", f"Get-DesktopRefusal 'MACHINE\\account' {given}")
                 self.assertEqual(result.returncode, 0, result.stderr)
                 if expected:
                     self.assertIn(expected, result.stdout)
@@ -92,8 +108,7 @@ class Session(unittest.TestCase):
         own = powershell("-Command", "[Security.Principal.WindowsIdentity]::GetCurrent().Name; "
                          "[Diagnostics.Process]::GetCurrentProcess().SessionId").stdout.split("\n")
         account, session = own[0].strip(), int(own[1])
-        result = powershell("-Command", f". '{SCRIPT}' -Directory x -Run sample-run -FunctionsOnly; "
-                            "Get-Session | ForEach-Object { \"$($_.Id) $($_.Account)\" }")
+        result = functions("x", "Get-Session | ForEach-Object { \"$($_.Id) $($_.Account)\" }")
         self.assertEqual(result.returncode, 0, result.stderr)
         if session > 0:
             self.assertIn(f"{session} {account}".lower(), result.stdout.lower())
@@ -104,29 +119,26 @@ class Ended(unittest.TestCase):
     # tools/ci/ci.sh reports such a run as failed, and "ci.sh forget" removes it.
     def test_a_start_that_is_refused_records_its_end_and_removes_the_bundle(self):
         with tempfile.TemporaryDirectory(prefix="junto-start-") as temporary:
-            here = pathlib.Path(temporary) / "runs" / "sample-run"
-            here.mkdir(parents=True)
+            here = run_folder(temporary)
             (here / "commit.bundle").write_bytes(b"bundle")
-            result = powershell("-Command", f". '{SCRIPT}' -Directory '{temporary}' -Run sample-run -FunctionsOnly; "
-                                "Stop-Start 2 'the run sample-run cannot start: the screen is locked'")
+            result = functions(temporary, f"Stop-Start 2 'the run {RUN} cannot start: the screen is locked'")
             self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
             self.assertEqual((here / "finished").read_text(), "2\n")
             self.assertEqual((here / "runner.log").read_text().strip(),
-                             "the run sample-run cannot start: the screen is locked")
+                             f"the run {RUN} cannot start: the screen is locked")
             self.assertFalse((here / "commit.bundle").exists())
 
     # The second copy of start-run.ps1 waits for the process of the run, then removes the task
-    # (here there is none, so it records that the task was not removed).
+    # (the run of these tests has none, so it records that the task was not removed).
     def test_the_removal_waits_until_the_process_of_the_run_has_ended(self):
         with tempfile.TemporaryDirectory(prefix="junto-start-") as temporary:
-            here = pathlib.Path(temporary) / "runs" / "sample-run"
-            here.mkdir(parents=True)
+            here = run_folder(temporary)
             child = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.readline()"],
                                      stdin=subprocess.PIPE, text=True)
             try:
                 removal = subprocess.Popen(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
                                             "Bypass", "-File", str(SCRIPT), "-Directory", temporary, "-Run",
-                                            "sample-run", "-Remove", "-After", str(child.pid)],
+                                            RUN, "-Remove", "-After", str(child.pid)],
                                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
                 try:
                     with self.assertRaises(subprocess.TimeoutExpired):
@@ -161,7 +173,7 @@ class Ended(unittest.TestCase):
                 for name in ("Tokyo Standard Time", "Pacific Standard Time"):
                     with self.subTest(zone=name):
                         result = functions(temporary, zone.format(name) + "[TimeZoneInfo]::Local.Id; "
-                                           "Test-RunEnded $here sample-run")
+                                           f"Test-RunEnded $here {RUN}")
                         self.assertEqual(result.returncode, 0, result.stderr)
                         self.assertEqual(result.stdout.split(), [*name.split(), "False"])
             finally:
@@ -176,7 +188,7 @@ class Ended(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="junto-start-") as temporary:
             here = run_folder(temporary)
             (here / "started").write_text("")
-            # No task \\junto-ci\\sample-run exists, and no start of it runs.
+            # The run of these tests has no task, and no start of it runs.
             result = script(temporary, "-Ended")
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             cases = {
@@ -188,19 +200,28 @@ class Ended(unittest.TestCase):
             }
             for given, expected in cases.items():
                 with self.subTest(given=given):
-                    result = functions(temporary, f"{given}; Test-RunEnded $here sample-run")
+                    result = functions(temporary, f"{given}; Test-RunEnded $here {RUN}")
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(result.stdout.strip(), expected)
 
 
 # The start with the commands that change scheduled tasks replaced, so that the tests create none.
+# The replaced registration and start write their call to tasks.log of the run.
 TASKS = ("function Get-DesktopSession { [pscustomobject]@{ Connected = $true; Lock = 'unlocked' } }; "
          "function Get-ScheduledTask { }; function Stop-ScheduledTask { }; function Unregister-ScheduledTask { }; "
-         "function Register-ScheduledTask { }; function Start-ScheduledTask { }; ")
+         "function Register-ScheduledTask { param($TaskPath, $TaskName, $Action, $Principal, $Settings) "
+         "Add-Content (Join-Path $here 'tasks.log') \"registered $TaskPath$TaskName\" }; "
+         "function Start-ScheduledTask { param($TaskPath, $TaskName) "
+         "Add-Content (Join-Path $here 'tasks.log') \"started $TaskPath$TaskName\" }; ")
 
 
 @unittest.skipIf(os.name != "nt", "start-run.ps1 runs on Windows")
 class Start(unittest.TestCase):
+    # A test of the start registers no scheduled task of its own; a task that one registered is
+    # removed here.
+    def tearDown(self):
+        self.assertFalse(removed_task(), f"a test of the start registered the task \\junto-ci\\{RUN}")
+
     # tools/ci/ci.sh then reports the run as failed, and "ci.sh forget" removes it.
     def test_an_error_before_the_run_has_started_records_its_end(self):
         with tempfile.TemporaryDirectory(prefix="junto-start-") as temporary:
@@ -209,7 +230,7 @@ class Start(unittest.TestCase):
             result = functions(temporary, TASKS + "function New-ScheduledTaskAction { throw 'no action' }; Invoke-Start")
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
             self.assertEqual((here / "finished").read_text(), "1\n")
-            self.assertIn("the run sample-run did not start: no action", (here / "runner.log").read_text())
+            self.assertIn(f"the run {RUN} did not start: no action", (here / "runner.log").read_text())
             self.assertFalse((here / "commit.bundle").exists())
 
     def test_an_error_after_the_run_has_started_leaves_the_run(self):
@@ -218,8 +239,10 @@ class Start(unittest.TestCase):
             (here / "started").write_text("")
             result = functions(temporary, TASKS + "function Get-CimInstance { throw 'no processes' }; Invoke-Start")
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("the run sample-run started, but its start did not complete: no processes", result.stdout)
+            self.assertIn(f"the run {RUN} started, but its start did not complete: no processes", result.stdout)
             self.assertIn("no processes", (here / "task.log").read_text())
+            self.assertEqual((here / "tasks.log").read_text().split("\n")[:-1],
+                             [f"registered \\junto-ci\\{RUN}", f"started \\junto-ci\\{RUN}"])
             self.assertFalse((here / "finished").exists())
 
     # A start removes the tasks of runs that have ended, and leaves the task of a start that
@@ -232,7 +255,7 @@ class Start(unittest.TestCase):
             (runs / "finished-run" / "finished").write_text("0\n")
             (runs / "ended-run" / "process").write_text("4 1\n")  # the System process has another creation time
             (runs / "running-run" / "started").write_text("")
-            names = ["finished-run", "gone-run", "starting-run", "ended-run", "running-run", "sample-run"]
+            names = ["finished-run", "gone-run", "starting-run", "ended-run", "running-run", RUN]
             listed = ", ".join(f"[pscustomobject]@{{ TaskName = '{name}' }}" for name in names)
             result = functions(temporary, f"function Get-ScheduledTask {{ @({listed}) }}; "
                                "function Unregister-ScheduledTask { [CmdletBinding(SupportsShouldProcess)] param($TaskPath, $TaskName) "

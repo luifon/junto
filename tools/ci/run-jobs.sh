@@ -10,6 +10,7 @@
 # ref refs/ci/<run>. On Windows <directory> is a path such as C:/junto-ci, and the script runs
 # in the Bash of Git for Windows. The run lives in <directory>/runs/<run>:
 #
+#   commit.git        a bare repository with the objects of the commit, while the run runs
 #   commit, jobs      the commit and the jobs of the run, written first
 #   current           the job that runs and its start, while it runs
 #   record.tsv        one line per finished job: commit, job, start, end (UTC), exit
@@ -17,12 +18,18 @@
 #   logs/<job>.log    the output of the job
 #   finished          the exit status of the run (0: every job passed), written last
 #
-# One run at a time: a run waits for the lock of tools/serial.sh, which on the Linux host and
-# on the Windows machine is <directory>/run.lock. Jobs run one after the other, so that the limits of one job are the
-# limits of the run. Before the first job and after each job, every container, network and
-# volume whose name starts with junto-ci- or junto-ci_ is removed, except the cache volumes
-# (Windows has no Docker); at the end the clone and a bundle are removed, also after a
-# failure, and a cache above its size cap is emptied.
+# One run at a time: a run waits for the lock of tools/serial.sh --inherited, which on the
+# Linux host and on the Windows machine is <directory>/run.lock; the processes of the run hold
+# the lock until the last of them has ended. Jobs run one after the other, so that the limits
+# of one job are the limits of the run. Each job runs in a group of processes of its own
+# (tools/ci/group.py), and the next step begins only after every process of the group has
+# ended, also when the run is ended by a signal. Before the checkout is written, before the
+# first job and after each job, every container, network and volume whose name starts with
+# junto-ci- or junto-ci_ is removed, except the cache volumes (Windows has no Docker); at the
+# end the repository of the run and a bundle are removed, also after a failure. Every run of
+# the machine uses the one checkout <directory>/checkout. Before the first job and after
+# the last, tools/ci/caches.py keeps the caches within their limits; when the free space is too
+# low for the run, the run starts no job.
 set -eu
 if [ "$#" -lt 5 ]; then
     echo "usage: $0 <directory> <run> <runner> <repository> <job>..." >&2
@@ -31,72 +38,99 @@ fi
 directory=$1 run=$2 runner=$3 repository=$4
 shift 4
 here=$directory/runs/$run
-checkout=$here/checkout
+# One checkout at one path for every run of the machine. Cargo keeps the output of a unit whose
+# source files are not newer than that output, and the compile-time paths of that output
+# (CARGO_MANIFEST_DIR, file!) name the checkout that built it. With a checkout per run, kept
+# output named the checkout of an earlier run, which no longer existed; with one path, Git
+# rewrites only the files that differ from the earlier commit, those are newer than every
+# earlier output, and the paths of kept output stay valid.
+checkout=$directory/checkout
+objects=$here/commit.git
 
 if [ -z "${JUNTO_CI_LOCKED:-}" ]; then
-    # Until the locked part runs, a failure or a signal ends the run here: the clone is
-    # removed and "finished" names the status.
+    # Until the locked part runs, a failure or a signal ends the run here: the repository of the
+    # run is removed and "finished" names the status. This part never changes the checkout,
+    # which another run can be using.
     locked=""
     outer_end() {
         status=$?
-        # The lock program runs the locked part as its child; that part ends its job and
-        # cleans up on its own signal.
+        trap '' INT TERM HUP
+        # The lock program sends the signal on to the locked part and ends after it, so the
+        # repository of the run stays until that part has ended its job and checked the caches;
+        # a run that waits for the lock ends at once. On Windows the signal ends the lock program, and its keeper
+        # ends every process of the run before it releases the lock (tools/windows/lock.py).
         if [ -n "$locked" ]; then
-            pkill -TERM -P "$locked" 2>/dev/null || true
-            kill "$locked" 2>/dev/null || true
+            kill -TERM "$locked" 2>/dev/null || true
             wait "$locked" 2>/dev/null || true
         fi
-        rm -rf "$checkout"
+        rm -rf "$objects" "$here/lock"
         if [ -f "$repository" ]; then rm -f "$repository"; fi
-        echo "$status" >"$here/finished"
+        if [ ! -f "$here/finished" ]; then echo "$status" >"$here/finished"; fi
     }
     trap outer_end EXIT
-    trap 'exit 143' INT TERM HUP
+    # The first signal ignores the next ones before it ends the script: a Ctrl-C reaches this
+    # part and the locked part, and the lock program sends it on once more; a second signal
+    # during the end would run "exit" again inside the cleanup and end it.
+    trap 'trap "" INT TERM HUP; exit 143' INT TERM HUP
     mkdir -p "$here/logs"
     echo "$*" >"$here/jobs"
-    # The clone gives this script the tools/serial.sh of the commit under test.
-    rm -rf "$checkout"
-    git init --quiet "$checkout"
-    # The files as the commit holds them: Git for Windows sets core.autocrlf in its system
-    # settings, which would give the scripts and the compared files CR LF line ends.
-    git -C "$checkout" config core.autocrlf false
-    git -C "$checkout" config core.longpaths true
+    # The objects of the commit under test, in the ref refs/ci/<run> of a bare repository of the
+    # run. The locked part fetches them into the checkout and writes the files there.
+    rm -rf "$objects" "$here/lock"
+    git init --quiet --bare "$objects"
     if [ -f "$repository" ]; then
-        # A bundle: the fetch copies every object into the checkout.
-        git -C "$checkout" fetch --quiet "$repository" "refs/ci/$run"
+        # A bundle: the fetch copies every object.
+        git -C "$objects" fetch --quiet "$repository" "refs/ci/$run:refs/ci/$run"
     else
-        objects=$(git -C "$repository" rev-parse --path-format=absolute --git-common-dir)/objects
-        echo "$objects" >"$checkout/.git/objects/info/alternates"
-        git -C "$checkout" fetch --quiet "$repository" "refs/ci/$run"
+        alternate=$(git -C "$repository" rev-parse --path-format=absolute --git-common-dir)/objects
+        echo "$alternate" >"$objects/objects/info/alternates"
+        git -C "$objects" fetch --quiet "$repository" "refs/ci/$run:refs/ci/$run"
+        # The run does not depend on the source repository after this point.
+        git -C "$objects" -c pack.threads=1 repack -a -d --quiet
+        rm "$objects/objects/info/alternates"
     fi
-    git -C "$checkout" checkout --quiet --detach FETCH_HEAD
-    if [ -f "$checkout/.git/objects/info/alternates" ]; then
-        # Container commands cannot reach the host's object directory.
-        git -C "$checkout" -c pack.threads=1 repack -a -d --quiet
-        rm "$checkout/.git/objects/info/alternates"
+    git -C "$objects" rev-parse "refs/ci/$run" >"$here/commit"
+    # The lock programs and this script of the commit under test, which take the lock and run
+    # the locked part.
+    for file in tools/serial.sh tools/windows/lock.py tools/ci/run-jobs.sh; do
+        mkdir -p "$here/lock/$(dirname -- "$file")"
+        git -C "$objects" show "refs/ci/$run:$file" >"$here/lock/$file"
+    done
+    # The run lock: on the Linux host and on the Windows machine a lock file of the CI directory;
+    # on the macOS machine the lock of the heavy commands of that machine, which tools/serial.sh
+    # names when JUNTO_HEAVY_LOCK is not set, or JUNTO_CI_RUN_LOCK (for the tests of this
+    # script). A JUNTO_HEAVY_LOCK of the caller is not used: two runs with two locks would write
+    # the one checkout at the same time.
+    if [ "$runner" != macos ]; then
+        export JUNTO_HEAVY_LOCK="$directory/run.lock"
+    elif [ -n "${JUNTO_CI_RUN_LOCK:-}" ]; then
+        export JUNTO_HEAVY_LOCK="$JUNTO_CI_RUN_LOCK"
+    else
+        unset JUNTO_HEAVY_LOCK
     fi
-    git -C "$checkout" rev-parse HEAD >"$here/commit"
-    if [ "$runner" != macos ]; then export JUNTO_HEAVY_LOCK="$directory/run.lock"; fi
-    # tools/serial.sh takes the lock with Python on Windows (tools/windows/lock.py): the
-    # Python of the setup, not a program of the same name in the PATH of the account.
+    # tools/serial.sh --inherited takes the lock with Python (tools/windows/lock.py); on
+    # Windows the Python of the setup, not a program of the same name in the PATH of the
+    # account.
     if [ "$runner" = windows ]; then PATH="$(cygpath -u "$directory")/tools/python:$PATH"; fi
     # The locked part writes "finished" itself; this part keeps its trap for the time the
     # run waits for the lock.
     # It runs in the background, so that a signal to this part ends it as well.
-    JUNTO_CI_LOCKED=1 "$checkout/tools/serial.sh" \
-        sh "$checkout/tools/ci/run-jobs.sh" "$directory" "$run" "$runner" "$repository" "$@" &
+    JUNTO_CI_LOCKED=1 sh "$here/lock/tools/serial.sh" --inherited \
+        sh "$here/lock/tools/ci/run-jobs.sh" "$directory" "$run" "$runner" "$repository" "$@" &
     locked=$!
     status=0
     wait "$locked" || status=$?
     locked=""
     trap - EXIT
-    rm -rf "$checkout"
+    rm -rf "$objects" "$here/lock"
     if [ -f "$repository" ]; then rm -f "$repository"; fi
     if [ ! -f "$here/finished" ]; then echo "$status" >"$here/finished"; fi
     exit "$status"
 fi
 
-pid=""
+# The locked part. With JUNTO_CI_JOB set, the script runs that one job in the group of
+# tools/ci/group.py: the same settings, without the traps and the checkout.
+pid="" group=""
 caches="junto-ci-cargo junto-ci-target junto-ci-uv junto-ci-npm"
 sweep() {
     if [ "$runner" = windows ]; then return 0; fi
@@ -117,50 +151,96 @@ sweep() {
         done
     fi
 }
+# end_job: ends every process of the running job and waits until each has ended. A signal from
+# the Bash of Git for Windows ends a native program at once, so on Windows the job object is
+# ended by its name.
+end_job() {
+    if [ "$runner" = windows ]; then
+        python3 "$checkout/tools/ci/group.py" --end "$group" || true
+    else
+        kill -TERM "$pid" 2>/dev/null || true
+    fi
+    wait "$pid" 2>/dev/null || true
+    pid=""
+}
+caches_check() {
+    JUNTO_CI_PYTHON_IMAGE=${JUNTO_CI_PYTHON_IMAGE:-} \
+        python3 "$checkout/tools/ci/caches.py" "$directory" "$runner" "$1" "$run" >>"$here/caches.log"
+}
 finish() {
     status=$?
-    if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; fi
+    # A second signal, such as the INT of a terminal that the lock program also sends on, must
+    # not end the cleanup.
+    trap '' INT TERM HUP
+    if [ -n "$pid" ]; then end_job; fi
     sweep
-    cap_caches || true
+    caches_check after || true
     rm -f "$here/current"
     echo "$status" >"$here/finished"
 }
-trap finish EXIT
-trap 'exit 143' INT TERM HUP
-# Commands inside the jobs that take tools/serial.sh take a lock of this run.
-export JUNTO_HEAVY_LOCK="$here/heavy.lock"
+# prepare_checkout: the checkout at the commit of this run. Its status is that of the first step
+# that fails: the steps are joined with &&, because a function in the condition of "if" runs
+# without set -e.
+prepare_checkout() {
+    if [ -d "$checkout/.git" ]; then
+        find "$checkout/.git" -name '*.lock' -type f -exec rm -f {} + || return
+    else
+        { rm -rf "$checkout" && git init --quiet "$checkout"; } || return
+    fi
+    # The files as the commit holds them: Git for Windows sets core.autocrlf in its system
+    # settings, which would give the scripts and the compared files CR LF line ends.
+    # The commit comes with its history, for the upgrade test of the deployment job. The checkout
+    # rewrites the files that differ; clean removes every file that the commit does not hold,
+    # also those that an earlier run wrote. Container commands read only this repository.
+    git -C "$checkout" config core.autocrlf false \
+        && git -C "$checkout" config core.longpaths true \
+        && git -C "$checkout" fetch --quiet --no-tags "$objects" "+refs/ci/$run:refs/ci/$run" \
+        && git -C "$checkout" checkout --quiet --force --detach "refs/ci/$run" \
+        && git -C "$checkout" clean -ffdxq \
+        && git -C "$checkout" update-ref -d "refs/ci/$run" \
+        && git -C "$checkout" gc --auto --quiet
+}
+# checked_checkout: the checkout holds exactly the commit of the run: its HEAD is that commit, and
+# Git sees no changed, added, removed or ignored file.
+checked_checkout() {
+    head=$(git -C "$checkout" rev-parse HEAD 2>/dev/null) || head=""
+    changes=$(git -C "$checkout" status --porcelain --ignored 2>&1) || changes="git status failed: $changes"
+    if [ "$head" != "$(cat "$here/commit")" ]; then
+        echo "the checkout holds ${head:-no commit}, not the commit $(cat "$here/commit") of the run" >&2
+        return 1
+    fi
+    if [ -n "$changes" ]; then
+        printf 'the checkout differs from the commit of the run:\n%s\n' "$changes" | head -n 20 >&2
+        return 1
+    fi
+}
+if [ -z "${JUNTO_CI_JOB:-}" ]; then
+    trap finish EXIT
+    trap 'trap "" INT TERM HUP; exit 143' INT TERM HUP
+    # Containers of an earlier run that ended without its cleanup can still write into a cache
+    # volume; they are removed before the files of the checkout are written.
+    sweep
+    # A run that was ended while Git wrote the checkout (a stop of Windows, a KILL) leaves the
+    # lock files of Git. No other Git process uses the checkout while this run holds the run
+    # lock, so they are removed; when Git still fails, the checkout is created again.
+    if ! prepare_checkout; then
+        echo "the checkout could not be updated; it is created again" >&2
+        rm -rf "$checkout"
+        if ! prepare_checkout; then
+            echo "the checkout could not be created" >&2
+            exit 1
+        fi
+    fi
+    # The jobs test these files, and the run records their result for this commit.
+    if ! checked_checkout; then
+        exit 1
+    fi
+    # Commands inside the jobs that take tools/serial.sh take a lock of this run.
+    export JUNTO_HEAVY_LOCK="$here/heavy.lock"
+fi
 commit=$(cat "$here/commit")
 cd "$checkout"
 . tools/ci/pins.sh
-
-# The caches of the Linux host are Docker volumes; each has a size cap in GiB. Above its cap
-# a volume is emptied after the run, and the next run fills it again from nothing. On macOS
-# and on Windows the Cargo target directory of the runner has the same rule.
-cap_caches() {
-    if [ "$runner" != linux ]; then
-        if [ -d "$directory/cargo-target" ]; then
-            size=$(du -sk "$directory/cargo-target" | cut -f 1)
-            if [ "$size" -gt $((60 * 1024 * 1024)) ]; then
-                echo "cache $directory/cargo-target: ${size} KiB, above its cap; emptied" >>"$here/caches.log"
-                rm -rf "$directory/cargo-target"
-            fi
-        fi
-        return
-    fi
-    for entry in junto-ci-cargo:8 junto-ci-target:60 junto-ci-uv:4 junto-ci-npm:4; do
-        volume=${entry%%:*} cap=${entry#*:}
-        docker volume inspect "$volume" >/dev/null 2>&1 || continue
-        size=$(docker run --rm --name junto-ci-cache-size --network none --cpus 1 --memory 256m \
-            --memory-swap 256m -v "$volume:/cache" "$JUNTO_CI_PYTHON_IMAGE" du -sk /cache | cut -f 1)
-        echo "cache $volume: $size KiB of $cap GiB" >>"$here/caches.log"
-        if [ "$size" -gt $((cap * 1024 * 1024)) ]; then
-            docker run --rm --name junto-ci-cache-empty --network none --cpus 1 --memory 256m \
-                --memory-swap 256m -v "$volume:/cache" "$JUNTO_CI_PYTHON_IMAGE" \
-                find /cache -mindepth 1 -delete
-            echo "cache $volume emptied" >>"$here/caches.log"
-        fi
-    done
-}
 
 # The programs that the Linux host lacks come from images: the uv program and the Docker
 # command-line program, kept in <directory>/tools/bin for the image names of pins.sh. The
@@ -267,17 +347,26 @@ job() {
     esac
 }
 
+if [ -n "${JUNTO_CI_JOB:-}" ]; then
+    job "$JUNTO_CI_JOB"
+    exit
+fi
+
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
-# Containers and networks of an earlier run that ended without its cleanup.
-sweep
+caches_check before
+# The shell of the job part, for group.py, which is a native program on Windows.
+shell=$(command -v sh)
+if [ "$runner" = windows ]; then shell=$(cygpath -w "$shell"); fi
 failed=0
 for name in "$@"; do
     start=$(now)
     began=$(date +%s)
     printf '%s\t%s\n' "$name" "$start" >"$here/current"
-    # The job runs in the background, so that a signal to this script ends it at once. It
-    # does not see the terminal of the runner.
-    job "$name" </dev/null >"$here/logs/$name.log" 2>&1 &
+    # The job runs in the background in a group of its own, so that a signal to this script
+    # ends it and every process that it started. It does not see the terminal of the runner.
+    group=junto-ci-$run-$name
+    JUNTO_CI_JOB=$name python3 "$checkout/tools/ci/group.py" "$group" \
+        "$shell" "$0" "$directory" "$run" "$runner" "$repository" "$name" </dev/null >"$here/logs/$name.log" 2>&1 &
     pid=$!
     status=0
     wait "$pid" || status=$?

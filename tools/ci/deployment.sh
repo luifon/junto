@@ -23,6 +23,23 @@ while read -r setting limit; do
 done <<EOF
 $settings
 EOF
+# The images of this job are built by a BuildKit builder of its own, in a container of the
+# Docker daemon. tools/ci/caches.py measures its cache and removes it above its cap; the
+# builder of the Docker daemon is shared with the other work of the machine and is not pruned
+# (ADR 0905). Compose and docker build use the builder that BUILDX_BUILDER names; docker
+# build needs --load to place the image in the image store of the daemon.
+step "BuildKit builder of the job"
+builder=junto-ci-deployment
+if docker buildx inspect "$builder" >/dev/null 2>&1 \
+    && ! docker buildx inspect "$builder" | grep -q "image=\"$JUNTO_CI_BUILDKIT_IMAGE\""; then
+    docker buildx rm "$builder"
+fi
+if ! docker buildx inspect "$builder" >/dev/null 2>&1; then
+    docker buildx create --name "$builder" --driver docker-container \
+        --driver-opt "image=$JUNTO_CI_BUILDKIT_IMAGE"
+fi
+docker buildx inspect --bootstrap "$builder" >/dev/null
+export BUILDX_BUILDER="$builder"
 step "Pinned versions agree"
 tools/check-pins.sh
 step "Workflow files"
@@ -52,11 +69,11 @@ deploy/tests/compose-config.sh
 step "Restore image checks before container changes"
 python3 -B -m unittest discover -s deploy/tests -p 'test_restore_images.py'
 step "Server image"
-docker build -f deploy/images/server/Dockerfile -t junto-ci-server .
+docker build --load -f deploy/images/server/Dockerfile -t junto-ci-server .
 step "The licence files of the server image"
 python3 -B deploy/tests/check_licences.py junto-ci-server
 step "Link image"
-docker build -t junto-ci-link deploy/images/link
+docker build --load -t junto-ci-link deploy/images/link
 step "Hand-over of a transcription job between two containers"
 deploy/tests/transcribe-handover.sh junto-ci-server
 step "The start script of the recorder saves partial files"
