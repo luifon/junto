@@ -2,8 +2,8 @@
 //! settings of one channel (ADR 0304, ADR 0402, ADR 0504).
 
 use gpui::{
-    AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString, Styled,
-    Window, div,
+    AnyElement, AppContext as _, Context, Hsla, InteractiveElement, IntoElement, ParentElement,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
 };
 use junto_client_core::protocol::call::UpdateCallSettings;
 use junto_client_core::protocol::ids::{CategoryId, ChannelId, ServerId, WorkspaceId};
@@ -50,6 +50,48 @@ const fn kind_icon(kind: ChannelKind) -> Icon {
 }
 
 type Click = gpui::ClickEvent;
+
+/// A channel that the person drags to another place or category (ADR 0761).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChannelDrag {
+    pub server_id: ServerId,
+    pub channel_id: ChannelId,
+}
+
+/// A place that takes a dropped channel: the place `to` of the channels of a category,
+/// or of the channels without a category.
+fn drop_target(
+    element: gpui::Stateful<gpui::Div>,
+    page: &ChannelsPage,
+    server_id: ServerId,
+    category_id: Option<CategoryId>,
+    to: usize,
+    theme: &Theme,
+    cx: &mut Context<Shell>,
+) -> gpui::Stateful<gpui::Div> {
+    let workspace_id = page.workspace_id;
+    let (accepts, hovers) = (page.clone(), page.clone());
+    let hover = theme.colors.limestone_hover;
+    element
+        .can_drop(move |value, _, _| {
+            value.downcast_ref::<ChannelDrag>().is_some_and(|drag| {
+                drag.server_id == server_id && accepts.takes(drag.channel_id, category_id, to)
+            })
+        })
+        .drag_over::<ChannelDrag>(move |style, drag, _, _| {
+            if drag.server_id == server_id && hovers.takes(drag.channel_id, category_id, to) {
+                style.bg(Hsla::from(hover))
+            } else {
+                style
+            }
+        })
+        .on_drop(cx.listener(move |this, drag: &ChannelDrag, _, cx| {
+            let channel_id = drag.channel_id;
+            this.state.update(cx, |state, cx| {
+                state.place_channel(server_id, workspace_id, channel_id, category_id, to, cx);
+            });
+        }))
+}
 
 impl Shell {
     fn category_listener(
@@ -248,17 +290,35 @@ impl Shell {
         )
     }
 
+    /// The heading of a group. A channel that is dropped on it goes to the end of the
+    /// group, whose channels are `count`.
     fn render_category_header(
         &mut self,
         view: &AdminView,
         page: &ChannelsPage,
         category: Option<&CategoryLine>,
+        count: usize,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (server_id, workspace_id) = (view.server_id, page.workspace_id);
         let Some(category) = category else {
-            return group_label(text::admin::NO_CATEGORY, theme).into_any_element();
+            return drop_target(
+                div()
+                    .id("category-result-none")
+                    .flex()
+                    .flex_col()
+                    .flex_none()
+                    .debug_selector(|| "category-row-none".to_owned())
+                    .child(group_label(text::admin::NO_CATEGORY, theme)),
+                page,
+                server_id,
+                None,
+                count,
+                theme,
+                cx,
+            )
+            .into_any_element();
         };
         let category_id = category.id;
         let name = category.name.clone();
@@ -374,12 +434,13 @@ impl Shell {
         let refused = view
             .refused(AskKind::UpdateCategory(category_id))
             .or(view.refused(AskKind::DeleteCategory(category_id)));
-        div()
+        let block = div()
             .id(SharedString::from(format!("category-result-{category_id}")))
             .flex()
             .flex_col()
             .flex_none()
-            .mt(u(14.0))
+            .mt(u(14.0));
+        drop_target(block, page, server_id, Some(category_id), count, theme, cx)
             .child(self.mode_row(
                 &[
                     Mode::RenameCategory(category_id),
@@ -394,11 +455,14 @@ impl Shell {
             .into_any_element()
     }
 
+    /// The row of a channel at the place `index` of its group. A channel that is dropped
+    /// on it takes that place.
     fn render_channel_line(
         &mut self,
         view: &AdminView,
         page: &ChannelsPage,
         row: &ChannelLine,
+        index: usize,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -424,12 +488,39 @@ impl Shell {
             _ => {
                 let detail: Option<SharedString> =
                     row.permanent.then(|| text::admin::PERMANENT_MARK.into());
+                // The handle is the place where a drag starts. A channel that the person
+                // does not manage has none.
+                let label: SharedString = row.name.clone().into();
+                let handle = div()
+                    .id(("channel-handle", number))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .size(u(22.0))
+                    .when(row.may_manage, |handle| {
+                        handle
+                            .cursor_grab()
+                            .tooltip(crate::ui::tooltip(text::admin::CHANNEL_HANDLE))
+                            .on_drag(
+                                ChannelDrag {
+                                    server_id,
+                                    channel_id,
+                                },
+                                move |_, _, _, cx| {
+                                    cx.new(|_| super::roles::DragLabel(label.clone()))
+                                },
+                            )
+                            .child(icon(Icon::List, 14.0, theme.colors.ink_2))
+                    })
+                    .debug_selector(move || format!("channel-handle-{channel_id}"));
                 div()
                     .flex()
                     .flex_1()
                     .min_w_0()
                     .items_center()
                     .gap(u(8.0))
+                    .child(handle)
                     .child(icon(kind_icon(row.kind), 15.0, theme.colors.ink_2))
                     .child(line_text(row.name.clone(), detail, theme))
                     .child(row_action(
@@ -482,11 +573,12 @@ impl Shell {
                     .into_any_element()
             }
         };
-        div()
+        let block = div()
             .id(SharedString::from(format!("channel-result-{channel_id}")))
             .flex()
             .flex_col()
-            .flex_none()
+            .flex_none();
+        drop_target(block, page, server_id, row.category_id, index, theme, cx)
             .child(self.mode_row(
                 &[Mode::MoveChannel(channel_id)],
                 named(
@@ -595,14 +687,15 @@ impl Shell {
                 view,
                 page,
                 group.category.as_ref(),
+                group.channels.len(),
                 &theme,
                 cx,
             ));
             if group.channels.is_empty() {
                 column = column.child(sentence(text::admin::NO_CHANNELS_HERE, &theme).py(u(6.0)));
             }
-            for row in &group.channels {
-                column = column.child(self.render_channel_line(view, page, row, &theme, cx));
+            for (at, row) in group.channels.iter().enumerate() {
+                column = column.child(self.render_channel_line(view, page, row, at, &theme, cx));
             }
             column = column.child(self.render_new_channel(view, group, index, &theme, cx));
         }

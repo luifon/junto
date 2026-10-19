@@ -144,6 +144,33 @@ impl ChannelsPage {
             .flat_map(|group| group.channels.iter())
             .find(|line| line.id == channel_id)
     }
+
+    /// True when a drop of the channel at the place `to` of the channels of `category_id`
+    /// moves it, and the person holds "manage channel" in every channel whose position or
+    /// category the drop changes (ADR 0761).
+    pub fn takes(&self, channel_id: ChannelId, category_id: Option<CategoryId>, to: usize) -> bool {
+        let Some(moving) = self.channel(channel_id) else {
+            return false;
+        };
+        let Some(group) = self
+            .groups
+            .iter()
+            .find(|group| group.category.as_ref().map(|category| category.id) == category_id)
+        else {
+            return false;
+        };
+        let order: Vec<(ChannelId, i32)> = group
+            .channels
+            .iter()
+            .map(|line| (line.id, line.position))
+            .collect();
+        let changes =
+            crate::state::admin::structure::placed(&order, channel_id, moving.position, to);
+        !changes.is_empty()
+            && changes
+                .iter()
+                .all(|(id, _)| self.channel(*id).is_some_and(|line| line.may_manage))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -426,19 +453,26 @@ pub fn needs(
     match *open {
         AdminOpen::Server { page, .. } => match page {
             // The snapshot carries the notification level of a workspace.
-            // The logo is no collection: its image is read from the public route.
-            AdminPage::Workspaces
-            | AdminPage::Channels
-            | AdminPage::Notifications
-            | AdminPage::Server => Vec::new(),
-            // The filters by person offer the accounts of the server to a person who may
-            // list them.
-            AdminPage::AuditLog => {
-                if holds_server(model, ServerPermission::BanMembers) {
-                    vec![AdminPart::Accounts]
+            AdminPage::Workspaces | AdminPage::Channels | AdminPage::Notifications => Vec::new(),
+            // The logo is no collection: its image is read from the public route. The page
+            // is an administrator's.
+            AdminPage::Server => {
+                if administrator {
+                    vec![AdminPart::AttachmentLimits]
                 } else {
                     Vec::new()
                 }
+            }
+            // The filters by person offer the accounts and the server roles of the server
+            // to a person who may list them. A row names the access token of its action by
+            // the list of the tokens: every token for an administrator, the own tokens for
+            // every other person (ADR 0210).
+            AdminPage::AuditLog => {
+                let mut parts = vec![AdminPart::AccessTokens];
+                if holds_server(model, ServerPermission::BanMembers) {
+                    parts.extend([AdminPart::Accounts, AdminPart::ServerRoles]);
+                }
+                parts
             }
             // The server gives the server roles to every person who has the page: their
             // order decides who can be removed and banned (ADR 0309).

@@ -10,16 +10,17 @@ use gpui::{
 use gpui_base::input::InputState;
 use junto_client_core::model::AdminPart;
 use junto_client_core::protocol::access_token::TokenAction;
-use junto_client_core::protocol::ids::{AccessTokenId, AccountId, ExportId, ServerId};
+use junto_client_core::protocol::ids::{AccessTokenId, ExportId, ServerId};
 use time::OffsetDateTime;
 
 use super::{group_label, line, named, page_title, refusal, row_action, sentence};
 use crate::shell::Shell;
 use crate::shell::room::option_row;
+use crate::state::admin::records::AuditReadKind;
 use crate::state::admin::view::records::{
-    ActorChoice, AuditGroup, AuditLine, AuditPage, AuditRead, DEFAULT_TOKEN_EXPIRY_DAYS,
-    ExportLine, ExportSave, ExportStatus, ExportsPage, NewToken, TOKEN_EXPIRY_DAYS, TokenLine,
-    TokensPage, group_of_action, new_token,
+    AuditGroup, AuditLine, AuditPage, AuditRead, DEFAULT_TOKEN_EXPIRY_DAYS, ExportLine, ExportSave,
+    ExportStatus, ExportsPage, NewToken, TOKEN_EXPIRY_DAYS, TargetKind, TokenLine, TokensPage,
+    group_of_action, new_token,
 };
 use crate::state::admin::view::{AdminView, Listed, Scope, ServerPage};
 use crate::state::admin::{AdminPage, AskKind, AskState, AuditFilter, AuditPeriod, AuditScope};
@@ -42,14 +43,10 @@ pub enum AuditMenu {
     /// The actions of one group.
     Action(AuditGroup),
     Actor,
-    About,
-}
-
-/// A filter of the audit log by a person.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PersonFilter {
-    Actor,
-    About,
+    /// The things of one kind that an entry can concern.
+    About(TargetKind),
+    /// The form of a range of dates.
+    Dates,
 }
 
 /// The actions that the form of a new access token has on when it opens: the one that
@@ -94,12 +91,19 @@ pub(crate) struct Ui {
     pub(crate) audit_asked: Option<(ServerId, AuditScope)>,
     /// The filter of the audit log whose choices the page shows.
     pub(crate) audit_menu: Option<AuditMenu>,
+    /// The first and the last date of a range of the audit log, as typed.
+    pub(crate) audit_from: Entity<InputState>,
+    pub(crate) audit_to: Entity<InputState>,
+    /// Why the typed dates were not applied.
+    pub(crate) dates_invalid: Option<&'static str>,
 }
 
 impl Ui {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Shell>) -> (Self, Vec<Subscription>) {
         let token_name = Field::state(txt::TOKEN_NAME, window, cx);
-        let subscriptions = vec![Field::observe(
+        let audit_from = Field::state(txt::DATES_FROM, window, cx);
+        let audit_to = Field::state(txt::DATES_TO, window, cx);
+        let mut subscriptions = vec![Field::observe(
             &token_name,
             window,
             cx,
@@ -111,6 +115,20 @@ impl Ui {
                 FieldEvent::Submitted => this.submit_token_form(window, cx),
             },
         )];
+        for field in [&audit_from, &audit_to] {
+            subscriptions.push(Field::observe(
+                field,
+                window,
+                cx,
+                |this: &mut Shell, event, _, cx| match event {
+                    FieldEvent::Changed => {
+                        this.admin.records.dates_invalid = None;
+                        cx.notify();
+                    }
+                    FieldEvent::Submitted => this.apply_audit_dates(cx),
+                },
+            ));
+        }
         let ui = Self {
             token_name,
             token_form: false,
@@ -125,6 +143,9 @@ impl Ui {
             new_token: NewRow::default(),
             audit_asked: None,
             audit_menu: None,
+            audit_from,
+            audit_to,
+            dates_invalid: None,
         };
         (ui, subscriptions)
     }
@@ -181,7 +202,8 @@ fn lines(name: String, details: Vec<String>, theme: &Theme) -> gpui::Div {
     column
 }
 
-fn audit_row(row: &AuditLine, theme: &Theme) -> AnyElement {
+/// The row of an entry, with an action of the row at its right.
+fn audit_row(row: &AuditLine, action: Option<AnyElement>, theme: &Theme) -> AnyElement {
     let id = row.id;
     let content = line(theme).child(
         div()
@@ -216,7 +238,11 @@ fn audit_row(row: &AuditLine, theme: &Theme) -> AnyElement {
                     .child(txt::audit_message(message))
             })),
     );
-    framed(format!("audit-row-{}", row.id), content, Vec::new())
+    framed(
+        format!("audit-row-{}", row.id),
+        content.children(action),
+        Vec::new(),
+    )
 }
 
 impl Shell {
@@ -234,6 +260,10 @@ impl Shell {
         ui.new_token.reset();
         ui.audit_asked = None;
         ui.audit_menu = None;
+        ui.dates_invalid = None;
+        for field in [ui.audit_from.clone(), ui.audit_to.clone()] {
+            field.update(cx, |field, cx| field.set_value("", window, cx));
+        }
         self.reset_token_form(window, cx);
     }
 
@@ -970,7 +1000,8 @@ impl Shell {
     /// Shows the choices of one filter under it, or puts them away.
     fn toggle_audit_menu(&mut self, menu: AuditMenu, cx: &mut Context<Self>) {
         let same = match (self.admin.records.audit_menu, menu) {
-            (Some(AuditMenu::Action(_)), AuditMenu::Action(_)) => true,
+            (Some(AuditMenu::Action(_)), AuditMenu::Action(_))
+            | (Some(AuditMenu::About(_)), AuditMenu::About(_)) => true,
             (open, menu) => open == Some(menu),
         };
         self.admin.records.audit_menu = (!same).then_some(menu);
@@ -1105,66 +1136,41 @@ impl Shell {
         parts
     }
 
-    /// A filter by a person: a box with the choice of now, and under it, while it is
-    /// open, the accounts that the page offers.
-    fn render_audit_people(
+    /// The filter by the person who acted: a box with the choice of now, and under it,
+    /// while it is open, the accounts that the page offers.
+    fn render_audit_actor(
         &mut self,
         page: &AuditPage,
-        which: PersonFilter,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let filter = page.filter;
-        let (label, none, id, menu, held) = match which {
-            PersonFilter::Actor => (
-                txt::AUDIT_ACTOR,
-                txt::EVERYONE,
-                "audit-actor",
-                AuditMenu::Actor,
-                filter.actor,
-            ),
-            PersonFilter::About => (
-                txt::AUDIT_ABOUT,
-                txt::ANYONE,
-                "audit-about",
-                AuditMenu::About,
-                filter.about,
-            ),
-        };
-        let with = move |account_id: Option<AccountId>| match which {
-            PersonFilter::Actor => AuditFilter {
-                actor: account_id,
-                ..filter
-            },
-            PersonFilter::About => AuditFilter {
-                about: account_id,
-                ..filter
-            },
-        };
-        let name_of = |choice: &ActorChoice| txt::audit_actor_choice(choice);
+        let held = filter.actor;
+        let id = "audit-actor";
         let chosen = page
             .people
             .iter()
             .find(|choice| Some(choice.id) == held)
-            .map_or_else(|| none.to_owned(), name_of);
-        let mut parts =
-            vec![
-                labelled(
-                    label,
-                    div()
-                        .flex_none()
-                        .w(u(FILTER_WIDTH))
-                        .child(SelectBox::new(id, label, chosen).selector(id).on_click(
-                            cx.listener(move |this, _, _, cx| {
-                                this.toggle_audit_menu(menu, cx);
-                            }),
-                        ))
-                        .into_any_element(),
-                    theme,
-                )
-                .into_any_element(),
-            ];
-        if self.admin.records.audit_menu != Some(menu) {
+            .map_or_else(|| txt::EVERYONE.to_owned(), txt::audit_actor_choice);
+        let mut parts = vec![
+            labelled(
+                txt::AUDIT_ACTOR,
+                div()
+                    .flex_none()
+                    .w(u(FILTER_WIDTH))
+                    .child(
+                        SelectBox::new(id, txt::AUDIT_ACTOR, chosen)
+                            .selector(id)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.toggle_audit_menu(AuditMenu::Actor, cx);
+                            })),
+                    )
+                    .into_any_element(),
+                theme,
+            )
+            .into_any_element(),
+        ];
+        if self.admin.records.audit_menu != Some(AuditMenu::Actor) {
             return parts;
         }
         let mut choices = div()
@@ -1175,27 +1181,283 @@ impl Shell {
             .debug_selector(move || format!("{id}-choices"))
             .child(Self::audit_choice(
                 (id, 0u64),
-                none,
+                txt::EVERYONE,
                 format!("{id}-none"),
                 held.is_none(),
                 cx.listener(move |this, _, _, cx| {
-                    this.set_audit_filter(with(None), cx);
+                    this.set_audit_filter(
+                        AuditFilter {
+                            actor: None,
+                            ..filter
+                        },
+                        cx,
+                    );
                 }),
             ));
         for choice in &page.people {
             let account_id = choice.id;
             choices = choices.child(Self::audit_choice(
                 (id, account_id.as_uuid().as_u128() as u64),
-                name_of(choice),
+                txt::audit_actor_choice(choice),
                 format!("{id}-{account_id}"),
                 held == Some(account_id),
                 cx.listener(move |this, _, _, cx| {
-                    this.set_audit_filter(with(Some(account_id)), cx);
+                    this.set_audit_filter(
+                        AuditFilter {
+                            actor: Some(account_id),
+                            ..filter
+                        },
+                        cx,
+                    );
                 }),
             ));
         }
         parts.push(choices.into_any_element());
         parts
+    }
+
+    /// The filter by the thing concerned: a box with the choice of now, and under it,
+    /// while it is open, the kinds of things and the things of one kind (ADR 0305).
+    fn render_audit_about(
+        &mut self,
+        page: &AuditPage,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let filter = page.filter;
+        let held = filter.about;
+        let id = "audit-about";
+        let chosen = page
+            .targets
+            .iter()
+            .flat_map(|(_, choices)| choices.iter())
+            .find(|choice| Some(choice.target) == held)
+            .map_or_else(|| txt::ANYONE.to_owned(), txt::target_choice);
+        let first = page
+            .targets
+            .iter()
+            .find(|(_, choices)| choices.iter().any(|choice| Some(choice.target) == held))
+            .or(page.targets.first())
+            .map_or(TargetKind::People, |(kind, _)| *kind);
+        let mut parts = vec![
+            labelled(
+                txt::AUDIT_ABOUT,
+                div()
+                    .flex_none()
+                    .w(u(FILTER_WIDTH))
+                    .child(
+                        SelectBox::new(id, txt::AUDIT_ABOUT, chosen)
+                            .selector(id)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.toggle_audit_menu(AuditMenu::About(first), cx);
+                            })),
+                    )
+                    .into_any_element(),
+                theme,
+            )
+            .into_any_element(),
+        ];
+        let Some(AuditMenu::About(kind)) = self.admin.records.audit_menu else {
+            return parts;
+        };
+        let kinds: Vec<TargetKind> = page.targets.iter().map(|(kind, _)| *kind).collect();
+        if kinds.len() > 1 {
+            let offered = kinds.clone();
+            let segmented = Segmented::new(
+                "audit-about-kind",
+                txt::AUDIT_ABOUT_KIND,
+                kinds
+                    .iter()
+                    .map(|kind| SharedString::from(txt::target_kind(*kind))),
+            )
+            .selected(kinds.iter().position(|held| *held == kind))
+            .selector("audit-about-kind")
+            .on_select({
+                let select = cx.listener(move |this, index: &usize, _, cx| {
+                    if let Some(kind) = offered.get(*index).copied() {
+                        this.admin.records.audit_menu = Some(AuditMenu::About(kind));
+                        cx.notify();
+                    }
+                });
+                move |index, window, cx| select(&index, window, cx)
+            });
+            parts.push(
+                div()
+                    .flex()
+                    .flex_none()
+                    .debug_selector(|| "audit-about-kind".to_owned())
+                    .child(segmented)
+                    .into_any_element(),
+            );
+        }
+        let mut choices = div()
+            .flex()
+            .flex_wrap()
+            .flex_none()
+            .gap(u(6.0))
+            .debug_selector(move || format!("{id}-choices"))
+            .child(Self::audit_choice(
+                (id, 0u64),
+                txt::ANYONE,
+                format!("{id}-none"),
+                held.is_none(),
+                cx.listener(move |this, _, _, cx| {
+                    this.set_audit_filter(
+                        AuditFilter {
+                            about: None,
+                            ..filter
+                        },
+                        cx,
+                    );
+                }),
+            ));
+        let offered = page
+            .targets
+            .iter()
+            .find(|(held, _)| *held == kind)
+            .map(|(_, choices)| choices.as_slice())
+            .unwrap_or_default();
+        for choice in offered {
+            let target = choice.target;
+            let identifier = target.id();
+            choices = choices.child(Self::audit_choice(
+                (id, identifier.as_u128() as u64),
+                txt::target_choice(choice),
+                format!("{id}-{identifier}"),
+                held == Some(target),
+                cx.listener(move |this, _, _, cx| {
+                    this.set_audit_filter(
+                        AuditFilter {
+                            about: Some(target),
+                            ..filter
+                        },
+                        cx,
+                    );
+                }),
+            ));
+        }
+        parts.push(choices.into_any_element());
+        parts
+    }
+
+    /// Shows the form of a range of dates, with the range of the filter in its fields.
+    fn open_audit_dates(
+        &mut self,
+        period: AuditPeriod,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.admin.records.audit_menu = Some(AuditMenu::Dates);
+        self.admin.records.dates_invalid = None;
+        if let AuditPeriod::Dates { from, to } = period {
+            let day = |date: time::Date| txt::audit_dates(date, date);
+            self.type_audit_dates(&day(from), &day(to), window, cx);
+        }
+        let from = self.admin.records.audit_from.clone();
+        self.focus_field(&from, window, cx);
+        cx.notify();
+    }
+
+    /// Puts dates into the two fields of the range of the audit log, as typing does.
+    pub fn type_audit_dates(
+        &mut self,
+        from: &str,
+        to: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for (field, text) in [
+            (self.admin.records.audit_from.clone(), from),
+            (self.admin.records.audit_to.clone(), to),
+        ] {
+            let text = text.to_owned();
+            field.update(cx, |field, cx| field.set_value(text, window, cx));
+        }
+    }
+
+    /// Reads the shown log for the typed range of dates, when both are dates and the first
+    /// is not after the last.
+    pub fn apply_audit_dates(&mut self, cx: &mut Context<Self>) {
+        let typed = |field: &Entity<InputState>| txt::typed_date(&field.read(cx).value());
+        let ui = &self.admin.records;
+        let (from, to) = (typed(&ui.audit_from), typed(&ui.audit_to));
+        let Some(view) = self.state.read(cx).admin_view() else {
+            return;
+        };
+        let Scope::Server {
+            page: ServerPage::AuditLog(page),
+            ..
+        } = &view.scope
+        else {
+            return;
+        };
+        match (from, to) {
+            (Some(from), Some(to)) if from <= to => {
+                let filter = AuditFilter {
+                    period: AuditPeriod::Dates { from, to },
+                    ..page.filter
+                };
+                self.set_audit_filter(filter, cx);
+            }
+            _ => {
+                self.admin.records.dates_invalid = Some(txt::DATES_INVALID);
+                cx.notify();
+            }
+        }
+    }
+
+    /// The form of a range of dates under the filter by time.
+    fn render_audit_dates(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let ui = &self.admin.records;
+        div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .debug_selector(|| "audit-dates".to_owned())
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(u(8.0))
+                    .child(
+                        div().w(u(150.0)).child(
+                            Field::new(&ui.audit_from, txt::DATES_FROM).selector("audit-from"),
+                        ),
+                    )
+                    .child(
+                        div()
+                            .w(u(150.0))
+                            .child(Field::new(&ui.audit_to, txt::DATES_TO).selector("audit-to")),
+                    )
+                    .child(
+                        Button::new("audit-dates-cancel")
+                            .label(text::CANCEL)
+                            .selector("audit-dates-cancel")
+                            .h(u(30.0))
+                            .px(u(10.0))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.show_audit_menu(None, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("audit-dates-apply")
+                            .kind(ButtonKind::Primary)
+                            .label(txt::DATES_APPLY)
+                            .selector("audit-dates-apply")
+                            .h(u(30.0))
+                            .px(u(12.0))
+                            .on_click(cx.listener(|this, _, _, cx| this.apply_audit_dates(cx))),
+                    ),
+            )
+            .child(
+                crate::ui::notice_slot("audit-dates-invalid-slot").children(
+                    ui.dates_invalid
+                        .map(|invalid| Notice::error(invalid).selector("audit-dates-invalid")),
+                ),
+            )
+            .child(sentence(txt::DATES_HELP, theme).mt(u(5.0)))
+            .into_any_element()
     }
 
     pub(crate) fn render_audit_page(
@@ -1270,25 +1532,29 @@ impl Shell {
         // The filters. The server applies them: each change reads the log again.
         let filter = page.filter;
         column = column.children(self.render_audit_actions(page, &theme, cx));
-        column = column.children(self.render_audit_people(page, PersonFilter::Actor, &theme, cx));
-        column = column.children(self.render_audit_people(page, PersonFilter::About, &theme, cx));
+        column = column.children(self.render_audit_actor(page, &theme, cx));
+        column = column.children(self.render_audit_about(page, &theme, cx));
+        // The periods that end at the read, and a range of dates that the person types.
+        let dates_choice = AuditPeriod::ALL.len();
         let period = Segmented::new(
             "audit-period",
             txt::AUDIT_PERIOD,
             AuditPeriod::ALL
                 .iter()
-                .map(|period| SharedString::from(txt::audit_period(*period))),
+                .map(|period| SharedString::from(txt::audit_period(*period)))
+                .chain([SharedString::from(txt::DATES)]),
         )
-        .selected(
-            AuditPeriod::ALL
-                .iter()
-                .position(|held| *held == filter.period),
-        )
+        .selected(match filter.period {
+            AuditPeriod::Dates { .. } => Some(dates_choice),
+            held => AuditPeriod::ALL.iter().position(|period| *period == held),
+        })
         .selector("audit-period")
         .on_select({
-            let select = cx.listener(move |this, index: &usize, _, cx| {
+            let select = cx.listener(move |this, index: &usize, window, cx| {
                 if let Some(period) = AuditPeriod::ALL.get(*index).copied() {
                     this.set_audit_filter(AuditFilter { period, ..filter }, cx);
+                } else if *index == dates_choice {
+                    this.open_audit_dates(filter.period, window, cx);
                 }
             });
             move |index, window, cx| select(&index, window, cx)
@@ -1304,6 +1570,14 @@ impl Shell {
                 .into_any_element(),
             &theme,
         ));
+        if self.admin.records.audit_menu == Some(AuditMenu::Dates) {
+            column = column.child(self.render_audit_dates(&theme, cx));
+        } else if let AuditPeriod::Dates { from, to } = filter.period {
+            column = column.child(
+                sentence(txt::audit_dates(from, to), &theme)
+                    .debug_selector(|| "audit-dates-shown".to_owned()),
+            );
+        }
         if filter.is_set() {
             column = column.child(
                 div()
@@ -1331,7 +1605,26 @@ impl Shell {
         // The entries.
         let mut entries = div().flex().flex_col().flex_none();
         for row in &page.rows {
-            entries = entries.child(audit_row(row, &theme));
+            // The entry of the deletion of a workspace opens the log of that workspace.
+            let action = row.deleted_workspace.clone().map(|(workspace_id, name)| {
+                row_action(
+                    ("audit-deleted-log", row.id.as_uuid().as_u128() as u64),
+                    txt::READ_ITS_LOG,
+                    format!("audit-deleted-log-{workspace_id}"),
+                    None,
+                    cx.listener(move |this, _, _, cx| {
+                        let scope = AuditScope::DeletedWorkspace(workspace_id);
+                        this.admin.records.audit_asked = Some((server_id, scope));
+                        this.admin.records.audit_menu = None;
+                        let name = name.clone();
+                        this.state.update(cx, |state, cx| {
+                            state.show_deleted_workspace_log(server_id, workspace_id, name, cx);
+                        });
+                    }),
+                )
+                .into_any_element()
+            });
+            entries = entries.child(audit_row(row, action, &theme));
         }
         column = column.child(entries);
         if page.loaded == 0 && page.state == AuditRead::Loaded {
@@ -1357,9 +1650,9 @@ impl Shell {
             }
             AuditRead::Failed {
                 sentence: reason,
-                older,
+                read,
             } => {
-                let older = *older;
+                let read = *read;
                 let scope = page.scope;
                 result = result.child(
                     div().flex_none().child(
@@ -1372,11 +1665,17 @@ impl Shell {
                                     .h(u(28.0))
                                     .px(u(10.0))
                                     .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.state.update(cx, |state, cx| {
-                                            if older {
+                                        this.state.update(cx, |state, cx| match read {
+                                            AuditReadKind::Older => {
                                                 state.read_older_audit(server_id, cx);
-                                            } else if let Some(scope) = scope {
-                                                state.show_audit_log(server_id, scope, cx);
+                                            }
+                                            AuditReadKind::Next => {
+                                                state.continue_audit(server_id, cx);
+                                            }
+                                            AuditReadKind::First => {
+                                                if let Some(scope) = scope {
+                                                    state.show_audit_log(server_id, scope, cx);
+                                                }
                                             }
                                         });
                                     })),
@@ -1406,6 +1705,22 @@ impl Shell {
             result = result.child(
                 sentence(txt::AUDIT_BOUND, &theme).debug_selector(|| "audit-bound".to_owned()),
             );
+            if page.continues && page.state == AuditRead::Loaded {
+                result = result.child(
+                    div().flex().flex_none().mt(u(6.0)).child(
+                        Button::new("audit-continue")
+                            .label(txt::CONTINUE)
+                            .selector("audit-continue")
+                            .h(u(30.0))
+                            .px(u(12.0))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.state.update(cx, |state, cx| {
+                                    state.continue_audit(server_id, cx);
+                                });
+                            })),
+                    ),
+                );
+            }
         }
         column = column.child(result);
         if page.state != AuditRead::NotRead {
@@ -1417,7 +1732,7 @@ impl Shell {
                     .items_center()
                     .gap(u(10.0))
                     .child(
-                        sentence(txt::audit_count(page.loaded), &theme)
+                        sentence(txt::audit_count(page.loaded, page.passed), &theme)
                             .flex_1()
                             .debug_selector(|| "audit-count".to_owned()),
                     )

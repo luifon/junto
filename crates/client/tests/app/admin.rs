@@ -537,3 +537,131 @@ fn an_answer_to_a_form_during_a_press_keeps_the_pressed_control_in_place(cx: &mu
         )
     });
 }
+
+/// The channels page of the open administration.
+fn channels_page(window: &mut Window) -> Option<junto_client::state::admin::view::ChannelsPage> {
+    match window.admin().map(|view| view.scope) {
+        Some(Scope::Server {
+            page: ServerPage::Channels(page),
+            ..
+        }) => Some(page),
+        _ => None,
+    }
+}
+
+/// The channels of one group of the channels page, in their order.
+fn group_order(
+    window: &mut Window,
+    category_id: Option<junto_client_core::protocol::ids::CategoryId>,
+) -> Vec<ChannelId> {
+    channels_page(window)
+        .and_then(|page| {
+            page.groups
+                .into_iter()
+                .find(|group| group.category.as_ref().map(|category| category.id) == category_id)
+        })
+        .map(|group| group.channels.into_iter().map(|line| line.id).collect())
+        .unwrap_or_default()
+}
+
+/// Drags the handle of a channel onto another place of the channels page, as the pointer
+/// does. Returns whether a drag started.
+fn drag_channel(window: &mut Window, from: &'static str, to: &'static str) -> bool {
+    use gpui::{Modifiers, MouseButton, point, px};
+    let scroll = window.in_shell(|shell, _, _| shell.admin_scroll_handle());
+    let start = window.reveal(&scroll, from).center();
+    window
+        .cx
+        .simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
+    window.cx.simulate_mouse_move(
+        start + point(px(0.0), px(12.0)),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    let started = window.cx.update(|_, cx| cx.has_active_drag());
+    let end = window.reveal(&scroll, to).center();
+    window
+        .cx
+        .simulate_mouse_move(end, MouseButton::Left, Modifiers::none());
+    window
+        .cx
+        .simulate_mouse_up(end, MouseButton::Left, Modifiers::none());
+    window.cx.run_until_parked();
+    started
+}
+
+#[gpui::test]
+fn an_administrator_drags_channels_to_another_place_and_category(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let (_directory, mut window, owner) = crate::admin_pages::owner_window(cx, &server);
+    let default = crate::admin_pages::default_workspace(&world, &owner);
+    let projects = world
+        .run(owner.api().create_category(
+            default,
+            &junto_client_core::protocol::structure::CreateCategory {
+                name: "Projects".to_owned(),
+                position: None,
+            },
+        ))
+        .unwrap()
+        .id;
+    let create = |name: &str, category_id| {
+        let channel = CreateChannel {
+            name: name.to_owned(),
+            kind: ChannelKind::Text,
+            category_id,
+            position: None,
+        };
+        world
+            .run(owner.api().create_channel(default, &channel))
+            .unwrap()
+            .id
+    };
+    let plans = create("plans", None);
+    let notes = create("notes", None);
+    let roadmap = create("roadmap", Some(projects));
+    let handle = |id: ChannelId| selector(format!("channel-handle-{id}"));
+    let row = |id: ChannelId| selector(format!("channel-line-{id}"));
+
+    window.open_administration();
+    window.click("admin-nav-channels");
+    window.until("the page shows the channels", |window| {
+        group_order(window, Some(projects)) == [roadmap]
+            && group_order(window, None).ends_with(&[plans, notes])
+    });
+
+    // A channel dropped on a channel of another category takes its place there.
+    assert!(drag_channel(&mut window, handle(notes), row(roadmap)));
+    window.until("the channel is in the other category", |window| {
+        group_order(window, Some(projects)) == [notes, roadmap]
+    });
+    let held = world.run(owner.api().channels(default)).unwrap().channels;
+    let moved = held.iter().find(|channel| channel.id == notes).unwrap();
+    assert_eq!(moved.category_id, Some(projects));
+    assert!(!group_order(&mut window, None).contains(&notes));
+
+    // Inside a group the channel takes the place of the row that it is dropped on, and
+    // the channels between move one place.
+    let before = group_order(&mut window, None);
+    let first = before[0];
+    assert!(drag_channel(&mut window, handle(first), row(plans)));
+    let mut expected = before.clone();
+    expected.remove(0);
+    let at = expected.iter().position(|id| *id == plans).unwrap() + 1;
+    expected.insert(at, first);
+    window.until("the channel took the place", |window| {
+        group_order(window, None) == expected
+    });
+
+    // A channel dropped on the heading of a category goes to its end.
+    assert!(drag_channel(
+        &mut window,
+        handle(plans),
+        selector(format!("category-row-{projects}"))
+    ));
+    window.until("the channel is at the end of the category", |window| {
+        group_order(window, Some(projects)) == [notes, roadmap, plans]
+    });
+    assert!(!window.shows("channel-refused"));
+}

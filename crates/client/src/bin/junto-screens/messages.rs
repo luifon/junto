@@ -445,6 +445,16 @@ pub(crate) fn draw(studio: &mut Studio) -> Result<(), String> {
         },
     )?;
 
+    // A message whose files the retention of its workspace removed (ADR 0409).
+    let mut removed = general();
+    removed
+        .message("Ana", 100, "The recording of the review is attached.")
+        .files_removed_by_retention = true;
+    studio.draw(
+        Screen::new("messages-files-removed", with_timeline(removed.timeline())),
+        |shell, _, cx| prepare(shell, none(), cx),
+    )?;
+
     // Every kind of block, a deleted message, a reply to it, and a group of one author.
     studio.draw(
         Screen::new("messages-blocks", with_timeline(blocks().timeline())),

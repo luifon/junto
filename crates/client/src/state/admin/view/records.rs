@@ -19,7 +19,8 @@ use junto_client_core::transfers::local_name;
 use time::{Date, Duration, OffsetDateTime};
 
 use super::{Listed, holds_server, holds_workspace};
-use crate::state::admin::{AdminState, AuditFilter, AuditScope, Made};
+use crate::state::admin::records::AuditReadKind;
+use crate::state::admin::{AdminState, AuditFilter, AuditScope, AuditTarget, Made};
 use crate::state::view::Known;
 use crate::text;
 
@@ -488,6 +489,16 @@ impl<'a> Names<'a> {
             .map(|role| role.name.clone())
     }
 
+    /// The name of an access token, while the state holds the list of the tokens.
+    pub fn token(&self, token_id: AccessTokenId) -> Option<String> {
+        self.model
+            .admin
+            .access_tokens
+            .loaded()
+            .and_then(|tokens| tokens.iter().find(|token| token.id == token_id))
+            .map(|token| token.name.clone())
+    }
+
     pub fn category(&self, category_id: CategoryId) -> Option<String> {
         self.model
             .workspaces
@@ -507,7 +518,8 @@ impl<'a> Names<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopeChoice {
     pub scope: AuditScope,
-    /// The name of the workspace of a workspace scope.
+    /// The name of the workspace of a workspace scope. A deleted workspace has the name
+    /// that the entry of its deletion states.
     pub workspace: Option<String>,
 }
 
@@ -522,8 +534,8 @@ pub enum AuditRead {
     /// The last read failed. The loaded entries stay.
     Failed {
         sentence: String,
-        /// The read asked for the page after the loaded entries.
-        older: bool,
+        /// What the read asked for: "Try again" asks for it again.
+        read: AuditReadKind,
     },
 }
 
@@ -554,8 +566,8 @@ pub struct AuditLine {
     /// In the time zone of the person.
     pub at: OffsetDateTime,
     pub actor: Actor,
-    /// The request was made with an access token of the actor (ADR 0210).
-    pub with_token: bool,
+    /// The access token of the actor that the request was made with (ADR 0210).
+    pub token: Option<TokenRef>,
     /// What was done, with the names that the state holds.
     pub sentence: String,
     /// The reason that the person stated for a ban or a removal (ADR 0106).
@@ -567,6 +579,36 @@ pub struct AuditLine {
     pub workspace: Option<About>,
     pub channel: Option<About>,
     pub group: AuditGroup,
+    /// The entry states the deletion of a workspace whose log the person may read: the
+    /// workspace with the name that the entry states (ADR 0308).
+    pub deleted_workspace: Option<(WorkspaceId, String)>,
+}
+
+/// The access token behind an action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenRef {
+    pub id: AccessTokenId,
+    /// The name of the token, when the state holds it.
+    pub name: Option<String>,
+}
+
+/// A kind of thing that the filter by the thing concerned offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TargetKind {
+    People,
+    Workspaces,
+    ServerRoles,
+    Channels,
+    Categories,
+    Roles,
+}
+
+/// A thing that the filter by the thing concerned offers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetChoice {
+    pub target: AuditTarget,
+    /// Absent: the state does not hold the name.
+    pub name: Option<String>,
 }
 
 /// An account that the filters by person offer.
@@ -590,8 +632,14 @@ pub struct AuditPage {
     pub loaded: usize,
     /// The server holds older entries, and the page reads them on request.
     pub older: bool,
-    /// The page holds the most entries that it keeps. It reads no older entry.
+    /// The page holds the most entries that it keeps. "Load older" reads no older entry.
     pub at_bound: bool,
+    /// At the bound, the server holds further entries: the page goes on with them in
+    /// place of the loaded ones.
+    pub continues: bool,
+    /// The number of entries of the list, newer than the loaded ones, that the page let
+    /// go when it went on.
+    pub passed: usize,
     /// The filters that the entries were asked for with.
     pub filter: AuditFilter,
     /// The accounts that the two filters by person offer: the accounts and the members
@@ -599,6 +647,9 @@ pub struct AuditPage {
     /// the accounts of the filters. In the order of their names, and after them the
     /// accounts without a known name.
     pub people: Vec<ActorChoice>,
+    /// The things that the filter by the thing concerned offers, by kind: the people
+    /// first, then what the shown log names. A kind without a choice is absent.
+    pub targets: Vec<(TargetKind, Vec<TargetChoice>)>,
 }
 
 /// The name of an account, when the state holds it: the own account, the loaded accounts,
@@ -797,9 +848,16 @@ fn about<T>(id: Option<T>, name: impl FnOnce(T) -> Option<String>) -> Option<Abo
     id.map(|id| name(id).map_or(About::Unknown, About::Named))
 }
 
-fn audit_line(entry: &AuditEntry, scope: AuditScope, names: &Names<'_>) -> AuditLine {
+fn audit_line(
+    entry: &AuditEntry,
+    scope: AuditScope,
+    names: &Names<'_>,
+    administrator: bool,
+) -> AuditLine {
     let in_shown_workspace = match scope {
-        AuditScope::Workspace(shown) => entry.workspace_id == Some(shown),
+        AuditScope::Workspace(shown) | AuditScope::DeletedWorkspace(shown) => {
+            entry.workspace_id == Some(shown)
+        }
         AuditScope::Server => false,
     };
     AuditLine {
@@ -812,7 +870,10 @@ fn audit_line(entry: &AuditEntry, scope: AuditScope, names: &Names<'_>) -> Audit
             },
             None => Actor::Server,
         },
-        with_token: entry.access_token_id.is_some(),
+        token: entry.access_token_id.map(|id| TokenRef {
+            id,
+            name: names.token(id),
+        }),
         sentence: text::admin::records::audit_sentence(&entry.event, names),
         reason: stated_reason(&entry.event),
         message: stated_message(&entry.event),
@@ -823,6 +884,13 @@ fn audit_line(entry: &AuditEntry, scope: AuditScope, names: &Names<'_>) -> Audit
         },
         channel: about(entry.channel_id, |id| names.channel(id)),
         group: AuditGroup::of(&entry.event),
+        // The server gives the log of a deleted workspace to an administrator only.
+        deleted_workspace: match &entry.event {
+            AuditEvent::WorkspaceDeleted { workspace_id, name } if administrator => {
+                Some((*workspace_id, name.clone()))
+            }
+            _ => None,
+        },
     }
 }
 
@@ -850,6 +918,17 @@ pub fn audit(
         });
     }
     let log = &admin.audit;
+    let administrator = model.is_administrator();
+    // The deleted workspace whose log the person opened from the entry of its deletion.
+    if administrator
+        && log.shown.is_some_and(|(of, _)| of == server_id)
+        && let Some((workspace_id, name)) = &log.deleted
+    {
+        scopes.push(ScopeChoice {
+            scope: AuditScope::DeletedWorkspace(*workspace_id),
+            workspace: Some(name.clone()),
+        });
+    }
     let chosen = log
         .shown
         .filter(|(of, _)| *of == server_id)
@@ -883,11 +962,15 @@ pub fn audit(
             .into_iter()
             .flatten()
             .map(|member| member.account_id);
+        let about = match filter.about {
+            Some(AuditTarget::Account(account_id)) => Some(account_id),
+            _ => None,
+        };
         for id in seen
             .chain(accounts)
             .chain(members)
             .chain(filter.actor)
-            .chain(filter.about)
+            .chain(about)
         {
             if !people.iter().any(|held| held.id == id) {
                 people.push(ActorChoice {
@@ -909,8 +992,12 @@ pub fn audit(
     let rows: Vec<AuditLine> = match read {
         Some(scope) => entries
             .iter()
-            .map(|entry| audit_line(entry, scope, &names))
+            .map(|entry| audit_line(entry, scope, &names, administrator))
             .collect(),
+        None => Vec::new(),
+    };
+    let targets = match read {
+        Some(scope) => targets(scope, model, workspace, &names, &people, filter.about),
         None => Vec::new(),
     };
     let at_bound = entries.len() >= MOST_AUDIT_ENTRIES;
@@ -918,7 +1005,7 @@ pub fn audit(
         (None, _) => AuditRead::NotRead,
         (Some(_), Some(failed)) => AuditRead::Failed {
             sentence: failed.sentence.clone(),
-            older: failed.older,
+            read: failed.read,
         },
         (Some(_), None) if log.reading => AuditRead::Reading,
         (Some(_), None) => AuditRead::Loaded,
@@ -931,9 +1018,124 @@ pub fn audit(
         loaded: entries.len(),
         older: read.is_some() && log.next_before.is_some() && !at_bound,
         at_bound,
+        continues: read.is_some() && log.next_before.is_some() && at_bound,
+        passed: read.map_or(0, |_| log.passed),
         filter,
         people,
+        targets,
     }
+}
+
+/// The things that the filter by the thing concerned offers for a log: the people of the
+/// filters by person, and what the state names of the log. The log of the server names
+/// workspaces and server roles; the log of a workspace its channels, its categories and
+/// its roles. A deleted workspace is in no state, so its log offers the people only. The
+/// thing that the filter holds is offered also when the state does not name it.
+fn targets(
+    scope: AuditScope,
+    model: &ServerModel,
+    workspace: Option<&WorkspaceModel>,
+    names: &Names<'_>,
+    people: &[ActorChoice],
+    held: Option<AuditTarget>,
+) -> Vec<(TargetKind, Vec<TargetChoice>)> {
+    let mut kinds: Vec<(TargetKind, Vec<TargetChoice>)> = vec![(
+        TargetKind::People,
+        people
+            .iter()
+            .map(|person| TargetChoice {
+                target: AuditTarget::Account(person.id),
+                name: person.name.clone(),
+            })
+            .collect(),
+    )];
+    match scope {
+        AuditScope::Server => {
+            let workspaces = model
+                .workspaces
+                .iter()
+                .map(|held| TargetChoice {
+                    target: AuditTarget::Workspace(held.workspace.id),
+                    name: Some(held.workspace.name.clone()),
+                })
+                .collect();
+            kinds.push((TargetKind::Workspaces, workspaces));
+            let roles = model
+                .admin
+                .server_roles
+                .loaded()
+                .into_iter()
+                .flatten()
+                .map(|role| TargetChoice {
+                    target: AuditTarget::ServerRole(role.id),
+                    name: Some(role.name.clone()),
+                })
+                .collect();
+            kinds.push((TargetKind::ServerRoles, roles));
+        }
+        AuditScope::Workspace(shown) => {
+            if let Some(workspace) = workspace.filter(|held| held.workspace.id == shown) {
+                let channels = workspace
+                    .channels
+                    .iter()
+                    .map(|held| TargetChoice {
+                        target: AuditTarget::Channel(held.channel.id),
+                        name: names.channel(held.channel.id),
+                    })
+                    .collect();
+                kinds.push((TargetKind::Channels, channels));
+                let categories = workspace
+                    .categories
+                    .iter()
+                    .map(|held| TargetChoice {
+                        target: AuditTarget::Category(held.id),
+                        name: Some(held.name.clone()),
+                    })
+                    .collect();
+                kinds.push((TargetKind::Categories, categories));
+                let roles = workspace
+                    .roles
+                    .iter()
+                    .map(|role| TargetChoice {
+                        target: AuditTarget::WorkspaceRole(role.id),
+                        name: Some(role.name.clone()),
+                    })
+                    .collect();
+                kinds.push((TargetKind::Roles, roles));
+            }
+        }
+        AuditScope::DeletedWorkspace(_) => {}
+    }
+    // The thing of the filter stays a choice, so that the filter names it.
+    if let Some(target) = held
+        && !kinds
+            .iter()
+            .any(|(_, choices)| choices.iter().any(|choice| choice.target == target))
+    {
+        let kind = match target {
+            AuditTarget::Account(_) => TargetKind::People,
+            AuditTarget::Workspace(_) => TargetKind::Workspaces,
+            AuditTarget::ServerRole(_) => TargetKind::ServerRoles,
+            AuditTarget::Channel(_) => TargetKind::Channels,
+            AuditTarget::Category(_) => TargetKind::Categories,
+            AuditTarget::WorkspaceRole(_) => TargetKind::Roles,
+        };
+        let name = match target {
+            AuditTarget::Account(id) => names.account(id),
+            AuditTarget::Workspace(id) => names.workspace(id),
+            AuditTarget::ServerRole(id) => names.server_role(id),
+            AuditTarget::Channel(id) => names.channel(id),
+            AuditTarget::Category(id) => names.category(id),
+            AuditTarget::WorkspaceRole(id) => names.workspace_role(id),
+        };
+        let choice = TargetChoice { target, name };
+        match kinds.iter_mut().find(|(held, _)| *held == kind) {
+            Some((_, choices)) => choices.push(choice),
+            None => kinds.push((kind, vec![choice])),
+        }
+    }
+    kinds.retain(|(_, choices)| !choices.is_empty());
+    kinds
 }
 
 #[cfg(test)]
@@ -2395,14 +2597,14 @@ mod tests {
         admin.audit.reading = false;
         admin.audit.failed = Some(AuditFailure {
             sentence: "No answer of the server arrived.".to_owned(),
-            older: true,
+            read: AuditReadKind::Older,
         });
         let shown = page(&admin);
         assert_eq!(
             shown.state,
             AuditRead::Failed {
                 sentence: "No answer of the server arrived.".to_owned(),
-                older: true,
+                read: AuditReadKind::Older,
             }
         );
         assert_eq!(shown.rows.len(), 1);
@@ -2507,7 +2709,7 @@ mod tests {
         for (event, named) in &actions {
             places.push(place(event));
             let held = entry(Some(ana), event.clone());
-            let line = audit_line(&held, AuditScope::Server, &names);
+            let line = audit_line(&held, AuditScope::Server, &names, false);
             assert!(!line.sentence.trim().is_empty(), "{event:?}");
             assert!(!holds_identifier(&line.sentence), "{}", line.sentence);
             for name in named {
@@ -2524,7 +2726,7 @@ mod tests {
             );
             assert_eq!(line.group, AuditGroup::of(event));
 
-            let unnamed = audit_line(&held, AuditScope::Server, &nothing);
+            let unnamed = audit_line(&held, AuditScope::Server, &nothing, false);
             assert!(!unnamed.sentence.trim().is_empty(), "{event:?}");
             assert!(!holds_identifier(&unnamed.sentence), "{}", unnamed.sentence);
             assert_eq!(
@@ -2725,8 +2927,8 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(txt::audit_count(3), "3 entries loaded");
-        assert_eq!(txt::audit_count(1), "1 entry loaded");
+        assert_eq!(txt::audit_count(3, 0), "3 entries loaded");
+        assert_eq!(txt::audit_count(1, 0), "1 entry loaded");
 
         // The filters of the log are the ones of the page. An account of a filter stays
         // in the list also when no entry names it, so that the filter can be seen and
@@ -2734,7 +2936,7 @@ mod tests {
         admin.audit.filter = AuditFilter {
             action: Some("account_banned"),
             actor: Some(ana),
-            about: Some(zoe),
+            about: Some(AuditTarget::Account(zoe)),
             period: AuditPeriod::Week,
         };
         admin.audit.entries = vec![ban.clone()];
@@ -2774,7 +2976,8 @@ mod tests {
         let known = known();
         let names = Names::new(scene.server_id, &model, &known);
         let zoe = AccountId::generate();
-        let line = |event: AuditEvent| audit_line(&entry(None, event), AuditScope::Server, &names);
+        let line =
+            |event: AuditEvent| audit_line(&entry(None, event), AuditScope::Server, &names, false);
         let banned = |reason: Option<&str>| AuditEvent::AccountBanned {
             recipient_message: None,
             reason: reason.map(str::to_owned),
@@ -2883,7 +3086,8 @@ mod tests {
                 name: "Lab".to_owned(),
             },
         );
-        with_token.access_token_id = Some(AccessTokenId::generate());
+        let token_id = AccessTokenId::generate();
+        with_token.access_token_id = Some(token_id);
         let mut by_server = entry(
             None,
             AuditEvent::RecordingStopped {
@@ -2910,16 +3114,23 @@ mod tests {
                 name: Some("Ana".to_owned()),
             }
         );
-        assert!(rows[0].with_token);
+        // The list of the tokens does not hold the token: the row names its identifier.
+        assert_eq!(
+            rows[0].token,
+            Some(TokenRef {
+                id: token_id,
+                name: None,
+            })
+        );
         assert_eq!((&rows[0].workspace, &rows[0].channel), (&None, &None));
         assert_eq!(
             txt::audit_head(&rows[0]),
-            "15 January 2027, 08:00 · Ana with an access token"
+            format!("15 January 2027, 08:00 · Ana with the access token {token_id}")
         );
         assert_eq!(rows[0].sentence, "The workspace “Lab” was created.");
 
         assert_eq!(rows[1].actor, Actor::Server);
-        assert!(!rows[1].with_token);
+        assert_eq!(rows[1].token, None);
         assert_eq!(rows[1].workspace, Some(About::Named("Studio".to_owned())));
         assert_eq!(rows[1].channel, Some(About::Named("# general".to_owned())));
         assert_eq!(rows[1].group, AuditGroup::Calls);
@@ -2977,12 +3188,18 @@ mod tests {
         // The server holds older entries.
         admin.audit.next_before = Some(AuditEntryId::generate());
         let page = audit(scene.server_id, &model, None, &known(), &admin);
-        assert!(page.at_bound);
+        assert!(page.at_bound && page.continues);
         assert!(!page.older);
         assert_eq!((page.loaded, page.rows.len()), (2000, 2000));
         assert_eq!(MOST_AUDIT_ENTRIES, 2000);
-        assert!(txt::AUDIT_BOUND.contains("the newest 2,000 entries"));
+        assert!(txt::AUDIT_BOUND.contains("2,000 entries at most"));
         assert_eq!(AUDIT_PAGE, 50);
+        assert_eq!(page.passed, 0);
+        // After the last page nothing follows.
+        admin.audit.next_before = None;
+        let last = audit(scene.server_id, &model, None, &known(), &admin);
+        assert!(last.at_bound && !last.continues);
+        admin.audit.next_before = Some(AuditEntryId::generate());
 
         // One entry below the bound the page reads the next page on request.
         admin.audit.entries.pop();
@@ -2990,5 +3207,172 @@ mod tests {
         assert!(!page.at_bound);
         assert!(page.older);
         assert_eq!(page.loaded, 1999);
+    }
+
+    #[test]
+    fn the_page_states_which_entries_of_the_list_it_shows_after_it_went_on() {
+        let scene = scene().administrator();
+        let model = scene.model(AdminModel::default());
+        let entries: Vec<AuditEntry> = (0..50)
+            .map(|_| entry(None, AuditEvent::EventEpochRenewed))
+            .collect();
+        let mut admin = log(scene.server_id, AuditScope::Server, entries);
+        admin.audit.passed = 2_000;
+        admin.audit.next_before = Some(AuditEntryId::generate());
+        let page = audit(scene.server_id, &model, None, &known(), &admin);
+        assert_eq!(page.passed, 2_000);
+        assert!(page.older && !page.at_bound && !page.continues);
+        assert_eq!(
+            txt::audit_count(page.loaded, page.passed),
+            "Entries 2001 to 2050 of the list"
+        );
+        assert_eq!(txt::audit_count(1, 0), "1 entry loaded");
+        assert_eq!(txt::audit_count(0, 2_000), "No entry after the first 2000");
+    }
+
+    #[test]
+    fn a_row_names_its_access_token_when_the_list_of_the_tokens_holds_it() {
+        let scene = scene().administrator();
+        let held = token("deploy", scene.own);
+        let model = scene.model(with_tokens(vec![held.clone()]));
+        let mut made = entry(Some(scene.own), AuditEvent::ChannelArchived);
+        made.access_token_id = Some(held.id);
+        let admin = log(scene.server_id, AuditScope::Server, vec![made]);
+        let page = audit(scene.server_id, &model, None, &known(), &admin);
+        assert_eq!(
+            page.rows[0].token,
+            Some(TokenRef {
+                id: held.id,
+                name: Some("deploy".to_owned()),
+            })
+        );
+        assert!(txt::audit_head(&page.rows[0]).ends_with("Luca with the access token “deploy”"));
+    }
+
+    #[test]
+    fn an_administrator_reads_the_log_of_a_deleted_workspace_from_the_entry_of_its_deletion() {
+        let gone = WorkspaceId::generate();
+        let deletion = entry(
+            None,
+            AuditEvent::WorkspaceDeleted {
+                workspace_id: gone,
+                name: "Old lab".to_owned(),
+            },
+        );
+        let mut member = scene();
+        member.snapshot.account.server_permissions = vec![ServerPermission::ViewServerAuditLog];
+        let member_model = member.model(AdminModel::default());
+        let admin = log(member.server_id, AuditScope::Server, vec![deletion.clone()]);
+        // A person who is no administrator has no route to that log.
+        let page = audit(member.server_id, &member_model, None, &known(), &admin);
+        assert_eq!(page.rows[0].deleted_workspace, None);
+
+        let scene = scene().administrator();
+        let model = scene.model(AdminModel::default());
+        let mut admin = log(scene.server_id, AuditScope::Server, vec![deletion]);
+        let page = audit(scene.server_id, &model, None, &known(), &admin);
+        assert_eq!(
+            page.rows[0].deleted_workspace,
+            Some((gone, "Old lab".to_owned()))
+        );
+        assert!(
+            !page
+                .scopes
+                .iter()
+                .any(|choice| choice.scope == AuditScope::DeletedWorkspace(gone))
+        );
+        // The log of the deleted workspace is shown, and it is a choice of the logs with
+        // the name of the entry. Its entries are named as entries of the shown workspace.
+        let mut inside = entry(Some(scene.own), AuditEvent::ChannelArchived);
+        inside.workspace_id = Some(gone);
+        inside.channel_id = Some(ChannelId::generate());
+        admin.audit.shown = Some((scene.server_id, AuditScope::DeletedWorkspace(gone)));
+        admin.audit.entries = vec![inside];
+        admin.audit.deleted = Some((gone, "Old lab".to_owned()));
+        let page = audit(scene.server_id, &model, None, &known(), &admin);
+        assert_eq!(page.scope, Some(AuditScope::DeletedWorkspace(gone)));
+        assert_eq!(
+            page.scopes.last(),
+            Some(&ScopeChoice {
+                scope: AuditScope::DeletedWorkspace(gone),
+                workspace: Some("Old lab".to_owned()),
+            })
+        );
+        assert_eq!(
+            txt::audit_scope(page.scopes.last().unwrap()),
+            "Deleted workspace Old lab"
+        );
+        assert_eq!(page.rows[0].workspace, None);
+        assert_eq!(page.rows[0].channel, Some(About::Unknown));
+        // The deleted workspace offers the people only.
+        assert!(
+            page.targets
+                .iter()
+                .all(|(kind, _)| *kind == TargetKind::People)
+        );
+    }
+
+    #[test]
+    fn the_filter_by_the_thing_concerned_offers_what_the_shown_log_names() {
+        let scene = scene().administrator();
+        let model = scene.model(AdminModel::default());
+        let kinds = |page: &AuditPage| -> Vec<TargetKind> {
+            page.targets.iter().map(|(kind, _)| *kind).collect()
+        };
+        let names = |page: &AuditPage, kind: TargetKind| -> Vec<String> {
+            page.targets
+                .iter()
+                .find(|(held, _)| *held == kind)
+                .map(|(_, choices)| choices.iter().map(txt::target_choice).collect())
+                .unwrap_or_default()
+        };
+        let mut acted = entry(Some(scene.own), AuditEvent::ChannelArchived);
+        acted.workspace_id = Some(scene.studio);
+        // The log of the server: the people and the workspaces. No server role is read.
+        let mut server = log(scene.server_id, AuditScope::Server, vec![acted.clone()]);
+        server.audit.people = vec![scene.own];
+        let page = audit(scene.server_id, &model, None, &known(), &server);
+        assert_eq!(kinds(&page), [TargetKind::People, TargetKind::Workspaces]);
+        assert_eq!(names(&page, TargetKind::Workspaces), ["Studio", "Lab"]);
+        // The log of a workspace: its channels, its categories and its roles.
+        let studio = model.workspace(scene.studio).unwrap();
+        let mut shown = log(
+            scene.server_id,
+            AuditScope::Workspace(scene.studio),
+            vec![acted],
+        );
+        shown.audit.people = vec![scene.own];
+        let page = audit(scene.server_id, &model, Some(studio), &known(), &shown);
+        assert_eq!(
+            kinds(&page),
+            [
+                TargetKind::People,
+                TargetKind::Channels,
+                TargetKind::Categories,
+                TargetKind::Roles
+            ]
+        );
+        assert_eq!(names(&page, TargetKind::Channels), ["# general"]);
+        assert_eq!(names(&page, TargetKind::Categories), ["Projects"]);
+        assert_eq!(names(&page, TargetKind::Roles), ["everyone", "leads"]);
+        // A thing of the filter that the state does not name stays a choice.
+        let gone = ChannelId::generate();
+        let mut filtered = shown;
+        filtered.audit.filter = AuditFilter {
+            about: Some(AuditTarget::Channel(gone)),
+            ..AuditFilter::default()
+        };
+        let page = audit(scene.server_id, &model, Some(studio), &known(), &filtered);
+        let channels = &page
+            .targets
+            .iter()
+            .find(|(kind, _)| *kind == TargetKind::Channels)
+            .unwrap()
+            .1;
+        assert!(
+            channels
+                .iter()
+                .any(|choice| choice.target == AuditTarget::Channel(gone) && choice.name.is_none())
+        );
     }
 }

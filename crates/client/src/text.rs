@@ -1422,6 +1422,10 @@ pub const MESSAGE_ACTIONS: &str = "Actions of this message";
 pub const DELETE_MESSAGE_TITLE: &str = "Delete this message?";
 pub const DELETE_MESSAGE_CONFIRM: &str =
     "The message and its files are removed for everyone. This cannot be undone.";
+pub const DELETE_PERMANENT_TITLE: &str = "Delete this permanent message?";
+pub const DELETE_PERMANENT_CONFIRM: &str = "Its text and files are removed for everyone. \
+     The channel shows a line that you deleted a permanent message, and the audit log keeps \
+     an entry. This cannot be undone.";
 pub const SENDING: &str = "sending…";
 pub const WAITING_FOR_FILES: &str = "uploading its files…";
 pub const NOT_CONFIRMED: &str = "No answer from the server. The message may have arrived.";
@@ -1521,6 +1525,9 @@ pub const PERMANENT_ABOUT: &str = " Nobody can edit a message in this channel. O
      administrator can delete one. Each deletion leaves a line here and an entry in the \
      audit log.";
 pub const NO_EDIT_OR_DELETE: &str = "No edit or delete here";
+pub const NO_EDIT: &str = "No edit here";
+pub const FILES_REMOVED_BY_RETENTION: &str =
+    "Files of this message were removed after the retention time of this workspace.";
 pub const PERMANENT_COMPOSER: &str = "Permanent messages: a sent message cannot be edited";
 pub const DIRECT_MESSAGES: &str = "Direct messages";
 pub const MESSAGE_PERSON: &str = "Message";

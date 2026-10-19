@@ -10,7 +10,7 @@ pub mod people;
 mod recordings;
 pub mod records;
 pub mod roles;
-mod server;
+pub mod server;
 mod workspaces;
 
 use gpui::{
@@ -64,6 +64,8 @@ pub enum Mode {
     Days(AskKind),
     /// The question before the removal of the logo of the server.
     RemoveLogo,
+    /// One limit of the files of messages is typed (ADR 0408).
+    Limit(server::Limit),
 }
 
 /// What the layer of the administration holds of the window itself: the text of its
@@ -416,7 +418,7 @@ impl Shell {
                 | Mode::CreateChannel(_)
                 | Mode::RenameChannel,
             ) => self.focus_field(&self.admin.name.clone(), window, cx),
-            Some(Mode::EnterCode | Mode::Days(_)) => {
+            Some(Mode::EnterCode | Mode::Days(_) | Mode::Limit(_)) => {
                 self.focus_field(&self.admin.value.clone(), window, cx);
             }
             _ => {}
@@ -474,6 +476,7 @@ impl Shell {
                 | Mode::RenameChannel,
             ) => self.submit_channel_form(&view, window, cx),
             Some(Mode::Days(_)) => self.submit_days(&view, window, cx),
+            Some(Mode::Limit(_)) => self.submit_limit(&view, cx),
             _ => {}
         }
     }

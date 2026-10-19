@@ -234,6 +234,8 @@ pub const KIND: &str = "Kind";
 pub const CATEGORY: &str = "Category";
 pub const MOVE_TO: &str = "Move to…";
 pub const MOVE_TO_HELP: &str = "Choose the category of the channel.";
+pub const CHANNEL_HANDLE: &str =
+    "Drag to move the channel to another place or category. Up, Down and Move to do the same.";
 pub const ARCHIVE: &str = "Archive";
 pub const NO_CHANNELS_HERE: &str = "No channel.";
 pub const PERMANENT_MARK: &str = "permanent messages";
@@ -387,6 +389,7 @@ fn invalid(what: AskKind) -> &'static str {
             RETENTION_DAYS_RANGE
         }
         AskKind::CallSettings(_) => "The server did not accept the user limit.",
+        AskKind::AttachmentLimits => server::LIMITS_REFUSED,
         AskKind::MoveRole(_) => {
             "The order of the roles has changed. The role is where the list shows it now."
         }

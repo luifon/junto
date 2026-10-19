@@ -18,7 +18,7 @@ use time::OffsetDateTime;
 use super::{channel_name, date, date_time, days};
 use crate::state::admin::view::records::{
     About, Actor, ActorChoice, AuditGroup, AuditLine, ExportLine, ExportOf, ExportStatus, Names,
-    ScopeChoice, TokenFault, TokenLine,
+    ScopeChoice, TargetChoice, TargetKind, TokenFault, TokenLine,
 };
 use crate::state::admin::{AuditPeriod, AuditScope};
 
@@ -306,8 +306,10 @@ pub const AUDIT_ACTION_GROUP: &str = "Kind of action";
 pub const EVERY_ACTION: &str = "Every action";
 pub const AUDIT_ACTOR: &str = "Person who acted";
 pub const EVERYONE: &str = "Everyone";
-pub const AUDIT_ABOUT: &str = "Person concerned";
-pub const ANYONE: &str = "Anyone";
+pub const AUDIT_ABOUT: &str = "Concerning";
+pub const ANYONE: &str = "Anything";
+pub const AUDIT_ABOUT_KIND: &str = "Kind of thing";
+pub const UNNAMED_TARGET: &str = "A thing whose name is not known here";
 pub const AUDIT_PERIOD: &str = "Time";
 pub const AUDIT_FILTERED: &str = "The server returns the entries that pass these filters.";
 pub const CLEAR_FILTERS: &str = "Clear filters";
@@ -317,7 +319,18 @@ pub const NO_ENTRIES: &str = "This log has no entry.";
 pub const NO_ENTRIES_FILTERED: &str = "No entry of this log passes the filters.";
 pub const LOAD_OLDER: &str = "Load older";
 pub const READ_AGAIN: &str = "Read again";
-pub const AUDIT_BOUND: &str = "The page shows the newest 2,000 entries. It reads no older entry.";
+pub const AUDIT_BOUND: &str = "The page holds 2,000 entries at most. \"Continue\" shows the next \
+     entries of the list in their place, and \"Read again\" returns to the newest ones.";
+pub const CONTINUE: &str = "Continue";
+pub const READ_ITS_LOG: &str = "Read its log";
+pub const DATES: &str = "Dates";
+pub const DATES_FROM: &str = "From";
+pub const DATES_TO: &str = "To";
+pub const DATES_APPLY: &str = "Apply";
+pub const DATES_HELP: &str = "Dates as year-month-day, such as 2026-10-01. The log shows the \
+     entries from the start of the first date to the end of the last one, on the clock of this \
+     device.";
+pub const DATES_INVALID: &str = "Write each date as year-month-day, such as 2026-10-01, with the first date not after the last.";
 pub const UNKNOWN_ACTION: &str = "An action that this version of Junto does not know";
 
 /// A scope of the audit log as the control names it.
@@ -326,7 +339,55 @@ pub fn audit_scope(choice: &ScopeChoice) -> String {
         (AuditScope::Server, _) => "Server".to_owned(),
         (AuditScope::Workspace(_), Some(name)) => format!("Workspace {name}"),
         (AuditScope::Workspace(_), None) => "Workspace".to_owned(),
+        (AuditScope::DeletedWorkspace(_), Some(name)) => format!("Deleted workspace {name}"),
+        (AuditScope::DeletedWorkspace(_), None) => "Deleted workspace".to_owned(),
     }
+}
+
+/// A kind of thing of the filter by the thing concerned.
+pub const fn target_kind(kind: TargetKind) -> &'static str {
+    match kind {
+        TargetKind::People => "People",
+        TargetKind::Workspaces => "Workspaces",
+        TargetKind::ServerRoles => "Server roles",
+        TargetKind::Channels => "Channels",
+        TargetKind::Categories => "Categories",
+        TargetKind::Roles => "Roles",
+    }
+}
+
+/// A thing of the filter by the thing concerned.
+pub fn target_choice(choice: &TargetChoice) -> String {
+    choice
+        .name
+        .clone()
+        .unwrap_or_else(|| UNNAMED_TARGET.to_owned())
+}
+
+/// A range of dates as the filter states it.
+pub fn audit_dates(from: time::Date, to: time::Date) -> String {
+    let day = |date: time::Date| {
+        format!(
+            "{}-{:02}-{:02}",
+            date.year(),
+            u8::from(date.month()),
+            date.day()
+        )
+    };
+    if from == to {
+        day(from)
+    } else {
+        format!("{} to {}", day(from), day(to))
+    }
+}
+
+/// A date that the person typed as year-month-day.
+pub fn typed_date(text: &str) -> Option<time::Date> {
+    let mut parts = text.trim().splitn(3, '-');
+    let year = parts.next()?.parse::<i32>().ok()?;
+    let month = parts.next()?.parse::<u8>().ok()?;
+    let day = parts.next()?.parse::<u8>().ok()?;
+    time::Date::from_calendar_date(year, time::Month::try_from(month).ok()?, day).ok()
 }
 
 /// A group of actions as the filter names it.
@@ -355,6 +416,7 @@ pub const fn audit_period(period: AuditPeriod) -> &'static str {
         AuditPeriod::Day => "Last 24 hours",
         AuditPeriod::Week => "Last 7 days",
         AuditPeriod::Month => "Last 30 days",
+        AuditPeriod::Dates { .. } => DATES,
     }
 }
 
@@ -375,10 +437,14 @@ pub fn audit_actor_choice(choice: &ActorChoice) -> String {
         .unwrap_or_else(|| UNNAMED_ACTOR.to_owned())
 }
 
-pub fn audit_count(loaded: usize) -> String {
-    match loaded {
-        1 => "1 entry loaded".to_owned(),
-        loaded => format!("{loaded} entries loaded"),
+/// How many entries the page holds, and where they are in the list when the page went on
+/// after the most entries that it keeps.
+pub fn audit_count(loaded: usize, passed: usize) -> String {
+    match (loaded, passed) {
+        (1, 0) => "1 entry loaded".to_owned(),
+        (loaded, 0) => format!("{loaded} entries loaded"),
+        (0, passed) => format!("No entry after the first {passed}"),
+        (loaded, passed) => format!("Entries {} to {} of the list", passed + 1, passed + loaded),
     }
 }
 
@@ -399,10 +465,14 @@ pub fn audit_head(line: &AuditLine) -> String {
         } => name.clone(),
         Actor::Account { name: None, .. } => "An account".to_owned(),
     };
-    let actor = if line.with_token {
-        format!("{actor} with an access token")
-    } else {
-        actor
+    // A token is named by its name when the state holds it, and by its identifier
+    // otherwise: two tokens can have one name.
+    let actor = match &line.token {
+        Some(token) => match &token.name {
+            Some(name) => format!("{actor} with the access token “{name}”"),
+            None => format!("{actor} with the access token {}", token.id),
+        },
+        None => actor,
     };
     let mut parts = vec![date_time(line.at), actor];
     if let Some(workspace) = &line.workspace {
