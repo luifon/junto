@@ -22,6 +22,7 @@ use crate::harness::{World, member_with_capture};
 /// The window of the fixture program; its process ends when the value is dropped.
 struct Fixture {
     child: Child,
+    _adopted: crate::limit::Adopted,
     input: ChildStdin,
     title: String,
 }
@@ -46,6 +47,7 @@ impl Fixture {
             .stdout(Stdio::piped())
             .spawn()
             .unwrap();
+        let adopted = crate::limit::adopt(child.id());
         let input = child.stdin.take().unwrap();
         let mut line = String::new();
         BufReader::new(child.stdout.take().unwrap())
@@ -54,6 +56,7 @@ impl Fixture {
         assert!(line.starts_with("ready "), "the fixture wrote {line:?}");
         Self {
             child,
+            _adopted: adopted,
             input,
             title,
         }

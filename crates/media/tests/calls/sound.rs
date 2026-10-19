@@ -578,12 +578,15 @@ async fn a_test_that_ends_while_the_media_server_is_paused_gives_it_back_running
 
 async fn docker(arguments: &[&str]) {
     // A test that a limit cancels while the command runs ends the command too.
-    let done = tokio::process::Command::new("docker")
+    let docker = tokio::process::Command::new("docker")
         .args(arguments)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
-        .output()
-        .await
+        .spawn()
         .unwrap();
+    let _adopted = docker.id().map(crate::limit::adopt);
+    let done = docker.wait_with_output().await.unwrap();
     assert!(done.status.success(), "{done:?}");
 }
 

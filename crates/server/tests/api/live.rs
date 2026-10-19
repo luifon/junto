@@ -84,6 +84,7 @@ async fn the_waits_of_the_live_tests_note_their_steps() {
 struct Client {
     child: Child,
     lines: Arc<Mutex<Vec<Value>>>,
+    _adopted: crate::limit::Adopted,
 }
 
 impl Client {
@@ -103,6 +104,7 @@ impl Client {
             .stderr(Stdio::null())
             .spawn()
             .unwrap();
+        let adopted = crate::limit::adopt(child.id());
         let output = child.stdout.take().unwrap();
         let lines = Arc::new(Mutex::new(Vec::new()));
         let kept = lines.clone();
@@ -113,7 +115,11 @@ impl Client {
                 }
             }
         });
-        Self { child, lines }
+        Self {
+            child,
+            lines,
+            _adopted: adopted,
+        }
     }
 
     fn publisher(join: &CallJoin, arguments: &[&str]) -> Self {
@@ -178,6 +184,81 @@ fn room_of(join: &CallJoin) -> String {
         base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, payload).unwrap();
     let claims: Value = serde_json::from_slice(&decoded).unwrap();
     claims["video"]["room"].as_str().unwrap().to_owned()
+}
+
+/// Set for a run of this test binary by the test below, which runs one test in a process of
+/// its own.
+const FORCED_END_CHILD: &str = "JUNTO_LIVE_FORCED_END_CHILD";
+
+#[tokio::test]
+#[ignore = "run in its own process by a_forced_end_of_a_test_process_also_ends_its_call_participants"]
+async fn child_with_a_call_participant_that_does_not_end() {
+    if std::env::var_os(FORCED_END_CHILD).is_none() {
+        return;
+    }
+    let scene = scene().await;
+    let join = scene.server.join_call(&scene.ann, scene.voice.id).await;
+    let client = Client::publisher(&join, &["--mic-hz", "440"]);
+    client.until("joined").await;
+    eprintln!("participant process {}", client.child.id());
+    let _limit = crate::limit::watch(Wait::from_millis(300));
+    std::thread::sleep(Wait::from_secs(60));
+}
+
+/// ADR 0904: a forced end of a test process by its limit also ends the call participants
+/// that its tests started, which would otherwise stay in the call and keep what the test
+/// process inherited, such as the lock of the machine.
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn a_forced_end_of_a_test_process_also_ends_its_call_participants() {
+    limited(async {
+        let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "live::child_with_a_call_participant_that_does_not_end",
+                "--ignored",
+                "--nocapture",
+                "--test-threads",
+                "1",
+            ])
+            .env(FORCED_END_CHILD, "1")
+            .stdout(Stdio::null())
+            .output()
+            .await
+            .unwrap();
+        let errors = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(crate::limit::LIMIT_EXIT_CODE),
+            "{errors}"
+        );
+        let participant: u32 = errors
+            .lines()
+            .find_map(|line| line.strip_prefix("participant process "))
+            .expect("the child started a participant")
+            .trim()
+            .parse()
+            .unwrap();
+        let runs = || {
+            std::process::Command::new("kill")
+                .args(["-0", &participant.to_string()])
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        };
+        let started = Instant::now();
+        while runs() && started.elapsed() < Wait::from_secs(2) {
+            tokio::time::sleep(Wait::from_millis(20)).await;
+        }
+        if runs() {
+            let _ = std::process::Command::new("kill")
+                .args(["-KILL", &participant.to_string()])
+                .status();
+            panic!("the participant {participant} still runs: {errors}");
+        }
+    })
+    .await;
 }
 
 #[tokio::test]

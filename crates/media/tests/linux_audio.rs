@@ -20,7 +20,7 @@ fn pactl(arguments: &[&str]) -> String {
         std::env::var("JUNTO_TEST_VIRTUAL_AUDIO").as_deref(),
         Ok("1")
     );
-    let output = Command::new("pactl").args(arguments).output().unwrap();
+    let output = limit::output_of(Command::new("pactl").args(arguments)).unwrap();
     assert!(output.status.success(), "{output:?}");
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
@@ -40,9 +40,7 @@ impl Sink {
 
 impl Drop for Sink {
     fn drop(&mut self) {
-        if let Err(error) = Command::new("pactl")
-            .args(["unload-module", &self.0])
-            .output()
+        if let Err(error) = limit::output_of(Command::new("pactl").args(["unload-module", &self.0]))
         {
             eprintln!("could not remove the virtual sound device: {error}");
         }
@@ -195,17 +193,18 @@ fn an_unavailable_pipewire_daemon_is_an_audio_error() {
         assert!(MediaOptions::system().host.devices().is_err());
         return;
     }
-    let output = Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--ignored",
-            "--exact",
-            "an_unavailable_pipewire_daemon_is_an_audio_error",
-            "--nocapture",
-        ])
-        .env("PIPEWIRE_REMOTE", "junto-linux-unavailable")
-        .env("JUNTO_TEST_MISSING_PIPEWIRE_CHILD", "1")
-        .output()
-        .unwrap();
+    let output = limit::output_of(
+        Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "an_unavailable_pipewire_daemon_is_an_audio_error",
+                "--nocapture",
+            ])
+            .env("PIPEWIRE_REMOTE", "junto-linux-unavailable")
+            .env("JUNTO_TEST_MISSING_PIPEWIRE_CHILD", "1"),
+    )
+    .unwrap();
     assert!(
         output.status.success(),
         "{}\n{}",

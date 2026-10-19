@@ -114,6 +114,7 @@ fn docker_within(arguments: &[&str], limit: Duration) {
     else {
         return;
     };
+    let _adopted = crate::limit::adopt(child.id());
     let started = std::time::Instant::now();
     while matches!(child.try_wait(), Ok(None)) {
         if started.elapsed() > limit {
@@ -127,22 +128,63 @@ fn docker_within(arguments: &[&str], limit: Duration) {
 
 /// True when the API of the media server answers a request at once.
 pub fn livekit_answers() -> bool {
+    std::env::var("JUNTO_TEST_LIVEKIT_API_URL").is_ok_and(|url| answers(&url))
+}
+
+/// How long one check of the media server may wait for each of its steps.
+const ANSWER_WAIT: Duration = Duration::from_millis(500);
+
+/// True when an HTTP server at `url` answers a request within the waits of a check. The name
+/// is looked up on a thread of its own, because a lookup has no time limit of its own.
+fn answers(url: &str) -> bool {
     use std::io::{Read, Write};
-    let Ok(url) = std::env::var("JUNTO_TEST_LIVEKIT_API_URL") else {
+    use std::net::ToSocketAddrs;
+    let authority = url
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let (found, finding) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = found.send(authority.to_socket_addrs().map(|mut all| all.next()));
+    });
+    let Ok(Ok(Some(address))) = finding.recv_timeout(ANSWER_WAIT) else {
         return false;
     };
-    let address = url.trim_start_matches("http://");
-    let Ok(mut stream) = std::net::TcpStream::connect(address) else {
+    let Ok(mut stream) = std::net::TcpStream::connect_timeout(&address, ANSWER_WAIT) else {
         return false;
     };
-    let wait = Some(Duration::from_millis(500));
-    if stream.set_read_timeout(wait).is_err()
+    if stream.set_read_timeout(Some(ANSWER_WAIT)).is_err()
+        || stream.set_write_timeout(Some(ANSWER_WAIT)).is_err()
         || stream.write_all(b"GET / HTTP/1.0\r\n\r\n").is_err()
     {
         return false;
     }
     let mut answer = [0u8; 12];
     stream.read_exact(&mut answer).is_ok() && answer.starts_with(b"HTTP/1.")
+}
+
+#[test]
+fn a_check_of_a_media_server_that_does_not_answer_ends_within_its_waits() {
+    // The listener accepts connections into its queue and never answers them.
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let started = std::time::Instant::now();
+    assert!(!answers(&format!(
+        "http://{}",
+        silent.local_addr().unwrap()
+    )));
+    // An address of a private network that no host of a test answers, and a name that the
+    // system cannot look up: each step ends at its wait.
+    assert!(!answers("http://10.255.255.1:7880"));
+    assert!(!answers(
+        "http://junto-test-name-that-does-not-exist.invalid:7880"
+    ));
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
 }
 
 fn note_wait(how: &str) {

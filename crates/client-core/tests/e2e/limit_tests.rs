@@ -112,7 +112,7 @@ fn a_cleanup_that_does_not_end_ends_the_test_process_after_the_report() {
         "{errors}"
     );
     let ended = errors
-        .find("its cleanup did not end within 300ms")
+        .find("this and its cleanup did not end within 350ms")
         .expect(&errors);
     assert!(reported < ended, "{errors}");
 }
@@ -139,4 +139,160 @@ fn a_test_that_is_not_one_future_ends_the_test_process_after_its_limit() {
         errors.contains("reads a pipe whose writer stays open"),
         "{errors}"
     );
+}
+
+#[tokio::test]
+#[ignore = "run in its own process by a_cleanup_after_the_end_of_the_body_is_bounded_too"]
+async fn child_whose_body_ends_and_whose_cleanup_does_not_end() {
+    if std::env::var_os(CHILD).is_none() {
+        return;
+    }
+    step("ends at once");
+    crate::limit::limited_within(Duration::from_secs(5), Duration::from_millis(300), async {
+        let _stuck = Stuck;
+    })
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "run in its own process by a_cleanup_after_the_end_of_the_body_is_bounded_too"]
+async fn child_whose_body_fails_and_whose_cleanup_does_not_end() {
+    if std::env::var_os(CHILD).is_none() {
+        return;
+    }
+    step("fails at once");
+    crate::limit::limited_within(Duration::from_secs(5), Duration::from_millis(300), async {
+        let _stuck = Stuck;
+        panic!("the body fails");
+    })
+    .await;
+}
+
+#[test]
+fn a_cleanup_after_the_end_of_the_body_is_bounded_too() {
+    for child in [
+        "limit_tests::child_whose_body_ends_and_whose_cleanup_does_not_end",
+        "limit_tests::child_whose_body_fails_and_whose_cleanup_does_not_end",
+    ] {
+        let (code, errors, took) = run_child(child);
+        assert_eq!(
+            code,
+            Some(crate::limit::LIMIT_EXIT_CODE),
+            "{child}: {errors}"
+        );
+        assert!(
+            took < Duration::from_secs(12),
+            "{child} took {took:?}: {errors}"
+        );
+        assert!(
+            errors.contains("this and its cleanup did not end within 5.3s"),
+            "{child}: {errors}"
+        );
+    }
+}
+
+/// True while a process with this number exists.
+#[cfg(unix)]
+fn exists(process: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &process.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[test]
+#[ignore = "run in its own process by a_forced_end_also_ends_the_processes_that_the_tests_started"]
+fn child_with_a_started_process_that_does_not_end() {
+    if std::env::var_os(CHILD).is_none() {
+        return;
+    }
+    let mut started = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    let _adopted = crate::limit::adopt(started.id());
+    eprintln!("started process {}", started.id());
+    let _limit = crate::limit::watch(Duration::from_millis(300));
+    std::thread::sleep(Duration::from_secs(20));
+    let _ = started.kill();
+    let _ = started.wait();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_forced_end_also_ends_the_processes_that_the_tests_started() {
+    // The started process holds the pipes of the child, so the child ends for its parent
+    // only when the started process has ended.
+    let (code, errors, took) =
+        run_child("limit_tests::child_with_a_started_process_that_does_not_end");
+    assert_eq!(code, Some(crate::limit::LIMIT_EXIT_CODE), "{errors}");
+    assert!(took < Duration::from_secs(10), "it took {took:?}: {errors}");
+    let process: u32 = errors
+        .lines()
+        .find_map(|line| line.strip_prefix("started process "))
+        .expect(&errors)
+        .trim()
+        .parse()
+        .unwrap();
+    let ended = (0..100).any(|_| {
+        std::thread::sleep(Duration::from_millis(20));
+        !exists(process)
+    });
+    if !ended {
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", &process.to_string()])
+            .status();
+    }
+    assert!(ended, "the started process {process} still runs: {errors}");
+}
+
+#[test]
+#[ignore = "run in its own process by a_forced_end_does_not_wait_for_a_standard_error_that_nobody_reads"]
+fn child_whose_standard_error_is_full() {
+    if std::env::var_os(CHILD).is_none() {
+        return;
+    }
+    // A writer fills the pipe of the standard error, which the parent does not read, and
+    // waits there.
+    std::thread::spawn(|| {
+        use std::io::Write as _;
+        let _ = std::io::stderr().write_all(&vec![b'.'; 1 << 20]);
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    let _limit = crate::limit::watch(Duration::from_millis(100));
+    std::thread::sleep(Duration::from_secs(20));
+}
+
+#[test]
+fn a_forced_end_does_not_wait_for_a_standard_error_that_nobody_reads() {
+    let started = std::time::Instant::now();
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "limit_tests::child_whose_standard_error_is_full",
+            "--ignored",
+            "--nocapture",
+            "--test-threads",
+            "1",
+        ])
+        .env(CHILD, "1")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut ended_in_time = false;
+    while started.elapsed() < Duration::from_secs(12) {
+        if child.try_wait().unwrap().is_some() {
+            ended_in_time = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if !ended_in_time {
+        let _ = child.kill();
+    }
+    let status = child.wait().unwrap();
+    assert!(ended_in_time, "the child did not end within 12 s");
+    assert_eq!(status.code(), Some(crate::limit::LIMIT_EXIT_CODE));
 }

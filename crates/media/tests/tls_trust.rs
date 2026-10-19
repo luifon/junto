@@ -13,7 +13,10 @@ use livekit::webrtc::peer_connection_factory::{
     IceServer, IceTransportsType, PeerConnectionFactory, RtcConfiguration,
 };
 
-struct Server(Child);
+struct Server {
+    child: Child,
+    _adopted: limit::Adopted,
+}
 
 struct TlsFailures(mpsc::Sender<()>);
 
@@ -38,8 +41,8 @@ impl log::Log for TlsFailures {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -51,13 +54,19 @@ async fn turn_tls_uses_system_roots_and_checks_the_peer() {
     let _limit = limit::watch(limit::TEST_LIMIT);
     let Ok(fixtures) = std::env::var("JUNTO_TEST_TLS_FIXTURES") else {
         limit::step("runs the isolated TLS check");
-        let status = Command::new("python3")
+        let check = Command::new("python3")
             .args([
                 concat!(env!("CARGO_MANIFEST_DIR"), "/../../tools/test-turn-tls.py"),
                 "run",
             ])
             .arg(std::env::current_exe().unwrap_or_else(|error| panic!("{error}")))
-            .status()
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap_or_else(|error| panic!("TLS fixtures: {error}"));
+        let _adopted = limit::adopt(check.id());
+        let status = check
+            .wait()
             .unwrap_or_else(|error| panic!("TLS fixtures: {error}"));
         assert!(status.success(), "isolated TLS trust check failed");
         return;
@@ -76,19 +85,28 @@ async fn turn_tls_uses_system_roots_and_checks_the_peer() {
         limit::step(format!(
             "starts the TLS server with the certificate {certificate}"
         ));
-        let mut server = Server(
-            Command::new("python3")
-                .args([
-                    concat!(env!("CARGO_MANIFEST_DIR"), "/../../tools/test-turn-tls.py"),
-                    "serve",
-                    &fixtures,
-                    certificate,
-                ])
-                .stdout(Stdio::piped())
-                .spawn()
-                .unwrap_or_else(|error| panic!("TLS server: {error}")),
+        let started = Command::new("python3")
+            .args([
+                concat!(env!("CARGO_MANIFEST_DIR"), "/../../tools/test-turn-tls.py"),
+                "serve",
+                &fixtures,
+                certificate,
+            ])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap_or_else(|error| panic!("TLS server: {error}"));
+        let adopted = limit::adopt(started.id());
+        let mut server = Server {
+            child: started,
+            _adopted: adopted,
+        };
+        let mut output = BufReader::new(
+            server
+                .child
+                .stdout
+                .take()
+                .unwrap_or_else(|| panic!("stdout")),
         );
-        let mut output = BufReader::new(server.0.stdout.take().unwrap_or_else(|| panic!("stdout")));
         let mut port = String::new();
         output
             .read_line(&mut port)

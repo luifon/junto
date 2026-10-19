@@ -47,7 +47,10 @@ fn participant_tool() -> PathBuf {
 }
 
 /// A process that joins the room of a call with the token of a join and publishes sound.
-struct Participant(Child);
+struct Participant {
+    child: Child,
+    _adopted: crate::limit::Adopted,
+}
 
 impl Participant {
     fn start(join: &CallJoin) -> Self {
@@ -60,14 +63,18 @@ impl Participant {
             .stderr(Stdio::null())
             .spawn()
             .unwrap();
-        Self(child)
+        let adopted = crate::limit::adopt(child.id());
+        Self {
+            child,
+            _adopted: adopted,
+        }
     }
 }
 
 impl Drop for Participant {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
