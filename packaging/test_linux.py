@@ -149,6 +149,13 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn('sh "$relink/link.sh" "$output"', build)
         self.assertNotRegex(build, r"\$CC [^\n]*-o runtime\b")
 
+    def test_the_paths_of_the_build_image_are_posix_paths_on_every_system(self):
+        for path in [linux.RUNTIME, linux.RUNTIME_SOURCE, *(path for _, path in linux.RUNTIME_PACKAGES)]:
+            with self.subTest(str(path)):
+                self.assertIs(type(path), pathlib.PurePosixPath)
+                self.assertTrue(str(path).startswith("/"))
+                self.assertNotIn("\\", str(path))
+
     def test_the_link_inputs_are_read_from_the_ld_command(self):
         script = "set -eu\nld -static -o \"$output\" \\\n    a.o libb.a \\\n    -T c.ld\nstrip x.o\n"
         self.assertEqual(linux.link_inputs(script), ["a.o", "libb.a", "c.ld"])

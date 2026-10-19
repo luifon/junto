@@ -21,11 +21,13 @@ import licences
 from configuration import architecture as machine_architecture
 
 APPLICATION_ID = "chat.junto.Junto"
-RUNTIME = pathlib.Path("/opt/junto-linux/appimage-runtime")
+# The paths of the build image are POSIX paths on every system: the Dockerfile names them, and
+# the unit tests read them on Windows too. The image reads its files through pathlib.Path.
+RUNTIME = pathlib.PurePosixPath("/opt/junto-linux/appimage-runtime")
 # The source of the runtime, its build script, and the directory relink with every file of the
 # link of the runtime and the script that links it (tools/linux/appimage-runtime), which the
 # AppImage carries in licences/appimage-runtime (ADR 0801).
-RUNTIME_SOURCE = pathlib.Path("/opt/junto-linux/appimage-runtime-source")
+RUNTIME_SOURCE = pathlib.PurePosixPath("/opt/junto-linux/appimage-runtime-source")
 
 # The libraries that a package carries: the X11 keyboard libraries and the XKB extension of
 # the X11 connection library, which hosts without an X11 keyboard library often lack.
@@ -56,9 +58,9 @@ RUNTIME_COMPONENTS = [
 # copyright file of each package.
 RUNTIME_PACKAGES = [
     ("musl 1.2.3, the C library, from the Debian package musl-dev 1.2.3-1",
-     pathlib.Path("/usr/share/doc/musl/copyright")),
+     pathlib.PurePosixPath("/usr/share/doc/musl/copyright")),
     ("the builtins and start files of compiler-rt of LLVM 22.1.8, from the Debian package libclang-rt-22-dev "
-     "1:22.1.8-1~deb12u1", pathlib.Path("/usr/share/doc/libclang-rt-22-dev/copyright")),
+     "1:22.1.8-1~deb12u1", pathlib.PurePosixPath("/usr/share/doc/libclang-rt-22-dev/copyright")),
 ]
 DESKTOP = f"""[Desktop Entry]
 Type=Application
@@ -192,7 +194,7 @@ def runtime_section(runtime_source):
     its components, from their source archives in `runtime_source`."""
     components = [(f"{component}: {name}", archive_member(runtime_source / "sources" / archive, name))
                   for component, archive, names in RUNTIME_COMPONENTS for name in names]
-    components.extend((f"{label}: {path}", path.read_bytes()) for label, path in RUNTIME_PACKAGES)
+    components.extend((f"{label}: {path}", pathlib.Path(path).read_bytes()) for label, path in RUNTIME_PACKAGES)
     return licences.Section("The AppImage runtime", [
         "The AppImage file starts with its runtime, the program that mounts the SquashFS image that follows it and "
         "starts junto. The runtime is the type 2 runtime of the AppImage project under the MIT licence, linked "
@@ -209,11 +211,11 @@ def licence_texts(version, architecture, build, appimage=False, runtime_source=R
     """The files of the directory `licences`: the licence of Junto and the licence file, which
     also holds the copyright files of the bundled libraries; in the AppImage also the licences of
     its runtime, whose source `runtime_source` holds."""
-    copyrights = {package: pathlib.Path(f"/usr/share/doc/{package}/copyright") for package in LIBRARY_PACKAGES}
+    copyrights = {package: pathlib.PurePosixPath(f"/usr/share/doc/{package}/copyright") for package in LIBRARY_PACKAGES}
     libraries = licences.Section("Libraries in lib", [
         "The libraries in the directory lib, from the Debian packages of the Linux build image, with the "
         "copyright file of each package."],
-        [(f"{package}: {path}", path.read_bytes()) for package, path in copyrights.items()])
+        [(f"{package}: {path}", pathlib.Path(path).read_bytes()) for package, path in copyrights.items()])
     extra = [libraries, runtime_section(pathlib.Path(runtime_source))] if appimage else [libraries]
     return licences.package_files(version, licences.target("linux", architecture), build, extra)
 
@@ -264,6 +266,7 @@ def assemble(client, recover, version, output, runtime=RUNTIME, epoch=None, *, i
     whose licences the packages carry, and `runtime_source` the source of `runtime`, which the
     AppImage carries."""
     client, recover, output = pathlib.Path(client), pathlib.Path(recover), pathlib.Path(output)
+    runtime, runtime_source = pathlib.Path(runtime), pathlib.Path(runtime_source)
     if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version):
         raise ValueError("a release version has three decimal numbers")
     architecture = machine_architecture()
@@ -281,7 +284,7 @@ def assemble(client, recover, version, output, runtime=RUNTIME, epoch=None, *, i
         tree(appimage_tree, client, recover, version, architecture,
              licence_texts(version, architecture, build, appimage=True, runtime_source=runtime_source), icon_tool)
         shutil.copytree(runtime_source, appimage_tree / "licences/appimage-runtime")
-        appimage(appimage_tree, image / "Junto.AppImage", pathlib.Path(runtime), epoch)
+        appimage(appimage_tree, image / "Junto.AppImage", runtime, epoch)
         shutil.rmtree(appimage_tree)
         copy(recover, image / "junto-recover", 0o755)
         write(image / "junto-package.json", description(version, "appimage", architecture))

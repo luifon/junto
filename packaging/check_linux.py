@@ -23,6 +23,8 @@ from programs import outcome
 
 DISPLAY = release_tools.REPOSITORY / "tools/linux/display.sh"
 TARGET = pathlib.Path(os.environ.get("CARGO_TARGET_DIR", release_tools.REPOSITORY / "target")) / "debug"
+# The AppImage runtime of the build image and its source, as files of this system.
+RUNTIME, RUNTIME_SOURCE = pathlib.Path(linux.RUNTIME), pathlib.Path(linux.RUNTIME_SOURCE)
 STEPS = []
 
 
@@ -123,12 +125,13 @@ class Check:
         if appimage:
             for component, archive, names in linux.RUNTIME_COMPONENTS:
                 for name in names:
-                    licence = licences.normal(linux.archive_member(linux.RUNTIME_SOURCE / "sources" / archive, name))
+                    licence = licences.normal(linux.archive_member(RUNTIME_SOURCE / "sources" / archive, name))
                     expect(licence in text, f"the licence file has no {name} of {component}")
-            lgpl = linux.archive_member(linux.RUNTIME_SOURCE / "sources/fuse-3.15.0.tar.xz", "LGPL2.txt")
+            lgpl = linux.archive_member(RUNTIME_SOURCE / "sources/fuse-3.15.0.tar.xz", "LGPL2.txt")
             expect(licences.licences_in(lgpl) == {"LGPL-2.1-only"}, "LGPL2.txt of libfuse is not the LGPL 2.1")
             for label, path in linux.RUNTIME_PACKAGES:
-                expect(licences.normal(path.read_bytes()) in text, f"the licence file has no copyright file of {label}")
+                expect(licences.normal(pathlib.Path(path).read_bytes()) in text,
+                       f"the licence file has no copyright file of {label}")
 
     def icon_theme(self, directory):
         """The icon theme of a package: the SVG source and its rendering at each size."""
@@ -184,12 +187,12 @@ class Check:
             expect((squashfs / name).is_file(), f"the AppImage has no {name}")
         self.licence_file(squashfs, appimage=True)
         carried = squashfs / "licences/appimage-runtime"
-        expected = sorted(path.relative_to(linux.RUNTIME_SOURCE) for path in linux.RUNTIME_SOURCE.rglob("*"))
+        expected = sorted(path.relative_to(RUNTIME_SOURCE) for path in RUNTIME_SOURCE.rglob("*"))
         expect(sorted(path.relative_to(carried) for path in carried.rglob("*")) == expected,
                f"the source of the runtime in the AppImage: {sorted(carried.rglob('*'))}")
         for name in expected:
             path = carried / name
-            expect(path.is_dir() or path.read_bytes() == (linux.RUNTIME_SOURCE / name).read_bytes(),
+            expect(path.is_dir() or path.read_bytes() == (RUNTIME_SOURCE / name).read_bytes(),
                    f"licences/appimage-runtime/{name} differs from the source of the runtime")
         relink = carried / "relink"
         named = linux.link_inputs((relink / "link.sh").read_text())
@@ -210,7 +213,7 @@ class Check:
 
     @step("the files of relink in the AppImage link its runtime again, byte for byte")
     def runtime_from_relink(self):
-        runtime = linux.RUNTIME.read_bytes()
+        runtime = RUNTIME.read_bytes()
         expect(self.appimage.read_bytes()[:len(runtime)] == runtime, "the AppImage does not start with the runtime")
         linked = self.root / "runtime-linked"
         result = ran(["sh", self.runtime_source / "relink/link.sh", linked], cwd=self.root)
@@ -223,7 +226,7 @@ class Check:
         rebuilt, relink = self.root / "runtime-rebuilt", self.root / "relink-rebuilt"
         result = ran(["sh", self.runtime_source / "build.sh", rebuilt, relink], cwd=self.root, timeout=1800)
         expect(result.returncode == 0, "the build script of the runtime failed", result)
-        expect(rebuilt.read_bytes() == linux.RUNTIME.read_bytes(),
+        expect(rebuilt.read_bytes() == RUNTIME.read_bytes(),
                "the runtime built from the source of the AppImage differs from the runtime of the AppImage")
         carried = self.runtime_source / "relink"
         for path in sorted(carried.iterdir()):
