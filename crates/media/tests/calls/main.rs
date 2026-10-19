@@ -15,6 +15,9 @@
 #[path = "../../../client-core/tests/e2e/support.rs"]
 mod support;
 
+#[path = "../../../client-core/tests/e2e/limit.rs"]
+mod limit;
+
 mod devices;
 mod executor;
 mod hidden;

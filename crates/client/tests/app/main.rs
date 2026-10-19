@@ -16,6 +16,9 @@
 #![allow(clippy::disallowed_methods)]
 
 #[allow(dead_code)]
+#[path = "../../../client-core/tests/e2e/limit.rs"]
+mod limit;
+#[allow(dead_code)]
 #[path = "../../../client-core/tests/e2e/recording_server.rs"]
 mod recording_server;
 #[allow(dead_code)]

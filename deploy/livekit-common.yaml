@@ -1,0 +1,20 @@
+# The settings of the media server that do not depend on the host. Every form in deploy/
+# repeats them in LIVEKIT_CONFIG, and deploy/tests/check_rendered.py compares each form with
+# this file. The test servers of tools/with-test-livekit.sh and tools/linux/run.sh add this
+# file to their configuration (ADR 0904).
+room:
+  # ADR 0020.
+  departure_timeout: 60
+video:
+  # ADR 0609.
+  stream_tracker_manager:
+    video:
+      packet_tracker:
+        1:
+          samples_required: 1
+          cycles_required: 4
+          cycle_duration: 500ms
+        2:
+          samples_required: 1
+          cycles_required: 4
+          cycle_duration: 500ms

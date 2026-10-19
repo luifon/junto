@@ -400,6 +400,12 @@ pub struct AppState {
     /// The invitations into a call that the person made on this device and that can
     /// still wait.
     made_invitations: HashSet<(ServerId, CallInvitationId)>,
+    /// The number of invitations of the person whose answer of the server has not arrived.
+    invitations_on_the_way: usize,
+    /// How the invitations ended that the server told while an invitation of the person was
+    /// on its way. The invited person can answer before the answer of the server to the
+    /// invitation arrives.
+    early_invitation_ends: HashMap<(ServerId, CallInvitationId), InvitationOutcome>,
     /// The places whose messages the window shows, with the task that opens each in the
     /// client core.
     open_places: HashMap<(ServerId, PlaceId), Task<()>>,
@@ -680,6 +686,8 @@ impl AppState {
             early_entry_answers: Vec::new(),
             call_asks: 0,
             made_invitations: HashSet::new(),
+            invitations_on_the_way: 0,
+            early_invitation_ends: HashMap::new(),
             open_places: HashMap::new(),
             open_pins: None,
             fork_asks: 0,
@@ -1160,21 +1168,37 @@ impl AppState {
         };
         let (server_id, api) = (server.id(), server.api());
         let asked = self.begin_ask();
+        self.invitations_on_the_way += 1;
         cx.spawn(async move |this, cx| {
-            let invitation = match api.invite_to_call(channel_id, account_id).await {
-                Ok(invitation) => invitation,
-                Err(error) => {
-                    let _ = this.update(cx, |this, cx| this.refused(&asked, &error, cx));
-                    return;
+            let answer = api.invite_to_call(channel_id, account_id).await;
+            let waits = this.update(cx, |this, cx| {
+                this.invitations_on_the_way -= 1;
+                let ended = answer.as_ref().ok().and_then(|invitation| {
+                    this.early_invitation_ends
+                        .remove(&(server_id, invitation.id))
+                });
+                if this.invitations_on_the_way == 0 {
+                    this.early_invitation_ends.clear();
                 }
+                match (&answer, ended) {
+                    (Err(error), _) => {
+                        this.refused(&asked, error, cx);
+                        false
+                    }
+                    (Ok(_), Some(outcome)) => {
+                        this.invitation_ended(outcome, cx);
+                        false
+                    }
+                    (Ok(invitation), None) => {
+                        this.made_invitations.insert((server_id, invitation.id));
+                        true
+                    }
+                }
+            });
+            let (Ok(invitation), Ok(true)) = (answer, waits) else {
+                return;
             };
             let made = (server_id, invitation.id);
-            let kept = this.update(cx, |this, _| {
-                this.made_invitations.insert(made);
-            });
-            if kept.is_err() {
-                return;
-            }
             let lasts = Duration::try_from(invitation.expires_at - invitation.created_at)
                 .unwrap_or(INVITATION_LASTS)
                 + ANSWER_MARGIN;
@@ -1184,6 +1208,17 @@ impl AppState {
             });
         })
         .detach();
+        cx.notify();
+    }
+
+    /// Tells the person how an invitation that the person made ended.
+    fn invitation_ended(&mut self, outcome: InvitationOutcome, cx: &mut Context<Self>) {
+        let told = match outcome {
+            InvitationOutcome::Declined => text::INVITATION_DECLINED,
+            InvitationOutcome::Expired => text::INVITATION_EXPIRED,
+            InvitationOutcome::Accepted | InvitationOutcome::Cancelled => return,
+        };
+        self.pending.call_told = Some(told.to_owned());
         cx.notify();
     }
 
@@ -1479,15 +1514,12 @@ impl AppState {
                 self.direct.resolve(server_id, *invitation_id, *outcome);
                 self.reconcile_direct(cx);
                 cx.notify();
-                let made = self.made_invitations.remove(&(server_id, *invitation_id));
-                let told = match outcome {
-                    InvitationOutcome::Declined => Some(text::INVITATION_DECLINED),
-                    InvitationOutcome::Expired => Some(text::INVITATION_EXPIRED),
-                    InvitationOutcome::Accepted | InvitationOutcome::Cancelled => None,
-                };
-                if let (true, Some(told)) = (made, told) {
-                    self.pending.call_told = Some(told.to_owned());
-                    cx.notify();
+                let ended = (server_id, *invitation_id);
+                if self.made_invitations.remove(&ended) {
+                    self.invitation_ended(*outcome, cx);
+                } else if self.invitations_on_the_way > 0 {
+                    // The invitation can be the one whose answer is on its way.
+                    self.early_invitation_ends.insert(ended, *outcome);
                 }
             }
             _ => {}
@@ -1875,6 +1907,8 @@ impl AppState {
         self.waiting.retain(|id, _| ids.contains(id));
         self.notice_readers.retain(|id, _| ids.contains(id));
         self.made_invitations.retain(|(id, _)| ids.contains(id));
+        self.early_invitation_ends
+            .retain(|(id, _), _| ids.contains(id));
         self.pending
             .acknowledge_failed
             .retain(|owner, _| ids.contains(&owner.entry.server_id));

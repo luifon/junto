@@ -46,7 +46,7 @@ Prompts:
 
 - A person inside sees a request to enter as a notice in the notice area of the shown view with "Let in" and "Deny", whatever channel the window shows.
 - An invitation for the person is a notice with "Join" and "Decline", whatever server and channel the window shows. "Join" accepts it and enters the call, in place of a call that the device is in.
-- The application remembers each invitation that the person made on this device, from the answer of the server, for the time that the invitation can wait and 5 seconds, and tells the person when it was declined or got no answer.
+- The application remembers each invitation that the person made on this device, from the answer of the server, for the time that the invitation can wait and 5 seconds, and tells the person when it was declined or got no answer. The invited person can answer before the answer of the server reaches this device. While an invitation of the person is on its way, the application keeps the end of every invitation that it does not know, and uses the one with the identifier of the answer when the answer arrives. It discards the kept ends when no invitation of the person is on its way.
 
 Inviting:
 

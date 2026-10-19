@@ -255,7 +255,7 @@ tools/with-test-postgres.sh tools/serial.sh \
     cargo test -p junto-server --test api transcriber_real:: -- --ignored
 ```
 
-`tools/with-test-livekit.sh` starts LiveKit 1.13.9 in development mode as the container `junto-dev-livekit` on the local ports 17880 to 17882 and removes it afterwards. LiveKit sends its notifications to `127.0.0.1:17890` on the machine of the tests, where one test listens; on Linux, set `JUNTO_TEST_WEBHOOK_ADDRESS` to an address of the machine that the container reaches.
+`tools/with-test-livekit.sh` starts LiveKit 1.13.9 in development mode as the container `junto-dev-livekit` on the local ports 17880 to 17882 and removes it afterwards. LiveKit sends its notifications to `127.0.0.1:17890` on the machine of the tests, where one test listens; on Linux, set `JUNTO_TEST_WEBHOOK_ADDRESS` to an address of the machine that the container reaches. The server has the settings of `deploy/livekit-common.yaml`, as the deployment has (ADR 0904).
 
 The live tier accepts `JUNTO_TEST_PARTICIPANT` as an executable path, so a debug build can
 be used: `cargo build --manifest-path spikes/test-participant/Cargo.toml --target-dir target`,

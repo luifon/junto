@@ -43,8 +43,18 @@ impl World {
         }
     }
 
+    /// Runs work on the runtime of the test, with the time limit of a live test: work
+    /// that waits for the network or another process ends.
     pub fn run<F: Future>(&self, work: F) -> F::Output {
-        self.runtime.block_on(work)
+        self.runtime.block_on(crate::limit::limited_step(work))
+    }
+
+    /// Runs work that takes longer than a live test may, with its own limit. The native
+    /// targets use it to write a long channel.
+    #[allow(dead_code)]
+    pub fn run_for<F: Future>(&self, limit: Duration, work: F) -> F::Output {
+        self.runtime
+            .block_on(crate::limit::limited_for(limit, work))
     }
 
     pub fn server(&self, name: &str) -> TestServer {
@@ -484,6 +494,7 @@ impl Window {
     /// does.
     #[track_caller]
     pub fn until(&mut self, what: &str, mut holds: impl FnMut(&mut Self) -> bool) {
+        crate::limit::step(what);
         let deadline = Instant::now() + PATIENCE;
         loop {
             self.settle();

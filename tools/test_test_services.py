@@ -88,14 +88,13 @@ exit 0
                 self.assertEqual(sum(command.startswith("rm -f -v ")
                                      for command in commands), 2)
 
-    def test_only_the_named_setting_gives_the_camera_layers_the_deployment_setting(self):
-        for value, given in [("", False), ("1", True)]:
-            with self.subTest(value=value):
-                result, commands = self.run_wrapped(
-                    ["livekit"], 0, settings={"JUNTO_TEST_LIVEKIT_DEPLOYMENT_LAYERS": value})
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual("packet_tracker:" in "\n".join(commands), given)
-
+    def test_the_server_always_has_the_common_settings_of_the_deployment(self):
+        common = (TOOLS.parent / "deploy/livekit-common.yaml").read_text(encoding="utf-8").strip()
+        result, commands = self.run_wrapped(["livekit"], 0)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        started = "\n".join(commands)
+        self.assertIn("LIVEKIT_CONFIG=", started)
+        self.assertIn(common, started)
 
 if __name__ == "__main__":
     unittest.main()

@@ -21,7 +21,9 @@ use junto_media::calls::{CallTarget, CallTiming, CallsView, MediaOptions, Phase}
 use junto_media::engine::VoiceConfig;
 use junto_media::permission::FixedPermission;
 use junto_media::share::synthetic::SyntheticCapture;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+
+use crate::limit::step;
 
 use crate::support::{Device, TestServer, claim, join, logged_in};
 
@@ -34,7 +36,65 @@ pub const HEARD_DBFS: f32 = -20.0;
 pub const ABSENT_DBFS: f32 = -55.0;
 
 /// The one LiveKit server of the test run. A test that restarts it holds it alone.
-pub static MEDIA_SERVER: RwLock<()> = RwLock::const_new(());
+static MEDIA_SERVER: RwLock<()> = RwLock::const_new(());
+
+/// The tests that hold the media server now. A test that waits for it notes them as its
+/// step, so that a test that does not end names the test that it waits for.
+static HOLDERS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// The hold of a test on the media server.
+pub struct MediaServer {
+    _shared: Option<RwLockReadGuard<'static, ()>>,
+    _alone: Option<RwLockWriteGuard<'static, ()>>,
+    test: String,
+}
+
+impl Drop for MediaServer {
+    fn drop(&mut self) {
+        let mut holders = HOLDERS.lock().unwrap();
+        if let Some(at) = holders.iter().position(|test| *test == self.test) {
+            holders.remove(at);
+        }
+    }
+}
+
+fn holding(
+    shared: Option<RwLockReadGuard<'static, ()>>,
+    alone: Option<RwLockWriteGuard<'static, ()>>,
+) -> MediaServer {
+    let test = this_test();
+    HOLDERS.lock().unwrap().push(test.clone());
+    step("holds the media server");
+    MediaServer {
+        _shared: shared,
+        _alone: alone,
+        test,
+    }
+}
+
+fn this_test() -> String {
+    std::thread::current().name().unwrap_or("a test").to_owned()
+}
+
+fn note_wait(how: &str) {
+    let holders = HOLDERS.lock().unwrap().join(", ");
+    step(format!(
+        "waits for the media server, {how}; it is held by: {holders}"
+    ));
+}
+
+/// Waits for the media server, which the test shares with the other tests that do not
+/// restart it.
+pub async fn media_server_shared() -> MediaServer {
+    note_wait("shared");
+    holding(Some(MEDIA_SERVER.read().await), None)
+}
+
+/// Waits until the test holds the media server alone, to restart it.
+pub async fn media_server_alone() -> MediaServer {
+    note_wait("alone");
+    holding(None, Some(MEDIA_SERVER.write().await))
+}
 
 pub struct Person {
     pub device: Device,
@@ -118,6 +178,7 @@ impl Person {
 
     /// Waits until the view of the calls fulfils a condition.
     pub async fn until(&self, what: &str, holds: impl FnMut(&CallsView) -> bool) -> CallsView {
+        step(what);
         let mut watch = self.calls.watch();
         match tokio::time::timeout(PATIENCE, watch.wait_for(holds)).await {
             Ok(Ok(view)) => view.clone(),
@@ -129,6 +190,7 @@ impl Person {
     }
 
     pub async fn enter(&self, target: CallTarget) {
+        step("asks to join the call");
         self.calls.join(target).await.unwrap();
         self.until("the media connection of the call", |view| {
             view.call
@@ -170,6 +232,7 @@ impl Person {
     /// Waits until the tone of another person arrives at a level that does not change any
     /// more, and returns that level.
     pub async fn until_steady(&self, of: &Person) -> f32 {
+        step(format!("the tone of {} Hz is steady", of.hz));
         let started = tokio::time::Instant::now();
         let mut before = f32::MIN;
         loop {
@@ -188,6 +251,7 @@ impl Person {
     }
 
     pub async fn until_level(&self, hz: f32, what: &str, holds: impl Fn(f32) -> bool) -> f32 {
+        step(format!("{what}: {hz} Hz"));
         let started = tokio::time::Instant::now();
         loop {
             let level = self.hears(hz);
@@ -225,6 +289,7 @@ pub async fn when(
     what: &str,
     holds: impl FnMut(&LiveView) -> bool,
 ) -> LiveView {
+    step(what);
     let mut watch = handle.live().watch();
     match tokio::time::timeout(PATIENCE, watch.wait_for(holds)).await {
         Ok(Some(view)) => view,
@@ -423,6 +488,7 @@ impl Room {
 
 /// Waits until `holds`, for a state that no watch tells.
 pub async fn until(what: &str, holds: impl Fn() -> bool) {
+    step(what);
     let started = tokio::time::Instant::now();
     while !holds() {
         assert!(
@@ -435,4 +501,34 @@ pub async fn until(what: &str, holds: impl Fn() -> bool) {
 
 pub fn account(handle: &ServerHandle) -> AccountId {
     logged_in(handle)
+}
+
+#[tokio::test]
+async fn a_test_that_waits_for_the_media_server_notes_the_tests_that_hold_it() {
+    let held = media_server_shared().await;
+    let holder = this_test();
+    let noted = std::thread::Builder::new()
+        .name("a waiting test".to_owned())
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let waited = runtime.block_on(async {
+                tokio::time::timeout(Duration::from_millis(100), media_server_alone()).await
+            });
+            assert!(waited.is_err(), "the media server is held");
+            crate::limit::last_steps()
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    assert!(
+        noted.contains(&format!(
+            "waits for the media server, alone; it is held by: {holder}"
+        )),
+        "{noted}"
+    );
+    drop(held);
+    assert!(!HOLDERS.lock().unwrap().contains(&holder));
 }

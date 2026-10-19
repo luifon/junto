@@ -9,6 +9,7 @@ import unittest
 
 TOOLS = Path(__file__).resolve().parent.parent
 SERIAL = Path(os.environ.get("JUNTO_SERIAL_UNDER_TEST", TOOLS / "serial.sh"))
+COMMON = TOOLS.parent / "deploy/livekit-common.yaml"
 
 
 class RunnerFailures(unittest.TestCase):
@@ -20,6 +21,8 @@ class RunnerFailures(unittest.TestCase):
             shutil.copy(os.environ.get("JUNTO_RUNNER_UNDER_TEST", TOOLS / "linux/run.sh"), tools / "linux/run.sh")
             shutil.copy(TOOLS / "linux-container.sh", tools / "linux-container.sh")
             shutil.copy(SERIAL, tools / "serial.sh")
+            (root / "checkout/deploy").mkdir()
+            shutil.copy(COMMON, root / "checkout/deploy/livekit-common.yaml")
             docker = root / "docker"
             docker.write_text('''#!/bin/sh
 printf '%s\\n' "$*" >> "$COMMAND_LOG"
@@ -44,7 +47,7 @@ exit 0
             search = f"{root}:{os.environ['PATH']}"
             if launcher:
                 # A Linux host has flock and no lockf.
-                for name in ["sh", "dirname", "nice", "grep", "mkdir"]:
+                for name in ["sh", "dirname", "nice", "grep", "mkdir", "cat"]:
                     (root / name).symlink_to(shutil.which(name))
                 search = str(root)
             environment = dict(os.environ, PATH=search, CHECKOUT=str(root / "checkout"),
@@ -120,6 +123,12 @@ exit 0
         self.assertEqual(len(build), 1, result.commands)
         self.assertIn(" --cpuset-cpus 0-1 ", build[0])
         self.assertIn(" -e CARGO_BUILD_JOBS=2 ", build[0])
+
+    def test_the_media_server_has_the_common_settings_of_the_deployment(self):
+        result = self.run_script("ownership")
+        start = result.commands.index("run -d --name junto-linux-livekit ")
+        end = result.commands.index("--dev --bind 0.0.0.0", start)
+        self.assertIn(COMMON.read_text(encoding="utf-8").strip(), result.commands[start:end])
 
     @unittest.skipUnless("flock" in SERIAL.read_text(), "the lock script has no flock path yet")
     def test_the_launcher_runs_on_a_host_without_lockf(self):
