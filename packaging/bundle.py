@@ -9,10 +9,13 @@ import sys
 import tomllib
 
 import icons
+import licences
+from configuration import architecture
 
 
-def assemble(binary, destination, version, recovery=None, *, icon_tool):
-    """Writes `destination`; `icon_tool` is the program `junto-icon` that writes the icon file."""
+def assemble(binary, destination, version, recovery=None, *, icon_tool, build):
+    """Writes `destination`; `icon_tool` is the program `junto-icon` that writes the icon file, and
+    `build` the directory of the programs of the build, whose licences the bundle carries."""
     binary, destination = pathlib.Path(binary), pathlib.Path(destination)
     if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version):
         raise ValueError("a release version has three decimal numbers")
@@ -44,6 +47,9 @@ def assemble(binary, destination, version, recovery=None, *, icon_tool):
         }
         (contents / "Info.plist").write_bytes(plistlib.dumps(info))
         icons.run(icon_tool, "icns", contents / "Resources/Junto.icns")
+        (contents / "Resources/licences").mkdir()
+        for name, text in licences.package_files(version, licences.target("macos", architecture()), build).items():
+            (contents / "Resources/licences" / name).write_bytes(text)
         return destination
     except BaseException:
         shutil.rmtree(destination)
@@ -57,6 +63,6 @@ if __name__ == "__main__":
     version = tomllib.loads((root / "Cargo.toml").read_text())["workspace"]["package"]["version"]
     try:
         assemble(sys.argv[1], sys.argv[2], os.environ.get("JUNTO_TEST_BUILD_VERSION", version), sys.argv[3],
-                 icon_tool=sys.argv[4])
+                 icon_tool=sys.argv[4], build=pathlib.Path(sys.argv[1]).parent)
     except ValueError as error:
         sys.exit(str(error))

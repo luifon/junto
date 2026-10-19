@@ -12,6 +12,7 @@ import sys
 import tempfile
 
 import icons
+import licences
 from bundle import assemble
 from check_signing import requirement
 from configuration import architecture
@@ -41,9 +42,12 @@ def check():
             environment.update(JUNTO_CODESIGN_IDENTITY=identity, JUNTO_CODESIGN_KEYCHAIN=str(keychain),
                                JUNTO_TEST_CERTIFICATE_FILE=str(pin))
             succeeding, failing = program(root / "exit-0", 0), program(root / "exit-1", 1)
-            installed = assemble(succeeding, root / "installed/Junto.app", "1.0.0", recover, icon_tool=icons.TOOL)
-            candidate = assemble(failing, root / "source-2/Junto.app", "2.0.0", recover, icon_tool=icons.TOOL)
-            first = assemble(succeeding, root / "source-1/Junto.app", "1.0.0", recover, icon_tool=icons.TOOL)
+            installed = assemble(succeeding, root / "installed/Junto.app", "1.0.0", recover, icon_tool=icons.TOOL,
+                                 build=licences.DEBUG_BUILD)
+            candidate = assemble(failing, root / "source-2/Junto.app", "2.0.0", recover, icon_tool=icons.TOOL,
+                                 build=licences.DEBUG_BUILD)
+            first = assemble(succeeding, root / "source-1/Junto.app", "1.0.0", recover, icon_tool=icons.TOOL,
+                             build=licences.DEBUG_BUILD)
 
             def ran(arguments):
                 return subprocess.run([str(argument) for argument in arguments], capture_output=True, text=True,
@@ -112,7 +116,8 @@ def check():
                 result = ran([record / "installed/recover", "rollback", installed])
                 assert result.returncode != 0 and version(installed) == "1.0.0", outcome(result)
                 for identity_kind in ["adhoc", "other"]:
-                    bad = assemble(succeeding, root / identity_kind / "Junto.app", "3.0.0", recover, icon_tool=icons.TOOL)
+                    bad = assemble(succeeding, root / identity_kind / "Junto.app", "3.0.0", recover,
+                                   icon_tool=icons.TOOL, build=licences.DEBUG_BUILD)
                     if identity_kind == "adhoc":
                         run("/usr/bin/codesign", "--force", "--sign", "-", str(bad))
                     else:

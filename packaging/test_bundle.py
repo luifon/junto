@@ -8,11 +8,15 @@ import sys
 import tempfile
 import unittest
 
+import fixtures
 import icons
+import licences
+from configuration import architecture
 
 # The entries of the macOS icon file and the side of each picture (ADR 0725).
 ICNS = {"ic04": 16, "ic11": 32, "ic05": 32, "ic12": 64, "ic07": 128, "ic13": 256, "ic08": 256, "ic14": 512,
         "ic09": 512, "ic10": 1024}
+TRIPLE = licences.target("macos", architecture())
 
 
 def load():
@@ -29,7 +33,8 @@ class BundleTests(unittest.TestCase):
             root = pathlib.Path(temporary)
             binary = root / "junto"
             binary.write_bytes(b"not executable in this test")
-            bundle = module.assemble(binary, root / "Junto.app", "0.2.3", icon_tool=icons.TOOL)
+            bundle = module.assemble(binary, root / "Junto.app", "0.2.3", icon_tool=icons.TOOL,
+                                     build=fixtures.build_directory(root / "build", TRIPLE))
             info = plistlib.loads((bundle / "Contents/Info.plist").read_bytes())
             self.assertEqual(info["CFBundleIdentifier"], "org.junto.app")
             self.assertEqual(info["CFBundleVersion"], "0.2.3")
@@ -40,14 +45,30 @@ class BundleTests(unittest.TestCase):
             self.assertTrue((bundle / "Contents/Resources/Junto.icns").is_file())
             self.assertEqual((bundle / "Contents/MacOS/junto").read_bytes(), binary.read_bytes())
             with self.assertRaises(FileExistsError):
-                module.assemble(binary, bundle, "0.2.4", icon_tool=icons.TOOL)
+                module.assemble(binary, bundle, "0.2.4", icon_tool=icons.TOOL, build=root / "build")
+
+    def test_the_bundle_holds_the_licence_of_junto_and_the_licence_file_of_its_programs(self):
+        with tempfile.TemporaryDirectory(prefix="junto-bundle-") as temporary:
+            root = pathlib.Path(temporary)
+            binary = root / "junto"
+            binary.write_bytes(b"not executable in this test")
+            bundle = load().assemble(binary, root / "Junto.app", "0.2.3", root / "junto", icon_tool=icons.TOOL,
+                                     build=fixtures.build_directory(root / "build", TRIPLE))
+            folder = bundle / "Contents/Resources/licences"
+            self.assertEqual(sorted(path.name for path in folder.iterdir()), ["Junto-LICENSE.txt", licences.NAME])
+            self.assertEqual((folder / "Junto-LICENSE.txt").read_bytes(), (licences.ROOT / "LICENSE").read_bytes())
+            text = (folder / licences.NAME).read_text(encoding="utf-8")
+            self.assertTrue(text.startswith(f"Junto 0.2.3 for {TRIPLE}: third-party licences\n"))
+            self.assertEqual(licences.listed(text), fixtures.client_graph(TRIPLE))
+            self.assertIn(fixtures.WEBRTC_LICENCE.decode(), text)
 
     def test_the_icon_file_holds_the_rendering_of_the_source_at_each_size_of_macos(self):
         with tempfile.TemporaryDirectory(prefix="junto-bundle-") as temporary:
             root = pathlib.Path(temporary)
             binary = root / "junto"
             binary.write_bytes(b"not executable in this test")
-            bundle = load().assemble(binary, root / "Junto.app", "0.2.3", icon_tool=icons.TOOL)
+            bundle = load().assemble(binary, root / "Junto.app", "0.2.3", icon_tool=icons.TOOL,
+                                     build=fixtures.build_directory(root / "build", TRIPLE))
             self.assertEqual(plistlib.loads((bundle / "Contents/Info.plist").read_bytes())["CFBundleIconFile"],
                              "Junto.icns")
             entries = icons.icns((bundle / "Contents/Resources/Junto.icns").read_bytes())
@@ -69,7 +90,8 @@ class BundleTests(unittest.TestCase):
             root = pathlib.Path(temporary)
             binary = root / "junto"
             binary.write_bytes(b"not executable in this test")
-            bundle = load().assemble(binary, root / "Junto.app", "0.2.3", icon_tool=icons.TOOL)
+            bundle = load().assemble(binary, root / "Junto.app", "0.2.3", icon_tool=icons.TOOL,
+                                     build=fixtures.build_directory(root / "build", TRIPLE))
             entries = icons.icns((bundle / "Contents/Resources/Junto.icns").read_bytes())
             iconset = root / "reference.iconset"
             iconset.mkdir()
@@ -100,7 +122,8 @@ class BundleTests(unittest.TestCase):
             root = pathlib.Path(temporary)
             binary = root / "junto"
             binary.write_bytes(b"not executable in this test")
-            bundle = load().assemble(binary, root / "Junto.app", "0.2.3", icon_tool=icons.TOOL)
+            bundle = load().assemble(binary, root / "Junto.app", "0.2.3", icon_tool=icons.TOOL,
+                                     build=fixtures.build_directory(root / "build", TRIPLE))
             iconset = root / "Junto.iconset"
             subprocess.run(["iconutil", "-c", "iconset", "-o", str(iconset),
                             str(bundle / "Contents/Resources/Junto.icns")], check=True, capture_output=True)

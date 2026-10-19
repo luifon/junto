@@ -12,7 +12,7 @@ import sys
 import time
 import zipfile
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+import licences
 
 
 def description(version, architecture):
@@ -20,15 +20,9 @@ def description(version, architecture):
                        "architecture": architecture}) + "\n"
 
 
-def licence_texts():
-    texts = {"Junto-LICENSE.txt": (ROOT / "LICENSE").read_bytes()}
-    for path in sorted((ROOT / "crates/client/assets/fonts").glob("*-OFL.txt")):
-        texts[path.name] = path.read_bytes()
-    return texts
-
-
-def assemble(client, recover, version, output, architecture="x86_64", epoch=None):
-    """Writes `output/package-directory/Junto` and `output/Junto-<version>-windows-<architecture>.zip`."""
+def assemble(client, recover, version, output, architecture="x86_64", epoch=None, *, build):
+    """Writes `output/package-directory/Junto` and `output/Junto-<version>-windows-<architecture>.zip`;
+    `build` is the directory of the programs of the build, whose licences the package carries."""
     client, recover, output = pathlib.Path(client), pathlib.Path(recover), pathlib.Path(output)
     if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version):
         raise ValueError("a release version has three decimal numbers")
@@ -43,7 +37,7 @@ def assemble(client, recover, version, output, architecture="x86_64", epoch=None
         shutil.copyfile(client, folder / "junto.exe")
         shutil.copyfile(recover, folder / "junto-recover.exe")
         (folder / "junto-package.json").write_text(description(version, architecture), newline="\n")
-        for name, text in licence_texts().items():
+        for name, text in licences.package_files(version, licences.target("windows", architecture), build).items():
             (folder / "licences" / name).write_bytes(text)
         moment = time.gmtime(max(epoch, 315532800))[:6]
         with zipfile.ZipFile(output / f"Junto-{version}-windows-{architecture}.zip", "w",
@@ -68,6 +62,7 @@ if __name__ == "__main__":
     parser.add_argument("output", help="a new directory")
     arguments = parser.parse_args()
     try:
-        assemble(arguments.client, arguments.recover, arguments.version, arguments.output)
+        assemble(arguments.client, arguments.recover, arguments.version, arguments.output,
+                 build=pathlib.Path(arguments.client).parent)
     except (ValueError, OSError) as error:
         sys.exit(str(error))
