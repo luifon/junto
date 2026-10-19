@@ -154,10 +154,10 @@ async fn an_account_that_lost_the_channel_cannot_tell_whether_its_invitation_wai
 }
 
 /// Defect 3: an account mutes its conversation with every account that may call it
-/// (ADR 0307), also when it may not see the profile of that account. An account that may do
-/// neither gets the answer for an absent one.
+/// (ADR 0307), also with an administrator in no common workspace, whose profile it sees for
+/// that reason (ADR 0119). An account that may do neither gets the answer for an absent one.
 #[tokio::test]
-async fn a_conversation_with_an_account_that_may_call_is_muted_without_sight_of_its_profile() {
+async fn a_conversation_with_an_account_that_may_call_is_muted_also_without_a_common_workspace() {
     let scene = Scene::start().await;
     let (server, owner, ann) = (&scene.server, &scene.owner, &scene.ann);
     let second: Workspace = server
@@ -171,7 +171,10 @@ async fn a_conversation_with_an_account_that_may_call_is_muted_without_sight_of_
         .await;
     let mute = |account_id: AccountId| format!("/api/v1/direct-messages/{account_id}/mute");
     let profile = format!("/api/v1/accounts/{}/profile", carl.account_id);
-    server.get(ann, &profile).await.error(ErrorCode::NotFound);
+    server
+        .get(ann, &profile)
+        .await
+        .ok::<junto_protocol::account::AccountProfile>(StatusCode::OK);
 
     ring(server, &carl, ann)
         .await
