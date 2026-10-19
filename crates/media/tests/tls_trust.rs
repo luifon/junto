@@ -54,7 +54,7 @@ async fn turn_tls_uses_system_roots_and_checks_the_peer() {
     let _limit = limit::watch(limit::TEST_LIMIT);
     let Ok(fixtures) = std::env::var("JUNTO_TEST_TLS_FIXTURES") else {
         limit::step("runs the isolated TLS check");
-        let check = Command::new("python3")
+        let mut check = Command::new("python3")
             .args([
                 concat!(env!("CARGO_MANIFEST_DIR"), "/../../tools/test-turn-tls.py"),
                 "run",
@@ -153,7 +153,7 @@ async fn turn_tls_uses_system_roots_and_checks_the_peer() {
         assert_eq!(result.trim(), expected, "certificate {certificate}");
         assert!(
             server
-                .0
+                .child
                 .wait()
                 .unwrap_or_else(|error| panic!("{error}"))
                 .success()
