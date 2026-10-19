@@ -1862,3 +1862,550 @@ fn an_answer_to_the_form_of_a_new_access_token_moves_no_control_under_it(cx: &mu
         assert!(new_row.origin.y < window.cx.debug_bounds(under).unwrap().origin.y);
     }
 }
+
+/// A page whose form adds a row at the top of its list, whose newest rows are first: the
+/// invites or the access tokens (ADR 0730).
+#[derive(Clone, Copy)]
+struct NewRowPage {
+    nav: &'static str,
+    new: &'static str,
+    form: &'static str,
+    create: &'static str,
+    cancel: &'static str,
+    /// The code or the secret that the answer carries, drawn in the row of the form.
+    result: &'static str,
+    done: &'static str,
+    row: &'static str,
+    revoke: &'static str,
+    /// The sentence that the list has no row.
+    none: &'static str,
+    /// The place of that sentence while the list holds only the new row.
+    none_space: &'static str,
+    /// The end of the path of the request that makes a row.
+    request: &'static str,
+}
+
+const INVITES: NewRowPage = NewRowPage {
+    nav: "admin-nav-invites",
+    new: "invite-new",
+    form: "invite-form",
+    create: "invite-create",
+    cancel: "invite-cancel",
+    result: "invite-code",
+    done: "invite-code-done",
+    row: "invite-row",
+    revoke: "invite-revoke",
+    none: "invites-none",
+    none_space: "invites-none-space",
+    request: "/invites",
+};
+
+const TOKENS: NewRowPage = NewRowPage {
+    nav: "admin-nav-tokens",
+    new: "token-new",
+    form: "token-form",
+    create: "token-create",
+    cancel: "token-cancel",
+    result: "token-secret",
+    done: "token-secret-done",
+    row: "token-row",
+    revoke: "token-revoke",
+    none: "no-tokens",
+    none_space: "no-tokens-space",
+    request: "/access-tokens",
+};
+
+impl NewRowPage {
+    /// The identifiers of the rows of the list in the state, when it is read.
+    fn rows(self, window: &mut Window) -> Option<Vec<String>> {
+        if self.nav == INVITES.nav {
+            server_page!(window, Invites).and_then(|page| {
+                let rows = page.invites.loaded()?;
+                Some(rows.iter().map(|row| row.id.to_string()).collect())
+            })
+        } else {
+            server_page!(window, Tokens).and_then(|page| {
+                let rows = page.tokens.loaded()?;
+                Some(rows.iter().map(|row| row.id.to_string()).collect())
+            })
+        }
+    }
+
+    /// The row that the answer made, while its code or secret is shown.
+    fn made(self, window: &mut Window) -> Option<String> {
+        if self.nav == INVITES.nav {
+            server_page!(window, Invites)
+                .and_then(|page| page.made.map(|made| made.invite_id.to_string()))
+        } else {
+            server_page!(window, Tokens)
+                .and_then(|page| page.made.map(|made| made.access_token_id.to_string()))
+        }
+    }
+
+    /// Makes a row through the API, as another client of the owner does.
+    fn make(self, world: &World, owner: &ServerHandle) -> String {
+        if self.nav == INVITES.nav {
+            world
+                .run(owner.api().create_invite(&CreateInvite::default()))
+                .unwrap()
+                .invite
+                .id
+                .to_string()
+        } else {
+            let token = CreateAccessToken {
+                name: "older".to_owned(),
+                actions: vec![TokenAction::ReadStructure],
+                expires_at: OffsetDateTime::now_utc() + Duration::days(7),
+            };
+            world
+                .run(owner.api().create_access_token(&token))
+                .unwrap()
+                .access_token
+                .id
+                .to_string()
+        }
+    }
+
+    #[track_caller]
+    fn open(self, window: &mut Window) {
+        open_page(window, self.nav, |window| self.rows(window).is_some());
+    }
+
+    #[track_caller]
+    fn open_form(self, window: &mut Window) {
+        click_in_page(window, self.new);
+        window.until("the form is open", |window| {
+            try_reveal(window, self.create).is_some()
+        });
+        if self.nav == TOKENS.nav {
+            window.in_shell(|shell, window, cx| shell.type_token_name("setup", window, cx));
+            window.settle();
+        }
+    }
+
+    /// Sends the open form and waits for the code or secret, with the new row in the state.
+    /// Returns the new row.
+    #[track_caller]
+    fn create(self, window: &mut Window, listed: usize) -> String {
+        click_in_page(window, self.create);
+        window.until(
+            "the result is shown, the form is closed and the state has the new row",
+            |window| {
+                idle(window)
+                    && window.shows(self.result)
+                    && !window.shows(self.form)
+                    && self
+                        .rows(window)
+                        .is_some_and(|rows| rows.len() == listed + 1)
+            },
+        );
+        self.made(window).unwrap()
+    }
+}
+
+/// The first invite of a server and the first access token: while the code or the secret
+/// of the new row is shown in the row of the form, the list states no absence of rows, and
+/// it keeps the place of that sentence until the row joins it (ADR 0730).
+#[gpui::test]
+fn the_list_states_no_absence_of_rows_under_the_result_of_its_first_row(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let (_directory, mut window, _owner) = owner_window(cx, &server);
+    window.open_administration();
+    for page in [INVITES, TOKENS] {
+        page.open(&mut window);
+        window.until("the list states that it has no row", |window| {
+            window.shows(page.none)
+        });
+        page.open_form(&mut window);
+        let none = window.cx.debug_bounds(page.none).unwrap();
+        let made = page.create(&mut window, 0);
+        assert!(
+            !window.shows(page.none),
+            "{}: the list states that it has no row under the result of its first row",
+            page.nav
+        );
+        assert_eq!(window.cx.debug_bounds(page.none_space), Some(none));
+        assert!(!window.shows(sel(page.row, &made)));
+
+        click_in_page(&mut window, page.done);
+        window.until("the new row is in the list", |window| {
+            !window.shows(page.result) && window.shows(sel(page.row, &made))
+        });
+        assert!(!window.shows(page.none_space));
+    }
+}
+
+/// The answer arrives first, the person puts the code or the secret away, and the state of
+/// the server brings the new row only afterwards: the row waits for the next release of the
+/// space of the form, and the row under the form keeps its place (ADR 0730).
+#[gpui::test]
+fn a_new_row_that_the_state_brings_after_its_result_is_put_away_moves_no_row_under_it(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner) = owner_window_at(cx, &server, &proxy.address());
+    window.open_administration();
+    for page in [INVITES, TOKENS] {
+        let older = page.make(&world, &owner);
+        let under = sel(page.revoke, &older);
+        page.open(&mut window);
+        window.until("the older row is drawn", |window| window.shows(under));
+        page.open_form(&mut window);
+        let listed = page.rows(&mut window).unwrap().len();
+        proxy.hold_events();
+        click_in_page(&mut window, page.create);
+        window.until("the result is shown and the form is closed", |window| {
+            idle(window) && window.shows(page.result) && !window.shows(page.form)
+        });
+        let made = page.made(&mut window).unwrap();
+        assert_eq!(page.rows(&mut window).unwrap().len(), listed);
+
+        click_in_page(&mut window, page.done);
+        window.until("the result is put away", |window| {
+            !window.shows(page.result)
+        });
+        let before = window.cx.debug_bounds(under).unwrap();
+        proxy.release();
+        window.until("the state has the new row", |window| {
+            page.rows(window).unwrap_or_default().contains(&made)
+        });
+        // The wait read the state of the client core: a frame is drawn with that state
+        // before the window is measured (ADR 0730).
+        window.settle();
+        assert_eq!(
+            window.cx.debug_bounds(under).unwrap(),
+            before,
+            "{}: the new row that the state brought moved the row under the form",
+            page.nav
+        );
+        assert!(!window.shows(sel(page.row, &made)));
+
+        // The person opens the form: the row joins the list.
+        page.open_form(&mut window);
+        assert!(window.shows(sel(page.row, &made)));
+        click_in_page(&mut window, page.cancel);
+    }
+}
+
+/// Every release of the space of the form other than the Done button puts the new row into
+/// the list: the form opened again, a change of the page, and the layer closed and opened
+/// again (ADR 0730).
+#[gpui::test]
+fn the_new_row_joins_the_list_at_every_release_of_the_space_of_its_form(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let (_directory, mut window, _owner) = owner_window(cx, &server);
+    window.open_administration();
+    for page in [INVITES, TOKENS] {
+        page.open(&mut window);
+        for release in ["the form opened again", "a page change", "the layer closed"] {
+            page.open_form(&mut window);
+            let listed = page.rows(&mut window).unwrap().len();
+            let made = page.create(&mut window, listed);
+            assert!(!window.shows(sel(page.row, &made)));
+            match release {
+                "the form opened again" => {
+                    page.open_form(&mut window);
+                    window.settle();
+                    assert!(window.shows(page.form));
+                    click_in_page(&mut window, page.cancel);
+                }
+                "a page change" => {
+                    open_page(&mut window, "admin-nav-people", |window| {
+                        server_page!(window, People).is_some()
+                    });
+                    page.open(&mut window);
+                }
+                _ => {
+                    window.click("admin-close");
+                    window.until("the layer is closed", |window| !window.shows("admin"));
+                    window.open_administration();
+                    page.open(&mut window);
+                }
+            }
+            window.until(&format!("after {release} the new row is drawn"), |window| {
+                window.shows(sel(page.row, &made))
+            });
+        }
+    }
+}
+
+/// While the request of the form is on its way, the form stays: Cancel, the action of a row
+/// under it and the page that is shown in the list of pages do nothing. The answer then
+/// shows its result in the place of the form, and the row under the form keeps its place
+/// (ADR 0730).
+#[gpui::test]
+fn the_form_of_a_new_row_stays_while_its_request_is_sent(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner) = owner_window_at(cx, &server, &proxy.address());
+    window.open_administration();
+    for page in [INVITES, TOKENS] {
+        let older = page.make(&world, &owner);
+        let under = sel(page.revoke, &older);
+        page.open(&mut window);
+        window.until("the older row is drawn", |window| window.shows(under));
+        page.open_form(&mut window);
+        let listed = page.rows(&mut window).unwrap().len();
+        proxy.hold_answer_ending("POST", page.request);
+        click_in_page(&mut window, page.create);
+        window.until("the answer waits", |_| proxy.answers_waiting() == 1);
+        let before = window.cx.debug_bounds(under).unwrap();
+
+        for (selector, what) in [
+            (page.cancel, "Cancel"),
+            (under, "the action of the row under the form"),
+            (page.nav, "the page that is shown"),
+        ] {
+            window.click(selector);
+            window.settle();
+            assert!(
+                window.shows(page.form),
+                "{}: {what} put the form away while its request was sent",
+                page.nav
+            );
+        }
+        proxy.release();
+        window.until(
+            "the result is shown and the state has the new row",
+            |window| {
+                idle(window)
+                    && window.shows(page.result)
+                    && page
+                        .rows(window)
+                        .is_some_and(|rows| rows.len() == listed + 1)
+            },
+        );
+        window.settle();
+        assert_eq!(window.cx.debug_bounds(under).unwrap(), before);
+        click_in_page(&mut window, page.done);
+        window.until("the result is put away", |window| {
+            !window.shows(page.result)
+        });
+    }
+}
+
+/// The person makes a second row while the first one waits for the state: the first row
+/// stays out of the list while the second request is sent and after its answer, and both
+/// join the list at the next release at which the state holds them (ADR 0730).
+#[gpui::test]
+fn a_second_new_row_keeps_the_first_one_out_of_the_list_until_a_release(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner) = owner_window_at(cx, &server, &proxy.address());
+    window.open_administration();
+    for page in [INVITES, TOKENS] {
+        let older = page.make(&world, &owner);
+        let under = sel(page.revoke, &older);
+        page.open(&mut window);
+        window.until("the older row is drawn", |window| window.shows(under));
+        page.open_form(&mut window);
+        proxy.hold_events();
+        click_in_page(&mut window, page.create);
+        window.until("the first result is shown", |window| {
+            idle(window) && window.shows(page.result) && !window.shows(page.form)
+        });
+        let first = page.made(&mut window).unwrap();
+
+        // The person opens the form again, a release while the state does not hold the
+        // first row, and sends it.
+        page.open_form(&mut window);
+        let before = window.cx.debug_bounds(under).unwrap();
+        click_in_page(&mut window, page.create);
+        window.until("the second result is shown", |window| {
+            idle(window)
+                && !window.shows(page.form)
+                && page.made(window).is_some_and(|made| made != first)
+        });
+        let second = page.made(&mut window).unwrap();
+        proxy.release();
+        window.until("the state has both new rows", |window| {
+            page.rows(window)
+                .is_some_and(|rows| rows.contains(&first) && rows.contains(&second))
+        });
+        window.settle();
+        assert_eq!(
+            window.cx.debug_bounds(under).unwrap(),
+            before,
+            "{}: the first new row moved the row under the form",
+            page.nav
+        );
+        assert!(!window.shows(sel(page.row, &first)));
+        assert!(!window.shows(sel(page.row, &second)));
+
+        click_in_page(&mut window, page.done);
+        window.until("both new rows are in the list", |window| {
+            window.shows(sel(page.row, &first)) && window.shows(sel(page.row, &second))
+        });
+    }
+}
+
+/// An administrator loses the permission while the request of a new access token is sent:
+/// the form goes, the answer still settles the new row, and the person's next release
+/// draws it (ADR 0730).
+#[gpui::test]
+fn a_token_form_that_a_lost_permission_puts_away_holds_its_row_until_a_release(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    let own = window.view().person.account_id.unwrap();
+    let api = admin.handle.api();
+    let role = CreateServerRole {
+        name: "Administrators".to_owned(),
+        permissions: vec![ServerPermission::Administrator],
+    };
+    let role = world.run(api.create_server_role(&role)).unwrap();
+    world.run(api.assign_server_role(own, role.id)).unwrap();
+    window.open_administration();
+    TOKENS.open(&mut window);
+    window.until("the account may create a token", |window| {
+        server_page!(window, Tokens).is_some_and(|page| page.may_create)
+    });
+    TOKENS.open_form(&mut window);
+    proxy.hold_answer_ending("POST", TOKENS.request);
+    click_in_page(&mut window, TOKENS.create);
+    window.until("the answer waits", |_| proxy.answers_waiting() == 1);
+
+    world.run(api.unassign_server_role(own, role.id)).unwrap();
+    window.until("the form is put away", |window| {
+        !window.shows(TOKENS.form)
+            && server_page!(window, Tokens).is_some_and(|page| !page.may_create)
+    });
+    proxy.release();
+    window.until("the secret is shown", |window| {
+        idle(window) && window.shows(TOKENS.result)
+    });
+    let made = TOKENS.made(&mut window).unwrap();
+    window.until("the state has the new token", |window| {
+        TOKENS.rows(window).unwrap_or_default().contains(&made)
+    });
+    window.settle();
+    assert!(!window.shows(sel(TOKENS.row, &made)));
+
+    click_in_page(&mut window, TOKENS.done);
+    window.until("the new token is in the list", |window| {
+        window.shows(sel(TOKENS.row, &made))
+    });
+}
+
+/// The person puts the result of the first row away while the request of a second row is
+/// sent, and the state holds the first row then: the first row joins the list at that
+/// press, and the answer of the second request moves no row under the form (ADR 0730).
+#[gpui::test]
+fn the_first_row_joins_the_list_at_its_done_while_a_second_request_is_sent(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner) = owner_window_at(cx, &server, &proxy.address());
+    window.open_administration();
+    for page in [INVITES, TOKENS] {
+        let older = page.make(&world, &owner);
+        let under = sel(page.revoke, &older);
+        page.open(&mut window);
+        window.until("the older row is drawn", |window| window.shows(under));
+        page.open_form(&mut window);
+        proxy.hold_events();
+        click_in_page(&mut window, page.create);
+        window.until("the first result is shown", |window| {
+            idle(window) && window.shows(page.result) && !window.shows(page.form)
+        });
+        let first = page.made(&mut window).unwrap();
+
+        // The second request waits at the proxy; the state brings the first row.
+        page.open_form(&mut window);
+        proxy.hold_answer_ending("POST", page.request);
+        click_in_page(&mut window, page.create);
+        window.until("the second answer waits", |_| proxy.answers_waiting() == 1);
+        proxy.release_events();
+        window.until("the state has the first row", |window| {
+            page.rows(window).unwrap_or_default().contains(&first)
+        });
+        window.settle();
+        assert!(!window.shows(sel(page.row, &first)));
+
+        // Done of the first result: the first row joins the list at this press.
+        click_in_page(&mut window, page.done);
+        window.until("the first row is in the list", |window| {
+            window.shows(sel(page.row, &first))
+        });
+        let before = window.cx.debug_bounds(under).unwrap();
+        proxy.release();
+        window.until(
+            "the second result is shown and the state has the second row",
+            |window| {
+                idle(window)
+                    && window.shows(page.result)
+                    && page.made(window).is_some_and(|made| {
+                        made != first && page.rows(window).unwrap_or_default().contains(&made)
+                    })
+            },
+        );
+        window.settle();
+        let second = page.made(&mut window).unwrap();
+        assert_eq!(
+            window.cx.debug_bounds(under).unwrap(),
+            before,
+            "{}: the answer of the second request moved the row under the form",
+            page.nav
+        );
+        assert!(!window.shows(sel(page.row, &second)));
+        click_in_page(&mut window, page.done);
+        window.until("the second row is in the list", |window| {
+            window.shows(sel(page.row, &second))
+        });
+    }
+}
+
+/// The person opens the form while the list is read and makes a row: the read list holds
+/// the new row, which waits for a release after it was made (ADR 0730).
+#[gpui::test]
+fn a_form_opened_before_the_list_is_read_holds_its_new_row_until_a_release(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, _owner) = owner_window_at(cx, &server, &proxy.address());
+    window.open_administration();
+    for page in [INVITES, TOKENS] {
+        proxy.hold_request("GET", page.request);
+        open_page(&mut window, page.nav, |window| window.shows(page.new));
+        window.settle();
+        assert!(
+            page.rows(&mut window).is_none(),
+            "{}: the list was read",
+            page.nav
+        );
+        page.open_form(&mut window);
+        click_in_page(&mut window, page.create);
+        window.until("the result is shown", |window| {
+            idle(window) && window.shows(page.result) && !window.shows(page.form)
+        });
+        let made = page.made(&mut window).unwrap();
+        proxy.release();
+        window.until("the list is read with the new row", |window| {
+            page.rows(window).unwrap_or_default().contains(&made)
+        });
+        window.settle();
+        assert!(
+            !window.shows(sel(page.row, &made)),
+            "{}: the new row was drawn before a release after it was made",
+            page.nav
+        );
+        click_in_page(&mut window, page.done);
+        window.until("the new row is in the list", |window| {
+            window.shows(sel(page.row, &made))
+        });
+    }
+}

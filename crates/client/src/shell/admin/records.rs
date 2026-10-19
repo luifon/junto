@@ -231,7 +231,7 @@ impl Shell {
         ui.removing = None;
         ui.remove_sent = false;
         ui.space.release();
-        ui.new_token.release();
+        ui.new_token.reset();
         ui.audit_asked = None;
         ui.audit_menu = None;
         self.reset_token_form(window, cx);
@@ -317,25 +317,32 @@ impl Shell {
     /// The form that was sent goes when the server created the token. A refusal keeps it,
     /// with the reason.
     fn settle_token_form(&mut self, view: &AdminView, window: &mut Window, cx: &mut Context<Self>) {
+        // The new token follows its request, also when its form went while it was sent: a
+        // person who is no administrator any more gets no form.
+        if self.admin.records.new_token.waits() {
+            match view.asked(AskKind::CreateToken) {
+                Some(AskState::Sending) => {}
+                Some(AskState::Refused(_)) => self.admin.records.new_token.answer(None),
+                None => {
+                    let made = match &view.scope {
+                        Scope::Server {
+                            page: ServerPage::Tokens(page),
+                            ..
+                        } => page.made.as_ref().map(|made| made.access_token_id),
+                        _ => None,
+                    };
+                    self.admin.records.new_token.answer(made);
+                }
+            }
+        }
         if !self.admin.records.token_sent {
             return;
         }
         match view.asked(AskKind::CreateToken) {
             Some(AskState::Sending) => {}
-            Some(AskState::Refused(_)) => {
-                self.admin.records.token_sent = false;
-                self.admin.records.new_token.answer(None);
-            }
+            Some(AskState::Refused(_)) => self.admin.records.token_sent = false,
             None => {
                 self.admin.records.token_sent = false;
-                let made = match &view.scope {
-                    Scope::Server {
-                        page: ServerPage::Tokens(page),
-                        ..
-                    } => page.made.as_ref().map(|made| made.access_token_id),
-                    _ => None,
-                };
-                self.admin.records.new_token.answer(made);
                 // The answer arrives while the person can be pointing at a control under
                 // the form: its row keeps the height of the form.
                 self.put_away_token_form();
@@ -572,6 +579,7 @@ impl Shell {
                         Button::new("token-cancel")
                             .label(text::CANCEL)
                             .selector("token-cancel")
+                            .disabled(view.sending(AskKind::CreateToken))
                             .h(u(30.0))
                             .px(u(10.0))
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -616,7 +624,12 @@ impl Shell {
             ("token-revoke", token_id.as_uuid().as_u128() as u64),
             txt::REVOKE,
             format!("token-revoke-{token_id}"),
-            view.sending(what).then_some(text::admin::SENDING),
+            if view.sending(what) {
+                Some(text::admin::SENDING)
+            } else {
+                view.sending(AskKind::CreateToken)
+                    .then_some(txt::TOKEN_BEING_MADE)
+            },
             cx.listener(move |this, _, _, cx| {
                 this.state.update(cx, |state, cx| {
                     state.revoke_access_token(server_id, token_id, cx);
@@ -703,14 +716,17 @@ impl Shell {
                 column =
                     column.child(self.render_reading(server_id, part, Some(*failure), &theme, cx));
             }
-            Listed::Loaded(rows) => {
-                let held = &self.admin.records.new_token;
-                let rows: Vec<&TokenLine> = rows.iter().filter(|row| held.shows(row.id)).collect();
-                if rows.is_empty() {
+            Listed::Loaded(listed) => {
+                let rows = self.admin.records.new_token.drawn(listed, |row| row.id);
+                let none = sentence(txt::no_tokens(page.may_create), &theme).py(u(6.0));
+                if listed.is_empty() {
+                    column = column.child(none.debug_selector(|| "no-tokens".to_owned()));
+                } else if rows.is_empty() {
+                    // The list holds only the new token, which waits for the release of the
+                    // space of its form: the place of the sentence stays, without it.
                     column = column.child(
-                        sentence(txt::no_tokens(page.may_create), &theme)
-                            .py(u(6.0))
-                            .debug_selector(|| "no-tokens".to_owned()),
+                        none.invisible()
+                            .debug_selector(|| "no-tokens-space".to_owned()),
                     );
                 }
                 for row in &rows {
