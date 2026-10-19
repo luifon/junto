@@ -88,8 +88,13 @@ pub struct NewRow<R> {
     /// the list was not read. A row that is not one of them can be its new row.
     sent: Option<Option<Vec<R>>>,
     /// The rows that answers made and that the list does not draw yet.
-    made: Vec<R>,
-    /// The person released the space since the list was drawn last.
+    made: Vec<Made<R>>,
+}
+
+struct Made<R> {
+    row: R,
+    /// The person released the space after the row was made and since the list was drawn
+    /// last.
     released: bool,
 }
 
@@ -98,7 +103,6 @@ impl<R> Default for NewRow<R> {
         Self {
             sent: None,
             made: Vec::new(),
-            released: false,
         }
     }
 }
@@ -119,16 +123,21 @@ impl<R: Copy + PartialEq> NewRow<R> {
     pub fn answer(&mut self, made: Option<R>) {
         self.sent = None;
         if let Some(row) = made
-            && !self.made.contains(&row)
+            && !self.made.iter().any(|held| held.row == row)
         {
-            self.made.push(row);
+            self.made.push(Made {
+                row,
+                released: false,
+            });
         }
     }
 
-    /// The person opened or put away a form, a question or the result of a form: each made
-    /// row joins the list at its next drawing when the state holds it then.
+    /// The person opened or put away a form, a question or the result of a form: each row
+    /// made before joins the list at its next drawing when the state holds it then.
     pub fn release(&mut self) {
-        self.released = true;
+        for held in &mut self.made {
+            held.released = true;
+        }
     }
 
     /// The page changed or the layer closed. The list is read again when its page opens,
@@ -140,16 +149,27 @@ impl<R: Copy + PartialEq> NewRow<R> {
     /// The rows that the list draws, of the rows `rows` of the state, in their order. `id`
     /// names a row.
     pub fn drawn<'a, T>(&mut self, rows: &'a [T], id: impl Fn(&T) -> R) -> Vec<&'a T> {
-        if self.released {
-            self.released = false;
-            self.made
-                .retain(|made| !rows.iter().any(|row| id(row) == *made));
+        let mut joined = Vec::new();
+        self.made.retain_mut(|held| {
+            if !held.released {
+                return true;
+            }
+            held.released = false;
+            if rows.iter().any(|row| id(row) == held.row) {
+                joined.push(held.row);
+                return false;
+            }
+            true
+        });
+        // A row that joins the list stays drawn while a further request is sent.
+        if let Some(Some(listed)) = &mut self.sent {
+            listed.extend(joined);
         }
         rows.iter().filter(|&row| self.shows(id(row))).collect()
     }
 
     fn shows(&self, row: R) -> bool {
-        if self.made.contains(&row) {
+        if self.made.iter().any(|held| held.row == row) {
             return false;
         }
         match &self.sent {
@@ -258,6 +278,32 @@ mod tests {
         assert_eq!(drawn(&mut held, &[3, 2, 1]), [2, 1]);
         held.release();
         assert_eq!(drawn(&mut held, &[3, 2, 1]), [3, 2, 1]);
+    }
+
+    #[test]
+    fn a_release_before_a_row_is_made_does_not_draw_it() {
+        let mut held = NewRow::default();
+        held.release();
+        held.send(None);
+        held.answer(Some(2));
+        assert_eq!(drawn(&mut held, &[2, 1]), [1]);
+        held.release();
+        assert_eq!(drawn(&mut held, &[2, 1]), [2, 1]);
+    }
+
+    #[test]
+    fn a_row_that_joins_the_list_while_a_further_request_is_sent_stays_drawn() {
+        let mut held = NewRow::default();
+        held.send(Some(vec![1]));
+        held.answer(Some(2));
+        held.release();
+        assert_eq!(drawn(&mut held, &[1]), [1]);
+        held.send(Some(vec![1]));
+        assert_eq!(drawn(&mut held, &[2, 1]), [1]);
+        held.release();
+        assert_eq!(drawn(&mut held, &[2, 1]), [2, 1]);
+        held.answer(Some(3));
+        assert_eq!(drawn(&mut held, &[3, 2, 1]), [2, 1]);
     }
 
     #[test]

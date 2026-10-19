@@ -482,6 +482,9 @@ struct ProxyState {
     held: Vec<String>,
     /// A request whose path ends with one of these texts waits too.
     held_ending: Vec<String>,
+    /// A request with this method whose path without its query ends with this text waits
+    /// too.
+    held_requests: Vec<(String, String)>,
     /// The answer to a request with this method whose path ends with this text waits at
     /// the proxy, after the server gave it.
     held_answers: Vec<(String, String)>,
@@ -575,6 +578,17 @@ impl FaultProxy {
         self.state.lock().unwrap().held_ending.push(end.to_owned());
     }
 
+    /// As [`FaultProxy::hold_ending`], only for the requests with `method`, and with the
+    /// path compared without its query.
+    #[allow(dead_code)]
+    pub fn hold_request(&self, method: &str, end: &str) {
+        self.state
+            .lock()
+            .unwrap()
+            .held_requests
+            .push((method.to_owned(), end.to_owned()));
+    }
+
     /// From now on the answer to a request with `method` whose path ends with `end` waits
     /// at the proxy until [`FaultProxy::release`]. The server has handled the request by
     /// then. A test of the window uses it to act between a change on the server and its
@@ -602,6 +616,14 @@ impl FaultProxy {
         self.state.lock().unwrap().events_held = true;
     }
 
+    /// Passes on the events that wait and holds no further one. Requests and answers that
+    /// wait keep waiting.
+    #[allow(dead_code)]
+    pub fn release_events(&self) {
+        self.state.lock().unwrap().events_held = false;
+        self.released.send_modify(|releases| *releases += 1);
+    }
+
     /// Passes on every request, every answer and the events that wait, and holds no further
     /// one.
     pub fn release(&self) {
@@ -609,6 +631,7 @@ impl FaultProxy {
             let mut state = self.state.lock().unwrap();
             state.held.clear();
             state.held_ending.clear();
+            state.held_requests.clear();
             state.held_answers.clear();
             state.events_held = false;
         }
@@ -783,8 +806,14 @@ async fn serve(
         state.lock().unwrap().seen[index].answer = Some((status, body.to_vec()));
     };
     released.borrow_and_update();
+    let bare = path.split('?').next().unwrap_or_default();
     let held = |state: &ProxyState| {
-        state.held.contains(&path) || state.held_ending.iter().any(|end| path.ends_with(end))
+        state.held.contains(&path)
+            || state.held_ending.iter().any(|end| path.ends_with(end))
+            || state
+                .held_requests
+                .iter()
+                .any(|(of, end)| *of == method && bare.ends_with(end.as_str()))
     };
     while held(&state.lock().unwrap()) {
         if released.changed().await.is_err() {
