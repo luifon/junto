@@ -222,6 +222,7 @@ async fn one_write_of_owner_code(
         .env("JUNTO_LISTEN_ADDRESS", "127.0.0.1:0")
         .env("JUNTO_ATTACHMENTS_DIR", &scratch.0)
         .env("JUNTO_EXPORTS_DIR", &scratch.0)
+        .env("JUNTO_STOP_WITH_PROCESS", std::process::id().to_string())
         .stdin(std::process::Stdio::null())
         .stdout(std::os::fd::OwnedFd::from(output))
         .stderr(std::fs::File::create(&log).unwrap());
