@@ -317,25 +317,32 @@ impl Shell {
     /// The form that was sent goes when the server created the token. A refusal keeps it,
     /// with the reason.
     fn settle_token_form(&mut self, view: &AdminView, window: &mut Window, cx: &mut Context<Self>) {
+        // The new token follows its request, also when its form went while it was sent: a
+        // person who is no administrator any more gets no form.
+        if self.admin.records.new_token.waits() {
+            match view.asked(AskKind::CreateToken) {
+                Some(AskState::Sending) => {}
+                Some(AskState::Refused(_)) => self.admin.records.new_token.answer(None),
+                None => {
+                    let made = match &view.scope {
+                        Scope::Server {
+                            page: ServerPage::Tokens(page),
+                            ..
+                        } => page.made.as_ref().map(|made| made.access_token_id),
+                        _ => None,
+                    };
+                    self.admin.records.new_token.answer(made);
+                }
+            }
+        }
         if !self.admin.records.token_sent {
             return;
         }
         match view.asked(AskKind::CreateToken) {
             Some(AskState::Sending) => {}
-            Some(AskState::Refused(_)) => {
-                self.admin.records.token_sent = false;
-                self.admin.records.new_token.answer(None);
-            }
+            Some(AskState::Refused(_)) => self.admin.records.token_sent = false,
             None => {
                 self.admin.records.token_sent = false;
-                let made = match &view.scope {
-                    Scope::Server {
-                        page: ServerPage::Tokens(page),
-                        ..
-                    } => page.made.as_ref().map(|made| made.access_token_id),
-                    _ => None,
-                };
-                self.admin.records.new_token.answer(made);
                 // The answer arrives while the person can be pointing at a control under
                 // the form: its row keeps the height of the form.
                 self.put_away_token_form();

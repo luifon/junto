@@ -372,20 +372,12 @@ impl Shell {
     /// The question or the form that was sent goes when the server did the request. A
     /// refusal keeps it, with the reason.
     fn settle_people(&mut self, view: &AdminView, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(what) = self.admin.people.sent else {
-            return;
-        };
-        match view.asked(what) {
-            Some(AskState::Sending) => {}
-            Some(AskState::Refused(_)) => {
-                self.admin.people.sent = None;
-                if what == AskKind::CreateInvite {
-                    self.admin.people.new_invite.answer(None);
-                }
-            }
-            None => {
-                self.admin.people.sent = None;
-                if what == AskKind::CreateInvite {
+        // The new invite follows its request, also when its form went while it was sent.
+        if self.admin.people.new_invite.waits() {
+            match view.asked(AskKind::CreateInvite) {
+                Some(AskState::Sending) => {}
+                Some(AskState::Refused(_)) => self.admin.people.new_invite.answer(None),
+                None => {
                     let made = match &view.scope {
                         Scope::Server {
                             page: ServerPage::Invites(page),
@@ -395,6 +387,16 @@ impl Shell {
                     };
                     self.admin.people.new_invite.answer(made);
                 }
+            }
+        }
+        let Some(what) = self.admin.people.sent else {
+            return;
+        };
+        match view.asked(what) {
+            Some(AskState::Sending) => {}
+            Some(AskState::Refused(_)) => self.admin.people.sent = None,
+            None => {
+                self.admin.people.sent = None;
                 // The answer arrives while the person can be pointing at a control under
                 // the row: the row keeps the height of its question or form.
                 if let Some(open) = self.admin.people.open.take() {

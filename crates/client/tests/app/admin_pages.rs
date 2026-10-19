@@ -2072,6 +2072,9 @@ fn a_new_row_that_the_state_brings_after_its_result_is_put_away_moves_no_row_und
         window.until("the state has the new row", |window| {
             page.rows(window).unwrap_or_default().contains(&made)
         });
+        // The wait read the state of the client core: a frame is drawn with that state
+        // before the window is measured (ADR 0730).
+        window.settle();
         assert_eq!(
             window.cx.debug_bounds(under).unwrap(),
             before,
@@ -2177,10 +2180,119 @@ fn the_form_of_a_new_row_stays_while_its_request_is_sent(cx: &mut TestAppContext
                         .is_some_and(|rows| rows.len() == listed + 1)
             },
         );
+        window.settle();
         assert_eq!(window.cx.debug_bounds(under).unwrap(), before);
         click_in_page(&mut window, page.done);
         window.until("the result is put away", |window| {
             !window.shows(page.result)
         });
     }
+}
+
+/// The person makes a second row while the first one waits for the state: the first row
+/// stays out of the list while the second request is sent and after its answer, and both
+/// join the list at the next release at which the state holds them (ADR 0730).
+#[gpui::test]
+fn a_second_new_row_keeps_the_first_one_out_of_the_list_until_a_release(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let (_directory, mut window, owner) = owner_window_at(cx, &server, &proxy.address());
+    window.open_administration();
+    for page in [INVITES, TOKENS] {
+        let older = page.make(&world, &owner);
+        let under = sel(page.revoke, &older);
+        page.open(&mut window);
+        window.until("the older row is drawn", |window| window.shows(under));
+        page.open_form(&mut window);
+        proxy.hold_events();
+        click_in_page(&mut window, page.create);
+        window.until("the first result is shown", |window| {
+            idle(window) && window.shows(page.result) && !window.shows(page.form)
+        });
+        let first = page.made(&mut window).unwrap();
+
+        // The person opens the form again, a release while the state does not hold the
+        // first row, and sends it.
+        page.open_form(&mut window);
+        let before = window.cx.debug_bounds(under).unwrap();
+        click_in_page(&mut window, page.create);
+        window.until("the second result is shown", |window| {
+            idle(window)
+                && !window.shows(page.form)
+                && page.made(window).is_some_and(|made| made != first)
+        });
+        let second = page.made(&mut window).unwrap();
+        proxy.release();
+        window.until("the state has both new rows", |window| {
+            page.rows(window)
+                .is_some_and(|rows| rows.contains(&first) && rows.contains(&second))
+        });
+        window.settle();
+        assert_eq!(
+            window.cx.debug_bounds(under).unwrap(),
+            before,
+            "{}: the first new row moved the row under the form",
+            page.nav
+        );
+        assert!(!window.shows(sel(page.row, &first)));
+        assert!(!window.shows(sel(page.row, &second)));
+
+        click_in_page(&mut window, page.done);
+        window.until("both new rows are in the list", |window| {
+            window.shows(sel(page.row, &first)) && window.shows(sel(page.row, &second))
+        });
+    }
+}
+
+/// An administrator loses the permission while the request of a new access token is sent:
+/// the form goes, the answer still settles the new row, and the person's next release
+/// draws it (ADR 0730).
+#[gpui::test]
+fn a_token_form_that_a_lost_permission_puts_away_holds_its_row_until_a_release(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let proxy = world.run(FaultProxy::start(&server));
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    let own = window.view().person.account_id.unwrap();
+    let api = admin.handle.api();
+    let role = CreateServerRole {
+        name: "Administrators".to_owned(),
+        permissions: vec![ServerPermission::Administrator],
+    };
+    let role = world.run(api.create_server_role(&role)).unwrap();
+    world.run(api.assign_server_role(own, role.id)).unwrap();
+    window.open_administration();
+    TOKENS.open(&mut window);
+    window.until("the account may create a token", |window| {
+        server_page!(window, Tokens).is_some_and(|page| page.may_create)
+    });
+    TOKENS.open_form(&mut window);
+    proxy.hold_answer_ending("POST", TOKENS.request);
+    click_in_page(&mut window, TOKENS.create);
+    window.until("the answer waits", |_| proxy.answers_waiting() == 1);
+
+    world.run(api.unassign_server_role(own, role.id)).unwrap();
+    window.until("the form is put away", |window| {
+        !window.shows(TOKENS.form)
+            && server_page!(window, Tokens).is_some_and(|page| !page.may_create)
+    });
+    proxy.release();
+    window.until("the secret is shown", |window| {
+        idle(window) && window.shows(TOKENS.result)
+    });
+    let made = TOKENS.made(&mut window).unwrap();
+    window.until("the state has the new token", |window| {
+        TOKENS.rows(window).unwrap_or_default().contains(&made)
+    });
+    window.settle();
+    assert!(!window.shows(sel(TOKENS.row, &made)));
+
+    click_in_page(&mut window, TOKENS.done);
+    window.until("the new token is in the list", |window| {
+        window.shows(sel(TOKENS.row, &made))
+    });
 }

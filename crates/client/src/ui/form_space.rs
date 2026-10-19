@@ -70,36 +70,35 @@ impl<M: Copy + PartialEq + 'static> FormSpace<M> {
     }
 }
 
-/// The row that the request of a form adds to the top of a list whose newest rows are first
-/// (ADR 0730). The state of the server can bring the row before or after the answer, and
+/// The rows that the requests of a form add to the top of a list whose newest rows are first
+/// (ADR 0730). The state of the server can bring such a row before or after the answer, and
 /// before or after the person releases the space of the form, at a time that the person does
-/// not choose, and a row at the top moves every row under it. The row is therefore not drawn
-/// in the list from the moment the request is sent until the list is drawn after a release
+/// not choose, and a row at the top moves every row under it. A row is therefore not drawn
+/// in the list from the moment its request is sent until the list is drawn after a release
 /// with the row in it: the result of the form, such as a new code, is drawn in the row of
-/// the form. A row that arrives after the release waits for the next release.
+/// the form. A row that arrives after the release waits for the next release, also while a
+/// further request of the form is sent.
 ///
 /// The owner releases it where it releases its [`FormSpace`], and resets it when the page
-/// changes and when the layer closes. While the request is sent, the page offers no release:
-/// a reset drops the answer of the request.
+/// changes and when the layer closes. While a request is sent, the page offers no release,
+/// and the owner gives it the answer even when the form was put away: a reset drops the
+/// answer of the request.
 pub struct NewRow<R> {
-    held: Held<R>,
-}
-
-enum Held<R> {
-    /// No row is held.
-    Nothing,
-    /// The request is sent. The rows of the list when the person sent it, or none when the
-    /// list was not read: a row that is not one of them can be the new row.
-    Sent(Option<Vec<R>>),
-    /// The answer made `row`. `released`: the person released the space since the list was
-    /// drawn last.
-    Made { row: R, released: bool },
+    /// While a request is sent: the rows of the list when the person sent it, or none when
+    /// the list was not read. A row that is not one of them can be its new row.
+    sent: Option<Option<Vec<R>>>,
+    /// The rows that answers made and that the list does not draw yet.
+    made: Vec<R>,
+    /// The person released the space since the list was drawn last.
+    released: bool,
 }
 
 impl<R> Default for NewRow<R> {
     fn default() -> Self {
         Self {
-            held: Held::Nothing,
+            sent: None,
+            made: Vec::new(),
+            released: false,
         }
     }
 }
@@ -108,54 +107,54 @@ impl<R: Copy + PartialEq> NewRow<R> {
     /// The person sent the form while the list had the rows `listed`, or none when the
     /// list was not read.
     pub fn send(&mut self, listed: Option<Vec<R>>) {
-        self.held = Held::Sent(listed);
+        self.sent = Some(listed);
+    }
+
+    /// Whether a request was sent and its answer was not given to [`NewRow::answer`].
+    pub fn waits(&self) -> bool {
+        self.sent.is_some()
     }
 
     /// The server did the request and made the row `made`, or refused it.
     pub fn answer(&mut self, made: Option<R>) {
-        self.held = match made {
-            Some(row) => Held::Made {
-                row,
-                released: false,
-            },
-            None => Held::Nothing,
-        };
+        self.sent = None;
+        if let Some(row) = made
+            && !self.made.contains(&row)
+        {
+            self.made.push(row);
+        }
     }
 
-    /// The person opened or put away a form, a question or the result of a form: the made
+    /// The person opened or put away a form, a question or the result of a form: each made
     /// row joins the list at its next drawing when the state holds it then.
     pub fn release(&mut self) {
-        if let Held::Made { released, .. } = &mut self.held {
-            *released = true;
-        }
+        self.released = true;
     }
 
     /// The page changed or the layer closed. The list is read again when its page opens,
     /// after the answer, and draws every row that it reads.
     pub fn reset(&mut self) {
-        self.held = Held::Nothing;
+        *self = Self::default();
     }
 
     /// The rows that the list draws, of the rows `rows` of the state, in their order. `id`
     /// names a row.
     pub fn drawn<'a, T>(&mut self, rows: &'a [T], id: impl Fn(&T) -> R) -> Vec<&'a T> {
-        if let Held::Made { row, released } = &mut self.held
-            && *released
-        {
-            if rows.iter().any(|held| id(held) == *row) {
-                self.held = Held::Nothing;
-            } else {
-                *released = false;
-            }
+        if self.released {
+            self.released = false;
+            self.made
+                .retain(|made| !rows.iter().any(|row| id(row) == *made));
         }
         rows.iter().filter(|&row| self.shows(id(row))).collect()
     }
 
     fn shows(&self, row: R) -> bool {
-        match &self.held {
-            Held::Nothing | Held::Sent(None) => true,
-            Held::Sent(Some(listed)) => listed.contains(&row),
-            Held::Made { row: made, .. } => *made != row,
+        if self.made.contains(&row) {
+            return false;
+        }
+        match &self.sent {
+            Some(Some(listed)) => listed.contains(&row),
+            Some(None) | None => true,
         }
     }
 }
@@ -227,6 +226,38 @@ mod tests {
         held.answer(Some(2));
         held.reset();
         assert_eq!(drawn(&mut held, &[2, 1]), [2, 1]);
+    }
+
+    #[test]
+    fn a_second_request_keeps_the_first_row_until_a_release_at_which_the_state_holds_it() {
+        let mut held = NewRow::default();
+        held.send(Some(vec![1]));
+        held.answer(Some(2));
+        held.release();
+        assert_eq!(drawn(&mut held, &[1]), [1]);
+        held.send(Some(vec![1]));
+        assert_eq!(drawn(&mut held, &[2, 1]), [1]);
+        held.answer(Some(3));
+        assert_eq!(drawn(&mut held, &[3, 2, 1]), [1]);
+        held.release();
+        assert_eq!(drawn(&mut held, &[2, 1]), [2, 1]);
+        assert_eq!(drawn(&mut held, &[3, 2, 1]), [2, 1]);
+        held.release();
+        assert_eq!(drawn(&mut held, &[3, 2, 1]), [3, 2, 1]);
+    }
+
+    #[test]
+    fn a_release_draws_the_rows_that_the_state_holds_and_keeps_the_others() {
+        let mut held = NewRow::default();
+        held.send(None);
+        held.answer(Some(2));
+        held.send(None);
+        held.answer(Some(3));
+        held.release();
+        assert_eq!(drawn(&mut held, &[2, 1]), [2, 1]);
+        assert_eq!(drawn(&mut held, &[3, 2, 1]), [2, 1]);
+        held.release();
+        assert_eq!(drawn(&mut held, &[3, 2, 1]), [3, 2, 1]);
     }
 
     #[test]
