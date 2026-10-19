@@ -12,9 +12,14 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ *
+ * Modified: this file differs from the published webrtc-sys 0.3.48. Its errors are thrown
+ * as livekit_ffi::Exception (livekit/exception.h), which owns its message.
  */
 
 #include "livekit/rtp_sender.h"
+// Modified: added.
+#include "livekit/exception.h"
 #include "livekit/jsep.h"
 
 #include <memory>
@@ -203,7 +208,8 @@ RtpParameters RtpSender::get_parameters() const {
 void RtpSender::set_parameters(RtpParameters params) const {
   auto error = sender_->SetParameters(to_native_rtp_parameters(params));
   if (!error.ok())
-    throw std::runtime_error(serialize_error(to_error(error)));
+    // Modified: an exception that owns its message (livekit/exception.h).
+    throw Exception(serialize_error(to_error(error)));
 }
 
 void RtpSender::set_video_encoder_backend(VideoEncoderBackend backend) const {

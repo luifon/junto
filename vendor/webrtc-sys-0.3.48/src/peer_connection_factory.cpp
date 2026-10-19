@@ -12,9 +12,14 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ *
+ * Modified: this file differs from the published webrtc-sys 0.3.48. Its errors are thrown
+ * as livekit_ffi::Exception (livekit/exception.h), which owns its message.
  */
 
 #include "livekit/peer_connection_factory.h"
+// Modified: added.
+#include "livekit/exception.h"
 
 #include <memory>
 #include <utility>
@@ -220,7 +225,8 @@ std::shared_ptr<PeerConnection> PeerConnectionFactory::create_peer_connection(
       rtc_runtime_, peer_factory_, std::move(observer));
 
   if (!pc->Initialize(to_native_rtc_configuration(config))) {
-    throw std::runtime_error(serialize_error(to_error(webrtc::RTCError(
+    // Modified: an exception that owns its message (livekit/exception.h).
+    throw Exception(serialize_error(to_error(webrtc::RTCError(
         webrtc::RTCErrorType::INTERNAL_ERROR, "failed to initialize pc"))));
   }
 

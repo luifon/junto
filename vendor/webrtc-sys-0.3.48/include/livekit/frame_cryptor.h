@@ -12,6 +12,9 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ *
+ * Modified: this file differs from the published webrtc-sys 0.3.48. Its errors are thrown
+ * as livekit_ffi::Exception (livekit/exception.h), which owns its message.
  */
 
 #pragma once
@@ -25,6 +28,8 @@
 #include "api/crypto/frame_crypto_transformer.h"
 #include "api/scoped_refptr.h"
 #include "livekit/peer_connection.h"
+// Modified: added.
+#include "livekit/exception.h"
 #include "livekit/peer_connection_factory.h"
 #include "livekit/rtp_receiver.h"
 #include "livekit/rtp_sender.h"
@@ -57,7 +62,8 @@ class KeyProvider {
     rust::Vec<uint8_t> vec;
     auto data = impl_->RatchetSharedKey(key_index);
     if (data.empty()) {
-      throw std::runtime_error("ratchet_shared_key failed");
+      // Modified: an exception that owns its message (livekit/exception.h).
+      throw Exception("ratchet_shared_key failed");
     }
 
     std::move(data.begin(), data.end(), std::back_inserter(vec));
@@ -68,7 +74,8 @@ class KeyProvider {
     rust::Vec<uint8_t> vec;
     auto data = impl_->ExportSharedKey(key_index);
     if (data.empty()) {
-      throw std::runtime_error("get_shared_key failed");
+      // Modified: an exception that owns its message (livekit/exception.h).
+      throw Exception("get_shared_key failed");
     }
 
     std::move(data.begin(), data.end(), std::back_inserter(vec));
@@ -92,7 +99,8 @@ class KeyProvider {
     auto data = impl_->RatchetKey(
         std::string(participant_id.data(), participant_id.size()), key_index);
     if (data.empty()) {
-      throw std::runtime_error("ratchet_key failed");
+      // Modified: an exception that owns its message (livekit/exception.h).
+      throw Exception("ratchet_key failed");
     }
 
     std::move(data.begin(), data.end(), std::back_inserter(vec));
@@ -105,7 +113,8 @@ class KeyProvider {
     auto data = impl_->ExportKey(
         std::string(participant_id.data(), participant_id.size()), key_index);
     if (data.empty()) {
-      throw std::runtime_error("get_key failed");
+      // Modified: an exception that owns its message (livekit/exception.h).
+      throw Exception("get_key failed");
     }
 
     std::move(data.begin(), data.end(), std::back_inserter(vec));

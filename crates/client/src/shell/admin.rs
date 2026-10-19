@@ -315,6 +315,11 @@ pub(crate) struct Form {
 impl Shell {
     /// Opens the administration at a page.
     pub fn open_admin(&mut self, open: AdminOpen, window: &mut Window, cx: &mut Context<Self>) {
+        // The page that is shown does not open again: its forms and the requests that they
+        // sent stay, and an answer finds its form (ADR 0730).
+        if matches!(self.layer, Layer::Admin) && self.state.read(cx).admin_open() == Some(open) {
+            return;
+        }
         self.reset_admin_ui(window, cx);
         self.state
             .update(cx, |state, cx| state.open_admin(open, cx));

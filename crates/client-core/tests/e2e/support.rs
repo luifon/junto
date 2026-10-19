@@ -28,7 +28,7 @@ use tokio::sync::watch;
 const DATABASE_URL: &str = "JUNTO_TEST_DATABASE_URL";
 const SERVER_BINARY: &str = "JUNTO_SERVER_BIN";
 
-fn admin_url() -> String {
+pub fn admin_url() -> String {
     std::env::var(DATABASE_URL).unwrap_or_else(|_| {
         panic!("{DATABASE_URL} is not set. Run the tests through tools/with-test-postgres.sh.")
     })
@@ -237,6 +237,9 @@ impl TestServer {
             )
             .env("JUNTO_LOG_FORMAT", "text")
             .env("JUNTO_LOG_LEVEL", "warn")
+            // The server stops when the process of the tests ends, also when that process is
+            // killed (ADR 0915).
+            .env("JUNTO_STOP_WITH_PROCESS", std::process::id().to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -264,6 +267,11 @@ impl TestServer {
 
     pub fn address(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
+    }
+
+    /// The number of the running process.
+    pub fn process_id(&self) -> Option<u32> {
+        self.child.as_ref().map(Child::id)
     }
 
     /// The owner code that the running process printed. A server with an owner prints none.
@@ -474,11 +482,16 @@ struct ProxyState {
     held: Vec<String>,
     /// A request whose path ends with one of these texts waits too.
     held_ending: Vec<String>,
+    /// A request with this method whose path without its query ends with this text waits
+    /// too.
+    held_requests: Vec<(String, String)>,
     /// The answer to a request with this method whose path ends with this text waits at
     /// the proxy, after the server gave it.
     held_answers: Vec<(String, String)>,
     /// How many answers wait at the proxy now.
     answers_waiting: usize,
+    /// What the server sends on the event stream waits at the proxy.
+    events_held: bool,
 }
 
 /// An HTTP proxy in front of one server. It passes every request on unless a fault is
@@ -565,6 +578,17 @@ impl FaultProxy {
         self.state.lock().unwrap().held_ending.push(end.to_owned());
     }
 
+    /// As [`FaultProxy::hold_ending`], only for the requests with `method`, and with the
+    /// path compared without its query.
+    #[allow(dead_code)]
+    pub fn hold_request(&self, method: &str, end: &str) {
+        self.state
+            .lock()
+            .unwrap()
+            .held_requests
+            .push((method.to_owned(), end.to_owned()));
+    }
+
     /// From now on the answer to a request with `method` whose path ends with `end` waits
     /// at the proxy until [`FaultProxy::release`]. The server has handled the request by
     /// then. A test of the window uses it to act between a change on the server and its
@@ -584,13 +608,32 @@ impl FaultProxy {
         self.state.lock().unwrap().answers_waiting
     }
 
-    /// Passes on every request and every answer that waits, and holds no further one.
+    /// From now on what the server sends on every connection of the event stream waits at
+    /// the proxy, in its order, until [`FaultProxy::release`]. A test of the window uses it
+    /// to bring a change of the state after the answer to the request that made it.
+    #[allow(dead_code)]
+    pub fn hold_events(&self) {
+        self.state.lock().unwrap().events_held = true;
+    }
+
+    /// Passes on the events that wait and holds no further one. Requests and answers that
+    /// wait keep waiting.
+    #[allow(dead_code)]
+    pub fn release_events(&self) {
+        self.state.lock().unwrap().events_held = false;
+        self.released.send_modify(|releases| *releases += 1);
+    }
+
+    /// Passes on every request, every answer and the events that wait, and holds no further
+    /// one.
     pub fn release(&self) {
         {
             let mut state = self.state.lock().unwrap();
             state.held.clear();
             state.held_ending.clear();
+            state.held_requests.clear();
             state.held_answers.clear();
+            state.events_held = false;
         }
         self.released.send_modify(|releases| *releases += 1);
     }
@@ -700,12 +743,35 @@ async fn serve(
             return Ok(());
         }
         // The upgraded connection is carried as bytes in both directions until one side
-        // ends it or the test cuts it.
+        // ends it or the test cuts it. What the server sends waits while the test holds
+        // the events.
         let mut upstream = TcpStream::connect(("127.0.0.1", upstream_port)).await?;
         upstream.write_all(&request).await?;
         cut.borrow_and_update();
+        released.borrow_and_update();
+        let (mut from_client, mut to_client) = client.split();
+        let (mut from_server, mut to_server) = upstream.split();
+        let up = async {
+            tokio::io::copy(&mut from_client, &mut to_server).await?;
+            to_server.shutdown().await
+        };
+        let down = async {
+            let mut buffer = vec![0u8; 16 * 1024];
+            loop {
+                let count = from_server.read(&mut buffer).await?;
+                if count == 0 {
+                    return to_client.shutdown().await;
+                }
+                while state.lock().unwrap().events_held {
+                    if released.changed().await.is_err() {
+                        return Ok(());
+                    }
+                }
+                to_client.write_all(&buffer[..count]).await?;
+            }
+        };
         tokio::select! {
-            carried = tokio::io::copy_bidirectional(&mut client, &mut upstream) => {
+            carried = async { tokio::try_join!(up, down) } => {
                 carried?;
             }
             _ = cut.changed() => {}
@@ -740,8 +806,14 @@ async fn serve(
         state.lock().unwrap().seen[index].answer = Some((status, body.to_vec()));
     };
     released.borrow_and_update();
+    let bare = path.split('?').next().unwrap_or_default();
     let held = |state: &ProxyState| {
-        state.held.contains(&path) || state.held_ending.iter().any(|end| path.ends_with(end))
+        state.held.contains(&path)
+            || state.held_ending.iter().any(|end| path.ends_with(end))
+            || state
+                .held_requests
+                .iter()
+                .any(|(of, end)| *of == method && bare.ends_with(end.as_str()))
     };
     while held(&state.lock().unwrap()) {
         if released.changed().await.is_err() {

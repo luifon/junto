@@ -11,6 +11,9 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Modified: this file differs from the published webrtc-sys 0.3.48. Its bridge includes
+// `livekit/exception.h`, whose catch turns every C++ exception into an error.
 
 use std::{
     error::Error,
@@ -37,6 +40,8 @@ pub mod ffi {
     }
 
     extern "C++" {
+        // Modified: added.
+        include!("livekit/exception.h");
         include!("livekit/rtc_error.h");
 
         type RtcError = crate::rtc_error::ffi::RtcError;

@@ -12,9 +12,14 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ *
+ * Modified: this file differs from the published webrtc-sys 0.3.48. Its errors are thrown
+ * as livekit_ffi::Exception (livekit/exception.h), which owns its message.
  */
 
 #include "livekit/jsep.h"
+// Modified: added.
+#include "livekit/exception.h"
 
 #include <iomanip>
 #include <memory>
@@ -67,7 +72,8 @@ std::shared_ptr<IceCandidate> create_ice_candidate(rust::String sdp_mid,
   auto ice_rtc = webrtc::CreateIceCandidate(sdp_mid.c_str(), sdp_mline_index,
                                             sdp.c_str(), &error);
   if (!ice_rtc) {
-    throw std::runtime_error(serialize_sdp_error(error));
+    // Modified: an exception that owns its message (livekit/exception.h).
+    throw Exception(serialize_sdp_error(error));
   }
 
   return std::make_shared<IceCandidate>(
@@ -104,7 +110,8 @@ std::unique_ptr<SessionDescription> create_session_description(
   auto rtc_sdp = webrtc::CreateSessionDescription(
       static_cast<webrtc::SdpType>(type), sdp.c_str(), &error);
   if (!rtc_sdp) {
-    throw std::runtime_error(serialize_sdp_error(error));
+    // Modified: an exception that owns its message (livekit/exception.h).
+    throw Exception(serialize_sdp_error(error));
   }
 
   return std::make_unique<SessionDescription>(std::move(rtc_sdp));

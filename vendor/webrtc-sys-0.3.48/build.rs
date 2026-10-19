@@ -14,7 +14,8 @@
 //
 // Modified: this file differs from the published webrtc-sys 0.3.48. On Linux it also builds
 // the system-root TLS verifier (`src/system_certificate_verifier.rs` and
-// `src/system_certificate_verifier.cpp`).
+// `src/system_certificate_verifier.cpp`). It builds the exception bridge of the crate
+// (`src/exception.rs` and `src/exception.cpp`).
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -60,6 +61,8 @@ fn main() {
         "src/apm.rs",
         "src/audio_mixer.rs",
         "src/packet_trailer.rs",
+        // Modified: added.
+        "src/exception.rs",
     ];
 
     if is_desktop {
@@ -73,6 +76,8 @@ fn main() {
     let mut builder = cxx_build::bridges(rust_files);
 
     builder.files(&[
+        // Modified: added.
+        "src/exception.cpp",
         "src/peer_connection.cpp",
         "src/peer_connection_factory.cpp",
         "src/audio_device_controller.cpp",
