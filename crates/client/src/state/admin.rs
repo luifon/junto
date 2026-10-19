@@ -30,6 +30,7 @@ pub use recordings::RecordingList;
 pub use records::{AuditFilter, AuditLog, AuditPeriod, AuditScope, ExportFiles};
 pub use roles::{RoleLevel, RolePermission, RoleRef};
 pub use view::AdminView;
+use view::Scope;
 
 use super::AppState;
 use crate::text;
@@ -364,6 +365,40 @@ impl AppState {
         cx.notify();
     }
 
+    /// The page that the layer shows becomes its selected page. A page that the person may
+    /// not use gives way to another one when the view is derived; the page that was asked for
+    /// would otherwise return when the permission arrives, and replace the page under the
+    /// pointer (ADR 0761).
+    fn keep_shown_admin_page(&mut self) {
+        let (Some(open), Some(view)) = (self.admin.open, self.admin_view()) else {
+            return;
+        };
+        let shown = match (open, &view.scope) {
+            (AdminOpen::Server { server_id, .. }, Scope::Server { selected, .. }) => {
+                AdminOpen::Server {
+                    server_id,
+                    page: *selected,
+                }
+            }
+            (
+                AdminOpen::Channel {
+                    server_id,
+                    workspace_id,
+                    channel_id,
+                    ..
+                },
+                Scope::Channel(settings),
+            ) => AdminOpen::Channel {
+                server_id,
+                workspace_id,
+                channel_id,
+                page: settings.selected,
+            },
+            _ => return,
+        };
+        self.admin.open = Some(shown);
+    }
+
     /// The collections of the client core that the window needs are held open: those of
     /// the open page, and for an archived channel that the main area shows the archived
     /// list of its workspace (ADR 0762) and the permissions of the account in the channel
@@ -376,6 +411,7 @@ impl AppState {
         // A save of an export does not outlive its server or its account.
         self.end_stale_export_saves();
         self.settle_role_changes();
+        self.keep_shown_admin_page();
         let mut wanted: Vec<(ServerId, AdminPart)> = Vec::new();
         let snapshots = self.snapshots();
         let model_of = |server_id: ServerId| {

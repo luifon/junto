@@ -1564,12 +1564,25 @@ fn the_audit_log_names_what_was_done_filters_by_group_and_loads_older_entries(
     }
 }
 
-/// Whether the messages of a channel are permanent and whether the person is the owner, as
-/// the open page "Archive and deletion" of the channel states them.
-fn archive_page_of(window: &mut Window, channel_id: ChannelId) -> Option<(bool, bool)> {
+/// What the open page "Archive and deletion" of a channel states.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ArchivePage {
+    /// The messages of the channel are permanent.
+    permanent: bool,
+    /// The person is the server owner.
+    is_owner: bool,
+    /// The person holds "manage channel" in the channel.
+    manages: bool,
+}
+
+fn archive_page_of(window: &mut Window, channel_id: ChannelId) -> Option<ArchivePage> {
     match window.admin()?.scope {
         Scope::Channel(settings) if settings.channel_id == channel_id => match settings.page {
-            ChannelPageView::Archive(page) => Some((page.permanent, page.is_owner)),
+            ChannelPageView::Archive(page) => Some(ArchivePage {
+                permanent: page.permanent,
+                is_owner: page.is_owner,
+                manages: settings.may_manage,
+            }),
             _ => None,
         },
         _ => None,
@@ -1601,10 +1614,17 @@ fn a_member_who_manages_channels_deletes_none_with_permanent_messages(cx: &mut T
         .run(admin.handle.api().update_channel(plans, &permanent))
         .unwrap();
 
-    // The member may delete a channel without permanent messages: the question opens.
+    // The member may delete a channel without permanent messages: the question opens. The
+    // role reaches the window through the event stream, at a time that the test does not
+    // know, and the action is disabled until then (ADR 0730).
     open_channel_settings(&mut window, "notes", notes);
     open_page(&mut window, "channel-nav-archive", |window| {
-        archive_page_of(window, notes) == Some((false, false))
+        let managed = ArchivePage {
+            permanent: false,
+            is_owner: false,
+            manages: true,
+        };
+        archive_page_of(window, notes) == Some(managed)
     });
     click_in_page(&mut window, "channel-delete");
     window.until("the question of the deletion", |window| {
@@ -1621,12 +1641,92 @@ fn a_member_who_manages_channels_deletes_none_with_permanent_messages(cx: &mut T
     // drawn, and a click opens no question.
     open_channel_settings(&mut window, "plans", plans);
     open_page(&mut window, "channel-nav-archive", |window| {
-        archive_page_of(window, plans) == Some((true, false))
+        let permanent = ArchivePage {
+            permanent: true,
+            is_owner: false,
+            manages: true,
+        };
+        archive_page_of(window, plans) == Some(permanent)
     });
     click_in_page(&mut window, "channel-delete");
     window.settle();
     assert!(!window.shows("channel-delete-confirm"));
     assert!(window.shows("channel-delete"));
+}
+
+/// The settings of a channel that a member opens without "manage channel" show the page
+/// "Archive and deletion", the only one. When the role arrives, the pages of the channel
+/// are offered, and the page that is shown stays (ADR 0761).
+#[gpui::test]
+fn a_role_that_arrives_keeps_the_shown_page_of_the_channel_settings(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let own = window.view().person.account_id.unwrap();
+    let default = default_workspace(&world, &admin.handle);
+    let notes = text_channel(&world, &admin.handle, default, "notes");
+
+    // The gear asks for the overview, which the member may not use.
+    open_channel_settings(&mut window, "notes", notes);
+    let unmanaged = ArchivePage {
+        permanent: false,
+        is_owner: false,
+        manages: false,
+    };
+    window.until("the page of the archive is shown", |window| {
+        archive_page_of(window, notes) == Some(unmanaged)
+    });
+
+    grant_workspace(
+        &world,
+        &admin.handle,
+        default,
+        own,
+        WorkspacePermission::ManageChannel,
+    );
+    window.until("the overview is offered", |window| {
+        window.shows("channel-nav-overview")
+    });
+    let managed = ArchivePage {
+        permanent: false,
+        is_owner: false,
+        manages: true,
+    };
+    assert_eq!(archive_page_of(&mut window, notes), Some(managed));
+}
+
+/// A page of the administration that the person may not use any more gives way to the page
+/// of the workspaces. When the permission returns, the page of the workspaces stays (ADR 0761).
+#[gpui::test]
+fn a_permission_that_returns_keeps_the_shown_page_of_the_administration(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    let own = window.view().person.account_id.unwrap();
+    let api = admin.handle.api();
+    let role = CreateServerRole {
+        name: "Helpers".to_owned(),
+        permissions: vec![ServerPermission::CreateInvites],
+    };
+    let role = world.run(api.create_server_role(&role)).unwrap().id;
+    world.run(api.assign_server_role(own, role)).unwrap();
+
+    window.open_administration();
+    open_page(&mut window, "admin-nav-invites", |window| {
+        server_page!(window, Invites).is_some()
+    });
+    world.run(api.unassign_server_role(own, role)).unwrap();
+    window.until("the page of the workspaces is shown", |window| {
+        server_page!(window, Workspaces).is_some() && !window.shows("admin-nav-invites")
+    });
+
+    world.run(api.assign_server_role(own, role)).unwrap();
+    window.until("the page of the invites is offered again", |window| {
+        window.shows("admin-nav-invites")
+    });
+    assert!(server_page!(window, Workspaces).is_some());
 }
 
 /// The answers to the questions before the ban and before the removal of an account close
