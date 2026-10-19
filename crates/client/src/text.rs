@@ -1450,6 +1450,8 @@ pub const NO_MENTION_FOUND: &str = "No member or role has this name.";
 pub const REMOVE_FILE: &str = "Remove this file";
 pub const REMOVE_FAILED_FILE: &str = "A file was not uploaded. Remove it, or attach it again.";
 pub const MEMBER: &str = "member";
+/// The other person of a direct conversation, in the mention picker.
+pub const IN_THIS_CONVERSATION: &str = "in this conversation";
 pub const ROLE: &str = "role";
 pub const DROP_FILES: &str = "Drop files to attach them";
 pub const PASTED_PICTURE: &str = "pasted-picture.png";

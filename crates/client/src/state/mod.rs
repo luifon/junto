@@ -1998,17 +1998,8 @@ impl AppState {
         self.follow_people(&view, cx);
         self.follow_followed(&view, cx);
         self.follow_moderation(&snapshots, cx);
-        let archived = shown.server.zip(
-            view.workspace()
-                .filter(|workspace| workspace.archived.is_some())
-                .and_then(|workspace| Some((workspace.id, workspace.channel.as_ref()?.id))),
-        );
-        self.follow_admin(
-            archived.map(|(server_id, (workspace_id, channel_id))| {
-                (server_id, workspace_id, channel_id)
-            }),
-            cx,
-        );
+        let readers = self.archived_readers(&view, &snapshots);
+        self.follow_admin(readers, cx);
         self.follow_account(cx);
         self.follow_places(shown, cx);
         self.follow_recordings(shown, cx);

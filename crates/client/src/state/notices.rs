@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use junto_client_core::api::SettingsScope;
-use junto_client_core::model::{Named, PlaceId, ServerModel};
+use junto_client_core::model::{AdminPart, CollectionState, Named, PlaceId, ServerModel};
 use junto_client_core::protocol::discovery::{
     DailyQuiet, NotificationKind, NotificationLevel, NotificationSettings,
 };
@@ -167,10 +167,11 @@ pub fn whereabouts(
     accounts: &HashMap<AccountId, String>,
 ) -> Whereabouts {
     match place {
-        MessagePlace::Channel { channel_id, .. } => match model.channel(*channel_id) {
+        // A channel of the lists, or an archived channel that the state knows (ADR 0762).
+        MessagePlace::Channel { channel_id, .. } => match model.readable_channel(*channel_id) {
             Some(channel) => Whereabouts::Channel {
-                name: channel.channel.name.clone(),
-                kind: channel.channel.kind,
+                name: channel.name.clone(),
+                kind: channel.kind,
             },
             None => Whereabouts::Unknown,
         },
@@ -196,6 +197,43 @@ pub fn whereabouts(
             }
         }
     }
+}
+
+/// The workspace whose archived list names a channel that is in no channel list: the
+/// channel can be an archived one (ADR 0762). Absent for a channel of the lists and for
+/// a direct conversation.
+pub fn archived_list_for(place: &MessagePlace, model: &ServerModel) -> Option<WorkspaceId> {
+    match place {
+        MessagePlace::Channel {
+            workspace_id,
+            channel_id,
+        } if model.channel(*channel_id).is_none() => Some(*workspace_id),
+        _ => None,
+    }
+}
+
+/// True while the archived list of a workspace has not answered: a place that it can
+/// name is not known yet.
+pub fn archived_list_pending(model: &ServerModel, workspace_id: WorkspaceId) -> bool {
+    matches!(
+        model.admin.state(AdminPart::Archived(workspace_id)),
+        CollectionState::NotLoaded | CollectionState::Loading
+    )
+}
+
+/// The workspaces whose archived lists the notices of a server need: those of the notices
+/// whose channel is in no channel list.
+pub fn archived_lists_of_notices(model: &ServerModel) -> Vec<WorkspaceId> {
+    let mut wanted = Vec::new();
+    for notice in &model.notices {
+        if let Some(Named::Read(message)) = model.named(notice.message_id)
+            && let Some(workspace_id) = archived_list_for(&message.place, model)
+            && !wanted.contains(&workspace_id)
+        {
+            wanted.push(workspace_id);
+        }
+    }
+    wanted
 }
 
 /// The text of a message on one line: its words, or the name of its first file.
@@ -225,7 +263,9 @@ fn author_of(message: &Message, accounts: &HashMap<AccountId, String>) -> String
 
 /// The notices of a server as the side panel lists them, the newest first. A notice whose
 /// message the server no longer has for the account is not listed, and a notice whose
-/// place the state does not hold is not listed either.
+/// place the state does not hold is not listed either. A notice of a channel that is in no
+/// channel list waits for the archived list of its workspace, and so do the notices after
+/// it: they are added at the end when the list answers, and no listed row moves.
 pub fn notices_panel(server_id: ServerId, model: &ServerModel, known: &Known) -> NoticesPanel {
     let accounts = account_names(server_id, model, known);
     let mut rows = Vec::with_capacity(model.notices.len());
@@ -235,6 +275,12 @@ pub fn notices_panel(server_id: ServerId, model: &ServerModel, known: &Known) ->
     for notice in &model.notices {
         let row = match model.named(notice.message_id) {
             Some(Named::Read(message)) => {
+                if archived_list_for(&message.place, model)
+                    .is_some_and(|workspace_id| archived_list_pending(model, workspace_id))
+                {
+                    reading = true;
+                    break;
+                }
                 let place = whereabouts(&message.place, model, &accounts);
                 if place == Whereabouts::Unknown {
                     continue;

@@ -23,6 +23,7 @@ State:
 - "Show more results" reads the page after the read ones. The window holds at most 1,000 results of one search, and of the text of one result its first 600 characters.
 - After the state of its server was replaced (ADR 0722), the first page of a search that the side panel shows is read again; a further page is read when the person asks. The side panel, the filters and a jump that is on its way stay as they are. A search that the side panel does not show sends no request then: its results are dropped.
 - A result whose place the state of the server does not hold is not listed. A person who loses a channel loses its results on screen without a request. A filter for a channel that left the state is taken away, and the search is read again.
+- A result names the workspace of its channel (ADR 0413). While the search is open, the window holds the archived list of each workspace whose results name a channel that is in no channel list (ADR 0762), and a result of an archived channel is listed with its place and leads to it. The results stop at the first one whose archived list has not answered, and the search is shown as searching: the later results follow at the end when the list answers, so no listed row moves (ADR 0730).
 - The search ends when another server is shown, and with its close control, which empties the field.
 
 Panel:

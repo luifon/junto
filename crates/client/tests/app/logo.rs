@@ -79,6 +79,11 @@ fn an_administrator_sets_and_removes_the_logo_and_the_window_of_a_member_follows
         window.shows("server-logo-0")
     });
     assert!(member.view().servers[0].logo.is_some());
+    // The head of the menu of the selected server shows it too.
+    member.click("server-menu-button");
+    assert!(member.shows("server-menu") && member.shows("selected-server-logo-0"));
+    member.press("escape");
+    assert!(!member.shows("server-menu"));
 
     // The removal asks first, and nothing is sent before the answer.
     click_in_page(&mut owner, "logo-remove");
@@ -103,6 +108,9 @@ fn an_administrator_sets_and_removes_the_logo_and_the_window_of_a_member_follows
         |window| !window.shows("server-logo-0"),
     );
     assert_eq!(member.view().servers[0].logo, None);
+    member.click("server-menu-button");
+    assert!(member.shows("server-menu") && !member.shows("selected-server-logo-0"));
+    member.press("escape");
     assert!(world.run(owner.handle().logo()).unwrap().is_none());
 }
 

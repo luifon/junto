@@ -350,18 +350,29 @@ impl ServerModel {
     /// known to lie in it leave. The lists are read again for the entries whose place the
     /// client does not know.
     pub(super) fn forget_named_of(&mut self, place: PlaceId) {
-        let inside: Vec<MessageId> = self
-            .named
+        let inside = self.named_inside(place);
+        self.threads.retain(|held| !inside.contains(&held.root_id));
+        self.notices
+            .retain(|held| !inside.contains(&held.message_id));
+        self.prune_named();
+    }
+
+    /// The unread threads of a place leave the list; its notices stay.
+    pub(super) fn forget_threads_of(&mut self, place: PlaceId) {
+        let inside = self.named_inside(place);
+        self.threads.retain(|held| !inside.contains(&held.root_id));
+        self.prune_named();
+    }
+
+    /// The named messages that are known to lie in a place.
+    fn named_inside(&self, place: PlaceId) -> Vec<MessageId> {
+        self.named
             .iter()
             .filter_map(|(message_id, named)| match named {
                 Named::Read(message) if PlaceId::of(&message.place) == place => Some(*message_id),
                 _ => None,
             })
-            .collect();
-        self.threads.retain(|held| !inside.contains(&held.root_id));
-        self.notices
-            .retain(|held| !inside.contains(&held.message_id));
-        self.prune_named();
+            .collect()
     }
 
     // Pins.

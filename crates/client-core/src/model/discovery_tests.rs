@@ -392,6 +392,48 @@ fn the_messages_that_the_lists_name_are_kept_while_a_list_names_them() {
 }
 
 #[test]
+fn an_archived_channel_keeps_its_notices_and_a_deleted_one_does_not() {
+    let scene = scene();
+    let mut model = scene.model();
+    let other = AccountId::generate();
+    let root = message(scene.text_place(), 2, other, "root");
+    let noticed = message(scene.text_place(), 7, other, "@you");
+    model.set_threads(UnreadThreads {
+        threads: vec![unread(root.id, 2, 9, 1)],
+        more: false,
+        next: None,
+    });
+    model.set_notices(NotificationPage {
+        notifications: vec![notice(noticed.id)],
+        has_more: false,
+    });
+    assert!(model.put_message(root.clone()));
+    assert!(model.put_message(noticed.clone()));
+
+    // No reader has the channel open: its unread thread leaves the list, and its notice
+    // stays with its message (ADR 0410).
+    let channel = model.channel(scene.general).unwrap().channel.clone();
+    model.apply(&Event::ChannelArchived {
+        channel: junto_protocol::structure::ArchivedChannel {
+            channel,
+            archived_at: time(),
+            deletes_at: None,
+        },
+    });
+    assert!(model.channel(scene.general).is_none());
+    assert!(model.threads.is_empty() && model.named(root.id).is_none());
+    assert_eq!(model.notices.len(), 1);
+    assert!(matches!(model.named(noticed.id), Some(Named::Read(_))));
+
+    // A deleted channel leaves no notice.
+    model.apply(&Event::ChannelDeleted {
+        workspace_id: scene.workspace_id,
+        channel_id: scene.general,
+    });
+    assert!(model.notices.is_empty() && model.named(noticed.id).is_none());
+}
+
+#[test]
 fn notices_are_replaced_by_their_first_page_and_continued_from_their_last_one() {
     let scene = scene();
     let mut model = scene.model();

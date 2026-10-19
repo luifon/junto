@@ -16668,6 +16668,17 @@
                 "type": "null"
               }
             ]
+          },
+          "workspace_id": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WorkspaceId",
+                "description": "The workspace of the channel of the result. Absent for a direct conversation."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },

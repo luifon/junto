@@ -60,6 +60,15 @@ fn the_structure_file_schema_describes_every_field_of_a_file() {
         "https://json-schema.org/draft/2020-12/schema"
     );
     assert_eq!(schema["$ref"], "#/components/schemas/StructureFile");
+    // The text names the format that the tool writes and the formats that it reads.
+    let format = junto_protocol::structure_file::STRUCTURE_FORMAT;
+    let oldest = junto_protocol::structure_file::OLDEST_STRUCTURE_FORMAT;
+    let description = schema["description"].as_str().unwrap();
+    assert!(
+        description.contains(&format!("writes it: format {format}."))
+            && description.contains(&format!("reads the formats {oldest} to {format}.")),
+        "{description}"
+    );
     let schemas = schema["components"]["schemas"].as_object().unwrap();
     for (start, _) in text.match_indices("#/components/schemas/") {
         let name: String = text[start + "#/components/schemas/".len()..]

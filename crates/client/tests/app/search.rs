@@ -405,3 +405,66 @@ fn a_reload_of_the_state_reads_the_search_again_and_leaves_the_side_panel(cx: &m
     });
     assert!(window.shows("search-panel"));
 }
+
+#[gpui::test]
+fn a_result_of_an_archived_channel_is_listed_and_leads_to_its_message(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Acme Studio");
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Luca");
+    window.until("the messages of the text channel are read", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let general = window.selected_channel();
+    let random = admin.text_channel(&world, &mut window, "random");
+    admin.send(&world, general, document("the quartz plan"));
+    let archived = admin.send(&world, random, document("quartz in the old channel"));
+    admin.send(&world, general, document("quartz once more"));
+    window.until_message("quartz once more");
+
+    // The channel is archived: it leaves the channel list, and the state does not know it
+    // until the archived list of its workspace is read.
+    world
+        .run(admin.handle.api().archive_channel(random))
+        .unwrap();
+    window.until("the archived channel leaves the list", |window| {
+        !window.channel_names().contains(&"random".to_owned())
+    });
+
+    // The search lists the result of the archived channel with its place.
+    window.search_for("quartz");
+    let panel = window.until_searched();
+    assert_eq!(panel.state, SearchShown::Results);
+    assert_eq!(panel.messages.len(), 3);
+    let old = panel
+        .messages
+        .iter()
+        .find(|row| row.target == ResultTarget::Message(archived.id))
+        .unwrap();
+    assert_eq!(
+        old.place,
+        Whereabouts::Channel {
+            name: "random".to_owned(),
+            kind: ChannelKind::Text
+        }
+    );
+
+    // The result leads to its message: the main area shows the archived channel and marks
+    // the message.
+    window.click_named(format!("search-result:{}", archived.id));
+    window.until("the message in the archived channel is shown", |window| {
+        let shows_archived = window.view().workspace().is_some_and(|workspace| {
+            workspace.archived.is_some()
+                && workspace
+                    .channel
+                    .as_ref()
+                    .is_some_and(|channel| channel.id == random)
+        });
+        shows_archived
+            && window
+                .messages()
+                .iter()
+                .any(|row| row.message.id == archived.id && row.target)
+    });
+    assert!(window.shows("search-panel"));
+}

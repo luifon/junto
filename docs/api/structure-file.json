@@ -352,6 +352,6 @@
       }
     }
   },
-  "description": "The structure of a Junto server as the setup tool writes and reads it: format 1. An entry is matched by its identifier; an entry that is absent is kept; a deletion is listed under `delete`.",
+  "description": "The structure of a Junto server as the setup tool writes it: format 2. The tool reads the formats 1 to 2. An entry is matched by its identifier; an entry that is absent is kept; a deletion is listed under `delete`.",
   "title": "Junto structure file"
 }

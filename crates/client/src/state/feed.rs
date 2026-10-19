@@ -198,6 +198,10 @@ pub struct MessageRow {
     /// The message mentions the account, one of its roles, or everyone.
     pub mentions_own: bool,
     pub reply: Option<Quote>,
+    /// The message takes a reaction and an answer: a message of a person in a place that
+    /// takes changes (ADR 0410).
+    pub can_react: bool,
+    pub can_reply: bool,
     /// The roles of the person allow the change. The server decides each request.
     pub can_edit: bool,
     pub can_delete: bool,
@@ -221,6 +225,8 @@ impl PartialEq for MessageRow {
             && self.author == other.author
             && self.time == other.time
             && self.reply == other.reply
+            && self.can_react == other.can_react
+            && self.can_reply == other.can_reply
             && self.can_edit == other.can_edit
             && self.can_delete == other.can_delete
             && self.can_pin == other.can_pin
@@ -231,6 +237,18 @@ impl PartialEq for MessageRow {
 }
 
 impl Eq for MessageRow {}
+
+impl MessageRow {
+    /// The message offers at least one action: its bar and its menu have an entry.
+    pub fn has_actions(&self) -> bool {
+        self.can_react
+            || self.can_reply
+            || self.can_thread
+            || self.can_pin
+            || self.can_edit
+            || self.can_delete
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct SystemRow {
@@ -702,6 +720,8 @@ pub fn message_row<'a>(
             .as_ref()
             .is_some_and(|document| mentions(document, own, source.own_roles)),
         reply: message.reply_to.map(|id| quote(source, loaded, id)),
+        can_react: changeable,
+        can_reply: changeable,
         can_edit: changeable && is_own && !message.permanent,
         can_delete: changeable && !message.permanent && (is_own || source.may_manage),
         can_pin: changeable && in_channel && source.may_manage,

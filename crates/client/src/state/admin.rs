@@ -399,13 +399,58 @@ impl AppState {
         self.admin.open = Some(shown);
     }
 
+    /// The collections that the window needs for archived channels outside the
+    /// administration (ADR 0762): for an archived channel that the main area shows, the
+    /// archived list of its workspace and the permissions of the account in the channel
+    /// (ADR 0310); for the open notices and the open search, the archived list of each
+    /// workspace that a notice or a result names with a channel that is in no channel
+    /// list.
+    pub(super) fn archived_readers(
+        &self,
+        view: &super::view::ShellView,
+        snapshots: &[super::view::ServerSnapshot],
+    ) -> Vec<(ServerId, AdminPart)> {
+        let mut wanted: Vec<(ServerId, AdminPart)> = Vec::new();
+        let mut want = |key: (ServerId, AdminPart)| {
+            if !wanted.contains(&key) {
+                wanted.push(key);
+            }
+        };
+        let Some(server_id) = self.shown.server else {
+            return wanted;
+        };
+        if let Some((workspace_id, channel_id)) = view
+            .workspace()
+            .filter(|workspace| workspace.archived.is_some())
+            .and_then(|workspace| Some((workspace.id, workspace.channel.as_ref()?.id)))
+        {
+            want((server_id, AdminPart::Archived(workspace_id)));
+            want((server_id, AdminPart::ChannelPermissions(channel_id)));
+        }
+        let Some(model) = snapshots
+            .iter()
+            .find(|server| server.id == server_id)
+            .and_then(|server| view::shown(server))
+        else {
+            return wanted;
+        };
+        if self.selection.notices == Some(server_id) {
+            for workspace_id in super::notices::archived_lists_of_notices(model) {
+                want((server_id, AdminPart::Archived(workspace_id)));
+            }
+        }
+        for workspace_id in super::search::archived_lists_of_search(server_id, model, &self.known) {
+            want((server_id, AdminPart::Archived(workspace_id)));
+        }
+        wanted
+    }
+
     /// The collections of the client core that the window needs are held open: those of
-    /// the open page, and for an archived channel that the main area shows the archived
-    /// list of its workspace (ADR 0762) and the permissions of the account in the channel
-    /// (ADR 0310). Every other collection is released.
+    /// the open page, and those of [`Self::archived_readers`]. Every other collection is
+    /// released.
     pub(super) fn follow_admin(
         &mut self,
-        archived: Option<(ServerId, WorkspaceId, ChannelId)>,
+        readers: Vec<(ServerId, AdminPart)>,
         cx: &mut Context<Self>,
     ) {
         // A save of an export does not outlive its server or its account.
@@ -440,15 +485,9 @@ impl AppState {
                 }
             }
         }
-        if let Some((server_id, workspace_id, channel_id)) = archived {
-            for part in [
-                AdminPart::Archived(workspace_id),
-                AdminPart::ChannelPermissions(channel_id),
-            ] {
-                let key = (server_id, part);
-                if !wanted.contains(&key) {
-                    wanted.push(key);
-                }
+        for key in readers {
+            if !wanted.contains(&key) {
+                wanted.push(key);
             }
         }
         let gone: Vec<(ServerId, AdminPart)> = self

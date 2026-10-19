@@ -1180,3 +1180,201 @@ fn only_the_message_under_the_pointer_has_the_bar_of_actions(cx: &mut TestAppCon
     window.settle();
     assert_eq!(bars(&mut window), Vec::<MessageId>::new());
 }
+
+impl Window {
+    /// The state of the first check box of a message of the list.
+    fn checked(&mut self, message_id: MessageId) -> Option<bool> {
+        let row = self
+            .messages()
+            .into_iter()
+            .find(|row| row.message.id == message_id)?;
+        row.message
+            .document
+            .as_ref()?
+            .blocks
+            .iter()
+            .find_map(|block| match block {
+                Block::Checklist { items } => items.first().map(|item| item.checked),
+                _ => None,
+            })
+    }
+
+    /// Writes a message with one check box and waits for it.
+    fn write_check(&mut self, label: &str) -> MessageId {
+        self.write(&format!("- [ ] {label}"));
+        self.until(&format!("the check box {label:?} is drawn"), |window| {
+            window
+                .messages()
+                .iter()
+                .any(|row| check_label(row) == Some(label.to_owned()))
+        });
+        self.messages()
+            .into_iter()
+            .find(|row| check_label(row) == Some(label.to_owned()))
+            .unwrap()
+            .message
+            .id
+    }
+}
+
+/// The text of the first check box of a message.
+fn check_label(row: &MessageRow) -> Option<String> {
+    row.message
+        .document
+        .as_ref()?
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Checklist { items } => items.first().map(|item| {
+                item.content
+                    .iter()
+                    .filter_map(|inline| match inline {
+                        Inline::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect()
+            }),
+            _ => None,
+        })
+}
+
+/// The requests of the window that change a message: every request on its path that is
+/// no read.
+fn changes_of(proxy: &FaultProxy, message_id: MessageId) -> usize {
+    let path = format!("/messages/{message_id}");
+    proxy
+        .all()
+        .iter()
+        .filter(|seen| seen.method != "GET" && seen.path.contains(&path))
+        .count()
+}
+
+#[gpui::test]
+fn a_check_box_takes_a_click_only_where_its_message_can_be_edited(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let proxy = world.run(FaultProxy::start(&server));
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    window.until("the messages are read", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    let channel_id = window.selected_channel();
+
+    // A check box of an own message is ticked and cleared by a click: an edit of the
+    // message (ADR 0401).
+    let open = window.write_check("first task");
+    assert_eq!(window.checked(open), Some(false));
+    window.click_named(format!("check:{open}:0:0"));
+    window.until("the box is ticked", |window| {
+        window.checked(open) == Some(true)
+    });
+    window.click_named(format!("check:{open}:0:0"));
+    window.until("the box is cleared", |window| {
+        window.checked(open) == Some(false)
+    });
+    assert_eq!(changes_of(&proxy, open), 2);
+
+    // A message of a channel with permanent messages takes no edit: its box takes no
+    // click, and nothing is sent (ADR 0402).
+    world
+        .run(admin.handle.api().update_channel(
+            channel_id,
+            &junto_client_core::protocol::structure::UpdateChannel {
+                permanent_messages: Some(true),
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    window.until("the channel has permanent messages", |window| {
+        window.shows("permanent-marker")
+    });
+    let kept = window.write_check("second task");
+    assert!(
+        window
+            .messages()
+            .iter()
+            .any(|row| row.message.id == kept && row.message.permanent)
+    );
+    window.click_named(format!("check:{kept}:0:0"));
+    window.until("no change of a message is on its way", |window| {
+        window.message_asks_flying() == 0
+    });
+    assert_eq!(changes_of(&proxy, kept), 0);
+    assert_eq!(window.checked(kept), Some(false));
+    assert!(!window.shows("compose-problem"));
+}
+
+#[gpui::test]
+fn a_message_of_an_archived_channel_offers_no_action(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server("Harbor");
+    let proxy = world.run(FaultProxy::start(&server));
+    let admin = world.owner(&server);
+    let (_directory, mut window) = member(cx, &world, &proxy.address(), &admin, "Luca");
+    window.until("the messages are read", |window| {
+        window.feed().is_some_and(|feed| feed.loaded)
+    });
+    // The person selects the channel: a channel that leaves the list stays shown only
+    // while the person has it selected (ADR 0762).
+    let channel_id = admin.text_channel(&world, &mut window, "plans");
+    window.click_channel("plans");
+    window.until("the channel is shown", |window| {
+        window
+            .feed()
+            .is_some_and(|feed| feed.loaded && feed.place == PlaceId::Channel(channel_id))
+    });
+    let own = window.write_check("a task");
+    let other = admin
+        .send(&world, channel_id, document("A message of Ada"))
+        .id;
+    world
+        .run(admin.handle.api().add_reaction(other, "👍"))
+        .unwrap();
+    window.until("the reaction is drawn", |window| {
+        window.shows_named(format!("reaction:{other}:0"))
+    });
+
+    // Before the archiving the messages take a reaction and an answer.
+    let row = |window: &mut Window, message_id: MessageId| {
+        window
+            .messages()
+            .into_iter()
+            .find(|row| row.message.id == message_id)
+            .unwrap()
+    };
+    let before = row(&mut window, other);
+    assert!(before.can_react && before.can_reply && before.has_actions());
+    window.right_click_named(format!("message:{other}"));
+    assert!(window.shows("message-menu") && window.shows("message-react"));
+    window.press("escape");
+    assert!(!window.shows("message-menu"));
+
+    // The channel is archived while the person reads it: the server refuses every change
+    // of its content (ADR 0410), so its messages offer none.
+    world
+        .run(admin.handle.api().archive_channel(channel_id))
+        .unwrap();
+    window.until("the channel is archived", |window| {
+        window
+            .view()
+            .workspace()
+            .is_some_and(|workspace| workspace.archived.is_some())
+    });
+    for message_id in [own, other] {
+        let held = row(&mut window, message_id);
+        assert!(!held.can_react && !held.can_reply && !held.has_actions());
+    }
+    // No menu opens, and a reaction and a check box take no click.
+    window.right_click_named(format!("message:{other}"));
+    assert!(!window.shows("message-menu"));
+    window.click_named(format!("reaction:{other}:0"));
+    window.click_named(format!("check:{own}:0:0"));
+    window.until("no change of a message is on its way", |window| {
+        window.message_asks_flying() == 0
+    });
+    assert_eq!(changes_of(&proxy, other), 0);
+    assert_eq!(changes_of(&proxy, own), 0);
+    assert!(!window.shows("emoji-picker"));
+    assert!(!window.shows("compose-problem"));
+}

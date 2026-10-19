@@ -1118,7 +1118,8 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The blocks of a document. A check box of a message of the person takes a click.
+    /// The blocks of a document. A check box takes a click when the person can edit its
+    /// message: the third part of `message`.
     fn document(
         &mut self,
         document: &Document,
@@ -1180,15 +1181,23 @@ impl Shell {
                 Block::Checklist { items } => {
                     for (item_index, item) in items.iter().enumerate() {
                         let checked = item.checked;
-                        // Ticking a box is an edit of the message: only its author can
-                        // do it (ADR 0401).
-                        let own = message
-                            .filter(|(_, _, own)| *own)
+                        // Ticking a box is an edit of the message: its author can do it
+                        // where the message can be edited, which a permanent message and
+                        // an archived channel cannot (ADR 0401, ADR 0402, ADR 0410).
+                        let editable = message
+                            .filter(|(_, _, can_edit)| *can_edit)
                             .map(|(feed, held, _)| (feed.server_id, held.clone()));
                         let box_id = block_index * 1000 + item_index;
+                        let message_id = message.map(|(_, held, _)| held.id);
                         let mut check = div()
                             .id(("check", box_id))
                             .role(Role::CheckBox)
+                            .debug_selector(move || match message_id {
+                                Some(message_id) => {
+                                    format!("check:{message_id}:{block_index}:{item_index}")
+                                }
+                                None => format!("check:{block_index}:{item_index}"),
+                            })
                             .aria_label(SharedString::from(crate::state::feed::plain_text(
                                 &Document {
                                     blocks: vec![Block::Paragraph {
@@ -1219,7 +1228,7 @@ impl Shell {
                             .when(checked, |mark| {
                                 mark.child(icon(Icon::Check, 10.0, colors.on_terracotta))
                             });
-                        if let Some((server_id, held)) = own {
+                        if let Some((server_id, held)) = editable {
                             check = check.cursor_pointer().on_click(cx.listener(
                                 move |this, _, _, cx| {
                                     this.state.update(cx, |state, cx| {
@@ -1256,13 +1265,16 @@ impl Shell {
     fn reactions(
         &mut self,
         feed: &Feed,
-        message: &Message,
+        row: &MessageRow,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        let message = &row.message;
         if message.reactions.is_empty() {
             return None;
         }
+        // A message that takes no reaction shows its reactions without a control.
+        let can_react = row.can_react;
         let colors = theme.colors;
         let (server_id, message_id) = (feed.server_id, message.id);
         let chips = message.reactions.iter().enumerate().map(|(index, held)| {
@@ -1272,7 +1284,7 @@ impl Shell {
             let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
             div()
                 .id(("reaction", index))
-                .role(Role::Button)
+                .role(if can_react { Role::Button } else { Role::Note })
                 .aria_label(label.clone())
                 .debug_selector(move || format!("reaction:{message_id}:{index}"))
                 .flex()
@@ -1295,17 +1307,19 @@ impl Shell {
                 }))
                 .text_size(u(13.0))
                 .line_height(u(17.0))
-                .cursor_pointer()
-                .focusable()
-                .tab_stop(true)
-                .focus_visible(move |style| style.shadow(ring))
                 .tooltip(tooltip(label.clone()))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    let emoji = sent.clone();
-                    this.state.update(cx, |state, cx| {
-                        state.react(server_id, message_id, emoji, !own, cx);
-                    });
-                }))
+                .when(can_react, |chip| {
+                    chip.cursor_pointer()
+                        .focusable()
+                        .tab_stop(true)
+                        .focus_visible(move |style| style.shadow(ring))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let emoji = sent.clone();
+                            this.state.update(cx, |state, cx| {
+                                state.react(server_id, message_id, emoji, !own, cx);
+                            });
+                        }))
+                })
                 .child(SharedString::from(emoji))
                 .child(
                     div()
@@ -1326,27 +1340,29 @@ impl Shell {
                 .gap(u(5.0))
                 .mt(u(4.0))
                 .children(chips)
-                .child(
-                    div()
-                        .id("add-reaction")
-                        .role(Role::Button)
-                        .aria_label(text::REACT)
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .h(u(23.0))
-                        .px(u(5.0))
-                        .rounded(u(theme.metrics.radius))
-                        .border_1()
-                        .border_color(Hsla::from(colors.rule))
-                        .bg(Hsla::from(colors.travertine_hi))
-                        .cursor_pointer()
-                        .tooltip(tooltip(text::REACT))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_emoji_picker(EmojiTarget::React(message_id), window, cx);
-                        }))
-                        .child(icon(Icon::Smile, 14.0, colors.ink_2)),
-                )
+                .when(can_react, |row| {
+                    row.child(
+                        div()
+                            .id("add-reaction")
+                            .role(Role::Button)
+                            .aria_label(text::REACT)
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .h(u(23.0))
+                            .px(u(5.0))
+                            .rounded(u(theme.metrics.radius))
+                            .border_1()
+                            .border_color(Hsla::from(colors.rule))
+                            .bg(Hsla::from(colors.travertine_hi))
+                            .cursor_pointer()
+                            .tooltip(tooltip(text::REACT))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_emoji_picker(EmojiTarget::React(message_id), window, cx);
+                            }))
+                            .child(icon(Icon::Smile, 14.0, colors.ink_2)),
+                    )
+                })
                 .into_any_element(),
         )
     }
@@ -1751,18 +1767,24 @@ impl Shell {
             .border_color(Hsla::from(colors.rule))
             .bg(Hsla::from(colors.travertine_hi))
             .shadow(ledge(colors.rule))
-            .child(
-                action("react", Icon::Smile, text::REACT).on_click(cx.listener(
-                    move |this, _, window, cx| {
-                        this.open_emoji_picker(EmojiTarget::React(message_id), window, cx);
-                    },
-                )),
-            )
-            .child(
-                action("reply", Icon::Reply, text::REPLY).on_click(cx.listener(
-                    move |this, _, window, cx| this.reply_to_message(pane, message_id, window, cx),
-                )),
-            )
+            .when(row.can_react, |bar| {
+                bar.child(
+                    action("react", Icon::Smile, text::REACT).on_click(cx.listener(
+                        move |this, _, window, cx| {
+                            this.open_emoji_picker(EmojiTarget::React(message_id), window, cx);
+                        },
+                    )),
+                )
+            })
+            .when(row.can_reply, |bar| {
+                bar.child(
+                    action("reply", Icon::Reply, text::REPLY).on_click(cx.listener(
+                        move |this, _, window, cx| {
+                            this.reply_to_message(pane, message_id, window, cx);
+                        },
+                    )),
+                )
+            })
             .when_some(
                 channel_id.filter(|_| row.can_thread && pane == Pane::Main),
                 |bar, channel_id| {
@@ -2029,7 +2051,7 @@ impl Shell {
             let mut body = match &message.document {
                 Some(document) => self.document(
                     document,
-                    Some((feed, message, row.own)),
+                    Some((feed, message, row.can_edit)),
                     &feed.names,
                     &theme,
                     cx,
@@ -2037,7 +2059,7 @@ impl Shell {
                 None => Vec::new(),
             };
             body.extend(self.attachments(feed, message, None, &theme, cx));
-            body.extend(self.reactions(feed, message, &theme, cx));
+            body.extend(self.reactions(feed, row, &theme, cx));
             if !bare {
                 body.extend(self.thread_chip(feed, row, &theme, cx));
             }
@@ -2080,9 +2102,14 @@ impl Shell {
                 if open.message_id == message_id && open.pane == pane);
         let menu = open_menu.then(|| self.render_message_menu(row, feed, window, cx));
         let ring = focus_ring_inside(colors.terracotta_deep, theme.metrics.focus_ring);
-        let actions =
-            (!message.deleted && !bare && self.hovered_message == Some((pane, message_id)))
-                .then(|| self.action_bar(feed, row, &theme, cx));
+        // A message without an action has no bar and no menu: a permanent one still has the
+        // bar, which states that it cannot be changed.
+        let offers = row.has_actions() || row.message.permanent;
+        let actions = (offers
+            && !message.deleted
+            && !bare
+            && self.hovered_message == Some((pane, message_id)))
+        .then(|| self.action_bar(feed, row, &theme, cx));
         let label: SharedString = format!(
             "{}, {}: {}",
             row.author,
@@ -2120,9 +2147,12 @@ impl Shell {
             })
             .when(open_menu, |frame| frame.bg(Hsla::from(colors.row_hover)))
             .when(!message.deleted && !bare, |frame| {
+                let has_actions = row.has_actions();
                 let (by_click, by_key) = (
                     cx.listener(move |this, _: &gpui::MouseDownEvent, window, cx| {
-                        this.open_message_menu(pane, message_id, window, cx);
+                        if has_actions {
+                            this.open_message_menu(pane, message_id, window, cx);
+                        }
                     }),
                     cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
                         let keys = &event.keystroke;
@@ -2131,7 +2161,7 @@ impl Shell {
                             "f10" => keys.modifiers.shift,
                             _ => false,
                         };
-                        if opens {
+                        if opens && has_actions {
                             this.open_message_menu(pane, message_id, window, cx);
                             cx.stop_propagation();
                         }
@@ -2439,24 +2469,31 @@ impl Shell {
         let server_id = feed.server_id;
         let pane = Pane::of(feed.place);
         let pinned = row.message.pinned;
-        let mut items = vec![
-            MenuItem::new("message-react", text::REACT)
-                .icon(Icon::Smile)
-                .selector("message-react")
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.close_layer(window, cx);
-                    this.open_emoji_picker(EmojiTarget::React(message_id), window, cx);
-                }))
-                .into_any_element(),
-            MenuItem::new("message-reply", text::REPLY)
-                .icon(Icon::Reply)
-                .selector("message-reply")
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.close_layer(window, cx);
-                    this.reply_to_message(pane, message_id, window, cx);
-                }))
-                .into_any_element(),
-        ];
+        let mut items = Vec::new();
+        if row.can_react {
+            items.push(
+                MenuItem::new("message-react", text::REACT)
+                    .icon(Icon::Smile)
+                    .selector("message-react")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.close_layer(window, cx);
+                        this.open_emoji_picker(EmojiTarget::React(message_id), window, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
+        if row.can_reply {
+            items.push(
+                MenuItem::new("message-reply", text::REPLY)
+                    .icon(Icon::Reply)
+                    .selector("message-reply")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.close_layer(window, cx);
+                        this.reply_to_message(pane, message_id, window, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
         if let Some(channel_id) = crate::state::feed::channel_of(feed.place)
             .filter(|_| row.can_thread && pane == Pane::Main)
         {

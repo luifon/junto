@@ -820,3 +820,65 @@ fn no_code_of_the_application_names_the_local_zone_of_chrono() {
         "the zone of the system is the zone that the state read, not chrono::Local: {named:#?}"
     );
 }
+
+#[gpui::test]
+fn a_notice_of_an_archived_channel_is_listed_and_leads_to_its_message(cx: &mut TestAppContext) {
+    let world = World::new();
+    let (_server, admin, _directory, mut window, general) = scene(cx, &world);
+    let own = window.own_account();
+    let random = admin.text_channel(&world, &mut window, "random");
+    admin.mention(&world, general, "first, ", own);
+    let archived = admin.mention(&world, random, "in the old channel, ", own);
+    admin.mention(&world, general, "last, ", own);
+    window.until("the three notices are counted", |window| {
+        window.unread_notices() == 3
+    });
+
+    // The channel is archived: it leaves the channel list, and the state does not know it
+    // until the archived list of its workspace is read.
+    world
+        .run(admin.handle.api().archive_channel(random))
+        .unwrap();
+    window.until("the archived channel leaves the list", |window| {
+        !window.channel_names().contains(&"random".to_owned())
+    });
+
+    // The list of the notices names the archived channel at the notice of its message,
+    // in the order of the notices.
+    window.open_notices();
+    window.until("the notice of the archived channel is listed", |window| {
+        window.notices().is_some_and(|panel| panel.rows.len() == 3)
+    });
+    let panel = window.notices().unwrap();
+    let texts: Vec<&str> = panel.rows.iter().map(|row| row.text.as_str()).collect();
+    assert_eq!(
+        texts,
+        ["last, @Luca", "in the old channel, @Luca", "first, @Luca"]
+    );
+    assert_eq!(
+        panel.rows[1].place,
+        Whereabouts::Channel {
+            name: "random".to_owned(),
+            kind: ChannelKind::Text
+        }
+    );
+
+    // The row leads to the message: the main area shows the archived channel and marks
+    // the message.
+    window.click_named(format!("notice:{}", panel.rows[1].id));
+    window.until("the message in the archived channel is shown", |window| {
+        let shows_archived = window.view().workspace().is_some_and(|workspace| {
+            workspace.archived.is_some()
+                && workspace
+                    .channel
+                    .as_ref()
+                    .is_some_and(|channel| channel.id == random)
+        });
+        shows_archived
+            && window
+                .messages()
+                .iter()
+                .any(|row| row.message.id == archived.id && row.target)
+    });
+    assert!(window.shows("notices-panel"));
+}

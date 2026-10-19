@@ -3,7 +3,8 @@
 //!
 //! A search holds no state in the client core (ADR 0722). Each page is decided by what
 //! the account can read at the time of its request, and a result of a place that the
-//! state of the server does not hold any more is not listed.
+//! state of the server does not hold any more is not listed. A result of an archived
+//! channel is placed by the archived list of its workspace (ADR 0762).
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -82,6 +83,9 @@ pub struct Hit {
     pub line: Option<u32>,
     /// The channel or the direct conversation of the result.
     pub place_id: Uuid,
+    /// The workspace of the channel of the result. Absent for a direct conversation, and
+    /// from a server before this field.
+    pub workspace_id: Option<WorkspaceId>,
     pub author_id: AccountId,
     pub created_at: OffsetDateTime,
     pub text: String,
@@ -101,6 +105,7 @@ impl From<SearchHit> for Hit {
             recording_id: hit.recording_id,
             line: hit.line,
             place_id: hit.place_id,
+            workspace_id: hit.workspace_id,
             author_id: hit.author_id,
             created_at: hit.created_at,
             text: bounded(hit.text),
@@ -112,17 +117,28 @@ impl From<SearchHit> for Hit {
 }
 
 impl Hit {
+    /// The workspace whose archived list can name the channel of the result: a channel
+    /// that is in no channel list and that the result states the workspace of.
+    pub fn archived_list(&self, model: &ServerModel) -> Option<WorkspaceId> {
+        let channel_id = ChannelId::from_uuid(self.place_id);
+        self.workspace_id
+            .filter(|_| model.channel(channel_id).is_none())
+            .filter(|_| {
+                !model
+                    .conversations
+                    .iter()
+                    .any(|held| held.id.as_uuid() == self.place_id)
+            })
+    }
+
     /// The jump to the message of the result, from what the result states: its place, its
     /// position and the root of its thread. Absent for a transcript line, for a result
     /// without a position, and for a place that the state does not hold.
     pub fn jump(&self, server_id: ServerId, model: &ServerModel) -> Option<Jump> {
         let (message_id, position) = (self.message_id?, self.position?);
         let channel_id = ChannelId::from_uuid(self.place_id);
-        let (workspace_id, place) = match model.channel(channel_id) {
-            Some(channel) => (
-                Some(channel.channel.workspace_id),
-                PlaceId::Channel(channel_id),
-            ),
+        let (workspace_id, place) = match model.readable_channel(channel_id) {
+            Some(channel) => (Some(channel.workspace_id), PlaceId::Channel(channel_id)),
             None => {
                 let conversation = model
                     .conversations
@@ -323,13 +339,13 @@ fn place_of(
     accounts: &HashMap<AccountId, String>,
 ) -> (Whereabouts, Option<(WorkspaceId, ChannelId)>) {
     let channel_id = ChannelId::from_uuid(place_id);
-    if let Some(channel) = model.channel(channel_id) {
+    if let Some(channel) = model.readable_channel(channel_id) {
         return (
             Whereabouts::Channel {
-                name: channel.channel.name.clone(),
-                kind: channel.channel.kind,
+                name: channel.name.clone(),
+                kind: channel.kind,
             },
-            Some((channel.channel.workspace_id, channel_id)),
+            Some((channel.workspace_id, channel_id)),
         );
     }
     match model
@@ -354,6 +370,32 @@ fn place_of(
     }
 }
 
+/// The workspaces whose archived lists the results of the open search of a server need.
+pub fn archived_lists_of_search(
+    server_id: ServerId,
+    model: &ServerModel,
+    known: &Known,
+) -> Vec<WorkspaceId> {
+    let mut wanted = Vec::new();
+    let Some(search) = known
+        .search
+        .as_ref()
+        .filter(|search| search.server_id == server_id && search.open)
+    else {
+        return wanted;
+    };
+    for workspace_id in search
+        .hits
+        .iter()
+        .filter_map(|hit| hit.archived_list(model))
+    {
+        if !wanted.contains(&workspace_id) {
+            wanted.push(workspace_id);
+        }
+    }
+    wanted
+}
+
 /// The search as the side panel shows it. Absent while no search of this server is open.
 pub fn search_panel(
     server_id: ServerId,
@@ -373,7 +415,18 @@ pub fn search_panel(
             .unwrap_or_else(|| text::UNKNOWN_PERSON.to_owned())
     };
     let (mut messages, mut transcripts) = (Vec::new(), Vec::new());
+    // The results are listed in their order. A result whose archived channel the state
+    // does not know yet ends the list until the archived list of its workspace answers:
+    // the further results are then added at the end, and no listed row moves.
+    let mut placing = false;
     for hit in &search.hits {
+        if hit
+            .archived_list(model)
+            .is_some_and(|workspace_id| super::notices::archived_list_pending(model, workspace_id))
+        {
+            placing = true;
+            break;
+        }
         let (place, channel) = place_of(hit.place_id, model, &accounts);
         if place == Whereabouts::Unknown {
             continue;
@@ -415,6 +468,7 @@ pub fn search_panel(
     let found = !messages.is_empty() || !transcripts.is_empty();
     let state = match &search.progress {
         Progress::Searching => SearchShown::Searching,
+        Progress::Done if placing => SearchShown::Searching,
         Progress::Refused(reason) => SearchShown::Refused(reason.clone()),
         Progress::Failed(reason) => SearchShown::Failed(reason.clone()),
         Progress::Done if found => SearchShown::Results,

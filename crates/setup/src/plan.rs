@@ -10,8 +10,8 @@ use std::fmt::Display;
 use junto_protocol::ids::StructureId;
 use junto_protocol::structure::ChannelKind;
 use junto_protocol::structure_file::{
-    CategoryEntry, ChannelEntry, RoleEntry, STRUCTURE_FORMAT, StructureChange, StructureFile,
-    WorkspaceEntry,
+    CategoryEntry, ChannelEntry, OLDEST_STRUCTURE_FORMAT, RoleEntry, STRUCTURE_FORMAT,
+    StructureChange, StructureFile, WorkspaceEntry,
 };
 
 const NAME_MAX_CHARS: usize = 64;
@@ -151,9 +151,10 @@ fn reference(value: Option<StructureId>) -> String {
 
 /// Refuses identifiers that two entries of one kind share, and marks that two entries hold.
 fn check_file(planner: &mut Planner<'_>, file: &StructureFile) {
-    if file.format != 1 && file.format != STRUCTURE_FORMAT {
+    if !(OLDEST_STRUCTURE_FORMAT..=STRUCTURE_FORMAT).contains(&file.format) {
         planner.problem(format!(
-            "the file has the format {}; this tool reads the format {STRUCTURE_FORMAT}",
+            "the file has the format {}; this tool reads the formats \
+             {OLDEST_STRUCTURE_FORMAT} to {STRUCTURE_FORMAT}",
             file.format
         ));
     }

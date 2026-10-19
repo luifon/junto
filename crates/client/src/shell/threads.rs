@@ -12,6 +12,7 @@ use super::feed::{MessageShape, PaneShown};
 use super::{Layer, Pane, Shell};
 use crate::assets::Icon;
 use crate::state::feed::Feed;
+use crate::state::notices::Jump;
 use crate::state::view::{ForkState, PinsPanel, PinsState, ShellView, ThreadPanel};
 use crate::text;
 use crate::theme::{Theme, theme, u};
@@ -432,14 +433,14 @@ impl Shell {
                     .into_any_element()
             }
             (PinsState::Loaded(rows), Some(feed)) => {
-                let (server_id, place) = (feed.server_id, feed.place);
+                let server_id = feed.server_id;
                 let mut shown: Vec<AnyElement> = Vec::new();
                 for (index, row) in rows.iter().enumerate() {
                     let message_id = row.message.id;
-                    let position = row.message.position;
-                    // A pinned reply of a thread is shown in its thread.
-                    let thread_root = row.message.thread_root;
-                    let channel_id = pins.channel_id;
+                    // The window goes to the message as it goes to the message of a
+                    // notice: a pinned reply of a thread is shown in its thread, at its
+                    // place, and the list marks it (ADR 0741).
+                    let jump = Jump::to(server_id, &row.message);
                     let message =
                         self.render_message(index, row, feed, MessageShape::Bare, window, cx);
                     shown.push(
@@ -464,17 +465,8 @@ impl Shell {
                                         Button::new(("go-to-pin", index))
                                             .label(text::GO_TO_MESSAGE)
                                             .selector("go-to-pin")
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                match thread_root {
-                                                    Some(root_id) => this.open_thread(
-                                                        server_id, channel_id, root_id, window, cx,
-                                                    ),
-                                                    None => this.state.update(cx, |state, _| {
-                                                        state.show_position(
-                                                            server_id, place, position,
-                                                        );
-                                                    }),
-                                                }
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.go_to(jump, cx);
                                             })),
                                     )
                                     .when(row.can_pin, |actions| {
