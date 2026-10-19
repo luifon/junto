@@ -172,29 +172,3 @@ pub fn system() -> Arc<dyn CameraCapture> {
 
 #[cfg(test)]
 mod tests;
-
-/// Mirrors a preview; transmitted frames keep the camera's orientation.
-pub fn mirror(frame: &crate::share::picture::PictureFrame) -> crate::share::picture::PictureFrame {
-    let mut pixels = frame.bgra.to_vec();
-    let row_bytes = frame.width as usize * 4;
-    if row_bytes > 0 {
-        for row in pixels.chunks_exact_mut(row_bytes) {
-            for x in 0..frame.width as usize / 2 {
-                let other = frame.width as usize - 1 - x;
-                for channel in 0..4 {
-                    row.swap(x * 4 + channel, other * 4 + channel);
-                }
-            }
-        }
-    }
-    crate::share::picture::PictureFrame {
-        bgra: pixels.into(),
-        ..frame.clone()
-    }
-}
-
-mod frame;
-pub use frame::CameraFrame;
-#[cfg(target_os = "macos")]
-#[allow(unsafe_code)]
-mod surface;

@@ -27,8 +27,8 @@ use crate::state::view::{CallPanel, ChannelRow, Microphone, ShareCard, ShareStag
 use crate::text;
 use crate::theme::{Theme, theme, u};
 use crate::ui::{
-    Button, ButtonKind, Dialog, Notice, PersonTile, ScrollArea, Segmented, StyleExt, dialog_footer,
-    focus_ring, focus_ring_inside, icon, tooltip,
+    Button, ButtonKind, Dialog, DrawnPicture, Notice, PersonTile, ScrollArea, Segmented, StyleExt,
+    dialog_footer, focus_ring, focus_ring_inside, icon, tooltip,
 };
 
 /// The kinds of sound that a share can have (ADR 0502).
@@ -172,7 +172,7 @@ impl SharePicker {
 /// The pictures of the shares as the window draws them.
 #[derive(Default)]
 pub(crate) struct ShownPictures {
-    pub main: Option<(ShareId, Arc<RenderImage>)>,
+    pub main: Option<(ShareId, DrawnPicture)>,
     pub small: HashMap<ShareId, (Arc<PictureFrame>, Arc<RenderImage>)>,
 }
 
@@ -215,10 +215,11 @@ async fn newer_pictures<E>(
     .await
 }
 
-/// A picture of the media engine as an image of the window. It copies the picture: call it
-/// on a blocking thread of the runtime, not on the thread of the window (ADR 0730).
-pub(crate) fn render_image(frame: &PictureFrame) -> Option<Arc<RenderImage>> {
-    let buffer = image::RgbaImage::from_raw(frame.width, frame.height, frame.bgra.to_vec())?;
+/// A picture of the media engine as an image of the window. The image takes the pixels of
+/// the picture without a copy. The picture is made on a blocking thread of the runtime, not
+/// on the thread of the window (ADR 0730).
+pub(crate) fn render_image(frame: PictureFrame) -> Option<Arc<RenderImage>> {
+    let buffer = image::RgbaImage::from_raw(frame.width, frame.height, frame.bgra)?;
     Some(Arc::new(RenderImage::new(vec![image::Frame::new(buffer)])))
 }
 
@@ -367,7 +368,9 @@ impl Shell {
             };
             if !same {
                 self.main_taken = main.frame;
-                self.show_main(main.shown, cx);
+                let shown =
+                    (main.shown).and_then(|(share, picture)| Some((share, picture.picture()?)));
+                self.show_main(shown, cx);
                 drawn = true;
             }
         }
@@ -407,11 +410,13 @@ impl Shell {
 
     pub(crate) fn show_main(
         &mut self,
-        shown: Option<(ShareId, Arc<RenderImage>)>,
+        shown: Option<(ShareId, DrawnPicture)>,
         cx: &mut Context<Self>,
     ) {
-        if let Some((_, before)) = std::mem::replace(&mut self.pictures.main, shown) {
-            crate::images::release(before, cx);
+        if let Some((_, before)) = std::mem::replace(&mut self.pictures.main, shown)
+            && let Some(image) = before.image()
+        {
+            crate::images::release(image.clone(), cx);
         }
         cx.notify();
     }
@@ -569,12 +574,13 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         self.picture_tasks.clear();
-        let main = main.and_then(|(share, frame)| Some((share, render_image(&frame)?)));
+        let main = main
+            .and_then(|(share, frame)| Some((share, DrawnPicture::Image(render_image(frame)?))));
         self.show_main(main, cx);
         let small = small
             .into_iter()
             .map(|(share, frame)| {
-                let image = render_image(&frame);
+                let image = render_image(frame.clone());
                 (share, (Arc::new(frame), image))
             })
             .collect();
@@ -593,7 +599,7 @@ impl Shell {
     /// share, the small pictures of the shares and the cameras that are drawn as images.
     #[cfg(feature = "test-support")]
     pub fn picture_images(&self) -> Vec<Arc<RenderImage>> {
-        let main = self.pictures.main.iter().map(|(_, image)| image);
+        let main = (self.pictures.main.iter()).filter_map(|(_, picture)| picture.image());
         let small = self.pictures.small.values().map(|(_, image)| image);
         let cameras = self
             .cameras
@@ -1379,7 +1385,7 @@ impl Shell {
                 .main
                 .as_ref()
                 .filter(|(of, _)| *of == share.id)
-                .map(|(_, image)| image.clone())
+                .map(|(_, picture)| picture.clone())
         });
         let calls = self.state.read(cx).calls().clone();
         let viewport = div()
@@ -1413,7 +1419,7 @@ impl Shell {
                 .inset(u(12.0)),
             )
             .map(|viewport| match shown {
-                Some(image) => viewport.child(
+                Some(picture) => viewport.child(
                     div()
                         .id("share-picture")
                         .role(Role::Image)
@@ -1424,11 +1430,11 @@ impl Shell {
                         .min_h_0()
                         .overflow_hidden()
                         .child(
-                            img(image)
+                            div()
                                 .absolute()
                                 .inset(u(0.0))
                                 .size_full()
-                                .object_fit(ObjectFit::Contain),
+                                .child(picture.element()),
                         ),
                 ),
                 None => viewport.child(
@@ -1601,6 +1607,26 @@ mod tests {
     use junto_media::share::{ApplicationSource, DisplaySource, WindowSource};
 
     use super::*;
+
+    /// The pixels that the conversion of a picture writes are the pixels of the image of the
+    /// window: neither the conversion nor the image copies them.
+    #[test]
+    fn an_image_holds_the_pixels_that_the_conversion_wrote() {
+        let pixels =
+            junto_media::share::synthetic::two_colours(64, 36, (200, 30, 30), (30, 30, 200));
+        let frame = junto_media::share::picture::convert(&pixels, (64, 36)).unwrap();
+        let written = frame.bgra.as_ptr();
+        let image = render_image(frame).unwrap();
+        assert_eq!(image.as_bytes(0).unwrap().as_ptr(), written);
+        let picture = junto_media::share::picture::VideoPicture::new(&pixels, false, (32, 18))
+            .unwrap()
+            .bgra()
+            .unwrap();
+        let written = picture.bgra.as_ptr();
+        let image = render_image(picture).unwrap();
+        assert_eq!(image.as_bytes(0).unwrap().as_ptr(), written);
+        assert_eq!(image.size(0), gpui::size(32.into(), 18.into()));
+    }
 
     fn player() -> ApplicationId {
         ApplicationId {

@@ -7,9 +7,7 @@ use crate::{
     theme::u,
     ui::{Button, ButtonKind, Notice},
 };
-use gpui::{
-    AnyElement, Context, IntoElement, ObjectFit, ParentElement, Styled, StyledImage, div, img,
-};
+use gpui::{AnyElement, Context, IntoElement, ParentElement, Styled, div};
 use junto_client_core::protocol::{
     call::CallPlace,
     ids::{AccountId, ServerId},
@@ -157,12 +155,8 @@ impl Shell {
                 }),
             )
         });
-        let share = active.and(self.pictures.main.as_ref()).map(|(_, image)| {
-            img(image.clone())
-                .w_full()
-                .h(u(240.0))
-                .object_fit(ObjectFit::Contain)
-        });
+        let share = (active.and(self.pictures.main.as_ref()))
+            .map(|(_, picture)| div().w_full().h(u(240.0)).child(picture.clone().element()));
         let separate = active.is_some() && state.is_call_detached() && !self.detached;
         let call = if let Some(call) = active {
             let (label, selector) = if call.phase == junto_media::calls::Phase::Reconnecting {

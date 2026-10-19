@@ -1,8 +1,8 @@
 //! Camera capture and publication belong to the lifetime of one media connection.
 use super::*;
-use crate::camera::CameraFrame;
 use crate::camera::{CameraAccess, CameraError, CameraSink, CameraState};
 use crate::share::CaptureStream;
+use crate::share::picture::VideoPicture;
 use livekit::options::{VideoEncoding, VideoPreset};
 use livekit::prelude::{LocalVideoTrack, RemoteTrackPublication, RemoteVideoTrack};
 use livekit::track::TrackDimension;
@@ -481,7 +481,7 @@ impl Actor {
                     .as_ref()
                     .is_none_or(|old| !Arc::ptr_eq(old, &frame))
             {
-                if let Some(picture) = CameraFrame::new(frame.as_ref(), true, own_size) {
+                if let Some(picture) = VideoPicture::of_buffer(&frame, true, own_size) {
                     changed.push((ShareId::Own, Arc::new(picture)));
                 }
                 camera.seen = Some(frame);
@@ -497,7 +497,7 @@ impl Actor {
             };
             if camera.frames.has_changed().unwrap_or(false)
                 && let Some(frame) = camera.frames.borrow_and_update().clone()
-                && let Some(picture) = CameraFrame::new(frame.buffer.as_ref(), false, size)
+                && let Some(picture) = VideoPicture::of_frame(&frame, false, size)
             {
                 changed.push((ShareId::Of(camera.account), Arc::new(picture)));
             }

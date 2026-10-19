@@ -3,7 +3,7 @@
 # form for use by other machines: a client on another machine cannot log in (ADR 0117).
 #
 #   cd deploy && docker compose -f local.yaml up -d --build
-#   docker compose -f local.yaml logs server       # shows the one-time owner code
+#   docker logs "$(docker compose -f local.yaml ps -q server)" 2>/dev/null   # the one-time owner code
 
 name: junto-local
 
