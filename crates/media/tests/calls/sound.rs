@@ -551,9 +551,36 @@ async fn until_microphone_muted(listener: &Person, muted: bool) {
     }
 }
 
+/// ADR 0904: a test that ends while it holds the media server paused, here cancelled as the
+/// limit of a test cancels it, gives the media server back running: the tests after it
+/// need it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a LiveKit server: run through tools/with-test-livekit.sh"]
+async fn a_test_that_ends_while_the_media_server_is_paused_gives_it_back_running() {
+    limited(async {
+        let container = std::env::var("JUNTO_TEST_LIVEKIT_CONTAINER")
+            .expect("JUNTO_TEST_LIVEKIT_CONTAINER names the LiveKit server of the test run");
+        let (paused, is_paused) = tokio::sync::oneshot::channel();
+        let pausing = tokio::spawn(async move {
+            let _media = media_server_alone().await;
+            docker(&["pause", &container]).await;
+            let _ = paused.send(());
+            std::future::pending::<()>().await;
+        });
+        is_paused.await.unwrap();
+        pausing.abort();
+        assert!(pausing.await.unwrap_err().is_cancelled());
+        let _media = media_server_shared().await;
+        until("the media server answers", crate::scene::livekit_answers).await;
+    })
+    .await;
+}
+
 async fn docker(arguments: &[&str]) {
+    // A test that a limit cancels while the command runs ends the command too.
     let done = tokio::process::Command::new("docker")
         .args(arguments)
+        .kill_on_drop(true)
         .output()
         .await
         .unwrap();

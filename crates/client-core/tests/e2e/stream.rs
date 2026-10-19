@@ -29,6 +29,7 @@ pub async fn when(
     what: &str,
     holds: impl FnMut(&LiveView) -> bool,
 ) -> LiveView {
+    crate::limit::step(what);
     let mut watch = handle.live().watch();
     match tokio::time::timeout(PATIENCE, watch.wait_for(holds)).await {
         Ok(Some(view)) => view,
@@ -145,6 +146,7 @@ pub async fn told_until(
     what: &str,
     mut done: impl FnMut(&[Notice]) -> bool,
 ) -> Vec<Notice> {
+    crate::limit::step(what);
     let mut found = Vec::new();
     let reading = async {
         while !done(&found) {
@@ -776,4 +778,17 @@ async fn the_call_routes_answer_with_typed_results_and_their_events_reach_the_st
     let error = api.own_call().await.unwrap_err();
     assert!(matches!(error, ApiError::Unreachable(_)), "{error}");
     assert!(error.code().is_none());
+}
+
+#[tokio::test]
+async fn the_waits_of_the_live_tests_note_their_steps() {
+    let server = TestServer::start("Steps").await;
+    let device = crate::support::Device::new();
+    let handle = device.add(&server.address()).await;
+    when(&handle, "the stream of the server", |_| true).await;
+    assert!(
+        crate::limit::last_steps().contains("the stream of the server"),
+        "{}",
+        crate::limit::last_steps()
+    );
 }

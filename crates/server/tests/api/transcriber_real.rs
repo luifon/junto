@@ -62,6 +62,7 @@ async fn the_real_worker_transcribes_the_microphone_and_the_shared_sound_of_a_re
             separate_speakers: true,
             batch_size: None,
         };
+        crate::limit::step("starts the server with the real worker");
         let server = TestServer::start_for_calls_with(|config| {
             config.recorder.as_mut().unwrap().transcriber = Some(settings);
         })
@@ -97,10 +98,12 @@ async fn the_real_worker_transcribes_the_microphone_and_the_shared_sound_of_a_re
             &microphone(&studio.ben_seat),
             junto_server::recorder::samples::silent_track(),
         );
+        crate::limit::step("records the call");
         let done = studio.finished_after(Duration::seconds(32)).await;
         let id = done.recording.id;
         assert_eq!(done.recording.transcript, TranscriptState::Waiting);
 
+        crate::limit::step("runs the real worker");
         assert!(server.transcribe().await);
         let transcript = server.transcript(ben, id).await;
         assert_eq!(transcript.state, TranscriptState::Ready, "{transcript:?}");

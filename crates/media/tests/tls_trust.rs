@@ -5,6 +5,10 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
+#[allow(dead_code)]
+#[path = "../../client-core/tests/e2e/limit.rs"]
+mod limit;
+
 use livekit::webrtc::peer_connection_factory::{
     IceServer, IceTransportsType, PeerConnectionFactory, RtcConfiguration,
 };
@@ -42,7 +46,11 @@ impl Drop for Server {
 #[tokio::test]
 #[ignore = "requires Python and OpenSSL in the isolated Linux container"]
 async fn turn_tls_uses_system_roots_and_checks_the_peer() {
+    // The test waits for processes and reads their pipes, which a timer of tokio does not
+    // end: a watch ends the test process when the test has not ended in time.
+    let _limit = limit::watch(limit::TEST_LIMIT);
     let Ok(fixtures) = std::env::var("JUNTO_TEST_TLS_FIXTURES") else {
+        limit::step("runs the isolated TLS check");
         let status = Command::new("python3")
             .args([
                 concat!(env!("CARGO_MANIFEST_DIR"), "/../../tools/test-turn-tls.py"),
@@ -65,6 +73,9 @@ async fn turn_tls_uses_system_roots_and_checks_the_peer() {
         ("wrong-name", "closed"),
         ("client-only", "untrusted"),
     ] {
+        limit::step(format!(
+            "starts the TLS server with the certificate {certificate}"
+        ));
         let mut server = Server(
             Command::new("python3")
                 .args([
@@ -113,6 +124,9 @@ async fn turn_tls_uses_system_roots_and_checks_the_peer() {
                 .unwrap_or_else(|error| panic!("hostname was not rejected: {error}"));
             connection.close();
         }
+        limit::step(format!(
+            "reads the result for the certificate {certificate}"
+        ));
         let mut result = String::new();
         output
             .read_line(&mut result)

@@ -11,6 +11,10 @@ use junto_media::audio::DeviceInfo;
 use junto_media::audio::synthetic::tone_level;
 use junto_media::calls::MediaOptions;
 
+#[allow(dead_code)]
+#[path = "../../client-core/tests/e2e/limit.rs"]
+mod limit;
+
 fn pactl(arguments: &[&str]) -> String {
     assert_eq!(
         std::env::var("JUNTO_TEST_VIRTUAL_AUDIO").as_deref(),
@@ -46,6 +50,7 @@ impl Drop for Sink {
 }
 
 fn until(reason: &str, mut ready: impl FnMut() -> bool) {
+    limit::step(reason);
     let started = Instant::now();
     while !ready() {
         assert!(started.elapsed() < Duration::from_secs(15), "{reason}");
@@ -60,6 +65,7 @@ fn named(devices: &[DeviceInfo], name: &str) -> Option<DeviceInfo> {
 #[test]
 #[ignore = "needs isolated virtual PipeWire devices: tools/linux-container.sh"]
 fn the_production_host_captures_its_playback_through_a_null_device() {
+    let _limit = limit::watch(limit::TEST_LIMIT);
     let name = "junto-test-roundtrip";
     let _sink = Sink::new(name);
     let host = MediaOptions::system().host;
@@ -125,6 +131,7 @@ fn the_production_host_captures_its_playback_through_a_null_device() {
 #[test]
 #[ignore = "needs isolated virtual PipeWire devices: tools/linux-container.sh"]
 fn the_production_device_list_follows_a_device_appearing_and_disappearing() {
+    let _limit = limit::watch(limit::TEST_LIMIT);
     let name = "junto-test-hotplug";
     let host = MediaOptions::system().host;
     assert!(named(&host.devices().unwrap().outputs, name).is_none());
@@ -179,6 +186,7 @@ fn remember_failure(
 #[test]
 #[ignore = "needs isolated virtual PipeWire devices: tools/linux-container.sh"]
 fn an_unavailable_pipewire_daemon_is_an_audio_error() {
+    let _limit = limit::watch(limit::TEST_LIMIT);
     assert_eq!(
         std::env::var("JUNTO_TEST_VIRTUAL_AUDIO").as_deref(),
         Ok("1")
@@ -209,6 +217,7 @@ fn an_unavailable_pipewire_daemon_is_an_audio_error() {
 #[test]
 #[ignore = "needs isolated virtual PipeWire devices: tools/linux-container.sh"]
 fn removing_a_monitor_ends_the_capture_without_choosing_another_device() {
+    let _limit = limit::watch(limit::TEST_LIMIT);
     let name = "junto-test-capture-removal";
     let sink = Sink::new(name);
     let host = MediaOptions::system().host;

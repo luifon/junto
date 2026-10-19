@@ -59,6 +59,7 @@ async fn scene() -> Scene {
 }
 
 async fn until(what: &str, mut holds: impl AsyncFnMut() -> bool) {
+    crate::limit::step(what);
     let started = Instant::now();
     while !holds().await {
         assert!(
@@ -67,6 +68,16 @@ async fn until(what: &str, mut holds: impl AsyncFnMut() -> bool) {
         );
         tokio::time::sleep(Wait::from_millis(100)).await;
     }
+}
+
+#[tokio::test]
+async fn the_waits_of_the_live_tests_note_their_steps() {
+    until("a condition that holds", async || true).await;
+    assert!(
+        crate::limit::last_steps().contains("a condition that holds"),
+        "{}",
+        crate::limit::last_steps()
+    );
 }
 
 /// A process of the test participant of `spikes/test-participant`.
@@ -119,6 +130,7 @@ impl Client {
 
     /// Waits until the process printed `event`.
     async fn until(&self, event: &str) {
+        crate::limit::step(format!("the participant reports {event:?}"));
         let started = Instant::now();
         while !self.saw(event) {
             assert!(
@@ -132,6 +144,7 @@ impl Client {
 
     /// Waits until the process has ended.
     async fn ended(&mut self) -> ExitStatus {
+        crate::limit::step("the participant ends");
         let started = Instant::now();
         loop {
             if let Some(status) = self.child.try_wait().unwrap() {

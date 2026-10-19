@@ -51,6 +51,9 @@ pub struct MediaServer {
 
 impl Drop for MediaServer {
     fn drop(&mut self) {
+        if self._alone.is_some() {
+            give_the_media_server_back();
+        }
         let mut holders = HOLDERS.lock().unwrap();
         if let Some(at) = holders.iter().position(|test| *test == self.test) {
             holders.remove(at);
@@ -74,6 +77,72 @@ fn holding(
 
 fn this_test() -> String {
     std::thread::current().name().unwrap_or("a test").to_owned()
+}
+
+/// The longest time that one Docker command of a restore of the media server may take.
+const RESTORE_LIMIT: Duration = Duration::from_secs(30);
+
+/// Makes the LiveKit server of the test run run and answer again. A test that holds it
+/// alone pauses or stops it; when that test ends in another way than its own last step, by
+/// a failure or by its limit, the tests after it would find no media server.
+fn give_the_media_server_back() {
+    let Ok(container) = std::env::var("JUNTO_TEST_LIVEKIT_CONTAINER") else {
+        return;
+    };
+    // Each command does nothing to a server that runs already.
+    for action in ["unpause", "start"] {
+        docker_within(&[action, &container], RESTORE_LIMIT);
+    }
+    let started = std::time::Instant::now();
+    while !livekit_answers() {
+        if started.elapsed() > PATIENCE {
+            eprintln!("after {PATIENCE:?} the media server {container} does not answer");
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// Runs a Docker command from a drop, which cannot wait for a future, and ends it at
+/// `limit`.
+fn docker_within(arguments: &[&str], limit: Duration) {
+    let Ok(mut child) = std::process::Command::new("docker")
+        .args(arguments)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        return;
+    };
+    let started = std::time::Instant::now();
+    while matches!(child.try_wait(), Ok(None)) {
+        if started.elapsed() > limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// True when the API of the media server answers a request at once.
+pub fn livekit_answers() -> bool {
+    use std::io::{Read, Write};
+    let Ok(url) = std::env::var("JUNTO_TEST_LIVEKIT_API_URL") else {
+        return false;
+    };
+    let address = url.trim_start_matches("http://");
+    let Ok(mut stream) = std::net::TcpStream::connect(address) else {
+        return false;
+    };
+    let wait = Some(Duration::from_millis(500));
+    if stream.set_read_timeout(wait).is_err()
+        || stream.write_all(b"GET / HTTP/1.0\r\n\r\n").is_err()
+    {
+        return false;
+    }
+    let mut answer = [0u8; 12];
+    stream.read_exact(&mut answer).is_ok() && answer.starts_with(b"HTTP/1.")
 }
 
 fn note_wait(how: &str) {
