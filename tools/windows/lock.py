@@ -14,9 +14,12 @@ starts, also when this process is ended from outside:
   has ended, and only then exits, which releases the lock. When the keeper itself is ended, the
   limit "end the processes when the job is closed" ends them; the lock is then free while
   Windows ends them.
-- On other systems the command inherits the locked file, as with `flock`: the lock lasts until
-  the last process that holds the file has ended. TERM, INT and HUP to this process are sent on
-  to the command.
+- On other systems the command inherits the locked file: the lock lasts until the last process
+  that holds the file has ended. JUNTO_LOCK_FD names its descriptor for the command, so that a
+  program that closes the descriptors of its children can pass it on (tools/ci/group.py). BSD `lockf`, which tools/serial.sh prefers on macOS, does not
+  pass its file on, so its lock ends with its direct child. TERM, INT and HUP to this process
+  end it while it waits for the lock, and are sent on to the command after the command has
+  started.
 
 The system releases the lock when the process that holds it ends, also when it is killed, so a
 run that ended without its cleanup leaves no lock behind.
@@ -58,9 +61,10 @@ def hold(file):
 
 
 class Job:
-    """A Windows job object that ends its processes when its last handle is closed."""
+    """A Windows job object that ends its processes when its last handle is closed. With a name,
+    another process can open the job by that name (`Job.opened`) and end its processes."""
 
-    def __init__(self):
+    def __init__(self, name=None, opened=False):
         import ctypes
         from ctypes import wintypes
 
@@ -84,6 +88,8 @@ class Job:
                                                     wintypes.BOOL, wintypes.DWORD]
         kernel32.WaitForMultipleObjects.restype = wintypes.DWORD
         kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.OpenJobObjectW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+        kernel32.OpenJobObjectW.restype = wintypes.HANDLE
         self.resume_process = ctypes.WinDLL("ntdll").NtResumeProcess
         self.resume_process.argtypes = [wintypes.HANDLE]
         self.resume_process.restype = ctypes.c_long
@@ -104,11 +110,19 @@ class Job:
                         ("job_memory", ctypes.c_size_t), ("peak_process_memory", ctypes.c_size_t),
                         ("peak_job_memory", ctypes.c_size_t)]
 
-        self.handle = self.checked(kernel32.CreateJobObjectW(None, None))
+        if opened:
+            self.handle = self.checked(kernel32.OpenJobObjectW(0x1F001F, False, name))  # JOB_OBJECT_ALL_ACCESS
+            return
+        self.handle = self.checked(kernel32.CreateJobObjectW(None, name))
         limits = ExtendedLimits()
         limits.basic.flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
         self.checked(kernel32.SetInformationJobObject(self.handle, 9, ctypes.byref(limits),
                                                       ctypes.sizeof(limits)))
+
+    @classmethod
+    def opened(cls, name):
+        """The job of that name, which another process created."""
+        return cls(name, opened=True)
 
     def checked(self, value):
         if not value:
@@ -260,11 +274,37 @@ def keep(front, created, lock, command):
         return 1 if code is None else code
 
 
-def run(file, command):
-    process = subprocess.Popen(command, pass_fds=[file.fileno()])
-    for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
-        signal.signal(number, lambda received, _: process.send_signal(received))
-    code = process.wait()
+class Forward:
+    """The handling of TERM, INT and HUP: before the command starts they end this process; a
+    signal that arrives while the command is being started is sent to it once it has started;
+    after that each is sent on to the command."""
+
+    def __init__(self):
+        self.process = None
+        self.starting = False
+        self.pending = []
+        for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            signal.signal(number, self.received)
+
+    def received(self, number, _):
+        if self.process is not None:
+            self.process.send_signal(number)
+        elif self.starting:
+            self.pending.append(number)
+        else:
+            raise SystemExit(128 + number)
+
+    def start(self, command, file):
+        self.starting = True
+        self.process = subprocess.Popen(command, pass_fds=[file.fileno()],
+                                        env=dict(os.environ, JUNTO_LOCK_FD=str(file.fileno())))
+        for number in self.pending:
+            self.process.send_signal(number)
+        return self.process
+
+
+def run(file, command, forward):
+    code = forward.start(command, file).wait()
     return 128 - code if code < 0 else code
 
 
@@ -280,10 +320,11 @@ def main(arguments):
         keeper = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--keeper", str(os.getpid()),
                                    str(created), *arguments])
         return keeper.wait()
+    forward = Forward()
     with open(arguments[0], "a+b") as file:
         hold(file)
         try:
-            return run(file, arguments[1:])
+            return run(file, arguments[1:], forward)
         except OSError as error:
             print(f"lock.py: {arguments[1]} did not start: {error}", file=sys.stderr)
             return 127

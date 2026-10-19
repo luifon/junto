@@ -11,6 +11,8 @@ export JUNTO_TEST_POSTGRES_IMAGE JUNTO_TEST_LIVEKIT_IMAGE
 
 # The linters of the deployment job.
 JUNTO_CI_ACTIONLINT_IMAGE=rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+# The BuildKit of the builder of the deployment job (tools/ci/deployment.sh).
+JUNTO_CI_BUILDKIT_IMAGE=moby/buildkit:v0.27.1@sha256:1e110c71d389d6d24f67b9438e2f7b8da749a6ff407b22a1631e025c95599368
 JUNTO_CI_SHELLCHECK_IMAGE=koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d
 
 # The tool versions that the jobs install when the runner does not provide them.

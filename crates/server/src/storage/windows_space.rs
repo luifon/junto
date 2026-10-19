@@ -1,5 +1,5 @@
-//! The free space of a directory on Windows (ADR 0605). This is the only module of the
-//! server with unsafe code.
+//! The free space of a directory on Windows (ADR 0605). One of the two modules of the server
+//! with unsafe code.
 
 #![allow(unsafe_code)]
 

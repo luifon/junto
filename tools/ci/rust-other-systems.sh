@@ -15,6 +15,10 @@ case "$(uname -s)" in
     *) echo "this job runs on macOS or on Windows, not on $(uname -s)" >&2; exit 2 ;;
 esac
 
+# Code under cfg(windows) and cfg(target_os = "macos") is linted only on its own system.
+# --keep-going: the lints of every crate, also after a crate with an error.
+step "Lint"
+cargo clippy --workspace --all-targets --locked --keep-going -- -D warnings
 step "Build every target"
 cargo build --workspace --all-targets --locked
 if [ "$system" = macos ]; then
@@ -47,7 +51,6 @@ if [ "$system" = macos ]; then
     export TMPDIR="$temporary"
     python3 packaging/check_signing.py
     python3 packaging/check_update.py
-    cargo clippy --locked -p junto-client-core --all-targets -- -D warnings
     exit 0
 fi
 

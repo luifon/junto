@@ -9,6 +9,7 @@ mod calls_live;
 mod limit;
 mod limit_tests;
 mod messages;
+mod processes;
 mod recording_server;
 mod recordings;
 mod remaining;
