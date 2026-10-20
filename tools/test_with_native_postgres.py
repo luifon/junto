@@ -199,21 +199,160 @@ class Extract(unittest.TestCase):
             with self.assertRaisesRegex(postgres.Failure, "not a file"):
                 postgres.extract(archive, root / "installation")
 
+    def test_a_name_with_backslashes_is_refused_on_every_system(self):
+        # Windows reads the backslashes as separators: the file would be written beside the
+        # folder of the installation.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            archive = root / "pg.zip"
+            archive.write_bytes(archive_bytes({"pgsql/bin/..\\..\\outside": b"x"}))
+            with self.assertRaisesRegex(postgres.Failure, "outside its folder"):
+                postgres.extract(archive, root / "installation")
+            self.assertEqual(sorted(p.name for p in root.iterdir()), ["pg.zip"])
+
+    def test_a_path_is_inside_its_folder_only_below_it(self):
+        folder = pathlib.Path(tempfile.gettempdir()) / "installation"
+        self.assertTrue(postgres.inside(folder / "bin" / "initdb", folder))
+        self.assertFalse(postgres.inside(folder / "bin" / ".." / ".." / "outside", folder))
+        self.assertFalse(postgres.inside(folder, folder))
+        self.assertFalse(postgres.inside(folder.parent / "installation-2" / "x", folder))
+
+
+def detached_process():
+    """A process that sleeps and is not a child of the tests, as the server that pg_ctl
+    starts: its parent ends at once. On Unix it leads a session of its own."""
+    child = "import time; time.sleep(60)"
+    session = ", start_new_session=True" if os.name != "nt" else ""
+    streams = "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL"
+    parent = (f"import subprocess, sys; child = subprocess.Popen([sys.executable, '-c', {child!r}], "
+              f"{streams}{session}); print(child.pid)")
+    result = subprocess.run([sys.executable, "-c", parent], capture_output=True, text=True, timeout=30, check=True)
+    return int(result.stdout.split()[0])
+
+
+class Stop(unittest.TestCase):
+    def test_a_server_that_pg_ctl_does_not_stop_is_ended_by_its_process_number(self):
+        number = detached_process()
+        try:
+            with tempfile.TemporaryDirectory() as temporary:
+                root = pathlib.Path(temporary)
+                (root / "data").mkdir()
+                (root / "data" / "postmaster.pid").write_text(f"{number}\n{root / 'data'}\n")
+
+                def failed_stop(*_arguments, **_options):
+                    raise postgres.Failure("the stop of PostgreSQL failed")
+
+                with mock.patch.object(postgres, "checked", failed_stop), \
+                        contextlib.redirect_stdout(io.StringIO()) as printed:
+                    stopped = postgres.stop(root / "pgsql", root / "data", root / "output")
+            self.assertIs(stopped, True)
+            self.assertFalse(postgres.running(number))
+            self.assertIn(f"ended from process {number}", printed.getvalue())
+        finally:
+            end_process(number)
+
+    def test_a_missing_pg_ctl_is_a_failed_stop(self):
+        number = detached_process()
+        try:
+            with tempfile.TemporaryDirectory() as temporary:
+                root = pathlib.Path(temporary)
+                (root / "data").mkdir()
+                (root / "data" / "postmaster.pid").write_text(f"{number}\n")
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertIs(postgres.stop(root / "no-installation", root / "data", root / "output"), True)
+            self.assertFalse(postgres.running(number))
+        finally:
+            end_process(number)
+
+    def test_without_a_process_file_no_server_runs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            self.assertIs(postgres.stop(pathlib.Path(temporary), pathlib.Path(temporary), None), True)
+
+
+@unittest.skipIf(os.name == "nt", "Windows ends a process on SIGTERM without a handler")
+class Main(unittest.TestCase):
+    """main with every PostgreSQL program replaced; the command is a Python program."""
+
+    def setUp(self):
+        self.handlers = {number: signal.getsignal(number) for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
+        self.stops = []
+        patches = [
+            mock.patch.object(postgres, "current_system", lambda: "macos"),
+            mock.patch.object(postgres, "fetch", lambda *_arguments: pathlib.Path("pg.zip")),
+            mock.patch.object(postgres, "extract", lambda *_arguments: None),
+            mock.patch.object(postgres, "checked", lambda *_arguments, **_options: None),
+            mock.patch.object(postgres, "free_port", lambda: 5999),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def tearDown(self):
+        for number, handler in self.handlers.items():
+            signal.signal(number, handler)
+
+    def main(self, command):
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as errors:
+            status = postgres.main([sys.executable, "-c", command])
+        return status, errors.getvalue()
+
+    def test_a_signal_during_the_stop_does_not_interrupt_it_and_the_exit_states_the_signal(self):
+        def stop(*_arguments):
+            self.stops.append("started")
+            os.kill(os.getpid(), signal.SIGTERM)
+            time.sleep(0.2)
+            self.stops.append("finished")
+            return True
+
+        with mock.patch.object(postgres, "stop", stop):
+            status, errors = self.main("pass")
+        self.assertEqual(self.stops[:2], ["started", "finished"])
+        self.assertEqual(status, 128 + signal.SIGTERM)
+        self.assertIn(f"stopped after signal {int(signal.SIGTERM)}", errors)
+
+    def test_a_signal_during_the_command_ends_it_and_stops_the_server(self):
+        def stop(*_arguments):
+            self.stops.append("stopped")
+            return True
+
+        command = "import os, signal, time; os.kill(os.getppid(), signal.SIGTERM); time.sleep(30)"
+        began = time.monotonic()
+        with mock.patch.object(postgres, "stop", stop):
+            status, _ = self.main(command)
+        self.assertLess(time.monotonic() - began, 20)
+        self.assertIn("stopped", self.stops)
+        self.assertEqual(status, 128 + signal.SIGTERM)
+
+    def test_a_server_that_still_runs_after_the_stop_fails_the_program(self):
+        with mock.patch.object(postgres, "stop", lambda *_arguments: False):
+            status, errors = self.main("pass")
+        self.assertEqual(status, 1)
+        self.assertIn("still runs", errors)
+
+    def test_the_exit_code_of_the_command_is_the_exit_code_of_the_program(self):
+        with mock.patch.object(postgres, "stop", lambda *_arguments: True):
+            self.assertEqual(self.main("raise SystemExit(7)")[0], 7)
+            self.assertEqual(self.main("pass")[0], 0)
+
 
 class Signals(unittest.TestCase):
     @unittest.skipIf(os.name == "nt", "Windows ends a process on SIGTERM without a handler")
-    def test_the_first_signal_raises_ended_and_the_next_are_ignored(self):
+    def test_only_the_first_signal_raises_and_none_after_defer(self):
         program = ("import os, signal, sys; sys.path.insert(0, sys.argv[1]); import with_native_postgres as p\n"
-                   "p.end_on_signals()\n"
+                   "s = p.Signals(); s.install()\n"
                    "try:\n"
                    "    os.kill(os.getpid(), signal.SIGTERM)\n"
                    "except p.Ended as ended:\n"
                    "    os.kill(os.getpid(), signal.SIGHUP)\n"
-                   "    print('ended', ended.number)\n")
+                   "    print('ended', ended.number, s.number)\n"
+                   "t = p.Signals(); t.install(); t.defer()\n"
+                   "os.kill(os.getpid(), signal.SIGINT)\n"
+                   "print('deferred', t.number)\n")
         result = subprocess.run([sys.executable, "-c", program, str(REPOSITORY / "tools")],
                                 capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.split(), ["ended", str(int(signal.SIGTERM))])
+        term, interrupt = str(int(signal.SIGTERM)), str(int(signal.SIGINT))
+        self.assertEqual(result.stdout.split(), ["ended", term, term, "deferred", interrupt])
 
 
 class Commands(unittest.TestCase):

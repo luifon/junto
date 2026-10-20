@@ -124,6 +124,12 @@ def fetch(downloads, url, expected, get=download):
     return path
 
 
+def inside(path, folder):
+    """Whether `path`, with its links and its ".." parts resolved, is below `folder`."""
+    path, folder = os.path.realpath(path), os.path.realpath(folder)
+    return os.path.commonpath([path, folder]) == folder and path != folder
+
+
 def extract(archive, destination):
     """Extracts the parts of the server below `destination`, without the top folder `pgsql`.
     A file keeps the permission bits that the ZIP states for it."""
@@ -132,13 +138,16 @@ def extract(archive, destination):
             parts = pathlib.PurePosixPath(member.filename).parts
             if len(parts) < 3 or parts[0] != "pgsql" or parts[1] not in PARTS or member.is_dir():
                 continue
-            if any(part in ("..", "") for part in parts) or ":" in member.filename:
+            # Windows reads a backslash as a separator, so pgsql/bin/..\..\x would leave the
+            # folder there although no part of the name is "..".
+            target = destination.joinpath(*parts[1:])
+            if (any(part in ("..", "") for part in parts) or ":" in member.filename or "\\" in member.filename
+                    or not inside(target, destination)):
                 raise Failure(f"the ZIP holds a path outside its folder: {member.filename}")
             # A ZIP written on Unix states the type and the permission bits of each entry.
             mode = member.external_attr >> 16 if member.create_system == 3 else 0
             if stat.S_IFMT(mode) not in (0, stat.S_IFREG):
                 raise Failure(f"the ZIP holds an entry that is not a file: {member.filename}")
-            target = destination.joinpath(*parts[1:])
             target.parent.mkdir(parents=True, exist_ok=True)
             with opened.open(member) as source, open(target, "wb") as file:
                 shutil.copyfileobj(source, file, 1 << 20)
@@ -197,14 +206,78 @@ def checked(command, what, output, log=None):
         raise Failure(f"{what} failed")
 
 
-def stop(installation, data, output):
-    """Stops the server of `data` when one runs; prints why a stop failed."""
-    if not (data / "postmaster.pid").exists():
+def server_number(data):
+    """The process number of the server of `data`, from the first line of postmaster.pid."""
+    try:
+        return int((data / "postmaster.pid").read_text().splitlines()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def running(number):
+    """Whether the process `number` runs."""
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        query_limited_information, still_active = 0x1000, 259
+        handle = kernel.OpenProcess(query_limited_information, False, number)
+        if not handle:
+            return False
+        try:
+            code = wintypes.DWORD()
+            return bool(kernel.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == still_active
+        finally:
+            kernel.CloseHandle(handle)
+    try:
+        os.kill(number, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def end_tree(number):
+    """Ends the process `number` and its child processes. On Unix the server that pg_ctl
+    starts leads a process group of its own, which holds its child processes."""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(number)], stdin=subprocess.DEVNULL,
+                       capture_output=True, timeout=60)
         return
     try:
-        checked(stop_command(installation, data), "the stop of PostgreSQL", output)
-    except Failure:
+        if os.getpgid(number) == number:
+            os.killpg(number, signal.SIGKILL)
+        else:
+            os.kill(number, signal.SIGKILL)
+    except ProcessLookupError:
         pass
+
+
+def stop(installation, data, output, end_seconds=30):
+    """Stops the server of `data` with pg_ctl. When pg_ctl fails or its time limit ends and
+    the server still runs, ends the server and its child processes by the process number of
+    postmaster.pid. Returns whether no server of `data` runs afterwards."""
+    number = server_number(data)
+    if number is None:
+        return True
+    try:
+        checked(stop_command(installation, data), "the stop of PostgreSQL", output)
+    except (Failure, OSError) as failure:
+        print(f"PostgreSQL was not stopped by pg_ctl: {failure}", flush=True)
+    if not running(number):
+        return True
+    print(f"PostgreSQL still runs after pg_ctl stop: its processes are ended from process {number}", flush=True)
+    end_tree(number)
+    deadline = time.monotonic() + end_seconds
+    while running(number) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    return not running(number)
 
 
 class Ended(BaseException):
@@ -215,20 +288,51 @@ class Ended(BaseException):
         self.number = number
 
 
-def end_on_signals():
-    """pg_ctl starts the server in a session of its own, so the end of the process group of
-    this program does not end it. The first signal that ends this program raises Ended, and
-    the stop of the server runs; the next signals are ignored, so that they do not end the
-    stop."""
-    numbers = [getattr(signal, name) for name in ("SIGTERM", "SIGINT", "SIGHUP") if hasattr(signal, name)]
+class Signals:
+    """SIGTERM, SIGINT and SIGHUP end the program after the stop of the server. pg_ctl starts
+    the server in a session of its own, so the end of the process group of this program does
+    not end it. Only the first signal raises Ended, and only before `defer`: the cleanup calls
+    `defer` first, so no signal interrupts it, and a signal during the cleanup is recorded."""
 
-    def raise_ended(number, _frame):
-        for each in numbers:
-            signal.signal(each, signal.SIG_IGN)
-        raise Ended(number)
+    def __init__(self):
+        self.number = None
+        self.raising = True
 
-    for number in numbers:
-        signal.signal(number, raise_ended)
+    def install(self):
+        for name in ("SIGTERM", "SIGINT", "SIGHUP"):
+            if hasattr(signal, name):
+                signal.signal(getattr(signal, name), self.handle)
+
+    def handle(self, number, _frame):
+        if self.number is None:
+            self.number = number
+        if self.raising:
+            self.raising = False
+            raise Ended(number)
+
+    def defer(self):
+        self.raising = False
+
+
+def serve(arguments, version, downloads, url, expected, installation, data, log, output):
+    """Starts the server of `data` and runs the command with its address; returns the exit
+    code of the command, or 1 when the server did not start."""
+    try:
+        extract(fetch(downloads, url, expected), installation)
+        started = time.monotonic()
+        checked(init_command(installation, data), "initdb", output)
+        # The runner has no other process that takes a port between this choice and the
+        # start; a taken port ends the start with the log of the server.
+        port = free_port()
+        # On Windows, pg_ctl starts the server with the administrator rights removed from
+        # its token, which the server requires.
+        checked(start_command(installation, data, log, port), "the start of PostgreSQL", output, log)
+    except (Failure, OSError) as failure:
+        print(f"PostgreSQL {version} did not start: {failure}", flush=True)
+        return 1
+    print(f"PostgreSQL {version} runs at 127.0.0.1:{port}, started in {time.monotonic() - started:.0f} s",
+          flush=True)
+    return subprocess.run(arguments, env=command_environment(os.environ, port)).returncode
 
 
 def main(arguments):
@@ -252,34 +356,36 @@ def main(arguments):
             print(f"PostgreSQL {version} was not downloaded: {failure}", flush=True)
             return 1
         return 0
-    end_on_signals()
+    signals = Signals()
+    signals.install()
+    root = pathlib.Path(tempfile.mkdtemp(prefix="junto-postgres-"))
+    installation, data, log = root / "pgsql", root / "data", root / "server.log"
+    output = root / "programs.log"
+
+    def cleanup():
+        signals.defer()
+        stopped = stop(installation, data, output)
+        shutil.rmtree(root, ignore_errors=True)
+        return stopped
+
+    # Ended can be raised once, before the cleanup has called defer. When it is raised in
+    # the cleanup of the finally, the cleanup runs again in the except, where no signal
+    # interrupts it.
+    status = 1
     try:
-        with tempfile.TemporaryDirectory(prefix="junto-postgres-", ignore_cleanup_errors=True) as temporary:
-            root = pathlib.Path(temporary)
-            installation, data, log = root / "pgsql", root / "data", root / "server.log"
-            output = root / "programs.log"
-            try:
-                try:
-                    extract(fetch(downloads, url, expected), installation)
-                    started = time.monotonic()
-                    checked(init_command(installation, data), "initdb", output)
-                    # The runner has no other process that takes a port between this choice
-                    # and the start; a taken port ends the start with the log of the server.
-                    port = free_port()
-                    # On Windows, pg_ctl starts the server with the administrator rights
-                    # removed from its token, which the server requires.
-                    checked(start_command(installation, data, log, port), "the start of PostgreSQL", output, log)
-                except (Failure, OSError) as failure:
-                    print(f"PostgreSQL {version} did not start: {failure}", flush=True)
-                    return 1
-                print(f"PostgreSQL {version} runs at 127.0.0.1:{port}, started in "
-                      f"{time.monotonic() - started:.0f} s", flush=True)
-                return subprocess.run(arguments, env=command_environment(os.environ, port)).returncode
-            finally:
-                stop(installation, data, output)
-    except Ended as ended:
-        print(f"PostgreSQL {version} stopped after signal {ended.number}", file=sys.stderr, flush=True)
-        return 128 + ended.number
+        try:
+            status = serve(arguments, version, downloads, url, expected, installation, data, log, output)
+        finally:
+            stopped = cleanup()
+    except Ended:
+        stopped = cleanup()
+    if signals.number is not None:
+        print(f"PostgreSQL {version} stopped after signal {signals.number}", file=sys.stderr, flush=True)
+        status = 128 + signals.number
+    if not stopped:
+        print(f"PostgreSQL {version} still runs: its processes did not end", file=sys.stderr, flush=True)
+        status = status or 1
+    return status
 
 
 if __name__ == "__main__":
