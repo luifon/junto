@@ -1,4 +1,5 @@
 use super::*;
+use junto_client::shell::Pane;
 
 #[gpui::test]
 #[ignore = "needs PostgreSQL and LiveKit"]
@@ -472,4 +473,249 @@ fn the_detached_call_draws_the_notices_and_the_bars_of_its_call(cx: &mut TestApp
     shown(&mut window, "the person may speak", "may-speak-unmute");
     world.run(caller.calls.leave());
     window.click("leave-call");
+}
+
+/// The people of the call that a window draws in the panel of its call.
+fn panel_people(window: &mut Window) -> Vec<Occupant> {
+    window
+        .view()
+        .lists()
+        .and_then(|lists| lists.call.clone())
+        .map(|panel| panel.people)
+        .unwrap_or_default()
+}
+
+/// The call window has the chat, the members and the settings of its call, so that a
+/// person can use it alone (ADR 0772). The text that its composer holds goes to the main
+/// window when it closes.
+#[gpui::test]
+#[ignore = "needs PostgreSQL and LiveKit"]
+fn the_call_window_has_the_chat_the_members_and_the_settings_of_its_call(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server_with_media("Call window panel");
+    let admin = world.owner(&server);
+    let caller = admin.caller(&world);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
+    voice_channel(&world, &admin, &mut window, ROOM);
+    turn_processing_off(&mut window);
+    let voice = room(&mut window);
+    enter(
+        &world,
+        &caller,
+        CallTarget {
+            server_id: admin.handle.id(),
+            place: CallPlace::Channel {
+                workspace_id: window.view().workspace().unwrap().id,
+                channel_id: voice.id,
+            },
+        },
+    );
+    let ada = admin.handle.account().unwrap();
+    let workspace_id = window.view().workspace().unwrap().id;
+    window.click_channel(ROOM);
+    window.click("join-call");
+    window.until("connected", |window| {
+        window
+            .view()
+            .call
+            .is_some_and(|call| call.phase == Phase::Connected)
+    });
+    window.click("detach-call");
+    let mut call = window.call_window();
+    // A narrow call window: the panel lies over the stage.
+    call.cx
+        .simulate_resize(gpui::size(gpui::px(480.0), gpui::px(640.0)));
+    call.settle();
+
+    // The panel starts closed. The buttons of the header open its tabs.
+    assert!(!call.shows("call-panel"));
+    call.click("open-call-chat");
+    call.until("the chat of the call is shown", |call| {
+        call.shows("call-panel") && call.shows("call-chat")
+    });
+
+    // The recording control changes when the person may record: the header keeps its
+    // height, and the panel under it does not move (ADR 0730).
+    assert!(call.shows("no-record-permission"));
+    let before = (
+        call.cx.debug_bounds("call-panel").unwrap(),
+        call.cx.debug_bounds("close-call-panel").unwrap(),
+    );
+    let api = admin.handle.api();
+    let roles = world.run(api.workspace_roles(workspace_id)).unwrap();
+    let everyone = roles.iter().find(|role| role.is_everyone).unwrap();
+    let mut permissions = everyone.permissions.clone();
+    permissions.push(WorkspacePermission::RecordCalls);
+    world
+        .run(api.update_workspace_role(
+            workspace_id,
+            everyone.id,
+            &UpdateWorkspaceRole {
+                name: None,
+                permissions: Some(permissions),
+            },
+        ))
+        .unwrap();
+    call.until("the person may record", |call| {
+        !call.shows("no-record-permission") && call.shows("start-recording")
+    });
+    assert_eq!(
+        before,
+        (
+            call.cx.debug_bounds("call-panel").unwrap(),
+            call.cx.debug_bounds("close-call-panel").unwrap(),
+        )
+    );
+
+    // The main window shows another channel: the chat of the call window still reads the
+    // messages of the call.
+    window.click_channel("general");
+    admin.send(
+        &world,
+        voice.id,
+        crate::messages::document("Hello from Ada"),
+    );
+    call.until_message("Hello from Ada");
+    call.write("Hello from the call window");
+    call.until_message("Hello from the call window");
+
+    // The volume of Ada.
+    call.click("call-tab-members");
+    let slider = crate::harness::selector(format!("volume:{ada}"));
+    call.until("the volume control is drawn", |call| call.shows(slider));
+    call.click(slider);
+    call.press(&["left"; 20].join(" "));
+    call.until("Ada is not played", |call| {
+        panel_people(call)
+            .iter()
+            .any(|person| person.account_id == ada && person.volume == 0)
+            && heard(&call.sound, ADMIN_TONE_HZ) < ABSENT_DBFS
+    });
+
+    // The devices.
+    call.click("call-tab-settings");
+    call.until("the devices are listed", |call| call.shows("input-device"));
+    call.click("input-device");
+    call.click("device-choice-1");
+    call.until("the microphone is chosen", |call| {
+        call.view()
+            .lists()
+            .and_then(|lists| lists.call.clone())
+            .is_some_and(|panel| panel.audio.inputs[1].selected)
+    });
+
+    // The panel closes with its button, which is inside the window.
+    let close = call.cx.debug_bounds("close-call-panel").unwrap();
+    let width = call.cx.update(|window, _| window.viewport_size().width);
+    assert!(close.right() <= width, "{close:?} beyond {width:?}");
+    call.click("close-call-panel");
+    assert!(!call.shows("call-panel"));
+
+    // Text that the composer of the call window holds is in the composer of the main
+    // window after the call window closed.
+    call.click("open-call-chat");
+    call.in_shell(|shell, window, cx| {
+        shell.type_message(Pane::Main, "Not sent yet", window, cx);
+    });
+    call.click("return-call");
+    window.until("the call is back in the main window", |window| {
+        !window
+            .state
+            .read_with(&window.cx, |state, _| state.is_call_detached())
+    });
+    // The main window shows another channel: the text waits for the voice channel.
+    assert_eq!(
+        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
+        ""
+    );
+    window.click_channel(ROOM);
+    window.until("the text is in the main window", |window| {
+        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)) == "Not sent yet"
+    });
+    window.click("leave-call");
+    world.run(caller.calls.leave());
+}
+
+/// The chat of a direct-message call in the call window is the conversation of its two
+/// accounts.
+#[gpui::test]
+#[ignore = "needs PostgreSQL and LiveKit"]
+fn the_call_window_of_a_direct_call_has_its_conversation(cx: &mut TestAppContext) {
+    let world = World::new();
+    let server = world.server_with_media("Direct call window");
+    let admin = world.owner(&server);
+    let caller = admin.caller(&world);
+    let (_directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
+    let server_id = admin.handle.id();
+    let other = admin.handle.account().unwrap();
+    let own = window.view().person.account_id.unwrap();
+    window.state.update(&mut window.cx, |state, cx| {
+        state.open_conversation(server_id, other, cx)
+    });
+    window.until("conversation shown", |window| {
+        window.shows("start-direct-call")
+    });
+    window.click("start-direct-call");
+    window.until("the other account receives a ring", |_| {
+        admin
+            .handle
+            .live()
+            .view()
+            .model
+            .is_some_and(|model| model.incoming_invitations().next().is_some())
+    });
+    let invitation = admin
+        .handle
+        .live()
+        .view()
+        .model
+        .unwrap()
+        .incoming_invitations()
+        .next()
+        .unwrap()
+        .clone();
+    world
+        .run(caller.calls.join_invited(
+            CallTarget {
+                server_id,
+                place: CallPlace::direct(own, other),
+            },
+            invitation.id,
+        ))
+        .unwrap();
+    window.until("the other person is in the call", |window| {
+        window.shows("active-direct-call")
+    });
+    window.click("detach-call");
+    // The main window shows the conversation in the whole main area, with Return.
+    window.until("the main window shows the separate call", |window| {
+        window.shows("call-in-separate-window")
+            && !window.shows("call-panel")
+            && !window.shows("call-stage")
+            && window.shows("message-list")
+    });
+    window.write("From the main window");
+    window.until_message("From the main window");
+    let mut call = window.call_window();
+    call.click("open-call-chat");
+    call.until("the conversation is the chat", |call| {
+        call.shows("call-chat")
+            && call
+                .view()
+                .lists()
+                .and_then(|lists| lists.conversation.as_ref().map(|row| row.account_id))
+                == Some(other)
+    });
+    call.until_message("From the main window");
+    // The main window shows a channel: the call window still reads the conversation.
+    window.click_channel("general");
+    call.write("From the call window");
+    call.until_message("From the call window");
+    call.click("call-tab-members");
+    call.until("the volume of the other person is drawn", |call| {
+        call.shows_named(format!("volume:{other}"))
+    });
+    call.click("leave-call");
+    window.until("the call has ended", |window| window.view().call.is_none());
+    world.run(caller.calls.leave());
 }

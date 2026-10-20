@@ -241,7 +241,7 @@ impl Shell {
     ) -> impl IntoElement + use<> {
         let colors = theme.colors;
         let workspace = lists.workspace.as_ref();
-        let in_call = workspace.is_some_and(|workspace| workspace.call.is_some());
+        let in_call = lists.call.is_some();
         let (channels, entries) = match workspace {
             Some(workspace) => self.channel_rows(view, workspace, theme, window, cx),
             None => (

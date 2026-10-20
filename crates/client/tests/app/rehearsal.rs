@@ -1103,8 +1103,8 @@ fn own_share(window: &mut Window) -> OwnShare {
 fn stage(window: &mut Window) -> Option<ShareStage> {
     window
         .view()
-        .workspace()
-        .and_then(|workspace| workspace.call.clone())
+        .lists()
+        .and_then(|lists| lists.call.clone())
         .and_then(|panel| panel.stage)
 }
 

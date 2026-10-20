@@ -23,7 +23,7 @@ use crate::assets::Icon;
 use crate::state::CameraAction;
 use crate::state::view::{
     CallPanel, CallStrip, ChannelRow, DeviceChoice, INPUT_SEGMENTS, Microphone, MicrophoneLine,
-    Occupant, OwnShare, Presence, Relation, ShellView, SoundWarning, VoiceState,
+    Occupant, OwnShare, PanelPlace, Presence, Relation, ShellView, SoundWarning, VoiceState,
 };
 use crate::text;
 use crate::theme::{Theme, theme, u};
@@ -32,6 +32,10 @@ use crate::ui::{
     SectionLabel, Segmented, SelectBox, StyleExt, Tab, TileMark, Toggle, VolumeSlider,
     float_shadow, icon, tooltip,
 };
+
+/// The width that a panel over the content adds for its close button, in pixels of the
+/// design.
+const PANEL_CLOSE_WIDTH: f32 = 40.0;
 
 /// The pane of the panel of a call that is shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -56,6 +60,13 @@ pub(crate) struct VolumeControl {
     pub(crate) state: Entity<SliderState>,
     pub(crate) focus: FocusHandle,
     pub(crate) _changes: Subscription,
+}
+
+/// A person outside the call in the member list of a call, with the line of the state.
+struct OutsideRow {
+    account_id: AccountId,
+    name: SharedString,
+    state: Option<(Icon, SharedString)>,
 }
 
 /// The marks on the plate of the tile of a person, and the words for them.
@@ -125,14 +136,6 @@ fn member_states(occupant: &Occupant) -> Vec<(Icon, SharedString)> {
         states.push((Icon::Hand, text::HAND_RAISED.into()));
     }
     states
-}
-
-pub(crate) fn occupants(channel: &ChannelRow) -> &[Occupant] {
-    channel
-        .voice
-        .as_ref()
-        .map(|voice| voice.occupants.as_slice())
-        .unwrap_or_default()
 }
 
 impl Shell {
@@ -339,14 +342,15 @@ impl Shell {
     /// The stage of the call: the people as tiles, or what the call waits for.
     pub(crate) fn render_stage(
         &self,
-        channel: &ChannelRow,
         panel: &CallPanel,
         theme: &Theme,
         cx: &gpui::App,
     ) -> AnyElement {
         let colors = theme.colors;
         let faces = self.shown_faces();
-        let people = occupants(channel);
+        let people = panel.people.as_slice();
+        // A direct-message call rings until the other person takes a place in it.
+        let ringing = panel.direct().filter(|direct| !direct.joined);
         let waiting = |title: &'static str, sentence: String, selector: &'static str| {
             div()
                 .id(selector)
@@ -397,7 +401,7 @@ impl Shell {
             .justify_start()
             .overflow_y_scroll()
             .p(u(12.0));
-        let note = |sentence: &'static str| {
+        let note = |sentence: String| {
             div()
                 .typeface(theme.types.small, theme)
                 .text_size(u(13.0))
@@ -419,7 +423,7 @@ impl Shell {
             )),
             Phase::Reconnecting => viewport.justify_center().child(waiting(
                 text::CALL_RECONNECTING,
-                text::connection_dropped(panel.interrupted_at, &channel.name),
+                text::connection_dropped(panel.interrupted_at, panel.place_name()),
                 "call-lost",
             )),
             Phase::Connected => {
@@ -499,12 +503,20 @@ impl Shell {
                                 .flex_none()
                                 .children(tiles),
                         )
-                        .when(people.len() < 2, |viewport| {
+                        .when_some(ringing, |viewport, direct| {
+                            viewport.child(
+                                div()
+                                    .debug_selector(|| "direct-call-ringing".to_owned())
+                                    .mt(u(14.0))
+                                    .child(note(text::calling(direct.name.as_deref()))),
+                            )
+                        })
+                        .when(ringing.is_none() && people.len() < 2, |viewport| {
                             viewport.child(
                                 div()
                                     .debug_selector(|| "alone-in-call".to_owned())
                                     .mt(u(14.0))
-                                    .child(note(text::ALONE_IN_CALL)),
+                                    .child(note(text::ALONE_IN_CALL.to_owned())),
                             )
                         })
                         .when(visible.len() < people.len(), |viewport| {
@@ -544,7 +556,7 @@ impl Shell {
                         .border_t_1()
                         .border_color(Hsla::from(colors.basalt_rule))
                         .bg(Hsla::from(colors.basalt_deep))
-                        .child(note(text::SOUND_RETURNS)),
+                        .child(note(text::SOUND_RETURNS.to_owned())),
                 )
             })
             .into_any_element()
@@ -554,7 +566,6 @@ impl Shell {
     pub(crate) fn render_call_panel(
         &mut self,
         view: &ShellView,
-        channel: &ChannelRow,
         panel: &CallPanel,
         narrow: bool,
         window: &mut Window,
@@ -575,7 +586,7 @@ impl Shell {
         let tabs = div()
             .id("call-tabs")
             .role(Role::TabList)
-            .aria_label(channel.name.clone())
+            .aria_label(SharedString::from(panel.place_name().to_owned()))
             .flex()
             .flex_none()
             .items_stretch()
@@ -584,30 +595,40 @@ impl Shell {
             .border_b_1()
             .border_color(Hsla::from(colors.rule))
             .bg(Hsla::from(colors.limestone))
-            .child(tab(
-                CallTab::Chat,
-                Icon::Chat,
-                text::CHAT,
-                "call-tab-chat",
-                cx,
-            ))
-            .child(tab(
-                CallTab::Members,
-                Icon::People,
-                text::MEMBERS,
-                "call-tab-members",
-                cx,
-            ))
-            .child(tab(
-                CallTab::Settings,
-                Icon::Gear,
-                text::SETTINGS,
-                "call-tab-settings",
-                cx,
-            ))
+            // The tabs give up their width before the close button does: the button
+            // stays inside the panel.
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_w_0()
+                    .items_stretch()
+                    .overflow_hidden()
+                    .child(tab(
+                        CallTab::Chat,
+                        Icon::Chat,
+                        text::CHAT,
+                        "call-tab-chat",
+                        cx,
+                    ))
+                    .child(tab(
+                        CallTab::Members,
+                        Icon::People,
+                        text::MEMBERS,
+                        "call-tab-members",
+                        cx,
+                    ))
+                    .child(tab(
+                        CallTab::Settings,
+                        Icon::Gear,
+                        text::SETTINGS,
+                        "call-tab-settings",
+                        cx,
+                    )),
+            )
             .when(narrow, |tabs| {
-                tabs.child(div().flex_1()).child(
-                    div().flex().items_center().child(
+                tabs.child(
+                    div().flex().flex_none().items_center().child(
                         Button::new("close-call-panel")
                             .kind(ButtonKind::Ghost)
                             .icon(Icon::X)
@@ -621,19 +642,22 @@ impl Shell {
                 )
             });
         let pane = match self.call_tab {
-            CallTab::Chat => self.render_call_chat(view, channel, theme, window, cx),
-            CallTab::Members => self.render_call_members(view, channel, panel, theme, window, cx),
+            CallTab::Chat => self.render_call_chat(view, panel, theme, window, cx),
+            CallTab::Members => self.render_call_members(view, panel, theme, window, cx),
             CallTab::Settings => self.render_call_settings(panel, theme, window, cx),
         };
         div()
             .id("call-panel")
             .role(Role::Complementary)
-            .aria_label(channel.name.clone())
+            .aria_label(SharedString::from(panel.place_name().to_owned()))
             .debug_selector(|| "call-panel".to_owned())
             .flex()
             .flex_col()
             .flex_none()
-            .w(u(theme.metrics.call_panel_width))
+            // A panel over the content also holds its close button beside the tabs.
+            .w(u(
+                theme.metrics.call_panel_width + if narrow { PANEL_CLOSE_WIDTH } else { 0.0 }
+            ))
             .h_full()
             .bg(Hsla::from(colors.plaster))
             .border_l_1()
@@ -643,12 +667,12 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The chat of the voice channel of the call: the messages of the channel and the
-    /// composer, in the panel of the call.
+    /// The chat of the call in the panel of the call: the messages of the voice channel, or
+    /// of the direct conversation of a direct-message call, and the composer.
     fn render_call_chat(
         &mut self,
         view: &ShellView,
-        channel: &ChannelRow,
+        panel: &CallPanel,
         theme: &Theme,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -686,9 +710,12 @@ impl Shell {
                             .truncate()
                             .typeface(theme.types.name, theme)
                             .ink(colors.ink)
-                            .child(channel.name.clone()),
+                            .child(panel.place_name().to_owned()),
                     )
-                    .child(text::VOICE_CHANNEL_CHAT),
+                    .child(match panel.place {
+                        PanelPlace::Channel(_) => text::VOICE_CHANNEL_CHAT,
+                        PanelPlace::Direct(_) => text::DIRECT_CALL_CHAT,
+                    }),
             )
             .child(feed)
             .into_any_element()
@@ -697,7 +724,6 @@ impl Shell {
     fn render_call_members(
         &mut self,
         view: &ShellView,
-        channel: &ChannelRow,
         panel: &CallPanel,
         theme: &Theme,
         window: &mut Window,
@@ -786,7 +812,7 @@ impl Shell {
                     )
                 })
         };
-        let people = occupants(channel);
+        let people = panel.people.as_slice();
         let mut inside: Vec<AnyElement> = Vec::new();
         for (index, occupant) in people.iter().enumerate() {
             let name = occupant_name(occupant);
@@ -855,27 +881,54 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        let outside = panel.outside.iter().enumerate().map(|(index, member)| {
-            row(
-                people.len() + index,
-                member.account_id,
-                member.name.clone().into(),
+        // Outside the call: the members of the workspace, or the other person of a
+        // direct-message call while it rings.
+        let outside: Vec<OutsideRow> = match &panel.place {
+            PanelPlace::Channel(channel) => channel
+                .outside
+                .iter()
+                .map(|member| OutsideRow {
+                    account_id: member.account_id,
+                    name: member.name.clone().into(),
+                    state: member
+                        .place
+                        .as_ref()
+                        .map(|place| (Icon::Speaker, text::in_channel(place).into())),
+                })
+                .collect(),
+            PanelPlace::Direct(direct) if !direct.joined => vec![OutsideRow {
+                account_id: direct.other,
+                name: panel.place_name().to_owned().into(),
+                state: Some((Icon::Retry, text::CALLING.into())),
+            }],
+            PanelPlace::Direct(_) => Vec::new(),
+        };
+        let outside: Vec<AnyElement> = outside
+            .into_iter()
+            .enumerate()
+            .map(
+                |(
+                    index,
+                    OutsideRow {
+                        account_id,
+                        name,
+                        state,
+                    },
+                )| {
+                    row(people.len() + index, account_id, name.clone())
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(name_line(name, false, None))
+                                .when_some(state, |column, state| {
+                                    column.child(state_line(vec![state]))
+                                }),
+                        )
+                        .into_any_element()
+                },
             )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(name_line(member.name.clone().into(), false, None))
-                    .when_some(member.place.as_ref(), |column, place| {
-                        column.child(state_line(vec![(
-                            Icon::Speaker,
-                            text::in_channel(place).into(),
-                        )]))
-                    }),
-            )
-            .into_any_element()
-        });
-        let outside: Vec<AnyElement> = outside.collect();
+            .collect();
         let list = ScrollArea::new("call-members", &self.call_members_scroll, text::MEMBERS)
             .selector("call-members")
             .child(SectionLabel::new(text::IN_THE_CALL).count(people.len()))
@@ -891,7 +944,11 @@ impl Shell {
             .flex_1()
             .min_h_0()
             .child(list)
-            .child(self.render_invite_area(panel, theme, cx))
+            .children(
+                panel
+                    .channel()
+                    .map(|channel| self.render_invite_area(channel, theme, cx)),
+            )
             .into_any_element()
     }
 
@@ -994,7 +1051,10 @@ impl Shell {
             .into_any_element(),
             theme,
         );
-        let room_rows = self.render_room_settings(&panel.room, theme, cx);
+        let room_rows = match panel.room() {
+            Some(room) => self.render_room_settings(room, theme, cx),
+            None => Vec::new(),
+        };
         let share_volume = self.state.read(cx).voice().share_volume;
         let (volume_state, volume_focus) = self.share_volume_control(share_volume, window, cx);
         let volume_row = div()
@@ -1656,7 +1716,6 @@ impl Shell {
     pub(crate) fn render_call(
         &mut self,
         view: &ShellView,
-        channel: &ChannelRow,
         panel: &CallPanel,
         narrow: bool,
         window: &mut Window,
@@ -1676,16 +1735,27 @@ impl Shell {
                 .child(self.return_call_button(cx))
                 .into_any_element()
         } else {
-            match &panel.stage {
-                Some(shares) if panel.phase == Phase::Connected => {
-                    self.render_share_stage(channel, panel, shares, &theme, cx)
-                }
-                _ => self.render_stage(channel, panel, &theme, cx),
-            }
+            self.render_call_stage(panel, &theme, cx)
         };
         let side = (!narrow || self.call_panel_open)
-            .then(|| self.render_call_panel(view, channel, panel, narrow, window, cx));
+            .then(|| self.render_call_panel(view, panel, narrow, window, cx));
         (stage, side)
+    }
+
+    /// The stage of a call: its shares while the call is connected and a person shares,
+    /// otherwise its people.
+    pub(crate) fn render_call_stage(
+        &mut self,
+        panel: &CallPanel,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match &panel.stage {
+            Some(shares) if share_visible(panel.phase) => {
+                self.render_share_stage(panel, shares, theme, cx)
+            }
+            _ => self.render_stage(panel, theme, cx),
+        }
     }
 
     /// The cover behind a panel that lies over the content in a narrow window.
@@ -1721,5 +1791,24 @@ impl Shell {
             .shadow(float_shadow(theme.colors.shadow_deep, 0.0, 26.0))
             .child(side)
             .into_any_element()
+    }
+}
+
+/// A share is drawn while the call is connected. A call that is restored keeps the pictures
+/// of its shares and does not draw them.
+fn share_visible(phase: Phase) -> bool {
+    phase == Phase::Connected
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_reconnecting_call_does_not_show_its_retained_share() {
+        assert!(share_visible(Phase::Connected));
+        assert!(!share_visible(Phase::Reconnecting));
+        assert!(!share_visible(Phase::Connecting));
+        assert!(!share_visible(Phase::Entering));
     }
 }

@@ -108,7 +108,7 @@ impl Window {
     }
 
     /// Types a text into the composer and sends it with Enter.
-    fn write(&mut self, text: &str) {
+    pub fn write(&mut self, text: &str) {
         self.in_shell(|shell, window, cx| {
             shell.type_message(Pane::Main, text, window, cx);
             shell.focus_composer(Pane::Main, window, cx);

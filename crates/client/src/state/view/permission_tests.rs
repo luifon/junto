@@ -294,12 +294,17 @@ fn the_controls_of_a_call_read_the_list_of_the_voice_channel_of_the_call() {
             &shown(server.id, scene, daily),
             &known,
         );
-        view.workspace().unwrap().call.clone().unwrap()
+        view.lists().unwrap().call.clone().unwrap()
     };
     let shown_panel = panel(&scene);
-    assert!(!shown_panel.recording.may_record);
-    assert!(!shown_panel.room.allowed.lock && !shown_panel.room.allowed.manage);
-    assert_eq!(shown_panel.room.meeting_start, MeetingStart::NoPermission);
+    assert!(!shown_panel.recording().unwrap().may_record);
+    assert!(
+        !shown_panel.room().unwrap().allowed.lock && !shown_panel.room().unwrap().allowed.manage
+    );
+    assert_eq!(
+        shown_panel.room().unwrap().meeting_start,
+        MeetingStart::NoPermission
+    );
 
     // The list of the voice channel gives what the list of the workspace does not.
     scene.states_in(
@@ -313,16 +318,24 @@ fn the_controls_of_a_call_read_the_list_of_the_voice_channel_of_the_call() {
         ],
     );
     let shown_panel = panel(&scene);
-    assert!(shown_panel.recording.may_record);
-    assert!(shown_panel.room.allowed.lock && shown_panel.room.allowed.manage);
-    assert_eq!(shown_panel.room.meeting_start, MeetingStart::NotSharing);
+    assert!(shown_panel.recording().unwrap().may_record);
+    assert!(shown_panel.room().unwrap().allowed.lock && shown_panel.room().unwrap().allowed.manage);
+    assert_eq!(
+        shown_panel.room().unwrap().meeting_start,
+        MeetingStart::NotSharing
+    );
 
     // And it takes what the list of the workspace gives.
     scene.states(&[ViewChannel, RecordCalls, LockRoom, RunMeetingMode]);
     scene.states_in(daily, &[ViewChannel]);
     let shown_panel = panel(&scene);
-    assert!(!shown_panel.recording.may_record && !shown_panel.room.allowed.lock);
-    assert_eq!(shown_panel.room.meeting_start, MeetingStart::NoPermission);
+    assert!(
+        !shown_panel.recording().unwrap().may_record && !shown_panel.room().unwrap().allowed.lock
+    );
+    assert_eq!(
+        shown_panel.room().unwrap().meeting_start,
+        MeetingStart::NoPermission
+    );
 }
 
 #[test]

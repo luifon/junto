@@ -885,8 +885,8 @@ fn occupants(window: &mut Window) -> usize {
 fn share_stage(window: &mut Window) -> Option<junto_client::state::view::ShareStage> {
     window
         .view()
-        .workspace()
-        .and_then(|workspace| workspace.call.clone())
+        .lists()
+        .and_then(|lists| lists.call.clone())
         .and_then(|panel| panel.stage)
 }
 

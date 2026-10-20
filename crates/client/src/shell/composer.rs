@@ -302,6 +302,150 @@ impl Composer {
     }
 }
 
+/// The texts that a call window held when it closed, until another window takes them
+/// (ADR 0772). The call window that opens again with another kind takes its own; the main
+/// window takes the texts of a call window that closed for another reason.
+#[derive(Default)]
+pub(crate) struct HandedDrafts {
+    call_window: Vec<(Desk, Draft)>,
+    main: Vec<(Desk, Draft)>,
+}
+
+impl gpui::Global for HandedDrafts {}
+
+/// The window that takes the texts of a call window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HandTo {
+    /// The call window that opens again in place of the closed one.
+    CallWindow,
+    Main,
+}
+
+impl HandedDrafts {
+    /// The texts for the call window move to the main window: the call window that was to
+    /// take them did not open.
+    pub(crate) fn to_main(cx: &mut gpui::App) {
+        let handed = cx.default_global::<Self>();
+        let waiting = std::mem::take(&mut handed.call_window);
+        handed.main.extend(waiting);
+    }
+}
+
+/// The text of `second` after the text of `first`, on a line of its own, with the mentions
+/// of both.
+fn joined(first: &InputContent, second: &InputContent) -> InputContent {
+    let offset = first.text().len() + 1;
+    let mut content = InputContent::new(format!("{}\n{}", first.text(), second.text()));
+    let spans = first
+        .tokens()
+        .iter()
+        .map(|span| (span.range(), span.token()))
+        .chain(second.tokens().iter().map(|span| {
+            let range = span.range();
+            (range.start + offset..range.end + offset, span.token())
+        }));
+    for (range, token) in spans {
+        // A span that does not fit the joined text keeps its text without the mention.
+        if let Ok(with) = content.clone().with_token(range, token.clone()) {
+            content = with;
+        }
+    }
+    content
+}
+
+impl Composer {
+    /// The text of the shown place and the texts of the other places, taken out of the
+    /// composer. The composer then holds no place, so that its text is taken once.
+    fn take_all(&mut self, cx: &gpui::App) -> Vec<(Desk, Draft)> {
+        let mut taken: Vec<(Desk, Draft)> = self.drafts.drain().collect();
+        if let Some(place) = self.place.take() {
+            taken.push((
+                place,
+                Draft {
+                    content: self.input.read(cx).content(),
+                    reply_to: self.reply_to.take(),
+                    editing: self.editing.take(),
+                },
+            ));
+        }
+        taken.retain(|(_, draft)| {
+            !draft.content.text().trim().is_empty()
+                || draft.reply_to.is_some()
+                || draft.editing.is_some()
+        });
+        taken
+    }
+
+    /// Takes the text of a place that another window held. A place whose text is empty
+    /// gets it with its reply or edit; otherwise the other text follows the text that is
+    /// there, and the reply or edit that is there stays.
+    fn receive(&mut self, desk: Desk, draft: Draft, window: &mut Window, cx: &mut Context<Shell>) {
+        if self.place == Some(desk) {
+            let shown = self.input.read(cx).content();
+            let empty =
+                shown.text().trim().is_empty() && self.reply_to.is_none() && self.editing.is_none();
+            let content = if empty {
+                self.reply_to = draft.reply_to;
+                self.editing = draft.editing;
+                draft.content
+            } else {
+                joined(&shown, &draft.content)
+            };
+            self.input
+                .update(cx, |input, cx| input.set_value(content, window, cx));
+            return;
+        }
+        match self.drafts.entry(desk) {
+            std::collections::hash_map::Entry::Occupied(mut held) => {
+                let held = held.get_mut();
+                held.content = joined(&held.content, &draft.content);
+            }
+            std::collections::hash_map::Entry::Vacant(place) => {
+                place.insert(draft);
+            }
+        }
+    }
+}
+
+impl Shell {
+    /// The call window gives the texts of its composer to another window (ADR 0772).
+    pub(crate) fn hand_over_drafts(&mut self, to: HandTo, cx: &mut gpui::App) {
+        let taken = self.composer.take_all(cx);
+        if taken.is_empty() {
+            return;
+        }
+        let handed = cx.default_global::<HandedDrafts>();
+        match to {
+            HandTo::CallWindow => handed.call_window.extend(taken),
+            HandTo::Main => handed.main.extend(taken),
+        }
+    }
+
+    /// The window takes the texts that a call window gave to it.
+    pub(crate) fn take_handed_drafts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(handed) = cx.try_global::<HandedDrafts>() else {
+            return;
+        };
+        let waiting = if self.detached {
+            handed.call_window.is_empty()
+        } else {
+            handed.main.is_empty()
+        };
+        if waiting {
+            return;
+        }
+        let handed = cx.default_global::<HandedDrafts>();
+        let taken = std::mem::take(if self.detached {
+            &mut handed.call_window
+        } else {
+            &mut handed.main
+        });
+        for (desk, draft) in taken {
+            self.composer.receive(desk, draft, window, cx);
+        }
+    }
+}
+
 impl Shell {
     /// The place that the composer writes to.
     fn composer_place(&self, pane: Pane) -> Option<(ServerId, PlaceId)> {

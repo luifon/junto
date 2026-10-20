@@ -13,7 +13,7 @@ use junto_client_core::protocol::message::{
 use junto_client_core::protocol::roles::WorkspaceRole;
 use junto_client_core::protocol::structure::{ChannelKind, WorkspaceMember};
 
-use super::tests::{Scene, logged_in, scene, server, time};
+use super::tests::{Scene, calls, logged_in, scene, server, time};
 use super::*;
 
 pub(super) fn message(
@@ -281,6 +281,27 @@ fn a_server_without_a_workspace_shows_its_direct_conversations_and_notices() {
         PlaceId::Direct(with_ana.id)
     );
     assert!(lists.notices.is_some() && view.shown().notices);
+
+    // The direct-message call of this device in that conversation is shown in its place,
+    // unless the call window draws it.
+    let mut known = calls::in_call(calls::active(CallTarget {
+        server_id: server.id,
+        place: CallPlace::direct(scene.own, ana),
+    }));
+    known.people.read_name(server.id, ana, "Ana");
+    let view = derive(std::slice::from_ref(&server), &selection, &known);
+    let lists = view.lists().unwrap();
+    let call = lists.call.as_ref().unwrap();
+    assert_eq!(
+        call.direct()
+            .map(|direct| (direct.other, direct.name.as_deref())),
+        Some((ana, Some("Ana")))
+    );
+    // The side panel is the panel of the call.
+    assert!(lists.notices.is_none());
+    known.call_in_own_window = true;
+    let view = derive(std::slice::from_ref(&server), &selection, &known);
+    assert!(view.lists().unwrap().call.is_none());
 }
 
 #[test]

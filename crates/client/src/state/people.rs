@@ -878,14 +878,15 @@ pub(super) fn wanted(servers: &[ServerSnapshot], view: &ShellView) -> HashMap<Se
                     .flat_map(|voice| &voice.occupants)
                     .map(|occupant| occupant.account_id),
             );
-            if let Some(call) = &workspace.call {
-                people.extend(
-                    call.stage
-                        .iter()
-                        .flat_map(|stage| &stage.shares)
-                        .map(|share| share.account_id),
-                );
-            }
+        }
+        if let Some(call) = lists.and_then(|lists| lists.call.as_ref()) {
+            people.extend(call.people.iter().map(|person| person.account_id));
+            people.extend(
+                call.stage
+                    .iter()
+                    .flat_map(|stage| &stage.shares)
+                    .map(|share| share.account_id),
+            );
         }
         if let Some(lists) = lists {
             feed_people(lists.feed.as_ref(), &mut people);

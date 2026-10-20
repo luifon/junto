@@ -590,3 +590,215 @@ fn a_decline_before_the_answer_to_the_join_ends_the_outgoing_call(cx: &mut TestA
     window.until("the call is left", |window| window.view().call.is_none());
     assert!(window.shows("direct-call-history"));
 }
+
+/// The panel of the direct-message call that the window shows: one person of the call.
+fn direct_panel(window: &mut Window) -> Option<junto_client::state::view::CallPanel> {
+    window
+        .view()
+        .lists()
+        .and_then(|lists| lists.call.clone())
+        .filter(|panel| panel.direct().is_some())
+}
+
+/// A direct-message call is drawn as a call: its panel has the conversation, the volume of
+/// the other person, the choice of the microphone, the speaker and the camera, and the
+/// controls of a share (ADR 0735, ADR 0738).
+#[gpui::test]
+#[ignore = "needs PostgreSQL and LiveKit"]
+fn a_direct_call_has_the_chat_the_volume_the_devices_and_the_share_controls_of_a_call(
+    cx: &mut TestAppContext,
+) {
+    let world = World::new();
+    let server = world.server_with_media("Direct call panel");
+    let admin = world.owner(&server);
+    let caller = admin.caller(&world);
+    let (directory, mut window) = member(cx, &world, &server.address(), &admin, "Member");
+    turn_processing_off(&mut window);
+    let server_id = admin.handle.id();
+    let other = admin.handle.account().unwrap();
+    let own = window.view().person.account_id.unwrap();
+    window.state.update(&mut window.cx, |state, cx| {
+        state.open_conversation(server_id, other, cx)
+    });
+    window.until("conversation shown", |window| {
+        window.shows("start-direct-call")
+    });
+
+    // While it rings, the stage names the person, and the members list the person outside
+    // the call.
+    window.click("start-direct-call");
+    window.until("the call rings in the page of a call", |window| {
+        window.shows("outgoing-direct-call")
+            && window.shows("direct-call-ringing")
+            && window.shows("call-panel")
+    });
+    window.click("call-tab-members");
+    window.until("the other person is listed outside the call", |window| {
+        window.shows_named(format!("call-member:{other}"))
+            && !window.shows_named(format!("volume:{other}"))
+    });
+    window.until("the other account receives a ring", |_| {
+        admin
+            .handle
+            .live()
+            .view()
+            .model
+            .is_some_and(|model| model.incoming_invitations().next().is_some())
+    });
+    let invitation = admin
+        .handle
+        .live()
+        .view()
+        .model
+        .unwrap()
+        .incoming_invitations()
+        .next()
+        .unwrap()
+        .clone();
+    let target = CallTarget {
+        server_id,
+        place: CallPlace::direct(own, other),
+    };
+    world
+        .run(caller.calls.join_invited(target, invitation.id))
+        .unwrap();
+    window.until("the other person is in the call", |window| {
+        window.shows("active-direct-call")
+            && !window.shows("direct-call-ringing")
+            && direct_panel(window).is_some_and(|panel| panel.people.len() == 2)
+    });
+    window.until("the window hears the other person", |window| {
+        heard(&window.sound, ADMIN_TONE_HZ) > HEARD_DBFS
+    });
+
+    // The volume of the other person.
+    let slider = crate::harness::selector(format!("volume:{other}"));
+    window.until("the volume control is drawn", |window| window.shows(slider));
+    window.click(slider);
+    window.press(&["left"; 20].join(" "));
+    window.until("the other person is not played", |window| {
+        direct_panel(window).is_some_and(|panel| {
+            panel
+                .people
+                .iter()
+                .any(|person| person.account_id == other && person.volume == 0)
+        }) && heard(&window.sound, ADMIN_TONE_HZ) < ABSENT_DBFS
+    });
+    window.press(&["right"; 10].join(" "));
+    window.until("the other person is played again", |window| {
+        heard(&window.sound, ADMIN_TONE_HZ) > HEARD_DBFS
+    });
+
+    // The chat of the call is the conversation.
+    window.click("call-tab-chat");
+    assert!(window.shows("call-chat"));
+    let api = admin.handle.api();
+    let conversation = world.run(api.open_conversation(own)).unwrap();
+    world
+        .run(api.send_message(
+            junto_client_core::model::PlaceId::Direct(conversation.id),
+            &junto_client_core::protocol::message::SendMessage {
+                document: crate::messages::document("Can you hear me"),
+                reply_to: None,
+                attachments: Vec::new(),
+            },
+        ))
+        .unwrap();
+    window.until_message("Can you hear me");
+    window.write("Yes, in the call");
+    window.until_message("Yes, in the call");
+
+    // The microphone, the speaker and the camera.
+    window.click("call-tab-settings");
+    window.until("the devices are listed", |window| {
+        direct_panel(window)
+            .is_some_and(|panel| panel.audio.inputs.len() == 2 && panel.audio.outputs.len() == 2)
+    });
+    window.click("input-device");
+    window.click("device-choice-1");
+    window.click("output-device");
+    window.click("device-choice-1");
+    window.until("the microphone and the speaker are chosen", |window| {
+        direct_panel(window)
+            .is_some_and(|panel| panel.audio.inputs[1].selected && panel.audio.outputs[1].selected)
+    });
+    window.click("camera-device");
+    window.click("device-choice-1");
+    window.until("the choices are stored", |_| {
+        std::fs::read_to_string(voice_file(directory.path()))
+            .is_ok_and(|stored| stored.contains("\"camera_device\": \"generated-camera\""))
+    });
+    window.click("call-camera");
+    window.until("the other person receives the camera", |_| {
+        !caller.calls.camera_pictures().borrow().is_empty()
+    });
+    window.click("call-camera");
+
+    // A share: what is shared, and its sound.
+    window.click("call-share");
+    window.until("the screens and windows are listed", |window| {
+        window.shows("share-sources")
+    });
+    window.click("share-display:1");
+    window.click("share-sound-1");
+    window.click("start-share");
+    window.until("the own share runs with its sound", |window| {
+        own_share(window) == OwnShare::Running
+            && window.shows("share-header")
+            && window.shows("share-sound")
+            && direct_panel(window)
+                .and_then(|panel| panel.stage)
+                .is_some_and(|stage| stage.shares[0].sound == Some(ShareAudio::System))
+    });
+    window.until("the other person hears the share", |_| {
+        heard(&caller.sound, SYSTEM_TONE_HZ) > SHARE_HEARD_DBFS
+    });
+    // The other person shares a window with the sound of its application: the window
+    // chooses the share that it watches.
+    caller.calls.start_share(CaptureRequest {
+        picture: PictureSource::Window(11),
+        sound: SoundChoice::Application(SyntheticCapture::player()),
+        quality: ShareQuality::default(),
+    });
+    window.until("two shares are shown", |window| {
+        window.shows("shares-bar")
+            && direct_panel(window)
+                .and_then(|panel| panel.stage)
+                .is_some_and(|stage| stage.shares.len() == 2)
+    });
+    window.click_named(format!("share-card:{other}"));
+    window.until(
+        "the share of the other person is watched and heard",
+        |window| {
+            direct_panel(window)
+                .and_then(|panel| panel.stage)
+                .and_then(|stage| stage.watched().map(|share| share.id))
+                == Some(ShareId::Of(other))
+                && heard(&window.sound, PLAYER_TONE_HZ) > SHARE_HEARD_DBFS
+        },
+    );
+    // The volume of the watched share, and the quality of the own share.
+    window.click("share-volume");
+    window.press(&["left"; 20].join(" "));
+    window.until("the share is not played", |window| {
+        direct_panel(window)
+            .and_then(|panel| panel.stage)
+            .is_some_and(|stage| stage.volume == 0)
+            && heard(&window.sound, PLAYER_TONE_HZ) < ABSENT_DBFS
+    });
+    window.click("share-resolution-0");
+    window.click("share-frame-rate-0");
+    window.until("the settings of the share are stored", |_| {
+        std::fs::read_to_string(voice_file(directory.path())).is_ok_and(|stored| {
+            stored.contains("\"share_resolution\": \"p720\"")
+                && stored.contains("\"share_frame_rate\": 15")
+                && stored.contains("\"share_volume\": 0")
+        })
+    });
+
+    window.click("leave-call");
+    window.until("the call has ended", |window| {
+        window.view().call.is_none() && window.shows("start-direct-call")
+    });
+    world.run(caller.calls.leave());
+}

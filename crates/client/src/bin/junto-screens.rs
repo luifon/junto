@@ -87,6 +87,8 @@ mod admin;
 mod book;
 #[path = "junto-screens/cameras.rs"]
 mod cameras;
+#[path = "junto-screens/direct.rs"]
+mod direct;
 #[path = "junto-screens/discovery.rs"]
 mod discovery;
 #[path = "junto-screens/frames.rs"]
@@ -335,16 +337,26 @@ fn snapshot(account: &str, workspaces: Vec<WorkspaceState>) -> Snapshot {
 /// The state of "Acme Studio" as Luca sees it, with the members of "Studio" loaded and Ana
 /// speaking.
 fn acme_model(change: impl FnOnce(&mut WorkspaceState)) -> Arc<ServerModel> {
+    acme_model_of(change, |_| {})
+}
+
+/// [`acme_model`] with a change of the snapshot of Luca beyond the workspace.
+fn acme_model_of(
+    change: impl FnOnce(&mut WorkspaceState),
+    more: impl FnOnce(&mut Snapshot),
+) -> Arc<ServerModel> {
     let mut studio = studio();
     change(&mut studio);
-    let mut model = ServerModel::from_snapshot(stated(snapshot(
+    let mut stated_snapshot = snapshot(
         "Luca",
         vec![
             studio,
             workspace(11, "Client Alpha", false),
             workspace(12, "Client Beta", false),
         ],
-    )));
+    );
+    more(&mut stated_snapshot);
+    let mut model = ServerModel::from_snapshot(stated(stated_snapshot));
     let studio = Arc::make_mut(&mut model.workspaces[0]);
     let roles: Vec<_> = studio.roles.iter().map(|role| role.id).collect();
     studio.members = Loadable::Loaded(
@@ -2725,6 +2737,7 @@ fn run(out: &Path) -> Result<(), String> {
         Some("cameras") => cameras::draw(&mut studio),
         Some("shares") => draw_shares(&mut studio),
         Some("rules") => draw_rules(&mut studio),
+        Some("direct") => direct::draw(&mut studio),
         Some("messages") => messages::draw(&mut studio),
         Some("threads") => threads::draw(&mut studio),
         Some("discovery") => discovery::draw(&mut studio),
@@ -2741,6 +2754,7 @@ fn run(out: &Path) -> Result<(), String> {
             .and_then(|()| draw_calls(&mut studio))
             .and_then(|()| draw_shares(&mut studio))
             .and_then(|()| draw_rules(&mut studio))
+            .and_then(|()| direct::draw(&mut studio))
             .and_then(|()| messages::draw(&mut studio))
             .and_then(|()| threads::draw(&mut studio))
             .and_then(|()| discovery::draw(&mut studio))
