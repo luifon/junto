@@ -42,4 +42,4 @@ The server builds its SQL statements at run time (ADR 0008) and relies on constr
 - A test of a time limit takes no real time.
 - A machine under load makes a test slower and does not change its result: no preparation step runs under a shortened time limit.
 - A live test runs against the media server behaviour of the deployment: a room stays 60 seconds after its last person left, and a camera layer above the lowest is forwarded again after two seconds with packets. A new setting of LiveKit that changes media behaviour goes into `deploy/livekit-common.yaml`; a form that has it alone fails the check of the deployment.
-- The CI jobs on macOS and Windows run the window tests against the PostgreSQL build of their system of the same version, which `tools/with_native_postgres.py` starts without Docker (ADR 0912); the other tests that need PostgreSQL run in CI on Linux only.
+- The CI jobs on macOS and Windows run the window tests against the PostgreSQL build of their system of the same version, without Docker (ADR 0916 on macOS, ADR 0912 on Windows); the other tests that need PostgreSQL run in CI on Linux only.

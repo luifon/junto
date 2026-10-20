@@ -1,5 +1,6 @@
-"""Unit tests of tools/with_native_postgres.py. They run on every system and start no
-PostgreSQL: the CI jobs on Windows and macOS start the real one."""
+"""Unit tests of tools/with_native_postgres.py. They start no PostgreSQL: the macOS CI job
+starts the real one. The tests of the server process run on Unix; those of the shared memory
+of the server read `ipcs` of macOS."""
 
 import contextlib
 import hashlib
@@ -9,6 +10,7 @@ import pathlib
 import re
 import shutil
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -74,16 +76,11 @@ class Pin(unittest.TestCase):
             version, _, _ = postgres.build_of(self.pins, system)
             self.assertEqual(version.split("-")[0], image.group(1))
 
-    def test_each_download_is_named_by_its_version_and_has_a_sha256_of_its_own(self):
-        self.assertEqual(sorted(postgres.SYSTEMS), ["macos", "windows"])
-        sums = set()
-        for system in postgres.SYSTEMS:
-            version, url, expected = postgres.build_of(self.pins, system)
-            self.assertIn(f"postgresql-{version}-", url)
-            self.assertTrue(url.startswith("https://get.enterprisedb.com/postgresql/"))
-            self.assertRegex(expected, r"^[0-9a-f]{64}$")
-            sums.add(expected)
-        self.assertEqual(len(sums), 2)
+    def test_the_download_is_named_by_its_version_and_has_a_sha256(self):
+        self.assertEqual(sorted(postgres.SYSTEMS), ["macos"])
+        version, url, expected = postgres.build_of(self.pins, "macos")
+        self.assertEqual(url, f"https://get.enterprisedb.com/postgresql/postgresql-{version}-osx-binaries.zip")
+        self.assertRegex(expected, r"^[0-9a-f]{64}$")
 
     def test_a_missing_or_malformed_pin_is_refused(self):
         with self.assertRaisesRegex(postgres.Failure, "JUNTO_CI_POSTGRES_MACOS_SHA256"):
@@ -148,16 +145,13 @@ def zip_entry(name, mode):
 
 
 class System(unittest.TestCase):
-    def test_windows_and_macos_have_a_build_and_other_systems_none(self):
-        expected = {"nt": "windows"}.get(os.name, "macos" if sys.platform == "darwin" else None)
-        if expected is None:
-            with self.assertRaisesRegex(postgres.Failure, "with-test-postgres.sh"):
-                postgres.current_system()
-        else:
-            self.assertEqual(postgres.current_system(), expected)
-        with mock.patch.object(postgres.os, "name", "posix"), mock.patch.object(postgres.sys, "platform", "linux"):
-            with self.assertRaisesRegex(postgres.Failure, "with-test-postgres.sh"):
-                postgres.current_system()
+    def test_macos_has_a_build_and_other_systems_none(self):
+        with mock.patch.object(postgres.sys, "platform", "darwin"):
+            self.assertEqual(postgres.current_system(), "macos")
+        for platform in ("linux", "win32"):
+            with mock.patch.object(postgres.sys, "platform", platform):
+                with self.assertRaisesRegex(postgres.Failure, "with-test-postgres.sh"):
+                    postgres.current_system()
 
 
 class Extract(unittest.TestCase):
@@ -221,6 +215,7 @@ class Extract(unittest.TestCase):
 
 STREAMS = "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL"
 PYTHON = sys.executable
+INTERRUPT, QUIT, KILL = (int(getattr(signal, name, 0)) for name in ("SIGINT", "SIGQUIT", "SIGKILL"))
 
 
 def detached(program, arguments=()):
@@ -233,25 +228,7 @@ def detached(program, arguments=()):
 
 
 def alive(number):
-    """Whether a process with the number runs. Only reads; the tests use it for numbers that
-    they did not start as a server."""
-    if os.name == "nt":
-        import ctypes
-        from ctypes import wintypes
-
-        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-        kernel.OpenProcess.restype = wintypes.HANDLE
-        kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
-        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-        handle = kernel.OpenProcess(0x1000, False, number)
-        if not handle:
-            return False
-        try:
-            code = wintypes.DWORD()
-            return bool(kernel.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259
-        finally:
-            kernel.CloseHandle(handle)
+    """Whether a process with the number runs. Sends no signal: signal 0 only checks."""
     try:
         os.kill(number, 0)
     except ProcessLookupError:
@@ -268,95 +245,184 @@ def until(condition, seconds=30):
     return condition()
 
 
-# A server with one child process; the child states its number in the file of the first
-# argument. With "ignore", the server ignores SIGINT.
-SERVER = (f"import signal, subprocess, sys, time\n"
-          f"if sys.argv[2:] == ['ignore']: signal.signal(signal.SIGINT, signal.SIG_IGN)\n"
-          f"child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], {STREAMS})\n"
+# A postmaster for the tests. It starts one child process in a session of its own, as
+# PostgreSQL does, which ends when the postmaster has ended: it waits for the end of a pipe
+# whose other end only the postmaster holds. The child states its number in the file of the
+# first argument. The signals named after the file are ignored.
+SERVER = (f"import os, signal, subprocess, sys, time\n"
+          f"for name in sys.argv[2:]: signal.signal(getattr(signal, name), signal.SIG_IGN)\n"
+          f"child = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE,"
+          f" stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)\n"
           f"open(sys.argv[1], 'w').write(str(child.pid))\n"
           f"time.sleep(60)\n")
 
 
+@unittest.skipIf(os.name == "nt", "the server process of macOS")
 class ServerProcess(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self.temporary.cleanup)
         self.root = pathlib.Path(self.temporary.name)
+        self.data = self.root / "data"
+        self.data.mkdir()
+        self.sent = []
 
-    def start(self, *arguments):
-        server = postgres.Server([PYTHON, "-c", SERVER, str(self.root / "child"), *arguments], self.root / "log")
-        self.addCleanup(server.close)
-        self.addCleanup(lambda: server.running() and server.stop(1))
+    def server(self, command, port=None):
+        server = postgres.Server(command, self.root / "log", self.data, port or free_port())
+        self.addCleanup(lambda: server.process.returncode is None and server.stop(1))
+        return server
+
+    def start(self, *ignored):
+        server = self.server([PYTHON, "-c", SERVER, str(self.root / "child"), *ignored])
         self.assertTrue(until(lambda: (self.root / "child").exists() and (self.root / "child").read_text()))
         return server, int((self.root / "child").read_text())
 
-    def test_the_server_and_its_child_process_end_with_the_stop(self):
-        server, child = self.start()
-        self.assertTrue(server.running())
-        self.assertIs(server.stop(10), True)
-        self.assertFalse(server.running())
-        self.assertTrue(until(lambda: not alive(child)))
-        self.assertFalse(alive(server.number))
-
-    @unittest.skipIf(os.name == "nt", "Windows ends every process of the job at once")
-    def test_a_server_that_ignores_sigint_is_ended_with_its_group(self):
-        server, child = self.start("ignore")
-        began = time.monotonic()
-        self.assertIs(server.stop(1), True)
-        self.assertLess(time.monotonic() - began, 10)
-        self.assertTrue(until(lambda: not alive(child)))
-
-    @unittest.skipIf(os.name == "nt", "the Windows server is ended by its job, not by signals")
-    def test_every_signal_goes_to_the_number_of_the_own_child_only(self):
-        server, child = self.start("ignore")
-        sent = []
-        kill, killpg = os.kill, os.killpg
+    def recorded(self, server):
+        """os.kill that records each signal with whether the postmaster was collected when the
+        signal was sent; os.killpg fails the test."""
+        kill = os.kill
 
         def recorded_kill(number, signal_number):
-            sent.append(("kill", number, signal_number))
+            try:
+                os.waitid(os.P_PID, server.number, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                collected = False
+            except ChildProcessError:
+                collected = True
+            self.sent.append((number, int(signal_number), collected, server.process.returncode))
             return kill(number, signal_number)
 
-        def recorded_killpg(number, signal_number):
-            sent.append(("killpg", number, signal_number))
-            return killpg(number, signal_number)
+        def no_group_signal(*arguments):
+            self.fail(f"a group was signalled: {arguments}")
 
-        with mock.patch.object(postgres.os, "kill", recorded_kill), \
-                mock.patch.object(postgres.os, "killpg", recorded_killpg):
-            self.assertIs(server.stop(1), True)
-        self.assertTrue(sent)
-        self.assertEqual({number for _, number, _ in sent}, {server.number})
-        self.assertNotIn(child, {number for _, number, _ in sent})
+        return [mock.patch.object(postgres.os, "kill", recorded_kill),
+                mock.patch.object(postgres.os, "killpg", no_group_signal)]
 
-    @unittest.skipIf(os.name == "nt", "the Windows server is ended by its job, not by signals")
-    def test_a_server_that_exited_before_the_stop_is_collected_after_the_signals(self):
-        server = postgres.Server([PYTHON, "-c", "pass"], self.root / "log")
+    def stop(self, server, seconds):
+        patches = self.recorded(server)
+        for patch in patches:
+            patch.start()
+        try:
+            return server.stop(seconds)
+        finally:
+            for patch in patches:
+                patch.stop()
+
+    def test_sigint_stops_the_server_and_its_child_ends_after_it(self):
+        server, child = self.start()
+        self.assertIs(self.stop(server, 10), True)
+        self.assertEqual(self.sent, [(server.number, INTERRUPT, False, None)])
+        self.assertIsNotNone(server.process.returncode)
+        self.assertTrue(until(lambda: not alive(child)))
+
+    def test_the_signals_go_in_the_order_of_postgresql_to_the_uncollected_postmaster_only(self):
+        server, child = self.start("SIGINT", "SIGQUIT")
+        began = time.monotonic()
+        self.assertIs(self.stop(server, 0.5), True)
+        self.assertLess(time.monotonic() - began, 10)
+        self.assertEqual(self.sent, [(server.number, INTERRUPT, False, None), (server.number, QUIT, False, None),
+                                     (server.number, KILL, False, None)])
+        self.assertEqual(server.process.returncode, -KILL)
+        self.assertTrue(until(lambda: not alive(child)))
+
+    def test_a_server_that_exited_before_the_stop_gets_no_signal_and_is_collected(self):
+        server = self.server([PYTHON, "-c", "pass"])
         self.assertTrue(until(lambda: not server.running()))
         self.assertIsNone(server.process.returncode)
-        self.assertIs(server.stop(1), True)
+        self.assertIs(self.stop(server, 1), True)
+        self.assertEqual(self.sent, [])
         self.assertEqual(server.process.returncode, 0)
 
-    @unittest.skipIf(os.name == "nt", "the Windows server is ended by its job, not by signals")
-    def test_an_error_of_the_forced_end_leaves_the_stop_with_the_error(self):
-        server, _ = self.start("ignore")
+    def test_a_server_that_exits_before_its_signal_is_signalled_uncollected(self):
+        # The postmaster exits between the check and the signal: the first check states that
+        # it runs, while it has already exited. The signal must reach the exited postmaster
+        # before it is collected, whose number no other process can have.
+        server = self.server([PYTHON, "-c", "pass"])
+        self.assertTrue(until(lambda: not server.running()))
+        running = server.running
+        answers = [True]
+        with mock.patch.object(server, "running", lambda: answers.pop() if answers else running()):
+            self.assertIs(self.stop(server, 1), True)
+        self.assertEqual(self.sent, [(server.number, INTERRUPT, False, None)])
+        self.assertEqual(server.process.returncode, 0)
+
+    def test_a_stopped_postmaster_counts_as_running_and_ends_with_sigkill(self):
+        server, child = self.start("SIGINT", "SIGQUIT")
+        os.kill(server.number, signal.SIGSTOP)
+        self.assertTrue(until(lambda: os.waitid(os.P_PID, server.number,
+                                                os.WEXITED | os.WSTOPPED | os.WNOHANG | os.WNOWAIT) is not None))
+        self.assertTrue(server.running())
+        self.assertIs(self.stop(server, 0.5), True)
+        self.assertEqual([signal_number for _, signal_number, _, _ in self.sent], [INTERRUPT, QUIT, KILL])
+        self.assertEqual(server.process.returncode, -KILL)
+        self.assertTrue(until(lambda: not alive(child)))
+
+    def test_a_refused_signal_to_a_running_server_is_an_error_of_the_stop(self):
+        server, _ = self.start("SIGINT")
 
         def refused(number, signal_number):
             raise PermissionError(f"operation not permitted: {number} {signal_number}")
 
-        with mock.patch.object(postgres.os, "killpg", refused):
+        with mock.patch.object(postgres.os, "kill", refused):
             with self.assertRaises(PermissionError):
                 server.stop(1)
 
+    def test_an_open_port_after_the_collection_is_a_failed_stop(self):
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            server = self.server([PYTHON, "-c", "pass"], port=listener.getsockname()[1])
+            self.assertIs(server.stop(0.3), False)
+
+    @unittest.skipUnless(sys.platform == "darwin", "the output of ipcs of macOS")
+    def test_a_process_attached_to_the_shared_memory_of_the_server_is_a_failed_stop(self):
+        holder = subprocess.Popen([PYTHON, "-c", SEGMENT_HOLDER], stdout=subprocess.PIPE, text=True)
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+        identifier = int(holder.stdout.readline())
+        self.addCleanup(subprocess.run, ["ipcrm", "-m", str(identifier)], capture_output=True)
+        (self.data / "postmaster.pid").write_text("1\n" * 6 + f"0 {identifier}\nready\n")
+        server = self.server([PYTHON, "-c", "pass"])
+        self.assertEqual(server.attached((0, identifier)), 1)
+        self.assertIs(server.stop(0.3), False)
+        holder.kill()
+        holder.wait()
+        self.assertEqual(server.attached((0, identifier)), 0)
+        self.assertIs(server.stop(1), True)
+        listing = subprocess.run(["ipcs", "-m"], capture_output=True, text=True, check=True).stdout
+        self.assertNotIn(f" {identifier} ", listing)
+
+    def test_without_postmaster_pid_and_with_the_port_closed_the_data_directory_is_free(self):
+        server = self.server([PYTHON, "-c", "pass"])
+        self.assertIs(server.stop(1), True)
+
     def test_a_program_that_cannot_start_is_an_error_of_the_system(self):
         with self.assertRaises(OSError):
-            postgres.Server([str(self.root / "no-program")], self.root / "log")
+            postgres.Server([str(self.root / "no-program")], self.root / "log", self.data, 5999)
 
     def test_the_wait_for_the_server_fails_when_the_server_ended(self):
-        server = postgres.Server([PYTHON, "-c", "pass"], self.root / "log")
-        self.addCleanup(server.close)
-        self.addCleanup(server.stop, 1)
+        server = self.server([PYTHON, "-c", "pass"])
         self.assertTrue(until(lambda: not server.running()))
         with self.assertRaisesRegex(postgres.Failure, "ended during its start"):
             postgres.wait_until_ready(server, self.root / "pgsql", 5999, self.root / "log")
+
+
+# A process that creates a shared memory segment with the key IPC_PRIVATE, stays attached to
+# it, and prints its identifier.
+SEGMENT_HOLDER = """import ctypes, sys, time
+libc = ctypes.CDLL(None, use_errno=True)
+libc.shmat.restype = ctypes.c_void_p
+identifier = libc.shmget(0, 4096, 0o1000 | 0o600)
+if identifier < 0 or libc.shmat(identifier, None, 0) in (None, ctypes.c_void_p(-1).value):
+    sys.exit(f"shared memory: errno {ctypes.get_errno()}")
+print(identifier, flush=True)
+time.sleep(60)
+"""
+
+
+def free_port():
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        return listener.getsockname()[1]
 
 
 class FakeServer:
@@ -364,7 +430,7 @@ class FakeServer:
     stop_with = staticmethod(lambda: True)
     started_with = staticmethod(lambda: None)
 
-    def __init__(self, _command, _log):
+    def __init__(self, _command, _log, _data, _port):
         type(self).started_with()
 
     def running(self):
@@ -425,8 +491,8 @@ class Main(unittest.TestCase):
         servers = []
         real = postgres.Server
 
-        def recorded(command, log):
-            servers.append(real(command, log))
+        def recorded(command, log, data, port):
+            servers.append(real(command, log, data, port))
             return servers[-1]
 
         sleeper = [PYTHON, "-c", "import time; time.sleep(60)"]
@@ -444,23 +510,23 @@ class Main(unittest.TestCase):
         servers = []
         real = postgres.Server
 
-        def recorded(command, log):
-            servers.append(real(command, log))
+        def recorded(command, log, data, port):
+            servers.append(real(command, log, data, port))
             return servers[-1]
 
-        killpg = os.killpg
+        kill = os.kill
 
         def refused(number, signal_number):
-            if signal_number:
+            if signal_number == signal.SIGQUIT:
                 raise PermissionError("operation not permitted")
-            return killpg(number, signal_number)
+            return kill(number, signal_number)
 
         with mock.patch.object(postgres, "server_command", lambda *_arguments: sleeper), \
                 mock.patch.object(postgres, "Server", recorded), \
-                mock.patch.object(postgres, "STOP_SECONDS", 1), \
-                mock.patch.object(postgres.os, "killpg", refused):
+                mock.patch.object(postgres, "STOP_SECONDS", 0.5), \
+                mock.patch.object(postgres.os, "kill", refused):
             status, errors = self.main("pass")
-        killpg(servers[0].number, signal.SIGKILL)
+        servers[0].process.kill()
         servers[0].process.wait(timeout=30)
         self.assertEqual(status, 1)
         self.assertIn("operation not permitted", errors)

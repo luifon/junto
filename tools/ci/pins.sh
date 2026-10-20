@@ -9,12 +9,11 @@
 : "${JUNTO_TEST_LIVEKIT_IMAGE:=livekit/livekit-server:v1.13.9@sha256:d0c04791bf63ca8dcea123571827d56ba9504bd57c8d5de60ee03b5408cc3154}"
 export JUNTO_TEST_POSTGRES_IMAGE JUNTO_TEST_LIVEKIT_IMAGE
 
-# The PostgreSQL builds of EnterpriseDB that tools/with_native_postgres.py starts for the
-# window tests on macOS and on Windows (ADR 0912): the version of JUNTO_TEST_POSTGRES_IMAGE
-# with the build number of EnterpriseDB, and the SHA-256 of the ZIP of each system.
+# The PostgreSQL build of EnterpriseDB that tools/with_native_postgres.py starts for the
+# window tests on macOS (ADR 0916): the version of JUNTO_TEST_POSTGRES_IMAGE with the build
+# number of EnterpriseDB, and the SHA-256 of the ZIP.
 JUNTO_CI_POSTGRES_BUILD=17.11-1
 JUNTO_CI_POSTGRES_MACOS_SHA256=a540ac46eea5a2c612a8e097fd9aa75e41ac3f3b49bf10ffd75ecf5b1efc2997
-JUNTO_CI_POSTGRES_WINDOWS_SHA256=6eabdf00d2893713b75db4336a23c3fdf505f056e217ec6e2e95d901750cfea3
 
 # The linters of the deployment job.
 JUNTO_CI_ACTIONLINT_IMAGE=rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667

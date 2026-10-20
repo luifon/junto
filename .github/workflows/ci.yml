@@ -72,25 +72,44 @@ jobs:
             ~/.cargo/registry/cache
             target
           key: rust-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
-      # The ZIP of the PostgreSQL build of the system is kept before the tests run, so that a
-      # failed test does not lose the download. The script finds it there and does not fetch
-      # it again. The key of the cache is the SHA-256 of the ZIP in tools/ci/pins.sh.
-      - id: postgres-pin
-        shell: bash
-        run: echo "sha256=$(python3 tools/with_native_postgres.py --pin)" >> "$GITHUB_OUTPUT"
+      # The ZIP of PostgreSQL for Windows is kept before the tests run, so that a failed test
+      # does not lose the download. The script finds it there and does not fetch it again.
       - id: postgres-cache
+        if: runner.os == 'Windows'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/junto-postgres
-          key: postgres-${{ steps.postgres-pin.outputs.sha256 }}
-      - name: PostgreSQL for ${{ matrix.system }}
+          key: postgres-windows-${{ hashFiles('tools/windows/with_test_postgres.py') }}
+      - name: PostgreSQL for Windows
+        if: runner.os == 'Windows'
         shell: bash
-        run: python3 tools/with_native_postgres.py --fetch
-      - if: steps.postgres-cache.outputs.cache-hit != 'true'
+        run: python3 tools/windows/with_test_postgres.py --fetch
+      - if: runner.os == 'Windows' && steps.postgres-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/junto-postgres
-          key: postgres-${{ steps.postgres-pin.outputs.sha256 }}
+          key: postgres-windows-${{ hashFiles('tools/windows/with_test_postgres.py') }}
+      # The ZIP of PostgreSQL for macOS, kept in the same way; the key of the cache is its
+      # SHA-256 in tools/ci/pins.sh.
+      - id: postgres-macos-pin
+        if: runner.os == 'macOS'
+        shell: bash
+        run: echo "sha256=$(python3 tools/with_native_postgres.py --pin)" >> "$GITHUB_OUTPUT"
+      - id: postgres-macos-cache
+        if: runner.os == 'macOS'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/junto-postgres
+          key: postgres-macos-${{ steps.postgres-macos-pin.outputs.sha256 }}
+      - name: PostgreSQL for macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: python3 tools/with_native_postgres.py --fetch
+      - if: runner.os == 'macOS' && steps.postgres-macos-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/junto-postgres
+          key: postgres-macos-${{ steps.postgres-macos-pin.outputs.sha256 }}
       - name: Rust on ${{ matrix.system }}
         shell: bash
         run: tools/ci/rust-other-systems.sh

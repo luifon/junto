@@ -94,17 +94,19 @@ if [ -n "$other$unpinned" ]; then
 else
     echo "ok    every package that a CI script installs with apt-get has a version"
 fi
-same "PostgreSQL version of the tests in CI on Linux, on macOS and on Windows" \
+same "PostgreSQL version of the tests in CI on Linux and on Windows" \
+    "$(pin JUNTO_TEST_POSTGRES_IMAGE | sed -n 's/^postgres:\([0-9.]*\)-.*/\1/p')" \
+    "$(sed -n 's/^VERSION = "\([0-9.]*\)-[0-9]*"$/\1/p' tools/windows/with_test_postgres.py)"
+same "PostgreSQL version of the tests in CI on Linux and on macOS" \
     "$(pin JUNTO_TEST_POSTGRES_IMAGE | sed -n 's/^postgres:\([0-9.]*\)-.*/\1/p')" \
     "$(pin JUNTO_CI_POSTGRES_BUILD | sed -n 's/^\([0-9.]*\)-[0-9]*$/\1/p')"
-# The macOS job and the Windows job download the PostgreSQL build of their system (ADR 0912);
-# the program that downloads it checks the SHA-256 of the file against tools/ci/pins.sh.
+# The macOS job downloads the PostgreSQL build for macOS (ADR 0916); the program that downloads
+# it checks the SHA-256 of the file against tools/ci/pins.sh.
 if pin JUNTO_CI_POSTGRES_MACOS_SHA256 | grep -qx '[0-9a-f]\{64\}' \
-    && pin JUNTO_CI_POSTGRES_WINDOWS_SHA256 | grep -qx '[0-9a-f]\{64\}' \
     && grep -q 'sha256_of(partial)' tools/with_native_postgres.py; then
-    echo "ok    the PostgreSQL downloads of the macOS and Windows tests are checked by their SHA-256"
+    echo "ok    the PostgreSQL download of the macOS tests is checked by its SHA-256"
 else
-    fail "tools/with_native_postgres.py downloads PostgreSQL without a SHA-256 of each system in $pins"
+    fail "tools/with_native_postgres.py downloads PostgreSQL without a SHA-256 in $pins"
 fi
 # The tools of the Windows CI machine (ADR 0905): each download of the setup has a SHA-256 of
 # its own and is fetched through the function that checks it; its Python has the minor
@@ -141,6 +143,14 @@ if [ -d .github/workflows ]; then
         "$(sed -n 's/.*pipx install uv==\([0-9.]*\)$/\1/p' .github/workflows/ci.yml)" "$(pin JUNTO_CI_UV_VERSION)"
     same "cargo-deny version of the workflow cache and of $pins" \
         "$(sed -n 's/^ *key: cargo-deny-\([0-9.]*\)-.*/\1/p' .github/workflows/ci.yml)" "$(pin JUNTO_CI_CARGO_DENY_VERSION)"
+    # The Windows job downloads the PostgreSQL build for Windows (ADR 0912); the program
+    # that downloads it checks the SHA-256 of the file.
+    if grep -q '^SHA256 = "[0-9a-f]\{64\}"$' tools/windows/with_test_postgres.py \
+        && grep -q 'sha256_of(partial)' tools/windows/with_test_postgres.py; then
+        echo "ok    the PostgreSQL download of the Windows tests is checked by its SHA-256"
+    else
+        fail "tools/windows/with_test_postgres.py downloads PostgreSQL without checking its SHA-256"
+    fi
 fi
 
 unpinned=$(grep -n '^ *image:' deploy/*.yaml | grep -v -F -e 'image: ${JUNTO_SERVER_IMAGE:' -e 'image: ${JUNTO_INIT_IMAGE:' | grep -v "$digest" || true)

@@ -30,8 +30,10 @@ WINDOWS_ONLY_SKIPS = [
     "messages::files_attached_before_a_send_are_in_the_message_in_the_order_of_their_drops",
     "messages::a_pending_file_picker_cannot_retarget_an_upload",
     "messages::the_picture_of_a_message_is_read_again_for_the_next_account_of_the_server",
+    "messages::a_message_whose_files_the_retention_removed_says_so",
     "admin_pages::the_owner_exports_a_channel_saves_the_file_and_removes_the_export",
 ]
+DATABASE = {"macos": "python3 tools/with_native_postgres.py", "windows": "python3 tools/windows/with_test_postgres.py"}
 
 
 @unittest.skipIf(os.name == "nt", "the job runs with programs written as shell scripts")
@@ -67,20 +69,20 @@ class JobSteps(unittest.TestCase):
                                 capture_output=True, text=True, timeout=120)
         return result.returncode, record.read_text().splitlines(), result.stdout + result.stderr
 
-    def window_steps(self, commands):
+    def window_steps(self, commands, system):
         without = [c for c in commands if c.startswith(WINDOW_TESTS)]
-        with_database = [c for c in commands if c.startswith(f"python3 tools/with_native_postgres.py {WINDOW_TESTS}")]
+        with_database = [c for c in commands if c.startswith(f"{DATABASE[system]} {WINDOW_TESTS}")]
         return without, with_database
 
     def test_macos_runs_the_window_tests_with_postgresql_and_leaves_out_only_the_live_tests(self):
         status, commands, output = self.run_job("macos")
         self.assertEqual(status, 0, output)
-        without, with_database = self.window_steps(commands)
+        without, with_database = self.window_steps(commands, "macos")
         self.assertEqual(without, [f"{WINDOW_TESTS} updates::"])
-        self.assertEqual(with_database,
-                         [f"python3 tools/with_native_postgres.py {WINDOW_TESTS} --skip updates:: --skip live::"])
-        self.assertLess(commands.index("python3 tools/with_native_postgres.py --fetch"),
-                        commands.index(with_database[0]))
+        self.assertEqual(with_database, [f"{DATABASE['macos']} {WINDOW_TESTS} --skip updates:: --skip live::"])
+        self.assertLess(commands.index("python3 tools/test_with_native_postgres.py"),
+                        commands.index(f"{DATABASE['macos']} --fetch"))
+        self.assertLess(commands.index(f"{DATABASE['macos']} --fetch"), commands.index(with_database[0]))
 
     def test_macos_starts_the_bundle_of_the_build_until_its_first_frame(self):
         status, commands, output = self.run_job("macos")
@@ -109,10 +111,11 @@ class JobSteps(unittest.TestCase):
     def test_windows_leaves_out_the_tests_that_store_files_and_starts_no_bundle(self):
         status, commands, output = self.run_job("windows")
         self.assertEqual(status, 0, output)
-        without, with_database = self.window_steps(commands)
+        without, with_database = self.window_steps(commands, "windows")
         self.assertEqual(without, [f"{WINDOW_TESTS} updates::"])
         skips = " ".join(f"--skip {name}" for name in ["updates::", "live::", *WINDOWS_ONLY_SKIPS])
-        self.assertEqual(with_database, [f"python3 tools/with_native_postgres.py {WINDOW_TESTS} {skips}"])
+        self.assertEqual(with_database, [f"{DATABASE['windows']} {WINDOW_TESTS} {skips}"])
+        self.assertNotIn("python3 tools/with_native_postgres.py --fetch", commands)
         self.assertIn("python3 packaging/check_windows.py", commands)
         self.assertFalse(any("packaging/check_start.py" in c or "packaging/bundle.py" in c for c in commands))
 

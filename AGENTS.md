@@ -39,7 +39,7 @@ Outside the workspace:
   - An ADR states engineering decisions and their technical reasons only.
   - Every feature adds or changes an ADR, so that `docs/adr/` describes the current design.
   - The order for each feature: tests and a check in the running application, an independent review, fixes, the ADR, a local commit, and a push after a review by a maintainer.
-- ADR 0902 is the testing strategy. ADR 0904 covers the server tests, ADR 0905 continuous integration, ADR 0906 the bound on the stack of one function, ADR 0912 the window tests on Windows, ADR 0913 the native media tests, ADR 0914 the measurement of the client per mode, ADR 0915 the processes and scheduled tasks that a test must not leave behind.
+- ADR 0902 is the testing strategy. ADR 0904 covers the server tests, ADR 0905 continuous integration, ADR 0906 the bound on the stack of one function, ADR 0912 the window tests on Windows, ADR 0913 the native media tests, ADR 0914 the measurement of the client per mode, ADR 0915 the processes and scheduled tasks that a test must not leave behind, ADR 0916 the window tests and the start check on macOS.
 - `docs/step-0/README.md` lists the technical tests of step 0 (ADR 0903).
 
 ## Documents for people who install Junto
@@ -80,8 +80,8 @@ The release tooling of the client: the macOS bundle and its signing, the Linux t
 - `tools/check-pins.sh`: fails when a version that two files state differs between them, or when an image, a CI action, a Debian package of an image or a package that a workflow installs is not pinned (ADR 0014, ADR 0905).
 - `tools/process_usage.py <path>`: reads the memory, the processor time and the threads of every process whose executable is under a path, by the method of the `modes` target, to compare another application with the client (ADR 0914).
 - `tools/check-condition-wait.sh` (ADR 0786), `tools/check-client-start.sh` (a native start of the client with an empty data directory), `tools/native-devices.sh` (ADR 0913).
-- `tools/with_native_postgres.py <command>`: on macOS and Windows, starts the PostgreSQL build of the system without Docker, of the version and SHA-256 in `tools/ci/pins.sh`, gives the command `JUNTO_TEST_DATABASE_URL`, and removes the database. The CI jobs of those systems run the window tests with it (ADR 0912). `JUNTO_TEST_POSTGRES_DOWNLOADS` names the folder of the download (default `~/.cache/junto-postgres`).
-- `tools/linux/`: the Linux build image and its runner. `tools/windows/`: the setup and the lock of the Windows CI machine.
+- `tools/with_native_postgres.py <command>`: on macOS, starts the PostgreSQL build for macOS without Docker, of the version and SHA-256 in `tools/ci/pins.sh`, gives the command `JUNTO_TEST_DATABASE_URL`, and removes the database. The macOS CI job runs the window tests with it (ADR 0916). `JUNTO_TEST_POSTGRES_DOWNLOADS` names the folder of the download (default `~/.cache/junto-postgres`).
+- `tools/linux/`: the Linux build image and its runner. `tools/windows/`: the setup and the lock of the Windows CI machine, and PostgreSQL for the window tests on Windows (ADR 0912).
 
 ## Continuous integration: `tools/ci/` (ADR 0905)
 
@@ -94,7 +94,7 @@ The release tooling of the client: the macOS bundle and its signing, the Linux t
   - The addresses of the machines come from `.env.local`, which is not tracked.
 - `run-jobs.sh` runs the jobs of a run on one machine, each in a group of processes of its own (`group.py`), with the run lock of `tools/serial.sh --inherited`.
 - `caches.py` keeps the caches of each machine under their size caps before and after each run, empties a target cache that another runner version wrote, and before a run decides from the free space and the recorded use of earlier runs whether the run keeps them, empties them or starts no job; a machine sets other limits in the file `settings` of its CI directory.
-- The Linux job runs format, clippy, the workspace build and suite, the Python unit tests, the check of the Linux packages, and the comparison of `docs/api/` with the generated files, in the Linux build image. The macOS and Windows jobs run clippy, build every target, run the tests that need no database, and run the window tests with the PostgreSQL of `tools/with_native_postgres.py`; macOS also runs the media unit tests, the signing and update checks, and the start of the bundle of the client build until its first frame; Windows also runs the check of the Windows package.
+- The Linux job runs format, clippy, the workspace build and suite, the Python unit tests, the check of the Linux packages, and the comparison of `docs/api/` with the generated files, in the Linux build image. The macOS and Windows jobs run clippy, build every target, run the tests that need no database, and run the window tests with PostgreSQL; macOS also runs the media unit tests, the signing and update checks, and the start of the bundle of the client build until its first frame; Windows also runs the check of the Windows package.
 
 ## `vendor/`
 
