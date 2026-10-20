@@ -3125,7 +3125,11 @@ mod tests {
         assert_eq!((&rows[0].workspace, &rows[0].channel), (&None, &None));
         assert_eq!(
             txt::audit_head(&rows[0]),
-            format!("15 January 2027, 08:00 · Ana with the access token {token_id}")
+            "15 January 2027, 08:00 · Ana with an access token"
+        );
+        assert_eq!(
+            txt::audit_token(rows[0].token.as_ref().unwrap()),
+            format!("An access token that is not listed here, identifier {token_id}")
         );
         assert_eq!(rows[0].sentence, "The workspace “Lab” was created.");
 
@@ -3231,22 +3235,47 @@ mod tests {
     }
 
     #[test]
-    fn a_row_names_its_access_token_when_the_list_of_the_tokens_holds_it() {
+    fn a_row_names_its_access_token_by_name_and_identifier() {
         let scene = scene().administrator();
-        let held = token("deploy", scene.own);
-        let model = scene.model(with_tokens(vec![held.clone()]));
-        let mut made = entry(Some(scene.own), AuditEvent::ChannelArchived);
-        made.access_token_id = Some(held.id);
-        let admin = log(scene.server_id, AuditScope::Server, vec![made]);
+        // Two tokens of one account with one name.
+        let (first, second) = (token("deploy", scene.own), token("deploy", scene.own));
+        let model = scene.model(with_tokens(vec![first.clone(), second.clone()]));
+        let made = |token: &AccessTokenInfo| {
+            let mut made = entry(Some(scene.own), AuditEvent::ChannelArchived);
+            made.access_token_id = Some(token.id);
+            made
+        };
+        let admin = log(
+            scene.server_id,
+            AuditScope::Server,
+            vec![made(&first), made(&second)],
+        );
         let page = audit(scene.server_id, &model, None, &known(), &admin);
         assert_eq!(
             page.rows[0].token,
             Some(TokenRef {
-                id: held.id,
+                id: first.id,
                 name: Some("deploy".to_owned()),
             })
         );
-        assert!(txt::audit_head(&page.rows[0]).ends_with("Luca with the access token “deploy”"));
+        assert!(txt::audit_head(&page.rows[0]).ends_with("Luca with an access token"));
+        let lines: Vec<String> = page
+            .rows
+            .iter()
+            .map(|row| txt::audit_token(row.token.as_ref().unwrap()))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                format!("Access token “deploy”, identifier {}", first.id),
+                format!("Access token “deploy”, identifier {}", second.id),
+            ]
+        );
+        // The row of the token on the page of the tokens states the same identifier.
+        assert_eq!(
+            txt::token_identifier(first.id),
+            format!("Identifier {}", first.id)
+        );
     }
 
     #[test]

@@ -110,6 +110,9 @@ pub enum AskKind {
     DeleteCategory(CategoryId),
     CreateChannel,
     UpdateChannel(ChannelId),
+    /// A move of a channel, with the other channels whose position it changes, in one
+    /// request (ADR 0761).
+    MoveChannels(ChannelId),
     DeleteChannel(ChannelId),
     ArchiveChannel(ChannelId),
     RestoreChannel(ChannelId),

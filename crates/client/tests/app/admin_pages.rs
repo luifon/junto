@@ -2732,26 +2732,30 @@ fn the_audit_log_reads_a_range_of_dates_a_channel_and_names_the_access_token_of_
         .unwrap()
         .assume_utc();
     write_audit_entries(&world, &server, logged_in(&owner), 1, past);
-    // A channel created with an access token.
-    let token = world
-        .run(owner.api().create_access_token(&CreateAccessToken {
-            name: "deploy".to_owned(),
-            actions: vec![TokenAction::ManageStructure],
-            expires_at: OffsetDateTime::now_utc() + Duration::days(7),
-        }))
-        .unwrap();
-    let with_token = with_access_token(&world, &server, token.token.expose());
-    world
-        .run(with_token.create_channel(
-            default,
-            &CreateChannel {
-                name: "built".to_owned(),
-                kind: ChannelKind::Text,
-                category_id: None,
-                position: None,
-            },
-        ))
-        .unwrap();
+    // Two tokens with one name, each of which creates a channel.
+    let mut tokens = Vec::new();
+    for name in ["built", "rebuilt"] {
+        let token = world
+            .run(owner.api().create_access_token(&CreateAccessToken {
+                name: "deploy".to_owned(),
+                actions: vec![TokenAction::ManageStructure],
+                expires_at: OffsetDateTime::now_utc() + Duration::days(7),
+            }))
+            .unwrap();
+        let with_token = with_access_token(&world, &server, token.token.expose());
+        world
+            .run(with_token.create_channel(
+                default,
+                &CreateChannel {
+                    name: name.to_owned(),
+                    kind: ChannelKind::Text,
+                    category_id: None,
+                    position: None,
+                },
+            ))
+            .unwrap();
+        tokens.push((name, token.access_token.id));
+    }
 
     window.open_administration();
     open_page(&mut window, "admin-nav-audit", |window| {
@@ -2822,19 +2826,27 @@ fn the_audit_log_reads_a_range_of_dates_a_channel_and_names_the_access_token_of_
     );
     click_in_page(&mut window, "audit-clear");
 
-    // The entry of the channel made with the token names the token.
-    let row = awaited(&mut window, "the entry of the token", |window| {
-        server_page!(window, AuditLog)?
-            .rows
-            .into_iter()
-            .find(|row| row.token.is_some() && row.sentence.contains("built"))
-    });
-    assert_eq!(
-        row.token,
-        Some(TokenRef {
-            id: token.access_token.id,
-            name: Some("deploy".to_owned()),
-        })
-    );
-    assert!(audit_head(&row).contains("with the access token “deploy”"));
+    // The entry of each channel names its token by name and by identifier: the two
+    // tokens have one name.
+    for (name, token_id) in tokens {
+        let row = awaited(&mut window, "the entry of the token", |window| {
+            server_page!(window, AuditLog)?
+                .rows
+                .into_iter()
+                .find(|row| row.token.is_some() && row.sentence.contains(&format!("“{name}”")))
+        });
+        let token = row.token.clone().unwrap();
+        assert_eq!(
+            token,
+            TokenRef {
+                id: token_id,
+                name: Some("deploy".to_owned()),
+            }
+        );
+        assert!(window.shows(sel("audit-token", row.id)));
+        assert!(
+            junto_client::text::admin::records::audit_token(&token).contains(&token_id.to_string())
+        );
+        assert!(audit_head(&row).contains("Ada with an access token"));
+    }
 }

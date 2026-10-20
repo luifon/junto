@@ -9658,6 +9658,62 @@
         ]
       }
     },
+    "/api/v1/workspaces/{workspace_id}/channels/positions": {
+      "patch": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "Changes the category and the position of channels of one workspace in one transaction:\nall of them or none. Each move states where the client read the channel; when one of\nthem is no longer there, the answer is `conflict` and nothing changes. Each channel\nneeds \"manage channel\", as on the route of one channel.",
+        "operationId": "move_channels",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoveChannels"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "headers": {
+              "junto-event-cursor": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "May be present for verified session credentials on successful mutations, and on reads that commit changes; absent for unauthenticated requests, access tokens, or a failed receipt lookup after commit. Absence states no position and does not mean the change failed: do not repeat the change for that reason; load a fresh snapshot if reconciliation needs a known boundary. JSON Cursor {epoch,position} of the last committed event that the caller may receive at the full level with its current access after the commit, or null when no event was written or none may be received by the caller. Wait for the stream or a snapshot to reach this cursor; the header does not advance the stream cursor."
+              }
+            }
+          },
+          "default": {
+            "description": "An error. The field `error.code` states which one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/v1/workspaces/{workspace_id}/file-retention": {
       "get": {
         "tags": [
@@ -13784,6 +13840,27 @@
           }
         }
       },
+      "ChannelMove": {
+        "type": "object",
+        "description": "One channel of a change of the order: where the client read it, and where it goes.",
+        "required": [
+          "channel_id",
+          "from",
+          "to"
+        ],
+        "properties": {
+          "channel_id": {
+            "$ref": "#/components/schemas/ChannelId"
+          },
+          "from": {
+            "$ref": "#/components/schemas/ChannelPlace"
+          },
+          "to": {
+            "$ref": "#/components/schemas/ChannelPlace"
+          }
+        },
+        "additionalProperties": false
+      },
       "ChannelOverride": {
         "type": "object",
         "description": "The allow set and the deny set of one workspace role in one channel.",
@@ -13828,6 +13905,31 @@
             }
           }
         }
+      },
+      "ChannelPlace": {
+        "type": "object",
+        "description": "The category and the position of a channel.",
+        "required": [
+          "position"
+        ],
+        "properties": {
+          "category_id": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CategoryId",
+                "description": "Absent: the channel has no category."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "additionalProperties": false
       },
       "CheckItem": {
         "type": "object",
@@ -15481,6 +15583,23 @@
               "null"
             ],
             "description": "Message in the affected person's notice for 30 days and retained separately in\nthe private audit. At most 1000 characters without control characters; empty\nmeans no message."
+          }
+        },
+        "additionalProperties": false
+      },
+      "MoveChannels": {
+        "type": "object",
+        "description": "A change of the order of the channels of one workspace, applied whole or not at all.",
+        "required": [
+          "moves"
+        ],
+        "properties": {
+          "moves": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChannelMove"
+            },
+            "description": "1 to 200 channels, each named once."
           }
         },
         "additionalProperties": false

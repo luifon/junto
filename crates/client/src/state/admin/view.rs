@@ -15,7 +15,9 @@ mod tests;
 
 use junto_client_core::model::{AdminPart, Collection, LoadFailure, ServerModel, WorkspaceModel};
 use junto_client_core::protocol::ids::{CategoryId, ChannelId, ServerId, WorkspaceId};
-use junto_client_core::protocol::structure::{ArchivedChannel, ChannelKind};
+use junto_client_core::protocol::structure::{
+    ArchivedChannel, ChannelKind, ChannelMove, ChannelPlace,
+};
 use junto_client_core::protocol::{ServerPermission, WorkspacePermission};
 use time::OffsetDateTime;
 
@@ -99,8 +101,13 @@ pub struct ChannelLine {
     pub id: ChannelId,
     pub name: String,
     pub kind: ChannelKind,
+    /// The group of the row: its category, or none when the workspace holds no such
+    /// category.
     pub category_id: Option<CategoryId>,
     pub position: i32,
+    /// The category and the position that the state holds, which a move states as the
+    /// place where it read the channel.
+    pub place: ChannelPlace,
     pub permanent: bool,
     /// The first or the last channel of its group: it moves in one direction only.
     pub first: bool,
@@ -145,20 +152,26 @@ impl ChannelsPage {
             .find(|line| line.id == channel_id)
     }
 
-    /// True when a drop of the channel at the place `to` of the channels of `category_id`
-    /// moves it, and the person holds "manage channel" in every channel whose position or
-    /// category the drop changes (ADR 0761).
-    pub fn takes(&self, channel_id: ChannelId, category_id: Option<CategoryId>, to: usize) -> bool {
-        let Some(moving) = self.channel(channel_id) else {
-            return false;
-        };
-        let Some(group) = self
-            .groups
+    /// The channels of one group, in their order.
+    pub fn group(&self, category_id: Option<CategoryId>) -> Option<&ChannelGroup> {
+        self.groups
             .iter()
             .find(|group| group.category.as_ref().map(|category| category.id) == category_id)
-        else {
-            return false;
-        };
+    }
+
+    /// The moves that put the channel at the place `to` of the channels of `category_id`,
+    /// computed from this page alone, the moved channel first. Absent when they move
+    /// nothing, or when the person does not hold "manage channel" in one of the channels
+    /// whose position or category they change (ADR 0761). The drag, Up, Down and the
+    /// places of "Move to" all use it, so they offer the same destinations.
+    pub fn plan(
+        &self,
+        channel_id: ChannelId,
+        category_id: Option<CategoryId>,
+        to: usize,
+    ) -> Option<Vec<ChannelMove>> {
+        let moving = self.channel(channel_id)?;
+        let group = self.group(category_id)?;
         let order: Vec<(ChannelId, i32)> = group
             .channels
             .iter()
@@ -166,10 +179,32 @@ impl ChannelsPage {
             .collect();
         let changes =
             crate::state::admin::structure::placed(&order, channel_id, moving.position, to);
-        !changes.is_empty()
-            && changes
-                .iter()
-                .all(|(id, _)| self.channel(*id).is_some_and(|line| line.may_manage))
+        if changes.is_empty() {
+            return None;
+        }
+        let mut moves = Vec::with_capacity(changes.len());
+        for (id, position) in changes {
+            let line = self.channel(id).filter(|line| line.may_manage)?;
+            moves.push(ChannelMove {
+                channel_id: id,
+                from: line.place,
+                to: ChannelPlace {
+                    category_id,
+                    position,
+                },
+            });
+        }
+        if let Some(at) = moves.iter().position(|held| held.channel_id == channel_id) {
+            let own = moves.remove(at);
+            moves.insert(0, own);
+        }
+        Some(moves)
+    }
+
+    /// True when a drop of the channel at the place `to` of the channels of `category_id`
+    /// is offered.
+    pub fn takes(&self, channel_id: ChannelId, category_id: Option<CategoryId>, to: usize) -> bool {
+        self.plan(channel_id, category_id, to).is_some()
     }
 }
 
@@ -592,6 +627,10 @@ fn channels_page(workspace: &WorkspaceModel) -> ChannelsPage {
                 kind: held.channel.kind,
                 category_id,
                 position: held.channel.position,
+                place: ChannelPlace {
+                    category_id: held.channel.category_id,
+                    position: held.channel.position,
+                },
                 permanent: held.channel.permanent_messages,
                 first: false,
                 last: false,
@@ -605,21 +644,6 @@ fn channels_page(workspace: &WorkspaceModel) -> ChannelsPage {
         }
         if let Some(last) = lines.last_mut() {
             last.last = true;
-        }
-        // A move changes the position of the channel and of its neighbour, and of every
-        // channel of the group when two of them share a position.
-        let order: Vec<(ChannelId, i32)> =
-            lines.iter().map(|line| (line.id, line.position)).collect();
-        let manages = |channel_id: ChannelId| {
-            workspace.holds_in(channel_id, WorkspacePermission::ManageChannel)
-        };
-        for (index, line) in lines.iter_mut().enumerate() {
-            let offered = |up: bool| {
-                let changes = crate::state::admin::structure::moved(&order, index, up);
-                !changes.is_empty() && changes.iter().all(|(channel_id, _)| manages(*channel_id))
-            };
-            line.moves_up = offered(true);
-            line.moves_down = offered(false);
         }
         lines
     };
@@ -640,12 +664,39 @@ fn channels_page(workspace: &WorkspaceModel) -> ChannelsPage {
             channels: lines(Some(category.id)),
         });
     }
-    ChannelsPage {
+    let mut page = ChannelsPage {
         workspace_id: workspace.workspace.id,
         workspace_name: workspace.workspace.name.clone(),
         may_manage: holds_workspace(workspace, WorkspacePermission::ManageChannel),
         groups,
+    };
+    // A move by one place is the move to the place before or after, with the same rule of
+    // positions and permissions as a drag.
+    let offered: Vec<Vec<(bool, bool)>> = page
+        .groups
+        .iter()
+        .map(|group| {
+            let category_id = group.category.as_ref().map(|category| category.id);
+            group
+                .channels
+                .iter()
+                .enumerate()
+                .map(|(index, line)| {
+                    let up = index
+                        .checked_sub(1)
+                        .is_some_and(|to| page.takes(line.id, category_id, to));
+                    (up, page.takes(line.id, category_id, index + 1))
+                })
+                .collect()
+        })
+        .collect();
+    for (group, flags) in page.groups.iter_mut().zip(offered) {
+        for (line, (up, down)) in group.channels.iter_mut().zip(flags) {
+            line.moves_up = up;
+            line.moves_down = down;
+        }
     }
+    page
 }
 
 fn archive_page(model: &ServerModel, workspace: &WorkspaceModel, known: &Known) -> ArchivePage {

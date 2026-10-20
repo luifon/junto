@@ -223,6 +223,13 @@ fn audit_row(row: &AuditLine, action: Option<AnyElement>, theme: &Theme) -> AnyE
             )
             // The reason is text of the person who acted: it takes the lines that it
             // needs and is not cut.
+            .children(row.token.as_ref().map(|token| {
+                div()
+                    .debug_selector(move || format!("audit-token-{id}"))
+                    .typeface(theme.types.small, theme)
+                    .ink(theme.colors.ink_2)
+                    .child(txt::audit_token(token))
+            }))
             .children(row.reason.as_ref().map(|reason| {
                 div()
                     .debug_selector(move || format!("audit-reason-{id}"))
@@ -644,7 +651,11 @@ impl Shell {
         let what = AskKind::RevokeToken(token_id);
         let mut content = line(theme).child(lines(
             row.name.clone(),
-            vec![txt::token_actions(&row.actions), txt::token_detail(row)],
+            vec![
+                txt::token_actions(&row.actions),
+                txt::token_detail(row),
+                txt::token_identifier(token_id),
+            ],
             theme,
         ));
         if row.expired {

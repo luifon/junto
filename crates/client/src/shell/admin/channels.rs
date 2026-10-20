@@ -7,7 +7,7 @@ use gpui::{
 };
 use junto_client_core::protocol::call::UpdateCallSettings;
 use junto_client_core::protocol::ids::{CategoryId, ChannelId, ServerId, WorkspaceId};
-use junto_client_core::protocol::structure::{ChannelKind, UpdateChannel};
+use junto_client_core::protocol::structure::{ChannelKind, ChannelMove, UpdateChannel};
 
 use super::{
     Form, FormField, Mode, Question, group_label, line, line_text, named, page_title, refusal,
@@ -85,12 +85,21 @@ fn drop_target(
                 style
             }
         })
-        .on_drop(cx.listener(move |this, drag: &ChannelDrag, _, cx| {
-            let channel_id = drag.channel_id;
-            this.state.update(cx, |state, cx| {
-                state.place_channel(server_id, workspace_id, channel_id, category_id, to, cx);
-            });
-        }))
+        .on_drop({
+            // The drop sends the moves of the page that decided that it takes the drop.
+            let plans = page.clone();
+            cx.listener(move |this, drag: &ChannelDrag, _, cx| {
+                if drag.server_id != server_id {
+                    return;
+                }
+                let channel_id = drag.channel_id;
+                if let Some(moves) = plans.plan(channel_id, category_id, to) {
+                    this.state.update(cx, |state, cx| {
+                        state.move_channels(server_id, workspace_id, channel_id, moves, cx);
+                    });
+                }
+            })
+        })
 }
 
 impl Shell {
@@ -126,18 +135,156 @@ impl Shell {
         })
     }
 
-    fn channel_step_listener(
+    /// Sends moves that the page computed. `form` states that a form of the row sent them,
+    /// so that the row puts its form away when the server did them.
+    fn moves_listener(
         server_id: ServerId,
         workspace_id: WorkspaceId,
         channel_id: ChannelId,
-        up: bool,
+        moves: Vec<ChannelMove>,
+        form: bool,
         cx: &mut Context<Self>,
     ) -> impl Fn(&Click, &mut Window, &mut gpui::App) + 'static {
         cx.listener(move |this, _, _, cx| {
+            if form {
+                this.admin_sent(AskKind::MoveChannels(channel_id));
+            }
+            let moves = moves.clone();
             this.state.update(cx, |state, cx| {
-                state.move_channel(server_id, workspace_id, channel_id, up, cx);
+                state.move_channels(server_id, workspace_id, channel_id, moves, cx);
             });
         })
+    }
+
+    /// The first step of "Move to" on the page of the channels: the group that the channel
+    /// goes to.
+    fn render_group_choice(
+        &mut self,
+        page: &ChannelsPage,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let mut row = div()
+            .flex()
+            .flex_1()
+            .flex_wrap()
+            .min_w_0()
+            .items_center()
+            .gap(u(6.0))
+            .child(sentence(text::admin::CHANNEL_GROUP_HELP, theme));
+        for (index, group) in page.groups.iter().enumerate() {
+            let category_id = group.category.as_ref().map(|category| category.id);
+            let (label, selector) = match &group.category {
+                Some(category) => (
+                    category.name.clone(),
+                    format!("channel-group-{}", category.id),
+                ),
+                None => (
+                    text::admin::NO_CATEGORY.to_owned(),
+                    "channel-group-none".to_owned(),
+                ),
+            };
+            row = row.child(named(
+                selector,
+                Button::new(("channel-group", index))
+                    .label(label)
+                    .h(u(28.0))
+                    .px(u(10.0))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.admin.move_group = Some(category_id);
+                        cx.notify();
+                    })),
+            ));
+        }
+        row.child(
+            Button::new("channel-move-cancel")
+                .label(text::CANCEL)
+                .selector("channel-move-cancel")
+                .h(u(28.0))
+                .px(u(10.0))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.set_admin_mode(None, "", window, cx);
+                })),
+        )
+    }
+
+    /// The second step of "Move to": every place of the chosen group. A place is enabled
+    /// when a drop of the channel there would be taken, so the keyboard reaches every
+    /// destination of a drag (ADR 0703).
+    fn render_place_choice(
+        &mut self,
+        view: &AdminView,
+        page: &ChannelsPage,
+        channel_id: ChannelId,
+        category_id: Option<CategoryId>,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let (server_id, workspace_id) = (view.server_id, page.workspace_id);
+        let sending = view.sending(AskKind::MoveChannels(channel_id));
+        let others: Vec<&ChannelLine> = page
+            .group(category_id)
+            .map(|group| {
+                group
+                    .channels
+                    .iter()
+                    .filter(|line| line.id != channel_id)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut row = div()
+            .flex()
+            .flex_1()
+            .flex_wrap()
+            .min_w_0()
+            .items_center()
+            .gap(u(6.0))
+            .child(sentence(text::admin::CHANNEL_PLACE_HELP, theme));
+        for to in 0..=others.len() {
+            let label = match to.checked_sub(1).and_then(|before| others.get(before)) {
+                Some(before) => text::admin::place_after(&before.name),
+                None => text::admin::PLACE_FIRST.to_owned(),
+            };
+            let moves = page.plan(channel_id, category_id, to);
+            let enabled = moves.is_some() && !sending;
+            let mut button = Button::new(("channel-place", to))
+                .label(label)
+                .disabled(!enabled)
+                .h(u(28.0))
+                .px(u(10.0));
+            if let Some(moves) = moves {
+                button = button.on_click(Self::moves_listener(
+                    server_id,
+                    workspace_id,
+                    channel_id,
+                    moves,
+                    true,
+                    cx,
+                ));
+            }
+            row = row.child(named(format!("channel-place-{to}"), button));
+        }
+        row.child(
+            Button::new("channel-place-back")
+                .label(text::admin::OTHER_CATEGORY)
+                .selector("channel-place-back")
+                .h(u(28.0))
+                .px(u(10.0))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.admin.move_group = None;
+                    cx.notify();
+                })),
+        )
+        .child(
+            Button::new("channel-move-cancel")
+                .label(text::CANCEL)
+                .selector("channel-move-cancel")
+                .h(u(28.0))
+                .px(u(10.0))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.set_admin_mode(None, "", window, cx);
+                })),
+        )
     }
 
     fn user_limit_listener(
@@ -470,21 +617,12 @@ impl Shell {
         let channel_id = row.id;
         let number = channel_id.as_uuid().as_u128() as u64;
         let content: AnyElement = match self.admin.mode {
-            Some(Mode::MoveChannel(id)) if id == channel_id => {
-                let categories: Vec<(CategoryId, String)> = page
-                    .categories()
-                    .map(|category| (category.id, category.name.clone()))
-                    .collect();
-                self.render_category_choice(
-                    server_id,
-                    channel_id,
-                    row.category_id,
-                    &categories,
-                    theme,
-                    cx,
-                )
-                .into_any_element()
-            }
+            Some(Mode::MoveChannel(id)) if id == channel_id => match self.admin.move_group {
+                None => self.render_group_choice(page, theme, cx).into_any_element(),
+                Some(category_id) => self
+                    .render_place_choice(view, page, channel_id, category_id, theme, cx)
+                    .into_any_element(),
+            },
             _ => {
                 let detail: Option<SharedString> =
                     row.permanent.then(|| text::admin::PERMANENT_MARK.into());
@@ -514,6 +652,17 @@ impl Shell {
                             .child(icon(Icon::List, 14.0, theme.colors.ink_2))
                     })
                     .debug_selector(move || format!("channel-handle-{channel_id}"));
+                // Up and Down send the moves of the place before and after, as the page
+                // shows them now.
+                let step = |up: bool| {
+                    let to = if up {
+                        index.checked_sub(1)
+                    } else {
+                        Some(index + 1)
+                    };
+                    to.and_then(|to| page.plan(channel_id, row.category_id, to))
+                        .unwrap_or_default()
+                };
                 div()
                     .flex()
                     .flex_1()
@@ -530,7 +679,14 @@ impl Shell {
                         row.first
                             .then_some(text::admin::FIRST_ALREADY)
                             .or((!row.moves_up).then_some(text::admin::MOVE_NEEDS)),
-                        Self::channel_step_listener(server_id, workspace_id, channel_id, true, cx),
+                        Self::moves_listener(
+                            server_id,
+                            workspace_id,
+                            channel_id,
+                            step(true),
+                            false,
+                            cx,
+                        ),
                     ))
                     .child(row_action(
                         ("channel-down", number),
@@ -539,7 +695,14 @@ impl Shell {
                         row.last
                             .then_some(text::admin::LAST_ALREADY)
                             .or((!row.moves_down).then_some(text::admin::MOVE_NEEDS)),
-                        Self::channel_step_listener(server_id, workspace_id, channel_id, false, cx),
+                        Self::moves_listener(
+                            server_id,
+                            workspace_id,
+                            channel_id,
+                            step(false),
+                            false,
+                            cx,
+                        ),
                     ))
                     .child(row_action(
                         ("channel-move", number),
@@ -587,7 +750,8 @@ impl Shell {
                 ),
             ))
             .children(refusal(
-                view.refused(AskKind::UpdateChannel(channel_id)),
+                view.refused(AskKind::UpdateChannel(channel_id))
+                    .or(view.refused(AskKind::MoveChannels(channel_id))),
                 "channel-refused",
             ))
             .into_any_element()

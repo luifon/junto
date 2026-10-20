@@ -9,7 +9,7 @@ use junto_client_core::protocol::access_token::TokenAction;
 use junto_client_core::protocol::audit::AuditEvent;
 use junto_client_core::protocol::discovery::NotificationLevel;
 use junto_client_core::protocol::export::ExportFailure;
-use junto_client_core::protocol::ids::WorkspaceId;
+use junto_client_core::protocol::ids::{AccessTokenId, WorkspaceId};
 use junto_client_core::protocol::recording::RecordingStopReason;
 use junto_client_core::protocol::structure::ChannelKind;
 use junto_client_core::protocol::{ServerPermission, WorkspacePermission};
@@ -18,7 +18,7 @@ use time::OffsetDateTime;
 use super::{channel_name, date, date_time, days};
 use crate::state::admin::view::records::{
     About, Actor, ActorChoice, AuditGroup, AuditLine, ExportLine, ExportOf, ExportStatus, Names,
-    ScopeChoice, TargetChoice, TargetKind, TokenFault, TokenLine,
+    ScopeChoice, TargetChoice, TargetKind, TokenFault, TokenLine, TokenRef,
 };
 use crate::state::admin::{AuditPeriod, AuditScope};
 
@@ -170,6 +170,25 @@ pub fn token_detail(row: &TokenLine) -> String {
         format!("Expires on {}", date_time(row.expires))
     };
     format!("{creator} on {} · {expiry}", date_time(row.created))
+}
+
+/// The identifier of a token, which tells two tokens with one name apart. The row of an
+/// action in the audit log states the same identifier.
+pub fn token_identifier(token_id: AccessTokenId) -> String {
+    format!("Identifier {token_id}")
+}
+
+/// The line of an action of the audit log that names its access token: its name when the
+/// list of the tokens holds it, and always its identifier, because two tokens can have
+/// one name (ADR 0797).
+pub fn audit_token(token: &TokenRef) -> String {
+    match &token.name {
+        Some(name) => format!("Access token “{name}”, identifier {}", token.id),
+        None => format!(
+            "An access token that is not listed here, identifier {}",
+            token.id
+        ),
+    }
 }
 
 // The exports.
@@ -465,13 +484,9 @@ pub fn audit_head(line: &AuditLine) -> String {
         } => name.clone(),
         Actor::Account { name: None, .. } => "An account".to_owned(),
     };
-    // A token is named by its name when the state holds it, and by its identifier
-    // otherwise: two tokens can have one name.
+    // The token itself is named in a line of its own (`audit_token`).
     let actor = match &line.token {
-        Some(token) => match &token.name {
-            Some(name) => format!("{actor} with the access token “{name}”"),
-            None => format!("{actor} with the access token {}", token.id),
-        },
+        Some(_) => format!("{actor} with an access token"),
         None => actor,
     };
     let mut parts = vec![date_time(line.at), actor];

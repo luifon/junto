@@ -76,6 +76,9 @@ pub(crate) struct AdminUi {
     /// A number or a code: days, a user limit, an invite code.
     pub(crate) value: Entity<InputState>,
     pub(crate) mode: Option<Mode>,
+    /// The second step of "Move to" on the page of the channels: the group whose places
+    /// the row offers. Absent while the group is chosen.
+    pub(crate) move_group: Option<Option<CategoryId>>,
     /// The kind of the channel that is created.
     pub(crate) new_kind: ChannelKind,
     /// Why the text of a field was not sent.
@@ -129,6 +132,7 @@ impl AdminUi {
             name,
             value,
             mode: None,
+            move_group: None,
             new_kind: ChannelKind::Text,
             invalid: None,
             sent: None,
@@ -375,6 +379,7 @@ impl Shell {
     /// The fields and the open forms of the layer belong to the page that was shown.
     pub(crate) fn reset_admin_ui(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.admin.mode = None;
+        self.admin.move_group = None;
         self.admin.invalid = None;
         self.admin.sent = None;
         self.admin.space.release();
@@ -397,6 +402,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         self.admin.mode = mode;
+        self.admin.move_group = None;
         self.admin.invalid = None;
         self.admin.sent = None;
         self.admin.space.release();

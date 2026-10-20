@@ -10,45 +10,12 @@ use junto_client_core::protocol::ids::{
 };
 use junto_client_core::protocol::secret::InviteCode;
 use junto_client_core::protocol::structure::{
-    ArchivePeriod, ChannelKind, CreateCategory, CreateChannel, UpdateCategory, UpdateChannel,
+    ArchivePeriod, ChannelKind, ChannelMove, CreateCategory, CreateChannel, MoveChannels,
+    UpdateCategory, UpdateChannel,
 };
 
 use super::{AskKind, Made};
 use crate::state::AppState;
-
-/// The new positions that move the entry at `index` one place up or down among `order`,
-/// which holds each entry with its position in the shown order. Two neighbours with
-/// different positions exchange them. When two entries share a position, the order of the
-/// server follows their identifiers, so every entry gets its place in the new order as
-/// its position. Entries that keep their position are not named.
-pub fn moved<Id: Copy + PartialEq>(order: &[(Id, i32)], index: usize, up: bool) -> Vec<(Id, i32)> {
-    let other = if up {
-        index.checked_sub(1)
-    } else {
-        index.checked_add(1).filter(|other| *other < order.len())
-    };
-    let (Some(other), Some(entry)) = (other, order.get(index)) else {
-        return Vec::new();
-    };
-    let neighbour = order[other];
-    let distinct = order
-        .iter()
-        .enumerate()
-        .all(|(at, (_, position))| order[..at].iter().all(|(_, before)| before != position));
-    if distinct {
-        return vec![(entry.0, neighbour.1), (neighbour.0, entry.1)];
-    }
-    let mut next: Vec<Id> = order.iter().map(|(id, _)| *id).collect();
-    next.swap(index, other);
-    next.into_iter()
-        .enumerate()
-        .filter_map(|(place, id)| {
-            let position = i32::try_from(place).unwrap_or(i32::MAX);
-            let held = order.iter().find(|(of, _)| *of == id)?.1;
-            (held != position).then_some((id, position))
-        })
-        .collect()
-}
 
 /// Every entry of `order` with its place as its position, without the entries that hold
 /// it already.
@@ -143,17 +110,6 @@ pub fn placed<Id: Copy + PartialEq>(
     }
 }
 
-async fn move_channels(api: ServerApi, changes: Vec<(ChannelId, i32)>) -> Result<(), ApiError> {
-    for (channel_id, position) in changes {
-        let change = UpdateChannel {
-            position: Some(position),
-            ..UpdateChannel::default()
-        };
-        api.update_channel(channel_id, &change).await?;
-    }
-    Ok(())
-}
-
 async fn move_categories(
     api: ServerApi,
     workspace_id: WorkspaceId,
@@ -168,48 +124,6 @@ async fn move_categories(
             .await?;
     }
     Ok(())
-}
-
-/// What a drop of a channel asks of the server.
-pub struct ChannelDrop {
-    /// The new positions, the dropped channel first.
-    pub changes: Vec<(ChannelId, i32)>,
-    /// The group that the channel leaves.
-    pub from: Option<CategoryId>,
-}
-
-/// The requests of a drop of a channel at the place `to` of the channels of
-/// `category_id`. A category that the workspace does not hold is no category. Absent when
-/// the drop moves nothing.
-pub fn channel_drop(
-    workspace: &junto_client_core::model::WorkspaceModel,
-    channel_id: ChannelId,
-    category_id: Option<CategoryId>,
-    to: usize,
-) -> Option<ChannelDrop> {
-    let group = |category_id: Option<CategoryId>| {
-        category_id.filter(|id| workspace.categories.iter().any(|held| held.id == *id))
-    };
-    let channel = &workspace.channel(channel_id)?.channel;
-    let from = group(channel.category_id);
-    if category_id != group(category_id) {
-        return None;
-    }
-    let order: Vec<(ChannelId, i32)> = workspace
-        .channels
-        .iter()
-        .filter(|held| group(held.channel.category_id) == category_id)
-        .map(|held| (held.channel.id, held.channel.position))
-        .collect();
-    let mut changes = placed(&order, channel_id, channel.position, to);
-    if changes.is_empty() {
-        return None;
-    }
-    if let Some(at) = changes.iter().position(|(id, _)| *id == channel_id) {
-        let own = changes.remove(at);
-        changes.insert(0, own);
-    }
-    Some(ChannelDrop { changes, from })
 }
 
 impl AppState {
@@ -339,7 +253,15 @@ impl AppState {
         let Some(index) = order.iter().position(|(id, _)| *id == category_id) else {
             return;
         };
-        let changes = moved(&order, index, up);
+        let to = if up {
+            index.checked_sub(1)
+        } else {
+            Some(index + 1)
+        };
+        let Some(to) = to else {
+            return;
+        };
+        let changes = placed(&order, category_id, order[index].1, to);
         if changes.is_empty() {
             return;
         }
@@ -410,94 +332,26 @@ impl AppState {
         );
     }
 
-    /// Moves a channel one place up or down among the channels of its group: the
-    /// channels of its category, or the channels without a category.
-    pub fn move_channel(
+    /// Moves channels of a workspace as the page computed it from what it showed: one
+    /// request that the server applies whole or not at all, and refuses when a channel is
+    /// no longer where the page read it (ADR 0761). `channel_id` is the channel that the
+    /// person moved.
+    pub fn move_channels(
         &mut self,
         server_id: ServerId,
         workspace_id: WorkspaceId,
         channel_id: ChannelId,
-        up: bool,
+        moves: Vec<ChannelMove>,
         cx: &mut Context<Self>,
     ) {
-        let order: Vec<(ChannelId, i32)> = self
-            .client
-            .server(server_id)
-            .and_then(|server| server.live().view().model)
-            .and_then(|model| {
-                let workspace = model.workspace(workspace_id)?;
-                let group = |category_id: Option<CategoryId>| {
-                    category_id.filter(|id| workspace.categories.iter().any(|held| held.id == *id))
-                };
-                let of = group(workspace.channel(channel_id)?.channel.category_id);
-                Some(
-                    workspace
-                        .channels
-                        .iter()
-                        .filter(|held| group(held.channel.category_id) == of)
-                        .map(|held| (held.channel.id, held.channel.position))
-                        .collect(),
-                )
-            })
-            .unwrap_or_default();
-        let Some(index) = order.iter().position(|(id, _)| *id == channel_id) else {
-            return;
-        };
-        let changes = moved(&order, index, up);
-        if changes.is_empty() {
+        if moves.is_empty() {
             return;
         }
+        let moves = MoveChannels { moves };
         self.admin_ask(
             server_id,
-            AskKind::UpdateChannel(channel_id),
-            |api| move_channels(api, changes),
-            |_, (), _| {},
-            cx,
-        );
-    }
-
-    /// Puts a channel at the place `to` of the channels of `category_id`, as a drop of the
-    /// channel there asks (ADR 0761). The channel is sent first, with its new category
-    /// when it changes, and then the other channels whose position changes.
-    pub fn place_channel(
-        &mut self,
-        server_id: ServerId,
-        workspace_id: WorkspaceId,
-        channel_id: ChannelId,
-        category_id: Option<CategoryId>,
-        to: usize,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(model) = self
-            .client
-            .server(server_id)
-            .and_then(|server| server.live().view().model)
-        else {
-            return;
-        };
-        let Some(workspace) = model.workspace(workspace_id) else {
-            return;
-        };
-        let Some(ChannelDrop { changes, from }) =
-            channel_drop(workspace, channel_id, category_id, to)
-        else {
-            return;
-        };
-        let moves_group = from != category_id;
-        self.admin_ask(
-            server_id,
-            AskKind::UpdateChannel(channel_id),
-            |api| async move {
-                for (id, position) in changes {
-                    let change = UpdateChannel {
-                        position: Some(position),
-                        category_id: (id == channel_id && moves_group).then_some(category_id),
-                        ..UpdateChannel::default()
-                    };
-                    api.update_channel(id, &change).await?;
-                }
-                Ok(())
-            },
+            AskKind::MoveChannels(channel_id),
+            |api| async move { api.move_channels(workspace_id, &moves).await },
             |_, (), _| {},
             cx,
         );
@@ -676,23 +530,7 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
-    use super::{moved, placed};
-
-    #[test]
-    fn two_neighbours_with_different_positions_exchange_them() {
-        let order = [('a', 0), ('b', 4), ('c', 9)];
-        assert_eq!(moved(&order, 1, true), [('b', 0), ('a', 4)]);
-        assert_eq!(moved(&order, 1, false), [('b', 9), ('c', 4)]);
-    }
-
-    #[test]
-    fn the_first_entry_does_not_move_up_and_the_last_not_down() {
-        let order = [('a', 0), ('b', 1)];
-        assert!(moved(&order, 0, true).is_empty());
-        assert!(moved(&order, 1, false).is_empty());
-        assert!(moved(&order, 5, true).is_empty());
-        assert!(moved::<char>(&[], 0, false).is_empty());
-    }
+    use super::placed;
 
     #[test]
     fn an_entry_moved_inside_its_group_takes_the_positions_of_the_entries_that_it_passes() {
@@ -737,16 +575,5 @@ mod tests {
             placed(&[('a', 2), ('b', 2)], 'x', 0, 2),
             [('a', 0), ('b', 1), ('x', 2)]
         );
-    }
-
-    #[test]
-    fn entries_that_share_a_position_get_their_places_as_positions() {
-        // The server orders equal positions by identifier, so an exchange of two equal
-        // positions would change nothing.
-        let order = [('a', 3), ('b', 3), ('c', 3)];
-        assert_eq!(moved(&order, 2, true), [('a', 0), ('c', 1), ('b', 2)]);
-        // An entry that has its place as position already is not sent.
-        let order = [('a', 0), ('b', 1), ('c', 1)];
-        assert_eq!(moved(&order, 2, true), [('b', 2)]);
     }
 }

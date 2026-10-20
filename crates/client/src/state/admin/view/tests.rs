@@ -1163,3 +1163,85 @@ fn every_member_has_the_page_of_the_recordings_of_the_shown_workspace() {
     assert_eq!(selected, AdminPage::Workspaces);
     assert!(matches!(page, ServerPage::Workspaces(_)));
 }
+
+/// A page of the channels: "x" without a category, which the person manages, and the
+/// category "Projects" with the channels at `positions`, which the person does not manage.
+fn page_of_moves(positions: &[i32]) -> (ChannelsPage, ChannelId, CategoryId, Vec<ChannelId>) {
+    let x = ChannelId::generate();
+    let projects = CategoryId::generate();
+    let line = |id, name: &str, category_id, position, may_manage| ChannelLine {
+        id,
+        name: name.to_owned(),
+        kind: ChannelKind::Text,
+        category_id,
+        position,
+        place: ChannelPlace {
+            category_id,
+            position,
+        },
+        permanent: false,
+        first: false,
+        last: false,
+        may_manage,
+        moves_up: false,
+        moves_down: false,
+    };
+    let others: Vec<ChannelId> = positions.iter().map(|_| ChannelId::generate()).collect();
+    let page = ChannelsPage {
+        workspace_id: WorkspaceId::generate(),
+        workspace_name: "Studio".to_owned(),
+        may_manage: true,
+        groups: vec![
+            ChannelGroup {
+                category: None,
+                channels: vec![line(x, "x", None, 0, true)],
+            },
+            ChannelGroup {
+                category: Some(CategoryLine {
+                    id: projects,
+                    name: "Projects".to_owned(),
+                    position: 0,
+                    first: true,
+                    last: true,
+                }),
+                channels: others
+                    .iter()
+                    .zip(positions)
+                    .map(|(id, position)| line(*id, "other", Some(projects), *position, false))
+                    .collect(),
+            },
+        ],
+    };
+    (page, x, projects, others)
+}
+
+#[test]
+fn a_move_names_where_each_channel_was_read_and_needs_every_channel_that_it_changes() {
+    // Between two channels that the person does not manage there is a free position: only
+    // the moved channel changes, and the move is offered.
+    let (page, x, projects, _) = page_of_moves(&[10, 20]);
+    let between = page.plan(x, Some(projects), 1).unwrap();
+    assert_eq!(
+        between,
+        [ChannelMove {
+            channel_id: x,
+            from: ChannelPlace {
+                category_id: None,
+                position: 0,
+            },
+            to: ChannelPlace {
+                category_id: Some(projects),
+                position: 11,
+            },
+        }]
+    );
+    assert!(page.takes(x, Some(projects), 1));
+    // Every place of the group is offered: before the first, between, after the last.
+    assert!((0..=2).all(|to| page.takes(x, Some(projects), to)));
+    // Without a free position the other channels would change: no move is offered.
+    let (page, x, projects, _) = page_of_moves(&[10, 11]);
+    assert_eq!(page.plan(x, Some(projects), 1), None);
+    assert!(!page.takes(x, Some(projects), 1));
+    // A drop at its own place moves nothing.
+    assert_eq!(page.plan(x, None, 0), None);
+}
