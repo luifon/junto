@@ -35,7 +35,11 @@ getrandom = { workspace = true }
 hyper = { workspace = true }
 hmac = { workspace = true }
 hyper-util = { workspace = true }
+opentelemetry = { version = "=0.31.0", default-features = false, features = ["trace", "metrics"] }
+opentelemetry_sdk = { version = "=0.31.0", default-features = false, features = ["trace", "metrics"] }
+opentelemetry-otlp = { version = "=0.31.1", default-features = false, features = ["http-json", "reqwest-blocking-client", "reqwest-rustls", "trace", "metrics"] }
 reqwest = { workspace = true }
+reqwest-otel = { package = "reqwest", version = "=0.12.28", default-features = false, features = ["blocking", "rustls-tls-native-roots"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
