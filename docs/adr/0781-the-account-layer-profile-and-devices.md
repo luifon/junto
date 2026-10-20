@@ -31,7 +31,7 @@ Profile:
 
 Devices:
 
-- The list is read from the server when the page opens. It is read again after a change that the page made, when the server tells `device_added`, `device_renamed` or `device_removed`, and when the state of the server was replaced or the reader of its events fell behind.
+- The list is read from the server when the page opens. It is read again after a change that the page made, when the server tells `device_added`, `device_renamed` or `device_removed`, when it tells `device_logged_in`, which changes the last login of a device, and when the state of the server was replaced or the reader of its events fell behind.
 - One read runs at a time. Changes that arrive during a read cause one further read after it. A read that failed is not repeated by itself: the page states the failure with "Try again", and keeps the rows of the read before.
 - The layer holds at most 200 devices. When the server lists more, the page states how many it does not show.
 - A row shows the name, or "Unnamed device"; "This device" for the device of the session; how the key came to the account; the date of the addition; and the last login. Times are in UTC, as the notice of a recovery (ADR 0732).

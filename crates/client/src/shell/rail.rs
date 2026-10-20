@@ -63,7 +63,7 @@ fn seed(row: &ServerRow) -> u128 {
 /// image (ADR 0101), and the generated picture otherwise. Only the logo has a name for a
 /// screen reader and for a test: the generated picture is decoration beside the name of
 /// the server.
-fn picture(
+pub(super) fn picture(
     place: &'static str,
     index: usize,
     row: &ServerRow,

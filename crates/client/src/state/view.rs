@@ -2159,6 +2159,8 @@ fn workspace_view(
     let read_only = archived.is_some();
     let fixed = |mut row: MessageRow| {
         if read_only {
+            row.can_react = false;
+            row.can_reply = false;
             row.can_edit = false;
             row.can_delete = false;
             row.can_pin = false;

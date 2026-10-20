@@ -22,8 +22,12 @@ use uuid::Uuid;
 use crate::ids::StructureId;
 use crate::structure::{ChannelKind, present};
 
-/// The format version that this build reads and writes.
+/// The format version that this build writes. It reads every format from
+/// [`OLDEST_STRUCTURE_FORMAT`] to this one (ADR 0212).
 pub const STRUCTURE_FORMAT: u32 = 2;
+
+/// The oldest format version that this build reads.
+pub const OLDEST_STRUCTURE_FORMAT: u32 = 1;
 
 /// The largest number of changes of one request. A request of this size runs in a small
 /// part of the time limit of a request (ADR 0211).

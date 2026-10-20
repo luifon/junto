@@ -34,7 +34,7 @@ Fork:
 
 Pins:
 
-- "Pins" in the header of a channel opens the pin list in the side panel: each pinned message with "Go to message" and, with "manage messages", "Unpin". "Go to message" shows the message in its place with the messages around it, or opens the thread of a pinned reply.
+- "Pins" in the header of a channel opens the pin list in the side panel: each pinned message with "Go to message" and, with "manage messages", "Unpin". "Go to message" goes to the message as a notice does (ADR 0742): the list of its place, or the thread of a pinned reply, reads the messages around its position when it does not hold the message, shows it and marks it.
 - "Pin" and "Unpin" are in the actions and in the menu of a message for a person whose roles hold "manage messages". A refusal is told above the composer: the limit of 100 pins, a missing permission, and every other answer by its error code.
 - A pinned message carries the mark "Pinned" without a name.
 

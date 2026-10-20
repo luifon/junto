@@ -58,7 +58,23 @@ impl Shell {
             .mb(u(4.0))
             .border_b_1()
             .border_color(Hsla::from(colors.rule_soft))
-            .child(Mosaic::new(MosaicKind::Large, server_id.as_uuid().as_u128(), 26.0).radius(2.0))
+            // The logo of the server when the window holds it, as in the server book
+            // (ADR 0799).
+            .child(
+                match view
+                    .servers
+                    .iter()
+                    .enumerate()
+                    .find(|(_, row)| row.id == server_id)
+                {
+                    Some((index, row)) => {
+                        super::rail::picture("selected-server-logo", index, row, 26.0, 2.0)
+                    }
+                    None => Mosaic::new(MosaicKind::Large, server_id.as_uuid().as_u128(), 26.0)
+                        .radius(2.0)
+                        .into_any_element(),
+                },
+            )
             .child(
                 div()
                     .flex_1()

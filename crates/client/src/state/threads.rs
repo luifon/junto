@@ -5,7 +5,6 @@
 use gpui::Context;
 use junto_client_core::api::{ApiError, ErrorCategory};
 use junto_client_core::flow::FlowError;
-use junto_client_core::model::PlaceId;
 use junto_client_core::protocol::error::ErrorCode;
 use junto_client_core::protocol::ids::{AccountId, ChannelId, ConversationId, MessageId, ServerId};
 use junto_client_core::protocol::structure::ChannelKind;
@@ -101,15 +100,6 @@ impl AppState {
             },
             refusal,
         );
-    }
-
-    /// Shows a message of an open place: the messages around its position replace what is
-    /// loaded.
-    pub fn show_position(&mut self, server_id: ServerId, place: PlaceId, position: u64) {
-        if let Some(server) = self.client.server(server_id) {
-            self.anchors.insert((server_id, place), Some(position));
-            server.live().read_messages_around(place, position);
-        }
     }
 
     /// Asks the server to copy a thread into a new channel. The state of the request is

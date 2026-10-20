@@ -534,9 +534,10 @@ impl ServerModel {
                 // The call of an archived voice channel ends (ADR 0410).
                 self.forget_calls_of(channel_id);
                 // The channel stays readable for a reader that has it open, and for a
-                // reader of the archived list. For every other reader nothing of it stays.
+                // reader of the archived list. For every other reader only its notices
+                // stay.
                 if self.readable_channel(channel_id).is_none() {
-                    self.forget_place(PlaceId::Channel(channel_id));
+                    self.close_archived_place(PlaceId::Channel(channel_id));
                 }
             }
             Event::CategoryDeleted {
@@ -602,6 +603,7 @@ impl ServerModel {
                     self.forget_calls_of(*channel_id);
                     self.lose_recordings_of(*channel_id);
                 }
+                self.forget_named_of_workspace(*workspace_id);
                 // The settings of the snapshot that name the workspace or one of its
                 // channels name nothing any more.
                 self.notification_settings.retain(|held| {

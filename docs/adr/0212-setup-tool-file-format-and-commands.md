@@ -56,6 +56,7 @@ Commands:
 - The export of one server, applied to an empty server, renames the default workspace of that server, changes its "everyone" role, and adds the other entries. The two first channels of the empty server stay, because the file does not list them for deletion.
 - A person who writes a new entry by hand gives it a new UUID.
 - The tool reads file formats 1 and 2 and writes format 2. Saved plans use format 2; older saved plans must be recomputed. A later format has another number.
+- The protocol crate states the format that is written and the oldest format that is read as two constants. The description of the generated schema and the refusal of a file of another format are written from them, so they name the current formats.
 - A structure with more than 200 differences is applied in several files, each with a part of the entries.
 - The plan file contains no credential.
 

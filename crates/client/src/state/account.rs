@@ -614,8 +614,9 @@ impl AppState {
         .detach();
     }
 
-    /// A step of the event stream of a server: a change of the devices of the account
-    /// reads the list of the open page again. `None` is a reader that fell behind.
+    /// A step of the event stream of a server: a change of the devices of the account,
+    /// and a login of one of them, which changes its last login, reads the list of the
+    /// open page again. `None` is a reader that fell behind.
     pub(super) fn account_noticed(
         &mut self,
         server_id: ServerId,
@@ -629,6 +630,7 @@ impl AppState {
                 Event::DeviceAdded { .. }
                     | Event::DeviceRenamed { .. }
                     | Event::DeviceRemoved { .. }
+                    | Event::DeviceLoggedIn { .. }
             ),
             Some(Notice::Ended { .. }) => false,
         };

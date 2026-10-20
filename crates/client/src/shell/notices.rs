@@ -347,6 +347,24 @@ impl Shell {
                 ),
             )
         });
+        // The notices of archived channels whose list could not be read (ADR 0762).
+        let archive_failed = (!panel.archive_failed.is_empty()).then(|| {
+            let workspaces = panel.archive_failed.clone();
+            div().flex_none().px(u(14.0)).pt(u(10.0)).child(
+                Notice::error(text::ARCHIVED_NOTICES_NOT_READ)
+                    .selector("notices-archive-failed")
+                    .action(
+                        Button::new("notices-archive-retry")
+                            .label(text::TRY_AGAIN)
+                            .selector("notices-archive-retry")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.state.update(cx, |state, cx| {
+                                    state.read_archived_lists_again(server_id, &workspaces, cx);
+                                });
+                            })),
+                    ),
+            )
+        });
         let body: AnyElement = if panel.rows.is_empty() && panel.reading {
             div()
                 .px(u(14.0))
@@ -436,7 +454,11 @@ impl Shell {
         side_panel(&theme, text::NOTIFICATIONS, "notices-panel")
             .child(header)
             .child(crate::ui::notice_slot("notices-bar-slot").children(bar))
-            .child(crate::ui::notice_slot("notices-failed-slot").children(failed))
+            .child(
+                crate::ui::notice_slot("notices-failed-slot")
+                    .children(failed)
+                    .children(archive_failed),
+            )
             .child(body)
             .into_any_element()
     }

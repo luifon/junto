@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use junto_client_core::model::{Collection, LoadFailure};
 use junto_client_core::protocol::account::OwnAccount;
 use junto_client_core::protocol::events::Cursor;
 use junto_client_core::protocol::ids::{ConversationId, StreamEpoch};
@@ -119,12 +122,14 @@ impl Scene {
             recording_id: None,
             line: None,
             place_id,
+            workspace_id: None,
             author_id: self.ana,
             created_at: morning() - Duration::minutes(minutes),
             text: text.to_owned(),
             position: Some(7),
             thread_root: None,
             start_ms: None,
+            page: 0,
         }
     }
 
@@ -134,12 +139,14 @@ impl Scene {
             recording_id: Some(RecordingId::generate()),
             line: Some(line),
             place_id: self.daily.as_uuid(),
+            workspace_id: None,
             author_id: self.own,
             created_at: morning() - Duration::days(2),
             text: text.to_owned(),
             position: None,
             thread_root: None,
             start_ms: None,
+            page: 0,
         }
     }
 
@@ -359,7 +366,7 @@ fn the_filters_offer_the_channels_and_the_members_of_the_shown_workspace() {
     ];
     let mut workspace = scene.model.workspace(workspace_id).unwrap().clone();
     workspace.members = junto_client_core::model::Loadable::Loaded(members);
-    scene.model.workspaces = vec![std::sync::Arc::new(workspace)];
+    scene.model.workspaces = vec![Arc::new(workspace)];
     let mut search = scene.search("retention", Vec::new());
     search.filters = Filters {
         channel: Some(scene.general),
@@ -449,6 +456,7 @@ fn the_text_of_a_result_is_held_up_to_a_bound() {
             recording_id: None,
             line: None,
             place_id: Uuid::now_v7(),
+            workspace_id: None,
             author_id: AccountId::generate(),
             created_at: morning(),
             text,
@@ -462,4 +470,79 @@ fn the_text_of_a_result_is_held_up_to_a_bound() {
     let long = from_server("ação ".repeat(1_000));
     assert_eq!(long.text.chars().count(), MOST_HIT_CHARACTERS);
     assert!(long.text.ends_with('…'));
+}
+
+#[test]
+fn a_page_with_a_result_of_an_unknown_archived_channel_waits_for_the_archived_list() {
+    let mut scene = scene();
+    let archived = ChannelId::generate();
+    let in_page = |mut hit: Hit, page: u32, workspace_id: Option<WorkspaceId>| {
+        hit.page = page;
+        hit.workspace_id = workspace_id;
+        hit
+    };
+    let studio = Some(scene.studio);
+    let first = in_page(scene.spoken("retention aloud", 3), 0, studio);
+    let old = in_page(
+        scene.hit(archived.as_uuid(), "retention, archived", 5),
+        0,
+        studio,
+    );
+    let later = in_page(
+        scene.hit(scene.general.as_uuid(), "retention later", 6),
+        1,
+        studio,
+    );
+    let count = |panel: &SearchPanel| panel.messages.len() + panel.transcripts.len();
+
+    // A page is listed whole: the transcript line of the first page is not listed while
+    // the message of an unknown channel of the same page waits for the archived list.
+    assert_eq!(
+        archived_lists_of_search(scene.server_id, &scene.model, &{
+            let mut known = scene.known.clone();
+            known.search = Some(scene.search("retention", vec![first.clone(), old.clone()]));
+            known
+        }),
+        [scene.studio]
+    );
+    let panel =
+        scene.panel(scene.search("retention", vec![first.clone(), old.clone(), later.clone()]));
+    assert_eq!(panel.state, SearchShown::Searching);
+    assert_eq!(count(&panel), 0);
+
+    // A later page that waits is shown as a page on its way, under the listed ones.
+    let panel = scene.panel(scene.search(
+        "retention",
+        vec![
+            first.clone(),
+            in_page(old.clone(), 1, studio),
+            in_page(later.clone(), 1, studio),
+        ],
+    ));
+    assert_eq!(panel.state, SearchShown::Results);
+    assert_eq!(count(&panel), 1);
+    assert!(panel.can_read_more && panel.reading_more);
+
+    // A result of a workspace that the state does not hold waits for nothing and is not
+    // listed.
+    let gone = in_page(old.clone(), 0, Some(WorkspaceId::generate()));
+    let panel = scene.panel(scene.search("retention", vec![first.clone(), gone, later.clone()]));
+    assert_eq!(panel.state, SearchShown::Results);
+    assert_eq!(count(&panel), 2);
+
+    // A list that failed is named with the workspace, and its results are not listed.
+    Arc::make_mut(&mut scene.model.admin).archived =
+        vec![(scene.studio, Collection::Failed(LoadFailure::NoAnswer))];
+    let panel =
+        scene.panel(scene.search("retention", vec![first.clone(), old.clone(), later.clone()]));
+    assert_eq!(panel.state, SearchShown::Results);
+    assert_eq!(count(&panel), 2);
+    assert_eq!(panel.archive_failed, [scene.studio]);
+
+    // The list answered without the channel: nothing waits and nothing failed.
+    Arc::make_mut(&mut scene.model.admin).archived =
+        vec![(scene.studio, Collection::Loaded(Vec::new()))];
+    let panel = scene.panel(scene.search("retention", vec![first, old, later]));
+    assert_eq!(count(&panel), 2);
+    assert!(panel.archive_failed.is_empty() && !panel.reading_more);
 }

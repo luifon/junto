@@ -24,7 +24,7 @@ use super::{EmojiTarget, Layer, Pane, Shell};
 use crate::assets::Icon;
 use crate::compose::{self, Mention, MentionTarget};
 use crate::state::feed::{Feed, FeedRow, plain_text};
-use crate::state::view::{DraftFile, Members, ShellView, WorkspaceView};
+use crate::state::view::{DirectRow, DraftFile, Members, ShellView, WorkspaceView};
 use crate::text;
 use crate::theme::{theme, u};
 use crate::ui::{
@@ -165,6 +165,35 @@ fn mention_query(text: &str, cursor: usize) -> Option<(usize, String)> {
         .then(|| (start, query.to_owned()))
 }
 
+/// The other participant of a direct conversation, when the query finds the name. A
+/// participant whose name the client has not read yet is not offered: the mention would
+/// have no name to show.
+fn direct_candidates(row: &DirectRow, query: &str) -> Vec<Candidate> {
+    row.name
+        .as_ref()
+        .map(|name| Candidate {
+            target: MentionTarget::Account(row.account_id),
+            name: name.clone(),
+            detail: text::IN_THIS_CONVERSATION,
+        })
+        .filter(|candidate| rank(candidate, &query.to_lowercase()).is_some())
+        .into_iter()
+        .collect()
+}
+
+/// Where a candidate stands for a query in lower case: 0 when its name starts with the
+/// query, 1 when the name holds it, and absent otherwise.
+fn rank(candidate: &Candidate, query: &str) -> Option<u8> {
+    let name = candidate.name.to_lowercase();
+    if name.starts_with(query) {
+        Some(0)
+    } else if name.contains(query) {
+        Some(1)
+    } else {
+        None
+    }
+}
+
 /// The members and roles whose names start with the query, and then those that hold it.
 fn candidates(
     workspace: &WorkspaceView,
@@ -197,19 +226,9 @@ fn candidates(
             detail: text::EVERYONE_HELP,
         });
     }
-    let rank = |candidate: &Candidate| {
-        let name = candidate.name.to_lowercase();
-        if name.starts_with(&query) {
-            Some(0)
-        } else if name.contains(&query) {
-            Some(1)
-        } else {
-            None
-        }
-    };
     let mut found: Vec<(u8, Candidate)> = all
         .into_iter()
-        .filter_map(|candidate| rank(&candidate).map(|rank| (rank, candidate)))
+        .filter_map(|candidate| rank(&candidate, &query).map(|rank| (rank, candidate)))
         .collect();
     found.sort_by(|one, other| {
         one.0
@@ -414,13 +433,26 @@ impl Shell {
         cx.notify();
     }
 
+    /// The entries of the mention picker of a pane. A message of a channel mentions the
+    /// members and the roles of its workspace; a message of a direct conversation mentions
+    /// only its two participants, so the picker offers the other one (ADR 0408).
     fn mention_candidates(&self, pane: Pane) -> Vec<Candidate> {
         let (Some(view), Some(open)) = (&self.view, &self.pen(pane).mention) else {
             return Vec::new();
         };
-        view.workspace()
-            .map(|workspace| candidates(workspace, view.person.account_id, &open.query))
-            .unwrap_or_default()
+        let Some(workspace) = view.workspace() else {
+            return Vec::new();
+        };
+        match self.composer_place(pane).map(|(_, place)| place) {
+            Some(PlaceId::Direct(conversation_id)) => workspace
+                .directs
+                .iter()
+                .chain(&workspace.conversation)
+                .find(|row| row.id == conversation_id)
+                .map(|row| direct_candidates(row, &open.query))
+                .unwrap_or_default(),
+            _ => candidates(workspace, view.person.account_id, &open.query),
+        }
     }
 
     /// Puts a mention into the text in place of the typed `@` and its query.
@@ -1729,6 +1761,14 @@ impl Shell {
                 .as_ref()
                 .map(|editing| editing.message_id),
         )
+    }
+
+    /// The names of the entries that the mention picker of a pane shows, in their order.
+    pub fn mention_names(&self, pane: Pane) -> Vec<String> {
+        self.mention_candidates(pane)
+            .into_iter()
+            .map(|candidate| candidate.name)
+            .collect()
     }
 
     /// Takes the entry of the mention picker with this name.
