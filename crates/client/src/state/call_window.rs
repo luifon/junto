@@ -20,7 +20,9 @@ impl AppState {
         cx: &mut Context<Self>,
     ) {
         self.call_window = Some(window);
-        cx.notify();
+        self.known.call_in_own_window = true;
+        // The call window reads the messages of the place of the call.
+        self.changed(cx);
     }
     /// Sets what the call window does before it closes, whatever closes it.
     pub fn on_call_window_closing(&mut self, closing: impl FnOnce(&mut gpui::App) + 'static) {
@@ -47,6 +49,7 @@ impl AppState {
 
     fn call_window_closed(&mut self, cx: &mut Context<Self>) {
         self.call_window = None;
+        self.known.call_in_own_window = false;
         self.talking_windows.clear();
         self.calls.set_talking(false);
         cx.notify();
@@ -56,9 +59,7 @@ impl AppState {
         if let Some(window) = self.call_window.take() {
             let _ = window.update(cx, |_, window, _| window.remove_window());
         }
-        self.talking_windows.clear();
-        self.calls.set_talking(false);
-        cx.notify();
+        self.call_window_closed(cx);
     }
     pub fn save_call_window(&mut self, settings: CallWindowSettings, cx: &mut Context<Self>) {
         self.call_window_settings = settings;
@@ -101,6 +102,29 @@ impl AppState {
         settings.keep_on_top = top;
         self.save_call_window(settings, cx);
     }
+    /// The place whose messages the call window shows while it is open: the voice channel of
+    /// the call, or the conversation of a direct-message call.
+    pub(super) fn call_window_place(
+        &self,
+        snapshots: &[ServerSnapshot],
+    ) -> Option<(ServerId, PlaceId)> {
+        self.call_window.as_ref()?;
+        let call = self.media_calls().call?;
+        let server_id = call.target.server_id;
+        let place = match call.target.place {
+            CallPlace::Channel { channel_id, .. } => PlaceId::Channel(channel_id),
+            CallPlace::Direct {
+                low_account_id,
+                high_account_id,
+            } => PlaceId::Direct(direct_conversation(
+                snapshots,
+                server_id,
+                [low_account_id, high_account_id],
+            )?),
+        };
+        Some((server_id, place))
+    }
+
     /// The view of the call window: the place of the call, whatever the main window shows.
     /// The chat of a direct-message call is the conversation of its two accounts.
     pub fn call_view(&self) -> ShellView {
@@ -125,25 +149,18 @@ impl AppState {
                     high_account_id,
                 } => {
                     let accounts = [low_account_id, high_account_id];
-                    let conversation = snapshots
-                        .iter()
-                        .find(|snapshot| snapshot.id == server_id)
-                        .and_then(view::shown_model)
-                        .and_then(|model| {
-                            model.conversations.iter().find(|conversation| {
-                                accounts.contains(&conversation.low_account_id)
-                                    && accounts.contains(&conversation.high_account_id)
-                            })
-                        })
-                        .map(|conversation| conversation.id);
-                    match conversation {
+                    match direct_conversation(&snapshots, server_id, accounts) {
                         Some(id) => selection.conversations.insert(server_id, id),
                         None => selection.conversations.remove(&server_id),
                     };
                 }
             }
         }
-        let known = self.known.clone();
+        // The call window draws the call in every kind of place.
+        let known = Known {
+            call_in_own_window: false,
+            ..self.known.clone()
+        };
         #[cfg(feature = "test-support")]
         let known = if let Some(media) = &self.media_fixture {
             Known {
@@ -156,6 +173,26 @@ impl AppState {
         self.direct
             .filter_view(view::derive(&snapshots, &selection, &known))
     }
+}
+
+/// The conversation of the two accounts of a direct-message call, when the state of its
+/// server holds it.
+fn direct_conversation(
+    snapshots: &[ServerSnapshot],
+    server_id: ServerId,
+    accounts: [AccountId; 2],
+) -> Option<junto_client_core::protocol::ids::ConversationId> {
+    snapshots
+        .iter()
+        .find(|snapshot| snapshot.id == server_id)
+        .and_then(view::shown_model)
+        .and_then(|model| {
+            model.conversations.iter().find(|conversation| {
+                accounts.contains(&conversation.low_account_id)
+                    && accounts.contains(&conversation.high_account_id)
+            })
+        })
+        .map(|conversation| conversation.id)
 }
 
 pub(super) fn call_transition(

@@ -68,10 +68,11 @@ impl Shell {
             )
             .into_any_element()
     }
-    /// What a direct conversation shows above its messages while it is not the place of
-    /// the call of this device: the button that starts a direct-message call, and the
-    /// outcome of the last call with the person. The call of the conversation is drawn as
-    /// the call of a voice channel is (ADR 0735).
+    /// What a direct conversation shows above its messages while the main window does not
+    /// draw its call: the button that starts a direct-message call, or the statement that
+    /// the call window draws the call of the conversation with Return, and the outcome of
+    /// the last call with the person. The call of the conversation is drawn as the call of
+    /// a voice channel is (ADR 0735).
     pub(crate) fn render_direct_call(
         &self,
         server: ServerId,
@@ -91,7 +92,17 @@ impl Shell {
             latest.map(|ring| (ring.outcome, ring.incoming)),
         );
         let incoming = self.view.as_ref().is_some_and(|view| view.invitations.iter().any(|invited| invited.target.server_id == server && matches!(invited.target.place, CallPlace::Direct { low_account_id, high_account_id } if low_account_id == other || high_account_id == other)));
-        let call = if incoming {
+        let separate = state.is_call_detached()
+            && state.media_calls().call.is_some_and(|call| {
+                call.target.server_id == server
+                    && matches!(call.target.place, CallPlace::Direct { low_account_id, high_account_id } if low_account_id == other || high_account_id == other)
+            });
+        let call = if separate {
+            Notice::new(text::CALL_SEPARATE)
+                .selector("call-in-separate-window")
+                .action(self.return_call_button(cx))
+                .into_any_element()
+        } else if incoming {
             div().into_any_element()
         } else {
             Button::new("start-direct-call")

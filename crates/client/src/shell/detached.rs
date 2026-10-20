@@ -21,6 +21,10 @@ use junto_client_core::call_window::CallWindowSettings;
 /// the other kind (ADR 0772).
 const ASKS_WINDOW_MANAGER: bool = cfg!(target_os = "linux");
 
+/// The height of the header of the call window, in pixels of the design: one line of
+/// buttons.
+const HEADER_HEIGHT: f32 = 48.0;
+
 /// The narrowest stage that the call window draws beside the panel of the call, in pixels
 /// of the design. A narrower window draws the panel over the stage.
 const STAGE_BESIDE_PANEL: f32 = 480.0;
@@ -199,13 +203,12 @@ impl Shell {
             .bg(Hsla::from(theme.colors.basalt));
         let state = self.state.clone();
         let top = self.state.read(cx).call_window_settings().keep_on_top;
-        // The window controls and the recording wrap among themselves; the buttons of the
-        // panel keep the end of the first line.
+        // The header has one line of a fixed height: a change of the recording changes only
+        // its own part, between the window controls and the buttons of the panel, and moves
+        // nothing under the header (ADR 0730).
         let controls = div()
-            .flex_1()
-            .min_w_0()
             .flex()
-            .flex_wrap()
+            .flex_none()
             .items_center()
             .gap(u(6.0))
             // The choice is offered only where the system can keep a window above the
@@ -246,7 +249,13 @@ impl Shell {
                     .icon(crate::assets::Icon::Expand)
                     .tooltip(text::FULLSCREEN)
                     .on_click(cx.listener(|_, _, window, _| window.toggle_fullscreen())),
-            )
+            );
+        let recording = div()
+            .flex()
+            .flex_1()
+            .min_w_0()
+            .items_center()
+            .gap(u(6.0))
             .children(
                 panel
                     .and_then(|panel| panel.channel())
@@ -257,10 +266,12 @@ impl Shell {
         let header = div()
             .flex_none()
             .flex()
-            .items_start()
+            .items_center()
             .gap(u(6.0))
-            .p(u(8.0))
+            .h(u(HEADER_HEIGHT))
+            .px(u(8.0))
             .child(controls)
+            .child(recording)
             .when(panel.is_some(), |header| {
                 header.child(
                     div()

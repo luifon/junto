@@ -2039,7 +2039,8 @@ impl AppState {
             cx,
         );
         self.follow_account(cx);
-        self.follow_places(shown, cx);
+        let call_window = self.call_window_place(&snapshots);
+        self.follow_places(shown, call_window, cx);
         self.follow_recordings(shown, cx);
         self.follow_jump(shown);
         self.follow_result_jump(shown);

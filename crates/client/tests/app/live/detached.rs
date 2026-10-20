@@ -511,6 +511,7 @@ fn the_call_window_has_the_chat_the_members_and_the_settings_of_its_call(cx: &mu
         },
     );
     let ada = admin.handle.account().unwrap();
+    let workspace_id = window.view().workspace().unwrap().id;
     window.click_channel(ROOM);
     window.click("join-call");
     window.until("connected", |window| {
@@ -521,6 +522,10 @@ fn the_call_window_has_the_chat_the_members_and_the_settings_of_its_call(cx: &mu
     });
     window.click("detach-call");
     let mut call = window.call_window();
+    // A narrow call window: the panel lies over the stage.
+    call.cx
+        .simulate_resize(gpui::size(gpui::px(480.0), gpui::px(640.0)));
+    call.settle();
 
     // The panel starts closed. The buttons of the header open its tabs.
     assert!(!call.shows("call-panel"));
@@ -528,6 +533,43 @@ fn the_call_window_has_the_chat_the_members_and_the_settings_of_its_call(cx: &mu
     call.until("the chat of the call is shown", |call| {
         call.shows("call-panel") && call.shows("call-chat")
     });
+
+    // The recording control changes when the person may record: the header keeps its
+    // height, and the panel under it does not move (ADR 0730).
+    assert!(call.shows("no-record-permission"));
+    let before = (
+        call.cx.debug_bounds("call-panel").unwrap(),
+        call.cx.debug_bounds("close-call-panel").unwrap(),
+    );
+    let api = admin.handle.api();
+    let roles = world.run(api.workspace_roles(workspace_id)).unwrap();
+    let everyone = roles.iter().find(|role| role.is_everyone).unwrap();
+    let mut permissions = everyone.permissions.clone();
+    permissions.push(WorkspacePermission::RecordCalls);
+    world
+        .run(api.update_workspace_role(
+            workspace_id,
+            everyone.id,
+            &UpdateWorkspaceRole {
+                name: None,
+                permissions: Some(permissions),
+            },
+        ))
+        .unwrap();
+    call.until("the person may record", |call| {
+        !call.shows("no-record-permission") && call.shows("start-recording")
+    });
+    assert_eq!(
+        before,
+        (
+            call.cx.debug_bounds("call-panel").unwrap(),
+            call.cx.debug_bounds("close-call-panel").unwrap(),
+        )
+    );
+
+    // The main window shows another channel: the chat of the call window still reads the
+    // messages of the call.
+    window.click_channel("general");
     admin.send(
         &world,
         voice.id,
@@ -581,6 +623,12 @@ fn the_call_window_has_the_chat_the_members_and_the_settings_of_its_call(cx: &mu
             .state
             .read_with(&window.cx, |state, _| state.is_call_detached())
     });
+    // The main window shows another channel: the text waits for the voice channel.
+    assert_eq!(
+        window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)),
+        ""
+    );
+    window.click_channel(ROOM);
     window.until("the text is in the main window", |window| {
         window.in_shell(|shell, _, cx| shell.composer_text(Pane::Main, cx)) == "Not sent yet"
     });
@@ -639,9 +687,15 @@ fn the_call_window_of_a_direct_call_has_its_conversation(cx: &mut TestAppContext
         window.shows("active-direct-call")
     });
     window.click("detach-call");
+    // The main window shows the conversation in the whole main area, with Return.
     window.until("the main window shows the separate call", |window| {
-        window.shows("call-in-separate-window") && window.shows("call-panel")
+        window.shows("call-in-separate-window")
+            && !window.shows("call-panel")
+            && !window.shows("call-stage")
+            && window.shows("message-list")
     });
+    window.write("From the main window");
+    window.until_message("From the main window");
     let mut call = window.call_window();
     call.click("open-call-chat");
     call.until("the conversation is the chat", |call| {
@@ -652,6 +706,9 @@ fn the_call_window_of_a_direct_call_has_its_conversation(cx: &mut TestAppContext
                 .and_then(|workspace| workspace.conversation.as_ref().map(|row| row.account_id))
                 == Some(other)
     });
+    call.until_message("From the main window");
+    // The main window shows a channel: the call window still reads the conversation.
+    window.click_channel("general");
     call.write("From the call window");
     call.until_message("From the call window");
     call.click("call-tab-members");

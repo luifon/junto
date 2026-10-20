@@ -167,6 +167,9 @@ pub struct Known {
     /// this device created there (ADR 0717).
     pub preset_refused: HashSet<ServerId>,
     pub media: MediaSnapshot,
+    /// The call window draws the call. The main window then shows the direct conversation
+    /// of a direct-message call as a conversation, in the whole main area (ADR 0735).
+    pub call_in_own_window: bool,
     /// The last recording of the call of this device that failed or that the server
     /// stopped, with the server of that call. The state of a server holds a recording
     /// only while it runs (ADR 0719).
@@ -2225,7 +2228,11 @@ fn workspace_view(
         .zip(known.media.calls.call.as_ref())
         .map(|(row, active)| call_panel(server_id, row, active, workspace, model, known))
         .or_else(|| {
-            // The direct conversation of the direct-message call of this device.
+            // The direct conversation of the direct-message call of this device, unless
+            // the call window draws the call.
+            if known.call_in_own_window {
+                return None;
+            }
             let other = conversation.as_ref()?.account_id;
             let active = known.media.calls.call.as_ref().filter(|active| {
                 active.target.server_id == server_id
